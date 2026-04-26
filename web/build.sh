@@ -44,7 +44,7 @@ for module in "${modules[@]}"; do
     # Build with wasm-pack
     # Convert module name from kebab-case to snake_case for output
     out_name="${module//-/_}"
-    wasm-pack build --target web --out-dir "$OUTPUT_DIR" --out-name "$out_name"
+    wasm-pack build --release --no-opt --target web --out-dir "$OUTPUT_DIR" --out-name "$out_name"
     
     if [ $? -eq 0 ]; then
         echo "  Success!"
