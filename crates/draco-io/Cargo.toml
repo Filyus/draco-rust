@@ -1,0 +1,91 @@
+[package]
+name = "draco-io"
+version = "0.1.0"
+edition = "2021"
+description = "Rust IO helpers for Draco geometry compression formats"
+license = "Apache-2.0"
+repository = "https://github.com/Filyus/draco-rust"
+readme = "README.md"
+
+[dependencies]
+draco-core = { version = "0.1.0", path = "../draco-core", default-features = false }
+thiserror = "2.0.17"
+byteorder = "1.5.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.148"
+miniz_oxide = { version = "0.6", optional = true }
+
+[features]
+default = [
+    "encoder",
+    "decoder",
+    "compression",
+    "point_cloud_decode",
+]
+encoder = ["draco-core/encoder"]
+decoder = ["draco-core/decoder"]
+point_cloud_decode = ["decoder", "draco-core/point_cloud_decode"]
+compression = ["miniz_oxide"]
+
+[dev-dependencies]
+tempfile = "3.24.0"
+
+[[example]]
+name = "check_dedup"
+required-features = ["decoder"]
+
+[[example]]
+name = "decode_drc"
+required-features = ["decoder"]
+
+[[example]]
+name = "decode_rust_lamp"
+required-features = ["decoder"]
+
+[[example]]
+name = "encode_lamp"
+required-features = ["encoder", "decoder"]
+
+[[example]]
+name = "fbx_demo"
+required-features = ["encoder", "decoder"]
+
+[[example]]
+name = "fbx_inspect"
+required-features = ["decoder"]
+
+[[example]]
+name = "gltf_demo"
+required-features = ["encoder", "decoder"]
+
+[[example]]
+name = "polymorphic"
+required-features = ["encoder"]
+
+[[example]]
+name = "unified_api"
+required-features = ["encoder"]
+
+[[example]]
+name = "unified_readers"
+required-features = ["encoder", "decoder"]
+
+[[test]]
+name = "cpp_decode_test"
+required-features = ["decoder"]
+
+[[test]]
+name = "encoding_speed_test"
+required-features = ["encoder", "decoder"]
+
+[[test]]
+name = "glb_roundtrip_test"
+required-features = ["encoder", "decoder"]
+
+[[test]]
+name = "ply_bunny_test"
+required-features = ["encoder", "decoder"]
+
+[[test]]
+name = "roundtrip"
+required-features = ["encoder", "decoder"]

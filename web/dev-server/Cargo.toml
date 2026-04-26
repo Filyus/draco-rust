@@ -1,0 +1,10 @@
+[package]
+name = "draco-web-dev-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ctrlc = "3.5"
+local-ip-address = "0.6"
+mime_guess = "2.0"
+miniz_oxide = "0.9"

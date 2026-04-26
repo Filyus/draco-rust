@@ -1,0 +1,19 @@
+[package]
+name = "draco-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+draco-core = { path = "../crates/draco-core", default-features = false, features = ["decoder", "point_cloud_decode"] }
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "decode_drc"
+path = "fuzz_targets/decode_drc.rs"
+test = false
+doc = false
+bench = false

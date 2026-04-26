@@ -1,0 +1,42 @@
+use draco_core::decoder_buffer::DecoderBuffer;
+use draco_core::encoder_buffer::EncoderBuffer;
+use draco_core::geometry_indices::{FaceIndex, PointIndex};
+use draco_core::mesh::Mesh;
+use draco_core::mesh_decoder::MeshDecoder;
+use draco_core::mesh_encoder::MeshEncoder;
+use draco_core::EncoderOptions;
+
+#[test]
+fn test_edgebreaker_tetrahedron_roundtrip() {
+    // Closed manifold, smallest non-degenerate case. This exercises
+    // start-face configuration encoding/decoding for interior starts.
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(4);
+    mesh.set_num_faces(4);
+
+    // Tetrahedron faces.
+    mesh.set_face(FaceIndex(0), [PointIndex(0), PointIndex(1), PointIndex(2)]);
+    mesh.set_face(FaceIndex(1), [PointIndex(0), PointIndex(3), PointIndex(1)]);
+    mesh.set_face(FaceIndex(2), [PointIndex(0), PointIndex(2), PointIndex(3)]);
+    mesh.set_face(FaceIndex(3), [PointIndex(1), PointIndex(3), PointIndex(2)]);
+
+    let mut options = EncoderOptions::new();
+    options.set_global_int("encoding_method", 1); // Edgebreaker
+
+    let mut encoder = MeshEncoder::new();
+    encoder.set_mesh(mesh);
+    let mut encoder_buffer = EncoderBuffer::new();
+    encoder
+        .encode(&options, &mut encoder_buffer)
+        .expect("Encode failed");
+
+    let mut decoder = MeshDecoder::new();
+    let mut decoder_buffer = DecoderBuffer::new(encoder_buffer.data());
+    let mut decoded_mesh = Mesh::new();
+    decoder
+        .decode(&mut decoder_buffer, &mut decoded_mesh)
+        .expect("Decode failed");
+
+    assert_eq!(decoded_mesh.num_faces(), 4);
+    assert_eq!(decoded_mesh.num_points(), 4);
+}

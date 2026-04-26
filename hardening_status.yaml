@@ -1,0 +1,398 @@
+# Decode hardening status for Rust Draco.
+#
+# Purpose:
+# - Track malformed-input and resource-hardening work separately from
+#   actionable_status.yaml so the main actionable file stays short.
+# - Keep completed hardening evidence, residual risk, and next investigation
+#   steps in one place.
+# - Do not use this file as a full implementation inventory; detailed completed
+#   behavior still belongs in implementation_state.yaml.
+
+version: 1
+last_reviewed: "2026-04-25"
+
+scope:
+  crate: "draco-core"
+  surface: "Rust DRC decode of mesh and point-cloud streams"
+  compatibility_floor: "Draco 1.0.0+ for supported compatibility claims"
+  threat_model:
+    controlled_assets: "Known-good generated/fixture streams from trusted pipelines."
+    untrusted_assets: "Externally supplied .drc bytes that may be truncated, corrupted, inconsistent, oversized, or adversarial."
+
+readiness:
+  controlled_assets: "good"
+  opportunistic_untrusted_decode: "improving"
+  arbitrary_hostile_input: "not_claimed"
+  summary: "Positive-path decode coverage is strong for the supported fixture set. Malformed-input behavior has deterministic regression coverage and several panic/resource hazards have been converted into controlled failures, but sustained fuzzing and explicit caller resource policy are still missing."
+
+completed:
+  - id: malformed-basic-drc-streams
+    status: covered
+    evidence:
+      - path: "crates/draco-core/tests/drc_edge_cases_test.rs"
+        tests:
+          - "malformed_drc_inputs_fail_without_panic"
+          - "mutated_supported_drc_inputs_do_not_panic"
+          - "deterministic_fuzz_like_drc_inputs_do_not_panic"
+    note: "Covers empty/short/bad-magic streams, invalid geometry type, truncation, corrupt point-cloud varints, truncated metadata, deterministic byte flips, fuzz-like synthetic byte streams, truncations, and trailing garbage over supported fixtures."
+
+  - id: resource-count-preflight
+    status: covered
+    evidence:
+      - path: "crates/draco-core/tests/drc_edge_cases_test.rs"
+        tests:
+          - "oversized_drc_counts_fail_before_large_allocation"
+      - path: "crates/draco-core/src/mesh_decoder.rs"
+      - path: "crates/draco-core/src/point_cloud_decoder.rs"
+      - path: "crates/draco-core/src/kd_tree_attributes_decoder.rs"
+      - path: "crates/draco-core/src/dynamic_integer_points_kd_tree.rs"
+    note: "Oversized mesh face counts, sequential/KD-tree point-cloud point counts, and impossible attribute counts fail before large allocations where these counts are parsed."
+
+  - id: attribute-descriptor-validation
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/draco_types.rs"
+      - path: "crates/draco-core/src/geometry_attribute.rs"
+      - path: "crates/draco-core/src/kd_tree_attributes_decoder.rs"
+      - path: "crates/draco-core/tests/drc_edge_cases_test.rs"
+        tests:
+          - "semantically_invalid_drc_payloads_fail_without_panic"
+    note: "Invalid attribute type ids, invalid data type ids, zero-component attributes, impossible attribute counts, and impossible KD-tree attribute descriptor counts are rejected instead of silently constructing invalid descriptors."
+
+  - id: edgebreaker-attribute-seam-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/mesh_decoder.rs"
+        tests:
+          - "attribute_corner_table_rejects_out_of_range_seam_corner"
+    note: "Attribute seam corner-table rebuilding rejects out-of-range seam corners and seam opposite corners instead of unchecked vector indexing."
+
+  - id: edgebreaker-connectivity-invariants
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/edgebreaker_connectivity_decoder.rs"
+        tests:
+          - "invalid_opposite_corner_is_rejected_without_indexing"
+          - "topology_symbol_that_requires_active_corner_fails_cleanly"
+    note: "Active-corner stack access, vertex-hole indexing, and opposite-corner writes use fallible helpers so malformed topology returns controlled errors."
+
+  - id: drc-level-edgebreaker-corruption
+    status: covered
+    evidence:
+      - path: "crates/draco-core/tests/drc_edge_cases_test.rs"
+        tests:
+          - "corrupted_edgebreaker_drc_sections_do_not_panic"
+    note: "Real v2.2 Edgebreaker fixture streams with attribute seams, split symbols, and multiple attribute payloads are truncated and byte-mutated across body sections to assert decode does not panic."
+
+  - id: legacy-bitstream-feature-gate
+    status: covered
+    evidence:
+      - path: "crates/draco-core/Cargo.toml"
+      - path: "crates/draco-core/src/decoder_buffer.rs"
+      - path: "crates/draco-core/src/rans_bit_decoder.rs"
+      - path: "crates/draco-core/src/rans_symbol_decoder.rs"
+      - path: "crates/draco-core/src/mesh_decoder.rs"
+      - path: "crates/draco-core/src/mesh_edgebreaker_decoder.rs"
+      - path: "crates/draco-core/src/sequential_integer_attribute_decoder.rs"
+      - path: "crates/draco-core/src/prediction_scheme_geometric_normal.rs"
+    note: "Backwards-compatibility decode paths are grouped under legacy_bitstream_decode. Default draco-core keeps compatibility, while no-default decoder/web profiles compile without legacy bitstream layouts and deprecated prediction decoders."
+
+  - id: predictive-edgebreaker-explicit-reject
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/mesh_edgebreaker_decoder.rs"
+        tests:
+          - "predictive_traversal_type_is_rejected_explicitly"
+    note: "Deprecated Edgebreaker predictive traversal type 1 is rejected with UnsupportedFeature instead of being decoded through the non-valence/standard path."
+
+  - id: prediction-decode-panic-guards
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/sequential_integer_attribute_decoder.rs"
+      - path: "crates/draco-core/src/point_cloud_decoder.rs"
+      - path: "crates/draco-core/src/prediction_scheme_tex_coords_portable.rs"
+      - path: "crates/draco-core/src/prediction_scheme_geometric_normal.rs"
+      - path: "crates/draco-core/src/prediction_scheme_parallelogram.rs"
+      - path: "crates/draco-core/src/prediction_scheme_constrained_multi_parallelogram.rs"
+    note: "Central integer attribute prediction dispatch, point-cloud sequential decode, and core mesh prediction decoders now use explicit missing-state/bounds guards instead of unwraps for selected decode paths."
+
+  - id: bit-and-octahedron-bounds-guards
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/decoder_buffer.rs"
+        tests:
+          - "bit_decode_respects_declared_byte_size"
+          - "try_advance_rejects_out_of_bounds_skip"
+      - path: "crates/draco-core/src/attribute_octahedron_transform.rs"
+        tests:
+          - "inverse_transform_rejects_truncated_portable_data"
+          - "generate_portable_attribute_rejects_truncated_source_data"
+    note: "Fast bit decoding now respects the declared bitstream byte window without unwraps, decoder-facing byte skips use fallible advance guards, and octahedron attribute transforms reject truncated source/portable buffers instead of relying on unchecked slices."
+
+  - id: geometric-normal-position-buffer-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/prediction_scheme_geometric_normal.rs"
+        tests:
+          - "mesh_geometric_normal_position_lookup_returns_zero_for_truncated_buffer"
+    note: "Geometric-normal prediction position lookup uses fallible DataBuffer reads and falls back to zero prediction input when the referenced position buffer is truncated."
+
+  - id: kd-tree-attribute-buffer-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/data_buffer.rs"
+        tests:
+          - "try_read_write_reject_out_of_bounds_ranges"
+      - path: "crates/draco-core/src/kd_tree_attributes_decoder.rs"
+        tests:
+          - "kd_tree_component_write_rejects_out_of_bounds_buffer"
+          - "kd_tree_decoded_component_write_rejects_short_decoded_stream"
+          - "kd_tree_portable_decode_rejects_invalid_attribute_id"
+          - "kd_tree_transform_data_rejects_invalid_attribute_id"
+          - "kd_tree_original_transform_rejects_invalid_attribute_id"
+    note: "KD-tree decoded component writes and attribute lookups now use fallible DataBuffer/PointCloud helpers and checked decoded-stream indexing, returning controlled failure instead of panicking on inconsistent decoded lengths, invalid attribute ids, or attribute buffer ranges."
+
+  - id: texcoord-prediction-position-buffer-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/prediction_scheme_tex_coords_portable.rs"
+        tests:
+          - "test_read_component_as_i64_rejects_truncated_buffer"
+      - path: "crates/draco-core/src/prediction_scheme_tex_coords_deprecated.rs"
+        tests:
+          - "deprecated_tex_coords_rejects_truncated_position_buffer"
+    note: "Portable and deprecated texcoord prediction position reads now use checked offset arithmetic and fallible DataBuffer reads, returning a controlled prediction failure when the referenced position buffer is truncated."
+
+  - id: sequential-integer-attribute-store-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/sequential_integer_attribute_decoder.rs"
+        tests:
+          - "decode_values_rejects_invalid_attribute_id"
+          - "decode_values_with_portable_attribute_allows_missing_destination_id"
+          - "store_i32_values_rejects_short_decoded_values"
+          - "store_i32_values_rejects_impossible_required_size"
+    note: "Sequential integer attribute decode now validates destination attribute ids, decoded value counts, required buffer sizes, and per-component writes before storing reconstructed i32 values into attribute buffers."
+
+  - id: sequential-integer-prediction-map-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/sequential_integer_attribute_decoder.rs"
+        tests:
+          - "vertex_to_data_map_builder_accepts_valid_corners"
+          - "vertex_to_data_map_builder_rejects_out_of_range_corner"
+    note: "Sequential integer mesh prediction setup now validates data-to-corner map entries before converting them through CornerTable::vertex, so malformed prediction maps fail cleanly instead of indexing outside the corner table."
+
+  - id: mesh-decoder-traversal-map-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/mesh_decoder.rs"
+        tests:
+          - "vertex_to_data_map_rejects_out_of_range_corner"
+    note: "Mesh attribute traversal map setup now validates data-to-corner map entries before deriving vertex-to-data maps for prediction decode."
+
+  - id: attribute-transform-data-buffer-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/attribute_transform_data.rs"
+        tests:
+          - "get_parameter_value_rejects_overflowing_offset"
+          - "set_parameter_value_ignores_overflowing_offset"
+    note: "Attribute transform metadata parameter access now uses checked offset arithmetic plus fallible DataBuffer reads/resizes/writes, avoiding overflow-prone direct buffer indexing."
+
+  - id: quantization-inverse-transform-buffer-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/attribute_quantization_transform.rs"
+        tests:
+          - "inverse_quantization_rejects_truncated_source_buffer"
+          - "inverse_quantization_rejects_short_min_values"
+    note: "Quantization inverse transform now validates transform parameter dimensionality and uses checked offsets with fallible source reads and target writes while reconstructing float attributes."
+
+  - id: edgebreaker-traversal-symbol-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/edgebreaker_connectivity_decoder.rs"
+        tests:
+          - "exhausted_traversal_symbol_stream_fails_cleanly"
+      - path: "crates/draco-core/src/mesh_edgebreaker_decoder.rs"
+      - path: "crates/draco-core/src/mesh_edgebreaker_traversal_valence_decoder.rs"
+    note: "Edgebreaker traversal symbol decoding is now fallible, so truncated or inconsistent traversal symbol streams return controlled connectivity errors instead of indexing past the symbol buffer."
+
+  - id: edgebreaker-valence-context-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/mesh_edgebreaker_traversal_valence_decoder.rs"
+        tests:
+          - "valence_active_corner_rejects_out_of_range_corner_without_panic"
+          - "valence_active_corner_rejects_out_of_range_vertex_without_panic"
+    note: "Valence traversal active-corner updates now validate corner ids and vertex-valence slots before updating context state, avoiding panics on inconsistent connectivity tables."
+
+  - id: rans-symbol-decoder-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/rans_symbol_decoder.rs"
+        tests:
+          - "try_decode_symbol_rejects_invalid_lut_symbol_id"
+          - "try_decode_symbol_rejects_inconsistent_cumulative_probability"
+      - path: "crates/draco-core/src/symbol_encoding.rs"
+        tests:
+          - "decode_raw_symbols_rejects_short_output"
+          - "decode_tagged_symbols_rejects_zero_components"
+          - "decode_tagged_symbols_rejects_partial_component_chunk"
+    note: "Symbol entropy decode now uses a fallible RAnsSymbolDecoder path for raw/tagged symbol streams, checking LUT/table accesses and rANS state arithmetic before returning decoded symbols."
+
+  - id: direct-bit-decoder-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/direct_bit_decoder.rs"
+        tests:
+          - "decode_least_significant_bits32_rejects_invalid_bit_counts"
+          - "decode_least_significant_bits32_rejects_missing_second_word"
+    note: "Direct bit decode now rejects invalid requested bit counts and missing continuation words through false returns instead of assert/index panics."
+
+  - id: folded-bit-decoder-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/folded_bit32_coder.rs"
+        tests:
+          - "decode_least_significant_bits32_rejects_invalid_bit_counts"
+      - path: "crates/draco-core/src/dynamic_integer_points_kd_tree.rs"
+    note: "Folded bit decode now validates requested bit widths and propagates failure through KD-tree number decode instead of indexing folded decoder slots unchecked."
+
+  - id: rans-bit-decoder-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/rans_bit_decoder.rs"
+        tests:
+          - "decode_least_significant_bits32_rejects_invalid_bit_counts"
+          - "decode_least_significant_bits32_rejects_unstarted_decoder"
+      - path: "crates/draco-core/src/dynamic_integer_points_kd_tree.rs"
+    note: "rANS bit decode now rejects invalid requested bit widths and unstarted decoder state, and KD-tree number decode propagates the failure instead of treating rANS bit reads as infallible."
+
+  - id: kd-tree-axis-bitstream-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/dynamic_integer_points_kd_tree.rs"
+        tests:
+          - "get_axis_rejects_truncated_axis_stream"
+    note: "KD-tree adaptive-axis decode now propagates a missing axis bitstream as decode failure instead of treating a failed bit read as axis zero."
+
+  - id: point-attribute-map-write-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/geometry_attribute.rs"
+        tests:
+          - "try_set_point_map_entry_rejects_out_of_range_point"
+      - path: "crates/draco-core/src/mesh_decoder.rs"
+    note: "Point attribute explicit map writes now have a fallible setter, and mesh decode uses it when reconstructing point-to-attribute mappings from bitstream-controlled ids."
+
+  - id: sequential-generic-attribute-allocation
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/sequential_generic_attribute_decoder.rs"
+      - path: "crates/draco-core/src/data_buffer.rs"
+        tests:
+          - "try_resize_rejects_impossible_size"
+    note: "Generic sequential attribute decode now uses fallible DataBuffer resizing before copying decoded bytes, so allocation failure is reported as a decode error instead of panicking during Vec resize."
+
+  - id: point-cloud-attribute-id-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/point_cloud.rs"
+        tests:
+          - "try_attribute_rejects_out_of_range_ids"
+      - path: "crates/draco-core/src/sequential_generic_attribute_decoder.rs"
+        tests:
+          - "decode_values_rejects_invalid_attribute_id"
+      - path: "crates/draco-core/src/sequential_normal_attribute_decoder.rs"
+        tests:
+          - "init_rejects_invalid_attribute_id"
+      - path: "crates/draco-core/src/point_cloud_decoder.rs"
+    note: "PointCloud now exposes fallible attribute lookup helpers, and generic/normal/sequential point-cloud decode uses them in decoder-facing paths so invalid attribute ids return decode errors instead of indexing the attribute array unchecked."
+
+  - id: mesh-sequential-attribute-id-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/mesh_decoder.rs"
+    note: "Sequential mesh attribute decode now uses fallible Mesh/PointCloud attribute lookups while initializing explicit maps, resizing attributes, decoding transform parameters, applying inverse transforms, updating point maps, and copying portable mappings."
+
+  - id: point-cloud-raw-attribute-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/point_cloud_decoder.rs"
+        tests:
+          - "decode_raw_attribute_values_rejects_required_size_overflow"
+          - "decode_raw_attribute_values_rejects_truncated_input"
+    note: "Raw point-cloud attribute decode now uses checked byte-size/offset arithmetic and returns decode errors for truncated raw payloads."
+
+  - id: normal-attribute-quantization-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/attribute_octahedron_transform.rs"
+        tests:
+          - "decode_parameters_rejects_invalid_quantization_bits"
+          - "decode_parameters_accepts_valid_quantization_bits"
+          - "init_from_attribute_rejects_invalid_quantization_bits"
+      - path: "crates/draco-core/src/mesh_decoder.rs"
+      - path: "crates/draco-core/src/point_cloud_decoder.rs"
+      - path: "crates/draco-core/src/sequential_normal_attribute_decoder.rs"
+        tests:
+          - "decode_portable_transform_rejects_invalid_normal_quantization_bits"
+          - "decode_portable_transform_accepts_valid_normal_quantization_bits"
+    note: "Normal attribute decode now rejects invalid octahedral quantization bits at parameter/metadata decode time in sequential normal, mesh, point-cloud, and generic octahedron transform paths instead of carrying an invalid transform until inverse reconstruction fails later."
+
+  - id: fuzz-decode-entrypoint
+    status: covered
+    evidence:
+      - path: "fuzz/fuzz_targets/decode_drc.rs"
+        commands:
+          - "cargo check --manifest-path fuzz/Cargo.toml --bins"
+    note: "A cargo-fuzz/libFuzzer entrypoint now feeds arbitrary byte slices through both MeshDecoder and PointCloudDecoder so sustained no-panic decode fuzzing can run outside the normal test suite."
+
+open_risks:
+  - id: fuzzing-not-yet-operationalized
+    priority: high
+    summary: "A cargo-fuzz entrypoint exists, but it is not yet part of CI or a documented pre-release fuzzing routine."
+    why_it_matters: "The harness enables sustained arbitrary-byte decode fuzzing, but it only improves hostile-input confidence when run regularly with corpus persistence and sanitizer-relevant configurations."
+    next_steps:
+      - "Seed the fuzz corpus with supported fixtures and current malformed edge cases."
+      - "Document the local fuzz command, corpus location, and recommended runtime."
+      - "Run native and wasm-relevant configurations before making hostile-input claims."
+
+  - id: resource-policy-boundary
+    priority: medium
+    summary: "Decoder code avoids arbitrary Draco-format caps, but caller-level input-size, timeout, and memory policy is not documented here."
+    why_it_matters: "Draco is designed for large meshes; hard-coded geometry caps are undesirable, but production callers still need explicit operational limits."
+    next_steps:
+      - "Document recommended caller limits for input byte size, worker isolation, timeout/cancellation, and memory budget."
+      - "Keep decoder internals focused on overflow checks and fallible allocation rather than artificial mesh-size caps."
+
+  - id: decode-error-api-cleanup
+    priority: medium
+    summary: "Several low-level entropy, prediction, and transform decode helpers still use bool returns, which loses failure context."
+    why_it_matters: "The recent panic-guard cleanup prevents selected unwrap panics, but callers still often see a generic false instead of a structured DracoError."
+    next_steps:
+      - "Audit remaining decode-only bool APIs in rANS/direct-bit/folded-bit/prediction helpers."
+      - "Convert the most externally reachable helpers to Result-based wrappers in small, mechanical commits."
+      - "Keep encoder-only invariant expects out of the malformed-input hardening scope unless they become public API concerns."
+
+  - id: decode-path-indexing-audit
+    priority: medium
+    summary: "A final audit is still needed for unchecked indexing and DataBuffer reads reachable from lower-level decode helpers."
+    why_it_matters: "Many obvious prediction unwraps, geometric-normal position reads, octahedron transform slices, and KD-tree attribute writes are now guarded, but slice/indexing panics can still hide in lower-level attribute or buffer helpers."
+    next_steps:
+      - "Audit decoder-facing DataBuffer::read/write callers and attribute transform offsets."
+      - "Prefer local bounds checks or fallible helper variants where malformed input can control offsets."
+      - "Add targeted malformed-input regressions when a reachable panic candidate is found."
+
+exit_criteria:
+  controlled_assets:
+    - "Supported fixture inventory decodes successfully."
+    - "Legacy Draco 1.0.0+ smoke fixtures remain covered."
+    - "Malformed edge-case regression tests pass."
+  arbitrary_hostile_input:
+    - "Fuzz/property entrypoint runs in CI or documented pre-release process."
+    - "DRC-level Edgebreaker corruption cases fail without panic."
+    - "Caller resource policy is documented."
+    - "Decode-path panic/indexing audit has no known reachable malformed-input panics."

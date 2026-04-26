@@ -1,0 +1,110 @@
+docs/_site
+
+# Build directories
+build/
+build-original/
+build-cmake/
+build_transcoder/
+**/build_compare/
+
+# Debug/development output directories
+**/artifacts/
+output/
+
+# Debug/development scripts and utilities (not for production)
+crates/**/debug/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.pdb
+*.idb
+*.ilk
+*.aps
+*.ncb
+*.ipch
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Compiled binaries and libraries
+*.exe
+*.lib
+*.dll
+*.obj
+*.a
+*.o
+*.dylib
+*.so
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Editors
+.claude/
+.vscode/
+
+# Backup files
+enhanced_io_test_backup.cpp
+
+# Rust build artifacts (contains .fingerprint, incremental builds, etc.)
+**/target/
+Cargo.lock
+.cargo/config.toml
+
+# WASM build output
+web/www/pkg/
+
+# Temporary/debug Python scripts (at root level)
+/analyze_*.py
+/compare_drc.py
+/inspect_*.py
+/parse_drc*.py
+/torus.obj.py
+
+# Generated .drc files (keep testdata/ tracked)
+/*.drc
+crates/**/*.drc
+
+# Temporary hex dump files
+**/*.hex
+
+# Generated decoded mesh files
+*.drc.ply
+*.drc.obj
+
+# Temporary object/executable files in crates
+crates/**/*.obj
+crates/**/*.exe
+crates/**/*.pdb
+crates/**/*.ply
+
+# Test-generated input/output files
+test_output.txt
+test_out.txt
+test_out2.txt
+**/test_out*.txt
+**/test_output.txt
+test_decode_speed*.html
+
+# Generated testdata from C++ interop / speed tests
+testdata/cpp_encoded_*.drc
+testdata/speed/
+
+# Temporary debug/development source files (not for production)
+crates/**/examples/debug_*.rs
+crates/**/tests/cross_impl_test.rs
+crates/**/tests/prediction_debug_test.rs
+crates/**/tests/symbol_parity_test.rs
+
+# Python bytecode (keep .py source files tracked)
+__pycache__/
+*.pyc
+*.pyo

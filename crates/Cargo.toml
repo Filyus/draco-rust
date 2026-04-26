@@ -1,0 +1,33 @@
+[workspace]
+members = [
+    "draco-core",
+    "draco-io",
+    "draco-cpp-test-bridge",
+]
+resolver = "2"
+
+# Optimize draco-core even in dev/test builds so benchmarks are meaningful.
+[profile.dev.package.draco-core]
+opt-level = 3
+codegen-units = 1
+
+[profile.test.package.draco-core]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.draco-io]
+opt-level = 2
+
+[profile.test.package.draco-io]
+opt-level = 2
+
+# Also optimize the FFI test crate so the benchmark loops themselves are fast.
+[profile.dev.package.draco-cpp-test-bridge]
+opt-level = 2
+
+[profile.test.package.draco-cpp-test-bridge]
+opt-level = 2
+
+# Note: LTO is intentionally NOT enabled for tests. `lto = "thin"` disables
+# Rust incremental compilation, causing full rebuilds on every run (~3 minutes).
+# Without LTO, incremental builds complete in ~15 seconds after the first build.

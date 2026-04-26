@@ -1,0 +1,31 @@
+# Current actionable implementation status for the Rust codebase.
+#
+# Scope:
+# - Keep only items that still need code changes.
+# - Do not mirror implementation_state.yaml or list completed work.
+# - Remove items as soon as they are fixed and covered by tests, then update implementation_state.yaml with the completed behavior.
+# - Prefer concrete file/line evidence over broad percentages.
+#
+# Structure:
+# items:
+#   - id: stable-short-id
+#     area: crate-or-module
+#     priority: low|medium|high
+#     status: open
+#     summary: "One concrete implementation gap."
+#     evidence:
+#       - path: "relative/path.rs"
+#         note: "Specific failing behavior, missing coverage, or source evidence."
+#     impact: "Why this still matters."
+#     next_steps:
+#       - "Smallest useful implementation or investigation step."
+#
+# An empty items list means there are currently no known actionable implementation
+# gaps. Completed behavior and policy decisions belong in implementation_state.yaml.
+# Malformed-input/resource-hardening status is tracked separately in
+# hardening_status.yaml; keep only concrete implementation actions here.
+
+version: 1
+last_reviewed: "2026-04-24"
+
+items: []

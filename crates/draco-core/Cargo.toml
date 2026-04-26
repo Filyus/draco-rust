@@ -1,0 +1,35 @@
+[package]
+name = "draco-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure Rust core encoder and decoder for Draco geometry compression"
+license = "Apache-2.0"
+repository = "https://github.com/Filyus/draco-rust"
+readme = "README.md"
+
+[features]
+default = [
+    "encoder",
+    "decoder",
+    "point_cloud_decode",
+    "edgebreaker_valence_encode",
+    "edgebreaker_valence_decode",
+    "legacy_bitstream_decode",
+]
+encoder = []
+decoder = []
+point_cloud_decode = ["decoder"]
+edgebreaker_valence_encode = ["encoder"]
+edgebreaker_valence_decode = ["decoder"]
+legacy_bitstream_decode = ["decoder"]
+debug_logs = []
+force_sequential_seeds = []
+
+[dependencies]
+thiserror = "2.0.17"
+bytemuck = { version = "1.24.0", features = ["derive"] }
+
+[dev-dependencies]
+draco-io = { path = "../draco-io" }
+tempfile = "3.24.0"
+

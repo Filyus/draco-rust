@@ -1,0 +1,24 @@
+[package]
+name = "obj-writer-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Draco web OBJ writer (WASM)"
+repository = "https://github.com/google/draco"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+console_error_panic_hook = { workspace = true, optional = true }
+draco-core = { path = "../../crates/draco-core", default-features = false, features = ["encoder"] }
+draco-io = { path = "../../crates/draco-io", default-features = false, features = ["encoder"] }
+
+[features]
+default = []
+console_error_panic_hook = ["dep:console_error_panic_hook"]
