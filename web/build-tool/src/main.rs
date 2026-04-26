@@ -447,21 +447,6 @@ fn finalize_module_output(
     output_dir: &Path,
     output_name: &str,
 ) -> Result<(), String> {
-    let wasm_file = module_output_dir.join(format!("{output_name}_bg.wasm"));
-    let clean_wasm_file = module_output_dir.join(format!("{output_name}.wasm"));
-    if wasm_file.exists() {
-        fs::rename(&wasm_file, &clean_wasm_file)
-            .map_err(|error| format!("failed to rename {}: {error}", wasm_file.display()))?;
-    }
-
-    let js_file = module_output_dir.join(format!("{output_name}.js"));
-    if js_file.exists() {
-        let js_content = fs::read_to_string(&js_file)
-            .map_err(|error| format!("failed to read {}: {error}", js_file.display()))?;
-        fs::write(&js_file, js_content.replace("_bg.wasm", ".wasm"))
-            .map_err(|error| format!("failed to write {}: {error}", js_file.display()))?;
-    }
-
     for entry in fs::read_dir(module_output_dir)
         .map_err(|error| format!("failed to read {}: {error}", module_output_dir.display()))?
     {
@@ -502,12 +487,12 @@ fn output_name(module: &str) -> String {
 fn write_build_result(config: &Config, result: &BuildResult) {
     if result.skipped {
         println!(
-            "Skip {} -> {}.wasm (unchanged)",
+            "Skip {} -> {}_bg.wasm (unchanged)",
             result.module, result.output_name
         );
     } else if result.success {
         println!(
-            "Done {} -> {}.wasm ({:.2}s)",
+            "Done {} -> {}_bg.wasm ({:.2}s)",
             result.module,
             result.output_name,
             result.elapsed.as_secs_f64()
@@ -576,7 +561,7 @@ fn collect_latest_mtime(path: &Path, latest: &mut u128) -> io::Result<()> {
 }
 
 fn module_up_to_date(config: &Config, module: &str, output_name: &str, input_latest: u128) -> bool {
-    let wasm_file = config.output_dir.join(format!("{output_name}.wasm"));
+    let wasm_file = config.output_dir.join(format!("{output_name}_bg.wasm"));
     let js_file = config.output_dir.join(format!("{output_name}.js"));
     let stamp_path = stamp_path(&config.output_dir, output_name);
     if !wasm_file.exists() || !js_file.exists() || !stamp_path.exists() {

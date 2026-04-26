@@ -71,7 +71,7 @@ You can also call the shared build tool directly:
 cargo run --manifest-path build-tool/Cargo.toml --
 ```
 
-Release builds run `wasm-pack --release --no-opt`, then run `wasm-opt` manually with the bulk-memory and related feature flags required by these modules. Generated `*_bg.wasm` files are renamed to `.wasm`, and the generated JavaScript imports are rewritten to match.
+Release builds run `wasm-pack --release --no-opt`, then run `wasm-opt` manually with the bulk-memory and related feature flags required by these modules. The generated files keep the canonical `wasm-bindgen` names: `<module>.js`, `<module>.d.ts`, `<module>_bg.wasm`, and `<module>_bg.wasm.d.ts`.
 
 ## Running
 

@@ -84,9 +84,9 @@ jobs:
             package_name="draco-${module//_/-}-wasm-${tag}"
             mkdir -p "dist/${package_name}"
 
-            cp "web/www/pkg/${module}.wasm" "dist/${package_name}/"
             cp "web/www/pkg/${module}.js" "dist/${package_name}/"
             cp "web/www/pkg/${module}.d.ts" "dist/${package_name}/"
+            cp "web/www/pkg/${module}_bg.wasm" "dist/${package_name}/"
             cp "web/www/pkg/${module}_bg.wasm.d.ts" "dist/${package_name}/"
             cp "web/www/pkg/LICENSE" "dist/${package_name}/"
 
