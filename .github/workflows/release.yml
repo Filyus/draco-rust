@@ -43,20 +43,22 @@ jobs:
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked
 
+      - name: Install wasm-opt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binaryen
+
       - name: Build web WASM modules
         run: bash ./build.sh
         working-directory: web
 
-      - name: Package WASM modules
+      - name: Verify WASM modules
         shell: bash
         run: |
           set -euo pipefail
 
           test -d web/www/pkg
           test -n "$(find web/www/pkg -maxdepth 1 -name '*.wasm' -print -quit)"
-
-          mkdir -p dist
-          tar -czf "dist/draco-rust-wasm-${{ steps.release.outputs.tag }}.tar.gz" -C web/www pkg
           find web/www/pkg -maxdepth 1 -type f | sort
 
       - name: Create or update GitHub release
@@ -67,12 +69,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          asset="dist/draco-rust-wasm-${RELEASE_TAG}.tar.gz"
-
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "$asset" --clobber
-          else
-            gh release create "$RELEASE_TAG" "$asset" \
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
               --title "$RELEASE_TAG" \
               --generate-notes
           fi
+
+          gh release upload "$RELEASE_TAG" web/www/pkg/* --clobber
