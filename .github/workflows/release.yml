@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and publish, for example v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  wasm:
+    name: Build WASM release assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Select release tag
+        id: release
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Build web WASM modules
+        run: bash ./build.sh
+        working-directory: web
+
+      - name: Package WASM modules
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -d web/www/pkg
+          test -n "$(find web/www/pkg -maxdepth 1 -name '*.wasm' -print -quit)"
+
+          mkdir -p dist
+          tar -czf "dist/draco-rust-wasm-${{ steps.release.outputs.tag }}.tar.gz" -C web/www pkg
+          find web/www/pkg -maxdepth 1 -type f | sort
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          asset="dist/draco-rust-wasm-${RELEASE_TAG}.tar.gz"
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$asset" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$asset" \
+              --title "$RELEASE_TAG" \
+              --generate-notes
+          fi
