@@ -1,0 +1,9 @@
+[package]
+name = "draco-web-build"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "draco-web-build"
+path = "src/main.rs"

@@ -43,8 +43,11 @@ web/
 
 1. **Rust**: Install from https://rustup.rs/
 2. **wasm-pack**: Install with `cargo install wasm-pack`
+3. **wasm-opt**: Install Binaryen or make `wasm-opt` available on `PATH` for optimized release builds
 
 ### Build Steps
+
+The PowerShell and shell scripts are thin wrappers around the same Rust build tool, so Windows, Linux, macOS, and CI use one build pipeline.
 
 #### Windows (PowerShell)
 
@@ -57,18 +60,18 @@ cd web
 
 ```bash
 cd web
-chmod +x build.sh
-./build.sh
+bash ./build.sh
 ```
 
-### Manual Build
+### Direct Build Tool
 
-You can also build individual modules:
+You can also call the shared build tool directly:
 
 ```bash
-cd obj-reader-wasm
-wasm-pack build --target web --out-dir ../www/pkg --out-name obj_reader_wasm
+cargo run --manifest-path build-tool/Cargo.toml --
 ```
+
+Release builds run `wasm-pack --release --no-opt`, then run `wasm-opt` manually with the bulk-memory and related feature flags required by these modules. Generated `*_bg.wasm` files are renamed to `.wasm`, and the generated JavaScript imports are rewritten to match.
 
 ## Running
 

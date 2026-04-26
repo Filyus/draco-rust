@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "build-tool",
     "dev-server",
     "obj-reader-wasm",
     "obj-writer-wasm",
