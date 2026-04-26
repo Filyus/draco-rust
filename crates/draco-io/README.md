@@ -12,7 +12,7 @@ For the project overview, compatibility notes, and benchmarks, see the
 - **Multiple Formats**: OBJ, PLY, FBX (ASCII/Binary), glTF (JSON/Binary/Embedded)
 - **Scene Graph Support**: Read and write scene hierarchies with transforms
 - **Point Cloud Support**: Read/write point clouds (OBJ, PLY)
-- **Feature Flags**: Separate `encoder` and `decoder` features
+- **Feature Flags**: Per-format reader and writer features
 
 ## Supported Formats
 
@@ -37,15 +37,23 @@ draco-io = { version = "0.1.0", path = "../draco-io" }
 
 | Feature       | Default | Description                              |
 |---------------|---------|------------------------------------------|
-| `encoder`     | ✓       | Writing support (all formats)            |
-| `decoder`     | ✓       | Reading support (all formats)            |
+| `all-readers` | ✓       | Reading support for all formats          |
+| `all-writers` | ✓       | Writing support for all formats          |
+| `obj-reader`  | ✓       | OBJ reading support                      |
+| `obj-writer`  | ✓       | OBJ writing support                      |
+| `ply-reader`  | ✓       | PLY reading support                      |
+| `ply-writer`  | ✓       | PLY writing support                      |
+| `fbx-reader`  | ✓       | FBX reading support                      |
+| `fbx-writer`  | ✓       | FBX writing support                      |
+| `gltf-reader` | ✓       | glTF/GLB reading support                 |
+| `gltf-writer` | ✓       | glTF/GLB writing support                 |
 | `compression` | ✓       | zlib compression for FBX                 |
 
-To use only reading (smaller binary):
+To use only one format direction (smaller binary):
 
 ```toml
 [dependencies]
-draco-io = { version = "0.1.0", default-features = false, features = ["decoder"] }
+draco-io = { version = "0.1.0", default-features = false, features = ["gltf-reader"] }
 ```
 
 ## Quick Start
@@ -298,13 +306,13 @@ draco-io
 │   ├── traits::PointCloudWriter - Point cloud writing
 │   └── traits::PointCloudReader - Point cloud reading
 │
-├── Readers (feature = "decoder")
+├── Readers (feature = "all-readers")
 │   ├── obj_reader    - Wavefront OBJ
 │   ├── ply_reader    - Stanford PLY
 │   ├── fbx_reader    - Autodesk FBX
 │   └── gltf_reader   - glTF/GLB with Draco support
 │
-└── Writers (feature = "encoder")
+└── Writers (feature = "all-writers")
     ├── obj_writer    - Wavefront OBJ
     ├── ply_writer    - Stanford PLY (ASCII)
     ├── fbx_writer    - Autodesk FBX (ASCII/compressed)

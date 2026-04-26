@@ -17,7 +17,7 @@ serde_json = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
 console_error_panic_hook = { workspace = true, optional = true }
 draco-core = { path = "../../crates/draco-core", default-features = false, features = ["encoder"] }
-draco-io = { path = "../../crates/draco-io", default-features = false, features = ["encoder"] }
+draco-io = { path = "../../crates/draco-io", default-features = false, features = ["ply-writer"] }
 
 [features]
 default = []

@@ -657,7 +657,7 @@ pub fn write_ply_positions<P: AsRef<Path>>(path: P, points: &[[f32; 3]]) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "decoder")]
+    #[cfg(feature = "ply-reader")]
     use crate::ply_reader::PlyReader;
     use draco_core::draco_types::DataType;
     use draco_core::geometry_attribute::PointAttribute;
@@ -813,7 +813,7 @@ mod tests {
         assert!(!writer.is_binary_little_endian());
     }
 
-    #[cfg(feature = "decoder")]
+    #[cfg(feature = "ply-reader")]
     #[test]
     fn test_write_binary_little_endian_positions_roundtrip() {
         let points = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
@@ -837,7 +837,7 @@ mod tests {
         assert_eq!(positions, points);
     }
 
-    #[cfg(feature = "decoder")]
+    #[cfg(feature = "ply-reader")]
     #[test]
     fn test_write_binary_little_endian_mesh_roundtrip() {
         let mesh = create_triangle_mesh();
@@ -868,7 +868,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "decoder")]
+    #[cfg(feature = "ply-reader")]
     #[test]
     fn test_write_binary_big_endian_mesh_roundtrip() {
         let mesh = create_triangle_mesh();

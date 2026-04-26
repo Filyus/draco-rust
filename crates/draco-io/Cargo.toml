@@ -10,21 +10,29 @@ readme = "README.md"
 [dependencies]
 draco-core = { version = "0.1.0", path = "../draco-core", default-features = false }
 thiserror = "2.0.17"
-byteorder = "1.5.0"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.148"
+byteorder = { version = "1.5.0", optional = true }
+serde = { version = "1.0.228", features = ["derive"], optional = true }
+serde_json = { version = "1.0.148", optional = true }
 miniz_oxide = { version = "0.6", optional = true }
 
 [features]
 default = [
-    "encoder",
-    "decoder",
+    "all-writers",
+    "all-readers",
     "compression",
     "point_cloud_decode",
 ]
-encoder = ["draco-core/encoder"]
-decoder = ["draco-core/decoder"]
-point_cloud_decode = ["decoder", "draco-core/point_cloud_decode"]
+all-readers = ["fbx-reader", "gltf-reader", "obj-reader", "ply-reader"]
+all-writers = ["fbx-writer", "gltf-writer", "obj-writer", "ply-writer"]
+fbx-reader = ["draco-core/decoder"]
+fbx-writer = ["draco-core/encoder"]
+gltf-reader = ["draco-core/decoder", "dep:serde", "dep:serde_json"]
+gltf-writer = ["draco-core/encoder", "dep:serde", "dep:serde_json"]
+obj-reader = ["draco-core/decoder"]
+obj-writer = ["draco-core/encoder"]
+ply-reader = ["draco-core/decoder", "dep:byteorder"]
+ply-writer = ["draco-core/encoder"]
+point_cloud_decode = ["draco-core/point_cloud_decode"]
 compression = ["miniz_oxide"]
 
 [dev-dependencies]
@@ -32,60 +40,60 @@ tempfile = "3.24.0"
 
 [[example]]
 name = "check_dedup"
-required-features = ["decoder"]
+required-features = ["all-readers"]
 
 [[example]]
 name = "decode_drc"
-required-features = ["decoder"]
+required-features = ["all-readers"]
 
 [[example]]
 name = "decode_rust_lamp"
-required-features = ["decoder"]
+required-features = ["all-readers"]
 
 [[example]]
 name = "encode_lamp"
-required-features = ["encoder", "decoder"]
+required-features = ["all-writers", "all-readers"]
 
 [[example]]
 name = "fbx_demo"
-required-features = ["encoder", "decoder"]
+required-features = ["all-writers", "all-readers"]
 
 [[example]]
 name = "fbx_inspect"
-required-features = ["decoder"]
+required-features = ["fbx-reader"]
 
 [[example]]
 name = "gltf_demo"
-required-features = ["encoder", "decoder"]
+required-features = ["gltf-writer", "gltf-reader"]
 
 [[example]]
 name = "polymorphic"
-required-features = ["encoder"]
+required-features = ["all-writers"]
 
 [[example]]
 name = "unified_api"
-required-features = ["encoder"]
+required-features = ["all-writers"]
 
 [[example]]
 name = "unified_readers"
-required-features = ["encoder", "decoder"]
+required-features = ["all-writers", "all-readers"]
 
 [[test]]
 name = "cpp_decode_test"
-required-features = ["decoder"]
+required-features = ["all-readers"]
 
 [[test]]
 name = "encoding_speed_test"
-required-features = ["encoder", "decoder"]
+required-features = ["all-writers", "all-readers"]
 
 [[test]]
 name = "glb_roundtrip_test"
-required-features = ["encoder", "decoder"]
+required-features = ["gltf-writer", "gltf-reader"]
 
 [[test]]
 name = "ply_bunny_test"
-required-features = ["encoder", "decoder"]
+required-features = ["ply-writer", "ply-reader"]
 
 [[test]]
 name = "roundtrip"
-required-features = ["encoder", "decoder"]
+required-features = ["all-writers", "all-readers"]

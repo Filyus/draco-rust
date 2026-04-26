@@ -103,24 +103,24 @@
 //! writer.write_gltf_embedded("output.gltf")?;
 //! ```
 
-// Reader modules (require decoder feature)
-#[cfg(feature = "decoder")]
+// Reader modules.
+#[cfg(feature = "fbx-reader")]
 pub mod fbx_reader;
-#[cfg(feature = "decoder")]
+#[cfg(feature = "gltf-reader")]
 pub mod gltf_reader;
-#[cfg(feature = "decoder")]
+#[cfg(feature = "obj-reader")]
 pub mod obj_reader;
-#[cfg(feature = "decoder")]
+#[cfg(feature = "ply-reader")]
 pub mod ply_reader;
 
-// Writer modules (require encoder feature)
-#[cfg(feature = "encoder")]
+// Writer modules.
+#[cfg(feature = "fbx-writer")]
 pub mod fbx_writer;
-#[cfg(feature = "encoder")]
+#[cfg(feature = "gltf-writer")]
 pub mod gltf_writer;
-#[cfg(feature = "encoder")]
+#[cfg(feature = "obj-writer")]
 pub mod obj_writer;
-#[cfg(feature = "encoder")]
+#[cfg(feature = "ply-writer")]
 pub mod ply_writer;
 
 // Traits module is always available
@@ -128,22 +128,22 @@ pub mod ply_format;
 pub mod traits;
 
 // Re-export main types for convenience
-#[cfg(feature = "decoder")]
+#[cfg(feature = "fbx-reader")]
 pub use fbx_reader::FbxReader;
-#[cfg(feature = "encoder")]
+#[cfg(feature = "fbx-writer")]
 pub use fbx_writer::FbxWriter;
-#[cfg(feature = "decoder")]
+#[cfg(feature = "gltf-reader")]
 pub use gltf_reader::{DracoPrimitiveInfo, GltfError, GltfReader};
-#[cfg(feature = "encoder")]
+#[cfg(feature = "gltf-writer")]
 pub use gltf_writer::{GltfWriteError, GltfWriter};
-#[cfg(feature = "decoder")]
+#[cfg(feature = "obj-reader")]
 pub use obj_reader::ObjReader;
-#[cfg(feature = "encoder")]
+#[cfg(feature = "obj-writer")]
 pub use obj_writer::ObjWriter;
 pub use ply_format::PlyFormat;
-#[cfg(feature = "decoder")]
+#[cfg(feature = "ply-reader")]
 pub use ply_reader::PlyReader;
-#[cfg(feature = "encoder")]
+#[cfg(feature = "ply-writer")]
 pub use ply_writer::PlyWriter;
 pub use traits::{
     PointCloudReader, PointCloudWriter, Reader, Scene, SceneNode, SceneObject, SceneReader,

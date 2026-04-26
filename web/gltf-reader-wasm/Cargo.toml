@@ -16,7 +16,7 @@ js-sys = { workspace = true }
 nanoserde = { version = "0.2", default-features = false, features = ["std", "json"] }
 console_error_panic_hook = { workspace = true, optional = true }
 draco-core = { path = "../../crates/draco-core", default-features = false, features = ["decoder"] }
-draco-io = { path = "../../crates/draco-io", default-features = false, features = ["decoder"] }
+draco-io = { path = "../../crates/draco-io", default-features = false, features = ["gltf-reader"] }
 
 [features]
 default = []

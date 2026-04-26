@@ -21,11 +21,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde-wasm-bindgen = "0.6"
 console_error_panic_hook = "0.1.7"
-# Separate dependencies for encoder and decoder to reduce WASM size
-draco-core-decoder = { path = "../crates/draco-core", package = "draco-core", default-features = false, features = ["decoder"] }
-draco-core-encoder = { path = "../crates/draco-core", package = "draco-core", default-features = false, features = ["encoder"] }
-draco-io-decoder = { path = "../crates/draco-io", package = "draco-io", default-features = false, features = ["decoder"] }
-draco-io-encoder = { path = "../crates/draco-io", package = "draco-io", default-features = false, features = ["encoder"] }
 
 # Aggressive size optimization for release builds
 [profile.release]
