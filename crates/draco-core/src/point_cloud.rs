@@ -120,6 +120,16 @@ impl PointCloud {
             .and_then(|metadata| metadata.attribute_metadata_by_unique_id(attribute_unique_id))
     }
 
+    pub fn attribute_metadata_by_string_entry(
+        &self,
+        entry_name: &str,
+        entry_value: &str,
+    ) -> Option<&AttributeMetadata> {
+        self.metadata.as_ref().and_then(|metadata| {
+            metadata.attribute_metadata_by_string_entry(entry_name, entry_value)
+        })
+    }
+
     pub fn set_attribute_metadata(
         &mut self,
         att_id: i32,

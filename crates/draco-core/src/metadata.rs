@@ -4,6 +4,8 @@ use crate::decoder_buffer::DecoderBuffer;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::status::DracoError;
 use std::collections::BTreeMap;
+use std::mem::size_of;
+use std::str;
 
 pub const METADATA_FLAG_MASK: u16 = 0x8000;
 
@@ -65,6 +67,86 @@ impl Metadata {
         }
         self.entries.insert(name, value);
         Ok(())
+    }
+
+    pub fn set_i32(&mut self, name: impl Into<String>, value: i32) -> Result<(), DracoError> {
+        self.set_raw(name, value.to_le_bytes().to_vec())
+    }
+
+    pub fn get_i32(&self, name: &str) -> Option<i32> {
+        let bytes = self.get_raw(name)?;
+        let bytes: [u8; size_of::<i32>()] = bytes.try_into().ok()?;
+        Some(i32::from_le_bytes(bytes))
+    }
+
+    pub fn set_i32_array(
+        &mut self,
+        name: impl Into<String>,
+        values: &[i32],
+    ) -> Result<(), DracoError> {
+        let mut bytes = Vec::new();
+        let byte_len = values
+            .len()
+            .checked_mul(size_of::<i32>())
+            .ok_or_else(|| DracoError::InvalidParameter("Metadata array too large".to_string()))?;
+        bytes
+            .try_reserve_exact(byte_len)
+            .map_err(|_| DracoError::InvalidParameter("Metadata array too large".to_string()))?;
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        self.set_raw(name, bytes)
+    }
+
+    pub fn get_i32_array(&self, name: &str) -> Option<Vec<i32>> {
+        let bytes = self.get_raw(name)?;
+        decode_le_array::<{ size_of::<i32>() }, i32>(bytes, i32::from_le_bytes)
+    }
+
+    pub fn set_f64(&mut self, name: impl Into<String>, value: f64) -> Result<(), DracoError> {
+        self.set_raw(name, value.to_le_bytes().to_vec())
+    }
+
+    pub fn get_f64(&self, name: &str) -> Option<f64> {
+        let bytes = self.get_raw(name)?;
+        let bytes: [u8; size_of::<f64>()] = bytes.try_into().ok()?;
+        Some(f64::from_le_bytes(bytes))
+    }
+
+    pub fn set_f64_array(
+        &mut self,
+        name: impl Into<String>,
+        values: &[f64],
+    ) -> Result<(), DracoError> {
+        let mut bytes = Vec::new();
+        let byte_len = values
+            .len()
+            .checked_mul(size_of::<f64>())
+            .ok_or_else(|| DracoError::InvalidParameter("Metadata array too large".to_string()))?;
+        bytes
+            .try_reserve_exact(byte_len)
+            .map_err(|_| DracoError::InvalidParameter("Metadata array too large".to_string()))?;
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        self.set_raw(name, bytes)
+    }
+
+    pub fn get_f64_array(&self, name: &str) -> Option<Vec<f64>> {
+        let bytes = self.get_raw(name)?;
+        decode_le_array::<{ size_of::<f64>() }, f64>(bytes, f64::from_le_bytes)
+    }
+
+    pub fn set_string(
+        &mut self,
+        name: impl Into<String>,
+        value: impl AsRef<str>,
+    ) -> Result<(), DracoError> {
+        self.set_raw(name, value.as_ref().as_bytes().to_vec())
+    }
+
+    pub fn get_string(&self, name: &str) -> Option<&str> {
+        str::from_utf8(self.get_raw(name)?).ok()
     }
 
     pub fn remove_entry(&mut self, name: &str) -> Option<Vec<u8>> {
@@ -224,6 +306,16 @@ impl GeometryMetadata {
             .find(|metadata| metadata.attribute_unique_id == attribute_unique_id)
     }
 
+    pub fn attribute_metadata_by_string_entry(
+        &self,
+        entry_name: &str,
+        entry_value: &str,
+    ) -> Option<&AttributeMetadata> {
+        self.attribute_metadata
+            .iter()
+            .find(|metadata| metadata.metadata.get_string(entry_name) == Some(entry_value))
+    }
+
     pub fn attribute_metadata_by_unique_id_mut(
         &mut self,
         attribute_unique_id: u32,
@@ -273,6 +365,23 @@ impl GeometryMetadata {
         }
         self.metadata.encode(buffer)
     }
+}
+
+fn decode_le_array<const N: usize, T>(
+    bytes: &[u8],
+    decode: impl Fn([u8; N]) -> T,
+) -> Option<Vec<T>> {
+    if bytes.is_empty() || bytes.len() % N != 0 {
+        return None;
+    }
+
+    let mut values = Vec::with_capacity(bytes.len() / N);
+    for chunk in bytes.chunks_exact(N) {
+        let mut item = [0u8; N];
+        item.copy_from_slice(chunk);
+        values.push(decode(item));
+    }
+    Some(values)
 }
 
 fn validate_metadata_name(name: &str) -> Result<(), DracoError> {
@@ -354,6 +463,118 @@ mod tests {
     }
 
     #[test]
+    fn metadata_typed_helpers_encode_cpp_compatible_bytes() {
+        let mut metadata = Metadata::new();
+        metadata.set_i32("i32", -123).unwrap();
+        metadata.set_i32_array("i32_array", &[1, -2, 3]).unwrap();
+        metadata.set_f64("f64", 1.25).unwrap();
+        metadata.set_f64_array("f64_array", &[0.5, -2.0]).unwrap();
+        metadata.set_string("string", "metadata").unwrap();
+
+        assert_eq!(
+            metadata.get_raw("i32"),
+            Some((-123i32).to_le_bytes().as_slice())
+        );
+        assert_eq!(
+            metadata.get_raw("i32_array"),
+            Some(
+                [
+                    1i32.to_le_bytes(),
+                    (-2i32).to_le_bytes(),
+                    3i32.to_le_bytes()
+                ]
+                .concat()
+                .as_slice()
+            )
+        );
+        assert_eq!(
+            metadata.get_raw("f64"),
+            Some(1.25f64.to_le_bytes().as_slice())
+        );
+        assert_eq!(
+            metadata.get_raw("f64_array"),
+            Some(
+                [0.5f64.to_le_bytes(), (-2.0f64).to_le_bytes()]
+                    .concat()
+                    .as_slice()
+            )
+        );
+        assert_eq!(metadata.get_raw("string"), Some(b"metadata".as_slice()));
+
+        assert_eq!(metadata.get_i32("i32"), Some(-123));
+        assert_eq!(metadata.get_i32_array("i32_array"), Some(vec![1, -2, 3]));
+        assert_eq!(metadata.get_f64("f64"), Some(1.25));
+        assert_eq!(metadata.get_f64_array("f64_array"), Some(vec![0.5, -2.0]));
+        assert_eq!(metadata.get_string("string"), Some("metadata"));
+    }
+
+    #[test]
+    fn metadata_typed_getters_decode_raw_bytes() {
+        let mut metadata = Metadata::new();
+        metadata
+            .set_raw("i32", 42i32.to_le_bytes().to_vec())
+            .unwrap();
+        metadata
+            .set_raw(
+                "i32_array",
+                [7i32.to_le_bytes(), (-8i32).to_le_bytes()].concat(),
+            )
+            .unwrap();
+        metadata
+            .set_raw("f64", 3.5f64.to_le_bytes().to_vec())
+            .unwrap();
+        metadata
+            .set_raw(
+                "f64_array",
+                [1.0f64.to_le_bytes(), 2.25f64.to_le_bytes()].concat(),
+            )
+            .unwrap();
+        metadata.set_raw("string", b"from raw".to_vec()).unwrap();
+
+        assert_eq!(metadata.get_i32("i32"), Some(42));
+        assert_eq!(metadata.get_i32_array("i32_array"), Some(vec![7, -8]));
+        assert_eq!(metadata.get_f64("f64"), Some(3.5));
+        assert_eq!(metadata.get_f64_array("f64_array"), Some(vec![1.0, 2.25]));
+        assert_eq!(metadata.get_string("string"), Some("from raw"));
+    }
+
+    #[test]
+    fn metadata_typed_getters_reject_wrong_raw_shapes() {
+        let mut metadata = Metadata::new();
+        metadata.set_raw("i32", vec![1, 2, 3]).unwrap();
+        metadata.set_raw("i32_array", vec![1, 2, 3]).unwrap();
+        metadata.set_raw("f64", vec![1, 2, 3, 4]).unwrap();
+        metadata.set_raw("f64_array", vec![1, 2, 3, 4]).unwrap();
+        metadata.set_raw("string", vec![0xff]).unwrap();
+
+        assert_eq!(metadata.get_i32("i32"), None);
+        assert_eq!(metadata.get_i32_array("i32_array"), None);
+        assert_eq!(metadata.get_f64("f64"), None);
+        assert_eq!(metadata.get_f64_array("f64_array"), None);
+        assert_eq!(metadata.get_string("string"), None);
+    }
+
+    #[test]
+    fn metadata_typed_setters_reject_empty_values() {
+        let mut metadata = Metadata::new();
+
+        assert!(metadata.set_string("string", "").is_err());
+        assert!(metadata.set_i32_array("i32_array", &[]).is_err());
+        assert!(metadata.set_f64_array("f64_array", &[]).is_err());
+    }
+
+    #[test]
+    fn metadata_typed_setters_overwrite_existing_entry() {
+        let mut metadata = Metadata::new();
+        metadata.set_i32("key", 5).unwrap();
+        metadata.set_string("key", "value").unwrap();
+
+        assert_eq!(metadata.get_i32("key"), None);
+        assert_eq!(metadata.get_string("key"), Some("value"));
+        assert_eq!(metadata.get_raw("key"), Some(b"value".as_slice()));
+    }
+
+    #[test]
     fn metadata_codec_encodes_entries_in_sorted_order() {
         let mut metadata = Metadata::new();
         metadata.set_raw("z", b"last".to_vec()).unwrap();
@@ -414,6 +635,29 @@ mod tests {
                 .and_then(|metadata| metadata.metadata().get_raw("semantic")),
             Some(b"POSITION".as_slice())
         );
+    }
+
+    #[test]
+    fn geometry_metadata_finds_attribute_metadata_by_string_entry() {
+        let mut invalid_string = Metadata::new();
+        invalid_string.set_raw("name", vec![0xff]).unwrap();
+
+        let mut position = Metadata::new();
+        position.set_string("name", "position").unwrap();
+
+        let mut geometry = GeometryMetadata::new();
+        geometry.set_attribute_metadata(3, invalid_string);
+        geometry.set_attribute_metadata(7, position);
+
+        assert_eq!(
+            geometry
+                .attribute_metadata_by_string_entry("name", "position")
+                .map(AttributeMetadata::attribute_unique_id),
+            Some(7)
+        );
+        assert!(geometry
+            .attribute_metadata_by_string_entry("name", "normal")
+            .is_none());
     }
 
     #[test]

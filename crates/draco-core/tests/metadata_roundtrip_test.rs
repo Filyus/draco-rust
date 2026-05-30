@@ -72,6 +72,41 @@ fn assert_metadata(point_cloud: &PointCloud, label: &'static [u8]) {
     );
 }
 
+fn add_typed_metadata(point_cloud: &mut PointCloud, att_id: i32) {
+    point_cloud.attribute_mut(att_id).set_unique_id(77);
+
+    let metadata = point_cloud.metadata_or_insert().metadata_mut();
+    metadata.set_string("geometry", "typed").unwrap();
+    metadata.set_i32("revision", 2).unwrap();
+    metadata.set_f64_array("scale", &[1.0, 2.5]).unwrap();
+
+    let mut attribute_metadata = Metadata::new();
+    attribute_metadata.set_string("name", "position").unwrap();
+    attribute_metadata.set_i32("components", 3).unwrap();
+    point_cloud
+        .set_attribute_metadata(att_id, attribute_metadata)
+        .unwrap();
+}
+
+fn assert_typed_metadata(point_cloud: &PointCloud) {
+    let metadata = point_cloud.metadata().expect("geometry metadata");
+    assert_eq!(metadata.metadata().get_string("geometry"), Some("typed"));
+    assert_eq!(metadata.metadata().get_i32("revision"), Some(2));
+    assert_eq!(
+        metadata.metadata().get_f64_array("scale"),
+        Some(vec![1.0, 2.5])
+    );
+
+    let attribute_metadata = point_cloud
+        .attribute_metadata_by_string_entry("name", "position")
+        .expect("attribute metadata by string entry");
+    assert_eq!(
+        attribute_metadata.attribute_unique_id(),
+        point_cloud.attribute(0).unique_id()
+    );
+    assert_eq!(attribute_metadata.metadata().get_i32("components"), Some(3));
+}
+
 fn make_point_cloud(label: &'static [u8]) -> PointCloud {
     let mut point_cloud = PointCloud::new();
     let att_id = point_cloud.add_attribute(position_attribute(4));
@@ -150,6 +185,35 @@ fn point_cloud_kdtree_metadata_roundtrips() {
 
     assert_eq!(header_flags(&bytes), 0x8000);
     assert_metadata(&decoded, b"point-cloud-kdtree");
+}
+
+#[test]
+fn point_cloud_typed_metadata_roundtrips() {
+    let mut point_cloud = PointCloud::new();
+    let att_id = point_cloud.add_attribute(position_attribute(4));
+    add_typed_metadata(&mut point_cloud, att_id);
+
+    let mut encoder = PointCloudEncoder::new();
+    encoder.set_point_cloud(point_cloud);
+
+    let mut options = EncoderOptions::new();
+    options.set_encoding_method(0);
+    options.set_attribute_int(0, "quantization_bits", 10);
+
+    let mut encoded = EncoderBuffer::new();
+    encoder
+        .encode(&options, &mut encoded)
+        .expect("point cloud encode");
+
+    let bytes = encoded.data().to_vec();
+    let mut buffer = DecoderBuffer::new(&bytes);
+    let mut decoded = PointCloud::new();
+    PointCloudDecoder::new()
+        .decode(&mut buffer, &mut decoded)
+        .expect("point cloud decode");
+
+    assert_eq!(header_flags(&bytes), 0x8000);
+    assert_typed_metadata(&decoded);
 }
 
 #[test]

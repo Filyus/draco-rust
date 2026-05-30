@@ -16,7 +16,7 @@ The C++ reference used here is the local checkout at `D:\Projects\Draco\src`.
 | yes | Implemented in the relevant project path. |
 | partial | Some useful path exists, but important C++ behavior/API is missing. |
 | skip-only | Parser advances over the data but does not retain or expose it. |
-| raw roundtrip | Raw bitstream data is decoded, exposed, and encoded without typed convenience helpers. |
+| raw roundtrip | Raw bitstream data is decoded, exposed, and encoded; higher-level helpers are tracked separately. |
 | explicit | Available only by manual selection; not part of default encoder choice. |
 | no | Not implemented. |
 | n/a | Not meaningful for this layer. |
@@ -110,20 +110,24 @@ automatically.
 
 ## Metadata
 
-C++ Draco metadata is not just an ideal feature; it is implemented and exposed.
-`draco-core` is currently behind here.
+C++ Draco metadata stores entries as untyped byte blobs. Its `int32`, `double`,
+array, and string APIs are convenience helpers over those bytes, not a tagged
+schema. `draco-core` follows the same model: raw bytes are the base API, and
+typed helpers read/write the same entry payloads.
 
-| Metadata feature | C++ support | `draco-core` status | Realistic Rust step |
+| Metadata feature | C++ support | `draco-core` status | Notes |
 |---|---:|---|---|
-| Geometry-level metadata entries | yes | raw roundtrip | Stored on `PointCloud`; `Mesh` gets it through its point-cloud base. |
-| Attribute metadata keyed by attribute unique id | yes | raw roundtrip | Preserved by Draco attribute unique id, not attribute vector index. |
-| Nested sub-metadata | yes | raw roundtrip | Preserved with C++-matching nesting limit. |
-| Binary entry values | yes | raw roundtrip | Raw `Vec<u8>` values are the supported public surface. |
-| Typed helpers for `int32`, `double`, arrays, strings | yes | no public API | Add typed convenience methods after raw storage exists. |
-| Metadata encode/decode roundtrip | yes | yes | Rust raw metadata roundtrips for point clouds and meshes. |
+| Geometry-level metadata entries | yes | yes | Stored on `PointCloud`; `Mesh` gets it through its point-cloud base. |
+| Attribute metadata keyed by attribute unique id | yes | yes | Preserved by Draco attribute unique id, not attribute vector index. |
+| Attribute metadata lookup by string entry | yes | yes | Mirrors C++ `GetAttributeMetadataByStringEntry` for helpers such as `"name" = "position"`. |
+| Nested sub-metadata | yes | yes | Preserved with C++-matching nesting limit. |
+| Binary/raw entry values | yes | yes | Raw `Vec<u8>` values remain the lossless public surface. |
+| Typed helpers for `int32`, `double`, arrays, strings | yes | yes | Rust-style helpers mirror C++ byte layout without type tags. |
+| Metadata encode/decode roundtrip | yes | yes | Metadata roundtrips for point clouds and meshes when bitstream header flags are available. |
 
-The Rust metadata API intentionally exposes raw bytes first. C++ typed helpers
-can be mirrored later without changing the raw bitstream model.
+Rust numeric helpers use explicit little-endian encoding for deterministic
+output. Empty values are rejected because C++ Draco's metadata decoder rejects
+zero-length entry data.
 
 ## Keyframe Animation
 
@@ -166,7 +170,7 @@ builds, but they are not raw Draco bitstream features.
 | Priority | Item | Why |
 |---:|---|---|
 | 1 | Finish raw mesh/point-cloud C++ parity tests | This is the crate's main job. |
-| 2 | Add typed `.drc` metadata helpers when needed | Raw metadata roundtrip exists; typed helpers would mirror C++ convenience API. |
+| 2 | Add broader metadata utilities when needed | Raw and typed `.drc` metadata roundtrip exists; future work is merge/copy helpers if they become useful. |
 | 3 | Add keyframe animation wrapper if needed | Feasible because it reuses point-cloud sequential encode/decode. |
 | 4 | Keep deprecated prediction schemes explicit | C++ public encoder rejects them; supporting them is for compatibility, not defaults. |
 | 5 | Keep 2017-era legacy decode gaps fixture-driven | EdgeBreaker predictive type `1` and old normal octahedron transform are still C++ decode compatibility targets, but modern C++ encoders do not emit them. |
@@ -194,7 +198,9 @@ Important examples:
   2017, and still decodes both transform ids. Rust keeps the old transform base
   because the canonicalized transform reuses the same octahedron math; that is
   not the same as supporting old transform id `2` in the decoder.
-- Metadata is preserved as raw bytes and roundtrips through Rust encode/decode;
-  typed helpers are intentionally deferred.
+- Metadata is preserved as raw bytes and roundtrips through Rust encode/decode.
+  Typed helpers expose C++-compatible `int32`, `double`, array, and string
+  convenience APIs over the same bytes; Rust writes numeric helpers in explicit
+  little-endian order for deterministic streams.
 - Keyframe animation is not implemented yet, but is realistically implementable
   as a typed wrapper around the existing point-cloud path.
