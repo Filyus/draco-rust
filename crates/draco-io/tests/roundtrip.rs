@@ -539,29 +539,48 @@ fn roundtrip_with_blender() -> io::Result<()> {
     // Validate scene support per format capability.
     use draco_io::SceneReader;
 
+    fn mesh_instance_count(nodes: &[draco_io::SceneNode]) -> usize {
+        nodes
+            .iter()
+            .map(|node| node.mesh_instances.len() + mesh_instance_count(&node.children))
+            .sum()
+    }
+
     // Flat formats (OBJ/PLY) have no native scene graph; wrap explicitly.
     let mut obj_scene_reader = ObjReader::open(&obj)?;
     let scene = draco_io::flatten_to_scene(&mut obj_scene_reader, None)?;
-    assert!(!scene.parts.is_empty(), "OBJ scene has no parts");
+    assert!(
+        mesh_instance_count(&scene.root_nodes) > 0,
+        "OBJ scene has no mesh instances"
+    );
 
     let mut ply_scene_reader = PlyReader::open(&ply)?;
     let scene = draco_io::flatten_to_scene(&mut ply_scene_reader, None)?;
-    assert!(!scene.parts.is_empty(), "PLY scene has no parts");
+    assert!(
+        mesh_instance_count(&scene.root_nodes) > 0,
+        "PLY scene has no mesh instances"
+    );
 
     // FBX SceneReader only if we successfully read it earlier
     if f_mesh_opt.is_some() {
         let mut fbx_scene_reader = FbxReader::open(&fbxf)?;
         let scene = fbx_scene_reader.read_scene()?;
-        assert!(!scene.parts.is_empty(), "FBX scene has no parts");
         assert!(!scene.root_nodes.is_empty(), "FBX scene has no root nodes");
+        assert!(
+            mesh_instance_count(&scene.root_nodes) > 0,
+            "FBX scene has no mesh instances"
+        );
     }
 
     // GLB/Draco SceneReader validation - must succeed
     let mut gltf_scene_reader = <GltfReader as draco_io::Reader>::open(&glb)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
     let scene = draco_io::SceneReader::read_scene(&mut gltf_scene_reader)?;
-    assert!(!scene.parts.is_empty(), "GLB scene has no parts");
     assert!(!scene.root_nodes.is_empty(), "GLB scene has no root nodes");
+    assert!(
+        mesh_instance_count(&scene.root_nodes) > 0,
+        "GLB scene has no mesh instances"
+    );
 
     Ok(())
 }

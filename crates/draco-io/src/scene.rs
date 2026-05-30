@@ -18,21 +18,24 @@ pub struct Transform {
     pub matrix: [[f32; 4]; 4],
 }
 
-/// Represents an object in a scene (Blender-like 'Object').
-/// Contains the mesh data and optional transform metadata.
+/// One mesh instance attached to a scene node.
+///
+/// The mesh data is owned by the instance for now; `transform` is the optional
+/// local transform applied to this specific instance when it cannot be folded
+/// into the containing node.
 #[derive(Debug, Clone)]
-pub struct SceneObject {
+pub struct MeshInstance {
     pub name: Option<String>,
     pub mesh: Mesh,
     pub transform: Option<Transform>,
 }
 
-/// A node in a scene graph. Nodes can contain parts (meshes) and children.
+/// A node in a scene graph. Nodes can contain mesh instances and children.
 #[derive(Debug, Clone)]
 pub struct SceneNode {
     pub name: Option<String>,
     pub transform: Option<Transform>,
-    pub parts: Vec<SceneObject>,
+    pub mesh_instances: Vec<MeshInstance>,
     pub children: Vec<SceneNode>,
 }
 
@@ -41,16 +44,16 @@ impl SceneNode {
         Self {
             name,
             transform: None,
-            parts: Vec::new(),
+            mesh_instances: Vec::new(),
             children: Vec::new(),
         }
     }
 
-    pub fn with_parts(name: Option<String>, parts: Vec<SceneObject>) -> Self {
+    pub fn with_mesh_instances(name: Option<String>, mesh_instances: Vec<MeshInstance>) -> Self {
         Self {
             name,
             transform: None,
-            parts,
+            mesh_instances,
             children: Vec::new(),
         }
     }
@@ -60,8 +63,6 @@ impl SceneNode {
 #[derive(Debug, Clone)]
 pub struct Scene {
     pub name: Option<String>,
-    /// Flat list of parts (for convenience/backward compatibility).
-    pub parts: Vec<SceneObject>,
     /// Root nodes forming a hierarchy.
     pub root_nodes: Vec<SceneNode>,
 }
@@ -70,16 +71,14 @@ impl Scene {
     pub fn new(name: Option<String>) -> Self {
         Self {
             name,
-            parts: Vec::new(),
             root_nodes: Vec::new(),
         }
     }
 
-    pub fn from_parts(name: Option<String>, parts: Vec<SceneObject>) -> Self {
+    pub fn from_mesh_instances(name: Option<String>, mesh_instances: Vec<MeshInstance>) -> Self {
         Self {
+            root_nodes: vec![SceneNode::with_mesh_instances(name.clone(), mesh_instances)],
             name,
-            parts,
-            root_nodes: Vec::new(),
         }
     }
 }
@@ -111,11 +110,7 @@ pub trait SceneReader: Reader {
 /// ```ignore
 /// use draco_io::{SceneWriter, Writer, GltfWriter, Scene};
 ///
-/// let scene = Scene {
-///     name: Some("MyScene".to_string()),
-///     parts: vec![],
-///     root_nodes: vec![/* ... */],
-/// };
+/// let scene = Scene::new(Some("MyScene".to_string()));
 ///
 /// let mut writer = GltfWriter::new();
 /// writer.add_scene(&scene)?;
@@ -142,20 +137,13 @@ pub trait SceneWriter: Writer {
 /// implement [`SceneReader`] and return their real graph instead.
 pub fn flatten_to_scene<R: Reader>(reader: &mut R, name: Option<String>) -> io::Result<Scene> {
     let meshes = reader.read_meshes()?;
-    let mut root = SceneNode::new(name.clone());
-    let mut parts = Vec::with_capacity(meshes.len());
-    for mesh in meshes {
-        let part = SceneObject {
+    let mesh_instances = meshes
+        .into_iter()
+        .map(|mesh| MeshInstance {
             name: None,
             mesh,
             transform: None,
-        };
-        root.parts.push(part.clone());
-        parts.push(part);
-    }
-    Ok(Scene {
-        name,
-        parts,
-        root_nodes: vec![root],
-    })
+        })
+        .collect();
+    Ok(Scene::from_mesh_instances(name, mesh_instances))
 }

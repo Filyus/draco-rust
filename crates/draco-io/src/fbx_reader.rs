@@ -262,36 +262,49 @@ impl crate::scene::SceneReader for FbxReader<BufReader<File>> {
             id: i64,
             model_map: &std::collections::HashMap<i64, &FbxNode>,
             model_children: &std::collections::HashMap<i64, Vec<i64>>,
+            model_mesh_instances: &std::collections::HashMap<i64, Vec<crate::scene::MeshInstance>>,
         ) -> crate::scene::SceneNode {
             let node_src = model_map.get(&id).unwrap();
             let mut node = crate::scene::SceneNode::new(Some(node_src.name.clone()));
             node.transform = parse_transform(node_src);
+            if let Some(mesh_instances) = model_mesh_instances.get(&id) {
+                node.mesh_instances.extend(mesh_instances.clone());
+            }
 
             if let Some(children) = model_children.get(&id) {
                 for &cid in children {
                     if model_map.contains_key(&cid) {
-                        node.children
-                            .push(build_model_node(cid, model_map, model_children));
+                        node.children.push(build_model_node(
+                            cid,
+                            model_map,
+                            model_children,
+                            model_mesh_instances,
+                        ));
                     }
                 }
             }
             node
         }
 
-        // Map geometries to models and create parts
-        let mut model_parts: std::collections::HashMap<i64, Vec<crate::scene::SceneObject>> =
-            std::collections::HashMap::new();
+        // Map geometries to models and create mesh instances.
+        let mut model_mesh_instances: std::collections::HashMap<
+            i64,
+            Vec<crate::scene::MeshInstance>,
+        > = std::collections::HashMap::new();
         for (geom_id, geom_node) in geometry_map.iter() {
             if let Some(mesh) = self.geometry_to_mesh(geom_node)? {
                 // find connection mapping geometry -> model
                 for (child, parent) in connections.iter() {
                     if *child == *geom_id && model_map.contains_key(parent) {
-                        let part = crate::scene::SceneObject {
+                        let mesh_instance = crate::scene::MeshInstance {
                             name: Some(geom_node.name.clone()),
                             mesh: mesh.clone(),
                             transform: None,
                         };
-                        model_parts.entry(*parent).or_default().push(part);
+                        model_mesh_instances
+                            .entry(*parent)
+                            .or_default()
+                            .push(mesh_instance);
                     }
                 }
             }
@@ -311,25 +324,16 @@ impl crate::scene::SceneReader for FbxReader<BufReader<File>> {
             .collect();
 
         for id in top_level {
-            let mut root_node = build_model_node(id, &model_map, &model_children);
-            // attach parts if present
-            if let Some(parts) = model_parts.get(&id) {
-                root_node.parts.extend(parts.clone());
-            }
-            root_nodes.push(root_node);
-        }
-
-        // Flatten parts for Scene.parts
-        let mut all_parts = Vec::new();
-        for parts in model_parts.values() {
-            for p in parts {
-                all_parts.push(p.clone());
-            }
+            root_nodes.push(build_model_node(
+                id,
+                &model_map,
+                &model_children,
+                &model_mesh_instances,
+            ));
         }
 
         Ok(crate::scene::Scene {
             name: None,
-            parts: all_parts,
             root_nodes,
         })
     }

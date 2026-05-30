@@ -51,11 +51,15 @@ impl Default for QuantizationBits {
 //
 // ```ignore
 // use draco_io::gltf_writer::GltfWriter;
-// use draco_io::{Scene, SceneNode, SceneObject};
+// use draco_io::{MeshInstance, Scene, SceneNode};
 //
 // let mut root = SceneNode::new(Some("Root".to_string()));
-// root.parts.push(SceneObject { name: Some("Mesh".to_string()), mesh, transform: None });
-// let scene = Scene { name: Some("Scene".to_string()), parts: Vec::new(), root_nodes: vec![root] };
+// root.mesh_instances.push(MeshInstance {
+//     name: Some("Mesh".to_string()),
+//     mesh,
+//     transform: None,
+// });
+// let scene = Scene { name: Some("Scene".to_string()), root_nodes: vec![root] };
 //
 // let mut writer = GltfWriter::new();
 // writer.add_scene(&scene, None)?;
@@ -342,22 +346,11 @@ impl GltfWriter {
     ) -> Result<usize> {
         let quantization = quantization.into().unwrap_or_default();
 
-        // Build nodes recursively and record root node indices. If callers pass
-        // the flat `Scene.parts` form, wrap it in one synthetic root node so no
-        // geometry is silently dropped.
-        let mut root_node_indices = Vec::with_capacity(scene.root_nodes.len().max(1));
-        if scene.root_nodes.is_empty() {
-            if !scene.parts.is_empty() {
-                let root =
-                    crate::scene::SceneNode::with_parts(scene.name.clone(), scene.parts.clone());
-                let node_idx = self.push_scene_node(&root, &quantization)?;
-                root_node_indices.push(node_idx);
-            }
-        } else {
-            for root in &scene.root_nodes {
-                let node_idx = self.push_scene_node(root, &quantization)?;
-                root_node_indices.push(node_idx);
-            }
+        // Build nodes recursively and record root node indices.
+        let mut root_node_indices = Vec::with_capacity(scene.root_nodes.len());
+        for root in &scene.root_nodes {
+            let node_idx = self.push_scene_node(root, &quantization)?;
+            root_node_indices.push(node_idx);
         }
 
         let scene_idx = self.scenes.len();
@@ -387,8 +380,8 @@ impl GltfWriter {
         node: &crate::scene::SceneNode,
         quantization: &QuantizationBits,
     ) -> Result<usize> {
-        // glTF nodes can reference at most one mesh; if multiple parts exist,
-        // we create child nodes for each part.
+        // glTF nodes can reference at most one mesh; if multiple mesh instances
+        // exist, we create child nodes for each instance.
 
         // First, create this node (without children for now).
         let node_idx = self.nodes.len();
@@ -399,28 +392,35 @@ impl GltfWriter {
             matrix: node.transform.as_ref().map(Self::transform_to_gltf_matrix),
         });
 
-        // Attach parts.
-        if node.parts.len() == 1 && node.parts[0].transform.is_none() {
-            let part = &node.parts[0];
-            let mesh_idx =
-                self.encode_draco_mesh_internal(&part.mesh, part.name.as_deref(), quantization)?;
+        // Attach mesh instances.
+        if node.mesh_instances.len() == 1 && node.mesh_instances[0].transform.is_none() {
+            let mesh_instance = &node.mesh_instances[0];
+            let mesh_idx = self.encode_draco_mesh_internal(
+                &mesh_instance.mesh,
+                mesh_instance.name.as_deref(),
+                quantization,
+            )?;
             self.nodes[node_idx].mesh = Some(mesh_idx);
-        } else if !node.parts.is_empty() {
-            for (i, part) in node.parts.iter().enumerate() {
-                let part_mesh_idx = self.encode_draco_mesh_internal(
-                    &part.mesh,
-                    part.name.as_deref(),
+        } else if !node.mesh_instances.is_empty() {
+            for (i, mesh_instance) in node.mesh_instances.iter().enumerate() {
+                let mesh_idx = self.encode_draco_mesh_internal(
+                    &mesh_instance.mesh,
+                    mesh_instance.name.as_deref(),
                     quantization,
                 )?;
                 let child_idx = self.nodes.len();
                 self.nodes.push(NodeOut {
-                    mesh: Some(part_mesh_idx),
-                    name: part
-                        .name
-                        .clone()
-                        .or_else(|| node.name.as_ref().map(|n| format!("{}_part{}", n, i))),
+                    mesh: Some(mesh_idx),
+                    name: mesh_instance.name.clone().or_else(|| {
+                        node.name
+                            .as_ref()
+                            .map(|n| format!("{}_mesh_instance{}", n, i))
+                    }),
                     children: Vec::new(),
-                    matrix: part.transform.as_ref().map(Self::transform_to_gltf_matrix),
+                    matrix: mesh_instance
+                        .transform
+                        .as_ref()
+                        .map(Self::transform_to_gltf_matrix),
                 });
                 self.nodes[node_idx].children.push(child_idx);
             }
@@ -1254,7 +1254,7 @@ mod tests {
     #[test]
     fn test_scene_graph_roundtrip() {
         use crate::gltf_reader::GltfReader;
-        use crate::scene::{Scene, SceneNode, SceneObject, SceneReader};
+        use crate::scene::{MeshInstance, Scene, SceneNode, SceneReader};
 
         let mesh = create_test_triangle();
 
@@ -1264,7 +1264,7 @@ mod tests {
 
         let mut child = SceneNode::new(Some("Child".to_string()));
         child.transform = Some(make_translation_transform(4.0, 5.0, 6.0));
-        child.parts.push(SceneObject {
+        child.mesh_instances.push(MeshInstance {
             name: Some("Triangle".to_string()),
             mesh: mesh.clone(),
             transform: None,
@@ -1273,7 +1273,6 @@ mod tests {
 
         let scene = Scene {
             name: Some("TestScene".to_string()),
-            parts: Vec::new(),
             root_nodes: vec![root],
         };
 
@@ -1292,7 +1291,7 @@ mod tests {
             out_scene.root_nodes[0].children[0].name,
             Some("Child".to_string())
         );
-        assert_eq!(out_scene.root_nodes[0].children[0].parts.len(), 1);
+        assert_eq!(out_scene.root_nodes[0].children[0].mesh_instances.len(), 1);
 
         // Verify transforms survived matrix column/row conversion.
         let root_m = out_scene.root_nodes[0].transform.as_ref().unwrap().matrix;
@@ -1312,20 +1311,20 @@ mod tests {
 
     #[cfg(feature = "gltf-reader")]
     #[test]
-    fn test_flat_scene_parts_roundtrip() {
+    fn test_flat_scene_mesh_instances_roundtrip() {
         use crate::gltf_reader::GltfReader;
-        use crate::scene::{Scene, SceneObject, SceneReader};
+        use crate::scene::{MeshInstance, Scene, SceneReader};
 
         let mesh = create_test_triangle();
-        let scene = Scene::from_parts(
+        let scene = Scene::from_mesh_instances(
             Some("FlatScene".to_string()),
             vec![
-                SceneObject {
+                MeshInstance {
                     name: Some("FlatA".to_string()),
                     mesh: mesh.clone(),
                     transform: Some(make_translation_transform(1.0, 2.0, 3.0)),
                 },
-                SceneObject {
+                MeshInstance {
                     name: Some("FlatB".to_string()),
                     mesh,
                     transform: Some(make_translation_transform(4.0, 5.0, 6.0)),
@@ -1344,9 +1343,14 @@ mod tests {
         assert_eq!(out_scene.root_nodes.len(), 1);
         assert_eq!(out_scene.root_nodes[0].name, Some("FlatScene".to_string()));
         assert_eq!(out_scene.root_nodes[0].children.len(), 2);
-        assert_eq!(out_scene.parts.len(), 2);
-        assert_eq!(out_scene.parts[0].name, Some("FlatA".to_string()));
-        assert_eq!(out_scene.parts[1].name, Some("FlatB".to_string()));
+        assert_eq!(
+            out_scene.root_nodes[0].children[0].mesh_instances[0].name,
+            Some("FlatA".to_string())
+        );
+        assert_eq!(
+            out_scene.root_nodes[0].children[1].mesh_instances[0].name,
+            Some("FlatB".to_string())
+        );
 
         let first_m = out_scene.root_nodes[0].children[0]
             .transform
@@ -1369,14 +1373,14 @@ mod tests {
 
     #[cfg(feature = "gltf-reader")]
     #[test]
-    fn test_scene_writer_trait_exports_flat_scene_parts() {
+    fn test_scene_writer_trait_exports_flat_scene_mesh_instances() {
         use crate::gltf_reader::GltfReader;
-        use crate::scene::{Scene, SceneObject, SceneReader, SceneWriter};
+        use crate::scene::{MeshInstance, Scene, SceneReader, SceneWriter};
 
-        let scene = Scene::from_parts(
+        let scene = Scene::from_mesh_instances(
             Some("TraitScene".to_string()),
-            vec![SceneObject {
-                name: Some("TraitPart".to_string()),
+            vec![MeshInstance {
+                name: Some("TraitMeshInstance".to_string()),
                 mesh: create_test_triangle(),
                 transform: None,
             }],
@@ -1391,8 +1395,11 @@ mod tests {
 
         assert_eq!(out_scene.name, Some("TraitScene".to_string()));
         assert_eq!(out_scene.root_nodes.len(), 1);
-        assert_eq!(out_scene.parts.len(), 1);
-        assert_eq!(out_scene.parts[0].name, Some("TraitPart".to_string()));
+        assert_eq!(out_scene.root_nodes[0].mesh_instances.len(), 1);
+        assert_eq!(
+            out_scene.root_nodes[0].mesh_instances[0].name,
+            Some("TraitMeshInstance".to_string())
+        );
     }
 
     #[cfg(feature = "gltf-reader")]

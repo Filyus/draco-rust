@@ -20,7 +20,11 @@
 //! // Or read the full scene graph with transforms
 //! let scene = reader.read_scene()?;
 //! for node in &scene.root_nodes {
-//!     println!("Node: {:?}, parts: {}", node.name, node.parts.len());
+//!     println!(
+//!         "Node: {:?}, mesh instances: {}",
+//!         node.name,
+//!         node.mesh_instances.len()
+//!     );
 //! }
 //! ```
 
@@ -1714,7 +1718,7 @@ impl GltfReader {
                     let mesh =
                         self.decode_primitive_mesh(mesh_idx, gltf_mesh, prim_idx, primitive)?;
 
-                    let part_name = if gltf_mesh.primitives.len() > 1 {
+                    let mesh_instance_name = if gltf_mesh.primitives.len() > 1 {
                         gltf_mesh
                             .name
                             .as_ref()
@@ -1723,8 +1727,8 @@ impl GltfReader {
                         gltf_mesh.name.clone()
                     };
 
-                    scene_node.parts.push(crate::scene::SceneObject {
-                        name: part_name,
+                    scene_node.mesh_instances.push(crate::scene::MeshInstance {
+                        name: mesh_instance_name,
                         mesh,
                         transform: None, // Primitive-level transform is identity
                     });
@@ -1790,22 +1794,8 @@ impl crate::scene::SceneReader for GltfReader {
             root_nodes.push(scene_node);
         }
 
-        // Collect all parts (flattened) for backward compatibility
-        fn collect_parts(node: &crate::scene::SceneNode, out: &mut Vec<crate::scene::SceneObject>) {
-            out.extend(node.parts.clone());
-            for child in &node.children {
-                collect_parts(child, out);
-            }
-        }
-
-        let mut parts = Vec::new();
-        for node in &root_nodes {
-            collect_parts(node, &mut parts);
-        }
-
         Ok(crate::scene::Scene {
             name: scene_name,
-            parts,
             root_nodes,
         })
     }

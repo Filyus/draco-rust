@@ -161,6 +161,6 @@ pub use ply_reader::PlyReader;
 pub use ply_writer::PlyWriter;
 #[cfg(feature = "scene")]
 pub use scene::{
-    flatten_to_scene, Scene, SceneNode, SceneObject, SceneReader, SceneWriter, Transform,
+    flatten_to_scene, MeshInstance, Scene, SceneNode, SceneReader, SceneWriter, Transform,
 };
 pub use traits::{PointCloudReader, PointCloudWriter, ReadFromBytes, Reader, WriteToBytes, Writer};
