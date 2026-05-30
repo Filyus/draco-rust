@@ -45,6 +45,15 @@ impl SceneNode {
             children: Vec::new(),
         }
     }
+
+    pub fn with_parts(name: Option<String>, parts: Vec<SceneObject>) -> Self {
+        Self {
+            name,
+            transform: None,
+            parts,
+            children: Vec::new(),
+        }
+    }
 }
 
 /// A simple scene container.
@@ -55,6 +64,24 @@ pub struct Scene {
     pub parts: Vec<SceneObject>,
     /// Root nodes forming a hierarchy.
     pub root_nodes: Vec<SceneNode>,
+}
+
+impl Scene {
+    pub fn new(name: Option<String>) -> Self {
+        Self {
+            name,
+            parts: Vec::new(),
+            root_nodes: Vec::new(),
+        }
+    }
+
+    pub fn from_parts(name: Option<String>, parts: Vec<SceneObject>) -> Self {
+        Self {
+            name,
+            parts,
+            root_nodes: Vec::new(),
+        }
+    }
 }
 
 /// Trait for readers that can return full scene information (meshes + metadata).
