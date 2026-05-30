@@ -1019,10 +1019,10 @@ impl GltfReader {
     }
 
     /// Compute a node's local transform as a row-major 4x4 matrix.
-    fn compute_node_transform(node: &GltfNode) -> Option<crate::traits::Transform> {
+    fn compute_node_transform(node: &GltfNode) -> Option<crate::scene::Transform> {
         if let Some(m) = &node.matrix {
             // glTF stores column-major; convert to row-major
-            Some(crate::traits::Transform {
+            Some(crate::scene::Transform {
                 matrix: [
                     [m[0], m[4], m[8], m[12]],
                     [m[1], m[5], m[9], m[13]],
@@ -1056,7 +1056,7 @@ impl GltfReader {
             ];
 
             // Compose T * R * S into 4x4 row-major
-            Some(crate::traits::Transform {
+            Some(crate::scene::Transform {
                 matrix: [
                     [rot[0][0] * s[0], rot[0][1] * s[1], rot[0][2] * s[2], t[0]],
                     [rot[1][0] * s[0], rot[1][1] * s[1], rot[1][2] * s[2], t[1]],
@@ -1074,7 +1074,7 @@ impl GltfReader {
         &self,
         node_idx: usize,
         visited: &mut Vec<bool>,
-    ) -> Result<crate::traits::SceneNode> {
+    ) -> Result<crate::scene::SceneNode> {
         if node_idx >= self.root.nodes.len() {
             return Err(GltfError::InvalidGltf(format!(
                 "Invalid node index: {}",
@@ -1093,7 +1093,7 @@ impl GltfReader {
 
         let gltf_node = &self.root.nodes[node_idx];
 
-        let mut scene_node = crate::traits::SceneNode::new(gltf_node.name.clone());
+        let mut scene_node = crate::scene::SceneNode::new(gltf_node.name.clone());
         scene_node.transform = Self::compute_node_transform(gltf_node);
 
         // Attach meshes if this node references a mesh
@@ -1112,7 +1112,7 @@ impl GltfReader {
                         gltf_mesh.name.clone()
                     };
 
-                    scene_node.parts.push(crate::traits::SceneObject {
+                    scene_node.parts.push(crate::scene::SceneObject {
                         name: part_name,
                         mesh,
                         transform: None, // Primitive-level transform is identity
@@ -1131,8 +1131,8 @@ impl GltfReader {
     }
 }
 
-impl crate::traits::SceneReader for GltfReader {
-    fn read_scene(&mut self) -> std::io::Result<crate::traits::Scene> {
+impl crate::scene::SceneReader for GltfReader {
+    fn read_scene(&mut self) -> std::io::Result<crate::scene::Scene> {
         let map_err = |e: GltfError| std::io::Error::other(e.to_string());
 
         // Select scene: prefer default, else first, else empty
@@ -1180,10 +1180,7 @@ impl crate::traits::SceneReader for GltfReader {
         }
 
         // Collect all parts (flattened) for backward compatibility
-        fn collect_parts(
-            node: &crate::traits::SceneNode,
-            out: &mut Vec<crate::traits::SceneObject>,
-        ) {
+        fn collect_parts(node: &crate::scene::SceneNode, out: &mut Vec<crate::scene::SceneObject>) {
             out.extend(node.parts.clone());
             for child in &node.children {
                 collect_parts(child, out);
@@ -1195,7 +1192,7 @@ impl crate::traits::SceneReader for GltfReader {
             collect_parts(node, &mut parts);
         }
 
-        Ok(crate::traits::Scene {
+        Ok(crate::scene::Scene {
             name: scene_name,
             parts,
             root_nodes,

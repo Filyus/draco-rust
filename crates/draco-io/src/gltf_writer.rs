@@ -51,7 +51,7 @@ impl Default for QuantizationBits {
 //
 // ```ignore
 // use draco_io::gltf_writer::GltfWriter;
-// use draco_io::traits::{Scene, SceneNode, SceneObject};
+// use draco_io::{Scene, SceneNode, SceneObject};
 //
 // let mut root = SceneNode::new(Some("Root".to_string()));
 // root.parts.push(SceneObject { name: Some("Mesh".to_string()), mesh, transform: None });
@@ -317,7 +317,7 @@ impl GltfWriter {
     /// Non-Draco writing (raw accessors) is not currently supported by this writer.
     pub fn add_scene(
         &mut self,
-        scene: &crate::traits::Scene,
+        scene: &crate::scene::Scene,
         quantization: impl Into<Option<QuantizationBits>>,
     ) -> Result<usize> {
         let quantization = quantization.into().unwrap_or_default();
@@ -349,7 +349,7 @@ impl GltfWriter {
         Ok(scene_idx)
     }
 
-    fn transform_to_gltf_matrix(transform: &crate::traits::Transform) -> [f32; 16] {
+    fn transform_to_gltf_matrix(transform: &crate::scene::Transform) -> [f32; 16] {
         // Input is row-major; glTF expects column-major.
         let m = &transform.matrix;
         [
@@ -360,7 +360,7 @@ impl GltfWriter {
 
     fn push_scene_node(
         &mut self,
-        node: &crate::traits::SceneNode,
+        node: &crate::scene::SceneNode,
         quantization: &QuantizationBits,
     ) -> Result<usize> {
         // glTF nodes can reference at most one mesh; if multiple parts exist,
@@ -831,8 +831,8 @@ impl Writer for GltfWriter {
     }
 }
 
-impl crate::traits::SceneWriter for GltfWriter {
-    fn add_scene(&mut self, scene: &crate::traits::Scene) -> io::Result<()> {
+impl crate::scene::SceneWriter for GltfWriter {
+    fn add_scene(&mut self, scene: &crate::scene::Scene) -> io::Result<()> {
         // Use default quantization for the trait method.
         self.add_scene(scene, None)
             .map(|_| ())
@@ -883,8 +883,8 @@ mod tests {
     }
 
     #[cfg(feature = "gltf-reader")]
-    fn make_translation_transform(x: f32, y: f32, z: f32) -> crate::traits::Transform {
-        crate::traits::Transform {
+    fn make_translation_transform(x: f32, y: f32, z: f32) -> crate::scene::Transform {
+        crate::scene::Transform {
             matrix: [
                 [1.0, 0.0, 0.0, x],
                 [0.0, 1.0, 0.0, y],
@@ -964,7 +964,7 @@ mod tests {
     #[test]
     fn test_scene_graph_roundtrip() {
         use crate::gltf_reader::GltfReader;
-        use crate::traits::{Scene, SceneNode, SceneObject, SceneReader};
+        use crate::scene::{Scene, SceneNode, SceneObject, SceneReader};
 
         let mesh = create_test_triangle();
 

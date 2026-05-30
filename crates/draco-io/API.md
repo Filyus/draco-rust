@@ -167,6 +167,8 @@ pub trait PointCloudReader: Reader {
 ### SceneWriter
 
 Extended trait for writing scene graphs with hierarchies and transforms.
+Available as `draco_io::scene::SceneWriter` and re-exported as
+`draco_io::SceneWriter` when the `scene` feature is enabled.
 
 ```rust
 pub trait SceneWriter: Writer {
@@ -178,11 +180,11 @@ pub trait SceneWriter: Writer {
 }
 ```
 
-**Implementations:** `GltfWriter`, `FbxWriter`
+**Implementations:** `GltfWriter`
 
 ```rust
 use draco_io::{GltfWriter, SceneWriter, Writer};
-use draco_io::traits::{Scene, SceneNode, SceneObject};
+use draco_io::{Scene, SceneNode, SceneObject};
 
 let mut root = SceneNode::new(Some("Root".to_string()));
 root.parts.push(SceneObject {
@@ -207,6 +209,10 @@ writer.write("scene.glb")?;
 ### SceneReader
 
 Extended trait for reading scene graphs.
+Available as `draco_io::scene::SceneReader` and re-exported as
+`draco_io::SceneReader` when the `scene` feature is enabled. Flat OBJ and PLY
+readers do not implement this trait; use `flatten_to_scene` to wrap their mesh
+lists explicitly.
 
 ```rust
 pub trait SceneReader: Reader {
@@ -237,6 +243,9 @@ for node in &scene.root_nodes {
 ---
 
 ## Scene Types
+
+Scene types live in `draco_io::scene` and are re-exported from `draco_io` when
+the `scene` feature is enabled.
 
 ### Scene
 
@@ -471,7 +480,7 @@ let scene = reader.read_scene()?;
 Writes Autodesk FBX files (ASCII format).
 
 ```rust
-use draco_io::{FbxWriter, Writer, SceneWriter};
+use draco_io::{FbxWriter, Writer};
 
 // Basic usage
 let mut writer = FbxWriter::new();
@@ -487,7 +496,7 @@ writer.add_mesh(&mesh, Some("CompressedModel"))?;
 writer.write("compressed.fbx")?;
 ```
 
-**Implements:** `Writer`, `SceneWriter`
+**Implements:** `Writer`
 
 **Methods:**
 
@@ -498,7 +507,6 @@ writer.write("compressed.fbx")?;
 | `with_compression_threshold(bytes: usize) -> Self` | Min size to compress |
 | `is_compression_enabled() -> bool` | Check compression status |
 | `add_mesh(&mut self, mesh, name)` | Add mesh |
-| `add_scene(&mut self, scene)` | Add scene graph |
 | `write(&self, path)` | Write to file |
 
 ---
@@ -766,7 +774,7 @@ fn export_all_formats(mesh: &Mesh, basename: &str) -> std::io::Result<()> {
 
 ```rust
 use draco_io::{GltfWriter, SceneWriter, Writer};
-use draco_io::traits::{Scene, SceneNode, SceneObject, Transform};
+use draco_io::{Scene, SceneNode, SceneObject, Transform};
 use draco_core::mesh::Mesh;
 
 fn export_scene(meshes: Vec<Mesh>) -> Result<(), draco_io::GltfWriteError> {

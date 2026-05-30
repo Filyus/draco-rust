@@ -84,8 +84,8 @@ impl crate::traits::Reader for FbxReader<BufReader<File>> {
     }
 }
 
-impl crate::traits::SceneReader for FbxReader<BufReader<File>> {
-    fn read_scene(&mut self) -> io::Result<crate::traits::Scene> {
+impl crate::scene::SceneReader for FbxReader<BufReader<File>> {
+    fn read_scene(&mut self) -> io::Result<crate::scene::Scene> {
         let nodes = self.read_nodes()?;
 
         // Build maps: id -> Model/Geometry nodes
@@ -138,7 +138,7 @@ impl crate::traits::SceneReader for FbxReader<BufReader<File>> {
         }
 
         // Helper to parse transform from Model node's Properties70
-        fn parse_transform(node: &FbxNode) -> Option<crate::traits::Transform> {
+        fn parse_transform(node: &FbxNode) -> Option<crate::scene::Transform> {
             let mut translation = None;
             let mut rotation = None;
             let mut scaling = None;
@@ -223,7 +223,7 @@ impl crate::traits::SceneReader for FbxReader<BufReader<File>> {
                 [t[0], t[1], t[2], 1.0],
             ];
 
-            Some(crate::traits::Transform { matrix: mat })
+            Some(crate::scene::Transform { matrix: mat })
         }
 
         // Build nodes recursively
@@ -231,9 +231,9 @@ impl crate::traits::SceneReader for FbxReader<BufReader<File>> {
             id: i64,
             model_map: &std::collections::HashMap<i64, &FbxNode>,
             model_children: &std::collections::HashMap<i64, Vec<i64>>,
-        ) -> crate::traits::SceneNode {
+        ) -> crate::scene::SceneNode {
             let node_src = model_map.get(&id).unwrap();
-            let mut node = crate::traits::SceneNode::new(Some(node_src.name.clone()));
+            let mut node = crate::scene::SceneNode::new(Some(node_src.name.clone()));
             node.transform = parse_transform(node_src);
 
             if let Some(children) = model_children.get(&id) {
@@ -248,14 +248,14 @@ impl crate::traits::SceneReader for FbxReader<BufReader<File>> {
         }
 
         // Map geometries to models and create parts
-        let mut model_parts: std::collections::HashMap<i64, Vec<crate::traits::SceneObject>> =
+        let mut model_parts: std::collections::HashMap<i64, Vec<crate::scene::SceneObject>> =
             std::collections::HashMap::new();
         for (geom_id, geom_node) in geometry_map.iter() {
             if let Some(mesh) = self.geometry_to_mesh(geom_node)? {
                 // find connection mapping geometry -> model
                 for (child, parent) in connections.iter() {
                     if *child == *geom_id && model_map.contains_key(parent) {
-                        let part = crate::traits::SceneObject {
+                        let part = crate::scene::SceneObject {
                             name: Some(geom_node.name.clone()),
                             mesh: mesh.clone(),
                             transform: None,
@@ -296,7 +296,7 @@ impl crate::traits::SceneReader for FbxReader<BufReader<File>> {
             }
         }
 
-        Ok(crate::traits::Scene {
+        Ok(crate::scene::Scene {
             name: None,
             parts: all_parts,
             root_nodes,

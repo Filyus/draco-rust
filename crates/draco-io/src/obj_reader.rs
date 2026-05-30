@@ -156,33 +156,6 @@ impl Reader for ObjReader {
     }
 }
 
-impl crate::traits::SceneReader for ObjReader {
-    fn read_scene(&mut self) -> io::Result<crate::traits::Scene> {
-        let meshes = self.read_meshes()?;
-        let mut parts = Vec::with_capacity(meshes.len());
-        let mut root = crate::traits::SceneNode::new(
-            self.path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string()),
-        );
-        for mesh in meshes {
-            let part = crate::traits::SceneObject {
-                name: None,
-                mesh: mesh.clone(),
-                transform: None,
-            };
-            root.parts.push(part.clone());
-            parts.push(part);
-        }
-        Ok(crate::traits::Scene {
-            name: root.name.clone(),
-            parts,
-            root_nodes: vec![root],
-        })
-    }
-}
-
 impl PointCloudReader for ObjReader {
     fn read_points(&mut self) -> io::Result<Vec<[f32; 3]>> {
         self.read_positions()

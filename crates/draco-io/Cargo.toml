@@ -24,14 +24,19 @@ default = [
 ]
 all-readers = ["fbx-reader", "gltf-reader", "obj-reader", "ply-reader"]
 all-writers = ["fbx-writer", "gltf-writer", "obj-writer", "ply-writer"]
-fbx-reader = ["draco-core/decoder"]
-fbx-writer = ["draco-core/encoder"]
-gltf-reader = ["draco-core/decoder", "dep:serde", "dep:serde_json"]
-gltf-writer = ["draco-core/encoder", "dep:serde", "dep:serde_json"]
-obj-reader = ["draco-core/decoder"]
-obj-writer = ["draco-core/encoder"]
-ply-reader = ["draco-core/decoder", "dep:byteorder"]
-ply-writer = ["draco-core/encoder"]
+# Plain mesh formats (OBJ/PLY/FBX) only touch the geometry data model in
+# draco-core, never the Draco codec, so they do not enable encoder/decoder.
+# Only glTF uses KHR_draco_mesh_compression and thus pulls the codec.
+fbx-reader = ["scene"]
+fbx-writer = []
+gltf-reader = ["draco-core/decoder", "scene", "dep:serde", "dep:serde_json"]
+gltf-writer = ["draco-core/encoder", "scene", "dep:serde", "dep:serde_json"]
+obj-reader = []
+obj-writer = []
+ply-reader = ["dep:byteorder"]
+ply-writer = []
+# Scene-graph layer, only pulled in by formats that natively carry a hierarchy.
+scene = []
 point_cloud_decode = ["draco-core/point_cloud_decode"]
 compression = ["miniz_oxide"]
 

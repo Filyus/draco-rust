@@ -235,35 +235,6 @@ impl Reader for PlyReader {
     }
 }
 
-impl crate::traits::SceneReader for PlyReader {
-    fn read_scene(&mut self) -> io::Result<crate::traits::Scene> {
-        let meshes = self.read_meshes()?;
-        let mut parts = Vec::with_capacity(meshes.len());
-        let scene_name = match &self.source {
-            PlyReaderSource::Path(path) => path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string()),
-            PlyReaderSource::Bytes(_) => None,
-        };
-        let mut root = crate::traits::SceneNode::new(scene_name);
-        for mesh in meshes {
-            let part = crate::traits::SceneObject {
-                name: None,
-                mesh: mesh.clone(),
-                transform: None,
-            };
-            root.parts.push(part.clone());
-            parts.push(part);
-        }
-        Ok(crate::traits::Scene {
-            name: root.name.clone(),
-            parts,
-            root_nodes: vec![root],
-        })
-    }
-}
-
 impl PointCloudReader for PlyReader {
     fn read_points(&mut self) -> io::Result<Vec<[f32; 3]>> {
         self.read_positions()

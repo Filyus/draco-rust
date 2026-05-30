@@ -536,15 +536,16 @@ fn roundtrip_with_blender() -> io::Result<()> {
         }
     }
 
-    // Validate SceneReader support: basic checks for all formats we exported
+    // Validate scene support per format capability.
     use draco_io::SceneReader;
 
+    // Flat formats (OBJ/PLY) have no native scene graph; wrap explicitly.
     let mut obj_scene_reader = ObjReader::open(&obj)?;
-    let scene = obj_scene_reader.read_scene()?;
+    let scene = draco_io::flatten_to_scene(&mut obj_scene_reader, None)?;
     assert!(!scene.parts.is_empty(), "OBJ scene has no parts");
 
     let mut ply_scene_reader = PlyReader::open(&ply)?;
-    let scene = ply_scene_reader.read_scene()?;
+    let scene = draco_io::flatten_to_scene(&mut ply_scene_reader, None)?;
     assert!(!scene.parts.is_empty(), "PLY scene has no parts");
 
     // FBX SceneReader only if we successfully read it earlier

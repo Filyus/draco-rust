@@ -127,6 +127,11 @@ pub mod ply_writer;
 pub mod ply_format;
 pub mod traits;
 
+// Scene-graph layer (data model + traits) is only compiled for hierarchical
+// formats (glTF, FBX) that actually carry a scene.
+#[cfg(feature = "scene")]
+pub mod scene;
+
 // Re-export main types for convenience
 #[cfg(feature = "fbx-reader")]
 pub use fbx_reader::FbxReader;
@@ -145,7 +150,8 @@ pub use ply_format::PlyFormat;
 pub use ply_reader::PlyReader;
 #[cfg(feature = "ply-writer")]
 pub use ply_writer::PlyWriter;
-pub use traits::{
-    PointCloudReader, PointCloudWriter, Reader, Scene, SceneNode, SceneObject, SceneReader,
-    SceneWriter, Transform, Writer,
+#[cfg(feature = "scene")]
+pub use scene::{
+    flatten_to_scene, Scene, SceneNode, SceneObject, SceneReader, SceneWriter, Transform,
 };
+pub use traits::{PointCloudReader, PointCloudWriter, Reader, Writer};

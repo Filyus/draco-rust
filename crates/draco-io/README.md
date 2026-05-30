@@ -47,6 +47,7 @@ draco-io = { version = "0.1.0", path = "../draco-io" }
 | `fbx-writer`  | ✓       | FBX writing support                      |
 | `gltf-reader` | ✓       | glTF/GLB reading support                 |
 | `gltf-writer` | ✓       | glTF/GLB writing support                 |
+| `scene`       | ✓       | Scene graph API for hierarchical formats |
 | `compression` | ✓       | zlib compression for FBX                 |
 
 To use only one format direction (smaller binary):
@@ -171,7 +172,10 @@ pub trait Reader: Sized {
 
 ### Scene Traits
 
-For scene graph support with transforms and hierarchies:
+For scene graph support with transforms and hierarchies. Scene APIs are in
+`draco_io::scene` and re-exported from `draco_io` when the `scene` feature is
+enabled. glTF and FBX readers expose native scene graphs; flat OBJ/PLY readers
+can be wrapped explicitly with `flatten_to_scene`.
 
 ```rust
 pub trait SceneReader: Reader {
@@ -301,10 +305,14 @@ draco-io
 ├── Traits
 │   ├── traits::Writer       - Common writer interface
 │   ├── traits::Reader       - Common reader interface
-│   ├── traits::SceneWriter  - Scene graph writing
-│   ├── traits::SceneReader  - Scene graph reading
 │   ├── traits::PointCloudWriter - Point cloud writing
 │   └── traits::PointCloudReader - Point cloud reading
+│
+├── Scene (feature = "scene")
+│   ├── scene::SceneWriter   - Scene graph writing
+│   ├── scene::SceneReader   - Scene graph reading
+│   ├── scene::Scene         - Scene container
+│   └── scene::flatten_to_scene - Flat mesh adapter
 │
 ├── Readers (feature = "all-readers")
 │   ├── obj_reader    - Wavefront OBJ
