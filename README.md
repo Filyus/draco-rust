@@ -166,15 +166,11 @@ That bridge crate is test infrastructure only and is marked `publish = false`.
 
 ## Performance
 
-These are local benchmark snapshots, not a performance contract. On generated
-mesh encode/decode tests, the Rust implementation measured faster than the C++
-reference in this setup:
-
-| Case | Encode | Decode |
-|---|---:|---:|
-| Sphere 24x48, speeds 0-9 | about 5.6-15.6 times faster | about 50-126 times faster |
-| Cube subdiv20, speeds 0-9 | about 6.4-15.9 times faster | about 65-126 times faster |
-| Speed 10 sequential path | about 70% faster | about 10% faster |
+Local Rust/C++ interop benchmarks show a clear advantage in this setup,
+especially on compressed mesh decoding. Encoding also measures faster on the
+generated mesh cases tracked by the benchmark suite. Decode can be dramatically
+faster; encode also shows solid gains. Exact results depend on the mesh,
+encoder settings, and hardware.
 
 The benchmark suite lives mostly under `draco-cpp-test-bridge`:
 
