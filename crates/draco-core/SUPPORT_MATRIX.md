@@ -43,7 +43,7 @@ The C++ reference used here is the local checkout at `D:\Projects\Draco\src`.
 | Triangle mesh, sequential | yes | yes | yes | yes | Core parity path. |
 | Triangle mesh, EdgeBreaker standard | yes | yes | yes | yes | Main compressed mesh path. |
 | Triangle mesh, EdgeBreaker valence | yes | yes | yes | yes | Behind `edgebreaker_valence_decode` / `edgebreaker_valence_encode`. |
-| Triangle mesh, EdgeBreaker predictive type `1` | yes | yes, through `0.9.1`; replaced by valence type `2` in `0.10.0` | no | no | Deprecated C++ connectivity variant. Public C++ `0.9.1` emitted type `1` on the predictive path; `0.10.0` changed that path to valence type `2`, and later versions keep type `1` as legacy decode compatibility. |
+| Triangle mesh, EdgeBreaker predictive type `1` | yes | legacy through `0.9.1` | no | no | Legacy connectivity variant. C++ emitted type `1` in `0.9.1` and replaced it with valence type `2` in `0.10.0` in 2017; current C++ keeps decode compatibility. |
 
 ## Sequential Attribute Encoders
 
@@ -93,8 +93,8 @@ automatically.
 |---|---:|---:|---:|---:|---|
 | Default/delta transform | yes | yes | yes | yes | Used by simple prediction paths. |
 | `PREDICTION_TRANSFORM_WRAP` | yes | yes | yes | yes | Integer wrap transform. |
-| `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON` | yes | yes | no direct path | no direct path | C++ supports the older non-canonical transform. Rust has shared toolbox/base pieces, but normal attribute encode/decode uses the canonicalized transform. |
-| `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON_CANONICALIZED` | yes | yes | yes | yes | Main modern normal prediction transform. |
+| `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON` | yes | legacy through `0.9.1` | shared base only | no | Legacy normal transform. Rust keeps the old octahedron base because canonicalized transform builds on the same math, but it does not currently accept old transform id `2` as a complete decode path. C++ emitted id `2` through `0.9.1` and switched normal encode to canonicalized in `0.10.0` in 2017; current C++ keeps decode compatibility. |
+| `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON_CANONICALIZED` | yes | yes, since `0.10.0` | yes | yes | Main modern normal prediction transform; C++ normal encoder switched to it in 2017. |
 
 ## Entropy and Bit Coding
 
@@ -169,7 +169,7 @@ builds, but they are not raw Draco bitstream features.
 | 2 | Add real `.drc` metadata retention | C++ supports it and Rust already has skip-only parsing, so this is a concrete gap. |
 | 3 | Add keyframe animation wrapper if needed | Feasible because it reuses point-cloud sequential encode/decode. |
 | 4 | Keep deprecated prediction schemes explicit | C++ public encoder rejects them; supporting them is for compatibility, not defaults. |
-| 5 | Keep EdgeBreaker predictive decoder type `1` as fixture-driven legacy work | Current C++ can compile the legacy decoder, but does not emit type `1` from the normal encoder path. |
+| 5 | Keep 2017-era legacy decode gaps fixture-driven | EdgeBreaker predictive type `1` and old normal octahedron transform are still C++ decode compatibility targets, but modern C++ encoders do not emit them. |
 | 6 | Leave scene/glTF animation, skins, structural metadata to `draco-io` | They are not raw Draco bitstream concerns. |
 
 ## Compatibility Notes
@@ -185,9 +185,15 @@ Important examples:
   `legacy_bitstream_encode`.
 - EdgeBreaker predictive connectivity traversal type `1` is deprecated in C++.
   Public Draco `0.9.1` emitted type `1` on the predictive path. Public Draco
-  `0.10.0` changed the same path to valence type `2`, and `1.0.0` already used
-  standard (`0`) or valence (`2`) for encoder output. Type `1` remains a legacy
-  decode compatibility target.
+  `0.10.0` changed the same path to valence type `2` in 2017, and `1.0.0`
+  already used standard (`0`) or valence (`2`) for encoder output. Type `1`
+  remains a legacy decode compatibility target.
+- `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON` follows the same compatibility shape:
+  C++ emitted it for normal prediction through `0.9.1`, switched encoder output
+  to `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON_CANONICALIZED` in `0.10.0` in
+  2017, and still decodes both transform ids. Rust keeps the old transform base
+  because the canonicalized transform reuses the same octahedron math; that is
+  not the same as supporting old transform id `2` in the decoder.
 - Metadata is currently only skipped, not preserved.
 - Keyframe animation is not implemented yet, but is realistically implementable
   as a typed wrapper around the existing point-cloud path.
