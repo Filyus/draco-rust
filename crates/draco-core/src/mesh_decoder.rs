@@ -18,8 +18,9 @@ use crate::geometry_indices::{
 };
 
 use crate::mesh_edgebreaker_decoder::MeshEdgebreakerDecoder;
+use crate::metadata::{GeometryMetadata, METADATA_FLAG_MASK};
 use crate::test_event_log;
-use crate::version::{version_at_least, version_less_than, VERSION_FLAGS_INTRODUCED};
+use crate::version::version_at_least;
 
 fn validate_num_attributes_in_decoder(
     num_attributes_in_decoder: usize,
@@ -153,8 +154,13 @@ impl MeshDecoder {
         self.decode_header(in_buffer)?;
 
         // 2. Decode Metadata
-        if (self.flags & 0x8000) != 0 {
-            self.decode_metadata(in_buffer)?;
+        if version_at_least(
+            self.version_major,
+            self.version_minor,
+            crate::version::VERSION_FLAGS_INTRODUCED,
+        ) && (self.flags & METADATA_FLAG_MASK) != 0
+        {
+            self.decode_metadata(in_buffer, out_mesh)?;
         }
 
         if self.geometry_type == EncodedGeometryType::PointCloud {
@@ -194,87 +200,14 @@ impl MeshDecoder {
         self.corner_table.as_deref()
     }
 
-    fn decode_metadata(&self, in_buffer: &mut DecoderBuffer) -> Result<(), DracoError> {
-        if version_less_than(
-            self.version_major,
-            self.version_minor,
-            VERSION_FLAGS_INTRODUCED,
-        ) {
-            return Ok(());
-        }
-
-        // Draco metadata is encoded using varints and length-prefixed names
-        // (see src/draco/metadata/metadata_decoder.cc).
-        let num_attribute_metadata = in_buffer.decode_varint().map_err(|_| {
-            DracoError::DracoError("Failed to read attribute metadata count".to_string())
-        })? as u32;
-        for _ in 0..num_attribute_metadata {
-            let _att_unique_id = in_buffer.decode_varint().map_err(|_| {
-                DracoError::DracoError("Failed to read attribute unique ID".to_string())
-            })? as u32;
-            self.skip_metadata(in_buffer)?;
-        }
-        self.skip_metadata(in_buffer)?; // Geometry metadata
-        Ok(())
-    }
-
-    // &self is needed for method signature consistency even though only used in recursive calls.
-    // This maintains a uniform API where all decoder methods take &self, and the recursive
-    // nature means the parameter is semantically meaningful for the call chain.
-    #[allow(clippy::only_used_in_recursion)]
-    fn skip_metadata(&self, in_buffer: &mut DecoderBuffer) -> Result<(), DracoError> {
-        let num_entries = in_buffer.decode_varint().map_err(|_| {
-            DracoError::DracoError("Failed to read metadata entries count".to_string())
-        })? as u32;
-        for _ in 0..num_entries {
-            // Name: u8 length + bytes.
-            let name_len = in_buffer.decode_u8().map_err(|_| {
-                DracoError::DracoError("Failed to read metadata entry name length".to_string())
-            })? as usize;
-            if in_buffer.remaining_size() < name_len {
-                return Err(DracoError::DracoError(
-                    "Failed to read metadata entry name".to_string(),
-                ));
-            }
-            in_buffer.try_advance(name_len)?;
-
-            let data_size = in_buffer.decode_varint().map_err(|_| {
-                DracoError::DracoError("Failed to read metadata entry data size".to_string())
-            })? as usize;
-            if data_size == 0 {
-                return Err(DracoError::DracoError(
-                    "Invalid metadata entry data size".to_string(),
-                ));
-            }
-            if in_buffer.remaining_size() < data_size {
-                return Err(DracoError::DracoError(
-                    "Failed to read metadata entry value".to_string(),
-                ));
-            }
-            in_buffer.try_advance(data_size)?;
-        }
-
-        let num_sub_metadata = in_buffer
-            .decode_varint()
-            .map_err(|_| DracoError::DracoError("Failed to read sub-metadata count".to_string()))?
-            as u32;
-        if num_sub_metadata as usize > in_buffer.remaining_size() {
-            return Err(DracoError::DracoError(
-                "Invalid sub-metadata count".to_string(),
-            ));
-        }
-        for _ in 0..num_sub_metadata {
-            let name_len = in_buffer.decode_u8().map_err(|_| {
-                DracoError::DracoError("Failed to read sub-metadata name length".to_string())
-            })? as usize;
-            if in_buffer.remaining_size() < name_len {
-                return Err(DracoError::DracoError(
-                    "Failed to read sub-metadata name".to_string(),
-                ));
-            }
-            in_buffer.try_advance(name_len)?;
-            self.skip_metadata(in_buffer)?;
-        }
+    fn decode_metadata(
+        &self,
+        in_buffer: &mut DecoderBuffer,
+        out_mesh: &mut Mesh,
+    ) -> Result<(), DracoError> {
+        let metadata = GeometryMetadata::decode(in_buffer)
+            .map_err(|_| DracoError::DracoError("Failed to decode metadata".to_string()))?;
+        out_mesh.set_metadata(Some(metadata));
         Ok(())
     }
 
@@ -782,7 +715,7 @@ impl MeshDecoder {
                 let mut att = PointAttribute::new();
                 att.try_init(att_type, num_components, data_type, normalized, num_points)?;
                 att.set_unique_id(unique_id);
-                let att_id = mesh.add_attribute(att);
+                let att_id = mesh.add_attribute_preserve_unique_id(att);
                 att_ids.push(att_id);
 
                 if self.method == 1 {

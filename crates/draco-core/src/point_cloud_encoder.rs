@@ -5,6 +5,7 @@ use crate::geometry_attribute::GeometryAttributeType;
 use crate::geometry_indices::PointIndex;
 use crate::kd_tree_attributes_encoder::KdTreeAttributesEncoder;
 use crate::mesh::Mesh;
+use crate::metadata::METADATA_FLAG_MASK;
 use crate::point_cloud::PointCloud;
 use crate::sequential_integer_attribute_encoder::SequentialIntegerAttributeEncoder;
 use crate::sequential_normal_attribute_encoder::SequentialNormalAttributeEncoder;
@@ -93,7 +94,8 @@ impl PointCloudEncoder {
         let method = self.options.get_encoding_method().unwrap_or(0);
 
         // 1. Encode Header
-        self.encode_header(out_buffer, method);
+        self.encode_header(out_buffer, method)?;
+        self.encode_metadata(out_buffer)?;
 
         if method == 1 {
             // KD-Tree Encoding (Draco v2.3)
@@ -336,9 +338,19 @@ impl PointCloudEncoder {
         Ok(())
     }
 
-    fn encode_header(&self, buffer: &mut EncoderBuffer, method: i32) {
-        buffer.encode_data(b"DRACO");
+    fn encode_metadata(&self, buffer: &mut EncoderBuffer) -> Status {
+        if let Some(metadata) = self
+            .point_cloud
+            .as_ref()
+            .and_then(|point_cloud| point_cloud.metadata())
+            .filter(|metadata| !metadata.is_empty())
+        {
+            metadata.encode(buffer)?;
+        }
+        Ok(())
+    }
 
+    fn encode_header(&self, buffer: &mut EncoderBuffer, method: i32) -> Status {
         let (mut major, mut minor) = self.options.get_version();
         if major == 0 && minor == 0 {
             if method == 1 {
@@ -347,6 +359,19 @@ impl PointCloudEncoder {
                 (major, minor) = DEFAULT_POINT_CLOUD_SEQUENTIAL_VERSION;
             }
         }
+        let has_metadata = self
+            .point_cloud
+            .as_ref()
+            .and_then(|point_cloud| point_cloud.metadata())
+            .is_some_and(|metadata| !metadata.is_empty());
+
+        if has_metadata && !has_header_flags(major, minor) {
+            return Err(DracoError::UnsupportedVersion(
+                "Metadata requires Draco bitstream version 1.3 or newer".to_string(),
+            ));
+        }
+
+        buffer.encode_data(b"DRACO");
 
         buffer.encode_u8(major);
         buffer.encode_u8(minor);
@@ -356,8 +381,10 @@ impl PointCloudEncoder {
         buffer.encode_u8(method as u8);
 
         if has_header_flags(major, minor) {
-            buffer.encode_u16(0); // Flags
+            let flags = if has_metadata { METADATA_FLAG_MASK } else { 0 };
+            buffer.encode_u16(flags);
         }
+        Ok(())
     }
 
     pub fn get_geometry_type(&self) -> EncodedGeometryType {

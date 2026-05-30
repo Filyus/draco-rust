@@ -35,6 +35,7 @@ pub mod geometry_indices;
 pub mod math_utils;
 pub mod mesh;
 pub mod mesh_edgebreaker_shared;
+pub mod metadata;
 
 // Test-only helpers (exposed so integration tests can access them)
 pub mod mesh_prediction_scheme_data;
@@ -151,6 +152,7 @@ pub use draco_types::DataType;
 pub use geometry_attribute::{GeometryAttribute, GeometryAttributeType, PointAttribute};
 pub use geometry_indices::{AttributeValueIndex, FaceIndex, PointIndex};
 pub use mesh::Mesh;
+pub use metadata::{AttributeMetadata, GeometryMetadata, Metadata};
 pub use normal_compression_utils::OctahedronToolBox;
 pub use point_cloud::PointCloud;
 pub use prediction_scheme::{

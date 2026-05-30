@@ -120,7 +120,7 @@ impl KdTreeAttributesDecoder {
             }
             att.set_unique_id(unique_id);
 
-            let att_id = point_cloud.add_attribute(att);
+            let att_id = point_cloud.add_attribute_preserve_unique_id(att);
             self.attribute_ids.push(att_id);
         }
         true

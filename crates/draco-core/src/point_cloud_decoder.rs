@@ -23,6 +23,8 @@ use crate::attribute_octahedron_transform::AttributeOctahedronTransform;
 use crate::attribute_quantization_transform::AttributeQuantizationTransform;
 #[cfg(feature = "point_cloud_decode")]
 use crate::attribute_transform::AttributeTransform;
+#[cfg(feature = "point_cloud_decode")]
+use crate::version::{version_at_least, VERSION_FLAGS_INTRODUCED};
 
 pub trait GeometryDecoder {
     fn point_cloud(&self) -> Option<&PointCloud>;
@@ -38,6 +40,8 @@ pub struct PointCloudDecoder {
     geometry_type: EncodedGeometryType,
     #[cfg(feature = "point_cloud_decode")]
     method: u8,
+    #[cfg(feature = "point_cloud_decode")]
+    flags: u16,
     #[cfg(feature = "point_cloud_decode")]
     version_major: u8,
     #[cfg(feature = "point_cloud_decode")]
@@ -152,6 +156,8 @@ impl PointCloudDecoder {
             #[cfg(feature = "point_cloud_decode")]
             method: 0,
             #[cfg(feature = "point_cloud_decode")]
+            flags: 0,
+            #[cfg(feature = "point_cloud_decode")]
             version_major: 0,
             #[cfg(feature = "point_cloud_decode")]
             version_minor: 0,
@@ -162,6 +168,17 @@ impl PointCloudDecoder {
     pub fn decode(&mut self, in_buffer: &mut DecoderBuffer, out_pc: &mut PointCloud) -> Status {
         // 1. Decode Header
         self.decode_header(in_buffer)?;
+
+        if version_at_least(
+            self.version_major,
+            self.version_minor,
+            VERSION_FLAGS_INTRODUCED,
+        ) && (self.flags & crate::metadata::METADATA_FLAG_MASK) != 0
+        {
+            let metadata = crate::metadata::GeometryMetadata::decode(in_buffer)
+                .map_err(|_| DracoError::DracoError("Failed to decode metadata".to_string()))?;
+            out_pc.set_metadata(Some(metadata));
+        }
 
         // 2. Decode Geometry Data
         self.decode_geometry_data(in_buffer, out_pc)
@@ -181,6 +198,7 @@ impl PointCloudDecoder {
         self.version_major = version_major;
         self.version_minor = version_minor;
         self.method = method;
+        self.flags = 0;
         self.geometry_type = EncodedGeometryType::PointCloud;
         self.decode_geometry_data(buffer, out_pc)
     }
@@ -207,7 +225,7 @@ impl PointCloudDecoder {
         self.method = buffer.decode_u8()?;
 
         // Flags field is always present in the binary header (C++ reads unconditionally).
-        let _flags = buffer
+        self.flags = buffer
             .decode_u16()
             .map_err(|_| DracoError::DracoError("Failed to decode flags".to_string()))?;
 
@@ -341,7 +359,7 @@ impl PointCloudDecoder {
                         num_points,
                     )?;
                     att.set_unique_id(spec.unique_id);
-                    let att_id = pc.add_attribute(att);
+                    let att_id = pc.add_attribute_preserve_unique_id(att);
                     att_ids.push(att_id);
                 }
 

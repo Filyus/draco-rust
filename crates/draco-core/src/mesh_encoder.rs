@@ -10,6 +10,7 @@ use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::geometry_indices::{FaceIndex, PointIndex};
 use crate::mesh::Mesh;
 use crate::mesh_edgebreaker_encoder::{EdgebreakerAttributeConnectivity, MeshEdgebreakerEncoder};
+use crate::metadata::METADATA_FLAG_MASK;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_encoder::GeometryEncoder;
 use crate::sequential_attribute_encoder::SequentialAttributeEncoder;
@@ -127,6 +128,7 @@ impl MeshEncoder {
 
         // 1. Encode Header
         self.encode_header(out_buffer)?;
+        self.encode_metadata(out_buffer)?;
 
         // 2. Encode geometry data (connectivity + attributes)
         self.encode_geometry_data(out_buffer)?;
@@ -134,20 +136,37 @@ impl MeshEncoder {
         Ok(())
     }
 
-    #[allow(dead_code)]
     fn encode_metadata(&self, buffer: &mut EncoderBuffer) -> Status {
-        buffer.encode_varint(0u64); // 0 metadata
+        if let Some(metadata) = self
+            .mesh
+            .as_ref()
+            .and_then(|mesh| mesh.metadata())
+            .filter(|metadata| !metadata.is_empty())
+        {
+            metadata.encode(buffer)?;
+        }
         Ok(())
     }
 
     fn encode_header(&self, buffer: &mut EncoderBuffer) -> Status {
-        buffer.encode_data(b"DRACO");
-
         let (mut major, mut minor) = self.options.get_version();
         if major == 0 && minor == 0 {
             // Default to latest mesh version
             (major, minor) = DEFAULT_MESH_VERSION;
         }
+        let has_metadata = self
+            .mesh
+            .as_ref()
+            .and_then(|mesh| mesh.metadata())
+            .is_some_and(|metadata| !metadata.is_empty());
+
+        if has_metadata && !has_header_flags(major, minor) {
+            return Err(DracoError::UnsupportedVersion(
+                "Metadata requires Draco bitstream version 1.3 or newer".to_string(),
+            ));
+        }
+
+        buffer.encode_data(b"DRACO");
 
         buffer.encode_u8(major);
         buffer.encode_u8(minor);
@@ -170,7 +189,8 @@ impl MeshEncoder {
         buffer.encode_u8(method);
 
         if has_header_flags(major, minor) {
-            buffer.encode_u16(0); // Flags
+            let flags = if has_metadata { METADATA_FLAG_MASK } else { 0 };
+            buffer.encode_u16(flags);
         }
         Ok(())
     }

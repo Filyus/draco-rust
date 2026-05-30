@@ -1,10 +1,12 @@
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use crate::metadata::{AttributeMetadata, GeometryMetadata, Metadata};
 use crate::status::DracoError;
 
 #[derive(Debug, Default, Clone)]
 pub struct PointCloud {
     attributes: Vec<PointAttribute>,
     num_points: usize,
+    metadata: Option<GeometryMetadata>,
 }
 
 impl PointCloud {
@@ -20,12 +22,17 @@ impl PointCloud {
         if self.num_points == 0 && attribute.size() > 0 {
             self.num_points = attribute.size();
         }
-        // Assign unique id if not set?
-        // In C++, it seems to just add it.
-        // But we need to handle unique ids.
-        // For now, just push.
         let id = self.attributes.len() as i32;
         attribute.set_unique_id(id as u32);
+        self.attributes.push(attribute);
+        id
+    }
+
+    pub fn add_attribute_preserve_unique_id(&mut self, attribute: PointAttribute) -> i32 {
+        if self.num_points == 0 && attribute.size() > 0 {
+            self.num_points = attribute.size();
+        }
+        let id = self.attributes.len() as i32;
         self.attributes.push(attribute);
         id
     }
@@ -86,6 +93,42 @@ impl PointCloud {
 
     pub fn num_points(&self) -> usize {
         self.num_points
+    }
+
+    pub fn metadata(&self) -> Option<&GeometryMetadata> {
+        self.metadata.as_ref()
+    }
+
+    pub fn metadata_mut(&mut self) -> Option<&mut GeometryMetadata> {
+        self.metadata.as_mut()
+    }
+
+    pub fn metadata_or_insert(&mut self) -> &mut GeometryMetadata {
+        self.metadata.get_or_insert_with(GeometryMetadata::new)
+    }
+
+    pub fn set_metadata(&mut self, metadata: Option<GeometryMetadata>) {
+        self.metadata = metadata;
+    }
+
+    pub fn attribute_metadata_by_unique_id(
+        &self,
+        attribute_unique_id: u32,
+    ) -> Option<&AttributeMetadata> {
+        self.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.attribute_metadata_by_unique_id(attribute_unique_id))
+    }
+
+    pub fn set_attribute_metadata(
+        &mut self,
+        att_id: i32,
+        metadata: Metadata,
+    ) -> Result<(), DracoError> {
+        let unique_id = self.try_attribute(att_id)?.unique_id();
+        self.metadata_or_insert()
+            .set_attribute_metadata(unique_id, metadata);
+        Ok(())
     }
 }
 
