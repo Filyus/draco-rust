@@ -471,11 +471,12 @@ impl GltfWriter {
     ) -> (HashMap<String, usize>, HashMap<String, usize>) {
         let mut attributes = HashMap::new();
         let mut draco_attributes: HashMap<String, usize> = HashMap::new();
+        let mut counters = GltfSemanticCounters::default();
 
         for i in 0..mesh.num_attributes() {
             let att = mesh.attribute(i);
             let Some((semantic, accessor_type)) =
-                gltf_attribute_info(att.attribute_type(), att.num_components(), i as usize)
+                gltf_attribute_info(att.attribute_type(), att.num_components(), &mut counters)
             else {
                 continue;
             };
@@ -744,20 +745,46 @@ fn component_type_for_data_type(dt: draco_core::draco_types::DataType) -> u32 {
     }
 }
 
+#[derive(Debug, Default)]
+struct GltfSemanticCounters {
+    color: usize,
+    texcoord: usize,
+    generic: usize,
+}
+
 fn gltf_attribute_info(
     attribute_type: GeometryAttributeType,
     num_components: u8,
-    attribute_index: usize,
+    counters: &mut GltfSemanticCounters,
 ) -> Option<(String, &'static str)> {
     match attribute_type {
-        GeometryAttributeType::Position => Some(("POSITION".to_string(), "VEC3")),
-        GeometryAttributeType::Normal => Some(("NORMAL".to_string(), "VEC3")),
-        GeometryAttributeType::Color => Some(("COLOR_0".to_string(), "VEC4")),
-        GeometryAttributeType::TexCoord => Some(("TEXCOORD_0".to_string(), "VEC2")),
-        GeometryAttributeType::Generic => Some((
-            format!("_GENERIC_{}", attribute_index),
-            gltf_type_for_num_components(num_components),
-        )),
+        GeometryAttributeType::Position => {
+            (num_components == 3).then(|| ("POSITION".to_string(), "VEC3"))
+        }
+        GeometryAttributeType::Normal => {
+            (num_components == 3).then(|| ("NORMAL".to_string(), "VEC3"))
+        }
+        GeometryAttributeType::Color => {
+            if !(num_components == 3 || num_components == 4) {
+                return None;
+            }
+            let semantic = format!("COLOR_{}", counters.color);
+            counters.color += 1;
+            Some((semantic, gltf_type_for_num_components(num_components)))
+        }
+        GeometryAttributeType::TexCoord => {
+            if num_components != 2 {
+                return None;
+            }
+            let semantic = format!("TEXCOORD_{}", counters.texcoord);
+            counters.texcoord += 1;
+            Some((semantic, "VEC2"))
+        }
+        GeometryAttributeType::Generic => {
+            let semantic = format!("_GENERIC_{}", counters.generic);
+            counters.generic += 1;
+            Some((semantic, gltf_type_for_num_components(num_components)))
+        }
         GeometryAttributeType::Invalid => None,
     }
 }

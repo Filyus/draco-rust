@@ -6,6 +6,7 @@ Complete API documentation for the draco-io crate.
 
 - [draco-io API Reference](#draco-io-api-reference)
   - [Table of Contents](#table-of-contents)
+  - [Geometry Contract](#geometry-contract)
   - [Traits](#traits)
     - [Writer](#writer)
     - [Reader](#reader)
@@ -41,6 +42,21 @@ Complete API documentation for the draco-io crate.
     - [Round-Trip: Read OBJ, Write GLB with Draco](#round-trip-read-obj-write-glb-with-draco)
     - [Multi-Format Export](#multi-format-export)
     - [Scene Graph Export](#scene-graph-export)
+
+---
+
+## Geometry Contract
+
+`draco-io` maps file formats onto the `draco-core` geometry model. It supports
+triangle meshes and point clouds, with `Position` as the required mesh
+attribute and `Normal`, `Color`, `TexCoord`, and `Generic` preserved when the
+format can represent them as Draco attributes.
+
+Readers triangulate polygon faces where practical and return explicit
+unsupported errors for primitive modes that do not map to Draco mesh geometry.
+The scene layer is limited to names, hierarchy, transforms, and mesh parts.
+Materials, textures/images, cameras, lights, animation, skinning, and arbitrary
+format extras are intentionally out of scope.
 
 ---
 
@@ -388,9 +404,9 @@ let mesh = reader.read_mesh()?;
 - Vertex positions (`v`)
 - Texture coordinates (`vt`)
 - Vertex normals (`vn`)
-- Faces (`f`)
+- Triangle faces (`f`); polygon faces are triangulated
 - Object groups (`o`, `g`)
-- Point clouds (faces with single vertex)
+- Point clouds via position-only OBJ files
 
 ---
 
@@ -415,6 +431,9 @@ writer.write("output.obj")?;
 
 **Implements:** `Writer`, `PointCloudWriter`
 
+**Attribute support:** writes positions, triangle faces, normals, and
+texcoords. Materials, MTL files, and vertex colors are not emitted.
+
 **Methods:**
 
 | Method | Description |
@@ -433,7 +452,7 @@ writer.write("output.obj")?;
 
 ### PlyReader
 
-Reads Stanford PLY files (ASCII and binary little-endian formats).
+Reads Stanford PLY files (ASCII, binary little-endian, and binary big-endian).
 
 ```rust
 use draco_io::{PlyReader, Reader};
@@ -446,16 +465,19 @@ let mesh = reader.read_mesh()?;
 
 **Supported Features:**
 - Vertex positions (x, y, z)
+- Vertex normals (nx, ny, nz)
 - Vertex colors (red, green, blue, alpha)
-- Faces (vertex_indices)
+- Per-vertex texture coordinates (`texture_u`/`texture_v`, `u`/`v`, or `s`/`t`)
+- Triangle or polygon faces (`vertex_indices`); polygons are triangulated
 - ASCII format
 - Binary little-endian format
+- Binary big-endian format
 
 ---
 
 ### PlyWriter
 
-Writes Stanford PLY files (ASCII by default, or binary little-endian when enabled).
+Writes Stanford PLY files (ASCII by default, or binary little/big-endian when enabled).
 
 ```rust
 use draco_io::{PlyWriter, Writer};
@@ -478,6 +500,9 @@ writer.write("output.ply")?;
 
 **Implements:** `Writer`, `PointCloudWriter`
 
+**Attribute support:** writes positions, normals, colors, per-vertex texcoords,
+and triangle faces. Arbitrary custom PLY properties are not generated.
+
 **Methods:**
 
 | Method | Description |
@@ -497,7 +522,7 @@ writer.write("output.ply")?;
 
 ### FbxReader
 
-Reads Autodesk FBX files (ASCII format).
+Reads Autodesk binary FBX files (7.x).
 
 ```rust
 use draco_io::{FbxReader, Reader, SceneReader};
@@ -517,13 +542,17 @@ let scene = reader.read_scene()?;
 - Geometry nodes
 - Model hierarchy
 - Basic transforms
-- ASCII format
+- Vertex positions
+- Triangle/polygon indices with fan triangulation
+- Binary FBX 7.x
+
+Normals, colors, UVs, materials, animation, and skinning are not mapped yet.
 
 ---
 
 ### FbxWriter
 
-Writes Autodesk FBX files (ASCII format).
+Writes Autodesk binary FBX files (7.5).
 
 ```rust
 use draco_io::{FbxWriter, Writer};
@@ -542,7 +571,11 @@ writer.add_mesh(&mesh, Some("CompressedModel"))?;
 writer.write("compressed.fbx")?;
 ```
 
-**Implements:** `Writer`
+**Implements:** `Writer`, `WriteToBytes`
+
+**Attribute support:** writes position-only triangle meshes. If a mesh contains
+normals, colors, texcoords, or generic attributes, `add_mesh()` returns
+`InvalidInput` instead of silently dropping them.
 
 **Methods:**
 

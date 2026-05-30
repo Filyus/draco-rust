@@ -4,6 +4,7 @@
 //! - Vertex positions
 //! - Triangle faces (for meshes)
 //! - Vertex normals (if present)
+//! - Vertex texture coordinates (if present)
 //!
 //! # Example
 //!
@@ -26,6 +27,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
+use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::GeometryAttributeType;
 use draco_core::geometry_indices::FaceIndex;
 use draco_core::mesh::Mesh;
@@ -52,10 +54,19 @@ pub struct ObjWriter {
     positions: Vec<[f32; 3]>,
     /// Collected vertex normals
     normals: Vec<[f32; 3]>,
+    /// Collected vertex texture coordinates
+    texcoords: Vec<[f32; 2]>,
     /// Collected faces (1-based indices)
-    faces: Vec<[u32; 3]>,
+    faces: Vec<ObjFace>,
     /// Object groups with (name, start_face_index)
     groups: Vec<(String, usize)>,
+}
+
+#[derive(Debug, Clone)]
+struct ObjFace {
+    positions: [u32; 3],
+    texcoords: Option<[u32; 3]>,
+    normals: Option<[u32; 3]>,
 }
 
 impl ObjWriter {
@@ -104,6 +115,14 @@ impl ObjWriter {
             writeln!(writer, "v {:.6} {:.6} {:.6}", x, y, z)?;
         }
 
+        // Write texture coordinates if present
+        if !self.texcoords.is_empty() {
+            writeln!(writer)?;
+            for [u, v] in &self.texcoords {
+                writeln!(writer, "vt {:.6} {:.6}", u, v)?;
+            }
+        }
+
         // Write normals if present
         if !self.normals.is_empty() {
             writeln!(writer)?;
@@ -117,6 +136,7 @@ impl ObjWriter {
             writeln!(writer)?;
 
             let mut group_iter = self.groups.iter().peekable();
+            let has_texcoords = !self.texcoords.is_empty();
             let has_normals = !self.normals.is_empty();
 
             for (i, face) in self.faces.iter().enumerate() {
@@ -128,14 +148,56 @@ impl ObjWriter {
                     }
                 }
 
-                if has_normals {
-                    writeln!(
-                        writer,
-                        "f {}//{} {}//{} {}//{}",
-                        face[0], face[0], face[1], face[1], face[2], face[2]
-                    )?;
-                } else {
-                    writeln!(writer, "f {} {} {}", face[0], face[1], face[2])?;
+                match (
+                    has_texcoords.then_some(face.texcoords).flatten(),
+                    has_normals.then_some(face.normals).flatten(),
+                ) {
+                    (Some(texcoords), Some(normals)) => {
+                        writeln!(
+                            writer,
+                            "f {}/{}/{} {}/{}/{} {}/{}/{}",
+                            face.positions[0],
+                            texcoords[0],
+                            normals[0],
+                            face.positions[1],
+                            texcoords[1],
+                            normals[1],
+                            face.positions[2],
+                            texcoords[2],
+                            normals[2]
+                        )?;
+                    }
+                    (Some(texcoords), None) => {
+                        writeln!(
+                            writer,
+                            "f {}/{} {}/{} {}/{}",
+                            face.positions[0],
+                            texcoords[0],
+                            face.positions[1],
+                            texcoords[1],
+                            face.positions[2],
+                            texcoords[2]
+                        )?;
+                    }
+                    (None, Some(normals)) => {
+                        writeln!(
+                            writer,
+                            "f {}//{} {}//{} {}//{}",
+                            face.positions[0],
+                            normals[0],
+                            face.positions[1],
+                            normals[1],
+                            face.positions[2],
+                            normals[2]
+                        )?;
+                    }
+                    (None, None) => {
+                        writeln!(
+                            writer,
+                            "f {} {} {}",
+                            face.positions[0], face.positions[1], face.positions[2]
+                        )?;
+                    }
                 }
             }
         }
@@ -165,6 +227,30 @@ fn read_float3(mesh: &Mesh, att_id: i32, point_idx: usize) -> [f32; 3] {
     ]
 }
 
+/// Read a float2 from an attribute at a given point index.
+fn read_float2(mesh: &Mesh, att_id: i32, point_idx: usize) -> [f32; 2] {
+    let att = mesh.attribute(att_id);
+    let byte_stride = att.byte_stride() as usize;
+    let buffer = att.buffer();
+    let mut bytes = [0u8; 8];
+    buffer.read(point_idx * byte_stride, &mut bytes);
+    [
+        f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+    ]
+}
+
+fn require_f32_components(mesh: &Mesh, att_id: i32, components: u8, label: &str) -> io::Result<()> {
+    let att = mesh.attribute(att_id);
+    if att.data_type() != DataType::Float32 || att.num_components() != components {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("OBJ writer requires {label} attributes to be Float32x{components}"),
+        ));
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Trait Implementations
 // ============================================================================
@@ -176,6 +262,8 @@ impl Writer for ObjWriter {
 
     fn add_mesh(&mut self, mesh: &Mesh, name: Option<&str>) -> io::Result<()> {
         let vertex_offset = self.positions.len() as u32;
+        let normal_offset = self.normals.len() as u32;
+        let texcoord_offset = self.texcoords.len() as u32;
         let face_start = self.faces.len();
 
         // Add group if name provided
@@ -186,6 +274,7 @@ impl Writer for ObjWriter {
         // Extract positions
         let pos_att_id = mesh.named_attribute_id(GeometryAttributeType::Position);
         if pos_att_id >= 0 {
+            require_f32_components(mesh, pos_att_id, 3, "position")?;
             for i in 0..mesh.num_points() {
                 self.positions.push(read_float3(mesh, pos_att_id, i));
             }
@@ -193,20 +282,51 @@ impl Writer for ObjWriter {
 
         // Extract normals if present
         let normal_att_id = mesh.named_attribute_id(GeometryAttributeType::Normal);
-        if normal_att_id >= 0 {
+        let has_normals = normal_att_id >= 0;
+        if has_normals {
+            require_f32_components(mesh, normal_att_id, 3, "normal")?;
             for i in 0..mesh.num_points() {
                 self.normals.push(read_float3(mesh, normal_att_id, i));
             }
         }
 
-        // Extract faces (convert to 1-based indices with offset)
+        // Extract texture coordinates if present
+        let texcoord_att_id = mesh.named_attribute_id(GeometryAttributeType::TexCoord);
+        let has_texcoords = texcoord_att_id >= 0;
+        if has_texcoords {
+            require_f32_components(mesh, texcoord_att_id, 2, "texcoord")?;
+            for i in 0..mesh.num_points() {
+                self.texcoords.push(read_float2(mesh, texcoord_att_id, i));
+            }
+        }
+
+        // Extract faces (convert to 1-based indices with offsets)
         for i in 0..mesh.num_faces() as u32 {
             let face = mesh.face(FaceIndex(i));
-            self.faces.push([
+            let positions = [
                 face[0].0 + vertex_offset + 1,
                 face[1].0 + vertex_offset + 1,
                 face[2].0 + vertex_offset + 1,
-            ]);
+            ];
+            let normals = has_normals.then(|| {
+                [
+                    face[0].0 + normal_offset + 1,
+                    face[1].0 + normal_offset + 1,
+                    face[2].0 + normal_offset + 1,
+                ]
+            });
+            let texcoords = has_texcoords.then(|| {
+                [
+                    face[0].0 + texcoord_offset + 1,
+                    face[1].0 + texcoord_offset + 1,
+                    face[2].0 + texcoord_offset + 1,
+                ]
+            });
+            self.faces.push(ObjFace {
+                positions,
+                texcoords,
+                normals,
+            });
         }
         Ok(())
     }
@@ -226,11 +346,11 @@ impl Writer for ObjWriter {
 
 impl PointCloudWriter for ObjWriter {
     fn add_points(&mut self, points: &[[f32; 3]]) {
-        self.add_points(points);
+        self.positions.extend_from_slice(points);
     }
 
     fn add_point(&mut self, point: [f32; 3]) {
-        self.add_point(point);
+        self.positions.push(point);
     }
 }
 
@@ -305,6 +425,28 @@ mod tests {
         mesh
     }
 
+    fn add_f32_attribute(
+        mesh: &mut Mesh,
+        attribute_type: GeometryAttributeType,
+        components: u8,
+        values: &[f32],
+    ) {
+        let mut att = PointAttribute::new();
+        att.init(
+            attribute_type,
+            components,
+            DataType::Float32,
+            false,
+            values.len() / components as usize,
+        );
+        let bytes: Vec<u8> = values
+            .iter()
+            .flat_map(|component| component.to_le_bytes())
+            .collect();
+        att.buffer_mut().write(0, &bytes);
+        mesh.add_attribute(att);
+    }
+
     #[test]
     fn test_obj_writer_new() {
         let writer = ObjWriter::new();
@@ -376,5 +518,30 @@ mod tests {
         assert!(content.contains("o Mesh2"));
         // Second mesh should have offset indices
         assert!(content.contains("f 4 5 6"));
+    }
+
+    #[test]
+    fn test_write_obj_mesh_with_normals_and_texcoords() {
+        let mut mesh = create_triangle_mesh();
+        add_f32_attribute(
+            &mut mesh,
+            GeometryAttributeType::Normal,
+            3,
+            &[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+        );
+        add_f32_attribute(
+            &mut mesh,
+            GeometryAttributeType::TexCoord,
+            2,
+            &[0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+        );
+
+        let mut writer = ObjWriter::new();
+        Writer::add_mesh(&mut writer, &mesh, Some("Triangle")).unwrap();
+
+        let content = String::from_utf8(writer.write_to_vec().unwrap()).unwrap();
+        assert!(content.contains("vt 1.000000 0.000000"));
+        assert!(content.contains("vn 0.000000 0.000000 1.000000"));
+        assert!(content.contains("f 1/1/1 2/2/2 3/3/3"));
     }
 }

@@ -720,52 +720,70 @@ impl GltfReader {
 
         // Optionally read NORMAL
         if let Some(&normal_idx) = primitive.attributes.get("NORMAL") {
-            let normals =
-                accessor_reader.read_attribute(normal_idx, &["VEC3"], &[GLTF_COMPONENT_FLOAT])?;
-            let normals = if let Some(indices) = &point_indices {
-                normals.gather(indices)?
-            } else {
-                normals
-            };
-            Self::add_decoded_attribute(&mut mesh, GeometryAttributeType::Normal, normals)?;
+            Self::read_and_add_standard_attribute(
+                &mut mesh,
+                &accessor_reader,
+                normal_idx,
+                GeometryAttributeType::Normal,
+                &["VEC3"],
+                &[GLTF_COMPONENT_FLOAT],
+                point_indices.as_deref(),
+            )?;
         }
 
-        // Optionally read TEXCOORD_0
-        if let Some(&tex_idx) = primitive.attributes.get("TEXCOORD_0") {
-            let texcoords = accessor_reader.read_attribute(
-                tex_idx,
-                &["VEC2"],
-                &[
-                    GLTF_COMPONENT_FLOAT,
-                    GLTF_COMPONENT_UNSIGNED_BYTE,
-                    GLTF_COMPONENT_UNSIGNED_SHORT,
-                ],
-            )?;
-            let texcoords = if let Some(indices) = &point_indices {
-                texcoords.gather(indices)?
-            } else {
-                texcoords
-            };
-            Self::add_decoded_attribute(&mut mesh, GeometryAttributeType::TexCoord, texcoords)?;
-        }
+        let mut attributes: Vec<_> = primitive.attributes.iter().collect();
+        attributes.sort_by(|(left, _), (right, _)| left.cmp(right));
 
-        // Optionally read COLOR_0.
-        if let Some(&color_idx) = primitive.attributes.get("COLOR_0") {
-            let colors = accessor_reader.read_attribute(
-                color_idx,
-                &["VEC3", "VEC4"],
-                &[
-                    GLTF_COMPONENT_FLOAT,
-                    GLTF_COMPONENT_UNSIGNED_BYTE,
-                    GLTF_COMPONENT_UNSIGNED_SHORT,
-                ],
-            )?;
-            let colors = if let Some(indices) = &point_indices {
-                colors.gather(indices)?
-            } else {
-                colors
-            };
-            Self::add_decoded_attribute(&mut mesh, GeometryAttributeType::Color, colors)?;
+        // Read every supported texture coordinate and color set. Draco can carry
+        // multiple attributes with the same semantic type, even though
+        // `named_attribute()` returns the first one for convenience.
+        for (semantic, accessor_idx) in attributes {
+            let semantic = semantic.as_str();
+            let accessor_idx = *accessor_idx;
+            if semantic.starts_with("TEXCOORD_") {
+                Self::read_and_add_standard_attribute(
+                    &mut mesh,
+                    &accessor_reader,
+                    accessor_idx,
+                    GeometryAttributeType::TexCoord,
+                    &["VEC2"],
+                    &[
+                        GLTF_COMPONENT_FLOAT,
+                        GLTF_COMPONENT_UNSIGNED_BYTE,
+                        GLTF_COMPONENT_UNSIGNED_SHORT,
+                    ],
+                    point_indices.as_deref(),
+                )?;
+            } else if semantic.starts_with("COLOR_") {
+                Self::read_and_add_standard_attribute(
+                    &mut mesh,
+                    &accessor_reader,
+                    accessor_idx,
+                    GeometryAttributeType::Color,
+                    &["VEC3", "VEC4"],
+                    &[
+                        GLTF_COMPONENT_FLOAT,
+                        GLTF_COMPONENT_UNSIGNED_BYTE,
+                        GLTF_COMPONENT_UNSIGNED_SHORT,
+                    ],
+                    point_indices.as_deref(),
+                )?;
+            } else if semantic.starts_with('_') {
+                Self::read_and_add_standard_attribute(
+                    &mut mesh,
+                    &accessor_reader,
+                    accessor_idx,
+                    GeometryAttributeType::Generic,
+                    &["SCALAR", "VEC2", "VEC3", "VEC4"],
+                    &[
+                        GLTF_COMPONENT_FLOAT,
+                        GLTF_COMPONENT_UNSIGNED_BYTE,
+                        GLTF_COMPONENT_UNSIGNED_SHORT,
+                        GLTF_COMPONENT_UNSIGNED_INT,
+                    ],
+                    point_indices.as_deref(),
+                )?;
+            }
         }
 
         // Match C++ Draco behavior: deduplicate point IDs in face-traversal order.
@@ -774,6 +792,28 @@ impl GltfReader {
         mesh.deduplicate_point_ids();
 
         Ok(mesh)
+    }
+
+    fn read_and_add_standard_attribute(
+        mesh: &mut Mesh,
+        accessor_reader: &GltfAccessorReader<'_>,
+        accessor_idx: usize,
+        attribute_type: GeometryAttributeType,
+        expected_types: &[&str],
+        allowed_component_types: &[u32],
+        point_indices: Option<&[u32]>,
+    ) -> Result<()> {
+        let decoded = accessor_reader.read_attribute(
+            accessor_idx,
+            expected_types,
+            allowed_component_types,
+        )?;
+        let decoded = if let Some(indices) = point_indices {
+            decoded.gather(indices)?
+        } else {
+            decoded
+        };
+        Self::add_decoded_attribute(mesh, attribute_type, decoded)
     }
 
     fn add_decoded_attribute(

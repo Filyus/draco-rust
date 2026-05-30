@@ -1,6 +1,8 @@
 //! PLY format reader for meshes and point clouds.
 //!
-//! Provides both a struct-based API (`PlyReader`) and convenience functions.
+//! Reads positions, triangle/polygon faces, normals, colors, and per-vertex
+//! texture coordinates from ASCII and binary PLY files. Polygon faces are
+//! triangulated with a fan.
 
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::fs;
@@ -26,6 +28,7 @@ struct ParsedPlyData {
     faces: Vec<[u32; 3]>,
     normals: Option<Vec<[f32; 3]>>,
     colors: Option<ParsedPlyColorData>,
+    texcoords: Option<Vec<[f32; 2]>>,
 }
 
 #[derive(Debug)]
@@ -99,6 +102,13 @@ struct PlyReadSchema {
     position_data_type: DataType,
     has_normals: bool,
     color_components: u8,
+    texcoord_pair: Option<TexcoordPropertyPair>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TexcoordPropertyPair {
+    u: &'static str,
+    v: &'static str,
 }
 
 fn parse_ply_scalar_type(token: &str) -> Option<DataType> {
@@ -203,6 +213,13 @@ impl PlyReader {
             ));
         }
 
+        if let Some(texcoords) = parsed.texcoords.as_ref() {
+            mesh.add_attribute(make_f32x2_attribute(
+                GeometryAttributeType::TexCoord,
+                texcoords,
+            ));
+        }
+
         for (i, face) in parsed.faces.iter().enumerate() {
             mesh.set_face(
                 draco_core::geometry_indices::FaceIndex(i as u32),
@@ -271,6 +288,25 @@ fn make_f32x3_attribute(
             .flat_map(|component| component.to_le_bytes())
             .collect();
         buffer.write(i * 12, &bytes);
+    }
+
+    attribute
+}
+
+fn make_f32x2_attribute(
+    attribute_type: GeometryAttributeType,
+    values: &[[f32; 2]],
+) -> PointAttribute {
+    let mut attribute = PointAttribute::new();
+    attribute.init(attribute_type, 2, DataType::Float32, false, values.len());
+
+    let buffer = attribute.buffer_mut();
+    for (i, value) in values.iter().enumerate() {
+        let bytes: Vec<u8> = value
+            .iter()
+            .flat_map(|component| component.to_le_bytes())
+            .collect();
+        buffer.write(i * 8, &bytes);
     }
 
     attribute
@@ -541,6 +577,41 @@ fn position_data_type_for_scalar(data_type: DataType) -> DataType {
     }
 }
 
+fn scalar_property_type(header: &PlyHeader, name: &str) -> Option<DataType> {
+    header.vertex_properties.iter().find_map(|property| {
+        (property.name == name)
+            .then(|| property.scalar_type())
+            .flatten()
+    })
+}
+
+fn detect_texcoord_pair(header: &PlyHeader) -> io::Result<Option<TexcoordPropertyPair>> {
+    const PAIRS: [TexcoordPropertyPair; 3] = [
+        TexcoordPropertyPair {
+            u: "texture_u",
+            v: "texture_v",
+        },
+        TexcoordPropertyPair { u: "u", v: "v" },
+        TexcoordPropertyPair { u: "s", v: "t" },
+    ];
+
+    for pair in PAIRS {
+        let u_type = scalar_property_type(header, pair.u);
+        let v_type = scalar_property_type(header, pair.v);
+        if u_type.is_some() || v_type.is_some() {
+            if u_type == Some(DataType::Float32) && v_type == Some(DataType::Float32) {
+                return Ok(Some(pair));
+            }
+            return Err(invalid_ply(format!(
+                "Texture coordinate properties {} and {} must both be float",
+                pair.u, pair.v
+            )));
+        }
+    }
+
+    Ok(None)
+}
+
 fn build_read_schema(header: &PlyHeader) -> io::Result<PlyReadSchema> {
     let mut has_x = false;
     let mut has_y = false;
@@ -611,6 +682,7 @@ fn build_read_schema(header: &PlyHeader) -> io::Result<PlyReadSchema> {
         position_data_type,
         has_normals,
         color_components,
+        texcoord_pair: detect_texcoord_pair(header)?,
     })
 }
 
@@ -737,6 +809,10 @@ fn read_ply_ascii_body(header: &PlyHeader, body: &[u8]) -> io::Result<ParsedPlyD
         num_components: schema.color_components,
         values: Vec::with_capacity(header.vertex_count),
     });
+    let mut texcoords = schema
+        .texcoord_pair
+        .is_some()
+        .then(|| Vec::with_capacity(header.vertex_count));
 
     for line in vertex_lines {
         let trimmed = line.trim();
@@ -749,6 +825,7 @@ fn read_ply_ascii_body(header: &PlyHeader, body: &[u8]) -> io::Result<ParsedPlyD
         let mut int_position = [0i32; 3];
         let mut normal = [0.0f32; 3];
         let mut color = [0u8; 4];
+        let mut texcoord = [0.0f32; 2];
         let mut color_component = 0usize;
         let mut cursor = 0usize;
 
@@ -791,6 +868,12 @@ fn read_ply_ascii_body(header: &PlyHeader, body: &[u8]) -> io::Result<ParsedPlyD
                     color[color_component] = parse_ascii_u8(token)?;
                     color_component += 1;
                 }
+                name if schema.texcoord_pair.is_some_and(|pair| name == pair.u) => {
+                    texcoord[0] = parse_ascii_f32(token, name)?;
+                }
+                name if schema.texcoord_pair.is_some_and(|pair| name == pair.v) => {
+                    texcoord[1] = parse_ascii_f32(token, name)?;
+                }
                 _ => {}
             }
         }
@@ -806,6 +889,10 @@ fn read_ply_ascii_body(header: &PlyHeader, body: &[u8]) -> io::Result<ParsedPlyD
 
         if let Some(colors) = colors.as_mut() {
             colors.values.push(color);
+        }
+
+        if let Some(texcoords) = texcoords.as_mut() {
+            texcoords.push(texcoord);
         }
     }
 
@@ -826,6 +913,7 @@ fn read_ply_ascii_body(header: &PlyHeader, body: &[u8]) -> io::Result<ParsedPlyD
         faces,
         normals,
         colors,
+        texcoords,
     })
 }
 
@@ -1042,12 +1130,17 @@ fn read_ply_binary_body(
         num_components: schema.color_components,
         values: Vec::with_capacity(header.vertex_count),
     });
+    let mut texcoords = schema
+        .texcoord_pair
+        .is_some()
+        .then(|| Vec::with_capacity(header.vertex_count));
 
     for _ in 0..header.vertex_count {
         let mut float_position = [0.0f32; 3];
         let mut int_position = [0i32; 3];
         let mut normal = [0.0f32; 3];
         let mut color = [0u8; 4];
+        let mut texcoord = [0.0f32; 2];
         let mut color_component = 0usize;
 
         for property in &header.vertex_properties {
@@ -1096,6 +1189,12 @@ fn read_ply_binary_body(
                         color[color_component] = read_binary_scalar_as_u8(&mut cursor, data_type)?;
                         color_component += 1;
                     }
+                    name if schema.texcoord_pair.is_some_and(|pair| name == pair.u) => {
+                        texcoord[0] = read_binary_scalar_as_f32(&mut cursor, data_type, endian)?
+                    }
+                    name if schema.texcoord_pair.is_some_and(|pair| name == pair.v) => {
+                        texcoord[1] = read_binary_scalar_as_f32(&mut cursor, data_type, endian)?
+                    }
                     _ => skip_binary_scalar(&mut cursor, data_type)?,
                 },
                 PlyPropertyKind::List {
@@ -1121,6 +1220,10 @@ fn read_ply_binary_body(
 
         if let Some(colors) = colors.as_mut() {
             colors.values.push(color);
+        }
+
+        if let Some(texcoords) = texcoords.as_mut() {
+            texcoords.push(texcoord);
         }
     }
 
@@ -1182,6 +1285,7 @@ fn read_ply_binary_body(
         faces,
         normals,
         colors,
+        texcoords,
     })
 }
 

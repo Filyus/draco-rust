@@ -100,6 +100,10 @@ name = "glb_roundtrip_test"
 required-features = ["gltf-writer", "gltf-reader"]
 
 [[test]]
+name = "geometry_contract"
+required-features = ["all-writers", "all-readers"]
+
+[[test]]
 name = "ply_bunny_test"
 required-features = ["ply-writer", "ply-reader"]
 

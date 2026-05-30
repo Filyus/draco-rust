@@ -3,9 +3,11 @@
 //! Supports writing:
 //! - ASCII PLY format
 //! - Binary little-endian PLY format
+//! - Binary big-endian PLY format
 //! - Vertex positions
 //! - Vertex normals (if present)
 //! - Vertex colors (if present)
+//! - Per-vertex texture coordinates (if present)
 //! - Triangle faces (for meshes)
 //!
 //! # Example
@@ -251,7 +253,7 @@ impl PlyWriter {
         let has_normals = self.normals.len() == self.positions.len();
         let has_colors = self.colors.len() == self.positions.len() && self.color_components > 0;
 
-        let has_texcoords = self.texcoords.len() == self.positions.len() && !self.faces.is_empty();
+        let has_texcoords = self.texcoords.len() == self.positions.len();
         self.write_header(writer, has_normals, has_colors, has_texcoords)?;
 
         match self.format {
@@ -301,12 +303,14 @@ impl PlyWriter {
             }
         }
 
+        if has_texcoords {
+            writeln!(writer, "property float texture_u")?;
+            writeln!(writer, "property float texture_v")?;
+        }
+
         if !self.faces.is_empty() {
             writeln!(writer, "element face {}", self.faces.len())?;
             writeln!(writer, "property list uchar int vertex_indices")?;
-            if has_texcoords {
-                writeln!(writer, "property list uchar float texcoord")?;
-            }
         }
 
         writeln!(writer, "end_header")?;
@@ -353,19 +357,17 @@ impl PlyWriter {
                 }
             }
 
+            if has_texcoords {
+                let [u, v] = self.texcoords[i];
+                write!(writer, " {:.6} {:.6}", u, v)?;
+            }
+
             writeln!(writer)?;
         }
 
         // Write faces
         for face in &self.faces {
             write!(writer, "3 {} {} {}", face[0], face[1], face[2])?;
-            if has_texcoords {
-                write!(writer, " 6")?;
-                for index in face {
-                    let [u, v] = self.texcoords[*index as usize];
-                    write!(writer, " {:.6} {:.6}", u, v)?;
-                }
-            }
             writeln!(writer)?;
         }
 
@@ -442,6 +444,20 @@ impl PlyWriter {
             if has_colors {
                 writer.write_all(&self.colors[i][..self.color_components as usize])?;
             }
+
+            if has_texcoords {
+                let [u, v] = self.texcoords[i];
+                writer.write_all(&if big_endian {
+                    u.to_be_bytes()
+                } else {
+                    u.to_le_bytes()
+                })?;
+                writer.write_all(&if big_endian {
+                    v.to_be_bytes()
+                } else {
+                    v.to_le_bytes()
+                })?;
+            }
         }
 
         for face in &self.faces {
@@ -458,22 +474,6 @@ impl PlyWriter {
                 } else {
                     index.to_le_bytes()
                 })?;
-            }
-            if has_texcoords {
-                writer.write_all(&[6u8])?;
-                for index in face {
-                    let [u, v] = self.texcoords[*index as usize];
-                    writer.write_all(&if big_endian {
-                        u.to_be_bytes()
-                    } else {
-                        u.to_le_bytes()
-                    })?;
-                    writer.write_all(&if big_endian {
-                        v.to_be_bytes()
-                    } else {
-                        v.to_le_bytes()
-                    })?;
-                }
             }
         }
 

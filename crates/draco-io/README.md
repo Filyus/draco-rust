@@ -19,11 +19,27 @@ For the project overview, compatibility notes, and benchmarks, see the
 
 | Format | Read | Write | Draco Compression | Notes |
 |--------|------|-------|-------------------|-------|
-| OBJ    | ✓    | ✓     | -                 | Named groups, point clouds |
-| PLY    | ✓    | ✓     | -                 | ASCII, vertex colors |
-| FBX    | ✓    | ✓     | -                 | ASCII format, optional zlib |
+| OBJ    | ✓    | ✓     | -                 | Positions, normals, texcoords, named groups, point clouds |
+| PLY    | ✓    | ✓     | -                 | ASCII/binary, normals, colors, per-vertex texcoords |
+| FBX    | ✓    | ✓     | -                 | Binary 7.x, positions and triangle faces only |
 | glTF   | ✓    | ✓     | ✓                 | JSON + separate .bin |
 | GLB    | ✓    | ✓     | ✓                 | Binary container |
+
+## Geometry Contract
+
+`draco-io` is a geometry bridge for the `draco-core` data model, not a
+general-purpose asset importer. The stable contract is:
+
+- Meshes use triangle faces; readers triangulate polygon faces when the source
+  format provides polygons, and reject unsupported primitive modes explicitly.
+- `Position` is the required mesh attribute. `Normal`, `Color`, `TexCoord`, and
+  `Generic` are preserved when the format can represent them as Draco
+  attributes.
+- Scene support is intentionally small: names, hierarchy, transforms, and mesh
+  parts. Materials, textures, cameras, lights, animation, skinning, and
+  arbitrary format extras are out of scope for now.
+- Writers should not silently claim to preserve attributes that the target
+  format cannot encode. FBX writing currently accepts position-only meshes.
 
 ## Installation
 
@@ -338,8 +354,8 @@ draco-io
 │
 └── Writers (feature = "all-writers")
     ├── obj_writer    - Wavefront OBJ
-    ├── ply_writer    - Stanford PLY (ASCII)
-    ├── fbx_writer    - Autodesk FBX (ASCII/compressed)
+    ├── ply_writer    - Stanford PLY (ASCII/binary)
+    ├── fbx_writer    - Autodesk binary FBX
     └── gltf_writer   - glTF/GLB with Draco compression
 ```
 

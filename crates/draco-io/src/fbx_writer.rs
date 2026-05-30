@@ -6,6 +6,11 @@
 //! - Triangle faces
 //! - Optional zlib compression for arrays (with `compression` feature)
 //!
+//! Normals, colors, texture coordinates, materials, animation, and other FBX
+//! layer elements are intentionally not written yet. `add_mesh()` returns an
+//! explicit `InvalidInput` error if a mesh contains attributes other than
+//! positions so geometry data is not dropped silently.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -199,6 +204,8 @@ impl Writer for FbxWriter {
     }
 
     fn add_mesh(&mut self, mesh: &Mesh, name: Option<&str>) -> io::Result<()> {
+        validate_supported_fbx_attributes(mesh)?;
+
         let geometry_id = self.allocate_id();
         let model_id = self.allocate_id();
         let name = name.unwrap_or("Mesh").to_string();
@@ -757,6 +764,22 @@ fn write_footer<W: Write + Seek>(writer: &mut W) -> io::Result<()> {
 // ============================================================================
 // Mesh Data Extraction
 // ============================================================================
+
+fn validate_supported_fbx_attributes(mesh: &Mesh) -> io::Result<()> {
+    for i in 0..mesh.num_attributes() {
+        let attribute_type = mesh.attribute(i).attribute_type();
+        if attribute_type != GeometryAttributeType::Position {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "FBX writer currently supports only Position attributes; {:?} is not written",
+                    attribute_type
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
 
 fn extract_vertices(mesh: &Mesh) -> Vec<f64> {
     let pos_att_id = mesh.named_attribute_id(GeometryAttributeType::Position);

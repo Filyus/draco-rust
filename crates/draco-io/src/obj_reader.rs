@@ -9,12 +9,13 @@ use std::path::Path;
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::mesh::Mesh;
+use std::collections::HashMap;
 
 use crate::traits::{PointCloudReader, ReadFromBytes, Reader};
 
 /// OBJ format reader.
 ///
-/// Reads vertex positions and faces from OBJ files.
+/// Reads vertex positions, texture coordinates, normals, and faces from OBJ files.
 #[derive(Debug)]
 pub struct ObjReader {
     source: ObjReaderSource,
@@ -64,16 +65,16 @@ impl ObjReader {
         }
     }
 
-    /// Read positions and faces from the OBJ file.
-    fn read_positions_and_faces(&self) -> io::Result<(Vec<[f32; 3]>, Vec<[u32; 3]>)> {
+    /// Read mesh geometry from the OBJ file.
+    fn read_mesh_data(&self) -> io::Result<ParsedObjMesh> {
         match &self.source {
             ObjReaderSource::Path(path) => {
                 let file = fs::File::open(path)?;
-                read_obj_positions_and_faces_from_reader(BufReader::new(file))
+                read_obj_mesh_from_reader(BufReader::new(file))
             }
-            ObjReaderSource::Bytes(bytes) => read_obj_positions_and_faces_from_reader(
-                BufReader::new(Cursor::new(bytes.as_slice())),
-            ),
+            ObjReaderSource::Bytes(bytes) => {
+                read_obj_mesh_from_reader(BufReader::new(Cursor::new(bytes.as_slice())))
+            }
         }
     }
 
@@ -83,37 +84,35 @@ impl ObjReader {
     /// point IDs are deduplicated in face-traversal order, which ensures binary
     /// compatibility when encoding with sequential encoding (speed 10).
     pub fn read_mesh(&mut self) -> io::Result<Mesh> {
-        let (positions, faces) = self.read_positions_and_faces()?;
+        let parsed = self.read_mesh_data()?;
         let mut mesh = Mesh::new();
 
-        if positions.is_empty() {
+        if parsed.positions.is_empty() {
             return Ok(mesh);
         }
 
-        mesh.set_num_points(positions.len());
-        mesh.set_num_faces(faces.len());
+        mesh.set_num_points(parsed.positions.len());
+        mesh.set_num_faces(parsed.faces.len());
 
-        // Create position attribute
-        let mut pos_att = PointAttribute::new();
-        pos_att.init(
+        mesh.add_attribute(make_f32x3_attribute(
             GeometryAttributeType::Position,
-            3,
-            DataType::Float32,
-            false,
-            positions.len(),
-        );
+            &parsed.positions,
+        ));
 
-        let buffer = pos_att.buffer_mut();
-        for (i, pos) in positions.iter().enumerate() {
-            let bytes: Vec<u8> = pos.iter().flat_map(|v| v.to_le_bytes()).collect();
-            buffer.write(i * 12, &bytes);
+        if let Some(normals) = parsed.normals.as_ref() {
+            mesh.add_attribute(make_f32x3_attribute(GeometryAttributeType::Normal, normals));
         }
 
-        mesh.add_attribute(pos_att);
+        if let Some(texcoords) = parsed.texcoords.as_ref() {
+            mesh.add_attribute(make_f32x2_attribute(
+                GeometryAttributeType::TexCoord,
+                texcoords,
+            ));
+        }
 
         // Set faces
         use draco_core::geometry_indices::{FaceIndex, PointIndex};
-        for (i, face) in faces.iter().enumerate() {
+        for (i, face) in parsed.faces.iter().enumerate() {
             mesh.set_face(
                 FaceIndex(i as u32),
                 [
@@ -173,7 +172,7 @@ fn read_obj_positions_from_reader<R: BufRead>(reader: R) -> io::Result<Vec<[f32;
 
     for line in reader.lines() {
         let line = line?;
-        let trimmed = line.trim();
+        let trimmed = strip_obj_comment(&line);
 
         if trimmed.starts_with("vn ") || trimmed.starts_with("vt ") {
             continue;
@@ -200,19 +199,142 @@ fn read_obj_positions_from_reader<R: BufRead>(reader: R) -> io::Result<Vec<[f32;
     Ok(positions)
 }
 
-fn read_obj_positions_and_faces_from_reader<R: BufRead>(
-    reader: R,
-) -> io::Result<(Vec<[f32; 3]>, Vec<[u32; 3]>)> {
-    let mut positions = Vec::new();
+#[derive(Debug)]
+struct ParsedObjMesh {
+    positions: Vec<[f32; 3]>,
+    texcoords: Option<Vec<[f32; 2]>>,
+    normals: Option<Vec<[f32; 3]>>,
+    faces: Vec<[u32; 3]>,
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+struct ObjVertexRef {
+    position: usize,
+    texcoord: Option<usize>,
+    normal: Option<usize>,
+}
+
+fn strip_obj_comment(line: &str) -> &str {
+    line.split('#').next().unwrap_or("").trim()
+}
+
+fn make_f32x3_attribute(
+    attribute_type: GeometryAttributeType,
+    values: &[[f32; 3]],
+) -> PointAttribute {
+    let mut attribute = PointAttribute::new();
+    attribute.init(attribute_type, 3, DataType::Float32, false, values.len());
+
+    let buffer = attribute.buffer_mut();
+    for (i, value) in values.iter().enumerate() {
+        let bytes: Vec<u8> = value
+            .iter()
+            .flat_map(|component| component.to_le_bytes())
+            .collect();
+        buffer.write(i * 12, &bytes);
+    }
+
+    attribute
+}
+
+fn make_f32x2_attribute(
+    attribute_type: GeometryAttributeType,
+    values: &[[f32; 2]],
+) -> PointAttribute {
+    let mut attribute = PointAttribute::new();
+    attribute.init(attribute_type, 2, DataType::Float32, false, values.len());
+
+    let buffer = attribute.buffer_mut();
+    for (i, value) in values.iter().enumerate() {
+        let bytes: Vec<u8> = value
+            .iter()
+            .flat_map(|component| component.to_le_bytes())
+            .collect();
+        buffer.write(i * 8, &bytes);
+    }
+
+    attribute
+}
+
+fn parse_obj_index(token: &str, len: usize, label: &str) -> io::Result<usize> {
+    let raw = token
+        .parse::<i32>()
+        .map_err(|_| invalid_obj(format!("Bad {label} index: {token}")))?;
+    if raw == 0 {
+        return Err(invalid_obj(format!("OBJ {label} indices are 1-based")));
+    }
+
+    let index = if raw > 0 { raw - 1 } else { len as i32 + raw };
+
+    if index < 0 || index as usize >= len {
+        return Err(invalid_obj(format!(
+            "OBJ {label} index {raw} is out of range for {len} values"
+        )));
+    }
+
+    Ok(index as usize)
+}
+
+fn parse_face_vertex(
+    token: &str,
+    position_count: usize,
+    texcoord_count: usize,
+    normal_count: usize,
+) -> io::Result<ObjVertexRef> {
+    let parts: Vec<&str> = token.split('/').collect();
+    if parts.is_empty() || parts.len() > 3 || parts[0].is_empty() {
+        return Err(invalid_obj(format!("Bad OBJ face vertex: {token}")));
+    }
+
+    let position = parse_obj_index(parts[0], position_count, "position")?;
+    let texcoord = if parts.get(1).is_some_and(|part| !part.is_empty()) {
+        Some(parse_obj_index(parts[1], texcoord_count, "texcoord")?)
+    } else {
+        None
+    };
+    let normal = if parts.get(2).is_some_and(|part| !part.is_empty()) {
+        Some(parse_obj_index(parts[2], normal_count, "normal")?)
+    } else {
+        None
+    };
+
+    Ok(ObjVertexRef {
+        position,
+        texcoord,
+        normal,
+    })
+}
+
+fn push_obj_vertex(
+    vertex_ref: ObjVertexRef,
+    vertex_map: &mut HashMap<ObjVertexRef, u32>,
+    vertices: &mut Vec<ObjVertexRef>,
+) -> u32 {
+    if let Some(&point_id) = vertex_map.get(&vertex_ref) {
+        return point_id;
+    }
+
+    let point_id = vertices.len() as u32;
+    vertices.push(vertex_ref);
+    vertex_map.insert(vertex_ref, point_id);
+    point_id
+}
+
+fn invalid_obj(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+fn read_obj_mesh_from_reader<R: BufRead>(reader: R) -> io::Result<ParsedObjMesh> {
+    let mut source_positions = Vec::new();
+    let mut source_texcoords = Vec::new();
+    let mut source_normals = Vec::new();
     let mut faces = Vec::new();
+    let mut vertices = Vec::new();
+    let mut vertex_map = HashMap::new();
 
     for line in reader.lines() {
         let line = line?;
-        let trimmed = line.trim();
-
-        if trimmed.starts_with("vn ") || trimmed.starts_with("vt ") {
-            continue;
-        }
+        let trimmed = strip_obj_comment(&line);
 
         if trimmed.starts_with("v ") {
             let mut parts = trimmed.split_whitespace();
@@ -223,31 +345,103 @@ fn read_obj_positions_and_faces_from_reader<R: BufRead>(
             let z = parts.next().and_then(|s| s.parse().ok());
 
             if let (Some(x), Some(y), Some(z)) = (x, y, z) {
-                positions.push([x, y, z]);
+                source_positions.push([x, y, z]);
+            }
+        } else if trimmed.starts_with("vt ") {
+            let mut parts = trimmed.split_whitespace();
+            parts.next(); // skip 'vt'
+
+            let u = parts.next().and_then(|s| s.parse().ok());
+            let v = parts.next().and_then(|s| s.parse().ok());
+
+            if let (Some(u), Some(v)) = (u, v) {
+                source_texcoords.push([u, v]);
+            }
+        } else if trimmed.starts_with("vn ") {
+            let mut parts = trimmed.split_whitespace();
+            parts.next(); // skip 'vn'
+
+            let x = parts.next().and_then(|s| s.parse().ok());
+            let y = parts.next().and_then(|s| s.parse().ok());
+            let z = parts.next().and_then(|s| s.parse().ok());
+
+            if let (Some(x), Some(y), Some(z)) = (x, y, z) {
+                source_normals.push([x, y, z]);
             }
         } else if trimmed.starts_with("f ") {
             let mut parts = trimmed.split_whitespace();
             parts.next(); // skip 'f'
 
-            // Parse face indices (format: v or v/vt or v/vt/vn or v//vn)
-            let parse_vertex = |s: &str| -> Option<u32> {
-                // Take only the first number (vertex index), ignore texture/normal indices
-                let idx_str = s.split('/').next()?;
-                idx_str.parse::<u32>().ok()
-            };
+            let face_vertices = parts
+                .map(|part| {
+                    parse_face_vertex(
+                        part,
+                        source_positions.len(),
+                        source_texcoords.len(),
+                        source_normals.len(),
+                    )
+                })
+                .collect::<io::Result<Vec<_>>>()?;
+            if face_vertices.len() < 3 {
+                continue;
+            }
 
-            let v0 = parts.next().and_then(parse_vertex);
-            let v1 = parts.next().and_then(parse_vertex);
-            let v2 = parts.next().and_then(parse_vertex);
-
-            // OBJ uses 1-based indices, convert to 0-based
-            if let (Some(v0), Some(v1), Some(v2)) = (v0, v1, v2) {
-                faces.push([v0 - 1, v1 - 1, v2 - 1]);
+            for i in 1..face_vertices.len() - 1 {
+                let triangle = [face_vertices[0], face_vertices[i], face_vertices[i + 1]];
+                faces.push([
+                    push_obj_vertex(triangle[0], &mut vertex_map, &mut vertices),
+                    push_obj_vertex(triangle[1], &mut vertex_map, &mut vertices),
+                    push_obj_vertex(triangle[2], &mut vertex_map, &mut vertices),
+                ]);
             }
         }
     }
 
-    Ok((positions, faces))
+    if faces.is_empty() {
+        return Ok(ParsedObjMesh {
+            positions: source_positions,
+            texcoords: None,
+            normals: None,
+            faces,
+        });
+    }
+
+    let uses_texcoords = vertices.iter().any(|vertex| vertex.texcoord.is_some());
+    let uses_normals = vertices.iter().any(|vertex| vertex.normal.is_some());
+    if uses_texcoords && vertices.iter().any(|vertex| vertex.texcoord.is_none()) {
+        return Err(invalid_obj(
+            "OBJ texture coordinate indices must be present on every face vertex",
+        ));
+    }
+    if uses_normals && vertices.iter().any(|vertex| vertex.normal.is_none()) {
+        return Err(invalid_obj(
+            "OBJ normal indices must be present on every face vertex",
+        ));
+    }
+
+    let positions = vertices
+        .iter()
+        .map(|vertex| source_positions[vertex.position])
+        .collect();
+    let texcoords = uses_texcoords.then(|| {
+        vertices
+            .iter()
+            .map(|vertex| source_texcoords[vertex.texcoord.unwrap()])
+            .collect()
+    });
+    let normals = uses_normals.then(|| {
+        vertices
+            .iter()
+            .map(|vertex| source_normals[vertex.normal.unwrap()])
+            .collect()
+    });
+
+    Ok(ParsedObjMesh {
+        positions,
+        texcoords,
+        normals,
+        faces,
+    })
 }
 
 #[cfg(test)]
@@ -272,5 +466,38 @@ mod tests {
         assert_eq!(positions[0], [1.0, 2.0, 3.0]);
         assert_eq!(positions[1], [4.5, 5.5, 6.5]);
         assert_eq!(positions[2], [-1.0, -2.0, -3.0]);
+    }
+
+    #[test]
+    fn test_read_obj_mesh_preserves_normals_and_texcoords() {
+        let obj = br#"
+v 0.0 0.0 0.0
+v 1.0 0.0 0.0
+v 1.0 1.0 0.0
+v 0.0 1.0 0.0
+vt 0.0 0.0
+vt 1.0 0.0
+vt 1.0 1.0
+vt 0.0 1.0
+vn 0.0 0.0 1.0
+f 1/1/1 2/2/1 3/3/1 4/4/1
+"#;
+
+        let mut reader = ObjReader::from_bytes(obj.as_slice());
+        let mesh = reader.read_mesh().unwrap();
+
+        assert_eq!(mesh.num_points(), 4);
+        assert_eq!(mesh.num_faces(), 2);
+
+        let normal_att = mesh.named_attribute(GeometryAttributeType::Normal).unwrap();
+        assert_eq!(normal_att.num_components(), 3);
+        assert_eq!(normal_att.data_type(), DataType::Float32);
+
+        let texcoord_att = mesh
+            .named_attribute(GeometryAttributeType::TexCoord)
+            .unwrap();
+        assert_eq!(texcoord_att.num_components(), 2);
+        assert_eq!(texcoord_att.data_type(), DataType::Float32);
+        assert_eq!(texcoord_att.buffer().data().len(), 4 * 2 * 4);
     }
 }

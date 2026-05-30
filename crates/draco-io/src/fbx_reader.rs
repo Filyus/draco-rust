@@ -4,7 +4,10 @@
 //! - Binary FBX format (versions 7.x)
 //! - Vertex positions
 //! - Polygon/face indices
-//! - Vertex normals (if present)
+//!
+//! FBX layer elements such as normals, colors, UVs, materials, animation, and
+//! skinning are not mapped yet. They require explicit per-layer mapping support
+//! before they can be represented safely as Draco attributes.
 //!
 //! # Example
 //!

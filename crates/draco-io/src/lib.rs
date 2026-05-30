@@ -13,6 +13,15 @@
 //! | glTF   | ✓    | ✓     | ✓                 |
 //! | GLB    | ✓    | ✓     | ✓                 |
 //!
+//! # Geometry Contract
+//!
+//! `draco-io` maps source formats onto the Draco geometry model. Meshes use
+//! triangle faces, `Position` is the required attribute, and `Normal`, `Color`,
+//! `TexCoord`, and `Generic` are preserved when the file format can represent
+//! them as Draco attributes. Scene support is limited to names, hierarchy,
+//! transforms, and mesh parts; materials, textures, cameras, lights, animation,
+//! skinning, and arbitrary format extras are intentionally out of scope.
+//!
 //! # Unified Trait API
 //!
 //! All readers implement [`Reader`] and all writers implement [`Writer`]:
