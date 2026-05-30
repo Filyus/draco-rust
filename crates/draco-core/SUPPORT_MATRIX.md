@@ -169,12 +169,11 @@ builds, but they are not raw Draco bitstream features.
 
 | Priority | Item | Why |
 |---:|---|---|
-| 1 | Finish raw mesh/point-cloud C++ parity tests | This is the crate's main job. |
-| 2 | Add broader metadata utilities when needed | Raw and typed `.drc` metadata roundtrip exists; future work is merge/copy helpers if they become useful. |
-| 3 | Add keyframe animation wrapper if needed | Feasible because it reuses point-cloud sequential encode/decode. |
-| 4 | Keep deprecated prediction schemes explicit | C++ public encoder rejects them; supporting them is for compatibility, not defaults. |
-| 5 | Keep 2017-era legacy decode gaps fixture-driven | EdgeBreaker predictive type `1` and old normal octahedron transform are still C++ decode compatibility targets, but modern C++ encoders do not emit them. |
-| 6 | Leave scene/glTF animation, skins, structural metadata to `draco-io` | They are not raw Draco bitstream concerns. |
+| 1 | Support legacy decode only from real compatibility targets | EdgeBreaker predictive type `1` and old normal octahedron transform are still C++ decode compatibility targets, but modern C++ encoders do not emit them. |
+| 2 | Keep deprecated prediction schemes explicit | C++ public encoder rejects them; supporting them is for compatibility, not defaults. |
+| 3 | Add broader metadata utilities when needed | Raw and typed `.drc` metadata roundtrip exists; future work is merge/copy helpers if they become useful. |
+| 4 | Add keyframe animation wrapper if needed | Feasible because it reuses point-cloud sequential encode/decode. |
+| 5 | Leave scene/glTF animation, skins, structural metadata to `draco-io` | They are not raw Draco bitstream concerns. |
 
 ## Compatibility Notes
 
