@@ -67,10 +67,13 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
+use draco_core::decoder_buffer::DecoderBuffer;
+use draco_core::draco_types::DataType;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::encoder_options::EncoderOptions;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::mesh::Mesh;
+use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
 use serde::Serialize;
 use thiserror::Error;
@@ -91,6 +94,9 @@ pub enum GltfWriteError {
 
     #[error("Invalid mesh: {0}")]
     InvalidMesh(String),
+
+    #[error("Unsupported feature: {0}")]
+    Unsupported(String),
 }
 
 pub type Result<T> = std::result::Result<T, GltfWriteError>;
@@ -135,6 +141,8 @@ struct AccessorOut {
     buffer_view: Option<usize>,
     byte_offset: Option<usize>,
     component_type: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    normalized: Option<bool>,
     count: usize,
     #[serde(rename = "type")]
     accessor_type: String,
@@ -249,6 +257,8 @@ impl Default for GltfWriter {
 }
 
 fn encode_draco_mesh_bytes(mesh: &Mesh, quantization: &QuantizationBits) -> Result<Vec<u8>> {
+    validate_mesh_for_gltf_draco(mesh)?;
+
     if mesh.num_faces() == 0 {
         return Err(GltfWriteError::InvalidMesh("Mesh has no faces".into()));
     }
@@ -282,6 +292,16 @@ fn encode_draco_mesh_bytes(mesh: &Mesh, quantization: &QuantizationBits) -> Resu
         .map_err(|e| GltfWriteError::DracoEncode(format!("{:?}", e)))?;
 
     Ok(enc_buffer.data().to_vec())
+}
+
+fn decode_draco_mesh_bytes(data: &[u8]) -> Result<Mesh> {
+    let mut decoder_buffer = DecoderBuffer::new(data);
+    let mut mesh = Mesh::new();
+    let mut decoder = MeshDecoder::new();
+    decoder
+        .decode(&mut decoder_buffer, &mut mesh)
+        .map_err(|e| GltfWriteError::DracoEncode(format!("self-decode failed: {:?}", e)))?;
+    Ok(mesh)
 }
 
 /// Encode a mesh to a Draco bitstream using the same settings as `GltfWriter`.
@@ -331,7 +351,8 @@ impl GltfWriter {
                     GltfWriteError::Io(_)
                     | GltfWriteError::Json(_)
                     | GltfWriteError::DracoEncode(_)
-                    | GltfWriteError::InvalidMesh(_) => e,
+                    | GltfWriteError::InvalidMesh(_)
+                    | GltfWriteError::Unsupported(_) => e,
                 })?;
             root_node_indices.push(node_idx);
         }
@@ -418,8 +439,9 @@ impl GltfWriter {
         quantization: &QuantizationBits,
     ) -> Result<usize> {
         let draco_data = encode_draco_mesh_bytes(mesh, quantization)?;
+        let decoded_mesh = decode_draco_mesh_bytes(&draco_data)?;
         let draco_buffer_view_idx = self.append_buffer_view(&draco_data);
-        let primitive = self.build_draco_primitive(mesh, draco_buffer_view_idx);
+        let primitive = self.build_draco_primitive(&decoded_mesh, draco_buffer_view_idx)?;
 
         let mesh_idx = self.meshes.len();
         self.meshes.push(MeshOut {
@@ -448,11 +470,15 @@ impl GltfWriter {
         buffer_view_idx
     }
 
-    fn build_draco_primitive(&mut self, mesh: &Mesh, draco_buffer_view_idx: usize) -> PrimitiveOut {
-        let (attributes, draco_attributes) = self.add_mesh_attribute_accessors(mesh);
+    fn build_draco_primitive(
+        &mut self,
+        mesh: &Mesh,
+        draco_buffer_view_idx: usize,
+    ) -> Result<PrimitiveOut> {
+        let (attributes, draco_attributes) = self.add_mesh_attribute_accessors(mesh)?;
         let indices_accessor_idx = self.add_indices_accessor(mesh.num_faces() * 3);
 
-        PrimitiveOut {
+        Ok(PrimitiveOut {
             attributes,
             indices: Some(indices_accessor_idx),
             mode: Some(4), // TRIANGLES
@@ -462,45 +488,52 @@ impl GltfWriter {
                     attributes: draco_attributes,
                 },
             }),
-        }
+        })
     }
 
     fn add_mesh_attribute_accessors(
         &mut self,
         mesh: &Mesh,
-    ) -> (HashMap<String, usize>, HashMap<String, usize>) {
+    ) -> Result<(HashMap<String, usize>, HashMap<String, usize>)> {
         let mut attributes = HashMap::new();
         let mut draco_attributes: HashMap<String, usize> = HashMap::new();
         let mut counters = GltfSemanticCounters::default();
 
         for i in 0..mesh.num_attributes() {
             let att = mesh.attribute(i);
-            let Some((semantic, accessor_type)) =
-                gltf_attribute_info(att.attribute_type(), att.num_components(), &mut counters)
-            else {
-                continue;
-            };
+            let (semantic, accessor_type) =
+                gltf_attribute_info(att.attribute_type(), att.num_components(), &mut counters)?;
 
-            let accessor_idx = self.add_attribute_accessor(att, accessor_type);
+            let accessor_idx = self.add_attribute_accessor(att, accessor_type)?;
             attributes.insert(semantic.clone(), accessor_idx);
             draco_attributes.insert(semantic, i as usize);
         }
 
-        (attributes, draco_attributes)
+        Ok((attributes, draco_attributes))
     }
 
-    fn add_attribute_accessor(&mut self, att: &PointAttribute, accessor_type: &str) -> usize {
+    fn add_attribute_accessor(
+        &mut self,
+        att: &PointAttribute,
+        accessor_type: &str,
+    ) -> Result<usize> {
         let accessor_idx = self.accessors.len();
+        let (min, max) = if att.attribute_type() == GeometryAttributeType::Position {
+            position_min_max(att)?
+        } else {
+            (Vec::new(), Vec::new())
+        };
         self.accessors.push(AccessorOut {
             buffer_view: None,
             byte_offset: None,
-            component_type: component_type_for_data_type(att.data_type()),
+            component_type: component_type_for_data_type(att.data_type())?,
+            normalized: att.normalized().then_some(true),
             count: att.size(),
             accessor_type: accessor_type.to_string(),
-            min: Vec::new(),
-            max: Vec::new(),
+            min,
+            max,
         });
-        accessor_idx
+        Ok(accessor_idx)
     }
 
     fn add_indices_accessor(&mut self, count: usize) -> usize {
@@ -509,6 +542,7 @@ impl GltfWriter {
             buffer_view: None,
             byte_offset: None,
             component_type: 5125, // UNSIGNED_INT
+            normalized: None,
             count,
             accessor_type: "SCALAR".to_string(),
             min: Vec::new(),
@@ -732,16 +766,189 @@ impl GltfWriter {
     }
 }
 
-fn component_type_for_data_type(dt: draco_core::draco_types::DataType) -> u32 {
-    use draco_core::draco_types::DataType;
+fn validate_mesh_for_gltf_draco(mesh: &Mesh) -> Result<()> {
+    let mut position_count = 0usize;
+    if mesh.num_faces() == 0 {
+        return Err(GltfWriteError::InvalidMesh("Mesh has no faces".into()));
+    }
+
+    for face_id in 0..mesh.num_faces() {
+        let face = mesh.face(draco_core::geometry_indices::FaceIndex(face_id as u32));
+        for point in face {
+            if point.0 as usize >= mesh.num_points() {
+                return Err(GltfWriteError::InvalidMesh(format!(
+                    "Face {} references point {} but mesh has {} points",
+                    face_id,
+                    point.0,
+                    mesh.num_points()
+                )));
+            }
+        }
+    }
+
+    for i in 0..mesh.num_attributes() {
+        let att = mesh.attribute(i);
+        validate_attribute_for_gltf(att)?;
+        if att.attribute_type() == GeometryAttributeType::Position {
+            position_count += 1;
+        }
+    }
+
+    if position_count == 0 {
+        return Err(GltfWriteError::InvalidMesh(
+            "glTF Draco mesh requires a POSITION attribute".into(),
+        ));
+    }
+    if position_count > 1 {
+        return Err(GltfWriteError::Unsupported(
+            "glTF supports only one POSITION attribute".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_attribute_for_gltf(att: &PointAttribute) -> Result<()> {
+    if att.size() == 0 {
+        return Err(GltfWriteError::InvalidMesh(format!(
+            "Attribute {:?} has no values",
+            att.attribute_type()
+        )));
+    }
+
+    match att.attribute_type() {
+        GeometryAttributeType::Position => {
+            if att.num_components() != 3 || att.data_type() != DataType::Float32 {
+                return Err(GltfWriteError::Unsupported(
+                    "POSITION must be VEC3 FLOAT".into(),
+                ));
+            }
+            if att.normalized() {
+                return Err(GltfWriteError::Unsupported(
+                    "POSITION must not be normalized".into(),
+                ));
+            }
+        }
+        GeometryAttributeType::Normal => {
+            if att.num_components() != 3 || att.data_type() != DataType::Float32 {
+                return Err(GltfWriteError::Unsupported(
+                    "NORMAL must be VEC3 FLOAT".into(),
+                ));
+            }
+            if att.normalized() {
+                return Err(GltfWriteError::Unsupported(
+                    "NORMAL must not be normalized".into(),
+                ));
+            }
+        }
+        GeometryAttributeType::Color => {
+            if !(att.num_components() == 3 || att.num_components() == 4) {
+                return Err(GltfWriteError::Unsupported(
+                    "COLOR attributes must be VEC3 or VEC4".into(),
+                ));
+            }
+            validate_normalized_integer_or_float(att, "COLOR")?;
+        }
+        GeometryAttributeType::TexCoord => {
+            if att.num_components() != 2 {
+                return Err(GltfWriteError::Unsupported(
+                    "TEXCOORD attributes must be VEC2".into(),
+                ));
+            }
+            validate_normalized_integer_or_float(att, "TEXCOORD")?;
+        }
+        GeometryAttributeType::Generic => {
+            if !(1..=4).contains(&att.num_components()) {
+                return Err(GltfWriteError::Unsupported(
+                    "Generic attributes must have 1..=4 components".into(),
+                ));
+            }
+            component_type_for_data_type(att.data_type())?;
+            if att.data_type() == DataType::Uint32 {
+                return Err(GltfWriteError::Unsupported(
+                    "UNSIGNED_INT is only valid for glTF indices, not vertex attributes".into(),
+                ));
+            }
+        }
+        GeometryAttributeType::Invalid => {
+            return Err(GltfWriteError::Unsupported(
+                "Invalid Draco attribute type cannot be written to glTF".into(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_normalized_integer_or_float(att: &PointAttribute, semantic: &str) -> Result<()> {
+    match att.data_type() {
+        DataType::Float32 => Ok(()),
+        DataType::Uint8 | DataType::Uint16 => {
+            if att.normalized() {
+                Ok(())
+            } else {
+                Err(GltfWriteError::Unsupported(format!(
+                    "{} integer attributes must be normalized",
+                    semantic
+                )))
+            }
+        }
+        other => Err(GltfWriteError::Unsupported(format!(
+            "{} does not support component data type {:?}",
+            semantic, other
+        ))),
+    }
+}
+
+fn position_min_max(att: &PointAttribute) -> Result<(Vec<f64>, Vec<f64>)> {
+    if att.num_components() != 3 || att.data_type() != DataType::Float32 {
+        return Err(GltfWriteError::Unsupported(
+            "POSITION min/max requires VEC3 FLOAT data".into(),
+        ));
+    }
+
+    let bytes = att.buffer().data();
+    let expected_len = att.size() * 3 * DataType::Float32.byte_length();
+    if bytes.len() < expected_len {
+        return Err(GltfWriteError::InvalidMesh(
+            "POSITION buffer is shorter than attribute metadata".into(),
+        ));
+    }
+
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for value_idx in 0..att.size() {
+        for component in 0..3 {
+            let offset = (value_idx * 3 + component) * 4;
+            let value = f32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ]);
+            min[component] = min[component].min(value);
+            max[component] = max[component].max(value);
+        }
+    }
+
+    Ok((
+        min.into_iter().map(f64::from).collect(),
+        max.into_iter().map(f64::from).collect(),
+    ))
+}
+
+fn component_type_for_data_type(dt: DataType) -> Result<u32> {
     match dt {
-        DataType::Int8 => 5120,
-        DataType::Uint8 => 5121,
-        DataType::Int16 => 5122,
-        DataType::Uint16 => 5123,
-        DataType::Uint32 => 5125,
-        DataType::Float32 => 5126,
-        _ => 5126, // Default to float
+        DataType::Int8 => Ok(5120),
+        DataType::Uint8 => Ok(5121),
+        DataType::Int16 => Ok(5122),
+        DataType::Uint16 => Ok(5123),
+        DataType::Uint32 => Ok(5125),
+        DataType::Float32 => Ok(5126),
+        _ => Err(GltfWriteError::Unsupported(format!(
+            "Unsupported glTF component data type: {:?}",
+            dt
+        ))),
     }
 }
 
@@ -756,55 +963,60 @@ fn gltf_attribute_info(
     attribute_type: GeometryAttributeType,
     num_components: u8,
     counters: &mut GltfSemanticCounters,
-) -> Option<(String, &'static str)> {
+) -> Result<(String, &'static str)> {
     match attribute_type {
-        GeometryAttributeType::Position => {
-            (num_components == 3).then(|| ("POSITION".to_string(), "VEC3"))
-        }
-        GeometryAttributeType::Normal => {
-            (num_components == 3).then(|| ("NORMAL".to_string(), "VEC3"))
-        }
+        GeometryAttributeType::Position => Ok(("POSITION".to_string(), "VEC3")),
+        GeometryAttributeType::Normal => Ok(("NORMAL".to_string(), "VEC3")),
         GeometryAttributeType::Color => {
-            if !(num_components == 3 || num_components == 4) {
-                return None;
-            }
             let semantic = format!("COLOR_{}", counters.color);
             counters.color += 1;
-            Some((semantic, gltf_type_for_num_components(num_components)))
+            Ok((semantic, gltf_type_for_num_components(num_components)?))
         }
         GeometryAttributeType::TexCoord => {
-            if num_components != 2 {
-                return None;
-            }
             let semantic = format!("TEXCOORD_{}", counters.texcoord);
             counters.texcoord += 1;
-            Some((semantic, "VEC2"))
+            Ok((semantic, "VEC2"))
         }
         GeometryAttributeType::Generic => {
             let semantic = format!("_GENERIC_{}", counters.generic);
             counters.generic += 1;
-            Some((semantic, gltf_type_for_num_components(num_components)))
+            Ok((semantic, gltf_type_for_num_components(num_components)?))
         }
-        GeometryAttributeType::Invalid => None,
+        GeometryAttributeType::Invalid => Err(GltfWriteError::Unsupported(
+            "Invalid Draco attribute type cannot be written to glTF".into(),
+        )),
     }
 }
 
-fn gltf_type_for_num_components(num_components: u8) -> &'static str {
+fn gltf_type_for_num_components(num_components: u8) -> Result<&'static str> {
     match num_components {
-        1 => "SCALAR",
-        2 => "VEC2",
-        3 => "VEC3",
-        4 => "VEC4",
-        _ => "SCALAR",
+        1 => Ok("SCALAR"),
+        2 => Ok("VEC2"),
+        3 => Ok("VEC3"),
+        4 => Ok("VEC4"),
+        _ => Err(GltfWriteError::Unsupported(format!(
+            "Unsupported glTF accessor component count: {}",
+            num_components
+        ))),
     }
 }
 
 fn build_glb(json_bytes: &[u8], bin_bytes: &[u8]) -> Vec<u8> {
     let json_padding = padding_len(json_bytes.len());
-    let bin_padding = padding_len(bin_bytes.len());
     let padded_json_len = json_bytes.len() + json_padding;
-    let padded_bin_len = bin_bytes.len() + bin_padding;
-    let total_len = 12 + 8 + padded_json_len + 8 + padded_bin_len;
+    let padded_bin_len = if bin_bytes.is_empty() {
+        0
+    } else {
+        bin_bytes.len() + padding_len(bin_bytes.len())
+    };
+    let total_len = 12
+        + 8
+        + padded_json_len
+        + if bin_bytes.is_empty() {
+            0
+        } else {
+            8 + padded_bin_len
+        };
 
     let mut output = Vec::with_capacity(total_len);
     output.extend_from_slice(&GLB_MAGIC.to_le_bytes());
@@ -812,7 +1024,9 @@ fn build_glb(json_bytes: &[u8], bin_bytes: &[u8]) -> Vec<u8> {
     output.extend_from_slice(&(total_len as u32).to_le_bytes());
 
     append_glb_chunk(&mut output, GLB_CHUNK_JSON, json_bytes, b' ');
-    append_glb_chunk(&mut output, GLB_CHUNK_BIN, bin_bytes, 0);
+    if !bin_bytes.is_empty() {
+        append_glb_chunk(&mut output, GLB_CHUNK_BIN, bin_bytes, 0);
+    }
 
     output
 }
@@ -895,6 +1109,7 @@ impl crate::scene::SceneWriter for GltfWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use draco_core::draco_types::DataType;
     use draco_core::geometry_attribute::PointAttribute;
     use draco_core::geometry_indices::{FaceIndex, PointIndex};
 
@@ -928,6 +1143,30 @@ mod tests {
         mesh.set_face(FaceIndex(0), [PointIndex(0), PointIndex(1), PointIndex(2)]);
 
         mesh
+    }
+
+    fn add_attribute(
+        mesh: &mut Mesh,
+        attribute_type: GeometryAttributeType,
+        components: u8,
+        data_type: DataType,
+        normalized: bool,
+        bytes: Vec<u8>,
+    ) {
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            attribute_type,
+            components,
+            data_type,
+            normalized,
+            bytes.len() / (components as usize * data_type.byte_length()),
+        );
+        attribute.buffer_mut().write(0, &bytes);
+        mesh.add_attribute(attribute);
+    }
+
+    fn repeated_zero_attribute_bytes(data_type: DataType, components: u8, count: usize) -> Vec<u8> {
+        vec![0; data_type.byte_length() * components as usize * count]
     }
 
     #[cfg(feature = "gltf-reader")]
@@ -1111,5 +1350,129 @@ mod tests {
         let data = b"Hello World";
         let encoded = GltfWriter::encode_data_uri(data);
         assert!(encoded.contains("SGVsbG8gV29ybGQ="));
+    }
+
+    #[test]
+    fn test_writer_emits_position_bounds_and_normalized_metadata() {
+        let mut mesh = create_test_triangle();
+        add_attribute(
+            &mut mesh,
+            GeometryAttributeType::Color,
+            4,
+            DataType::Uint8,
+            true,
+            vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255],
+        );
+        add_attribute(
+            &mut mesh,
+            GeometryAttributeType::TexCoord,
+            2,
+            DataType::Uint16,
+            true,
+            [0u16, 0, 65535, 0, 0, 65535]
+                .into_iter()
+                .flat_map(u16::to_le_bytes)
+                .collect(),
+        );
+
+        let mut writer = GltfWriter::new();
+        writer
+            .add_draco_mesh(&mesh, Some("Triangle"), None)
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&writer.to_gltf_embedded().unwrap())
+            .expect("writer JSON should parse");
+
+        let primitive = &json["meshes"][0]["primitives"][0];
+        let position_accessor = primitive["attributes"]["POSITION"].as_u64().unwrap() as usize;
+        let color_accessor = primitive["attributes"]["COLOR_0"].as_u64().unwrap() as usize;
+        let texcoord_accessor = primitive["attributes"]["TEXCOORD_0"].as_u64().unwrap() as usize;
+
+        assert_eq!(
+            json["accessors"][position_accessor]["min"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(
+            json["accessors"][position_accessor]["max"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(json["accessors"][color_accessor]["normalized"], true);
+        assert_eq!(json["accessors"][texcoord_accessor]["normalized"], true);
+    }
+
+    #[test]
+    fn test_writer_rejects_missing_position() {
+        let mut mesh = Mesh::new();
+        mesh.set_num_points(3);
+        mesh.set_num_faces(1);
+        mesh.set_face(FaceIndex(0), [PointIndex(0), PointIndex(1), PointIndex(2)]);
+        add_attribute(
+            &mut mesh,
+            GeometryAttributeType::Normal,
+            3,
+            DataType::Float32,
+            false,
+            repeated_zero_attribute_bytes(DataType::Float32, 3, 3),
+        );
+
+        let err = GltfWriter::new()
+            .add_draco_mesh(&mesh, Some("invalid"), None)
+            .unwrap_err();
+        assert!(matches!(err, GltfWriteError::InvalidMesh(_)));
+    }
+
+    #[test]
+    fn test_writer_rejects_unsupported_attribute_data_types() {
+        for data_type in [DataType::Float64, DataType::Int64, DataType::Uint32] {
+            let mut mesh = create_test_triangle();
+            add_attribute(
+                &mut mesh,
+                GeometryAttributeType::Generic,
+                1,
+                data_type,
+                false,
+                repeated_zero_attribute_bytes(data_type, 1, 3),
+            );
+
+            let err = GltfWriter::new()
+                .add_draco_mesh(&mesh, Some("invalid"), None)
+                .unwrap_err();
+            assert!(matches!(err, GltfWriteError::Unsupported(_)));
+        }
+    }
+
+    #[test]
+    fn test_writer_rejects_attributes_it_would_previously_skip() {
+        let mut mesh = create_test_triangle();
+        add_attribute(
+            &mut mesh,
+            GeometryAttributeType::Color,
+            2,
+            DataType::Uint8,
+            true,
+            vec![255, 0, 0, 255, 0, 0],
+        );
+
+        let err = GltfWriter::new()
+            .add_draco_mesh(&mesh, Some("invalid"), None)
+            .unwrap_err();
+        assert!(matches!(err, GltfWriteError::Unsupported(_)));
+    }
+
+    #[test]
+    fn test_empty_glb_omits_bin_chunk() {
+        let glb = GltfWriter::new().to_glb().unwrap();
+        assert_eq!(&glb[0..4], b"glTF");
+        assert_eq!(read_u32_le_for_test(&glb[12..16]) as usize + 20, glb.len());
+        assert!(!glb.windows(4).any(|window| window == b"BIN\0"));
+    }
+
+    fn read_u32_le_for_test(data: &[u8]) -> u32 {
+        u32::from_le_bytes([data[0], data[1], data[2], data[3]])
     }
 }
