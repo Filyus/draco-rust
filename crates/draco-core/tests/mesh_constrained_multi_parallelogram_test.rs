@@ -208,3 +208,33 @@ fn test_mesh_encode_decode_constrained_multi_parallelogram_edgebreaker() {
     let decoded_mesh = encode_decode_with_options(mesh, &options);
     assert_quad_mesh_edgebreaker(&decoded_mesh, &positions);
 }
+
+#[test]
+fn test_mesh_encode_decode_legacy_multi_parallelogram_sequential() {
+    let (mesh, positions) = make_unit_quad_mesh();
+
+    let mut options = EncoderOptions::new();
+    options.set_attribute_int(0, "quantization_bits", 10);
+    options.set_global_int("encoding_method", 0); // Sequential
+
+    // Force legacy Multi-Parallelogram prediction (2).
+    options.set_prediction_scheme(2);
+
+    let decoded_mesh = encode_decode_with_options(mesh, &options);
+    assert_quad_mesh(&decoded_mesh, &positions);
+}
+
+#[test]
+fn test_mesh_encode_decode_legacy_multi_parallelogram_edgebreaker() {
+    let (mesh, positions) = make_unit_quad_mesh();
+
+    let mut options = EncoderOptions::new();
+    options.set_attribute_int(0, "quantization_bits", 10);
+    options.set_global_int("encoding_method", 1); // Edgebreaker
+
+    // Force legacy Multi-Parallelogram prediction (2).
+    options.set_prediction_scheme(2);
+
+    let decoded_mesh = encode_decode_with_options(mesh, &options);
+    assert_quad_mesh_edgebreaker(&decoded_mesh, &positions);
+}

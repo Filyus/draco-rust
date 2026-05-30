@@ -44,13 +44,19 @@ pub mod prediction_scheme;
 pub mod prediction_scheme_constrained_multi_parallelogram;
 pub mod prediction_scheme_delta;
 pub mod prediction_scheme_geometric_normal;
-#[cfg(all(feature = "decoder", feature = "legacy_bitstream_decode"))]
+#[cfg(all(any(
+    all(feature = "encoder", feature = "legacy_bitstream_encode"),
+    all(feature = "decoder", feature = "legacy_bitstream_decode")
+)))]
 pub mod prediction_scheme_multi_parallelogram;
 pub mod prediction_scheme_normal_octahedron_canonicalized_transform_base;
 pub mod prediction_scheme_normal_octahedron_transform_base;
 pub mod prediction_scheme_parallelogram;
 pub mod prediction_scheme_selection;
-#[cfg(all(feature = "decoder", feature = "legacy_bitstream_decode"))]
+#[cfg(all(any(
+    all(feature = "encoder", feature = "legacy_bitstream_encode"),
+    all(feature = "decoder", feature = "legacy_bitstream_decode")
+)))]
 pub mod prediction_scheme_tex_coords_deprecated;
 pub mod prediction_scheme_tex_coords_portable;
 pub mod prediction_scheme_wrap;

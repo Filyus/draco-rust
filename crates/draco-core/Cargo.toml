@@ -14,6 +14,7 @@ default = [
     "point_cloud_decode",
     "edgebreaker_valence_encode",
     "edgebreaker_valence_decode",
+    "legacy_bitstream_encode",
     "legacy_bitstream_decode",
 ]
 encoder = []
@@ -21,6 +22,7 @@ decoder = []
 point_cloud_decode = ["decoder"]
 edgebreaker_valence_encode = ["encoder"]
 edgebreaker_valence_decode = ["decoder"]
+legacy_bitstream_encode = ["encoder"]
 legacy_bitstream_decode = ["decoder"]
 debug_logs = []
 force_sequential_seeds = []

@@ -18,8 +18,12 @@ use crate::prediction_scheme_delta::PredictionSchemeDeltaEncoder;
 use crate::prediction_scheme_geometric_normal::{
     MeshPredictionSchemeGeometricNormalEncoder, PredictionSchemeGeometricNormalEncodingTransform,
 };
+#[cfg(feature = "legacy_bitstream_encode")]
+use crate::prediction_scheme_multi_parallelogram::MeshPredictionSchemeMultiParallelogramEncoder;
 use crate::prediction_scheme_parallelogram::MeshPredictionSchemeParallelogramEncoder;
 use crate::prediction_scheme_selection::select_prediction_method;
+#[cfg(feature = "legacy_bitstream_encode")]
+use crate::prediction_scheme_tex_coords_deprecated::MeshPredictionSchemeTexCoordsDeprecatedEncoder;
 use crate::prediction_scheme_tex_coords_portable::{
     MeshPredictionSchemeTexCoordsPortableEncoder,
     PredictionSchemeTexCoordsPortableEncodingTransform,
@@ -219,6 +223,10 @@ impl SequentialIntegerAttributeEncoder {
         let mut selected_transform_type = PredictionSchemeTransformType::Wrap;
         let mut predictor_delta = None;
         let mut predictor_parallelogram = None;
+        #[cfg(feature = "legacy_bitstream_encode")]
+        let mut predictor_multi_parallelogram = None;
+        #[cfg(feature = "legacy_bitstream_encode")]
+        let mut predictor_tex_coords_deprecated = None;
         let mut predictor_constrained_multi_parallelogram = None;
         let mut predictor_tex_coords_portable = None;
         let mut predictor_geometric_normal = None;
@@ -461,6 +469,196 @@ impl SequentialIntegerAttributeEncoder {
                         predictor_delta = Some(predictor);
                     }
                 }
+                #[cfg(feature = "legacy_bitstream_encode")]
+                PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
+                    if let Some(_mesh) = encoder.mesh() {
+                        if let Some(corner_table) = encoder.corner_table() {
+                            let is_edgebreaker = encoder.get_encoding_method() == Some(1);
+
+                            let map_size = corner_table.num_vertices();
+                            vertex_to_data_map.resize(map_size, -1);
+                            data_to_corner_map.resize(num_points, 0);
+
+                            if is_edgebreaker {
+                                if let Some(map) = encoder.get_data_to_corner_map() {
+                                    if map.len() == num_points {
+                                        data_to_corner_map.copy_from_slice(map);
+                                    }
+                                }
+                                if let Some(map) = encoder.get_vertex_to_data_map() {
+                                    replace_vec_from_slice(&mut vertex_to_data_map, map);
+                                }
+                            } else {
+                                for (i, &point_id) in point_ids.iter().enumerate() {
+                                    if (point_id.0 as usize) < vertex_to_data_map.len()
+                                        && vertex_to_data_map[point_id.0 as usize] == -1
+                                    {
+                                        vertex_to_data_map[point_id.0 as usize] = i as i32;
+                                    }
+                                    let ci = corner_table.left_most_corner(
+                                        crate::geometry_indices::VertexIndex(point_id.0),
+                                    );
+                                    data_to_corner_map[i] = ci.0;
+                                }
+                            }
+
+                            let mut mesh_data = MeshPredictionSchemeData::new();
+                            mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+
+                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                            let mut predictor = MeshPredictionSchemeMultiParallelogramEncoder::new(
+                                transform, mesh_data,
+                            );
+                            selected_transform_type = predictor.get_transform_type();
+
+                            if !predictor.compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                None,
+                            ) {
+                                return false;
+                            }
+                            predictor_multi_parallelogram = Some(predictor);
+                        } else {
+                            selected_method = PredictionSchemeMethod::Difference;
+                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                            let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                            selected_transform_type = predictor.get_transform_type();
+                            if !predictor.compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                None,
+                            ) {
+                                return false;
+                            }
+                            predictor_delta = Some(predictor);
+                        }
+                    } else {
+                        selected_method = PredictionSchemeMethod::Difference;
+                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                        let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                        selected_transform_type = predictor.get_transform_type();
+                        if !predictor.compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        ) {
+                            return false;
+                        }
+                        predictor_delta = Some(predictor);
+                    }
+                }
+                #[cfg(not(feature = "legacy_bitstream_encode"))]
+                PredictionSchemeMethod::MeshPredictionMultiParallelogram => return false,
+                #[cfg(feature = "legacy_bitstream_encode")]
+                PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
+                    if let Some(_mesh) = encoder.mesh() {
+                        if let Some(corner_table) = encoder.corner_table() {
+                            let is_edgebreaker = encoder.get_encoding_method() == Some(1);
+
+                            let map_size = corner_table.num_vertices();
+                            vertex_to_data_map.resize(map_size, -1);
+                            data_to_corner_map.resize(num_points, 0);
+
+                            if is_edgebreaker {
+                                if let Some(map) = encoder.get_data_to_corner_map() {
+                                    if map.len() == num_points {
+                                        data_to_corner_map.copy_from_slice(map);
+                                    }
+                                }
+                                if let Some(map) = encoder.get_vertex_to_data_map() {
+                                    replace_vec_from_slice(&mut vertex_to_data_map, map);
+                                }
+                            } else {
+                                for (i, &point_id) in point_ids.iter().enumerate() {
+                                    if (point_id.0 as usize) < vertex_to_data_map.len()
+                                        && vertex_to_data_map[point_id.0 as usize] == -1
+                                    {
+                                        vertex_to_data_map[point_id.0 as usize] = i as i32;
+                                    }
+                                    let ci = corner_table.left_most_corner(
+                                        crate::geometry_indices::VertexIndex(point_id.0),
+                                    );
+                                    data_to_corner_map[i] = ci.0;
+                                }
+                            }
+
+                            let mut mesh_data = MeshPredictionSchemeData::new();
+                            mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+
+                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                            let mut predictor =
+                                MeshPredictionSchemeTexCoordsDeprecatedEncoder::new(transform);
+                            selected_transform_type = predictor.get_transform_type();
+
+                            let pos_att = encoder
+                                .point_cloud()
+                                .unwrap()
+                                .named_attribute(GeometryAttributeType::Position);
+                            let Some(pos_att) = pos_att else {
+                                return false;
+                            };
+                            if !predictor.set_parent_attribute(pos_att) {
+                                return false;
+                            }
+                            predictor.init(&mesh_data);
+
+                            let entry_to_point_id_map: Vec<u32> =
+                                point_ids.iter().map(|p| p.0).collect();
+
+                            if !predictor.compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                Some(crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(
+                                    &entry_to_point_id_map,
+                                )),
+                            ) {
+                                return false;
+                            }
+                            predictor_tex_coords_deprecated = Some(predictor);
+                        } else {
+                            selected_method = PredictionSchemeMethod::Difference;
+                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                            let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                            selected_transform_type = predictor.get_transform_type();
+                            if !predictor.compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                None,
+                            ) {
+                                return false;
+                            }
+                            predictor_delta = Some(predictor);
+                        }
+                    } else {
+                        selected_method = PredictionSchemeMethod::Difference;
+                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                        let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                        selected_transform_type = predictor.get_transform_type();
+                        if !predictor.compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        ) {
+                            return false;
+                        }
+                        predictor_delta = Some(predictor);
+                    }
+                }
+                #[cfg(not(feature = "legacy_bitstream_encode"))]
+                PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => return false,
                 PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
                     if let Some(_mesh) = encoder.mesh() {
                         if let Some(corner_table) = encoder.corner_table() {
@@ -681,36 +879,71 @@ impl SequentialIntegerAttributeEncoder {
                 return false;
             }
             pred_data_opt = Some(pred_data);
-        } else if let Some(mut predictor) = predictor_delta {
-            let mut pred_data = Vec::new();
-            if !predictor.encode_prediction_data(&mut pred_data) {
-                return false;
+        }
+        if pred_data_opt.is_none() {
+            if let Some(mut predictor) = predictor_delta {
+                let mut pred_data = Vec::new();
+                if !predictor.encode_prediction_data(&mut pred_data) {
+                    return false;
+                }
+                pred_data_opt = Some(pred_data);
             }
-            pred_data_opt = Some(pred_data);
-        } else if let Some(mut predictor) = predictor_parallelogram {
-            let mut pred_data = Vec::new();
-            if !predictor.encode_prediction_data(&mut pred_data) {
-                return false;
+        }
+        if pred_data_opt.is_none() {
+            if let Some(mut predictor) = predictor_parallelogram {
+                let mut pred_data = Vec::new();
+                if !predictor.encode_prediction_data(&mut pred_data) {
+                    return false;
+                }
+                pred_data_opt = Some(pred_data);
             }
-            pred_data_opt = Some(pred_data);
-        } else if let Some(mut predictor) = predictor_constrained_multi_parallelogram {
-            let mut pred_data = Vec::new();
-            if !predictor.encode_prediction_data(&mut pred_data) {
-                return false;
+        }
+        #[cfg(feature = "legacy_bitstream_encode")]
+        if pred_data_opt.is_none() {
+            if let Some(mut predictor) = predictor_multi_parallelogram {
+                let mut pred_data = Vec::new();
+                if !predictor.encode_prediction_data(&mut pred_data) {
+                    return false;
+                }
+                pred_data_opt = Some(pred_data);
             }
-            pred_data_opt = Some(pred_data);
-        } else if let Some(mut predictor) = predictor_tex_coords_portable {
-            let mut pred_data = Vec::new();
-            if !predictor.encode_prediction_data(&mut pred_data) {
-                return false;
+        }
+        #[cfg(feature = "legacy_bitstream_encode")]
+        if pred_data_opt.is_none() {
+            if let Some(mut predictor) = predictor_tex_coords_deprecated {
+                let mut pred_data = Vec::new();
+                if !predictor.encode_prediction_data(&mut pred_data) {
+                    return false;
+                }
+                pred_data_opt = Some(pred_data);
             }
-            pred_data_opt = Some(pred_data);
-        } else if let Some(mut predictor) = predictor_geometric_normal {
-            let mut pred_data = Vec::new();
-            if !predictor.encode_prediction_data(&mut pred_data) {
-                return false;
+        }
+        if pred_data_opt.is_none() {
+            if let Some(mut predictor) = predictor_constrained_multi_parallelogram {
+                let mut pred_data = Vec::new();
+                if !predictor.encode_prediction_data(&mut pred_data) {
+                    return false;
+                }
+                pred_data_opt = Some(pred_data);
             }
-            pred_data_opt = Some(pred_data);
+        }
+        if pred_data_opt.is_none() {
+            if let Some(mut predictor) = predictor_tex_coords_portable {
+                let mut pred_data = Vec::new();
+                if !predictor.encode_prediction_data(&mut pred_data) {
+                    return false;
+                }
+                pred_data_opt = Some(pred_data);
+            }
+        }
+        if pred_data_opt.is_none() {
+            if let Some(mut predictor) = predictor_geometric_normal {
+                let mut pred_data = Vec::new();
+                if !predictor.encode_prediction_data(&mut pred_data) {
+                    return false;
+                }
+                pred_data_opt = Some(pred_data);
+            }
         }
 
         // 4. Encode Prediction Method and Transform Type
