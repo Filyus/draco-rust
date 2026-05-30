@@ -30,7 +30,7 @@ use draco_core::geometry_attribute::GeometryAttributeType;
 use draco_core::geometry_indices::FaceIndex;
 use draco_core::mesh::Mesh;
 
-use crate::traits::{PointCloudWriter, Writer};
+use crate::traits::{PointCloudWriter, WriteToBytes, Writer};
 
 /// OBJ format writer.
 ///
@@ -142,6 +142,13 @@ impl ObjWriter {
 
         Ok(())
     }
+
+    /// Write the OBJ data into a byte vector.
+    pub fn write_to_vec(&self) -> io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        self.write_to(&mut out)?;
+        Ok(out)
+    }
 }
 
 /// Read a float3 from an attribute at a given point index.
@@ -224,6 +231,16 @@ impl PointCloudWriter for ObjWriter {
 
     fn add_point(&mut self, point: [f32; 3]) {
         self.add_point(point);
+    }
+}
+
+impl WriteToBytes for ObjWriter {
+    fn write_to_vec(&self) -> io::Result<Vec<u8>> {
+        ObjWriter::write_to_vec(self)
+    }
+
+    fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        ObjWriter::write_to(self, writer)
     }
 }
 

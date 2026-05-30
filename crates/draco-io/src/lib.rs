@@ -134,7 +134,7 @@ pub mod scene;
 
 // Re-export main types for convenience
 #[cfg(feature = "fbx-reader")]
-pub use fbx_reader::FbxReader;
+pub use fbx_reader::{FbxMemoryReader, FbxReader};
 #[cfg(feature = "fbx-writer")]
 pub use fbx_writer::FbxWriter;
 #[cfg(feature = "gltf-reader")]
@@ -154,4 +154,4 @@ pub use ply_writer::PlyWriter;
 pub use scene::{
     flatten_to_scene, Scene, SceneNode, SceneObject, SceneReader, SceneWriter, Transform,
 };
-pub use traits::{PointCloudReader, PointCloudWriter, Reader, Writer};
+pub use traits::{PointCloudReader, PointCloudWriter, ReadFromBytes, Reader, WriteToBytes, Writer};

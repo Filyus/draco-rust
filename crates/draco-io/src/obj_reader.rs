@@ -3,21 +3,27 @@
 //! Provides both a struct-based API (`ObjReader`) and convenience functions.
 
 use std::fs;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Cursor};
 use std::path::Path;
 
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::mesh::Mesh;
 
-use crate::traits::{PointCloudReader, Reader};
+use crate::traits::{PointCloudReader, ReadFromBytes, Reader};
 
 /// OBJ format reader.
 ///
 /// Reads vertex positions and faces from OBJ files.
 #[derive(Debug)]
 pub struct ObjReader {
-    path: std::path::PathBuf,
+    source: ObjReaderSource,
+}
+
+#[derive(Debug, Clone)]
+enum ObjReaderSource {
+    Path(std::path::PathBuf),
+    Bytes(Vec<u8>),
 }
 
 impl ObjReader {
@@ -30,63 +36,45 @@ impl ObjReader {
                 format!("File not found: {}", path.display()),
             ));
         }
-        Ok(Self { path })
+        Ok(Self {
+            source: ObjReaderSource::Path(path),
+        })
+    }
+
+    /// Create an OBJ reader from in-memory bytes.
+    pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
+        Self {
+            source: ObjReaderSource::Bytes(bytes.into()),
+        }
+    }
+
+    /// Read a mesh directly from in-memory bytes.
+    pub fn read_from_bytes(bytes: &[u8]) -> io::Result<Mesh> {
+        let mut reader = Self::from_bytes(bytes.to_vec());
+        reader.read_mesh()
     }
 
     /// Read all positions from the OBJ file.
     pub fn read_positions(&mut self) -> io::Result<Vec<[f32; 3]>> {
-        read_obj_positions(&self.path)
+        match &self.source {
+            ObjReaderSource::Path(path) => read_obj_positions(path),
+            ObjReaderSource::Bytes(bytes) => {
+                read_obj_positions_from_reader(BufReader::new(Cursor::new(bytes.as_slice())))
+            }
+        }
     }
 
     /// Read positions and faces from the OBJ file.
     fn read_positions_and_faces(&self) -> io::Result<(Vec<[f32; 3]>, Vec<[u32; 3]>)> {
-        let file = fs::File::open(&self.path)?;
-        let reader = BufReader::new(file);
-        let mut positions = Vec::new();
-        let mut faces = Vec::new();
-
-        for line in reader.lines() {
-            let line = line?;
-            let trimmed = line.trim();
-
-            if trimmed.starts_with("vn ") || trimmed.starts_with("vt ") {
-                continue;
+        match &self.source {
+            ObjReaderSource::Path(path) => {
+                let file = fs::File::open(path)?;
+                read_obj_positions_and_faces_from_reader(BufReader::new(file))
             }
-
-            if trimmed.starts_with("v ") {
-                let mut parts = trimmed.split_whitespace();
-                parts.next(); // skip 'v'
-
-                let x = parts.next().and_then(|s| s.parse().ok());
-                let y = parts.next().and_then(|s| s.parse().ok());
-                let z = parts.next().and_then(|s| s.parse().ok());
-
-                if let (Some(x), Some(y), Some(z)) = (x, y, z) {
-                    positions.push([x, y, z]);
-                }
-            } else if trimmed.starts_with("f ") {
-                let mut parts = trimmed.split_whitespace();
-                parts.next(); // skip 'f'
-
-                // Parse face indices (format: v or v/vt or v/vt/vn or v//vn)
-                let parse_vertex = |s: &str| -> Option<u32> {
-                    // Take only the first number (vertex index), ignore texture/normal indices
-                    let idx_str = s.split('/').next()?;
-                    idx_str.parse::<u32>().ok()
-                };
-
-                let v0 = parts.next().and_then(parse_vertex);
-                let v1 = parts.next().and_then(parse_vertex);
-                let v2 = parts.next().and_then(parse_vertex);
-
-                // OBJ uses 1-based indices, convert to 0-based
-                if let (Some(v0), Some(v1), Some(v2)) = (v0, v1, v2) {
-                    faces.push([v0 - 1, v1 - 1, v2 - 1]);
-                }
-            }
+            ObjReaderSource::Bytes(bytes) => read_obj_positions_and_faces_from_reader(
+                BufReader::new(Cursor::new(bytes.as_slice())),
+            ),
         }
-
-        Ok((positions, faces))
     }
 
     /// Read a mesh with positions and faces (if present).
@@ -156,6 +144,12 @@ impl Reader for ObjReader {
     }
 }
 
+impl ReadFromBytes for ObjReader {
+    fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        Ok(Self::from_bytes(bytes.to_vec()))
+    }
+}
+
 impl PointCloudReader for ObjReader {
     fn read_points(&mut self) -> io::Result<Vec<[f32; 3]>> {
         self.read_positions()
@@ -171,6 +165,10 @@ impl PointCloudReader for ObjReader {
 pub fn read_obj_positions<P: AsRef<Path>>(path: P) -> io::Result<Vec<[f32; 3]>> {
     let file = fs::File::open(path)?;
     let reader = BufReader::new(file);
+    read_obj_positions_from_reader(reader)
+}
+
+fn read_obj_positions_from_reader<R: BufRead>(reader: R) -> io::Result<Vec<[f32; 3]>> {
     let mut positions = Vec::new();
 
     for line in reader.lines() {
@@ -200,6 +198,56 @@ pub fn read_obj_positions<P: AsRef<Path>>(path: P) -> io::Result<Vec<[f32; 3]>> 
     }
 
     Ok(positions)
+}
+
+fn read_obj_positions_and_faces_from_reader<R: BufRead>(
+    reader: R,
+) -> io::Result<(Vec<[f32; 3]>, Vec<[u32; 3]>)> {
+    let mut positions = Vec::new();
+    let mut faces = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("vn ") || trimmed.starts_with("vt ") {
+            continue;
+        }
+
+        if trimmed.starts_with("v ") {
+            let mut parts = trimmed.split_whitespace();
+            parts.next(); // skip 'v'
+
+            let x = parts.next().and_then(|s| s.parse().ok());
+            let y = parts.next().and_then(|s| s.parse().ok());
+            let z = parts.next().and_then(|s| s.parse().ok());
+
+            if let (Some(x), Some(y), Some(z)) = (x, y, z) {
+                positions.push([x, y, z]);
+            }
+        } else if trimmed.starts_with("f ") {
+            let mut parts = trimmed.split_whitespace();
+            parts.next(); // skip 'f'
+
+            // Parse face indices (format: v or v/vt or v/vt/vn or v//vn)
+            let parse_vertex = |s: &str| -> Option<u32> {
+                // Take only the first number (vertex index), ignore texture/normal indices
+                let idx_str = s.split('/').next()?;
+                idx_str.parse::<u32>().ok()
+            };
+
+            let v0 = parts.next().and_then(parse_vertex);
+            let v1 = parts.next().and_then(parse_vertex);
+            let v2 = parts.next().and_then(parse_vertex);
+
+            // OBJ uses 1-based indices, convert to 0-based
+            if let (Some(v0), Some(v1), Some(v2)) = (v0, v1, v2) {
+                faces.push([v0 - 1, v1 - 1, v2 - 1]);
+            }
+        }
+    }
+
+    Ok((positions, faces))
 }
 
 #[cfg(test)]

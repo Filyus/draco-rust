@@ -8,6 +8,7 @@ For the project overview, compatibility notes, and benchmarks, see the
 ## Features
 
 - **Unified API**: Common `Reader` and `Writer` traits across all formats
+- **In-Memory I/O**: Common `ReadFromBytes` and `WriteToBytes` traits
 - **Draco Compression**: Full support for `KHR_draco_mesh_compression` in glTF/GLB
 - **Multiple Formats**: OBJ, PLY, FBX (ASCII/Binary), glTF (JSON/Binary/Embedded)
 - **Scene Graph Support**: Read and write scene hierarchies with transforms
@@ -170,6 +171,19 @@ pub trait Reader: Sized {
 }
 ```
 
+### In-Memory I/O Traits
+
+```rust
+pub trait ReadFromBytes: Sized {
+    fn from_bytes(bytes: &[u8]) -> io::Result<Self>;
+}
+
+pub trait WriteToBytes: Writer {
+    fn write_to_vec(&self) -> io::Result<Vec<u8>>;
+    fn write_to<W: io::Write>(&self, writer: &mut W) -> io::Result<()>;
+}
+```
+
 ### Scene Traits
 
 For scene graph support with transforms and hierarchies. Scene APIs are in
@@ -305,6 +319,8 @@ draco-io
 ├── Traits
 │   ├── traits::Writer       - Common writer interface
 │   ├── traits::Reader       - Common reader interface
+│   ├── traits::WriteToBytes - In-memory writer output
+│   ├── traits::ReadFromBytes - In-memory reader input
 │   ├── traits::PointCloudWriter - Point cloud writing
 │   └── traits::PointCloudReader - Point cloud reading
 │

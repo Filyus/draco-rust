@@ -9,6 +9,8 @@ Complete API documentation for the draco-io crate.
   - [Traits](#traits)
     - [Writer](#writer)
     - [Reader](#reader)
+    - [WriteToBytes](#writetobytes)
+    - [ReadFromBytes](#readfrombytes)
     - [PointCloudWriter](#pointcloudwriter)
     - [PointCloudReader](#pointcloudreader)
     - [SceneWriter](#scenewriter)
@@ -121,6 +123,50 @@ let mesh = load_mesh::<ObjReader>("model.obj")?;
 let mesh = load_mesh::<PlyReader>("model.ply")?;
 let mesh = load_mesh::<FbxReader>("model.fbx")?;
 let mesh = load_mesh::<GltfReader>("model.glb")?;
+```
+
+---
+
+### WriteToBytes
+
+Extended trait for writers that can emit a complete file payload in memory.
+
+```rust
+pub trait WriteToBytes: Writer {
+    fn write_to_vec(&self) -> io::Result<Vec<u8>>;
+    fn write_to<W: io::Write>(&self, writer: &mut W) -> io::Result<()>;
+}
+```
+
+**Implementations:** `ObjWriter`, `PlyWriter`, `FbxWriter`, `GltfWriter`
+
+```rust
+use draco_io::{ObjWriter, WriteToBytes, Writer};
+
+let mut writer = ObjWriter::new();
+writer.add_mesh(&mesh, Some("Model"))?;
+let bytes = writer.write_to_vec()?;
+```
+
+---
+
+### ReadFromBytes
+
+Extended trait for readers that can be constructed from a complete file payload.
+
+```rust
+pub trait ReadFromBytes: Sized {
+    fn from_bytes(bytes: &[u8]) -> io::Result<Self>;
+}
+```
+
+**Implementations:** `ObjReader`, `PlyReader`, `GltfReader`, `FbxMemoryReader`
+
+```rust
+use draco_io::{ObjReader, ReadFromBytes, Reader};
+
+let mut reader = <ObjReader as ReadFromBytes>::from_bytes(&bytes)?;
+let mesh = reader.read_mesh()?;
 ```
 
 ---

@@ -24,14 +24,14 @@
 //! ```
 
 use std::fs::File;
-use std::io::{self, BufWriter, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Cursor, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use draco_core::geometry_attribute::GeometryAttributeType;
 use draco_core::geometry_indices::FaceIndex;
 use draco_core::mesh::Mesh;
 
-use crate::traits::Writer;
+use crate::traits::{WriteToBytes, Writer};
 
 /// FBX file magic: "Kaydara FBX Binary  \0"
 const FBX_MAGIC: &[u8; 21] = b"Kaydara FBX Binary  \0";
@@ -165,6 +165,13 @@ impl FbxWriter {
         Ok(())
     }
 
+    /// Write the FBX data into a byte vector.
+    pub fn write_to_vec(&self) -> io::Result<Vec<u8>> {
+        let mut cursor = Cursor::new(Vec::new());
+        self.write_to(&mut cursor)?;
+        Ok(cursor.into_inner())
+    }
+
     /// Get the number of meshes added.
     pub fn mesh_count(&self) -> usize {
         self.meshes.len()
@@ -222,6 +229,12 @@ impl Writer for FbxWriter {
 
     fn face_count(&self) -> usize {
         self.meshes.iter().map(|m| m.indices.len() / 3).sum()
+    }
+}
+
+impl WriteToBytes for FbxWriter {
+    fn write_to_vec(&self) -> io::Result<Vec<u8>> {
+        FbxWriter::write_to_vec(self)
     }
 }
 

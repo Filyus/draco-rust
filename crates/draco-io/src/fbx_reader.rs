@@ -18,8 +18,8 @@
 //! }
 //! ```
 
-use std::fs::File;
-use std::io::{self, BufReader, Read, Seek, SeekFrom};
+use std::fs::{self, File};
+use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use draco_core::draco_types::DataType;
@@ -27,14 +27,19 @@ use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 
+use crate::traits::ReadFromBytes;
+
 /// FBX file magic: "Kaydara FBX Binary  \0"
 const FBX_MAGIC: &[u8; 21] = b"Kaydara FBX Binary  \0";
 
 /// FBX reader for binary FBX files.
-pub struct FbxReader<R: Read + Seek> {
+pub struct FbxReader<R: Read + Seek = BufReader<File>> {
     reader: R,
     version: u32,
 }
+
+/// FBX reader backed by in-memory bytes.
+pub type FbxMemoryReader = FbxReader<Cursor<Vec<u8>>>;
 
 /// An FBX node with properties and children.
 #[derive(Debug, Clone)]
@@ -71,6 +76,19 @@ impl FbxReader<BufReader<File>> {
     }
 }
 
+impl FbxReader<Cursor<Vec<u8>>> {
+    /// Create an FBX reader from in-memory bytes.
+    pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> io::Result<Self> {
+        Self::new(Cursor::new(bytes.into()))
+    }
+
+    /// Read all meshes directly from in-memory bytes.
+    pub fn read_from_bytes(bytes: &[u8]) -> io::Result<Vec<Mesh>> {
+        let mut reader = Self::from_bytes(bytes.to_vec())?;
+        reader.read_meshes()
+    }
+}
+
 // Implement the Reader trait for the concrete BufReader<File> specialization.
 impl crate::traits::Reader for FbxReader<BufReader<File>> {
     fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
@@ -80,6 +98,16 @@ impl crate::traits::Reader for FbxReader<BufReader<File>> {
     fn read_meshes(&mut self) -> io::Result<Vec<draco_core::mesh::Mesh>> {
         // Call the inherent method which already reads all meshes.
         // Use fully qualified syntax to avoid recursion.
+        FbxReader::read_meshes(self)
+    }
+}
+
+impl crate::traits::Reader for FbxReader<Cursor<Vec<u8>>> {
+    fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        Self::from_bytes(fs::read(path)?)
+    }
+
+    fn read_meshes(&mut self) -> io::Result<Vec<draco_core::mesh::Mesh>> {
         FbxReader::read_meshes(self)
     }
 }
@@ -301,6 +329,12 @@ impl crate::scene::SceneReader for FbxReader<BufReader<File>> {
             parts: all_parts,
             root_nodes,
         })
+    }
+}
+
+impl ReadFromBytes for FbxReader<Cursor<Vec<u8>>> {
+    fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        Self::from_bytes(bytes.to_vec())
     }
 }
 

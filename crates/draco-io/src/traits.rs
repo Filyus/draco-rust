@@ -23,7 +23,7 @@
 //! }
 //! ```
 
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 
 use draco_core::mesh::Mesh;
@@ -105,6 +105,31 @@ pub trait Reader: Sized {
         } else {
             Err(io::Error::new(io::ErrorKind::InvalidData, "No mesh found"))
         }
+    }
+}
+
+/// Common interface for readers that can be constructed from in-memory bytes.
+///
+/// This complements [`Reader::open`] for callers that already have file bytes
+/// loaded, or that are working in browser/embedded environments without direct
+/// filesystem access.
+pub trait ReadFromBytes: Sized {
+    /// Create a reader from a complete file payload.
+    fn from_bytes(bytes: &[u8]) -> io::Result<Self>;
+}
+
+/// Common interface for writers that can emit a complete file payload.
+///
+/// This complements [`Writer::write`] for callers that need to send bytes over
+/// the network, store them in an archive, or run roundtrips without temporary
+/// files.
+pub trait WriteToBytes: Writer {
+    /// Write all added data into a byte vector.
+    fn write_to_vec(&self) -> io::Result<Vec<u8>>;
+
+    /// Write all added data into an arbitrary byte sink.
+    fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        writer.write_all(&self.write_to_vec()?)
     }
 }
 

@@ -35,7 +35,7 @@ use draco_core::geometry_indices::FaceIndex;
 use draco_core::mesh::Mesh;
 
 pub use crate::ply_format::PlyFormat;
-use crate::traits::{PointCloudWriter, Writer};
+use crate::traits::{PointCloudWriter, WriteToBytes, Writer};
 
 /// PLY format writer.
 ///
@@ -625,6 +625,16 @@ impl PointCloudWriter for PlyWriter {
 
     fn add_point(&mut self, point: [f32; 3]) {
         self.add_point(point);
+    }
+}
+
+impl WriteToBytes for PlyWriter {
+    fn write_to_vec(&self) -> io::Result<Vec<u8>> {
+        PlyWriter::write_to_vec(self)
+    }
+
+    fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        PlyWriter::write_to(self, writer)
     }
 }
 

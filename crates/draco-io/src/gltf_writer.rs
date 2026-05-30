@@ -64,7 +64,7 @@ impl Default for QuantizationBits {
 
 use std::collections::HashMap;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 
 use draco_core::encoder_buffer::EncoderBuffer;
@@ -75,7 +75,7 @@ use draco_core::mesh_encoder::MeshEncoder;
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::traits::Writer;
+use crate::traits::{WriteToBytes, Writer};
 
 /// Errors that can occur when writing glTF files.
 #[derive(Error, Debug)]
@@ -629,6 +629,17 @@ impl GltfWriter {
         Ok(build_glb(json.as_bytes(), &self.binary_data))
     }
 
+    /// Write the default GLB output into a byte vector.
+    pub fn write_to_vec(&self) -> Result<Vec<u8>> {
+        self.to_glb()
+    }
+
+    /// Write the default GLB output into a byte sink.
+    pub fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
+        writer.write_all(&self.write_to_vec()?)?;
+        Ok(())
+    }
+
     fn encode_data_uri(data: &[u8]) -> String {
         const ENCODE_TABLE: &[u8; 64] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -828,6 +839,16 @@ impl Writer for GltfWriter {
             .filter_map(|p| p.indices)
             .map(|idx| self.accessors.get(idx).map(|a| a.count / 3).unwrap_or(0))
             .sum()
+    }
+}
+
+impl WriteToBytes for GltfWriter {
+    fn write_to_vec(&self) -> io::Result<Vec<u8>> {
+        GltfWriter::write_to_vec(self).map_err(|e| io::Error::other(e.to_string()))
+    }
+
+    fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        GltfWriter::write_to(self, writer).map_err(|e| io::Error::other(e.to_string()))
     }
 }
 

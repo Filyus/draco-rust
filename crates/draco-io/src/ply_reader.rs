@@ -12,7 +12,7 @@ use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::mesh::Mesh;
 
 pub use crate::ply_format::PlyFormat;
-use crate::traits::{PointCloudReader, Reader};
+use crate::traits::{PointCloudReader, ReadFromBytes, Reader};
 
 #[derive(Debug)]
 struct ParsedPlyColorData {
@@ -232,6 +232,12 @@ impl Reader for PlyReader {
     fn read_meshes(&mut self) -> io::Result<Vec<Mesh>> {
         let m = self.read_mesh()?;
         Ok(vec![m])
+    }
+}
+
+impl ReadFromBytes for PlyReader {
+    fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        Ok(Self::from_bytes(bytes.to_vec()))
     }
 }
 

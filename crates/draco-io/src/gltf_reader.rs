@@ -41,6 +41,8 @@ use draco_core::point_cloud_decoder::PointCloudDecoder;
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::traits::ReadFromBytes;
+
 /// Errors that can occur when reading glTF files.
 #[derive(Error, Debug)]
 pub enum GltfError {
@@ -497,6 +499,23 @@ impl GltfReader {
     /// Parse from GLB binary data.
     pub fn from_glb(data: &[u8]) -> Result<Self> {
         Self::from_glb_with_base_path(data, None)
+    }
+
+    /// Parse from glTF JSON or GLB binary data.
+    ///
+    /// The payload type is detected automatically from the GLB magic bytes.
+    /// For glTF JSON with external buffers, use [`Self::from_bytes_with_base_path`].
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        Self::from_bytes_with_base_path(data, None)
+    }
+
+    /// Parse from glTF JSON or GLB binary data with an optional base path for external buffers.
+    pub fn from_bytes_with_base_path(data: &[u8], base_path: Option<&Path>) -> Result<Self> {
+        if data.len() >= 4 && read_u32_le(&data[0..4]) == GLB_MAGIC {
+            Self::from_glb_with_base_path(data, base_path)
+        } else {
+            Self::from_gltf(data, base_path)
+        }
     }
 
     fn from_glb_with_base_path(data: &[u8], base_path: Option<&Path>) -> Result<Self> {
@@ -1000,6 +1019,12 @@ impl crate::traits::Reader for GltfReader {
     fn read_meshes(&mut self) -> std::io::Result<Vec<draco_core::mesh::Mesh>> {
         self.decode_all_meshes()
             .map_err(|e| std::io::Error::other(e.to_string()))
+    }
+}
+
+impl ReadFromBytes for GltfReader {
+    fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        GltfReader::from_bytes(bytes).map_err(|e| io::Error::other(e.to_string()))
     }
 }
 
