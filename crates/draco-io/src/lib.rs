@@ -1,17 +1,26 @@
-//! Draco I/O library for reading and writing 3D mesh formats.
+//! Format I/O layer for Draco geometry.
 //!
-//! This crate provides readers and writers for various 3D mesh formats with
-//! Draco compression support and a unified API through common traits.
+//! `draco-io` maps external 3D formats onto the geometry types from
+//! `draco-core`. It handles file/container concerns such as OBJ, PLY, FBX,
+//! glTF, GLB, scene hierarchy, and `KHR_draco_mesh_compression`; raw `.drc`
+//! bitstream encoding and decoding stays in `draco-core`.
 //!
 //! # Supported Formats
 //!
-//! | Format | Read | Write | Draco Compression |
+//! | Format | Read | Write | Draco compression |
 //! |--------|------|-------|-------------------|
-//! | OBJ    | ✓    | ✓     | -                 |
-//! | PLY    | ✓    | ✓     | -                 |
-//! | FBX    | ✓    | ✓     | -                 |
-//! | glTF   | ✓    | ✓     | ✓                 |
-//! | GLB    | ✓    | ✓     | ✓                 |
+//! | OBJ    | yes  | yes   | no                |
+//! | PLY    | yes  | yes   | no                |
+//! | FBX    | yes  | yes   | no                |
+//! | glTF   | yes  | yes   | yes               |
+//! | GLB    | yes  | yes   | yes               |
+//!
+//! # Feature Model
+//!
+//! The default feature set enables all readers, all writers, optional
+//! compression support, and point-cloud Draco decoding. For smaller builds, use
+//! `default-features = false` and enable only the format features needed, such
+//! as `gltf-reader`, `gltf-writer`, `obj-reader`, or `ply-writer`.
 //!
 //! # Geometry Contract
 //!
@@ -20,7 +29,8 @@
 //! `TexCoord`, and `Generic` are preserved when the file format can represent
 //! them as Draco attributes. Scene support is limited to names, hierarchy,
 //! transforms, and mesh parts; materials, textures, cameras, lights, animation,
-//! skinning, and arbitrary format extras are intentionally out of scope.
+//! skinning, structural metadata, and arbitrary format extras are intentionally
+//! out of scope.
 //!
 //! # Unified Trait API
 //!
@@ -74,8 +84,12 @@
 //!
 //! # glTF/GLB with Draco Compression
 //!
-//! The `gltf_reader` and `gltf_writer` modules provide full support for the
-//! `KHR_draco_mesh_compression` extension. Three output formats are available:
+//! The `gltf_reader` and `gltf_writer` modules provide focused support for
+//! Draco triangle meshes through `KHR_draco_mesh_compression`. They validate
+//! the container enough to avoid silently dropping required glTF features; they
+//! are not a full glTF SDK.
+//!
+//! Three output formats are available:
 //!
 //! - **GLB**: Binary container (single .glb file)
 //! - **glTF + .bin**: JSON with separate binary file
@@ -112,24 +126,34 @@
 //! writer.write_gltf_embedded("output.gltf")?;
 //! ```
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 // Reader modules.
 #[cfg(feature = "fbx-reader")]
+#[cfg_attr(docsrs, doc(cfg(feature = "fbx-reader")))]
 pub mod fbx_reader;
 #[cfg(feature = "gltf-reader")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gltf-reader")))]
 pub mod gltf_reader;
 #[cfg(feature = "obj-reader")]
+#[cfg_attr(docsrs, doc(cfg(feature = "obj-reader")))]
 pub mod obj_reader;
 #[cfg(feature = "ply-reader")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ply-reader")))]
 pub mod ply_reader;
 
 // Writer modules.
 #[cfg(feature = "fbx-writer")]
+#[cfg_attr(docsrs, doc(cfg(feature = "fbx-writer")))]
 pub mod fbx_writer;
 #[cfg(feature = "gltf-writer")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gltf-writer")))]
 pub mod gltf_writer;
 #[cfg(feature = "obj-writer")]
+#[cfg_attr(docsrs, doc(cfg(feature = "obj-writer")))]
 pub mod obj_writer;
 #[cfg(feature = "ply-writer")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ply-writer")))]
 pub mod ply_writer;
 
 // Traits module is always available
@@ -139,27 +163,37 @@ pub mod traits;
 // Scene-graph layer (data model + traits) is only compiled for hierarchical
 // formats (glTF, FBX) that actually carry a scene.
 #[cfg(feature = "scene")]
+#[cfg_attr(docsrs, doc(cfg(feature = "scene")))]
 pub mod scene;
 
 // Re-export main types for convenience
 #[cfg(feature = "fbx-reader")]
+#[cfg_attr(docsrs, doc(cfg(feature = "fbx-reader")))]
 pub use fbx_reader::{FbxMemoryReader, FbxReader};
 #[cfg(feature = "fbx-writer")]
+#[cfg_attr(docsrs, doc(cfg(feature = "fbx-writer")))]
 pub use fbx_writer::FbxWriter;
 #[cfg(feature = "gltf-reader")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gltf-reader")))]
 pub use gltf_reader::{DracoPrimitiveInfo, GltfError, GltfReader};
 #[cfg(feature = "gltf-writer")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gltf-writer")))]
 pub use gltf_writer::{GltfWriteError, GltfWriter};
 #[cfg(feature = "obj-reader")]
+#[cfg_attr(docsrs, doc(cfg(feature = "obj-reader")))]
 pub use obj_reader::ObjReader;
 #[cfg(feature = "obj-writer")]
+#[cfg_attr(docsrs, doc(cfg(feature = "obj-writer")))]
 pub use obj_writer::ObjWriter;
 pub use ply_format::PlyFormat;
 #[cfg(feature = "ply-reader")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ply-reader")))]
 pub use ply_reader::PlyReader;
 #[cfg(feature = "ply-writer")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ply-writer")))]
 pub use ply_writer::PlyWriter;
 #[cfg(feature = "scene")]
+#[cfg_attr(docsrs, doc(cfg(feature = "scene")))]
 pub use scene::{
     flatten_to_scene, MeshInstance, Scene, SceneNode, SceneReader, SceneWriter, Transform,
 };

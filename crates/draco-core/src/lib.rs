@@ -1,8 +1,47 @@
-//! Draco Core Library
+//! Core Draco geometry compression primitives.
 //!
-//! Core compression and decompression functionality for 3D geometric meshes
-//! and point clouds.
+//! `draco-core` implements the raw Draco `.drc` bitstream layer for triangle
+//! meshes and point clouds. It intentionally stops at the geometry compression
+//! model: file containers such as glTF/GLB, OBJ, PLY, and FBX live in
+//! `draco-io`.
+//!
+//! # Main Entry Points
+//!
+//! - [`Mesh`] and [`PointCloud`] hold decoded geometry.
+//! - [`PointAttribute`] stores typed attribute data such as positions, normals,
+//!   colors, texture coordinates, and generic attributes.
+//! - [`Metadata`], [`GeometryMetadata`], and [`AttributeMetadata`] expose raw
+//!   Draco metadata plus C++-compatible typed helpers.
+//! - With the `encoder` feature, use [`MeshEncoder`] or [`PointCloudEncoder`].
+//! - With the `decoder` feature, use [`MeshDecoder`] or [`PointCloudDecoder`].
+//!
+//! # Features
+//!
+//! The default feature set enables both encoding and decoding, point-cloud
+//! KD-tree decoding, EdgeBreaker valence traversal, and legacy bitstream
+//! compatibility helpers. Disable default features when embedding only the
+//! geometry data model or one codec direction is needed.
+//!
+//! # Metadata
+//!
+//! Draco metadata entries are stored as untyped byte blobs in the bitstream.
+//! The typed helpers on [`Metadata`] write the same bytes used by C++ Draco
+//! convenience APIs for `int32`, `double`, arrays, and strings.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use draco_core::{DecoderBuffer, Mesh, MeshDecoder};
+//!
+//! let bytes = std::fs::read("mesh.drc")?;
+//! let mut buffer = DecoderBuffer::new(&bytes);
+//! let mut mesh = Mesh::new();
+//! MeshDecoder::new().decode(&mut buffer, &mut mesh)?;
+//! println!("decoded {} faces", mesh.num_faces());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
 // Allow certain clippy lints that are intentional design decisions for C++ port compatibility
 #![allow(clippy::needless_range_loop)] // Many loops follow C++ patterns for array indexing
 #![allow(clippy::manual_memcpy)] // Manual copying matches C++ patterns for clarity
@@ -49,6 +88,13 @@ pub mod prediction_scheme_geometric_normal;
     all(feature = "encoder", feature = "legacy_bitstream_encode"),
     all(feature = "decoder", feature = "legacy_bitstream_decode")
 )))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(
+        all(feature = "encoder", feature = "legacy_bitstream_encode"),
+        all(feature = "decoder", feature = "legacy_bitstream_decode")
+    )))
+)]
 pub mod prediction_scheme_multi_parallelogram;
 pub mod prediction_scheme_normal_octahedron_canonicalized_transform_base;
 pub mod prediction_scheme_normal_octahedron_transform_base;
@@ -58,6 +104,13 @@ pub mod prediction_scheme_selection;
     all(feature = "encoder", feature = "legacy_bitstream_encode"),
     all(feature = "decoder", feature = "legacy_bitstream_decode")
 )))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(
+        all(feature = "encoder", feature = "legacy_bitstream_encode"),
+        all(feature = "decoder", feature = "legacy_bitstream_decode")
+    )))
+)]
 pub mod prediction_scheme_tex_coords_deprecated;
 pub mod prediction_scheme_tex_coords_portable;
 pub mod prediction_scheme_wrap;
@@ -73,32 +126,52 @@ pub mod version;
 // =============================================================================
 
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub mod decoder_buffer;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub mod direct_bit_decoder;
 #[cfg(all(feature = "decoder", feature = "point_cloud_decode"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "decoder", feature = "point_cloud_decode")))
+)]
 pub mod kd_tree_attributes_decoder;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub mod mesh_decoder;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub mod mesh_edgebreaker_decoder;
 #[cfg(all(feature = "decoder", feature = "edgebreaker_valence_decode"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "decoder", feature = "edgebreaker_valence_decode")))
+)]
 pub mod mesh_edgebreaker_traversal_valence_decoder;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub mod point_cloud_decoder;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub mod prediction_scheme_normal_octahedron_canonicalized_decoding_transform;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub mod rans_bit_decoder;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub mod rans_symbol_decoder;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub mod sequential_attribute_decoder;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub mod sequential_generic_attribute_decoder;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub mod sequential_integer_attribute_decoder;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub mod sequential_normal_attribute_decoder;
 
 // =============================================================================
@@ -106,34 +179,52 @@ pub mod sequential_normal_attribute_decoder;
 // =============================================================================
 
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod direct_bit_encoder;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod encoder_buffer;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod encoder_options;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod kd_tree_attributes_encoder;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod mesh_edgebreaker_encoder;
 #[cfg(all(feature = "encoder", feature = "edgebreaker_valence_encode"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "encoder", feature = "edgebreaker_valence_encode")))
+)]
 pub mod mesh_edgebreaker_traversal_valence_encoder;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod mesh_encoder;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod point_cloud_encoder;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod prediction_scheme_normal_octahedron_canonicalized_encoding_transform;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod rans_bit_encoder;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod rans_symbol_encoder;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod sequential_attribute_encoder;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod sequential_integer_attribute_encoder;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod sequential_normal_attribute_encoder;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub mod shannon_entropy;
 
 // =============================================================================
@@ -165,16 +256,22 @@ pub use status::{DracoError, Status};
 // =============================================================================
 
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub use decoder_buffer::DecoderBuffer;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub use direct_bit_decoder::DirectBitDecoder;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub use folded_bit32_coder::FoldedBit32Decoder;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub use mesh_decoder::MeshDecoder;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub use point_cloud_decoder::PointCloudDecoder;
 #[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub use rans_bit_decoder::RAnsBitDecoder;
 
 // =============================================================================
@@ -182,16 +279,23 @@ pub use rans_bit_decoder::RAnsBitDecoder;
 // =============================================================================
 
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub use direct_bit_encoder::DirectBitEncoder;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub use encoder_buffer::EncoderBuffer;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub use encoder_options::EncoderOptions;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub use folded_bit32_coder::FoldedBit32Encoder;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub use mesh_encoder::MeshEncoder;
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub use point_cloud_encoder::{GeometryEncoder, PointCloudEncoder};
 #[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub use rans_bit_encoder::RAnsBitEncoder;

@@ -81,8 +81,8 @@ impl PointDVector {
         }
     }
 
-    /// Partitions points in [begin, end) by point[axis] < value.
-    /// Returns split index such that [begin, split) are < value.
+    /// Partitions points in `[begin, end)` by `point[axis] < value`.
+    /// Returns split index such that `[begin, split)` are `< value`.
     pub fn partition(&mut self, begin: usize, end: usize, axis: usize, value: u32) -> usize {
         let mut left = begin;
         let mut right = end;
