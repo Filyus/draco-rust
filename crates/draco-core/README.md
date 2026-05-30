@@ -11,9 +11,9 @@ This project is independent and is not an official Google Draco release.
 
 ## Status
 
-The public API is still pre-1.0. The bitstream implementation is already tested
-against reference fixtures and C++ interop paths, but API names and option
-surfaces may still be refined.
+The crate is pre-1.0, but the bitstream implementation is already tested
+against reference fixtures and C++ interop paths. Remaining compatibility notes
+and scope boundaries are tracked in the support matrix.
 
 Supported high-level paths:
 
@@ -167,4 +167,3 @@ cargo test --manifest-path crates/Cargo.toml --all-features
 ## License
 
 Apache-2.0, matching the upstream Draco project.
-

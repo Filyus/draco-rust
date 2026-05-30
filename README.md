@@ -1,37 +1,43 @@
 # Draco for Rust
 
-Pure Rust encoder/decoder crates for the [Draco](https://github.com/google/draco)
-geometry compression format.
+Pure Rust crates for the [Draco](https://github.com/google/draco) geometry
+compression format.
 
-This repository contains an independent Rust implementation of Draco mesh and
-point-cloud compression. It is designed for applications that want Draco
-bitstream compatibility without linking the C++ library, including native Rust,
-WASM, and format-conversion workflows.
+This repository provides an independent Rust implementation of Draco mesh and
+point-cloud compression, plus format I/O crates around it. It is intended for
+native Rust, WASM, and conversion pipelines that need Draco bitstream
+compatibility without linking the C++ library.
 
-The project is not an official Google Draco release.
+This project is not an official Google Draco release.
 
 ## Crates
 
 | Crate | Purpose |
 |---|---|
-| [`draco-core`](crates/draco-core) | Core Draco mesh and point-cloud encode/decode implementation. |
-| [`draco-io`](crates/draco-io) | Format I/O helpers for OBJ, PLY, FBX, glTF, and GLB, including glTF Draco extension support. |
+| [`draco-core`](crates/draco-core) | Raw Draco `.drc` mesh and point-cloud encode/decode implementation. |
+| [`draco-io`](crates/draco-io) | Readers and writers for OBJ, PLY, FBX, glTF, and GLB. |
 
-## Status
+## Features
 
-Current focus:
+`draco-core` handles raw Draco data:
 
-- Mesh and point-cloud decoding.
-- Mesh and point-cloud encoding.
-- Sequential and EdgeBreaker mesh paths.
-- Attribute prediction schemes, including position, normal, color, texcoord,
-  and generic attributes.
-- C++ interop tests in both directions:
-  C++ encode -> Rust decode and Rust encode -> C++ decode.
-- Legacy `.drc` fixture coverage and malformed-input hardening.
-- `no unsafe` in `draco-core` and `draco-io` source code.
+- Decode and encode `.drc` point clouds and triangle meshes.
+- Use sequential, KD-tree, and EdgeBreaker paths.
+- Preserve positions, normals, colors, texture coordinates, and generic
+  attributes.
+- Roundtrip raw and typed Draco metadata.
 
-The public API is still young. Expect refinements before a stable 1.0 release.
+`draco-io` handles file formats:
+
+- Read and write glTF, GLB, OBJ, PLY, and binary FBX.
+- Use `KHR_draco_mesh_compression` for Draco-compressed glTF and GLB.
+
+The main paths are covered by Rust roundtrips, fixtures, and C++ interop tests.
+
+Neither `draco-core` nor `draco-io` uses `unsafe` in its source code.
+
+For detailed compatibility and scope notes, see the crate docs and
+[`SUPPORT_MATRIX.md`](crates/draco-core/SUPPORT_MATRIX.md).
 
 ## Installation
 
@@ -44,12 +50,18 @@ draco-io = "0.1"
 Use only the crate you need. `draco-core` is enough for raw Draco bitstreams;
 `draco-io` adds file-format readers and writers.
 
-Decoder-only builds are supported:
+For raw `.drc` decode-only builds:
 
 ```toml
 [dependencies]
 draco-core = { version = "0.1", default-features = false, features = ["decoder"] }
-draco-io = { version = "0.1", default-features = false, features = ["decoder"] }
+```
+
+Format-specific `draco-io` builds can enable only the readers or writers needed:
+
+```toml
+[dependencies]
+draco-io = { version = "0.1", default-features = false, features = ["gltf-reader", "gltf-writer"] }
 ```
 
 ## Quick Start
@@ -126,16 +138,20 @@ fn read_glb(path: &str) -> Result<(), draco_io::GltfError> {
 | Format | Read | Write | Notes |
 |---|---:|---:|---|
 | Draco `.drc` | yes | yes | Meshes and point clouds through `draco-core`. |
-| glTF / GLB | yes | yes | Includes `KHR_draco_mesh_compression`. |
+| glTF / GLB | yes | yes | Focused support for Draco triangle meshes through `KHR_draco_mesh_compression`. |
 | OBJ | yes | yes | Meshes and point clouds. |
 | PLY | yes | yes | ASCII and binary paths with mesh/point data. |
-| FBX | yes | yes | Rust-side I/O helpers, optional compression support. |
+| FBX | yes | yes | Binary FBX with optional array compression. |
+
+`draco-io` is not a full scene SDK. Materials, textures, cameras, lights,
+animation, skinning, and semantic glTF metadata are outside the supported
+format scope.
 
 ## Compatibility
 
 The implementation targets compatibility with the official C++ Draco bitstream.
-The test suite includes reference fixtures, legacy Draco files, C++ encode ->
-Rust decode checks, and Rust encode -> C++ decode checks.
+The test suite includes reference fixtures, legacy Draco files, C++-encoded
+streams decoded by Rust, and Rust-encoded streams decoded by C++.
 
 For local C++ interop benchmarks, `draco-cpp-test-bridge` can be pointed at a
 local C++ Draco checkout/build through environment variables:
@@ -150,15 +166,15 @@ That bridge crate is test infrastructure only and is marked `publish = false`.
 
 ## Performance
 
-Benchmarks are still evolving, so treat the numbers as a snapshot rather than a
-contract. On local generated mesh encode/decode tests, the Rust implementation
-was faster than the C++ reference in that setup:
+These are local benchmark snapshots, not a performance contract. On generated
+mesh encode/decode tests, the Rust implementation measured faster than the C++
+reference in this setup:
 
 | Case | Encode | Decode |
 |---|---:|---:|
-| Sphere 24x48, speeds 0-9 | about 5.6x-15.6x faster | about 50x-126x faster |
-| Cube subdiv20, speeds 0-9 | about 6.4x-15.9x faster | about 65x-126x faster |
-| Speed 10 sequential path | about 1.7x faster | about 1.1x faster |
+| Sphere 24x48, speeds 0-9 | about 5.6-15.6 times faster | about 50-126 times faster |
+| Cube subdiv20, speeds 0-9 | about 6.4-15.9 times faster | about 65-126 times faster |
+| Speed 10 sequential path | about 70% faster | about 10% faster |
 
 The benchmark suite lives mostly under `draco-cpp-test-bridge`:
 
@@ -194,7 +210,7 @@ cargo check --manifest-path fuzz/Cargo.toml --bins
 ```text
 crates/
   draco-core/              Core Draco bitstream implementation
-  draco-io/                OBJ/PLY/FBX/glTF/GLB helpers
+  draco-io/                OBJ/PLY/FBX/glTF/GLB readers and writers
 web/                       WASM conversion modules and demo workspace
 fuzz/                      Decode fuzz target wiring
 testdata/                  Fixtures used by compatibility and hardening tests
