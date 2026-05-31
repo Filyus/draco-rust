@@ -750,7 +750,7 @@ impl MeshDecoder {
             if self.method == 1 {
                 let att_data_id = att_data_id_by_decoder[dec_i] as usize;
                 let uses_attribute_connectivity =
-                    encoder_type_by_decoder.get(dec_i).copied().unwrap_or(0) != 0;
+                    att_data_id_by_decoder[dec_i] != u8::MAX && encoder_type_by_decoder[dec_i] != 0;
                 if uses_attribute_connectivity
                     && att_data_id < self.edgebreaker_attribute_seam_corners.len()
                 {

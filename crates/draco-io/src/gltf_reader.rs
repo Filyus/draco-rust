@@ -1900,7 +1900,9 @@ fn hex_digit(b: u8) -> Option<u8> {
 mod tests {
     use super::*;
     use draco_core::draco_types::DataType;
-    use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
+    use draco_core::geometry_attribute::GeometryAttributeType;
+    #[cfg(feature = "gltf-writer")]
+    use draco_core::geometry_attribute::PointAttribute;
     use draco_core::mesh::Mesh;
     use tempfile::tempdir;
 
@@ -1962,6 +1964,7 @@ mod tests {
         .collect()
     }
 
+    #[cfg(feature = "gltf-writer")]
     fn triangle_mesh() -> Mesh {
         let mut mesh = Mesh::new();
         mesh.set_num_points(3);
@@ -2373,6 +2376,7 @@ mod tests {
         assert_eq!(&positions[12..24], &triangle_positions()[0..12]);
     }
 
+    #[cfg(feature = "gltf-writer")]
     #[test]
     fn test_writer_glb_roundtrips_through_reader() {
         let dir = tempdir().unwrap();
@@ -2483,6 +2487,59 @@ mod tests {
             .decode_all_meshes()
             .unwrap_err();
         assert!(matches!(err, GltfError::InvalidGltf(_)));
+    }
+
+    #[cfg(feature = "legacy-bitstream-decode")]
+    #[test]
+    fn test_draco_legacy_bitstream_data_uri() {
+        let draco_bytes =
+            include_bytes!("../../../testdata/legacy_draco/cube_att.mesh_seq.1.1.0.drc");
+        let data_uri = format!(
+            "data:application/octet-stream;base64,{}",
+            base64_for_test(draco_bytes)
+        );
+        let json = format!(
+            r#"{{
+                "asset": {{"version": "2.0"}},
+                "extensionsUsed": ["KHR_draco_mesh_compression"],
+                "buffers": [{{"byteLength": {}, "uri": "{}"}}],
+                "bufferViews": [{{"buffer": 0, "byteOffset": 0, "byteLength": {}}}],
+                "accessors": [
+                    {{"componentType": 5126, "count": 24, "type": "VEC3"}}
+                ],
+                "meshes": [{{
+                    "primitives": [{{
+                        "attributes": {{"POSITION": 0}},
+                        "mode": 4,
+                        "extensions": {{
+                            "KHR_draco_mesh_compression": {{
+                                "bufferView": 0,
+                                "attributes": {{"POSITION": 0}}
+                            }}
+                        }}
+                    }}]
+                }}]
+            }}"#,
+            draco_bytes.len(),
+            data_uri,
+            draco_bytes.len()
+        );
+
+        let mesh = GltfReader::from_gltf(json.as_bytes(), None)
+            .unwrap()
+            .decode_all_draco_meshes()
+            .unwrap()
+            .remove(0)
+            .1;
+
+        assert_eq!(mesh.num_faces(), 12);
+        assert_eq!(mesh.num_points(), 24);
+        assert_eq!(
+            mesh.named_attribute(GeometryAttributeType::Position)
+                .expect("missing position")
+                .size(),
+            24
+        );
     }
 
     fn base64_for_test(bytes: &[u8]) -> String {

@@ -38,6 +38,9 @@ fbx-reader = ["scene"]
 fbx-writer = []
 gltf-reader = ["draco-core/decoder", "scene", "dep:serde", "dep:serde_json"]
 gltf-writer = ["draco-core/encoder", "scene", "dep:serde", "dep:serde_json"]
+# Optional compatibility mode for reading older Draco bitstreams embedded in
+# KHR_draco_mesh_compression payloads. Writers still emit the current bitstream.
+legacy-bitstream-decode = ["draco-core/legacy_bitstream_decode"]
 obj-reader = []
 obj-writer = []
 ply-reader = ["dep:byteorder"]

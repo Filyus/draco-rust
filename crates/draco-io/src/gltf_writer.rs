@@ -71,14 +71,12 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
-use draco_core::decoder_buffer::DecoderBuffer;
 use draco_core::draco_types::DataType;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::encoder_options::EncoderOptions;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::mesh::Mesh;
-use draco_core::mesh_decoder::MeshDecoder;
-use draco_core::mesh_encoder::MeshEncoder;
+use draco_core::mesh_encoder::{EncodedAttributeInfo, EncodedMeshInfo, MeshEncoder};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -260,7 +258,10 @@ impl Default for GltfWriter {
     }
 }
 
-fn encode_draco_mesh_bytes(mesh: &Mesh, quantization: &QuantizationBits) -> Result<Vec<u8>> {
+fn encode_draco_mesh_with_info(
+    mesh: &Mesh,
+    quantization: &QuantizationBits,
+) -> Result<(Vec<u8>, EncodedMeshInfo)> {
     validate_mesh_for_gltf_draco(mesh)?;
 
     if mesh.num_faces() == 0 {
@@ -294,18 +295,12 @@ fn encode_draco_mesh_bytes(mesh: &Mesh, quantization: &QuantizationBits) -> Resu
     encoder
         .encode(&options, &mut enc_buffer)
         .map_err(|e| GltfWriteError::DracoEncode(format!("{:?}", e)))?;
+    let encoded_info = encoder
+        .encoded_mesh_info()
+        .cloned()
+        .ok_or_else(|| GltfWriteError::DracoEncode("encoder did not return mesh info".into()))?;
 
-    Ok(enc_buffer.data().to_vec())
-}
-
-fn decode_draco_mesh_bytes(data: &[u8]) -> Result<Mesh> {
-    let mut decoder_buffer = DecoderBuffer::new(data);
-    let mut mesh = Mesh::new();
-    let mut decoder = MeshDecoder::new();
-    decoder
-        .decode(&mut decoder_buffer, &mut mesh)
-        .map_err(|e| GltfWriteError::DracoEncode(format!("self-decode failed: {:?}", e)))?;
-    Ok(mesh)
+    Ok((enc_buffer.data().to_vec(), encoded_info))
 }
 
 /// Encode a mesh to a Draco bitstream using the same settings as `GltfWriter`.
@@ -317,7 +312,7 @@ pub fn encode_draco_mesh(
     quantization: impl Into<Option<QuantizationBits>>,
 ) -> Result<Vec<u8>> {
     let quantization = quantization.into().unwrap_or_default();
-    encode_draco_mesh_bytes(mesh, &quantization)
+    encode_draco_mesh_with_info(mesh, &quantization).map(|(bytes, _)| bytes)
 }
 
 impl GltfWriter {
@@ -441,10 +436,9 @@ impl GltfWriter {
         name: Option<&str>,
         quantization: &QuantizationBits,
     ) -> Result<usize> {
-        let draco_data = encode_draco_mesh_bytes(mesh, quantization)?;
-        let decoded_mesh = decode_draco_mesh_bytes(&draco_data)?;
+        let (draco_data, encoded_info) = encode_draco_mesh_with_info(mesh, quantization)?;
         let draco_buffer_view_idx = self.append_buffer_view(&draco_data);
-        let primitive = self.build_draco_primitive(&decoded_mesh, draco_buffer_view_idx)?;
+        let primitive = self.build_draco_primitive(&encoded_info, draco_buffer_view_idx)?;
 
         let mesh_idx = self.meshes.len();
         self.meshes.push(MeshOut {
@@ -475,11 +469,11 @@ impl GltfWriter {
 
     fn build_draco_primitive(
         &mut self,
-        mesh: &Mesh,
+        encoded_info: &EncodedMeshInfo,
         draco_buffer_view_idx: usize,
     ) -> Result<PrimitiveOut> {
-        let (attributes, draco_attributes) = self.add_mesh_attribute_accessors(mesh)?;
-        let indices_accessor_idx = self.add_indices_accessor(mesh.num_faces() * 3);
+        let (attributes, draco_attributes) = self.add_mesh_attribute_accessors(encoded_info)?;
+        let indices_accessor_idx = self.add_indices_accessor(encoded_info.num_encoded_faces * 3);
 
         Ok(PrimitiveOut {
             attributes,
@@ -496,20 +490,20 @@ impl GltfWriter {
 
     fn add_mesh_attribute_accessors(
         &mut self,
-        mesh: &Mesh,
+        encoded_info: &EncodedMeshInfo,
     ) -> Result<(HashMap<String, usize>, HashMap<String, usize>)> {
         let mut attributes = HashMap::new();
         let mut draco_attributes: HashMap<String, usize> = HashMap::new();
         let mut counters = GltfSemanticCounters::default();
 
-        for i in 0..mesh.num_attributes() {
-            let att = mesh.attribute(i);
+        for att in &encoded_info.attributes {
             let (semantic, accessor_type) =
-                gltf_attribute_info(att.attribute_type(), att.num_components(), &mut counters)?;
+                gltf_attribute_info(att.attribute_type, att.num_components, &mut counters)?;
 
-            let accessor_idx = self.add_attribute_accessor(att, accessor_type)?;
+            let accessor_idx =
+                self.add_attribute_accessor(att, accessor_type, encoded_info.num_encoded_points)?;
             attributes.insert(semantic.clone(), accessor_idx);
-            draco_attributes.insert(semantic, i as usize);
+            draco_attributes.insert(semantic, att.unique_id as usize);
         }
 
         Ok((attributes, draco_attributes))
@@ -517,21 +511,29 @@ impl GltfWriter {
 
     fn add_attribute_accessor(
         &mut self,
-        att: &PointAttribute,
+        att: &EncodedAttributeInfo,
         accessor_type: &str,
+        count: usize,
     ) -> Result<usize> {
         let accessor_idx = self.accessors.len();
-        let (min, max) = if att.attribute_type() == GeometryAttributeType::Position {
-            position_min_max(att)?
+        let (min, max) = if att.attribute_type == GeometryAttributeType::Position {
+            (
+                att.position_min.clone().ok_or_else(|| {
+                    GltfWriteError::InvalidMesh("POSITION accessor is missing min bounds".into())
+                })?,
+                att.position_max.clone().ok_or_else(|| {
+                    GltfWriteError::InvalidMesh("POSITION accessor is missing max bounds".into())
+                })?,
+            )
         } else {
             (Vec::new(), Vec::new())
         };
         self.accessors.push(AccessorOut {
             buffer_view: None,
             byte_offset: None,
-            component_type: component_type_for_data_type(att.data_type())?,
-            normalized: att.normalized().then_some(true),
-            count: att.size(),
+            component_type: component_type_for_data_type(att.data_type)?,
+            normalized: att.normalized.then_some(true),
+            count,
             accessor_type: accessor_type.to_string(),
             min,
             max,
@@ -903,43 +905,6 @@ fn validate_normalized_integer_or_float(att: &PointAttribute, semantic: &str) ->
     }
 }
 
-fn position_min_max(att: &PointAttribute) -> Result<(Vec<f64>, Vec<f64>)> {
-    if att.num_components() != 3 || att.data_type() != DataType::Float32 {
-        return Err(GltfWriteError::Unsupported(
-            "POSITION min/max requires VEC3 FLOAT data".into(),
-        ));
-    }
-
-    let bytes = att.buffer().data();
-    let expected_len = att.size() * 3 * DataType::Float32.byte_length();
-    if bytes.len() < expected_len {
-        return Err(GltfWriteError::InvalidMesh(
-            "POSITION buffer is shorter than attribute metadata".into(),
-        ));
-    }
-
-    let mut min = [f32::INFINITY; 3];
-    let mut max = [f32::NEG_INFINITY; 3];
-    for value_idx in 0..att.size() {
-        for component in 0..3 {
-            let offset = (value_idx * 3 + component) * 4;
-            let value = f32::from_le_bytes([
-                bytes[offset],
-                bytes[offset + 1],
-                bytes[offset + 2],
-                bytes[offset + 3],
-            ]);
-            min[component] = min[component].min(value);
-            max[component] = max[component].max(value);
-        }
-    }
-
-    Ok((
-        min.into_iter().map(f64::from).collect(),
-        max.into_iter().map(f64::from).collect(),
-    ))
-}
-
 fn component_type_for_data_type(dt: DataType) -> Result<u32> {
     match dt {
         DataType::Int8 => Ok(5120),
@@ -1114,7 +1079,7 @@ mod tests {
     use super::*;
     use draco_core::draco_types::DataType;
     use draco_core::geometry_attribute::PointAttribute;
-    use draco_core::geometry_indices::{FaceIndex, PointIndex};
+    use draco_core::geometry_indices::{AttributeValueIndex, FaceIndex, PointIndex};
 
     fn create_test_triangle() -> Mesh {
         let mut mesh = Mesh::new();
@@ -1170,6 +1135,55 @@ mod tests {
 
     fn repeated_zero_attribute_bytes(data_type: DataType, components: u8, count: usize) -> Vec<u8> {
         vec![0; data_type.byte_length() * components as usize * count]
+    }
+
+    fn write_f32s(attribute: &mut PointAttribute, values: &[f32]) {
+        for (i, value) in values.iter().enumerate() {
+            attribute
+                .buffer_mut()
+                .write(i * DataType::Float32.byte_length(), &value.to_le_bytes());
+        }
+    }
+
+    fn create_test_uv_seam_mesh() -> Mesh {
+        let mut mesh = Mesh::new();
+        mesh.set_num_points(6);
+
+        let mut positions = PointAttribute::new();
+        positions.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            4,
+        );
+        write_f32s(
+            &mut positions,
+            &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+        );
+        positions.set_explicit_mapping(6);
+        for (point, entry) in [0, 1, 2, 1, 3, 2].iter().copied().enumerate() {
+            positions.set_point_map_entry(PointIndex(point as u32), AttributeValueIndex(entry));
+        }
+        mesh.add_attribute(positions);
+
+        add_attribute(
+            &mut mesh,
+            GeometryAttributeType::TexCoord,
+            2,
+            DataType::Float32,
+            false,
+            [
+                0.0f32, 0.0, 1.0, 0.0, 0.0, 1.0, 0.2, 0.0, 1.0, 1.0, 0.2, 1.0,
+            ]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect(),
+        );
+
+        mesh.add_face([PointIndex(0), PointIndex(1), PointIndex(2)]);
+        mesh.add_face([PointIndex(3), PointIndex(4), PointIndex(5)]);
+        mesh
     }
 
     #[cfg(feature = "gltf-reader")]
@@ -1469,6 +1483,9 @@ mod tests {
                 .flat_map(u16::to_le_bytes)
                 .collect(),
         );
+        mesh.attribute_mut(0).set_unique_id(10);
+        mesh.attribute_mut(1).set_unique_id(20);
+        mesh.attribute_mut(2).set_unique_id(30);
 
         let mut writer = GltfWriter::new();
         writer
@@ -1481,7 +1498,14 @@ mod tests {
         let position_accessor = primitive["attributes"]["POSITION"].as_u64().unwrap() as usize;
         let color_accessor = primitive["attributes"]["COLOR_0"].as_u64().unwrap() as usize;
         let texcoord_accessor = primitive["attributes"]["TEXCOORD_0"].as_u64().unwrap() as usize;
+        let draco_attributes = &primitive["extensions"]["KHR_draco_mesh_compression"]["attributes"];
 
+        assert_eq!(json["accessors"][position_accessor]["count"], 3);
+        assert_eq!(json["accessors"][color_accessor]["count"], 3);
+        assert_eq!(json["accessors"][texcoord_accessor]["count"], 3);
+        assert_eq!(draco_attributes["POSITION"], 10);
+        assert_eq!(draco_attributes["COLOR_0"], 20);
+        assert_eq!(draco_attributes["TEXCOORD_0"], 30);
         assert_eq!(
             json["accessors"][position_accessor]["min"]
                 .as_array()
@@ -1498,6 +1522,22 @@ mod tests {
         );
         assert_eq!(json["accessors"][color_accessor]["normalized"], true);
         assert_eq!(json["accessors"][texcoord_accessor]["normalized"], true);
+    }
+
+    #[test]
+    fn test_writer_uses_encoded_point_count_for_split_connectivity_accessors() {
+        let mesh = create_test_uv_seam_mesh();
+        let mut writer = GltfWriter::new();
+        writer.add_draco_mesh(&mesh, Some("Seam"), None).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&writer.to_gltf_embedded().unwrap())
+            .expect("writer JSON should parse");
+
+        let primitive = &json["meshes"][0]["primitives"][0];
+        let position_accessor = primitive["attributes"]["POSITION"].as_u64().unwrap() as usize;
+        let texcoord_accessor = primitive["attributes"]["TEXCOORD_0"].as_u64().unwrap() as usize;
+
+        assert_eq!(json["accessors"][position_accessor]["count"], 6);
+        assert_eq!(json["accessors"][texcoord_accessor]["count"], 6);
     }
 
     #[test]

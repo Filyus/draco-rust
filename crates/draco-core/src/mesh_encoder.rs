@@ -7,7 +7,7 @@ use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::encoder_options::EncoderOptions;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
-use crate::geometry_indices::{FaceIndex, PointIndex};
+use crate::geometry_indices::{FaceIndex, PointIndex, INVALID_ATTRIBUTE_VALUE_INDEX};
 use crate::mesh::Mesh;
 use crate::mesh_edgebreaker_encoder::{EdgebreakerAttributeConnectivity, MeshEdgebreakerEncoder};
 use crate::metadata::METADATA_FLAG_MASK;
@@ -41,6 +41,30 @@ pub struct MeshEncoder {
     point_to_vertex_map: Option<Vec<u32>>,
     /// Whether we're using single connectivity (all attributes share same corner table).
     use_single_connectivity: bool,
+    encoded_mesh_info: Option<EncodedMeshInfo>,
+}
+
+/// Geometry shape and attribute metadata produced by a successful mesh encode.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EncodedMeshInfo {
+    pub encoding_method: i32,
+    pub num_encoded_faces: usize,
+    pub num_encoded_points: usize,
+    pub attributes: Vec<EncodedAttributeInfo>,
+}
+
+/// Attribute metadata produced by a successful mesh encode.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EncodedAttributeInfo {
+    pub source_attribute_id: i32,
+    pub attribute_type: GeometryAttributeType,
+    pub data_type: DataType,
+    pub num_components: u8,
+    pub normalized: bool,
+    pub unique_id: u32,
+    pub num_encoded_values: usize,
+    pub position_min: Option<Vec<f64>>,
+    pub position_max: Option<Vec<f64>>,
 }
 
 impl GeometryEncoder for MeshEncoder {
@@ -100,6 +124,7 @@ impl MeshEncoder {
             method: 0,
             point_to_vertex_map: None,
             use_single_connectivity: false,
+            encoded_mesh_info: None,
         }
     }
 
@@ -119,8 +144,13 @@ impl MeshEncoder {
         self.corner_table.as_ref()
     }
 
+    pub fn encoded_mesh_info(&self) -> Option<&EncodedMeshInfo> {
+        self.encoded_mesh_info.as_ref()
+    }
+
     pub fn encode(&mut self, options: &EncoderOptions, out_buffer: &mut EncoderBuffer) -> Status {
         self.options = options.clone();
+        self.encoded_mesh_info = None;
 
         if self.mesh.is_none() {
             return Err(DracoError::DracoError("Mesh not set".to_string()));
@@ -210,6 +240,7 @@ impl MeshEncoder {
 
         // Then encode attributes
         self.encode_attributes(out_buffer)?;
+        self.build_encoded_mesh_info()?;
 
         Ok(())
     }
@@ -787,7 +818,14 @@ impl MeshEncoder {
         let traversal_method: u8 = if self.options.get_speed() == 0 { 1 } else { 0 };
         for (att_data_id, _) in &groups {
             out_buffer.encode_u8(*att_data_id as u8);
-            out_buffer.encode_u8(0);
+            let element_type = if *att_data_id >= 0
+                && !self.edgebreaker_attribute_connectivity[*att_data_id as usize].no_interior_seams
+            {
+                1 // MESH_CORNER_ATTRIBUTE
+            } else {
+                0 // MESH_VERTEX_ATTRIBUTE
+            };
+            out_buffer.encode_u8(element_type);
             out_buffer.encode_u8(traversal_method);
         }
 
@@ -1099,6 +1137,227 @@ impl MeshEncoder {
         if let Some(ref mesh) = self.mesh {
             self.num_encoded_faces = mesh.num_faces();
         }
+    }
+
+    fn build_encoded_mesh_info(&mut self) -> Status {
+        let num_attributes = self
+            .mesh
+            .as_ref()
+            .expect("mesh must be set before encoding")
+            .num_attributes();
+        let mut attributes = Vec::with_capacity(num_attributes as usize);
+        let mut encoded_num_points = self.point_ids.len();
+
+        for att_id in 0..num_attributes {
+            let point_ids = self.encoded_point_ids_for_attribute(att_id)?;
+            let num_encoded_values = point_ids.len();
+            encoded_num_points = encoded_num_points.max(num_encoded_values);
+
+            let (position_min, position_max) =
+                self.position_bounds_for_attribute(att_id, &point_ids)?;
+            let att = self
+                .mesh
+                .as_ref()
+                .expect("mesh must be set before encoding")
+                .attribute(att_id);
+            attributes.push(EncodedAttributeInfo {
+                source_attribute_id: att_id,
+                attribute_type: att.attribute_type(),
+                data_type: att.data_type(),
+                num_components: att.num_components(),
+                normalized: att.normalized(),
+                unique_id: att.unique_id(),
+                num_encoded_values,
+                position_min,
+                position_max,
+            });
+        }
+
+        let (source_num_points, num_faces) = self
+            .mesh
+            .as_ref()
+            .map(|mesh| (mesh.num_points(), mesh.num_faces()))
+            .expect("mesh must be set before encoding");
+        if self.method == 0 {
+            encoded_num_points = source_num_points;
+        } else {
+            encoded_num_points = self.encoded_num_points_for_mesh(encoded_num_points)?;
+        }
+
+        self.active_corner_table = None;
+        self.active_data_to_corner_map = None;
+        self.active_vertex_to_data_map = None;
+        self.encoded_mesh_info = Some(EncodedMeshInfo {
+            encoding_method: self.method,
+            num_encoded_faces: num_faces,
+            num_encoded_points: encoded_num_points,
+            attributes,
+        });
+        Ok(())
+    }
+
+    fn encoded_point_ids_for_attribute(
+        &mut self,
+        att_id: i32,
+    ) -> Result<Vec<PointIndex>, DracoError> {
+        if self.method == 0 || self.use_single_connectivity {
+            return Ok(self.point_ids.clone());
+        }
+
+        if let Some(data_id) = self
+            .edgebreaker_attribute_connectivity
+            .iter()
+            .position(|connectivity| connectivity.attribute_id == att_id)
+        {
+            return self.prepare_active_attribute_connectivity(data_id);
+        }
+
+        Ok(self.point_ids.clone())
+    }
+
+    fn encoded_num_points_for_mesh(&mut self, base_num_points: usize) -> Result<usize, DracoError> {
+        if self.method == 0 || self.use_single_connectivity {
+            return Ok(base_num_points);
+        }
+
+        let mut num_points = base_num_points;
+        for data_id in 0..self.edgebreaker_attribute_connectivity.len() {
+            if self.edgebreaker_attribute_connectivity[data_id].no_interior_seams {
+                continue;
+            }
+            let point_ids = self.prepare_active_attribute_connectivity(data_id)?;
+            num_points = num_points.max(point_ids.len());
+        }
+        self.active_corner_table = None;
+        self.active_data_to_corner_map = None;
+        self.active_vertex_to_data_map = None;
+        Ok(num_points)
+    }
+
+    fn position_bounds_for_attribute(
+        &self,
+        att_id: i32,
+        point_ids: &[PointIndex],
+    ) -> Result<(Option<Vec<f64>>, Option<Vec<f64>>), DracoError> {
+        let mesh = self
+            .mesh
+            .as_ref()
+            .expect("mesh must be set before encoding");
+        let att = mesh.attribute(att_id);
+        if att.attribute_type() != GeometryAttributeType::Position {
+            return Ok((None, None));
+        }
+        if att.num_components() != 3 || att.data_type() != DataType::Float32 {
+            return Ok((None, None));
+        }
+
+        if self.decoder_type_for_attribute(att_id) == 2 {
+            let quantization_bits = self
+                .options
+                .get_attribute_int(att_id, "quantization_bits", -1);
+            let mut q_transform = AttributeQuantizationTransform::new();
+            if !q_transform.compute_parameters(att, quantization_bits) {
+                return Err(DracoError::DracoError(
+                    "Failed to compute position quantization parameters".to_string(),
+                ));
+            }
+
+            let mut portable = PointAttribute::default();
+            if !q_transform.transform_attribute(att, point_ids, &mut portable) {
+                return Err(DracoError::DracoError(
+                    "Failed to quantize position attribute for encoded mesh info".to_string(),
+                ));
+            }
+
+            let mut dequantized = PointAttribute::new();
+            dequantized.try_init(
+                GeometryAttributeType::Position,
+                3,
+                DataType::Float32,
+                false,
+                portable.size(),
+            )?;
+            if !q_transform.inverse_transform_attribute(&portable, &mut dequantized) {
+                return Err(DracoError::DracoError(
+                    "Failed to dequantize position attribute for encoded mesh info".to_string(),
+                ));
+            }
+
+            return Self::position_bounds_from_attribute(&dequantized, &[]);
+        }
+
+        Self::position_bounds_from_attribute(att, point_ids)
+    }
+
+    fn position_bounds_from_attribute(
+        att: &PointAttribute,
+        point_ids: &[PointIndex],
+    ) -> Result<(Option<Vec<f64>>, Option<Vec<f64>>), DracoError> {
+        let count = if point_ids.is_empty() {
+            att.size()
+        } else {
+            point_ids.len()
+        };
+        if count == 0 {
+            return Ok((None, None));
+        }
+
+        let stride = usize::try_from(att.byte_stride()).map_err(|_| {
+            DracoError::DracoError("Position attribute has invalid byte stride".to_string())
+        })?;
+        let bytes = att.buffer().data();
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+
+        for i in 0..count {
+            let point = if point_ids.is_empty() {
+                PointIndex(i as u32)
+            } else {
+                point_ids[i]
+            };
+            let value_index = att.mapped_index(point);
+            if value_index == INVALID_ATTRIBUTE_VALUE_INDEX {
+                return Err(DracoError::DracoError(
+                    "Position attribute point map contains an invalid entry".to_string(),
+                ));
+            }
+
+            let value_offset = (value_index.0 as usize)
+                .checked_mul(stride)
+                .ok_or_else(|| {
+                    DracoError::DracoError("Position attribute offset overflow".to_string())
+                })?;
+            for component in 0..3 {
+                let offset = value_offset
+                    .checked_add(component * DataType::Float32.byte_length())
+                    .ok_or_else(|| {
+                        DracoError::DracoError("Position attribute offset overflow".to_string())
+                    })?;
+                let end = offset
+                    .checked_add(DataType::Float32.byte_length())
+                    .ok_or_else(|| {
+                        DracoError::DracoError("Position attribute offset overflow".to_string())
+                    })?;
+                let Some(component_bytes) = bytes.get(offset..end) else {
+                    return Err(DracoError::DracoError(
+                        "Position attribute buffer is shorter than metadata".to_string(),
+                    ));
+                };
+                let value = f32::from_le_bytes([
+                    component_bytes[0],
+                    component_bytes[1],
+                    component_bytes[2],
+                    component_bytes[3],
+                ]);
+                min[component] = min[component].min(value);
+                max[component] = max[component].max(value);
+            }
+        }
+
+        Ok((
+            Some(min.into_iter().map(f64::from).collect()),
+            Some(max.into_iter().map(f64::from).collect()),
+        ))
     }
 }
 

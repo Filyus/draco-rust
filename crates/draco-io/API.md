@@ -7,6 +7,7 @@ Complete API documentation for the draco-io crate.
 - [draco-io API Reference](#draco-io-api-reference)
   - [Table of Contents](#table-of-contents)
   - [Geometry Contract](#geometry-contract)
+  - [Feature Flags](#feature-flags)
   - [Traits](#traits)
     - [Writer](#writer)
     - [Reader](#reader)
@@ -19,7 +20,7 @@ Complete API documentation for the draco-io crate.
   - [Scene Types](#scene-types)
     - [Scene](#scene)
     - [SceneNode](#scenenode)
-    - [SceneObject](#sceneobject)
+    - [MeshInstance](#meshinstance)
     - [Transform](#transform)
   - [OBJ Format](#obj-format)
     - [ObjReader](#objreader)
@@ -54,9 +55,37 @@ format can represent them as Draco attributes.
 
 Readers triangulate polygon faces where practical and return explicit
 unsupported errors for primitive modes that do not map to Draco mesh geometry.
-The scene layer is limited to names, hierarchy, transforms, and mesh parts.
+The scene layer is limited to names, hierarchy, transforms, and mesh instances.
 Materials, textures/images, cameras, lights, animation, skinning, and arbitrary
 format extras are intentionally out of scope.
+
+---
+
+## Feature Flags
+
+`draco-io` keeps format support and Draco codec directions behind feature
+flags. The default feature set enables all readers and writers, optional FBX
+compression, and point-cloud decode support.
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `all-readers` | yes | Enables FBX, glTF/GLB, OBJ, and PLY readers |
+| `all-writers` | yes | Enables FBX, glTF/GLB, OBJ, and PLY writers |
+| `fbx-reader` | via `all-readers` | Binary FBX reader and scene graph support |
+| `fbx-writer` | via `all-writers` | Binary FBX writer |
+| `gltf-reader` | via `all-readers` | glTF/GLB reader; enables `draco-core/decoder` |
+| `gltf-writer` | via `all-writers` | glTF/GLB writer; enables `draco-core/encoder` |
+| `legacy-bitstream-decode` | no | Opt-in decode support for older Draco bitstreams inside glTF Draco payloads |
+| `obj-reader` | via `all-readers` | OBJ reader |
+| `obj-writer` | via `all-writers` | OBJ writer |
+| `ply-reader` | via `all-readers` | PLY reader |
+| `ply-writer` | via `all-writers` | PLY writer |
+| `scene` | via FBX/glTF readers and glTF writer | Scene graph model and traits |
+| `point_cloud_decode` | yes | Enables `draco-core/point_cloud_decode` |
+| `compression` | yes | Enables optional compressed FBX property output |
+
+`gltf-writer` intentionally depends only on `draco-core/encoder`; it does not
+enable runtime decode. Legacy bitstream support is reader-only and opt-in.
 
 ---
 
@@ -246,10 +275,10 @@ pub trait SceneWriter: Writer {
 
 ```rust
 use draco_io::{GltfWriter, SceneWriter, Writer};
-use draco_io::{Scene, SceneNode, SceneObject};
+use draco_io::{MeshInstance, Scene, SceneNode};
 
 let mut root = SceneNode::new(Some("Root".to_string()));
-root.parts.push(SceneObject {
+root.mesh_instances.push(MeshInstance {
     name: Some("Mesh".to_string()),
     mesh,
     transform: None,
@@ -257,12 +286,11 @@ root.parts.push(SceneObject {
 
 let scene = Scene {
     name: Some("MyScene".to_string()),
-    parts: vec![],
     root_nodes: vec![root],
 };
 
 let mut writer = GltfWriter::new();
-writer.add_scene(&scene)?;
+SceneWriter::add_scene(&mut writer, &scene)?;
 writer.write("scene.glb")?;
 ```
 
@@ -317,12 +345,14 @@ Container for a complete scene graph.
 pub struct Scene {
     /// Optional scene name.
     pub name: Option<String>,
-    
-    /// Flat list of parts (for convenience).
-    pub parts: Vec<SceneObject>,
-    
+
     /// Root nodes forming the hierarchy.
     pub root_nodes: Vec<SceneNode>,
+}
+
+impl Scene {
+    pub fn new(name: Option<String>) -> Self;
+    pub fn from_mesh_instances(name: Option<String>, mesh_instances: Vec<MeshInstance>) -> Self;
 }
 ```
 
@@ -336,37 +366,38 @@ A node in the scene graph hierarchy.
 pub struct SceneNode {
     /// Optional node name.
     pub name: Option<String>,
-    
+
     /// Optional transform.
     pub transform: Option<Transform>,
-    
-    /// Mesh parts attached to this node.
-    pub parts: Vec<SceneObject>,
-    
+
+    /// Mesh instances attached to this node.
+    pub mesh_instances: Vec<MeshInstance>,
+
     /// Child nodes.
     pub children: Vec<SceneNode>,
 }
 
 impl SceneNode {
     pub fn new(name: Option<String>) -> Self;
+    pub fn with_mesh_instances(name: Option<String>, mesh_instances: Vec<MeshInstance>) -> Self;
 }
 ```
 
 ---
 
-### SceneObject
+### MeshInstance
 
-A mesh with optional metadata.
+A mesh attached to a scene node with optional metadata.
 
 ```rust
-pub struct SceneObject {
-    /// Optional object name.
+pub struct MeshInstance {
+    /// Optional instance name.
     pub name: Option<String>,
-    
+
     /// The mesh data.
     pub mesh: Mesh,
-    
-    /// Optional transform.
+
+    /// Optional local transform for this mesh instance.
     pub transform: Option<Transform>,
 }
 ```
@@ -408,6 +439,9 @@ let mesh = reader.read_mesh()?;
 - Object groups (`o`, `g`)
 - Point clouds via position-only OBJ files
 
+**Additional Methods:** `from_bytes`, `read_from_bytes`, `read_positions`, and
+the convenience free function `read_obj_positions`.
+
 ---
 
 ### ObjWriter
@@ -429,22 +463,18 @@ writer.add_point([0.5, 0.5, 0.5]);
 writer.write("output.obj")?;
 ```
 
-**Implements:** `Writer`, `PointCloudWriter`
+**Implements:** `Writer`, `WriteToBytes`, `PointCloudWriter`
 
 **Attribute support:** writes positions, triangle faces, normals, and
 texcoords. Materials, MTL files, and vertex colors are not emitted.
 
-**Methods:**
+**API Surface:**
 
-| Method | Description |
-|--------|-------------|
-| `new() -> ObjWriter` | Create new writer |
-| `add_mesh(&mut self, mesh, name)` | Add mesh with optional group name |
-| `add_points(&mut self, points)` | Add point positions |
-| `add_point(&mut self, point)` | Add single point |
-| `write(&self, path)` | Write to file |
-| `vertex_count() -> usize` | Total vertices |
-| `face_count() -> usize` | Total faces |
+Construction and input: `new`, `add_mesh`, `add_points`, and `add_point`.
+
+Output: `write`, `write_to_vec`, and `write_to`.
+
+Counters: `vertex_count` and `face_count`.
 
 ---
 
@@ -473,6 +503,9 @@ let mesh = reader.read_mesh()?;
 - Binary little-endian format
 - Binary big-endian format
 
+**Additional Methods:** `from_bytes`, `read_from_bytes`, `read_positions`, and
+the convenience free function `read_ply_positions`.
+
 ---
 
 ### PlyWriter
@@ -498,23 +531,21 @@ println!("Has colors: {}", writer.has_colors());
 writer.write("output.ply")?;
 ```
 
-**Implements:** `Writer`, `PointCloudWriter`
+**Implements:** `Writer`, `WriteToBytes`, `PointCloudWriter`
 
 **Attribute support:** writes positions, normals, colors, per-vertex texcoords,
 and triangle faces. Arbitrary custom PLY properties are not generated.
 
-**Methods:**
+**API Surface:**
 
-| Method | Description |
-|--------|-------------|
-| `new() -> PlyWriter` | Create new writer |
-| `with_binary_little_endian(self) -> PlyWriter` | Enable binary little-endian output |
-| `set_binary_little_endian(&mut self, enabled)` | Toggle binary little-endian output |
-| `add_mesh(&mut self, mesh, name)` | Add mesh (name ignored) |
-| `add_points(&mut self, points)` | Add point positions |
-| `add_points_with_colors(&mut self, points, colors)` | Add colored points |
-| `has_colors() -> bool` | Check if colors present |
-| `write(&self, path)` | Write to file |
+Construction and format: `new`, `with_format`, `set_format`, `format`,
+`with_binary_little_endian`, `set_binary_little_endian`, and
+`is_binary_little_endian`.
+
+Input: `add_mesh`, `add_points`, `add_point`, and `add_points_with_colors`.
+
+Inspection and output: `has_normals`, `has_colors`, `write`, `write_to_vec`,
+and `write_to`.
 
 ---
 
@@ -548,6 +579,8 @@ let scene = reader.read_scene()?;
 
 Normals, colors, UVs, materials, animation, and skinning are not mapped yet.
 
+**Additional Methods:** `from_bytes`, `read_from_bytes`, and `read_nodes`.
+
 ---
 
 ### FbxWriter
@@ -577,16 +610,12 @@ writer.write("compressed.fbx")?;
 normals, colors, texcoords, or generic attributes, `add_mesh()` returns
 `InvalidInput` instead of silently dropping them.
 
-**Methods:**
+**API Surface:**
 
-| Method | Description |
-|--------|-------------|
-| `new() -> FbxWriter` | Create new writer |
-| `with_compression(enabled: bool) -> Self` | Enable zlib compression |
-| `with_compression_threshold(bytes: usize) -> Self` | Min size to compress |
-| `is_compression_enabled() -> bool` | Check compression status |
-| `add_mesh(&mut self, mesh, name)` | Add mesh |
-| `write(&self, path)` | Write to file |
+Construction and compression: `new`, `with_compression`,
+`with_compression_threshold`, and `is_compression_enabled`.
+
+Input and output: `add_mesh`, `write`, `write_to_vec`, and `write_to`.
 
 ---
 
@@ -613,13 +642,20 @@ let scene = reader.read_scene()?;
 
 **Implements:** `Reader`, `SceneReader`
 
-**Additional Methods:**
+**API Surface:**
 
-| Method | Description |
-|--------|-------------|
-| `decode_all_meshes() -> Result<Vec<Mesh>>` | Decode all meshes (Draco and non-Draco) |
-| `decode_all_draco_meshes() -> Result<Vec<(DracoPrimitiveInfo, Mesh)>>` | Decode only Draco-compressed meshes |
-| `has_draco_extension() -> bool` | Check for Draco extension |
+Construction: `open`, `from_glb`, `from_gltf`, `from_bytes`, and
+`from_bytes_with_base_path`.
+
+Draco payload access: `has_draco_extension`, `draco_primitives`,
+`get_draco_data`, `decode_draco_mesh`, `decode_draco_point_cloud`
+(`point_cloud_decode`), and `decode_all_draco_meshes`.
+
+General mesh and scene decode: `read_mesh`, `read_meshes`, `read_scene`,
+`read_scenes`, and `decode_all_meshes`.
+
+Metadata inspection: `num_meshes`, `num_buffers`, `extensions_used`, and
+`extensions_required`.
 
 ```rust
 use draco_io::gltf_reader::GltfReader;
@@ -664,20 +700,29 @@ writer.write_gltf("out.gltf", "out.bin")?;    // JSON + binary
 writer.write_gltf_embedded("embedded.gltf")?; // Pure text + base64
 ```
 
-**Implements:** `Writer`, `SceneWriter`
+**Implements:** `Writer`, `WriteToBytes`, `SceneWriter`
 
-**Methods:**
+`GltfWriter` emits current Draco bitstreams and uses encoder-side mesh summary
+metadata to build the `KHR_draco_mesh_compression` accessors. The writer
+feature depends on `draco-core/encoder` only; it does not decode its own output
+at runtime. Use `encode_draco_mesh()` when callers need the raw `.drc` payload
+without a glTF/GLB container.
 
-| Method | Description |
-|--------|-------------|
-| `new() -> GltfWriter` | Create new writer |
-| `add_mesh(&mut self, mesh, name)` | Add mesh (uses default 14-bit quantization) |
-| `add_draco_mesh(&mut self, mesh, name, quant)` | Add mesh with custom quantization |
-| `add_scene(&mut self, scene)` | Add scene graph |
-| `write(&self, path)` | Write GLB (default) |
-| `write_glb(&self, path)` | Write binary GLB |
-| `write_gltf(&self, json_path, bin_path)` | Write JSON + separate binary |
-| `write_gltf_embedded(&self, path)` | Write JSON with embedded base64 |
+**API Surface:**
+
+Construction and input: `new`, `add_mesh`, `add_draco_mesh`, and `add_scene`.
+The trait `SceneWriter::add_scene` uses default quantization; the inherent
+`GltfWriter::add_scene` also accepts optional custom quantization.
+
+File output: `write`, `write_glb`, `write_gltf`, and `write_gltf_embedded`.
+
+In-memory output: `to_gltf_embedded`, `to_glb`, `write_to_vec`, and `write_to`.
+
+**Free Functions:**
+
+| Function | Description |
+|----------|-------------|
+| `encode_draco_mesh(mesh, quantization) -> Result<Vec<u8>>` | Encode raw Draco bytes with the same validation and quantization defaults as `GltfWriter` |
 
 ---
 
@@ -727,15 +772,18 @@ Metadata about a Draco-compressed primitive.
 pub struct DracoPrimitiveInfo {
     /// Index of the glTF mesh.
     pub mesh_index: usize,
-    
-    /// Index of the primitive within the mesh.
-    pub primitive_index: usize,
-    
+
     /// Mesh name (if available).
     pub mesh_name: Option<String>,
-    
-    /// Byte offset into buffer view.
+
+    /// Index of the primitive within the mesh.
+    pub primitive_index: usize,
+
+    /// Buffer view containing the Draco data.
     pub buffer_view: usize,
+
+    /// Attribute mappings from glTF semantic to Draco attribute ID.
+    pub attributes: HashMap<String, usize>,
 }
 ```
 
@@ -788,6 +836,9 @@ pub enum GltfWriteError {
 
     #[error("Invalid mesh: {0}")]
     InvalidMesh(String),
+
+    #[error("Unsupported feature: {0}")]
+    Unsupported(String),
 }
 ```
 
@@ -853,7 +904,7 @@ fn export_all_formats(mesh: &Mesh, basename: &str) -> std::io::Result<()> {
 
 ```rust
 use draco_io::{GltfWriter, SceneWriter, Writer};
-use draco_io::{Scene, SceneNode, SceneObject, Transform};
+use draco_io::{MeshInstance, Scene, SceneNode, Transform};
 use draco_core::mesh::Mesh;
 
 fn export_scene(meshes: Vec<Mesh>) -> Result<(), draco_io::GltfWriteError> {
@@ -862,7 +913,7 @@ fn export_scene(meshes: Vec<Mesh>) -> Result<(), draco_io::GltfWriteError> {
     
     for (i, mesh) in meshes.into_iter().enumerate() {
         let mut child = SceneNode::new(Some(format!("Object_{}", i)));
-        child.parts.push(SceneObject {
+        child.mesh_instances.push(MeshInstance {
             name: Some(format!("Mesh_{}", i)),
             mesh,
             transform: Some(Transform {
@@ -876,16 +927,15 @@ fn export_scene(meshes: Vec<Mesh>) -> Result<(), draco_io::GltfWriteError> {
         });
         root.children.push(child);
     }
-    
+
     let scene = Scene {
         name: Some("MyScene".to_string()),
-        parts: vec![],
         root_nodes: vec![root],
     };
-    
+
     // Export
     let mut writer = GltfWriter::new();
-    writer.add_scene(&scene)?;
+    writer.add_scene(&scene, None)?;
     writer.write_glb("scene.glb")
 }
 ```

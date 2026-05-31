@@ -11,8 +11,11 @@ Complete API documentation for the draco-core crate.
   - [GeometryAttributeType](#geometryattributetype)
   - [DataType](#datatype)
   - [Index Types](#index-types)
+- [Feature Flags](#feature-flags)
 - [Encoding API](#encoding-api)
   - [MeshEncoder](#meshencoder)
+  - [EncodedMeshInfo](#encodedmeshinfo)
+  - [EncodedAttributeInfo](#encodedattributeinfo)
   - [PointCloudEncoder](#pointcloudencoder)
   - [EncoderBuffer](#encoderbuffer)
   - [EncoderOptions](#encoderoptions)
@@ -51,27 +54,20 @@ let num_faces = mesh.num_faces();
 let face = mesh.face(FaceIndex(0));  // Returns [PointIndex; 3]
 ```
 
-**Methods:**
+**API Surface:**
 
-| Method | Description |
-|--------|-------------|
-| `new() -> Mesh` | Create an empty mesh |
-| `add_face(face: Face)` | Append a face |
-| `set_face(id: FaceIndex, face: Face)` | Set face at index |
-| `face(id: FaceIndex) -> Face` | Get face at index |
-| `num_faces() -> usize` | Number of faces |
-| `set_num_faces(n: usize)` | Resize face array |
+Face editing: `new`, `add_face`, `set_face`, `face`, `num_faces`,
+`set_num_faces`, `try_set_num_faces`, and `set_face_from_indices`.
 
-**Inherited from PointCloud** (via `Deref`):
+Bulk index import: `set_faces_from_flat_indices`, `set_faces_from_u8_indices`,
+`set_faces_from_le_u16_indices`, and `set_faces_from_le_u32_indices`.
 
-| Method | Description |
-|--------|-------------|
-| `add_attribute(attr) -> i32` | Add attribute, returns ID |
-| `attribute(id: i32) -> &PointAttribute` | Get attribute by ID |
-| `attribute_mut(id: i32) -> &mut PointAttribute` | Get mutable attribute |
-| `named_attribute(type) -> Option<&PointAttribute>` | Get by semantic type |
-| `num_attributes() -> i32` | Number of attributes |
-| `num_points() -> usize` | Number of points |
+Point/attribute access comes from `PointCloud` via `Deref`: `num_points`,
+`num_attributes`, `add_attribute`, `attribute`, `attribute_mut`,
+`named_attribute`, and the checked `try_attribute` variants.
+
+Topology cleanup: `deduplicate_point_ids` rebuilds point and attribute maps
+with duplicate point IDs collapsed.
 
 ---
 
@@ -94,19 +90,18 @@ let att_id = pc.add_attribute(pos_att);
 let pos = pc.named_attribute(GeometryAttributeType::Position);
 ```
 
-**Methods:**
+**API Surface:**
 
-| Method | Description |
-|--------|-------------|
-| `new() -> PointCloud` | Create empty point cloud |
-| `set_num_points(n: usize)` | Set number of points |
-| `num_points() -> usize` | Get number of points |
-| `add_attribute(attr) -> i32` | Add attribute |
-| `attribute(id: i32) -> &PointAttribute` | Get attribute by ID |
-| `attribute_mut(id: i32) -> &mut PointAttribute` | Mutable access |
-| `named_attribute_id(type) -> i32` | Find attribute by type (-1 if not found) |
-| `named_attribute(type) -> Option<&PointAttribute>` | Get attribute by type |
-| `num_attributes() -> i32` | Attribute count |
+Point count: `new`, `set_num_points`, and `num_points`.
+
+Attributes: `add_attribute`, `add_attribute_preserve_unique_id`,
+`num_attributes`, `attribute`, `attribute_mut`, `named_attribute_id`, and
+`named_attribute`. Checked lookups are available as `try_attribute` and
+`try_attribute_mut`.
+
+Metadata: `metadata`, `metadata_mut`, `metadata_or_insert`, `set_metadata`,
+`attribute_metadata_by_unique_id`, `attribute_metadata_by_string_entry`, and
+`set_attribute_metadata`.
 
 ---
 
@@ -131,21 +126,20 @@ attr.buffer_mut().write(0, &bytes);
 let data = attr.buffer().data();
 ```
 
-**Methods:**
+**API Surface:**
 
-| Method | Description |
-|--------|-------------|
-| `new() -> PointAttribute` | Create uninitialized attribute |
-| `init(type, components, data_type, normalized, num_values)` | Initialize attribute |
-| `attribute_type() -> GeometryAttributeType` | Get semantic type |
-| `data_type() -> DataType` | Get data type |
-| `num_components() -> u8` | Components per value (e.g., 3 for vec3) |
-| `normalized() -> bool` | Is normalized integer data |
-| `size() -> usize` | Number of attribute values |
-| `buffer() -> &DataBuffer` | Raw data buffer |
-| `buffer_mut() -> &mut DataBuffer` | Mutable data buffer |
-| `unique_id() -> u32` | Unique identifier |
-| `set_unique_id(id: u32)` | Set unique identifier |
+Initialization and shape: `new`, `init`, `try_init`, `size`,
+`resize_unique_entries`, `num_components`, `data_type`, `attribute_type`,
+`normalized`, `byte_stride`, and `byte_offset`.
+
+Storage: `buffer` and `buffer_mut` expose the raw `DataBuffer`.
+
+Point-to-value mapping: `mapped_index`, `set_identity_mapping`,
+`set_explicit_mapping`, `set_point_map_entry`, and `try_set_point_map_entry`.
+
+Metadata and mutators: `unique_id`, `set_unique_id`, `set_attribute_type`,
+`set_data_type`, `set_num_components`, `set_attribute_transform_data`, and
+`attribute_transform_data`.
 
 ---
 
@@ -188,13 +182,13 @@ let dt = DataType::Float32;
 |---------|-------------|
 | `Invalid` | Invalid/uninitialized |
 | `Int8` | Signed 8-bit integer |
-| `UInt8` | Unsigned 8-bit integer |
+| `Uint8` | Unsigned 8-bit integer |
 | `Int16` | Signed 16-bit integer |
-| `UInt16` | Unsigned 16-bit integer |
+| `Uint16` | Unsigned 16-bit integer |
 | `Int32` | Signed 32-bit integer |
-| `UInt32` | Unsigned 32-bit integer |
+| `Uint32` | Unsigned 32-bit integer |
 | `Int64` | Signed 64-bit integer |
-| `UInt64` | Unsigned 64-bit integer |
+| `Uint64` | Unsigned 64-bit integer |
 | `Float32` | 32-bit float |
 | `Float64` | 64-bit float |
 | `Bool` | Boolean |
@@ -206,11 +200,14 @@ let dt = DataType::Float32;
 Type-safe index wrappers for geometry elements.
 
 ```rust
-use draco_core::{PointIndex, FaceIndex, AttributeValueIndex, CornerIndex, VertexIndex};
+use draco_core::{AttributeValueIndex, FaceIndex, PointIndex};
+use draco_core::geometry_indices::{CornerIndex, VertexIndex};
 
 let point = PointIndex(0);
 let face = FaceIndex(0);
 let attr_value = AttributeValueIndex(0);
+let corner = CornerIndex(0);
+let vertex = VertexIndex(0);
 ```
 
 | Type | Description |
@@ -220,6 +217,29 @@ let attr_value = AttributeValueIndex(0);
 | `AttributeValueIndex` | Index into attribute value array |
 | `CornerIndex` | Index into corner table |
 | `VertexIndex` | Index into vertex array |
+
+---
+
+## Feature Flags
+
+`draco-core` gates codec directions and optional compatibility paths so embedders
+can keep builds small.
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `encoder` | yes | Mesh and point-cloud encoding APIs |
+| `decoder` | yes | Mesh and point-cloud decoding APIs |
+| `point_cloud_decode` | yes | Point-cloud decoder path |
+| `edgebreaker_valence_encode` | yes | EdgeBreaker valence encoder path |
+| `edgebreaker_valence_decode` | yes | EdgeBreaker valence decoder path |
+| `legacy_bitstream_encode` | yes | Explicit/testing encode support for legacy bitstream paths |
+| `legacy_bitstream_decode` | yes | Decode support for legacy bitstream paths |
+| `debug_logs` | no | Diagnostic logging |
+| `force_sequential_seeds` | no | Test/debug knob for deterministic traversal experiments |
+
+Public encoders write the current Draco bitstream by default. Legacy encode
+support is for compatibility and conformance tests, not for normal writer
+output.
 
 ---
 
@@ -243,18 +263,61 @@ let mut buffer = EncoderBuffer::new();
 encoder.encode(&options, &mut buffer)?;
 
 let compressed_data = buffer.data();
+let encoded_info = encoder.encoded_mesh_info();
 ```
 
-**Methods:**
+**API Surface:**
 
-| Method | Description |
-|--------|-------------|
-| `new() -> MeshEncoder` | Create new encoder |
-| `set_mesh(mesh: Mesh)` | Set mesh to encode |
-| `mesh() -> Option<&Mesh>` | Get reference to mesh |
-| `encode(options, buffer) -> Status` | Encode mesh |
-| `num_encoded_faces() -> usize` | Faces encoded |
-| `corner_table() -> Option<&CornerTable>` | Access corner table |
+Construction and input: `new`, `set_mesh`, and `mesh`.
+
+Encoding and results: `encode`, `num_encoded_faces`, `corner_table`, and
+`encoded_mesh_info`.
+
+---
+
+### EncodedMeshInfo
+
+Summary produced by `MeshEncoder` after a successful `encode()`. This describes
+the encoded mesh shape and attribute metadata without requiring a decoder pass.
+It is primarily useful for container writers such as glTF
+`KHR_draco_mesh_compression`.
+
+```rust
+pub struct EncodedMeshInfo {
+    pub encoding_method: i32,
+    pub num_encoded_faces: usize,
+    pub num_encoded_points: usize,
+    pub attributes: Vec<EncodedAttributeInfo>,
+}
+```
+
+`num_encoded_points` is the global encoded point count used by compressed
+attribute accessors. Individual attributes also report their own
+`num_encoded_values`, which can differ when split attribute connectivity or
+seams are involved.
+
+---
+
+### EncodedAttributeInfo
+
+Attribute summary produced by `MeshEncoder`.
+
+```rust
+pub struct EncodedAttributeInfo {
+    pub source_attribute_id: i32,
+    pub attribute_type: GeometryAttributeType,
+    pub data_type: DataType,
+    pub num_components: u8,
+    pub normalized: bool,
+    pub unique_id: u32,
+    pub num_encoded_values: usize,
+    pub position_min: Option<Vec<f64>>,
+    pub position_max: Option<Vec<f64>>,
+}
+```
+
+`unique_id` is the Draco attribute id that container formats should reference.
+`position_min` and `position_max` are populated only for position attributes.
 
 ---
 
@@ -276,13 +339,7 @@ let mut buffer = EncoderBuffer::new();
 encoder.encode(&options, &mut buffer)?;
 ```
 
-**Methods:**
-
-| Method | Description |
-|--------|-------------|
-| `new() -> PointCloudEncoder` | Create new encoder |
-| `set_point_cloud(pc: PointCloud)` | Set point cloud to encode |
-| `encode(options, buffer) -> Status` | Encode point cloud |
+**API Surface:** `new`, `set_point_cloud`, `point_cloud`, and `encode`.
 
 ---
 
@@ -299,14 +356,18 @@ let data: &[u8] = buffer.data();
 let size = buffer.size();
 ```
 
-**Methods:**
+**API Surface:**
 
-| Method | Description |
-|--------|-------------|
-| `new() -> EncoderBuffer` | Create empty buffer |
-| `data() -> &[u8]` | Get encoded data |
-| `size() -> usize` | Size in bytes |
-| `clear()` | Clear buffer |
+Lifecycle and versioning: `new`, `clear`, `resize`, `set_version`,
+`version_major`, and `version_minor`.
+
+Inspection: `data` and `size`.
+
+Byte-aligned writes: `encode`, `encode_data`, `encode_u8`, `encode_u16`,
+`encode_u32`, `encode_u64`, `encode_varint`, and `encode_varint_signed_i32`.
+
+Bit-level writes: `start_bit_encoding`, `encode_least_significant_bits32`, and
+`end_bit_encoding`.
 
 ---
 
@@ -331,21 +392,14 @@ options.set_attribute_int(1, "quantization_bits", 10);  // Normal
 options.set_prediction_scheme(1);  // Parallelogram
 ```
 
-**Methods:**
+**API Surface:**
 
-| Method | Description |
-|--------|-------------|
-| `new() -> EncoderOptions` | Create with defaults |
-| `set_global_int(key, value)` | Set global option |
-| `get_global_int(key, default) -> i32` | Get global option |
-| `set_attribute_int(att_id, key, value)` | Set per-attribute option |
-| `get_attribute_int(att_id, key, default) -> i32` | Get per-attribute option |
-| `get_encoding_speed() -> i32` | Get encoding speed (0-10) |
-| `get_decoding_speed() -> i32` | Get decoding speed (0-10) |
-| `set_encoding_method(method: i32)` | Set encoding method |
-| `get_encoding_method() -> Option<i32>` | Get encoding method |
-| `set_prediction_scheme(scheme: i32)` | Set prediction scheme |
-| `set_version(major, minor)` | Force specific version |
+Generic options: `set_global_int`, `get_global_int`, `set_attribute_int`, and
+`get_attribute_int`.
+
+Common knobs: `get_encoding_speed`, `get_decoding_speed`, `get_speed`,
+`set_encoding_method`, `get_encoding_method`, `set_prediction_scheme`,
+`get_prediction_scheme`, `set_version`, and `get_version`.
 
 **Common Options:**
 
@@ -378,12 +432,7 @@ println!("Faces: {}", mesh.num_faces());
 println!("Points: {}", mesh.num_points());
 ```
 
-**Methods:**
-
-| Method | Description |
-|--------|-------------|
-| `new() -> MeshDecoder` | Create new decoder |
-| `decode(buffer, mesh) -> Status` | Decode to mesh |
+**API Surface:** `new` and `decode`.
 
 ---
 
@@ -403,12 +452,7 @@ let mut pc = PointCloud::new();
 decoder.decode(&mut buffer, &mut pc)?;
 ```
 
-**Methods:**
-
-| Method | Description |
-|--------|-------------|
-| `new() -> PointCloudDecoder` | Create new decoder |
-| `decode(buffer, point_cloud) -> Status` | Decode to point cloud |
+**API Surface:** `new` and `decode`.
 
 ---
 
@@ -428,24 +472,20 @@ let value = buffer.decode_varint()?;
 let remaining = buffer.remaining_size();
 ```
 
-**Methods:**
+**API Surface:**
 
-| Method | Description |
-|--------|-------------|
-| `new(data: &[u8]) -> DecoderBuffer` | Create from data |
-| `remaining_size() -> usize` | Bytes remaining |
-| `decode_u8() -> Result<u8, DracoError>` | Read u8 |
-| `decode_u16() -> Result<u16, DracoError>` | Read little-endian u16 |
-| `decode_u32() -> Result<u32, DracoError>` | Read little-endian u32 |
-| `decode_u64() -> Result<u64, DracoError>` | Read little-endian u64 |
-| `decode_f32() -> Result<f32, DracoError>` | Read little-endian f32 |
-| `decode_f64() -> Result<f64, DracoError>` | Read little-endian f64 |
-| `decode_varint() -> Result<u64, DracoError>` | Read variable-length int |
-| `decode_string() -> Result<String, DracoError>` | Read null-terminated string |
-| `decode_bytes(&mut [u8]) -> Result<(), DracoError>` | Read bytes into buffer |
-| `decode_slice(size) -> Result<&[u8], DracoError>` | Read and return slice |
-| `set_position(pos) -> Result<(), DracoError>` | Set read position |
-| `advance(bytes: usize)` | Skip bytes |
+Lifecycle, position, and versioning: `new`, `set_version`, `version_major`,
+`version_minor`, `position`, `set_position`, `advance`, and `try_advance`.
+
+Inspection: `remaining_size`, `remaining_data`, and `peek_bytes`.
+
+Byte-aligned reads: `decode`, `decode_u8`, `decode_u16`, `decode_u32`,
+`decode_u64`, `decode_f32`, `decode_f64`, `decode_varint`,
+`decode_varint_signed_i32`, `decode_string`, `decode_bytes`, and
+`decode_slice`.
+
+Bit-level reads: `start_bit_decoding`, `decode_least_significant_bits32`, and
+`end_bit_decoding`.
 
 ---
 
@@ -499,23 +539,20 @@ Quantizes floating-point attributes to integers for compression.
 ```rust
 use draco_core::AttributeQuantizationTransform;
 
-let transform = AttributeQuantizationTransform::new();
+let attribute = /* float PointAttribute */;
+let mut transform = AttributeQuantizationTransform::new();
 
-// Get quantization parameters after decoding
-let min_values = transform.min_value();
-let range = transform.range();
-let quantization_bits = transform.quantization_bits();
+// Compute quantization parameters for an attribute.
+let ok = transform.compute_parameters(&attribute, 14);
 ```
 
-**Methods:**
+**API Surface:**
 
-| Method | Description |
-|--------|-------------|
-| `new() -> Self` | Create new transform |
-| `quantization_bits() -> i32` | Bits per component |
-| `min_value() -> &[f32]` | Minimum values |
-| `range() -> f32` | Value range |
-| `is_initialized() -> bool` | Is transform initialized |
+Own methods: `new`, `set_parameters`, and `compute_parameters`.
+
+The `AttributeTransform` trait provides metadata initialization, forward and
+inverse attribute transforms, parameter encode/decode, and transformed
+data-shape queries.
 
 ---
 
@@ -526,9 +563,18 @@ Encodes unit normals using octahedron projection.
 ```rust
 use draco_core::AttributeOctahedronTransform;
 
-let transform = AttributeOctahedronTransform::new();
+let transform = AttributeOctahedronTransform::new(10);
 let quantization_bits = transform.quantization_bits();
 ```
+
+**API Surface:**
+
+Own methods: `new`, `is_valid_quantization_bits`, `set_parameters`,
+`is_initialized`, `quantization_bits`, and `generate_portable_attribute`.
+
+The `AttributeTransform` trait provides metadata initialization, forward and
+inverse attribute transforms, parameter encode/decode, and transformed
+data-shape queries.
 
 ---
 
@@ -572,13 +618,15 @@ Low-level entropy coding for advanced use cases.
 
 | Method | Value | Description |
 |--------|-------|-------------|
-| `None` | 0 | No prediction |
-| `Difference` | 1 | Delta from previous |
-| `Parallelogram` | 2 | Parallelogram prediction |
-| `MultiParallelogram` | 3 | Constrained multi-parallelogram |
-| `TexCoordsDeprecated` | 4 | Deprecated texture coords |
-| `TexCoordsPortable` | 5 | Portable texture coords |
-| `GeometricNormal` | 6 | Geometric normal prediction |
+| `None` | -2 | No prediction |
+| `Undefined` | -1 | Let encoder choose |
+| `Difference` | 0 | Delta from previous |
+| `MeshPredictionParallelogram` | 1 | Parallelogram prediction |
+| `MeshPredictionMultiParallelogram` | 2 | Legacy multi-parallelogram prediction |
+| `MeshPredictionTexCoordsDeprecated` | 3 | Deprecated texture coords predictor |
+| `MeshPredictionConstrainedMultiParallelogram` | 4 | Constrained multi-parallelogram prediction |
+| `MeshPredictionTexCoordsPortable` | 5 | Portable texture coords predictor |
+| `MeshPredictionGeometricNormal` | 6 | Geometric normal prediction |
 
 ---
 

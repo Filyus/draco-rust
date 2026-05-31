@@ -292,7 +292,7 @@ pub use encoder_options::EncoderOptions;
 pub use folded_bit32_coder::FoldedBit32Encoder;
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
-pub use mesh_encoder::MeshEncoder;
+pub use mesh_encoder::{EncodedAttributeInfo, EncodedMeshInfo, MeshEncoder};
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub use point_cloud_encoder::{GeometryEncoder, PointCloudEncoder};
