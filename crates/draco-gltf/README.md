@@ -83,10 +83,21 @@ therefore runs **Draco-aware validation**: full gltf-rs validation with only the
 expected Draco errors filtered out (the unsupported-extension error, and the
 "missing bufferView" on accessors whose data comes from the Draco stream). A
 structurally invalid asset — out-of-range indices, malformed accessors — is
-still rejected. The validation is also panic-safe: gltf-rs's validator can panic
-on some malformed documents, so it is isolated and any panic becomes a
-controlled `Error::Validation`. Use `draco_gltf::validate(&document)` to check a
-document you built yourself.
+still rejected. The validation is also panic-safe: gltf-rs 1.4's validator can
+panic on a primitive that references an out-of-range accessor, so `validate`
+pre-checks those references and returns a controlled `Error::Validation` before
+the panic can happen (this holds even on wasm targets built with
+`panic = "abort"`, where `catch_unwind` would not). Use
+`draco_gltf::validate(&document)` to check a document you built yourself.
+
+## WebAssembly
+
+`draco-gltf` works on `wasm32` for native-Rust web apps that want the full glTF
+scene model in the browser. Use the byte API — [`import_slice`], [`compress`],
+and [`Import::decompress_in_place`] — since the filesystem [`import`] is
+native-only. Fetch the glTF/GLB bytes (and any external resources) yourself and
+pass them in. For plugging a Draco decoder into a JavaScript glTF loader instead
+(three.js, babylon, …), use `draco-core` directly.
 
 ## Where it sits
 

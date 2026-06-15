@@ -262,8 +262,9 @@ fn set_accessor_view(doc: &mut Value, accessor: usize, view: usize, count: usize
 
 /// Loads a glTF/GLB file that may use Draco (and any other extensions).
 ///
-/// Loads without `gltf-rs` validation (which rejects Draco assets); see the
-/// [module docs](crate#validation).
+/// Filesystem-only (not available on `wasm32`); on the web use [`import_slice`]
+/// with bytes you have already fetched.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn import<P: AsRef<Path>>(path: P) -> Result<Import> {
     let path = path.as_ref();
     let bytes = std::fs::read(path)?;
@@ -298,44 +299,62 @@ pub fn import_slice(bytes: &[u8], base: Option<&Path>) -> Result<Import> {
 /// validate a document they have built or modified.
 pub fn validate(document: &gltf::Document) -> Result<()> {
     use gltf::json::validation::Validate;
-    // A Draco primitive's attribute/index accessors take their data from the
-    // Draco stream, so they legitimately have no bufferView. gltf-rs does not
-    // know this and reports "missing bufferView"; those are expected.
-    let draco_accessors = draco_accessor_indices(document);
-
     let root = document.clone().into_json();
 
-    // gltf-rs's validator is not panic-safe on every malformed document (e.g. it
-    // directly indexes `accessors[n]` for a primitive's attribute, which panics
-    // when `n` is out of range). Isolate it so a hostile document yields a
-    // controlled error instead of unwinding through the caller.
-    let collected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut errors = Vec::new();
-        root.validate(&root, gltf::json::Path::new, &mut |path, error| {
-            let location = path().to_string();
-            // gltf-rs flags the required KHR_draco extension as unsupported.
-            if location.contains(KHR_DRACO) {
-                return;
-            }
-            // A Draco accessor legitimately has no bufferView.
-            if format!("{error:?}") == "Missing" {
-                if let Some(idx) = accessor_buffer_view_index(&location) {
-                    if draco_accessors.contains(&idx) {
-                        return;
-                    }
+    // gltf-rs 1.4's validator has a single panic vector: it directly indexes
+    // `root.accessors[n]` for a primitive's POSITION attribute (a known bug,
+    // fixed upstream but unreleased). Pre-check every primitive's accessor
+    // references so the validator never reaches the panic. This keeps validation
+    // correct even on wasm targets built with `panic = "abort"`, where
+    // `catch_unwind` cannot intercept a panic.
+    let accessor_count = root.accessors.len();
+    let mut errors = Vec::new();
+    for (mi, mesh) in root.meshes.iter().enumerate() {
+        for (pi, prim) in mesh.primitives.iter().enumerate() {
+            for accessor in prim.attributes.values() {
+                if accessor.value() >= accessor_count {
+                    errors.push(format!(
+                        "IndexOutOfBounds at meshes[{mi}].primitives[{pi}].attributes"
+                    ));
                 }
             }
-            errors.push(format!("{error:?} at {location}"));
-        });
-        errors
-    }));
+            if let Some(indices) = &prim.indices {
+                if indices.value() >= accessor_count {
+                    errors.push(format!(
+                        "IndexOutOfBounds at meshes[{mi}].primitives[{pi}].indices"
+                    ));
+                }
+            }
+        }
+    }
+    if !errors.is_empty() {
+        return Err(Error::Validation(errors));
+    }
 
-    match collected {
-        Ok(errors) if errors.is_empty() => Ok(()),
-        Ok(errors) => Err(Error::Validation(errors)),
-        Err(_) => Err(Error::Validation(vec![
-            "glTF validation failed on a malformed document".into(),
-        ])),
+    // Every primitive accessor reference is in range, so the validator will not
+    // panic. Run it and filter the errors that are expected for a valid Draco
+    // asset: the unsupported-extension error, and "missing bufferView" on the
+    // geometry accessors whose data lives in the Draco stream.
+    let draco_accessors = draco_accessor_indices(document);
+    let mut errors = Vec::new();
+    root.validate(&root, gltf::json::Path::new, &mut |path, error| {
+        let location = path().to_string();
+        if location.contains(KHR_DRACO) {
+            return;
+        }
+        if format!("{error:?}") == "Missing" {
+            if let Some(idx) = accessor_buffer_view_index(&location) {
+                if draco_accessors.contains(&idx) {
+                    return;
+                }
+            }
+        }
+        errors.push(format!("{error:?} at {location}"));
+    });
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Validation(errors))
     }
 }
 

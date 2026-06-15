@@ -78,8 +78,9 @@ fn invalid_document_is_rejected_by_validation() {
 #[test]
 fn validation_does_not_panic_on_a_hostile_document() {
     // A primitive references accessor 99 with no accessors present. gltf-rs's
-    // own validator panics here (direct index); draco-gltf must turn that into a
-    // controlled error, never unwind through the caller.
+    // own validator would panic here (direct index); draco-gltf pre-checks
+    // primitive accessor references and returns a controlled error instead,
+    // never reaching the panic (so this holds even under panic=abort on wasm).
     let doc = serde_json::json!({
         "asset": { "version": "2.0" },
         "meshes": [ { "primitives": [ { "attributes": { "POSITION": 99 } } ] } ]
