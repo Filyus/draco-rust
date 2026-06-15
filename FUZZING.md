@@ -126,10 +126,35 @@ regression in
 (see the `*_do_not_panic` tests) so the case is covered on stable in CI without
 requiring the fuzzing toolchain.
 
-## CI / pre-release expectation
+## CI
 
-- Stable CI runs the deterministic malformed-input regressions in
-  `drc_edge_cases_test.rs` on every change — no nightly toolchain needed.
-- A bounded `-max_total_time=120` libFuzzer run is the minimum pre-release gate.
-- Any new crash must be fixed and then pinned as a deterministic regression test
-  before the hostile-input readiness in `hardening_status.yaml` is upgraded.
+Fuzzing runs in CI on Linux (`ubuntu-latest`), where libFuzzer and
+AddressSanitizer work out of the box — no Windows sanitizer-runtime workaround
+needed. Two layers run there:
+
+**Level 1 — lightweight in-repo gate ([`.github/workflows/fuzz.yml`](.github/workflows/fuzz.yml)):**
+
+- Bounded smoke run (`-max_total_time=120`) on every pull request and push to
+  `main`, plus a nightly soak (`-max_total_time=1800`) on a schedule.
+- The corpus is persisted across runs via the GitHub Actions cache and
+  re-seeded from the committed fixtures each run, so coverage never starts from
+  zero even if the cache entry is evicted.
+- A crash fails the job and uploads the reproducer as a build artifact.
+
+**Level 2 — ClusterFuzzLite continuous fuzzing
+([`.github/workflows/cflite_*.yml`](.github/workflows), [`.clusterfuzzlite/`](.clusterfuzzlite)):**
+
+- `cflite_pr.yml` fuzzes only the code changed in a pull request.
+- `cflite_batch.yml` runs a nightly batch campaign.
+- `cflite_cron.yml` prunes the corpus nightly.
+- Build integration lives in `.clusterfuzzlite/` (OSS-Fuzz Rust base image +
+  `build.sh` that calls `cargo fuzz build --fuzz-dir fuzz`); corpus and crashes
+  are stored in the GitHub Actions cache by default. This is also the stepping
+  stone to full OSS-Fuzz onboarding.
+
+Stable CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) additionally
+runs the deterministic malformed-input regressions in `drc_edge_cases_test.rs`
+on every change with no nightly toolchain needed.
+
+Any new crash must be fixed and then pinned as a deterministic regression test
+before the hostile-input readiness in `hardening_status.yaml` is upgraded.

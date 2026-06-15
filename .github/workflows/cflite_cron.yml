@@ -1,0 +1,25 @@
+name: ClusterFuzzLite cron tasks
+
+on:
+  schedule:
+    - cron: "0 5 * * *" # nightly corpus pruning
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  Pruning:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build Fuzzers
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@v1
+        with:
+          language: rust
+          sanitizer: address
+      - name: Run Fuzzers
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          mode: 'prune'

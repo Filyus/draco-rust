@@ -28,7 +28,7 @@ jobs:
         run: cargo fmt --manifest-path web/Cargo.toml --all -- --check
 
       - name: Test draco-core
-        run: cargo test --manifest-path crates/Cargo.toml -p draco-core --lib
+        run: cargo test --manifest-path crates/Cargo.toml -p draco-core
 
       - name: Test draco-io
         run: cargo test --manifest-path crates/Cargo.toml -p draco-io
