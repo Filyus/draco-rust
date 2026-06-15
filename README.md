@@ -205,7 +205,7 @@ Run the coverage-guided decode fuzzer (nightly + `cargo-fuzz`):
 
 ```powershell
 pwsh fuzz/seed_corpus.ps1
-cargo +nightly fuzz run decode_drc --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
+cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
 ```
 
 See [`FUZZING.md`](FUZZING.md) for the full fuzzing routine and

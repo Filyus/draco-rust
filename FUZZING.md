@@ -18,19 +18,25 @@ The fuzz crate builds `draco-core` with `default-features = false` and only the
 `decoder` + `point_cloud_decode` features, matching the smallest realistic
 untrusted-decode profile.
 
-### Build profile: production (release) semantics
+### `-O`: fuzz with production (release) semantics
 
-The fuzz profile (`fuzz/Cargo.toml`) disables `debug-assertions` and
-`overflow-checks` so the campaign exercises the actual shipped release behavior.
-The decoder intentionally relies on two's-complement wrapping (matching C++
-Draco) and uses `debug_assert!` / `DRACO_DCHECK`-equivalent invariants that are
-compiled out in release. With those checks on (cargo-fuzz's default) the fuzzer
-trips on dev-time assertions and benign intentional-overflow wraps instead of
-real hostile-input hazards. Disabling them keeps the memory-safety coverage that
-matters — out-of-bounds indexing still panics in release Rust and is still
-caught, as are OOMs, timeouts, and unbounded loops — while removing the
-debug-only noise. To hunt for logic-level invariant violations during
-development instead, fuzz a normal (assertions-on) build.
+Pass `-O` to `cargo fuzz` to build in release mode **without** debug assertions
+and overflow checks. This matters: by default cargo-fuzz enables both (its build
+is "release + debug-assertions + overflow-checks"), and a Cargo profile setting
+does not override that — only `-O` does.
+
+Use `-O` for the CI gate and any run whose job is to find *shipped-behavior*
+hazards. The decoder intentionally relies on two's-complement wrapping (matching
+C++ Draco) and keeps `debug_assert!` / `DRACO_DCHECK`-equivalent invariants that
+are compiled out in release. Without `-O`, the fuzzer trips on those dev-time
+checks and benign intentional-overflow wraps instead of real hostile-input
+hazards. With `-O` the memory-safety coverage that matters is intact —
+out-of-bounds indexing still panics in release Rust and is still caught, as are
+OOMs, timeouts, and unbounded loops.
+
+Omit `-O` only for **development** deep-fuzzing, where catching debug-assertion
+invariant violations and intentional-overflow wraps is the goal; treat those
+findings as debug-only (they do not reproduce in the shipped release build).
 
 ## Prerequisites
 
@@ -50,7 +56,7 @@ which makes the target fail at startup with `STATUS_DLL_NOT_FOUND`
 catches as a crash. Run with the sanitizer disabled on Windows:
 
 ```powershell
-cargo +nightly fuzz run decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
+cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
 ```
 
 (If you have the ASan runtime on `PATH`, drop `--sanitizer none` to keep it on.)
@@ -81,10 +87,10 @@ fuzz project with `--fuzz-dir fuzz`.
 
 ```powershell
 # Bounded smoke run (CI / pre-release gate)
-cargo +nightly fuzz run decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
+cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
 
 # Longer soak run
-cargo +nightly fuzz run decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=3600 -rss_limit_mb=4096
+cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=3600 -rss_limit_mb=4096
 ```
 
 Useful libFuzzer flags (everything after `--` is passed straight to libFuzzer):
@@ -104,7 +110,7 @@ Shrink the corpus to the smallest set that preserves coverage before committing
 a refreshed seed set or before a long soak:
 
 ```powershell
-cargo +nightly fuzz cmin decode_drc
+cargo +nightly fuzz cmin -O decode_drc --fuzz-dir fuzz
 ```
 
 ## Reproducing and triaging a crash
@@ -113,11 +119,11 @@ A failing input is written to `fuzz/artifacts/decode_drc/`. Re-run it
 deterministically and minimize it:
 
 ```powershell
-# Replay a specific crashing input
-cargo +nightly fuzz run decode_drc fuzz/artifacts/decode_drc/crash-<hash>
+# Replay a specific crashing input (use -O to match the CI gate's build)
+cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz fuzz/artifacts/decode_drc/crash-<hash>
 
 # Minimize the crashing input to the smallest reproducer
-cargo +nightly fuzz tmin decode_drc fuzz/artifacts/decode_drc/crash-<hash>
+cargo +nightly fuzz tmin -O decode_drc --fuzz-dir fuzz fuzz/artifacts/decode_drc/crash-<hash>
 ```
 
 When a crash is confirmed, add the minimized reproducer as a deterministic
