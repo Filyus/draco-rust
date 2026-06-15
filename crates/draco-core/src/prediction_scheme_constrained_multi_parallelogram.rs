@@ -1,3 +1,11 @@
+//! Constrained multi-parallelogram mesh predictor.
+//!
+//! Like multi-parallelogram, but the encoder selects, per vertex, the best
+//! subset of incident triangles and codes the choice as crease/selection flags
+//! so the decoder reproduces it exactly. Draco's highest-quality mesh position
+//! predictor. Port of Draco's
+//! `prediction_scheme_constrained_multi_parallelogram_*`.
+
 use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::{CornerIndex, INVALID_CORNER_INDEX};
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;

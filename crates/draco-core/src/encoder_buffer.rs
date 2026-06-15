@@ -1,6 +1,12 @@
 use crate::version::DEFAULT_MESH_VERSION;
 
 /// Output buffer for writing Draco bitstream data.
+///
+/// `EncoderBuffer` accumulates encoded bytes and supports both byte-aligned
+/// writes and packed bit-level encoding for entropy-coded sections. Encoders
+/// write into it; after encoding, [`data`](EncoderBuffer::data) returns the
+/// finished bitstream as a byte slice ready to hand to a `DecoderBuffer` or
+/// write to a file.
 pub struct EncoderBuffer {
     buffer: Vec<u8>,
     bit_encoder_active: bool,

@@ -1,3 +1,10 @@
+//! Delta prediction-scheme transform.
+//!
+//! The simplest residual transform: the correction is `value - prediction`,
+//! stored directly with no range wrapping. Paired with the difference predictor
+//! it is the default scheme when no mesh connectivity is available. Port of
+//! Draco's `prediction_scheme_delta_*_transform`.
+
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::prediction_scheme::{
     PredictionScheme, PredictionSchemeMethod, PredictionSchemeTransformType,

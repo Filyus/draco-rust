@@ -1,3 +1,10 @@
+//! Serialized parameters for an attribute transform.
+//!
+//! [`AttributeTransformData`] stores a transform's type tag plus its raw
+//! parameter bytes (e.g. quantization origin, range, and bit count) so they can
+//! travel with a [`PointAttribute`](crate::PointAttribute) and be re-applied on
+//! decode. Port of Draco's `attribute_transform_data.h`.
+
 use crate::attribute_transform::AttributeTransformType;
 use crate::data_buffer::DataBuffer;
 

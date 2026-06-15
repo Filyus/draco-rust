@@ -1,3 +1,13 @@
+//! Prediction-scheme abstraction and method/transform enums.
+//!
+//! A prediction scheme predicts each attribute value from previously coded
+//! values so that only a small residual is entropy-coded. Two enums identify
+//! what a bitstream used — [`PredictionSchemeMethod`] (which predictor) and
+//! `PredictionSchemeTransformType` (how prediction and correction combine) —
+//! and [`PredictionScheme`] is the trait implemented by the concrete predictors
+//! and transforms in the sibling `prediction_scheme_*` modules. Port of Draco's
+//! `prediction_scheme.h` family.
+
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::geometry_indices::PointIndex;
 

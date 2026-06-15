@@ -1,3 +1,10 @@
+//! KD-tree point-cloud attribute encoder.
+//!
+//! [`KdTreeAttributesEncoder`] compresses point-cloud attributes by recursively
+//! partitioning points in space and coding positions (and other attributes)
+//! against the KD-tree structure. Encode-side counterpart of
+//! `KdTreeAttributesDecoder`. Port of Draco's `kd_tree_attributes_encoder.h`.
+
 use crate::attribute_quantization_transform::AttributeQuantizationTransform;
 use crate::attribute_transform::AttributeTransform;
 use crate::draco_types::DataType;

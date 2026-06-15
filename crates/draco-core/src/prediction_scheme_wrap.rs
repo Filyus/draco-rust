@@ -1,3 +1,10 @@
+//! Wrap prediction-scheme transform.
+//!
+//! Maps prediction corrections into the attribute's value range with modular
+//! wrap-around, so residuals stay small even when a prediction overshoots the
+//! min/max. The standard residual transform for quantized integer attributes.
+//! Port of Draco's `prediction_scheme_wrap_*_transform`.
+
 use crate::prediction_scheme::PredictionSchemeTransformType;
 use std::marker::PhantomData;
 

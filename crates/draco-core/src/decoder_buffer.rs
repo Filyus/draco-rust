@@ -10,7 +10,7 @@ use std::mem;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
 /// use draco_core::DecoderBuffer;
 ///
 /// let data = &[0x44, 0x52, 0x41, 0x43, 0x4F]; // "DRACO" header

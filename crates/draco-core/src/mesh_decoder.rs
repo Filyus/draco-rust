@@ -107,6 +107,29 @@ fn upsert_portable_attribute(
 }
 
 /// Decoder for Draco triangle mesh bitstreams.
+///
+/// `MeshDecoder` reads a `.drc` bitstream produced by `MeshEncoder` (or C++
+/// Draco) and reconstructs a [`Mesh`]: faces, attributes, and any
+/// metadata. It handles both EdgeBreaker and sequential connectivity and
+/// dequantizes attributes back to their original data types.
+///
+/// A point-cloud bitstream (geometry type 0) is also accepted and decoded into
+/// the mesh's underlying [`PointCloud`](crate::PointCloud) with no faces.
+///
+/// # Examples
+///
+/// ```
+/// use draco_core::{DecoderBuffer, Mesh, MeshDecoder};
+///
+/// # fn decode(drc_bytes: &[u8]) -> Result<(), draco_core::DracoError> {
+/// let mut mesh = Mesh::new();
+/// MeshDecoder::new().decode(&mut DecoderBuffer::new(drc_bytes), &mut mesh)?;
+/// println!("{} faces, {} points", mesh.num_faces(), mesh.num_points());
+/// # Ok(())
+/// # }
+/// ```
+///
+/// A full encode/decode round trip is shown on the `MeshEncoder` type docs.
 pub struct MeshDecoder {
     geometry_type: EncodedGeometryType,
     method: u8,
@@ -151,7 +174,17 @@ impl MeshDecoder {
         }
     }
 
-    /// Decodes a Draco mesh from an input buffer.
+    /// Decodes a Draco mesh from `in_buffer` into `out_mesh`.
+    ///
+    /// Reads the header, optional metadata, connectivity, and attributes,
+    /// populating `out_mesh`. Point-cloud bitstreams are decoded into the
+    /// mesh's underlying point cloud (no faces).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the magic/header is invalid, the bitstream version
+    /// is unsupported, the geometry is malformed, or a required feature (such
+    /// as `point_cloud_decode`) is disabled.
     pub fn decode(&mut self, in_buffer: &mut DecoderBuffer, out_mesh: &mut Mesh) -> Status {
         // 1. Decode Header
         self.decode_header(in_buffer)?;

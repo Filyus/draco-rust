@@ -5,6 +5,26 @@ use std::collections::HashMap;
 /// Options mirror the C++ Draco encoder style: global options apply to the
 /// whole geometry, while attribute options override a value for one attribute
 /// id and fall back to the global value when unset.
+///
+/// Common keys include `quantization_bits` (per-attribute precision),
+/// `encoding_speed`/`decoding_speed`, `encoding_method`, and
+/// `prediction_scheme`. Keys without an explicit setter are read and written
+/// with [`get_global_int`](EncoderOptions::get_global_int) /
+/// [`set_global_int`](EncoderOptions::set_global_int).
+///
+/// # Examples
+///
+/// ```
+/// use draco_core::EncoderOptions;
+///
+/// let mut options = EncoderOptions::new();
+/// options.set_global_int("quantization_bits", 14); // default for all attributes
+/// options.set_attribute_int(0, "quantization_bits", 10); // override attribute 0
+///
+/// assert_eq!(options.get_attribute_int(0, "quantization_bits", 0), 10);
+/// // Attribute 1 has no override, so it falls back to the global value.
+/// assert_eq!(options.get_attribute_int(1, "quantization_bits", 0), 14);
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct EncoderOptions {
     global_options: HashMap<String, i32>,

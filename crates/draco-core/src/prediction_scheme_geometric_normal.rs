@@ -1,3 +1,10 @@
+//! Geometric normal predictor.
+//!
+//! Predicts vertex normals from the surrounding mesh geometry (face normals
+//! gathered through the corner table), so only a small octahedral correction is
+//! coded. [`NormalPredictionMode`] selects the prediction variant. Port of
+//! Draco's `prediction_scheme_geometric_normal_*`.
+
 use crate::corner_table::CornerTable;
 use crate::draco_types::DataType;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};

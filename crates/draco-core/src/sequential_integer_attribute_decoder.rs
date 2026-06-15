@@ -1,3 +1,11 @@
+//! Integer sequential attribute decoder.
+//!
+//! [`SequentialIntegerAttributeDecoder`] decodes integer (and quantized
+//! portable) attribute values, applying the inverse prediction scheme selected
+//! by the bitstream to reconstruct each value from its predecessors. It is the
+//! decode workhorse for positions, texture coordinates, and other quantized
+//! attributes. Port of Draco's `sequential_integer_attribute_decoder.h`.
+
 use crate::corner_table::CornerTable;
 use crate::decoder_buffer::DecoderBuffer;
 use crate::draco_types::DataType;

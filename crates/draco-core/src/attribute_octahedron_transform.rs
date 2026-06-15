@@ -1,3 +1,10 @@
+//! Octahedral normal attribute transform.
+//!
+//! [`AttributeOctahedronTransform`] projects unit normal vectors onto an
+//! octahedron and quantizes the 2D result, trading three float components for a
+//! compact integer pair; decode inverts the projection. Port of Draco's
+//! `attribute_octahedron_transform.h`.
+
 use crate::attribute_transform::{AttributeTransform, AttributeTransformType};
 use crate::attribute_transform_data::AttributeTransformData;
 #[cfg(feature = "decoder")]

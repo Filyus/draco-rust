@@ -1,3 +1,11 @@
+//! Quantization attribute transform.
+//!
+//! [`AttributeQuantizationTransform`] maps floating-point attribute values onto
+//! a fixed-point integer grid defined by an origin, range, and bit count, and
+//! inverts it (dequantizes) on decode. This is the most common transform for
+//! positions and texture coordinates. Port of Draco's
+//! `attribute_quantization_transform.h`.
+
 use crate::attribute_transform::{AttributeTransform, AttributeTransformType};
 use crate::attribute_transform_data::AttributeTransformData;
 #[cfg(feature = "decoder")]

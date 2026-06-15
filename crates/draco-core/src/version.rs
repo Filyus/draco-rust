@@ -1,3 +1,9 @@
+//! Draco bitstream version constants and checks.
+//!
+//! Version numbers for the mesh and point-cloud bitstreams, the versions at
+//! which format features were introduced, and helpers such as
+//! [`version_at_least`] used to gate version-dependent decode/encode paths.
+
 // Draco bitstream version constants.
 //
 // This module defines version-related constants for the Draco bitstream format.

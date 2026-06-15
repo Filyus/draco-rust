@@ -1,3 +1,10 @@
+//! Shannon entropy estimation.
+//!
+//! [`ShannonEntropyTracker`] incrementally tracks symbol frequencies and
+//! estimates the bit cost of encoding them. The encoder uses these estimates to
+//! choose between coding schemes and to size rANS tables. Port of Draco's
+//! `shannon_entropy.h`.
+
 use crate::rans_symbol_coding::approximate_rans_frequency_table_bits;
 
 #[derive(Clone, Copy, Debug, Default)]

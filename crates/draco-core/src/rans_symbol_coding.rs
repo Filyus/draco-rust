@@ -1,3 +1,10 @@
+//! Shared rANS symbol-coding helpers.
+//!
+//! Defines [`RAnsSymbol`] (a symbol's probability and cumulative probability)
+//! and the precision computations shared by the symbol encoder and decoder,
+//! including the unique-symbol-bit-length to rANS-precision mapping. Port of
+//! Draco's `rans_symbol_coding.h`.
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RAnsSymbol {
     pub prob: u32,

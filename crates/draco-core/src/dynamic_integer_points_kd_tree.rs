@@ -1,3 +1,10 @@
+//! Dynamic integer-point KD-tree.
+//!
+//! The spatial-partitioning core behind KD-tree point-cloud coding: builds and
+//! traverses a KD-tree over integer point coordinates ([`PointDVector`] backs
+//! the point storage), emitting and consuming the per-node splits the attribute
+//! coders entropy-code. Port of Draco's `dynamic_integer_points_kd_tree_*`.
+
 #[cfg(feature = "decoder")]
 use crate::decoder_buffer::DecoderBuffer;
 #[cfg(feature = "decoder")]

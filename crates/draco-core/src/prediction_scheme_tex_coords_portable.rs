@@ -1,3 +1,10 @@
+//! Portable texture-coordinate predictor.
+//!
+//! Predicts UV coordinates from the triangle's 3D positions using integer-only
+//! arithmetic (`int_sqrt`, etc.) for bit-exact results across platforms. The
+//! current tex-coord prediction scheme. Port of Draco's
+//! `prediction_scheme_tex_coords_portable_*`.
+
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::geometry_indices::{CornerIndex, PointIndex};
 use crate::math_utils::int_sqrt;

@@ -1,3 +1,10 @@
+//! Raw byte buffer for attribute data.
+//!
+//! [`DataBuffer`] is the contiguous little-endian byte store behind every
+//! [`PointAttribute`](crate::PointAttribute), with typed read/write helpers;
+//! [`DataBufferDescriptor`] records its id and size. Port of Draco's
+//! `data_buffer.h`.
+
 use std::io::{self, Write};
 
 #[derive(Debug, Default, Clone)]

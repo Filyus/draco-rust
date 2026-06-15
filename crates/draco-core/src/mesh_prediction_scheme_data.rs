@@ -1,3 +1,10 @@
+//! Shared context for mesh prediction schemes.
+//!
+//! [`MeshPredictionSchemeData`] bundles the corner table with the
+//! data-id↔corner mappings that mesh predictors traverse, letting each scheme
+//! locate a vertex's already-decoded neighbors. Port of Draco's
+//! `mesh_prediction_scheme_data.h`.
+
 use crate::corner_table::CornerTable;
 
 #[derive(Clone)]

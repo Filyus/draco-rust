@@ -1,3 +1,9 @@
+//! Binary (two-symbol) rANS encoder.
+//!
+//! [`RAnsBitEncoder`] is the encode-side counterpart of `RAnsBitDecoder`: it
+//! buffers boolean bits, estimates the zero probability, and rANS-encodes them.
+//! Port of Draco's `rans_bit_encoder.h`.
+
 use crate::ans::AnsCoder;
 use crate::bit_utils::{count_one_bits32, reverse_bits32};
 use crate::encoder_buffer::EncoderBuffer;

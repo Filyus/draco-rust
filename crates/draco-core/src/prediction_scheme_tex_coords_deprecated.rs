@@ -1,3 +1,10 @@
+//! Deprecated texture-coordinate predictor.
+//!
+//! Predicts UV coordinates from the triangle's 3D positions using the original
+//! (pre-portable) floating-point algorithm. Kept only for decoding legacy
+//! bitstreams; new content uses the portable tex-coord predictor. Port of
+//! Draco's `prediction_scheme_tex_coords_*` (deprecated variant).
+
 use crate::draco_types::DataType;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::geometry_indices::{CornerIndex, PointIndex, INVALID_ATTRIBUTE_VALUE_INDEX};

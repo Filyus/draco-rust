@@ -1,3 +1,9 @@
+//! Test-only corner-table event log.
+//!
+//! Captures corner-table `set`/`map` operations during encoder and decoder
+//! `CornerTable` construction so targeted tests can assert on how connectivity
+//! is built. Not used on production code paths.
+
 // Test-only event log used to capture corner-table operations (set/map) during
 // encoder and decoder CornerTable construction for targeted tests.
 

@@ -1,3 +1,10 @@
+//! Multi-symbol rANS encoder.
+//!
+//! [`RAnsSymbolEncoder`] builds a probability table from symbol frequencies and
+//! rANS-encodes symbols at a compile-time precision (`RANS_PRECISION_BITS`).
+//! Encode-side counterpart of `RAnsSymbolDecoder`. Port of Draco's
+//! `rans_symbol_encoder.h`.
+
 use crate::ans::AnsCoder;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::rans_symbol_coding::RAnsSymbol;

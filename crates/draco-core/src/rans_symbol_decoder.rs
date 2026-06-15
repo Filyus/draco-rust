@@ -1,3 +1,10 @@
+//! Multi-symbol rANS decoder.
+//!
+//! [`RAnsSymbolDecoder`] reconstructs symbols from a probability table and a
+//! lookup table built during initialization. Precision is stored at runtime
+//! (rather than as a const generic) to avoid monomorphization bloat while
+//! keeping shift/mask-based decoding. Port of Draco's `rans_symbol_decoder.h`.
+
 use crate::ans::AnsDecoder;
 use crate::decoder_buffer::DecoderBuffer;
 use crate::rans_symbol_coding::RAnsSymbol;

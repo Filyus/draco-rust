@@ -1,3 +1,10 @@
+//! Bitstream configuration enums and constants.
+//!
+//! Defines [`EncodedGeometryType`] (point cloud vs. triangular mesh), the
+//! encoding-method enums (sequential vs. EdgeBreaker, KD-tree vs. sequential
+//! point cloud), and related constants written into the Draco header. Port of
+//! Draco's encoder/decoder config definitions.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncodedGeometryType {
     InvalidGeometryType = -1,

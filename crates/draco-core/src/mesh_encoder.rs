@@ -21,8 +21,52 @@ use crate::version::{
     has_header_flags, uses_varint_encoding, uses_varint_unique_id, DEFAULT_MESH_VERSION,
 };
 
-/// MeshEncoder provides basic functionality for encoding mesh data.
-/// This is an abstract base that can be specialized for different mesh encoding methods.
+/// Encoder for Draco triangle mesh bitstreams.
+///
+/// A `MeshEncoder` takes a [`Mesh`] plus [`EncoderOptions`] and writes a
+/// self-contained `.drc` bitstream (header, optional metadata, connectivity,
+/// and attributes) into an [`EncoderBuffer`]. The encoding method (EdgeBreaker or
+/// sequential), prediction schemes, and quantization are selected from the
+/// options, mirroring the C++ `MeshEncoder`/`ExpertEncoder` configuration.
+///
+/// After a successful [`encode`](MeshEncoder::encode), per-attribute and
+/// per-face details are available via
+/// [`encoded_mesh_info`](MeshEncoder::encoded_mesh_info).
+///
+/// # Examples
+///
+/// Build a single-triangle mesh, encode it, and decode it back:
+///
+/// ```
+/// use draco_core::{
+///     DataType, DecoderBuffer, EncoderBuffer, EncoderOptions, FaceIndex,
+///     GeometryAttributeType, Mesh, MeshDecoder, MeshEncoder, PointAttribute,
+/// };
+///
+/// // One triangle with a float32 position attribute (3 vertices).
+/// let mut mesh = Mesh::new();
+/// let mut position = PointAttribute::new();
+/// position.init(GeometryAttributeType::Position, 3, DataType::Float32, false, 3);
+/// let coords: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+/// for (i, value) in coords.iter().enumerate() {
+///     position.buffer_mut().write(i * 4, &value.to_le_bytes());
+/// }
+/// mesh.add_attribute(position);
+/// mesh.set_num_faces(1);
+/// mesh.set_face(FaceIndex(0), [0u32.into(), 1u32.into(), 2u32.into()]);
+///
+/// // Encode to a Draco bitstream.
+/// let mut encoder = MeshEncoder::new();
+/// encoder.set_mesh(mesh);
+/// let mut buffer = EncoderBuffer::new();
+/// encoder.encode(&EncoderOptions::new(), &mut buffer)?;
+///
+/// // Decode it back.
+/// let mut decoded = Mesh::new();
+/// MeshDecoder::new().decode(&mut DecoderBuffer::new(buffer.data()), &mut decoded)?;
+/// assert_eq!(decoded.num_faces(), 1);
+/// # Ok::<(), draco_core::DracoError>(())
+/// ```
 pub struct MeshEncoder {
     mesh: Option<Mesh>,
     options: EncoderOptions,
@@ -168,6 +212,15 @@ impl MeshEncoder {
     }
 
     /// Encodes the assigned mesh into an output buffer.
+    ///
+    /// A mesh must have been provided with [`set_mesh`](MeshEncoder::set_mesh)
+    /// first. On success the bitstream is appended to `out_buffer` and
+    /// [`encoded_mesh_info`](MeshEncoder::encoded_mesh_info) is populated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no mesh was set, if the requested encoding method or
+    /// options are unsupported, or if attribute encoding fails.
     pub fn encode(&mut self, options: &EncoderOptions, out_buffer: &mut EncoderBuffer) -> Status {
         self.options = options.clone();
         self.encoded_mesh_info = None;

@@ -1,3 +1,11 @@
+//! Single-parallelogram mesh predictor.
+//!
+//! Predicts a vertex value with the parallelogram rule over one adjacent
+//! triangle (`v ≈ next + prev - opposite`), found through the corner table. A
+//! strong predictor for smooth surfaces and the building block of the multi-
+//! and constrained-multi-parallelogram schemes. Port of Draco's
+//! `prediction_scheme_parallelogram_*`.
+
 use crate::corner_table::CornerTable;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::geometry_indices::{CornerIndex, INVALID_CORNER_INDEX};

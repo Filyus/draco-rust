@@ -1,3 +1,10 @@
+//! Asymmetric Numeral System (rANS) entropy coder primitives.
+//!
+//! [`AnsCoder`] and `AnsDecoder` implement the low-level rANS state machine
+//! that backs Draco's symbol and bit coders. This is the Rust port of Draco's
+//! `ans.h`; the higher-level entropy coders live in the `rans_*` modules and
+//! drive these primitives.
+
 pub const ANS_P8_PRECISION: u32 = 256;
 pub const ANS_L_BASE: u32 = 4096;
 pub const ANS_IO_BASE: u32 = 256;

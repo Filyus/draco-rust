@@ -1,3 +1,10 @@
+//! EdgeBreaker traversal-decoder trait.
+//!
+//! [`EdgebreakerTraversalDecoder`] is the interface the EdgeBreaker connectivity
+//! decoder uses to pull symbols and side-channel bits, letting the standard and
+//! valence traversals share the same connectivity-reconstruction code. Port of
+//! Draco's `mesh_edgebreaker_traversal_decoder.h`.
+
 use crate::corner_table::CornerTable;
 use crate::geometry_indices::{
     CornerIndex, FaceIndex, VertexIndex, INVALID_CORNER_INDEX, INVALID_VERTEX_INDEX,

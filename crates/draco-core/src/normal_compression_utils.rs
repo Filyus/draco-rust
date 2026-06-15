@@ -1,3 +1,10 @@
+//! Octahedral normal compression helpers.
+//!
+//! [`OctahedronToolBox`] converts unit normals to and from the quantized 2D
+//! octahedral representation and provides the wrap/clamp math that the normal
+//! transforms and predictors rely on. Port of Draco's
+//! `normal_compression_utils.h`.
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct OctahedronToolBox {
     quantization_bits: i32,

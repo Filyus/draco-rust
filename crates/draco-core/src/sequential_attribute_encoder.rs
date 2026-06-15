@@ -1,3 +1,10 @@
+//! Base sequential attribute encoder.
+//!
+//! [`SequentialAttributeEncoder`] is the generic encode path that writes
+//! attribute values in point order with no prediction or transform. Encode-side
+//! base reused by the integer and normal encoders. Port of Draco's
+//! `sequential_attribute_encoder.h`.
+
 use crate::encoder_buffer::EncoderBuffer;
 use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::PointIndex;

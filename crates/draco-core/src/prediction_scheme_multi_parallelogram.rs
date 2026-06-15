@@ -1,3 +1,9 @@
+//! Multi-parallelogram mesh predictor.
+//!
+//! Averages parallelogram predictions from every triangle incident to a vertex,
+//! improving accuracy over the single-parallelogram scheme at higher cost. Port
+//! of Draco's `prediction_scheme_multi_parallelogram_*`.
+
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::geometry_indices::{CornerIndex, INVALID_CORNER_INDEX};
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;

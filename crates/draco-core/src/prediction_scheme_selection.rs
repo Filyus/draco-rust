@@ -1,3 +1,11 @@
+//! Prediction-method selection.
+//!
+//! [`select_prediction_method`] picks the prediction scheme for an attribute
+//! from the encoder options, geometry type, and speed setting, mirroring C++
+//! Draco's defaults (e.g. parallelogram for mesh positions, difference for
+//! point clouds). Port of Draco's `prediction_scheme_encoder_factory` selection
+//! logic.
+
 #[cfg(feature = "encoder")]
 use crate::compression_config::EncodedGeometryType;
 #[cfg(feature = "encoder")]

@@ -1,3 +1,9 @@
+//! Generic (untyped) sequential attribute decoder.
+//!
+//! [`SequentialGenericAttributeDecoder`] reads attribute values verbatim,
+//! byte-for-byte, for attributes that have no specialized prediction or
+//! transform. Port of Draco's `sequential_generic_attribute_decoder` path.
+
 use crate::decoder_buffer::DecoderBuffer;
 use crate::geometry_indices::PointIndex;
 use crate::point_cloud::PointCloud;

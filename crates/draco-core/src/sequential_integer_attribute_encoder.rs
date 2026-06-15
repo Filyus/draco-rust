@@ -1,3 +1,11 @@
+//! Integer sequential attribute encoder.
+//!
+//! [`SequentialIntegerAttributeEncoder`] quantizes (when needed) and encodes
+//! integer attribute values, applying the chosen prediction scheme and writing
+//! prediction residuals. Encode-side counterpart of
+//! `SequentialIntegerAttributeDecoder`. Port of Draco's
+//! `sequential_integer_attribute_encoder.h`.
+
 use crate::attribute_quantization_transform::AttributeQuantizationTransform;
 use crate::attribute_transform::AttributeTransform;
 use crate::data_buffer::DataBuffer;

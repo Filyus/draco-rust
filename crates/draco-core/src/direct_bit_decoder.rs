@@ -1,3 +1,9 @@
+//! Uncompressed (direct) bit decoder.
+//!
+//! [`DirectBitDecoder`] reads raw, non-entropy-coded bits packed into 32-bit
+//! words. Used where Draco stores values verbatim rather than rANS-coded. Port
+//! of Draco's `direct_bit_decoder.h`.
+
 use crate::decoder_buffer::DecoderBuffer;
 
 #[derive(Default)]

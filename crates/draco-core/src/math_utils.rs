@@ -1,3 +1,9 @@
+//! Small integer math helpers.
+//!
+//! Integer-only math used where bit-exact, platform-independent results are
+//! required (e.g. [`int_sqrt`] for the portable tex-coord predictor). Port of
+//! Draco's `math_utils.h`.
+
 pub fn int_sqrt(number: u64) -> u64 {
     if number == 0 {
         return 0;

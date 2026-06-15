@@ -1,3 +1,9 @@
+//! Uncompressed (direct) bit encoder.
+//!
+//! [`DirectBitEncoder`] writes raw, non-entropy-coded bits packed into 32-bit
+//! words. Encode-side counterpart of `DirectBitDecoder`. Port of Draco's
+//! `direct_bit_encoder.h`.
+
 use crate::encoder_buffer::EncoderBuffer;
 
 #[derive(Default)]

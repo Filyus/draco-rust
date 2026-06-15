@@ -1,3 +1,9 @@
+//! Binary (two-symbol) rANS decoder.
+//!
+//! [`RAnsBitDecoder`] decodes a stream of bits whose probability of being zero
+//! was modeled by the encoder. Used for boolean side-channels such as crease
+//! flags and EdgeBreaker symbols. Port of Draco's `rans_bit_decoder.h`.
+
 use crate::ans::AnsDecoder;
 use crate::decoder_buffer::DecoderBuffer;
 

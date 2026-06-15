@@ -1,3 +1,11 @@
+//! Normal sequential attribute encoder.
+//!
+//! [`SequentialNormalAttributeEncoder`] octahedron-encodes unit normals into a
+//! quantized 2D integer pair and encodes them with the normal-specialized
+//! prediction transform. Encode-side counterpart of
+//! `SequentialNormalAttributeDecoder`. Port of Draco's
+//! `sequential_normal_attribute_encoder.h`.
+
 use crate::attribute_octahedron_transform::AttributeOctahedronTransform;
 use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;

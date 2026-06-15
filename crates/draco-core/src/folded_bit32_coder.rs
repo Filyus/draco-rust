@@ -1,3 +1,10 @@
+//! Folded 32-bit integer coder.
+//!
+//! Encodes/decodes a 32-bit integer as a sequence of bits, each modeled by its
+//! own binary rANS context ("folding"), so high-entropy and low-entropy bit
+//! positions are coded separately. Used for KD-tree point-cloud attribute
+//! values. Port of Draco's `folded_integer_coding`/`FoldedBit32` coders.
+
 #[cfg(feature = "decoder")]
 use crate::decoder_buffer::DecoderBuffer;
 #[cfg(feature = "encoder")]

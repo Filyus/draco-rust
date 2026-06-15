@@ -1,3 +1,11 @@
+//! Canonicalized octahedral-normal transform base.
+//!
+//! Extends the octahedral transform base by rotating each correction into a
+//! canonical octant before coding, which concentrates residuals and improves
+//! compression of normals. Shared by the canonicalized encoding and decoding
+//! transforms. Port of Draco's
+//! `prediction_scheme_normal_octahedron_canonicalized_transform_base.h`.
+
 use crate::prediction_scheme::PredictionSchemeTransformType;
 use crate::prediction_scheme_normal_octahedron_transform_base::PredictionSchemeNormalOctahedronTransformBase;
 

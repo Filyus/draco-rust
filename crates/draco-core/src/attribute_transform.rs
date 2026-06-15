@@ -1,3 +1,11 @@
+//! Attribute transform trait and transform-type enum.
+//!
+//! An attribute transform converts attribute values into a more compressible
+//! "portable" integer representation before coding, and inverts it on decode
+//! (e.g. quantization, octahedral normal mapping). [`AttributeTransform`] is the
+//! shared interface; [`AttributeTransformType`] tags which transform was used.
+//! Port of Draco's `attribute_transform.h`.
+
 use crate::attribute_transform_data::AttributeTransformData;
 #[cfg(feature = "decoder")]
 use crate::decoder_buffer::DecoderBuffer;

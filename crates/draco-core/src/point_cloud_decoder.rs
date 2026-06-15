@@ -43,6 +43,13 @@ pub trait GeometryDecoder {
 }
 
 /// Decoder for Draco point cloud bitstreams.
+///
+/// `PointCloudDecoder` reads a point-cloud `.drc` bitstream and reconstructs a
+/// [`PointCloud`] with its attributes and metadata. Both
+/// KD-tree and sequential attribute encodings are supported (the actual decode
+/// requires the `point_cloud_decode` feature).
+///
+/// A round trip is shown on the `PointCloudEncoder` type docs.
 pub struct PointCloudDecoder {
     geometry_type: EncodedGeometryType,
     #[cfg(feature = "point_cloud_decode")]
@@ -173,7 +180,12 @@ impl PointCloudDecoder {
     }
 
     #[cfg(feature = "point_cloud_decode")]
-    /// Decodes a Draco point cloud from an input buffer.
+    /// Decodes a Draco point cloud from `in_buffer` into `out_pc`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the header is invalid, the bitstream version is
+    /// unsupported, or the encoded attributes are malformed.
     pub fn decode(&mut self, in_buffer: &mut DecoderBuffer, out_pc: &mut PointCloud) -> Status {
         // 1. Decode Header
         self.decode_header(in_buffer)?;

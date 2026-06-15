@@ -1,3 +1,11 @@
+//! EdgeBreaker connectivity decoder.
+//!
+//! [`MeshEdgebreakerDecoder`] reconstructs mesh topology from the EdgeBreaker
+//! symbol stream (C, L, R, S, E), rebuilding the corner table and the
+//! data-to-corner maps the attribute decoders need. Per-symbol traversal is
+//! delegated to a pluggable traversal decoder. Port of Draco's
+//! `mesh_edgebreaker_decoder.h`.
+
 use crate::corner_table::CornerTable;
 use crate::decoder_buffer::DecoderBuffer;
 use crate::edgebreaker_connectivity_decoder::{

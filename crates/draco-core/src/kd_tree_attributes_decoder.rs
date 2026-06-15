@@ -1,3 +1,10 @@
+//! KD-tree point-cloud attribute decoder.
+//!
+//! [`KdTreeAttributesDecoder`] decodes point-cloud attributes compressed with
+//! Draco's KD-tree scheme, which exploits spatial coherence instead of explicit
+//! connectivity. Used for point clouds (no mesh faces). Port of Draco's
+//! `kd_tree_attributes_decoder.h`.
+
 use crate::attribute_quantization_transform::AttributeQuantizationTransform;
 use crate::attribute_transform::AttributeTransform;
 use crate::decoder_buffer::DecoderBuffer;

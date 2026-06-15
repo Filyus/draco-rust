@@ -44,6 +44,41 @@ pub trait GeometryEncoder {
 }
 
 /// Encoder for Draco point cloud bitstreams.
+///
+/// A `PointCloudEncoder` takes a [`PointCloud`] plus [`EncoderOptions`] and
+/// writes a `.drc` bitstream into an [`EncoderBuffer`]. Depending on the options it uses
+/// either KD-tree or sequential attribute encoding, matching C++ Draco's
+/// `PointCloudEncoder` selection.
+///
+/// # Examples
+///
+/// ```
+/// use draco_core::{
+///     DataType, DecoderBuffer, EncoderBuffer, EncoderOptions, GeometryAttributeType,
+///     PointAttribute, PointCloud, PointCloudDecoder, PointCloudEncoder,
+/// };
+///
+/// // Three points with float32 positions.
+/// let mut pc = PointCloud::new();
+/// let mut position = PointAttribute::new();
+/// position.init(GeometryAttributeType::Position, 3, DataType::Float32, false, 3);
+/// let coords: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+/// for (i, value) in coords.iter().enumerate() {
+///     position.buffer_mut().write(i * 4, &value.to_le_bytes());
+/// }
+/// pc.add_attribute(position);
+///
+/// // Encode, then decode it back.
+/// let mut encoder = PointCloudEncoder::new();
+/// encoder.set_point_cloud(pc);
+/// let mut buffer = EncoderBuffer::new();
+/// encoder.encode(&EncoderOptions::new(), &mut buffer)?;
+///
+/// let mut decoded = PointCloud::new();
+/// PointCloudDecoder::new().decode(&mut DecoderBuffer::new(buffer.data()), &mut decoded)?;
+/// assert_eq!(decoded.num_points(), 3);
+/// # Ok::<(), draco_core::DracoError>(())
+/// ```
 pub struct PointCloudEncoder {
     point_cloud: Option<PointCloud>,
     options: EncoderOptions,
@@ -97,6 +132,14 @@ impl PointCloudEncoder {
     }
 
     /// Encodes the assigned point cloud into an output buffer.
+    ///
+    /// A point cloud must have been provided with
+    /// [`set_point_cloud`](PointCloudEncoder::set_point_cloud) first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no point cloud was set, the options are
+    /// unsupported, or attribute encoding fails.
     pub fn encode(&mut self, options: &EncoderOptions, out_buffer: &mut EncoderBuffer) -> Status {
         self.options = options.clone();
 

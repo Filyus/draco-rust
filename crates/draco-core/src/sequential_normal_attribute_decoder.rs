@@ -1,3 +1,10 @@
+//! Normal sequential attribute decoder.
+//!
+//! [`SequentialNormalAttributeDecoder`] decodes octahedron-encoded normals: it
+//! decodes the quantized 2D octahedral pair (via the integer decoder) and the
+//! inverse octahedral transform reconstructs unit normals. Port of Draco's
+//! `sequential_normal_attribute_decoder.h`.
+
 use crate::attribute_octahedron_transform::AttributeOctahedronTransform;
 use crate::attribute_transform::AttributeTransform;
 use crate::corner_table::CornerTable;

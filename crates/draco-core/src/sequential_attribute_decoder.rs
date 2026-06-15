@@ -1,3 +1,10 @@
+//! Base sequential attribute decoder.
+//!
+//! [`SequentialAttributeDecoder`] is the generic decode path that reads
+//! attribute values in point order with no prediction or transform. It is the
+//! base reused by the integer, generic, and normal decoders. Port of Draco's
+//! `sequential_attribute_decoder.h`.
+
 use crate::decoder_buffer::DecoderBuffer;
 use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::PointIndex;

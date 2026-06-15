@@ -1,3 +1,10 @@
+//! EdgeBreaker connectivity encoder.
+//!
+//! [`MeshEdgebreakerEncoder`] traverses the corner table and emits the
+//! EdgeBreaker symbol stream that encodes mesh topology, plus the attribute-seam
+//! connectivity ([`EdgebreakerAttributeConnectivity`]) used when attributes have
+//! their own corner tables. Port of Draco's `mesh_edgebreaker_encoder.h`.
+
 // Edgebreaker connectivity bitstream layout (C++-compatible).
 //
 // All integers are Varints unless specified otherwise.

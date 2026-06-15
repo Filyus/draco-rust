@@ -1,3 +1,11 @@
+//! Corner-table mesh connectivity.
+//!
+//! [`CornerTable`] is Draco's corner-based connectivity structure: each triangle
+//! contributes three corners, and `next`/`previous`/`opposite` plus the
+//! corner→vertex map let traversal walk the mesh in O(1) per step. It underpins
+//! EdgeBreaker connectivity and every mesh prediction scheme. Port of Draco's
+//! `corner_table.h`.
+
 use crate::geometry_indices::{
     CornerIndex, FaceIndex, VertexIndex, INVALID_CORNER_INDEX, INVALID_VERTEX_INDEX,
 };

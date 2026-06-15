@@ -1,3 +1,10 @@
+//! Scalar quantization helpers.
+//!
+//! [`Quantizer`] and its inverse map floating-point values to and from a
+//! fixed-point integer grid defined by an origin and range — the primitive used
+//! by the quantization attribute transform. Port of Draco's
+//! `quantization_utils.h`.
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Quantizer {
     inverse_delta: f32,

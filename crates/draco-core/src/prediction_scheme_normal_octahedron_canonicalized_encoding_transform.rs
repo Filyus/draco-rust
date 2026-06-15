@@ -1,3 +1,10 @@
+//! Canonicalized octahedral-normal encoding transform.
+//!
+//! Encode side of the canonicalized normal transform: rotates each correction
+//! into a canonical octant and writes the quantization parameters so the
+//! decoder can invert it. Port of Draco's
+//! `prediction_scheme_normal_octahedron_canonicalized_encoding_transform.h`.
+
 use crate::prediction_scheme::{PredictionSchemeEncodingTransform, PredictionSchemeTransformType};
 use crate::prediction_scheme_normal_octahedron_canonicalized_transform_base::PredictionSchemeNormalOctahedronCanonicalizedTransformBase;
 

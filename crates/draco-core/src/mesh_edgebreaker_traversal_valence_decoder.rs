@@ -1,3 +1,10 @@
+//! Valence-based EdgeBreaker traversal decoder.
+//!
+//! [`MeshEdgebreakerTraversalValenceDecoder`] decodes EdgeBreaker symbols using
+//! per-vertex valence context (Draco's higher-compression "valence" traversal),
+//! adapting symbol probabilities to local mesh degree. Port of Draco's
+//! `mesh_edgebreaker_traversal_valence_decoder.h`.
+
 use crate::corner_table::CornerTable;
 use crate::decoder_buffer::DecoderBuffer;
 use crate::edgebreaker_connectivity_decoder::EdgebreakerTraversalDecoder;

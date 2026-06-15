@@ -1,3 +1,10 @@
+//! Bit-level packing helpers and bit twiddling utilities.
+//!
+//! [`BitEncoder`]/`BitDecoder` pack and unpack bit fields into a byte slice,
+//! and free functions provide bit counting and reversal (`count_one_bits32`,
+//! `reverse_bits32`) plus the most-significant-bit helpers used throughout the
+//! codecs. Port of Draco's `bit_utils.h`.
+
 pub struct BitEncoder<'a> {
     buffer: &'a mut [u8],
     bit_offset: usize,

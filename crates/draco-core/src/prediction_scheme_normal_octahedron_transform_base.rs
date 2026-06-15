@@ -1,3 +1,11 @@
+//! Base octahedral-normal prediction transform.
+//!
+//! Shared logic for residual transforms that operate in octahedral normal
+//! space: corrections are computed and wrapped on the octahedron's 2D quantized
+//! grid (via `OctahedronToolBox`) rather than as plain integer deltas. Extended
+//! by the canonicalized variant. Port of
+//! Draco's `prediction_scheme_normal_octahedron_transform_base.h`.
+
 use crate::normal_compression_utils::OctahedronToolBox;
 use crate::prediction_scheme::PredictionSchemeTransformType;
 

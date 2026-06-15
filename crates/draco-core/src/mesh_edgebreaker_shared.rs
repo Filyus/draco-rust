@@ -1,3 +1,9 @@
+//! Shared EdgeBreaker symbols and constants.
+//!
+//! Defines [`EdgebreakerSymbol`] (the C/L/R/S/E traversal symbols) and other
+//! constants shared by the EdgeBreaker encoder and decoder. Port of Draco's
+//! `mesh_edgebreaker_shared.h`.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EdgebreakerSymbol {
     Center = 0,
