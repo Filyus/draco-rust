@@ -1,5 +1,10 @@
 # draco-core
 
+[![Crates.io](https://img.shields.io/crates/v/draco-core.svg)](https://crates.io/crates/draco-core)
+[![Docs.rs](https://docs.rs/draco-core/badge.svg)](https://docs.rs/draco-core)
+[![Rust CI](https://github.com/Filyus/draco-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/Filyus/draco-rust/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/Filyus/draco-rust/blob/main/LICENSE)
+
 `draco-core` is a pure Rust Draco bitstream encoder and decoder for triangle
 meshes and point clouds.
 

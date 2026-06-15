@@ -6,6 +6,8 @@ description = "Rust IO helpers for Draco geometry compression formats"
 license = "Apache-2.0"
 repository = "https://github.com/Filyus/draco-rust"
 readme = "README.md"
+keywords = ["draco", "gltf", "obj", "ply", "fbx"]
+categories = ["compression", "encoding", "graphics", "parser-implementations"]
 
 [package.metadata.docs.rs]
 all-features = true

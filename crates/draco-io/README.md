@@ -1,5 +1,10 @@
 # draco-io
 
+[![Crates.io](https://img.shields.io/crates/v/draco-io.svg)](https://crates.io/crates/draco-io)
+[![Docs.rs](https://docs.rs/draco-io/badge.svg)](https://docs.rs/draco-io)
+[![Rust CI](https://github.com/Filyus/draco-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/Filyus/draco-rust/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/Filyus/draco-rust/blob/main/LICENSE)
+
 A Rust library for reading and writing 3D mesh file formats with Draco compression support. Built on top of `draco-core`, this crate provides a unified API for working with OBJ, PLY, FBX, and glTF/GLB formats.
 
 For the project overview, compatibility notes, and benchmarks, see the
@@ -47,7 +52,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-draco-io = { version = "0.1.0", path = "../draco-io" }
+draco-io = "0.1"
 ```
 
 ### Feature Flags
@@ -71,7 +76,7 @@ To use only one format direction (smaller binary):
 
 ```toml
 [dependencies]
-draco-io = { version = "0.1.0", default-features = false, features = ["gltf-reader"] }
+draco-io = { version = "0.1", default-features = false, features = ["gltf-reader"] }
 ```
 
 ## Quick Start

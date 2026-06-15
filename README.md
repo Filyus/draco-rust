@@ -1,5 +1,12 @@
 # Draco for Rust
 
+[![Rust CI](https://github.com/Filyus/draco-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/Filyus/draco-rust/actions/workflows/ci.yml)
+[![draco-core on crates.io](https://img.shields.io/crates/v/draco-core.svg?label=draco-core)](https://crates.io/crates/draco-core)
+[![draco-io on crates.io](https://img.shields.io/crates/v/draco-io.svg?label=draco-io)](https://crates.io/crates/draco-io)
+[![draco-core docs](https://docs.rs/draco-core/badge.svg)](https://docs.rs/draco-core)
+[![draco-io docs](https://docs.rs/draco-io/badge.svg)](https://docs.rs/draco-io)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 Pure Rust crates for the [Draco](https://github.com/google/draco) geometry
 compression format.
 

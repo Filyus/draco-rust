@@ -6,6 +6,8 @@ description = "Pure Rust core encoder and decoder for Draco geometry compression
 license = "Apache-2.0"
 repository = "https://github.com/Filyus/draco-rust"
 readme = "README.md"
+keywords = ["draco", "compression", "mesh", "point-cloud", "geometry"]
+categories = ["compression", "encoding", "graphics", "wasm"]
 
 [package.metadata.docs.rs]
 all-features = true

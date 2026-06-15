@@ -44,3 +44,9 @@ jobs:
 
       - name: Package draco-core
         run: cargo package --manifest-path crates/draco-core/Cargo.toml
+
+      # Full verification of draco-io requires the matching draco-core version
+      # to exist on crates.io. Before publication, still check the package file
+      # set and metadata through --list.
+      - name: Check draco-io package file list
+        run: cargo package --manifest-path crates/draco-io/Cargo.toml --list

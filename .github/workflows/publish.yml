@@ -1,0 +1,350 @@
+name: "Release: publish crates"
+run-name: "release: publish crates"
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: crates-io-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CORE_CRATE: draco-core
+  IO_CRATE: draco-io
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+    outputs:
+      should_publish: ${{ steps.release.outputs.should_publish }}
+      version: ${{ steps.versions.outputs.version }}
+      release_sha: ${{ steps.resolve.outputs.release_sha }}
+
+    steps:
+      - name: Resolve release SHA
+        id: resolve
+        run: |
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "The publish workflow must be started from main, got '$GITHUB_REF_NAME'."
+            exit 1
+          fi
+
+          release_sha="$GITHUB_SHA"
+          if [ -z "$release_sha" ]; then
+            echo "Unable to resolve the release SHA."
+            exit 1
+          fi
+
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "Release SHA: $release_sha"
+
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.release_sha }}
+          fetch-depth: 0
+
+      - name: Read crate versions
+        id: versions
+        run: |
+          core_version="$(python3 -c 'import tomllib; print(tomllib.load(open("crates/draco-core/Cargo.toml", "rb"))["package"]["version"])')"
+          io_version="$(python3 -c 'import tomllib; print(tomllib.load(open("crates/draco-io/Cargo.toml", "rb"))["package"]["version"])')"
+          io_core_dep="$(python3 -c 'import tomllib; print(tomllib.load(open("crates/draco-io/Cargo.toml", "rb"))["dependencies"]["draco-core"]["version"])')"
+
+          if [ "$core_version" != "$io_version" ]; then
+            echo "draco-core version '$core_version' does not match draco-io version '$io_version'."
+            exit 1
+          fi
+
+          if [ "$io_core_dep" != "$core_version" ]; then
+            echo "draco-io depends on draco-core '$io_core_dep', expected '$core_version'."
+            exit 1
+          fi
+
+          echo "version=$core_version" >> "$GITHUB_OUTPUT"
+          echo "Release version: $core_version"
+
+      - name: Ignore non-release commits
+        id: release
+        env:
+          VERSION: ${{ steps.versions.outputs.version }}
+        run: |
+          subject="$(git log -1 --pretty=%s)"
+          expected="release: prepare draco-rust v$VERSION"
+
+          echo "Commit subject: $subject"
+          echo "Expected release subject: $expected"
+
+          if [ "$subject" != "$expected" ]; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "Not a release commit; nothing to publish."
+            exit 0
+          fi
+
+          echo "should_publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check CI passed for this commit
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.resolve.outputs.release_sha }}
+        run: |
+          ci_url="$(gh run list \
+            --workflow ci.yml \
+            --branch main \
+            --commit "$RELEASE_SHA" \
+            --json conclusion,status,url \
+            --limit 20 \
+            --jq '.[] | select(.status == "completed" and .conclusion == "success") | .url' \
+            | head -n 1)"
+
+          if [ -z "$ci_url" ]; then
+            echo "No successful Rust CI run found for $RELEASE_SHA."
+            echo "Wait for CI to pass on main, then rerun this workflow."
+            exit 1
+          fi
+
+          echo "Using successful CI run: $ci_url"
+
+      - name: Install stable Rust
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-semver-checks
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+
+      - name: Check changelog section exists
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        env:
+          VERSION: ${{ steps.versions.outputs.version }}
+        run: |
+          if ! grep -Fq "## [$VERSION]" CHANGELOG.md; then
+            echo "No changelog section found for $VERSION in CHANGELOG.md."
+            exit 1
+          fi
+
+      - name: Check semver compatibility for existing crates
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        env:
+          VERSION: ${{ steps.versions.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          for manifest in crates/draco-core/Cargo.toml crates/draco-io/Cargo.toml; do
+            crate="$(python3 -c "import tomllib; print(tomllib.load(open('$manifest', 'rb'))['package']['name'])")"
+            status="$(curl --user-agent "$crate-release-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$crate")"
+            if [ "$status" = "200" ]; then
+              cargo semver-checks --manifest-path "$manifest"
+            elif [ "$status" = "404" ]; then
+              echo "$crate is not published yet; skipping semver-checks for first release."
+            else
+              echo "Unexpected crates.io status while checking $crate: $status"
+              exit 1
+            fi
+          done
+
+      - name: Install nightly Rust for docs.rs check
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Verify docs.rs build
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        env:
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+        run: |
+          cargo +nightly doc --manifest-path crates/draco-core/Cargo.toml --no-deps --all-features
+          cargo +nightly doc --manifest-path crates/draco-io/Cargo.toml --no-deps --all-features
+
+      - name: Check versions are unpublished
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        env:
+          VERSION: ${{ steps.versions.outputs.version }}
+        run: |
+          for crate in "$CORE_CRATE" "$IO_CRATE"; do
+            status="$(curl --user-agent "$crate-release-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$crate/$VERSION")"
+            if [ "$status" = "200" ]; then
+              echo "$crate $VERSION is already published."
+              exit 1
+            fi
+            if [ "$status" != "404" ]; then
+              echo "Unexpected crates.io status while checking $crate $VERSION: $status"
+              exit 1
+            fi
+          done
+
+      - name: Check release tag is absent
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        env:
+          VERSION: ${{ steps.versions.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          tag_status=0
+          git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || tag_status=$?
+          if [ "$tag_status" = "0" ]; then
+            echo "Release tag '$tag' already exists."
+            exit 1
+          fi
+          if [ "$tag_status" != "2" ]; then
+            echo "Unable to check release tag '$tag'."
+            exit "$tag_status"
+          fi
+
+      - name: Publish dry run for draco-core
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        run: cargo publish --manifest-path crates/draco-core/Cargo.toml --dry-run
+
+  publish:
+    name: publish
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: ${{ needs.preflight.outputs.should_publish == 'true' }}
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+          fetch-depth: 0
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check release commit still matches crate versions
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          core_version="$(python3 -c 'import tomllib; print(tomllib.load(open("crates/draco-core/Cargo.toml", "rb"))["package"]["version"])')"
+          io_version="$(python3 -c 'import tomllib; print(tomllib.load(open("crates/draco-io/Cargo.toml", "rb"))["package"]["version"])')"
+          io_core_dep="$(python3 -c 'import tomllib; print(tomllib.load(open("crates/draco-io/Cargo.toml", "rb"))["dependencies"]["draco-core"]["version"])')"
+          subject="$(git log -1 --pretty=%s)"
+          expected="release: prepare draco-rust v$core_version"
+
+          if [ "$core_version" != "$VERSION" ] || [ "$io_version" != "$VERSION" ] || [ "$io_core_dep" != "$VERSION" ]; then
+            echo "Crate versions no longer match preflight version '$VERSION'."
+            exit 1
+          fi
+
+          if [ "$subject" != "$expected" ]; then
+            echo "Release commit subject changed or is invalid."
+            echo "Expected: $expected"
+            echo "Actual:   $subject"
+            exit 1
+          fi
+
+      - name: Check versions are unpublished
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          for crate in "$CORE_CRATE" "$IO_CRATE"; do
+            status="$(curl --user-agent "$crate-release-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$crate/$VERSION")"
+            if [ "$status" = "200" ]; then
+              echo "$crate $VERSION is already published."
+              exit 1
+            fi
+            if [ "$status" != "404" ]; then
+              echo "Unexpected crates.io status while checking $crate $VERSION: $status"
+              exit 1
+            fi
+          done
+
+      - name: Check release tag is absent
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          tag_status=0
+          git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || tag_status=$?
+          if [ "$tag_status" = "0" ]; then
+            echo "Release tag '$tag' already exists."
+            exit 1
+          fi
+          if [ "$tag_status" != "2" ]; then
+            echo "Unable to check release tag '$tag'."
+            exit "$tag_status"
+          fi
+
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish draco-core
+        run: cargo publish --manifest-path crates/draco-core/Cargo.toml
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Wait for draco-core in crates.io index
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          for i in $(seq 1 60); do
+            status="$(curl --user-agent "$CORE_CRATE-release-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$CORE_CRATE/$VERSION")"
+            if [ "$status" = "200" ]; then
+              echo "$CORE_CRATE $VERSION is visible on crates.io."
+              exit 0
+            fi
+            echo "Waiting for $CORE_CRATE $VERSION to become visible on crates.io ($i/60)."
+            sleep 10
+          done
+
+          echo "$CORE_CRATE $VERSION did not become visible on crates.io in time."
+          exit 1
+
+      - name: Publish dry run for draco-io
+        run: cargo publish --manifest-path crates/draco-io/Cargo.toml --dry-run
+
+      - name: Publish draco-io
+        run: cargo publish --manifest-path crates/draco-io/Cargo.toml
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Create release tag
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "draco-rust $VERSION"
+          git push origin "refs/tags/$tag"
+
+      - name: Extract changelog section
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          awk -v head="## [$VERSION]" '
+            index($0, head) == 1 { flag = 1; next }
+            flag && index($0, "## [") == 1 { exit }
+            flag { print }
+          ' CHANGELOG.md > release-notes.md
+
+          if [ ! -s release-notes.md ]; then
+            echo "No changelog section found for $VERSION in CHANGELOG.md."
+            exit 1
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; nothing to do."
+            exit 0
+          fi
+          gh release create "$tag" \
+            --title "$tag" \
+            --notes-file release-notes.md \
+            --verify-tag
