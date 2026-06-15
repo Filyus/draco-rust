@@ -131,8 +131,19 @@ zero-length entry data.
 
 ## Keyframe Animation
 
+> Likely legacy. C++ Draco's `KeyframeAnimation` dates to 2017 (copyright
+> `2017`, first public snapshot around Draco `1.3.4` in 2018). It predates the
+> glTF/USD transcoder and is **used nowhere in Draco's own pipeline** — no CLI
+> tool, no glTF/USD I/O, no JavaScript binding references it; only its own unit
+> tests do. glTF does not use it either: glTF compresses only mesh geometry via
+> `KHR_draco_mesh_compression`, while animation/skin data stays uncompressed
+> (see [Scene and Format I/O](#scene-and-format-io)). Treat the Rust port as
+> bitstream-parity completeness, not a recommended path — there is no known
+> consumer that needs it.
+
 C++ Draco has a raw keyframe animation path, but it is narrower than general
-scene animation.
+scene animation. It is unrelated to glTF node animation, which is a transcoder
+concern carried as uncompressed data.
 
 | Animation feature | C++ support | `draco-core` status | Notes |
 |---|---:|---|---|
@@ -149,6 +160,12 @@ The raw keyframe animation container, encoder, and decoder are implemented as a
 thin wrapper around the existing sequential point-cloud path, matching the C++
 architecture. It is still separate from the mesh-focused `draco-io` glTF scope,
 where node animations and skins are intentionally rejected today.
+
+This was ported to complete raw-bitstream parity, not because a consumer
+requires it. Because it is just a typed view over the already-supported
+sequential point-cloud encode/decode, it adds no new dependencies and minimal
+maintenance surface. If a future cleanup prefers to carry only actively used
+surface, it can be dropped without affecting any other path.
 
 ## Scene and Format I/O
 
@@ -207,4 +224,6 @@ Important examples:
 - Keyframe animation is implemented as a typed wrapper around the existing
   point-cloud path (`KeyframeAnimation`, `KeyframeAnimationEncoder`,
   `KeyframeAnimationDecoder`), mirroring the C++ point-cloud-like sequential
-  stream. glTF node animations and skins remain out of scope.
+  stream. This is a 2017-era, likely-legacy C++ feature that nothing in Draco's
+  own pipeline (or glTF) consumes; the Rust port exists for bitstream-parity
+  completeness only. glTF node animations and skins remain out of scope.
