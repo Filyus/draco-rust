@@ -1854,13 +1854,37 @@ impl GltfReader {
 
         Ok(scene_node)
     }
-}
 
-impl crate::scene::SceneReader for GltfReader {
-    fn read_scene(&mut self) -> std::io::Result<crate::scene::Scene> {
-        let map_err = |e: GltfError| std::io::Error::other(e.to_string());
+    fn root_node_indices_without_scenes(&self) -> Vec<usize> {
+        let mut is_child = vec![false; self.root.nodes.len()];
+        for node in &self.root.nodes {
+            for &child_idx in &node.children {
+                if child_idx < is_child.len() {
+                    is_child[child_idx] = true;
+                }
+            }
+        }
 
-        // Select scene: prefer default, else first, else empty
+        (0..self.root.nodes.len())
+            .filter(|&i| !is_child[i])
+            .collect()
+    }
+
+    fn build_scene_from_roots(
+        &self,
+        name: Option<String>,
+        root_node_indices: &[usize],
+    ) -> Result<crate::scene::Scene> {
+        let mut visited = vec![false; self.root.nodes.len()];
+        let mut root_nodes = Vec::with_capacity(root_node_indices.len());
+        for &node_idx in root_node_indices {
+            root_nodes.push(self.build_scene_node(node_idx, &mut visited)?);
+        }
+
+        Ok(crate::scene::Scene { name, root_nodes })
+    }
+
+    fn read_scene_result(&self) -> Result<crate::scene::Scene> {
         let scene_idx = self.root.scene.or({
             if self.root.scenes.is_empty() {
                 None
@@ -1869,45 +1893,43 @@ impl crate::scene::SceneReader for GltfReader {
             }
         });
 
-        let (scene_name, root_node_indices) = if let Some(idx) = scene_idx {
-            let gltf_scene = self.root.scenes.get(idx).ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Invalid scene index: {}", idx),
-                )
-            })?;
-            (gltf_scene.name.clone(), gltf_scene.nodes.clone())
+        if let Some(idx) = scene_idx {
+            let gltf_scene =
+                self.root.scenes.get(idx).ok_or_else(|| {
+                    GltfError::InvalidGltf(format!("Invalid scene index: {}", idx))
+                })?;
+            self.build_scene_from_roots(gltf_scene.name.clone(), &gltf_scene.nodes)
         } else {
-            // No scenes defined: treat all root-level nodes as roots
-            // (nodes not referenced as children by any other node)
-            let mut is_child = vec![false; self.root.nodes.len()];
-            for node in &self.root.nodes {
-                for &child_idx in &node.children {
-                    if child_idx < is_child.len() {
-                        is_child[child_idx] = true;
-                    }
-                }
-            }
-            let roots: Vec<usize> = (0..self.root.nodes.len())
-                .filter(|&i| !is_child[i])
-                .collect();
-            (None, roots)
-        };
+            let roots = self.root_node_indices_without_scenes();
+            self.build_scene_from_roots(None, &roots)
+        }
+    }
 
-        // Build node hierarchy
-        let mut visited = vec![false; self.root.nodes.len()];
-        let mut root_nodes = Vec::with_capacity(root_node_indices.len());
-        for &node_idx in &root_node_indices {
-            let scene_node = self
-                .build_scene_node(node_idx, &mut visited)
-                .map_err(map_err)?;
-            root_nodes.push(scene_node);
+    fn read_scenes_result(&self) -> Result<Vec<crate::scene::Scene>> {
+        if self.root.scenes.is_empty() {
+            let roots = self.root_node_indices_without_scenes();
+            return self
+                .build_scene_from_roots(None, &roots)
+                .map(|scene| vec![scene]);
         }
 
-        Ok(crate::scene::Scene {
-            name: scene_name,
-            root_nodes,
-        })
+        self.root
+            .scenes
+            .iter()
+            .map(|scene| self.build_scene_from_roots(scene.name.clone(), &scene.nodes))
+            .collect()
+    }
+}
+
+impl crate::scene::SceneReader for GltfReader {
+    fn read_scene(&mut self) -> std::io::Result<crate::scene::Scene> {
+        self.read_scene_result()
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    }
+
+    fn read_scenes(&mut self) -> std::io::Result<Vec<crate::scene::Scene>> {
+        self.read_scenes_result()
+            .map_err(|e| std::io::Error::other(e.to_string()))
     }
 }
 fn decode_base64(input: &str) -> Result<Vec<u8>> {
@@ -2152,6 +2174,45 @@ mod tests {
         let root: GltfRoot = serde_json::from_str(json).unwrap();
         assert!(root.meshes.is_empty());
         assert!(root.buffers.is_empty());
+    }
+
+    #[test]
+    fn test_read_scenes_returns_all_gltf_scenes() {
+        use crate::scene::SceneReader;
+
+        let json = r#"{
+            "asset": {"version": "2.0"},
+            "scene": 1,
+            "scenes": [
+                {"name": "Preview", "nodes": [0]},
+                {"name": "Full", "nodes": [1, 2]}
+            ],
+            "nodes": [
+                {"name": "PreviewRoot"},
+                {"name": "FullRootA"},
+                {"name": "FullRootB"}
+            ]
+        }"#;
+
+        let mut reader = GltfReader::from_gltf(json.as_bytes(), None).unwrap();
+        let default_scene = reader.read_scene().unwrap();
+        assert_eq!(default_scene.name, Some("Full".to_string()));
+        assert_eq!(default_scene.root_nodes.len(), 2);
+        assert_eq!(
+            default_scene.root_nodes[0].name,
+            Some("FullRootA".to_string())
+        );
+
+        let scenes = reader.read_scenes().unwrap();
+        assert_eq!(scenes.len(), 2);
+        assert_eq!(scenes[0].name, Some("Preview".to_string()));
+        assert_eq!(scenes[0].root_nodes.len(), 1);
+        assert_eq!(
+            scenes[0].root_nodes[0].name,
+            Some("PreviewRoot".to_string())
+        );
+        assert_eq!(scenes[1].name, Some("Full".to_string()));
+        assert_eq!(scenes[1].root_nodes.len(), 2);
     }
 
     #[test]
