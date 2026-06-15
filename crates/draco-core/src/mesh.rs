@@ -4,8 +4,13 @@ use crate::status::{DracoError, Status};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
+/// Triangle face represented by three point indices.
 pub type Face = [PointIndex; 3];
 
+/// Triangle mesh geometry decoded from, or prepared for, a Draco bitstream.
+///
+/// A mesh owns triangle topology and dereferences to its underlying
+/// [`PointCloud`], where attributes and metadata are stored.
 #[derive(Debug, Default, Clone)]
 pub struct Mesh {
     point_cloud: PointCloud,
@@ -13,14 +18,17 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    /// Creates an empty mesh with no faces, points, attributes, or metadata.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Appends one triangle face.
     pub fn add_face(&mut self, face: Face) {
         self.faces.push(face);
     }
 
+    /// Sets a face, growing the face list with zeroed faces when needed.
     pub fn set_face(&mut self, face_id: FaceIndex, face: Face) {
         if face_id.0 as usize >= self.faces.len() {
             self.faces
@@ -98,18 +106,22 @@ impl Mesh {
         ];
     }
 
+    /// Returns the point indices for a face.
     pub fn face(&self, face_id: FaceIndex) -> Face {
         self.faces[face_id.0 as usize]
     }
 
+    /// Returns the number of triangle faces.
     pub fn num_faces(&self) -> usize {
         self.faces.len()
     }
 
+    /// Resizes the face list, filling new faces with point index zero.
     pub fn set_num_faces(&mut self, num_faces: usize) {
         self.faces.resize(num_faces, [PointIndex(0); 3]);
     }
 
+    /// Fallibly resizes the face list.
     pub fn try_set_num_faces(&mut self, num_faces: usize) -> Status {
         if num_faces > self.faces.len() {
             self.faces

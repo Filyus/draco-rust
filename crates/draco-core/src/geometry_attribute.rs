@@ -5,13 +5,20 @@ use crate::geometry_indices::{AttributeValueIndex, PointIndex, INVALID_ATTRIBUTE
 use crate::status::DracoError;
 use std::convert::TryFrom;
 
+/// Semantic role of a geometry attribute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeometryAttributeType {
+    /// Invalid or unset attribute type.
     Invalid = -1,
+    /// Vertex or point positions.
     Position = 0,
+    /// Vertex or point normals.
     Normal,
+    /// Vertex or point colors.
     Color,
+    /// Texture coordinates.
     TexCoord,
+    /// Application-defined attribute data.
     Generic,
 }
 
@@ -32,6 +39,7 @@ impl TryFrom<u8> for GeometryAttributeType {
     }
 }
 
+/// Format descriptor shared by point and mesh attributes.
 #[derive(Debug, Clone)]
 pub struct GeometryAttribute {
     attribute_type: GeometryAttributeType,
@@ -62,6 +70,7 @@ impl GeometryAttribute {
     // type, components, data_type, normalized flag, num_values, byte_stride, byte_offset.
     // This matches the C++ PointAttribute::Init() signature and cannot be simplified
     // without breaking API compatibility or making attribute setup less explicit.
+    /// Initializes the attribute format descriptor.
     #[allow(clippy::too_many_arguments)]
     pub fn init(
         &mut self,
@@ -81,51 +90,67 @@ impl GeometryAttribute {
         self.byte_offset = byte_offset;
     }
 
+    /// Returns the semantic attribute type.
     pub fn attribute_type(&self) -> GeometryAttributeType {
         self.attribute_type
     }
 
+    /// Returns the scalar data type used by each component.
     pub fn data_type(&self) -> DataType {
         self.data_type
     }
 
+    /// Returns the number of scalar components per attribute value.
     pub fn num_components(&self) -> u8 {
         self.num_components
     }
 
+    /// Returns whether integer data should be interpreted as normalized.
     pub fn normalized(&self) -> bool {
         self.normalized
     }
 
+    /// Returns the byte stride between consecutive values.
     pub fn byte_stride(&self) -> i64 {
         self.byte_stride
     }
 
+    /// Returns the byte offset of the first value.
     pub fn byte_offset(&self) -> i64 {
         self.byte_offset
     }
 
+    /// Returns the stable Draco unique id for this attribute.
     pub fn unique_id(&self) -> u32 {
         self.unique_id
     }
 
+    /// Sets the stable Draco unique id for this attribute.
     pub fn set_unique_id(&mut self, id: u32) {
         self.unique_id = id;
     }
 
+    /// Sets the semantic attribute type.
     pub fn set_attribute_type(&mut self, attribute_type: GeometryAttributeType) {
         self.attribute_type = attribute_type;
     }
 
+    /// Sets the scalar data type.
     pub fn set_data_type(&mut self, data_type: DataType) {
         self.data_type = data_type;
     }
 
+    /// Sets the number of scalar components per value.
     pub fn set_num_components(&mut self, num_components: u8) {
         self.num_components = num_components;
     }
 }
 
+/// Typed attribute values attached to points in a point cloud or mesh.
+///
+/// Attribute data is stored in a contiguous byte buffer. Point ids either map
+/// directly to attribute value ids, or through an explicit point-to-value map
+/// when multiple points share or reorder attribute entries.
 #[derive(Debug, Clone)]
 pub struct PointAttribute {
     base: GeometryAttribute,
@@ -150,10 +175,12 @@ impl Default for PointAttribute {
 }
 
 impl PointAttribute {
+    /// Creates an empty attribute with an invalid semantic type.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Initializes the attribute and allocates storage for its values.
     pub fn init(
         &mut self,
         attribute_type: GeometryAttributeType,
@@ -178,6 +205,7 @@ impl PointAttribute {
         self.identity_mapping = true;
     }
 
+    /// Fallibly initializes the attribute and allocates storage for its values.
     pub fn try_init(
         &mut self,
         attribute_type: GeometryAttributeType,
@@ -209,6 +237,7 @@ impl PointAttribute {
         Ok(())
     }
 
+    /// Maps a point id to the corresponding attribute value id.
     pub fn mapped_index(&self, point_index: PointIndex) -> AttributeValueIndex {
         if self.identity_mapping {
             AttributeValueIndex(point_index.0)
@@ -219,10 +248,12 @@ impl PointAttribute {
         }
     }
 
+    /// Returns the number of unique attribute values.
     pub fn size(&self) -> usize {
         self.num_unique_entries
     }
 
+    /// Resizes the unique attribute value storage.
     pub fn resize_unique_entries(&mut self, num_attribute_values: usize) -> Result<(), DracoError> {
         let byte_stride = self.byte_stride() as usize;
         let buffer_size = num_attribute_values
@@ -240,49 +271,60 @@ impl PointAttribute {
         Ok(())
     }
 
+    /// Returns the raw attribute value buffer.
     pub fn buffer(&self) -> &DataBuffer {
         &self.buffer
     }
 
+    /// Returns the mutable raw attribute value buffer.
     pub fn buffer_mut(&mut self) -> &mut DataBuffer {
         &mut self.buffer
     }
 
+    /// Returns the semantic attribute type.
     pub fn attribute_type(&self) -> GeometryAttributeType {
         self.base.attribute_type()
     }
 
+    /// Returns the stable Draco unique id.
     pub fn unique_id(&self) -> u32 {
         self.base.unique_id()
     }
 
+    /// Sets the stable Draco unique id.
     pub fn set_unique_id(&mut self, id: u32) {
         self.base.set_unique_id(id);
     }
 
+    /// Sets the semantic attribute type.
     pub fn set_attribute_type(&mut self, attribute_type: GeometryAttributeType) {
         self.base.set_attribute_type(attribute_type);
     }
 
+    /// Sets the scalar data type.
     pub fn set_data_type(&mut self, data_type: DataType) {
         self.base.set_data_type(data_type);
     }
 
+    /// Sets the number of scalar components per value.
     pub fn set_num_components(&mut self, num_components: u8) {
         self.base.set_num_components(num_components);
     }
 
+    /// Uses point ids directly as attribute value ids.
     pub fn set_identity_mapping(&mut self) {
         self.identity_mapping = true;
         self.indices_map.clear();
     }
 
+    /// Allocates an explicit point-to-attribute-value map.
     pub fn set_explicit_mapping(&mut self, num_points: usize) {
         self.identity_mapping = false;
         self.indices_map
             .resize(num_points, INVALID_ATTRIBUTE_VALUE_INDEX);
     }
 
+    /// Sets one point-to-attribute-value map entry.
     pub fn set_point_map_entry(
         &mut self,
         point_index: PointIndex,
@@ -292,6 +334,7 @@ impl PointAttribute {
             .expect("point map entry must be in range");
     }
 
+    /// Fallibly sets one point-to-attribute-value map entry.
     pub fn try_set_point_map_entry(
         &mut self,
         point_index: PointIndex,
@@ -309,26 +352,32 @@ impl PointAttribute {
         Ok(())
     }
 
+    /// Stores transform metadata associated with this attribute.
     pub fn set_attribute_transform_data(&mut self, data: AttributeTransformData) {
         self.attribute_transform_data = Some(Box::new(data));
     }
 
+    /// Returns transform metadata associated with this attribute, if present.
     pub fn attribute_transform_data(&self) -> Option<&AttributeTransformData> {
         self.attribute_transform_data.as_deref()
     }
 
+    /// Returns the scalar data type.
     pub fn data_type(&self) -> DataType {
         self.base.data_type()
     }
 
+    /// Returns whether integer data should be interpreted as normalized.
     pub fn normalized(&self) -> bool {
         self.base.normalized()
     }
 
+    /// Returns the number of scalar components per value.
     pub fn num_components(&self) -> u8 {
         self.base.num_components()
     }
 
+    /// Returns the byte stride between consecutive values.
     pub fn byte_stride(&self) -> i64 {
         self.base.byte_stride()
     }

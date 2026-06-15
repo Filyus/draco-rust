@@ -1,5 +1,10 @@
 use std::collections::HashMap;
 
+/// Integer option bag used to configure Draco encoding.
+///
+/// Options mirror the C++ Draco encoder style: global options apply to the
+/// whole geometry, while attribute options override a value for one attribute
+/// id and fall back to the global value when unset.
 #[derive(Debug, Clone, Default)]
 pub struct EncoderOptions {
     global_options: HashMap<String, i32>,
@@ -7,14 +12,17 @@ pub struct EncoderOptions {
 }
 
 impl EncoderOptions {
+    /// Creates options with Draco-compatible defaults.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Returns the configured encoding speed, defaulting to 5.
     pub fn get_encoding_speed(&self) -> i32 {
         self.get_global_int("encoding_speed", 5)
     }
 
+    /// Returns the configured decoding speed target, defaulting to 5.
     pub fn get_decoding_speed(&self) -> i32 {
         self.get_global_int("decoding_speed", 5)
     }
@@ -40,27 +48,33 @@ impl EncoderOptions {
         }
     }
 
+    /// Returns the forced prediction scheme, or -1 for the encoder default.
     pub fn get_prediction_scheme(&self) -> i32 {
         self.get_global_int("prediction_scheme", -1)
     }
 
+    /// Forces a prediction scheme by numeric Draco method id.
     pub fn set_prediction_scheme(&mut self, value: i32) {
         self.set_global_int("prediction_scheme", value);
     }
 
+    /// Returns the forced encoding method, if one was set.
     pub fn get_encoding_method(&self) -> Option<i32> {
         self.global_options.get("encoding_method").cloned()
     }
 
+    /// Forces an encoding method by numeric Draco method id.
     pub fn set_encoding_method(&mut self, value: i32) {
         self.set_global_int("encoding_method", value);
     }
 
+    /// Sets the target Draco bitstream version.
     pub fn set_version(&mut self, major: u8, minor: u8) {
         self.set_global_int("version_major", major as i32);
         self.set_global_int("version_minor", minor as i32);
     }
 
+    /// Returns the target Draco bitstream version, or `(0, 0)` for default.
     pub fn get_version(&self) -> (u8, u8) {
         let major = self.get_global_int("version_major", -1);
         let minor = self.get_global_int("version_minor", -1);
@@ -73,14 +87,17 @@ impl EncoderOptions {
         }
     }
 
+    /// Sets a global integer option.
     pub fn set_global_int(&mut self, key: &str, value: i32) {
         self.global_options.insert(key.to_string(), value);
     }
 
+    /// Returns a global integer option or the supplied default.
     pub fn get_global_int(&self, key: &str, default_val: i32) -> i32 {
         *self.global_options.get(key).unwrap_or(&default_val)
     }
 
+    /// Sets an integer option for one attribute id.
     pub fn set_attribute_int(&mut self, att_id: i32, key: &str, value: i32) {
         self.attribute_options
             .entry(att_id)
@@ -88,6 +105,7 @@ impl EncoderOptions {
             .insert(key.to_string(), value);
     }
 
+    /// Returns an attribute integer option, falling back to the global value.
     pub fn get_attribute_int(&self, att_id: i32, key: &str, default_val: i32) -> i32 {
         if let Some(opts) = self.attribute_options.get(&att_id) {
             if let Some(val) = opts.get(key) {
