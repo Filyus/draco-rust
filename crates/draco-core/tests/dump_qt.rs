@@ -1,8 +1,8 @@
 use draco_core::attribute_quantization_transform::AttributeQuantizationTransform;
+use draco_core::attribute_transform::AttributeTransform;
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::PointIndex;
-use draco_core::AttributeTransform;
 
 fn create_complex_mesh_pos_attr() -> PointAttribute {
     let grid_size = 50;
