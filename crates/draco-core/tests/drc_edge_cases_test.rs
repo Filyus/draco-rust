@@ -270,6 +270,100 @@ fn oversized_drc_counts_fail_before_large_allocation() {
 }
 
 #[test]
+fn oversized_edgebreaker_counts_fail_before_large_allocation() {
+    // Exact libFuzzer reproducer (fuzz target `decode_drc`) for an EdgeBreaker
+    // mesh stream whose declared geometry counts drove a multi-gigabyte
+    // allocation before any payload was read. It must now fail as a controlled
+    // error without panicking or exhausting memory.
+    let oom_reproducer: [u8; 115] = [
+        68, 82, 65, 67, 79, 2, 2, 1, 1, 0, 0, 0, 25, 32, 0, 32, 3, 0, 10, 239, 211, 234, 83, 173,
+        234, 83, 213, 170, 26, 255, 1, 17, 1, 255, 0, 0, 1, 0, 9, 3, 0, 0, 2, 1, 1, 1, 0, 15, 3,
+        21, 46, 61, 10, 39, 33, 5, 145, 2, 6, 168, 166, 116, 234, 255, 161, 255, 255, 255, 15, 0,
+        252, 127, 255, 15, 0, 0, 64, 255, 7, 0, 64, 128, 8, 0, 0, 68, 0, 4, 4, 2, 0, 0, 0, 0, 255,
+        63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 64, 14,
+    ];
+    assert_both_decoders_do_not_panic(&oom_reproducer);
+
+    // Synthetic v2.2 EdgeBreaker mesh declaring an impossible face count. The
+    // geometric count guards must reject it before allocating connectivity.
+    let mut oversized_edgebreaker_faces = draco_header(2, 2, 1, 1);
+    oversized_edgebreaker_faces.push(0); // traversal decoder type = standard
+    append_varint(&mut oversized_edgebreaker_faces, 4); // num_encoded_vertices
+    append_varint(&mut oversized_edgebreaker_faces, u32::MAX as u64); // num_faces
+    assert!(
+        decode_malformed_without_panic(DecoderKind::Mesh, &oversized_edgebreaker_faces).is_err(),
+        "oversized EdgeBreaker face count unexpectedly decoded successfully"
+    );
+}
+
+#[test]
+fn oversized_sequential_mesh_point_count_fails_before_large_allocation() {
+    // libFuzzer reproducer (fuzz target `decode_drc`): an 18-byte v2.2 sequential
+    // mesh with num_faces = 0 but a ~billion-point num_points varint. Connectivity
+    // is skipped, but attribute decode then sized per-attribute buffers by
+    // num_points and accumulated multiple gigabytes. The point count must be
+    // rejected against the remaining input before those buffers are allocated.
+    let seq_mesh_point_count_oom: [u8; 18] = [
+        68, 82, 65, 67, 79, 2, 2, 1, 0, 0, 1, 0, 255, 255, 255, 255, 68, 11,
+    ];
+    assert!(
+        decode_malformed_without_panic(DecoderKind::Mesh, &seq_mesh_point_count_oom).is_err(),
+        "oversized sequential mesh point count unexpectedly decoded successfully"
+    );
+}
+
+#[test]
+fn oversized_texcoord_orientations_decode_quickly_without_hang() {
+    // libFuzzer reproducer (fuzz target `decode_drc`): a v2.2 EdgeBreaker mesh
+    // whose portable-texcoord prediction declared a ~2 billion orientation count
+    // (raw i32). Each orientation is rANS-bit-decoded in a loop, so the decode
+    // spun for ~2 seconds and reserved gigabytes before failing. The count must
+    // now be rejected against the remaining input so decode returns promptly.
+    let texcoord_orientation_dos: [u8; 224] = [
+        68, 82, 65, 67, 79, 2, 2, 1, 1, 0, 0, 0, 8, 12, 2, 11, 0, 0, 3, 95, 75, 21, 1, 1, 16, 85,
+        4, 138, 172, 164, 70, 85, 4, 138, 172, 164, 70, 3, 255, 0, 1, 0, 1, 0, 1, 1, 0, 1, 0, 9, 3,
+        0, 0, 2, 1, 3, 9, 2, 0, 1, 2, 1, 1, 9, 3, 0, 2, 3, 1, 1, 1, 0, 3, 3, 1, 48, 1, 16, 3, 0,
+        40, 150, 142, 8, 4, 0, 0, 0, 0, 0, 255, 255, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 128, 63, 20, 5, 1, 1, 0, 13, 3, 85, 13, 173, 18, 7, 1, 8, 23, 1, 24, 8, 141, 130, 114,
+        195, 183, 60, 131, 141, 6, 188, 252, 191, 191, 229, 251, 191, 191, 252, 203, 191, 186, 129,
+        252, 203, 63, 154, 252, 203, 255, 251, 191, 127, 2, 246, 251, 203, 62, 46, 255, 239, 255,
+        254, 242, 15, 12, 0, 0, 62, 1, 2, 192, 64, 0, 0, 0, 0, 255, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 128, 63, 12, 6, 3, 1, 1, 3, 1, 1, 64, 1, 0, 255, 15, 0, 0, 255, 7, 0, 0, 255, 2,
+        161, 65, 12,
+    ];
+    let start = std::time::Instant::now();
+    assert_both_decoders_do_not_panic(&texcoord_orientation_dos);
+    // The fixed decode returns in well under a millisecond; the pre-fix bug took
+    // ~2 seconds. A 1-second budget catches a regression without CI flakiness.
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "texcoord orientation decode took too long: {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn oversized_rans_symbol_table_fails_before_large_allocation() {
+    // libFuzzer reproducer (fuzz target `decode_drc`): a v2.2 EdgeBreaker mesh
+    // whose tagged-symbol attribute stream declared a ~5 billion entry rANS
+    // probability table, which drove a ~43 GB allocation in
+    // RAnsSymbolDecoder::decode_table. The declared table size must now be
+    // rejected against the remaining input before the table is allocated.
+    let rans_table_oom: [u8; 209] = [
+        68, 82, 65, 67, 79, 2, 2, 1, 1, 0, 0, 0, 12, 4, 0, 4, 0, 0, 2, 255, 15, 255, 2, 68, 64, 1,
+        255, 0, 0, 2, 0, 9, 3, 0, 0, 1, 9, 3, 0, 1, 2, 3, 0, 1, 1, 0, 17, 3, 85, 5, 85, 5, 51, 89,
+        53, 4, 181, 166, 147, 128, 255, 255, 1, 128, 0, 0, 255, 255, 2, 128, 0, 0, 233, 255, 15, 0,
+        4, 0, 34, 240, 255, 23, 0, 4, 0, 232, 255, 7, 0, 12, 0, 252, 255, 255, 255, 92, 92, 92, 92,
+        92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 19, 0, 252,
+        255, 15, 0, 4, 0, 0, 0, 232, 255, 15, 0, 244, 255, 255, 255, 19, 0, 20, 254, 255, 1, 0, 3,
+        0, 1, 0, 0, 0, 0, 255, 255, 0, 0, 0, 3, 1, 0, 9, 3, 173, 42, 19, 85, 5, 1, 16, 4, 4, 189,
+        250, 145, 128, 63, 88, 111, 194, 240, 48, 28, 234, 3, 255, 0, 0, 0, 127, 0, 0, 0, 10, 215,
+        35, 188, 10, 215, 163, 187, 10, 215, 163, 187, 10, 215, 163, 60, 16, 8,
+    ];
+    assert_both_decoders_do_not_panic(&rans_table_oom);
+}
+
+#[test]
 fn semantically_invalid_drc_payloads_fail_without_panic() {
     let mut impossible_point_cloud_attribute_count = draco_header(2, 0, 0, 0);
     impossible_point_cloud_attribute_count.extend_from_slice(&1u32.to_le_bytes());

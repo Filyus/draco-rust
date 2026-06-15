@@ -1,0 +1,86 @@
+name: Fuzz
+
+# Coverage-guided decode fuzzing (level 1: bounded smoke on PR/push, with a
+# longer soak available on manual dispatch). The corpus is persisted across runs
+# via the GitHub Actions cache and re-seeded from the committed fixtures each
+# run, so coverage never starts from zero even if the cache is evicted.
+#
+# ClusterFuzzLite (cflite_*.yml) provides the heavier continuous-fuzzing layer
+# (crash dedup, batch mode); this workflow is the lightweight in-repo gate.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # No scheduled (nightly) run: the smoke gate fires only when code changes.
+  # Trigger a longer soak manually with `gh workflow run fuzz.yml`.
+  workflow_dispatch:
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: decode_drc
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Pick fuzz duration
+        id: dur
+        run: |
+          # Manual dispatch = deep soak; change-triggered = quick smoke.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "seconds=1800" >> "$GITHUB_OUTPUT"
+          else
+            echo "seconds=120" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore fuzz corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-decode_drc-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-decode_drc-
+
+      - name: Seed corpus from fixtures
+        run: ./fuzz/seed_corpus.sh
+
+      # -O builds in release mode WITHOUT cargo-fuzz's default debug-assertions
+      # /overflow-checks, so the campaign targets shipped behavior. The decoder
+      # intentionally wraps (matching C++) and keeps DRACO_DCHECK-equivalent
+      # debug_assert! invariants that are compiled out in release; with those on
+      # the fuzzer would trip on dev-time checks rather than real hazards.
+      # Out-of-bounds indexing still panics in release and is still caught.
+      - name: Fuzz decode_drc
+        run: |
+          cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz \
+            --target x86_64-unknown-linux-gnu -- \
+            -max_total_time=${{ steps.dur.outputs.seconds }} \
+            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
+
+      - name: Minimize corpus
+        if: always()
+        run: cargo +nightly fuzz cmin -O decode_drc --fuzz-dir fuzz --target x86_64-unknown-linux-gnu
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

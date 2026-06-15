@@ -25,6 +25,41 @@ impl CornerTable {
         }
     }
 
+    /// Fallible constructor that reserves the corner storage through
+    /// `try_reserve` so a bitstream-controlled `num_faces` cannot abort the
+    /// process on a failed allocation; oversized counts return a `DracoError`
+    /// instead. Behaviorally identical to [`CornerTable::new`] on success.
+    pub fn try_new(num_faces: usize) -> Result<Self, crate::status::DracoError> {
+        let num_corners = num_faces.checked_mul(3).ok_or_else(|| {
+            crate::status::DracoError::DracoError("Corner table size overflow".to_string())
+        })?;
+
+        let mut corner_to_vertex_map = Vec::new();
+        corner_to_vertex_map
+            .try_reserve_exact(num_corners)
+            .map_err(|_| {
+                crate::status::DracoError::DracoError("Failed to allocate corner table".to_string())
+            })?;
+        corner_to_vertex_map.resize(num_corners, INVALID_VERTEX_INDEX);
+
+        let mut opposite_corners = Vec::new();
+        opposite_corners
+            .try_reserve_exact(num_corners)
+            .map_err(|_| {
+                crate::status::DracoError::DracoError("Failed to allocate corner table".to_string())
+            })?;
+        opposite_corners.resize(num_corners, INVALID_CORNER_INDEX);
+
+        Ok(Self {
+            corner_to_vertex_map,
+            opposite_corners,
+            vertex_corners: Vec::new(),
+            num_original_vertices: 0,
+            num_degenerated_faces: 0,
+            num_isolated_vertices: 0,
+        })
+    }
+
     pub fn map_corner_to_vertex(&mut self, corner: CornerIndex, vertex: VertexIndex) {
         self.corner_to_vertex_map[corner.0 as usize] = vertex;
     }
@@ -126,6 +161,37 @@ impl CornerTable {
 
     pub fn num_corners(&self) -> usize {
         self.corner_to_vertex_map.len()
+    }
+
+    /// Validate that the corner maps are internally consistent so a traversal can
+    /// index per-vertex / per-face arrays sized from the table counts without
+    /// risking an out-of-bounds panic. Every vertex index must be `INVALID` or
+    /// `< num_vertices`, every opposite-corner index must be `INVALID` or
+    /// `< num_corners`, and the opposite map must match the corner count.
+    /// Malformed (e.g. attribute-seam-modified) tables can violate these and
+    /// would otherwise panic on direct indexing in debug and release builds.
+    /// O(num_corners); intended for once-per-traversal use off the hot path.
+    pub fn is_index_consistent(&self) -> bool {
+        if self.opposite_corners.len() != self.corner_to_vertex_map.len() {
+            return false;
+        }
+        let num_vertices = self.vertex_corners.len();
+        let num_corners = self.corner_to_vertex_map.len();
+        if self
+            .corner_to_vertex_map
+            .iter()
+            .any(|&v| v != INVALID_VERTEX_INDEX && (v.0 as usize) >= num_vertices)
+        {
+            return false;
+        }
+        if self
+            .opposite_corners
+            .iter()
+            .any(|&o| o != INVALID_CORNER_INDEX && (o.0 as usize) >= num_corners)
+        {
+            return false;
+        }
+        true
     }
 
     pub fn num_faces(&self) -> usize {
@@ -663,5 +729,35 @@ impl CornerTable {
             }
         }
         valence
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_index_consistent_accepts_valid_and_rejects_malformed() {
+        // A single triangle: 3 corners, 3 vertices, no opposites.
+        let mut ct = CornerTable::default();
+        ct.corner_to_vertex_map = vec![VertexIndex(0), VertexIndex(1), VertexIndex(2)];
+        ct.opposite_corners = vec![INVALID_CORNER_INDEX; 3];
+        ct.vertex_corners = vec![CornerIndex(0), CornerIndex(1), CornerIndex(2)];
+        assert!(ct.is_index_consistent());
+
+        // Vertex index beyond num_vertices (vertex_corners.len()).
+        let mut bad_vertex = ct.clone();
+        bad_vertex.corner_to_vertex_map[2] = VertexIndex(3);
+        assert!(!bad_vertex.is_index_consistent());
+
+        // Opposite-corner index beyond num_corners.
+        let mut bad_opposite = ct.clone();
+        bad_opposite.opposite_corners[0] = CornerIndex(99);
+        assert!(!bad_opposite.is_index_consistent());
+
+        // Opposite map length not matching the corner count.
+        let mut bad_len = ct.clone();
+        bad_len.opposite_corners.pop();
+        assert!(!bad_len.is_index_consistent());
     }
 }

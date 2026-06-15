@@ -27,8 +27,14 @@ jobs:
       - name: Check web formatting
         run: cargo fmt --manifest-path web/Cargo.toml --all -- --check
 
-      - name: Test draco-core
+      - name: Test draco-core (unit + doc)
         run: cargo test --manifest-path crates/Cargo.toml -p draco-core --lib
+
+      # Malformed-input / hardening regressions. Kept separate from the C++
+      # interop integration tests (rust_*_cpp_*), which require the external
+      # draco_decoder/draco_encoder tools not present on the CI runner.
+      - name: Test draco-core malformed-input regressions
+        run: cargo test --manifest-path crates/Cargo.toml -p draco-core --test drc_edge_cases_test
 
       - name: Test draco-io
         run: cargo test --manifest-path crates/Cargo.toml -p draco-io

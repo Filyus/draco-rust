@@ -17,3 +17,14 @@ path = "fuzz_targets/decode_drc.rs"
 test = false
 doc = false
 bench = false
+
+# Release-profile defaults, stated explicitly to document intent. NOTE: the
+# actual switch for production (release) fuzzing semantics is the cargo-fuzz `-O`
+# flag, not this profile — cargo-fuzz enables debug-assertions/overflow-checks by
+# default and a profile setting does not override that. See FUZZING.md; CI and
+# .clusterfuzzlite/build.sh both pass `-O` so the campaign targets shipped
+# behavior (the decoder intentionally wraps like C++ and keeps DCHECK-equivalent
+# debug_assert! invariants that are compiled out in release).
+[profile.release]
+debug-assertions = false
+overflow-checks = false

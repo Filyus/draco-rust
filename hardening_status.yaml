@@ -9,7 +9,7 @@
 #   behavior still belongs in implementation_state.yaml.
 
 version: 1
-last_reviewed: "2026-04-25"
+last_reviewed: "2026-06-15"
 
 scope:
   crate: "draco-core"
@@ -21,9 +21,9 @@ scope:
 
 readiness:
   controlled_assets: "good"
-  opportunistic_untrusted_decode: "improving"
+  opportunistic_untrusted_decode: "good"
   arbitrary_hostile_input: "not_claimed"
-  summary: "Positive-path decode coverage is strong for the supported fixture set. Malformed-input behavior has deterministic regression coverage and several panic/resource hazards have been converted into controlled failures, but sustained fuzzing and explicit caller resource policy are still missing."
+  summary: "Positive-path decode coverage is strong for the supported fixture set. Malformed-input behavior has deterministic regression coverage and several panic/resource hazards have been converted into controlled failures. Coverage-guided fuzzing is now operationalized (seed corpus + documented routine in FUZZING.md) and has already found and fixed multiple malformed-input hazards: count-driven memory-amplification OOMs (EdgeBreaker geometry counts, point-cloud point count, rANS probability table), an integer-overflow panic in portable-texcoord prediction (now wrapping like C++), and a multi-second CPU/memory DoS from an unbounded texcoord orientation count. All are pinned as deterministic regression tests. Caller resource policy is now documented in SECURITY.md. After these fixes a 300-second local campaign (24,715 executions, peak RSS under 1 GB) over the seeded corpus completed with no panic, OOM, or timeout. Fuzzing now runs in CI on Linux/ASan with release semantics (cargo-fuzz -O): a bounded smoke gate on every PR/push (no scheduled runs) with a cache-persisted corpus, a longer soak and ClusterFuzzLite PR/batch/prune available on manual dispatch. Remaining confidence is a function of accumulated soak time before arbitrary-hostile-input claims; note that development (non -O) fuzzing additionally surfaces DRACO_DCHECK-equivalent debug_assert! invariant violations, which are debug-only and do not reproduce in the shipped release build."
 
 completed:
   - id: malformed-basic-drc-streams
@@ -350,23 +350,106 @@ completed:
           - "cargo check --manifest-path fuzz/Cargo.toml --bins"
     note: "A cargo-fuzz/libFuzzer entrypoint now feeds arbitrary byte slices through both MeshDecoder and PointCloudDecoder so sustained no-panic decode fuzzing can run outside the normal test suite."
 
-open_risks:
-  - id: fuzzing-not-yet-operationalized
-    priority: high
-    summary: "A cargo-fuzz entrypoint exists, but it is not yet part of CI or a documented pre-release fuzzing routine."
-    why_it_matters: "The harness enables sustained arbitrary-byte decode fuzzing, but it only improves hostile-input confidence when run regularly with corpus persistence and sanitizer-relevant configurations."
-    next_steps:
-      - "Seed the fuzz corpus with supported fixtures and current malformed edge cases."
-      - "Document the local fuzz command, corpus location, and recommended runtime."
-      - "Run native and wasm-relevant configurations before making hostile-input claims."
+  - id: edgebreaker-geometry-count-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/mesh_edgebreaker_decoder.rs"
+      - path: "crates/draco-core/src/corner_table.rs"
+      - path: "crates/draco-core/src/edgebreaker_connectivity_decoder.rs"
+      - path: "crates/draco-core/tests/drc_edge_cases_test.rs"
+        tests:
+          - "oversized_edgebreaker_counts_fail_before_large_allocation"
+    note: "EdgeBreaker connectivity decode now mirrors the C++ MeshEdgebreakerDecoderImpl geometric count invariants (num_faces <= u32::MAX/3, num_encoded_vertices <= 3*num_faces, vertex/face edge feasibility, num_symbols <= num_faces <= num_symbols*4/3, num_split_symbols <= num_symbols) BEFORE allocating face/connectivity storage, and the face vector, corner table, and per-vertex hole table use fallible try_reserve constructors (Mesh::try_set_num_faces, CornerTable::try_new, EdgebreakerConnectivityDecoder::try_new). Speculative event/symbol Vec pre-reservations are capped by the remaining byte/bit budget. Found by the decode_drc fuzz target (multi-GB allocation from a 115-byte input)."
 
-  - id: resource-policy-boundary
-    priority: medium
-    summary: "Decoder code avoids arbitrary Draco-format caps, but caller-level input-size, timeout, and memory policy is not documented here."
-    why_it_matters: "Draco is designed for large meshes; hard-coded geometry caps are undesirable, but production callers still need explicit operational limits."
+  - id: point-cloud-count-amplification-bound
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/point_cloud_decoder.rs"
+    note: "Point-cloud decode rejects a declared point count beyond the remaining bit budget (>= 1 bit/point holds for every real Draco stream including KD-tree) before per-attribute buffers sized by num_points are allocated. Prevents memory amplification from a tiny malformed header in both the sequential and KD-tree attribute paths. Found by the decode_drc fuzz target (~4 GB allocation in KdTreeAttributesDecoder from a 115-byte input)."
+
+  - id: sequential-mesh-count-amplification-bound
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/mesh_decoder.rs"
+      - path: "crates/draco-core/tests/drc_edge_cases_test.rs"
+        tests:
+          - "oversized_sequential_mesh_point_count_fails_before_large_allocation"
+    note: "Sequential mesh connectivity decode rejects num_faces / num_points beyond the remaining bit budget before connectivity-index and per-attribute buffers sized by those counts are allocated. Found by the decode_drc fuzz target: an 18-byte v2.2 sequential mesh with num_faces=0 and a ~billion-point num_points accumulated multiple gigabytes in attribute decode."
+
+  - id: rans-symbol-table-allocation-bound
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/rans_symbol_decoder.rs"
+      - path: "crates/draco-core/tests/drc_edge_cases_test.rs"
+        tests:
+          - "oversized_rans_symbol_table_fails_before_large_allocation"
+    note: "RAnsSymbolDecoder::decode_table rejects a declared symbol count beyond remaining_size*64 (a table byte covers at most 64 entries via zero-frequency runs) before resizing the probability table. The LUT resize is already bounded because precision bits are clamped to [12,20]. Found by the decode_drc fuzz target (~43 GB probability-table allocation from a 209-byte EdgeBreaker mesh input)."
+
+  - id: tex-coords-portable-prediction-wrapping
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/prediction_scheme_tex_coords_portable.rs"
+        tests:
+          - "integer_vector_helpers_wrap_instead_of_panicking_on_extreme_values"
+    note: "The integer vector helpers used by portable-texcoord prediction (vec3_sub/squared_norm/dot/div_scalar, vec2_sub and the encoder-side variants) now use wrapping arithmetic, matching C++ Draco's int64 intermediate math and the documented cast/wrapping order. For valid quantized streams the result is unchanged; on malformed streams with out-of-range positions it wraps like C++ instead of panicking under overflow checks. Found by the decode_drc fuzz target (multiply/add-with-overflow panic in vec3_squared_norm)."
+
+  - id: tex-coords-orientation-count-bound
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/prediction_scheme_tex_coords_portable.rs"
+      - path: "crates/draco-core/tests/drc_edge_cases_test.rs"
+        tests:
+          - "oversized_texcoord_orientations_decode_quickly_without_hang"
+    note: "PredictionSchemeTexCoordsPortableDecoder::decode_prediction_data now rejects a declared orientation count beyond remaining_size*8 before reserving and rANS-bit-decoding each orientation in a loop. C++ Draco checks only num_orientations < 0; the raw i32 count (up to ~2.1 billion) otherwise drove a ~2 second decode and multi-GB reservation. Found by the decode_drc fuzz target as a slow-unit/timeout from a 224-byte EdgeBreaker mesh input that reconstructs only 12 faces."
+
+  - id: edgebreaker-traversal-corner-table-consistency
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/corner_table.rs"
+        tests:
+          - "is_index_consistent_accepts_valid_and_rejects_malformed"
+      - path: "crates/draco-core/src/mesh_edgebreaker_decoder.rs"
+      - path: "crates/draco-core/src/mesh_decoder.rs"
+    note: "CornerTable::is_index_consistent() validates that every vertex index is < num_vertices and every opposite-corner index is < num_corners (with a matching opposite-map length) before the EdgeBreaker attribute traversals (assign_points_to_corners and the DFS/max-prediction-degree point-id generators) index per-vertex/per-face arrays by table-derived ids. A malformed attribute-seam corner table previously produced an out-of-bounds vertex index and a real (debug+release) index-panic. Found by the decode_drc fuzz target (index out of bounds in assign_points_to_corners)."
+
+  - id: fuzz-profile-release-semantics
+    status: covered
+    evidence:
+      - path: "fuzz/Cargo.toml"
+      - path: "FUZZING.md"
+    note: "The fuzz profile disables debug-assertions and overflow-checks so campaigns target shipped release behavior. The decoder intentionally relies on two's-complement wrapping (matching C++) and DRACO_DCHECK-equivalent debug_assert! invariants that are compiled out in release; fuzzing with them on tripped on dev-time checks rather than real hostile-input hazards. Memory-safety coverage is unaffected: out-of-bounds indexing still panics in release Rust and is still caught, as are OOMs, timeouts, and unbounded loops."
+
+  - id: fuzzing-corpus-and-routine
+    status: covered
+    evidence:
+      - path: "fuzz/seed_corpus.ps1"
+      - path: "fuzz/seed_corpus.sh"
+      - path: "FUZZING.md"
+    note: "The git-ignored libFuzzer corpus is reproducibly seeded from the 98 committed .drc fixtures via fuzz/seed_corpus.{ps1,sh}, and FUZZING.md documents the install/seed/run/minimize/triage routine, the Windows sanitizer-runtime nuance, and the requirement to pin any new crash as a deterministic regression test. Bounded campaigns have been run locally; corpus-persisted CI runs remain the open follow-up."
+
+  - id: caller-resource-policy-documented
+    status: covered
+    evidence:
+      - path: "SECURITY.md"
+    note: "SECURITY.md documents the decode threat model and recommended caller limits for untrusted input (input byte-size cap, memory budget, timeout/cancellation, process/WASM isolation, minimal decoder feature surface), making explicit that the crate avoids artificial geometry caps by design and that bounding cost is a caller responsibility."
+
+open_risks:
+  - id: fuzzing-ci-soak-time
+    priority: low
+    summary: "Fuzzing runs in CI on Linux/ASan, release semantics (Level 1 bounded smoke on every PR/push with cache-persisted corpus in fuzz.yml; Level 2 ClusterFuzzLite PR fuzzing in cflite_pr.yml). Deeper runs (fuzz.yml soak, ClusterFuzzLite batch/prune) are manual dispatch — there are no scheduled runs. Confidence still grows with cumulative soak time and corpus depth."
+    why_it_matters: "The change-triggered jobs catch regressions and shake out new hostile-input hazards, but arbitrary-hostile-input confidence is a function of total fuzzing hours and corpus coverage, which accrue over time rather than from a single run."
     next_steps:
-      - "Document recommended caller limits for input byte size, worker isolation, timeout/cancellation, and memory budget."
-      - "Keep decoder internals focused on overflow checks and fallible allocation rather than artificial mesh-size caps."
+      - "Run the manual soak / ClusterFuzzLite batch periodically (e.g. before a release) to accumulate corpus and coverage; review any uploaded crash artifacts promptly."
+      - "Consider full OSS-Fuzz onboarding (the .clusterfuzzlite build integration is OSS-Fuzz-compatible) for continuous infrastructure-scale fuzzing."
+      - "Optionally add a coverage-report cron once the address-sanitizer batch path is established."
+
+  - id: resource-policy-enforcement
+    priority: low
+    summary: "Caller resource policy is now documented in SECURITY.md, but the crate cannot enforce caller-side input-size, timeout, and memory limits on its own."
+    why_it_matters: "Draco is designed for large meshes, so the crate avoids artificial geometry caps; count-driven allocations are now bounded relative to input, but a genuinely large valid stream still needs caller-side operational limits."
+    next_steps:
+      - "Keep decoder internals focused on overflow checks, relative input-consistency bounds, and fallible allocation rather than artificial mesh-size caps."
+      - "Point production integrators at SECURITY.md for input-size, worker-isolation, timeout/cancellation, and memory-budget guidance."
 
   - id: decode-error-api-cleanup
     priority: medium
