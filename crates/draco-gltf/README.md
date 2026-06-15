@@ -1,0 +1,78 @@
+# draco-gltf
+
+Load and save **full glTF scenes with Draco-compressed geometry**.
+
+`draco-gltf` is a thin bridge between [`gltf`](https://crates.io/crates/gltf)
+(gltf-rs), which models the whole glTF scene — materials, textures, nodes,
+animations, skins, lights, and arbitrary extensions — and the Draco crates:
+
+- **decode** uses [`draco-core`](https://crates.io/crates/draco-core) to
+  decompress `KHR_draco_mesh_compression` geometry;
+- **encode** delegates to
+  [`draco-io`](https://crates.io/crates/draco-io)'s document-preserving
+  compressor, so the compression logic lives in exactly one place.
+
+It exists because neither side does the whole job alone: gltf-rs does not decode
+Draco (its validator even *rejects* a Draco asset, since
+`KHR_draco_mesh_compression` is a required extension it does not implement),
+while the Draco crates intentionally do not model the rest of a glTF scene.
+
+```toml
+[dependencies]
+draco-gltf = "0.1"
+```
+
+## Load a scene and decode geometry
+
+```rust,no_run
+let scene = draco_gltf::import("model.glb")?;
+
+// The full scene is available through the gltf-rs API.
+println!("{} materials, {} animations, {} skins",
+    scene.document.materials().count(),
+    scene.document.animations().count(),
+    scene.document.skins().count());
+
+// Decode the Draco-compressed geometry.
+for (mesh, prim) in scene.draco_primitives() {
+    let geometry = scene.decode_primitive(&prim)?; // draco_core::Mesh
+    println!("mesh {:?}: {} faces, {} points",
+        mesh.name(), geometry.num_faces(), geometry.num_points());
+}
+# Ok::<(), draco_gltf::Error>(())
+```
+
+## Compress a scene back to Draco
+
+```rust,no_run
+let scene = draco_gltf::import("model.gltf")?;
+let bytes = draco_gltf::compress(&scene.document, &scene.buffers)?;
+std::fs::write("model.draco.gltf", bytes)?;
+# Ok::<(), draco_gltf::Error>(())
+```
+
+`compress` preserves everything the geometry change does not touch — materials,
+textures, images, nodes, animations, skins, `extras`, and unknown extensions —
+because it reuses `draco-io`'s document-preserving compressor.
+
+## Validation
+
+gltf-rs's validator rejects Draco assets, so `import` loads without it. The rest
+of the document is still well-formed gltf-rs data. Callers that need strict
+validation of the non-Draco parts can run gltf-rs validation themselves and
+ignore the `KHR_draco_mesh_compression`-related errors.
+
+## Where it sits
+
+| Crate | Role | depends on gltf-rs |
+|---|---|---|
+| `draco-core` | raw `.drc` bitstream | no |
+| `draco-io` | container plumbing + document-preserving compressor | no |
+| **`draco-gltf`** | full-scene load/save bridging gltf-rs ↔ Draco | yes (only here) |
+
+If you only need raw `.drc` or geometry-level glTF I/O, use `draco-core` /
+`draco-io` directly and skip the gltf-rs dependency.
+
+## License
+
+Apache-2.0.

@@ -1,0 +1,24 @@
+[package]
+name = "draco-gltf"
+version = "0.1.0"
+edition = "2021"
+description = "Load and save full glTF scenes with Draco geometry, bridging gltf-rs and draco-core/draco-io"
+license = "Apache-2.0"
+repository = "https://github.com/Filyus/draco-rust"
+readme = "README.md"
+keywords = ["draco", "gltf", "glb", "compression", "scene"]
+categories = ["compression", "graphics", "rendering::data-formats"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
+
+[dependencies]
+gltf = { version = "1.4", default-features = false, features = ["import", "utils", "names", "extensions"] }
+draco-core = { version = "0.1.0", path = "../draco-core", default-features = false, features = ["decoder", "point_cloud_decode", "edgebreaker_valence_decode"] }
+draco-io = { version = "0.1.0", path = "../draco-io", default-features = false, features = ["gltf-reader", "gltf-writer"] }
+serde_json = "1.0"
+thiserror = "2.0"

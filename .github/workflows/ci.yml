@@ -50,6 +50,9 @@ jobs:
       - name: Test draco-io
         run: cargo test --manifest-path crates/Cargo.toml -p draco-io
 
+      - name: Test draco-gltf
+        run: cargo test --manifest-path crates/Cargo.toml -p draco-gltf
+
       - name: Test web workspace
         run: cargo test --manifest-path web/Cargo.toml --workspace
 

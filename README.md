@@ -23,6 +23,7 @@ This project is not an official Google Draco release.
 |---|---|
 | [`draco-core`](crates/draco-core) | Raw Draco `.drc` mesh and point-cloud encode/decode implementation. |
 | [`draco-io`](crates/draco-io) | Readers and writers for OBJ, PLY, FBX, glTF, and GLB. |
+| [`draco-gltf`](crates/draco-gltf) | Full glTF scene load/save with Draco geometry, bridging [gltf-rs](https://crates.io/crates/gltf) and the Draco crates. |
 
 ## Features
 
@@ -38,6 +39,15 @@ This project is not an official Google Draco release.
 
 - Read and write glTF, GLB, OBJ, PLY, and binary FBX.
 - Use `KHR_draco_mesh_compression` for Draco-compressed glTF and GLB.
+- Compress an existing glTF/GLB in place, preserving materials, textures,
+  animations, skins, and other content the geometry change does not touch.
+
+`draco-gltf` handles full glTF scenes (optional, pulls in `gltf-rs`):
+
+- Load a complete scene — materials, textures, nodes, animations, skins,
+  extensions — via [gltf-rs](https://crates.io/crates/gltf), and decode its
+  Draco geometry with `draco-core`.
+- Compress a scene back to Draco, reusing `draco-io`'s compressor.
 
 The main paths are covered by Rust roundtrips, fixtures, and C++ interop tests.
 
