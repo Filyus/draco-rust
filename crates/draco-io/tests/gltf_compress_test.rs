@@ -88,7 +88,7 @@ fn textured_triangle_glb() -> Vec<u8> {
     push_f32s(&mut bin, &[0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
     // indices (offset 96, len 6) -> pad to 100
     push_u16s(&mut bin, &[0, 1, 2]);
-    while bin.len() % 4 != 0 {
+    while !bin.len().is_multiple_of(4) {
         bin.push(0);
     }
     let image_offset = bin.len(); // 100
@@ -327,10 +327,10 @@ fn skinned_primitive_is_compressed_and_roundtrips() {
     assert_eq!(meshes[0].num_faces(), 1);
 }
 
-/// A primitive with no indices is outside the compressor's scope (it compresses
-/// only indexed triangle lists) and must be preserved uncompressed.
+/// A non-indexed triangle list is compressed: a fresh indices accessor is
+/// generated (Draco glTF primitives are indexed), and the result round-trips.
 #[test]
-fn non_indexed_primitive_is_preserved_uncompressed() {
+fn non_indexed_primitive_is_compressed_with_generated_indices() {
     let mut bin = Vec::new();
     push_f32s(&mut bin, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]); // 3 verts, no indices
 
@@ -359,11 +359,63 @@ fn non_indexed_primitive_is_preserved_uncompressed() {
     assert_eq!(doc["materials"][0]["name"], "KeepMe");
     let prim = &doc["meshes"][0]["primitives"][0];
     assert!(
+        prim["extensions"]["KHR_draco_mesh_compression"].is_object(),
+        "non-indexed primitive must be compressed"
+    );
+    // A SCALAR/UNSIGNED_INT indices accessor was generated, without a bufferView.
+    let indices_idx = prim["indices"]
+        .as_u64()
+        .expect("compressed primitive must have an indices accessor")
+        as usize;
+    let indices_acc = &doc["accessors"][indices_idx];
+    assert_eq!(indices_acc["type"], "SCALAR");
+    assert_eq!(indices_acc["componentType"], 5125);
+    assert!(indices_acc.get("bufferView").is_none());
+
+    // Round-trips through the decoder (one triangle).
+    let reader = GltfReader::from_glb(&output).expect("readable");
+    let meshes = reader.decode_all_meshes().expect("decode");
+    assert_eq!(meshes.len(), 1);
+    assert_eq!(meshes[0].num_faces(), 1);
+}
+
+/// A non-triangle primitive (POINTS) is outside the compressor's scope and must
+/// be preserved uncompressed.
+#[test]
+fn non_triangle_primitive_is_preserved_uncompressed() {
+    let mut bin = Vec::new();
+    push_f32s(&mut bin, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+
+    let json = json!({
+        "asset": { "version": "2.0" },
+        "meshes": [ {
+            "primitives": [ {
+                "attributes": { "POSITION": 0 },
+                "mode": 0, // POINTS
+                "material": 0
+            } ]
+        } ],
+        "materials": [ { "name": "KeepMe" } ],
+        "accessors": [
+            { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+              "min": [0.0,0.0,0.0], "max": [1.0,1.0,0.0] }
+        ],
+        "bufferViews": [ { "buffer": 0, "byteOffset": 0, "byteLength": 36 } ],
+        "buffers": [ { "byteLength": bin.len() } ]
+    });
+    let input = build_glb(&json, &bin);
+
+    let output = compress_gltf_bytes(&input, None).expect("must not fail");
+    let (doc, _) = split_glb(&output);
+
+    assert_eq!(doc["materials"][0]["name"], "KeepMe");
+    let prim = &doc["meshes"][0]["primitives"][0];
+    assert!(
         prim.get("extensions").is_none()
             || prim["extensions"]
                 .get("KHR_draco_mesh_compression")
                 .is_none(),
-        "non-indexed primitive must not be compressed"
+        "POINTS primitive must not be compressed"
     );
     assert!(doc.get("extensionsRequired").is_none());
 }

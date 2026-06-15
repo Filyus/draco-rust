@@ -650,15 +650,23 @@ impl GltfReader {
         Ok(Self { root, buffers })
     }
 
-    /// Parse from glTF/GLB bytes without rejecting features outside the
-    /// geometry-decoding scope (skins, animations, morph targets).
+    /// Parse glTF/GLB bytes, decoding geometry even when the asset uses scene
+    /// features this crate does not model (skins, animations, morph targets).
     ///
-    /// Intended for the document-preserving compressor, which never interprets
-    /// those features and only decodes per-primitive geometry it understands.
-    /// Per-primitive decoding still fails for unsupported layouts, so callers
-    /// must handle [`Self::decode_primitive_with_semantics`] errors per
-    /// primitive.
-    pub(crate) fn from_bytes_lenient(data: &[u8], base_path: Option<&Path>) -> Result<Self> {
+    /// Unlike [`Self::from_bytes`], which rejects such assets, this reader
+    /// ignores those features and decodes only geometry. Use it to read meshes
+    /// out of skinned or animated assets, including the output of
+    /// [`crate::compress_gltf_bytes`] for those assets. Per-primitive decoding
+    /// still fails for unsupported attribute layouts.
+    pub fn from_bytes_lenient(data: &[u8]) -> Result<Self> {
+        Self::from_bytes_lenient_with_base_path(data, None)
+    }
+
+    /// Like [`Self::from_bytes_lenient`], with a base path for external buffers.
+    pub fn from_bytes_lenient_with_base_path(
+        data: &[u8],
+        base_path: Option<&Path>,
+    ) -> Result<Self> {
         if data.len() >= 4 && read_u32_le(&data[0..4]) == GLB_MAGIC {
             let chunks = parse_glb_chunks(data)?;
             let root: GltfRoot = serde_json::from_slice(chunks.json)?;

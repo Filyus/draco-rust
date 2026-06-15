@@ -16,7 +16,8 @@
 //!
 //! A primitive is compressed only when it can be reproduced losslessly:
 //!
-//! - triangle list (`mode` 4 or absent) with an `indices` accessor,
+//! - triangle list (`mode` 4 or absent), indexed or non-indexed (a fresh
+//!   indices accessor is generated for the non-indexed case),
 //! - not already Draco-compressed,
 //! - its geometry accessors are not shared with any other primitive,
 //! - decoding and re-encoding succeed and reproduce the exact attribute set.
@@ -28,10 +29,10 @@
 //! lives in the map, not in the Draco attribute). Skinned and tangent-bearing
 //! meshes are therefore compressed, not just preserved.
 //!
-//! Primitives that fall outside this scope — non-indexed, non-triangle, already
-//! Draco, sharing geometry accessors, sparse accessors, or an attribute layout
-//! the encoder rejects — are left uncompressed but fully preserved, along with
-//! the rest of the document.
+//! Primitives that fall outside this scope — non-triangle, already Draco,
+//! sharing geometry accessors, sparse accessors, or an attribute layout the
+//! encoder rejects — are left uncompressed but fully preserved, along with the
+//! rest of the document.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -93,7 +94,7 @@ pub fn compress_gltf_bytes_with_base_path(
 
     // Reuse the reader (lenient: do not reject skins/animations/morph targets,
     // we only preserve them) for geometry decoding and resolved buffer bytes.
-    let reader = GltfReader::from_bytes_lenient(input, base_path)?;
+    let reader = GltfReader::from_bytes_lenient_with_base_path(input, base_path)?;
     let source_buffers: Vec<Vec<u8>> = reader.buffers().to_vec();
 
     // Reference-count accessor usage across every primitive so we only mutate
@@ -107,6 +108,10 @@ pub fn compress_gltf_bytes_with_base_path(
     // the count to the Draco-encoded value. Done before scanning for orphans so
     // the now-unreferenced geometry buffer views fall out naturally.
     apply_accessor_mutations(&mut doc, &plans)?;
+
+    // Non-indexed primitives need a generated indices accessor (Draco glTF
+    // primitives are indexed).
+    add_generated_indices(&mut doc, &plans)?;
 
     // Repack the binary: keep only buffer views still referenced by the JSON,
     // append one Draco buffer view per compressed primitive, and reindex every
@@ -137,9 +142,12 @@ struct CompressPlan {
     draco_bytes: Vec<u8>,
     /// `(glTF semantic, Draco attribute id)` for the extension's attribute map.
     semantic_to_id: Vec<(String, usize)>,
-    /// Accessor indices for each attribute, plus the indices accessor.
+    /// Accessor index for each attribute.
     attribute_accessors: Vec<usize>,
-    indices_accessor: usize,
+    /// The source indices accessor, or `None` for a non-indexed primitive (a
+    /// fresh indices accessor is generated, since Draco glTF primitives are
+    /// always indexed).
+    indices_accessor: Option<usize>,
     num_points: usize,
     num_indices: usize,
 }
@@ -194,11 +202,13 @@ fn plan_for_primitive(
     {
         return Ok(None);
     }
-    // Need an indices accessor (Draco glTF primitives are indexed).
-    let Some(indices_accessor) = prim.get("indices").and_then(Value::as_u64) else {
-        return Ok(None);
-    };
-    let indices_accessor = indices_accessor as usize;
+    // Indexed and non-indexed triangle lists are both supported. Non-indexed
+    // primitives get a freshly generated indices accessor below, since Draco
+    // glTF primitives are always indexed.
+    let indices_accessor = prim
+        .get("indices")
+        .and_then(Value::as_u64)
+        .map(|i| i as usize);
 
     // Collect attribute semantics + accessors; require a round-trippable set.
     let Some(attributes) = prim.get("attributes").and_then(Value::as_object) else {
@@ -219,7 +229,8 @@ fn plan_for_primitive(
     // dropping their buffer view / changing their count cannot corrupt another
     // primitive that shares them.
     let exclusive = |acc: usize| accessor_users.get(&acc).copied().unwrap_or(0) == 1;
-    if !exclusive(indices_accessor) || !attribute_accessors.iter().copied().all(exclusive) {
+    let indices_exclusive = indices_accessor.map(exclusive).unwrap_or(true);
+    if !indices_exclusive || !attribute_accessors.iter().copied().all(exclusive) {
         return Ok(None);
     }
 
@@ -295,9 +306,51 @@ fn apply_accessor_mutations(doc: &mut Value, plans: &[CompressPlan]) -> Result<(
         for &acc in &plan.attribute_accessors {
             strip_geometry_accessor(accessors, acc, plan.num_points)?;
         }
-        strip_geometry_accessor(accessors, plan.indices_accessor, plan.num_indices)?;
+        if let Some(indices) = plan.indices_accessor {
+            strip_geometry_accessor(accessors, indices, plan.num_indices)?;
+        }
     }
     Ok(())
+}
+
+/// For each non-indexed plan, append a fresh `SCALAR`/`UNSIGNED_INT` indices
+/// accessor (no buffer view — the indices live in the Draco stream) and point
+/// the primitive at it. Appending keeps existing accessor indices stable, and
+/// the new accessor has no buffer view so it does not affect buffer repacking.
+fn add_generated_indices(doc: &mut Value, plans: &[CompressPlan]) -> Result<()> {
+    for plan in plans {
+        if plan.indices_accessor.is_some() {
+            continue;
+        }
+        let accessors = doc
+            .get_mut("accessors")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| GltfError::InvalidGltf("missing accessors array".into()))?;
+        let new_idx = accessors.len();
+        accessors.push(serde_json::json!({
+            "componentType": 5125u64, // UNSIGNED_INT
+            "count": plan.num_indices as u64,
+            "type": "SCALAR",
+        }));
+        let prim = primitive_mut(doc, plan)?;
+        prim.insert("indices".into(), Value::from(new_idx as u64));
+    }
+    Ok(())
+}
+
+/// Mutable access to a plan's primitive JSON object.
+fn primitive_mut<'a>(
+    doc: &'a mut Value,
+    plan: &CompressPlan,
+) -> Result<&'a mut Map<String, Value>> {
+    doc.get_mut("meshes")
+        .and_then(Value::as_array_mut)
+        .and_then(|m| m.get_mut(plan.mesh_idx))
+        .and_then(|m| m.get_mut("primitives"))
+        .and_then(Value::as_array_mut)
+        .and_then(|p| p.get_mut(plan.prim_idx))
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| GltfError::InvalidGltf("primitive vanished during rewrite".into()))
 }
 
 /// Removes an accessor's buffer view (its data now lives in Draco) and sets the
@@ -463,15 +516,7 @@ fn set_primitive_draco_extension(
     plan: &CompressPlan,
     draco_buffer_view: usize,
 ) -> Result<()> {
-    let prim = doc
-        .get_mut("meshes")
-        .and_then(Value::as_array_mut)
-        .and_then(|m| m.get_mut(plan.mesh_idx))
-        .and_then(|m| m.get_mut("primitives"))
-        .and_then(Value::as_array_mut)
-        .and_then(|p| p.get_mut(plan.prim_idx))
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| GltfError::InvalidGltf("primitive vanished during rewrite".into()))?;
+    let prim = primitive_mut(doc, plan)?;
 
     let mut attributes = Map::new();
     for (semantic, id) in &plan.semantic_to_id {

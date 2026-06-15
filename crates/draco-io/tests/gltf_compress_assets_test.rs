@@ -4,9 +4,9 @@
 //! - `Lantern` (CC0): multi-mesh, textured PBR with TANGENT, no skins/animations
 //!   — exercises material/texture preservation, TANGENT compression, and a full
 //!   compress -> decode round-trip.
-//! - `Fox` (CC0): skinned + animated, non-indexed — exercises lossless
-//!   preservation of a complex real asset (skin + animations) that falls
-//!   outside the compressor's indexed-triangle scope.
+//! - `Fox` (CC0): skinned + animated, non-indexed — exercises skinning-attribute
+//!   compression (JOINTS_0/WEIGHTS_0), indices generation for a non-indexed
+//!   mesh, and skin/animation preservation on a complex real asset.
 
 #![cfg(all(feature = "gltf-reader", feature = "gltf-writer"))]
 
@@ -24,11 +24,7 @@ fn testdata() -> PathBuf {
         .join("testdata")
 }
 
-fn draco_attributes<'a>(
-    doc: &'a Value,
-    mesh: usize,
-    prim: usize,
-) -> &'a serde_json::Map<String, Value> {
+fn draco_attributes(doc: &Value, mesh: usize, prim: usize) -> &serde_json::Map<String, Value> {
     doc["meshes"][mesh]["primitives"][prim]["extensions"]["KHR_draco_mesh_compression"]
         ["attributes"]
         .as_object()
@@ -72,13 +68,12 @@ fn lantern_compresses_preserves_materials_and_roundtrips() {
     assert!(meshes.iter().all(|m| m.num_faces() > 0));
 }
 
-/// Fox is a non-indexed triangle soup, which is outside the compressor's
-/// current scope (it compresses indexed triangle lists). The whole asset —
-/// including its skin and three animations — must round-trip losslessly,
-/// preserved uncompressed. (Skinned *compression* itself is covered by the
-/// synthetic indexed test in `gltf_compress_test.rs`.)
+/// Fox is skinned + animated and non-indexed. Its geometry is compressed (a
+/// fresh indices accessor is generated and the skinning attributes ride inside
+/// the Draco stream), while the skin and three animations are carried through
+/// untouched.
 #[test]
-fn fox_skinned_animated_is_preserved_losslessly() {
+fn fox_skinned_animated_compresses_and_preserves_scene() {
     let dir = testdata().join("Fox").join("glTF");
     let path = dir.join("Fox.gltf");
     let bytes = std::fs::read(&path).expect("testdata/Fox/glTF/Fox.gltf must exist");
@@ -95,14 +90,25 @@ fn fox_skinned_animated_is_preserved_losslessly() {
     assert_eq!(after["skins"], before["skins"], "skins preserved");
     assert_eq!(after["images"], before["images"], "images preserved");
 
-    // Non-indexed primitive left uncompressed.
-    let prim = &after["meshes"][0]["primitives"][0];
+    // The skinned mesh is compressed with its skinning attributes inside Draco.
+    let attrs = draco_attributes(&after, 0, 0);
+    for sem in ["POSITION", "TEXCOORD_0", "JOINTS_0", "WEIGHTS_0"] {
+        assert!(attrs.contains_key(sem), "missing {sem} in draco attributes");
+    }
+    // A fresh indices accessor was generated for the originally non-indexed mesh.
     assert!(
-        prim.get("extensions").is_none()
-            || prim["extensions"]
-                .get("KHR_draco_mesh_compression")
-                .is_none(),
-        "non-indexed Fox must be preserved uncompressed"
+        after["meshes"][0]["primitives"][0]["indices"].is_u64(),
+        "generated indices accessor expected"
     );
-    assert!(after.get("extensionsRequired").is_none());
+    let used = after["extensionsUsed"].as_array().unwrap();
+    assert!(used
+        .iter()
+        .any(|v| v.as_str() == Some("KHR_draco_mesh_compression")));
+
+    // The strict reader rejects skinned/animated assets, but the lenient reader
+    // decodes their geometry — closing the round-trip for the compressed output.
+    let reader =
+        GltfReader::from_bytes_lenient(&output).expect("lenient read of compressed skinned glTF");
+    let meshes = reader.decode_all_meshes().expect("decode skinned geometry");
+    assert!(!meshes.is_empty() && meshes.iter().all(|m| m.num_faces() > 0));
 }
