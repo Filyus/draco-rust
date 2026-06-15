@@ -76,6 +76,8 @@ pub mod draco_types;
 pub mod geometry_attribute;
 /// Strongly typed geometry index wrappers.
 pub mod geometry_indices;
+/// Keyframe animation container built on the point-cloud path.
+pub mod keyframe_animation;
 /// Triangle mesh geometry data.
 pub mod mesh;
 /// Draco metadata containers and bitstream serialization helpers.
@@ -181,6 +183,13 @@ pub mod direct_bit_decoder;
 )]
 #[doc(hidden)]
 pub mod kd_tree_attributes_decoder;
+#[cfg(all(feature = "decoder", feature = "point_cloud_decode"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "decoder", feature = "point_cloud_decode")))
+)]
+/// Keyframe animation decoder entry point.
+pub mod keyframe_animation_decoder;
 #[cfg(feature = "decoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 /// Mesh decoder entry point.
@@ -251,6 +260,10 @@ pub mod encoder_options;
 pub mod kd_tree_attributes_encoder;
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
+/// Keyframe animation encoder entry point.
+pub mod keyframe_animation_encoder;
+#[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 #[doc(hidden)]
 pub mod mesh_edgebreaker_encoder;
 #[cfg(all(feature = "encoder", feature = "edgebreaker_valence_encode"))]
@@ -304,6 +317,7 @@ pub mod shannon_entropy;
 pub use draco_types::DataType;
 pub use geometry_attribute::{GeometryAttribute, GeometryAttributeType, PointAttribute};
 pub use geometry_indices::{AttributeValueIndex, FaceIndex, PointIndex};
+pub use keyframe_animation::KeyframeAnimation;
 pub use mesh::Mesh;
 pub use metadata::{AttributeMetadata, GeometryMetadata, Metadata};
 pub use point_cloud::PointCloud;
@@ -316,6 +330,12 @@ pub use status::{DracoError, Status};
 #[cfg(feature = "decoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub use decoder_buffer::DecoderBuffer;
+#[cfg(all(feature = "decoder", feature = "point_cloud_decode"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "decoder", feature = "point_cloud_decode")))
+)]
+pub use keyframe_animation_decoder::KeyframeAnimationDecoder;
 #[cfg(feature = "decoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub use mesh_decoder::MeshDecoder;
@@ -333,6 +353,9 @@ pub use encoder_buffer::EncoderBuffer;
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub use encoder_options::EncoderOptions;
+#[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
+pub use keyframe_animation_encoder::KeyframeAnimationEncoder;
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub use mesh_encoder::{EncodedAttributeInfo, EncodedMeshInfo, MeshEncoder};

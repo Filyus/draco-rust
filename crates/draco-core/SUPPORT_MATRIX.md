@@ -27,7 +27,7 @@ The C++ reference used here is the local checkout at `D:\Projects\Draco\src`.
 |---|---:|---:|---:|---|
 | Raw `.drc` point-cloud bitstream | yes | yes | no | Core compression format. |
 | Raw `.drc` triangle-mesh bitstream | yes | yes | no | Core compression format. |
-| Raw `.drc` keyframe animation bitstream | yes | possible | no | C++ implements it as a point-cloud-like sequential stream. |
+| Raw `.drc` keyframe animation bitstream | yes | yes | no | Implemented as a point-cloud-like sequential stream, matching C++. |
 | Geometry/attribute metadata in `.drc` | yes | yes | no | Bitstream-level metadata, not glTF metadata. |
 | Scene graph | yes, mainly transcoder | no | yes | `draco-core` should not become a scene SDK. |
 | glTF node animation and skins | yes, transcoder | no | possible | File/scene concern, currently rejected by `draco-io` glTF reader. |
@@ -134,21 +134,21 @@ zero-length entry data.
 C++ Draco has a raw keyframe animation path, but it is narrower than general
 scene animation.
 
-| Animation feature | C++ support | `draco-core` status | Realistic Rust step |
+| Animation feature | C++ support | `draco-core` status | Notes |
 |---|---:|---|---|
-| `KeyframeAnimation` container | yes | no | Add a thin wrapper over `PointCloud`. |
-| Timestamp track | yes | no | Reserve attribute unique id `0` for float timestamps. |
-| Multiple keyframe tracks | yes | no | Store each track as a point attribute with matching frame count. |
-| `KeyframeAnimationEncoder` | yes | no | Route through sequential point-cloud encoding. |
-| `KeyframeAnimationDecoder` | yes | no | Route through sequential point-cloud decoding. |
-| Quantized keyframe data | yes | no | Reuse existing quantization attribute path. |
+| `KeyframeAnimation` container | yes | yes | Thin wrapper over `PointCloud` (`keyframe_animation::KeyframeAnimation`). |
+| Timestamp track | yes | yes | Attribute unique id `0` reserved for `f32` timestamps. |
+| Multiple keyframe tracks | yes | yes | Each track stored as a generic point attribute with matching frame count. |
+| `KeyframeAnimationEncoder` | yes | yes | Routes through sequential point-cloud encoding. |
+| `KeyframeAnimationDecoder` | yes | yes | Routes through sequential point-cloud decoding. |
+| Quantized keyframe data | yes | yes | Reuses the existing quantization attribute path via encoder options. |
 | glTF node animations | yes, transcoder | no | `draco-io` concern, not `draco-core`. |
 | Skins / inverse bind matrices | yes, transcoder | no | `draco-io` concern unless a Rust scene crate appears. |
 
-This is feasible in current Rust architecture because C++ itself implements
-keyframe animation as a point-cloud-like wrapper. It is still separate from the
-mesh-focused `draco-io` glTF scope, where animations and skins are intentionally
-rejected today.
+The raw keyframe animation container, encoder, and decoder are implemented as a
+thin wrapper around the existing sequential point-cloud path, matching the C++
+architecture. It is still separate from the mesh-focused `draco-io` glTF scope,
+where node animations and skins are intentionally rejected today.
 
 ## Scene and Format I/O
 
@@ -172,7 +172,7 @@ builds, but they are not raw Draco bitstream features.
 | 1 | Support legacy decode only from real compatibility targets | EdgeBreaker predictive type `1` and old normal octahedron transform are still C++ decode compatibility targets, but modern C++ encoders do not emit them. |
 | 2 | Keep deprecated prediction schemes explicit | C++ public encoder rejects them; supporting them is for compatibility, not defaults. |
 | 3 | Add broader metadata utilities when needed | Raw and typed `.drc` metadata roundtrip exists; future work is merge/copy helpers if they become useful. |
-| 4 | Add keyframe animation wrapper if needed | Feasible because it reuses point-cloud sequential encode/decode. |
+| 4 | Keyframe animation wrapper (done) | Implemented as a point-cloud sequential encode/decode wrapper; future work is optional quantization tuning and ergonomics. |
 | 5 | Keep semantic glTF features outside `draco-core` | Animations, skins, `EXT_structural_metadata`, and `EXT_mesh_features` are scene/container concerns; `draco-io` may handle them later as a separate semantic glTF layer. |
 
 ## Compatibility Notes
@@ -204,5 +204,7 @@ Important examples:
 - glTF `EXT_structural_metadata` is separate from raw `.drc` metadata. It should
   be treated as unsupported when required by a glTF asset unless a future
   semantic glTF / 3D Tiles layer is added together with `EXT_mesh_features`.
-- Keyframe animation is not implemented yet, but is realistically implementable
-  as a typed wrapper around the existing point-cloud path.
+- Keyframe animation is implemented as a typed wrapper around the existing
+  point-cloud path (`KeyframeAnimation`, `KeyframeAnimationEncoder`,
+  `KeyframeAnimationDecoder`), mirroring the C++ point-cloud-like sequential
+  stream. glTF node animations and skins remain out of scope.

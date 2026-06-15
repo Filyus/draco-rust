@@ -42,9 +42,44 @@ impl PointCloud {
         id
     }
 
+    /// Places an attribute at `att_id`, growing the attribute list if needed.
+    ///
+    /// Mirrors C++ `PointCloud::SetAttribute`: the attribute's unique id is set
+    /// to `att_id`. Any vacancies created when growing the list are filled with
+    /// empty attributes.
+    pub fn set_attribute(&mut self, att_id: i32, mut attribute: PointAttribute) {
+        debug_assert!(att_id >= 0);
+        let index = att_id as usize;
+        if index >= self.attributes.len() {
+            self.attributes.resize_with(index + 1, PointAttribute::new);
+        }
+        attribute.set_unique_id(att_id as u32);
+        self.attributes[index] = attribute;
+    }
+
     /// Returns the number of attributes.
     pub fn num_attributes(&self) -> i32 {
         self.attributes.len() as i32
+    }
+
+    /// Returns the attribute id for the given Draco unique id, or -1.
+    ///
+    /// Mirrors C++ `PointCloud::GetAttributeIdByUniqueId`.
+    pub fn attribute_id_by_unique_id(&self, unique_id: u32) -> i32 {
+        for (i, att) in self.attributes.iter().enumerate() {
+            if att.unique_id() == unique_id {
+                return i as i32;
+            }
+        }
+        -1
+    }
+
+    /// Returns the attribute with the given Draco unique id.
+    ///
+    /// Mirrors C++ `PointCloud::GetAttributeByUniqueId`.
+    pub fn attribute_by_unique_id(&self, unique_id: u32) -> Option<&PointAttribute> {
+        let id = self.attribute_id_by_unique_id(unique_id);
+        (id >= 0).then(|| &self.attributes[id as usize])
     }
 
     /// Returns an attribute by attribute id.

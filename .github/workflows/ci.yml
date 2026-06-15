@@ -30,6 +30,17 @@ jobs:
       - name: Test draco-core (unit + doc)
         run: cargo test --manifest-path crates/Cargo.toml -p draco-core --lib
 
+      # Feature-combination compile guard. Default tests enable every feature,
+      # which hides feature-gating mistakes (e.g. a decoder module that secretly
+      # needs point_cloud_decode). Check the meaningful single-direction combos.
+      - name: Check draco-core feature combinations
+        run: |
+          cargo check --manifest-path crates/Cargo.toml -p draco-core --no-default-features
+          cargo check --manifest-path crates/Cargo.toml -p draco-core --no-default-features --features decoder
+          cargo check --manifest-path crates/Cargo.toml -p draco-core --no-default-features --features decoder,point_cloud_decode
+          cargo check --manifest-path crates/Cargo.toml -p draco-core --no-default-features --features encoder
+          cargo check --manifest-path crates/Cargo.toml -p draco-core --all-features
+
       # Malformed-input / hardening regressions. Kept separate from the C++
       # interop integration tests (rust_*_cpp_*), which require the external
       # draco_decoder/draco_encoder tools not present on the CI runner.
