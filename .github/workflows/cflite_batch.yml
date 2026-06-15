@@ -1,8 +1,8 @@
 name: ClusterFuzzLite batch fuzzing
 
 on:
-  schedule:
-    - cron: "0 4 * * *" # nightly, after the lightweight Fuzz soak
+  # Manual-only: run a batch campaign on demand with
+  # `gh workflow run cflite_batch.yml`. No nightly schedule.
   workflow_dispatch:
 
 permissions: read-all

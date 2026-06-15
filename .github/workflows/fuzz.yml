@@ -1,9 +1,9 @@
 name: Fuzz
 
-# Coverage-guided decode fuzzing (level 1: bounded smoke on PR/push,
-# longer soak on a nightly schedule). The corpus is persisted across runs via
-# the GitHub Actions cache and re-seeded from the committed fixtures each run,
-# so coverage never starts from zero even if the cache is evicted.
+# Coverage-guided decode fuzzing (level 1: bounded smoke on PR/push, with a
+# longer soak available on manual dispatch). The corpus is persisted across runs
+# via the GitHub Actions cache and re-seeded from the committed fixtures each
+# run, so coverage never starts from zero even if the cache is evicted.
 #
 # ClusterFuzzLite (cflite_*.yml) provides the heavier continuous-fuzzing layer
 # (crash dedup, batch mode); this workflow is the lightweight in-repo gate.
@@ -12,8 +12,8 @@ on:
   pull_request:
   push:
     branches: [main]
-  schedule:
-    - cron: "0 3 * * *" # nightly soak
+  # No scheduled (nightly) run: the smoke gate fires only when code changes.
+  # Trigger a longer soak manually with `gh workflow run fuzz.yml`.
   workflow_dispatch:
 
 concurrency:
@@ -42,7 +42,8 @@ jobs:
       - name: Pick fuzz duration
         id: dur
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # Manual dispatch = deep soak; change-triggered = quick smoke.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "seconds=1800" >> "$GITHUB_OUTPUT"
           else
             echo "seconds=120" >> "$GITHUB_OUTPUT"

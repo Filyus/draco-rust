@@ -1,8 +1,8 @@
 name: ClusterFuzzLite cron tasks
 
 on:
-  schedule:
-    - cron: "0 5 * * *" # nightly corpus pruning
+  # Manual-only: prune the corpus on demand with
+  # `gh workflow run cflite_cron.yml`. No nightly schedule.
   workflow_dispatch:
 
 permissions: read-all
