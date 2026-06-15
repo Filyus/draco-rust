@@ -258,11 +258,11 @@ fn original_geometry_buffer_views_are_pruned() {
     );
 }
 
-/// A skinned primitive (JOINTS_0/WEIGHTS_0) cannot be Draco-compressed by this
-/// crate yet, but the document — including its material — must be preserved and
-/// the primitive left intact and uncompressed.
+/// A skinned primitive (JOINTS_0/WEIGHTS_0) is compressed: the skinning
+/// attributes ride along inside the Draco stream as generic attributes, named
+/// in the extension's attribute map, and the material is preserved.
 #[test]
-fn unsupported_primitive_is_left_uncompressed_but_preserved() {
+fn skinned_primitive_is_compressed_and_roundtrips() {
     let mut bin = Vec::new();
     push_f32s(&mut bin, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]); // pos 0..36
     push_u16s(&mut bin, &[0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0]); // joints (3*VEC4 u16) 36..60
@@ -305,21 +305,65 @@ fn unsupported_primitive_is_left_uncompressed_but_preserved() {
     });
     let input = build_glb(&json, &bin);
 
-    let output = compress_gltf_bytes(&input, None).expect("must not fail on skinned primitive");
+    let output = compress_gltf_bytes(&input, None).expect("skinned compression failed");
     let (doc, _) = split_glb(&output);
 
     // Material preserved.
     assert_eq!(doc["materials"][0]["name"], "KeepMe");
-    // Primitive left uncompressed (no Draco extension, JOINTS/WEIGHTS intact).
+
+    // Skinning attributes are now carried in the Draco extension's attribute map.
+    let attrs = doc["meshes"][0]["primitives"][0]["extensions"]["KHR_draco_mesh_compression"]
+        ["attributes"]
+        .as_object()
+        .expect("skinned primitive must be Draco-compressed");
+    assert!(attrs.contains_key("POSITION"));
+    assert!(attrs.contains_key("JOINTS_0"));
+    assert!(attrs.contains_key("WEIGHTS_0"));
+
+    // Round-trips through the decoder with geometry intact (one triangle).
+    let reader = GltfReader::from_glb(&output).expect("compressed skinned GLB must be readable");
+    let meshes = reader.decode_all_meshes().expect("decode skinned mesh");
+    assert_eq!(meshes.len(), 1);
+    assert_eq!(meshes[0].num_faces(), 1);
+}
+
+/// A primitive with no indices is outside the compressor's scope (it compresses
+/// only indexed triangle lists) and must be preserved uncompressed.
+#[test]
+fn non_indexed_primitive_is_preserved_uncompressed() {
+    let mut bin = Vec::new();
+    push_f32s(&mut bin, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]); // 3 verts, no indices
+
+    let json = json!({
+        "asset": { "version": "2.0" },
+        "meshes": [ {
+            "primitives": [ {
+                "attributes": { "POSITION": 0 },
+                "mode": 4,
+                "material": 0
+            } ]
+        } ],
+        "materials": [ { "name": "KeepMe" } ],
+        "accessors": [
+            { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+              "min": [0.0,0.0,0.0], "max": [1.0,1.0,0.0] }
+        ],
+        "bufferViews": [ { "buffer": 0, "byteOffset": 0, "byteLength": 36 } ],
+        "buffers": [ { "byteLength": bin.len() } ]
+    });
+    let input = build_glb(&json, &bin);
+
+    let output = compress_gltf_bytes(&input, None).expect("must not fail");
+    let (doc, _) = split_glb(&output);
+
+    assert_eq!(doc["materials"][0]["name"], "KeepMe");
     let prim = &doc["meshes"][0]["primitives"][0];
     assert!(
         prim.get("extensions").is_none()
             || prim["extensions"]
                 .get("KHR_draco_mesh_compression")
                 .is_none(),
-        "skinned primitive must not be compressed"
+        "non-indexed primitive must not be compressed"
     );
-    assert_eq!(prim["attributes"]["JOINTS_0"], 1);
-    // Not declared as a Draco asset.
     assert!(doc.get("extensionsRequired").is_none());
 }

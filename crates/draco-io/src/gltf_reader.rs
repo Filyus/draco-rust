@@ -655,8 +655,9 @@ impl GltfReader {
     ///
     /// Intended for the document-preserving compressor, which never interprets
     /// those features and only decodes per-primitive geometry it understands.
-    /// Per-primitive decoding still fails for unsupported attributes, so callers
-    /// must handle [`Self::decode_primitive`] errors per primitive.
+    /// Per-primitive decoding still fails for unsupported layouts, so callers
+    /// must handle [`Self::decode_primitive_with_semantics`] errors per
+    /// primitive.
     pub(crate) fn from_bytes_lenient(data: &[u8], base_path: Option<&Path>) -> Result<Self> {
         if data.len() >= 4 && read_u32_le(&data[0..4]) == GLB_MAGIC {
             let chunks = parse_glb_chunks(data)?;
@@ -677,12 +678,19 @@ impl GltfReader {
         &self.buffers
     }
 
-    /// Decode a single primitive's geometry into a [`Mesh`].
+    /// Decode a single non-Draco primitive, returning the mesh and the
+    /// `(glTF semantic, Draco unique id)` mapping for its attributes.
     ///
-    /// Errors if the primitive uses an attribute semantic or layout this crate
-    /// cannot decode; the compressor treats that as "leave this primitive
-    /// uncompressed".
-    pub(crate) fn decode_primitive(&self, mesh_idx: usize, prim_idx: usize) -> Result<Mesh> {
+    /// Used by the compressor to build the `KHR_draco_mesh_compression`
+    /// attributes map with the original glTF semantic names (including
+    /// `TANGENT`, `JOINTS_n`, `WEIGHTS_n`, extra `TEXCOORD_n`/`COLOR_n`, and
+    /// custom `_*` attributes), which the Draco attribute model alone cannot
+    /// preserve. Errors if the primitive is already Draco-compressed.
+    pub(crate) fn decode_primitive_with_semantics(
+        &self,
+        mesh_idx: usize,
+        prim_idx: usize,
+    ) -> Result<(Mesh, Vec<(String, u32)>)> {
         let gltf_mesh = self.root.meshes.get(mesh_idx).ok_or_else(|| {
             GltfError::InvalidGltf(format!("Mesh index {} out of range", mesh_idx))
         })?;
@@ -692,7 +700,17 @@ impl GltfReader {
                 mesh_idx, prim_idx
             ))
         })?;
-        self.decode_primitive_mesh(mesh_idx, gltf_mesh, prim_idx, primitive)
+        if primitive
+            .extensions
+            .as_ref()
+            .and_then(|ext| ext.khr_draco_mesh_compression.as_ref())
+            .is_some()
+        {
+            return Err(GltfError::Unsupported(
+                "primitive is already Draco-compressed".into(),
+            ));
+        }
+        self.decode_standard_primitive(mesh_idx, prim_idx, primitive)
     }
 
     /// Check if the glTF file uses Draco compression.
@@ -805,12 +823,17 @@ impl GltfReader {
     // ========================================================================
 
     /// Decode a non-Draco primitive from accessors/bufferViews.
+    ///
+    /// Returns the decoded mesh plus the `(glTF semantic, Draco unique id)`
+    /// mapping for each attribute, in attribute add order. The unique id equals
+    /// the attribute index, which is what the `KHR_draco_mesh_compression`
+    /// attributes map references.
     fn decode_standard_primitive(
         &self,
         mesh_idx: usize,
         prim_idx: usize,
         primitive: &Primitive,
-    ) -> Result<Mesh> {
+    ) -> Result<(Mesh, Vec<(String, u32)>)> {
         use draco_core::geometry_indices::PointIndex;
 
         let mode = primitive.mode.unwrap_or(GLTF_MODE_TRIANGLES);
@@ -852,7 +875,10 @@ impl GltfReader {
         };
         mesh.set_num_points(positions.count);
 
-        Self::add_decoded_attribute(&mut mesh, GeometryAttributeType::Position, positions)?;
+        let mut semantics: Vec<(String, u32)> = Vec::new();
+        let pos_id =
+            Self::add_decoded_attribute(&mut mesh, GeometryAttributeType::Position, positions)?;
+        semantics.push(("POSITION".to_string(), pos_id as u32));
 
         if mode == GLTF_MODE_TRIANGLES {
             if let Some(indices_accessor_idx) = primitive.indices {
@@ -896,7 +922,7 @@ impl GltfReader {
 
         // Optionally read NORMAL
         if let Some(&normal_idx) = primitive.attributes.get("NORMAL") {
-            Self::read_and_add_standard_attribute(
+            let normal_id = Self::read_and_add_standard_attribute(
                 &mut mesh,
                 &accessor_reader,
                 normal_idx,
@@ -905,6 +931,7 @@ impl GltfReader {
                 &[GLTF_COMPONENT_FLOAT],
                 point_indices.as_deref(),
             )?;
+            semantics.push(("NORMAL".to_string(), normal_id as u32));
         }
 
         let mut attributes: Vec<_> = primitive.attributes.iter().collect();
@@ -920,7 +947,7 @@ impl GltfReader {
                 continue;
             }
             let attribute_spec = supported_semantic_spec(semantic)?;
-            Self::read_and_add_standard_attribute(
+            let att_id = Self::read_and_add_standard_attribute(
                 &mut mesh,
                 &accessor_reader,
                 accessor_idx,
@@ -929,14 +956,16 @@ impl GltfReader {
                 attribute_spec.allowed_component_types,
                 point_indices.as_deref(),
             )?;
+            semantics.push((semantic.to_string(), att_id as u32));
         }
 
         // Match C++ Draco behavior: deduplicate point IDs in face-traversal order.
-        // This ensures binary compatibility when encoding.
-        // Note: Draco-compressed meshes don't need this as they're already in the correct format.
+        // This ensures binary compatibility when encoding. Deduplication remaps
+        // points/values but does not change attribute ids, so `semantics` stays
+        // valid. Note: Draco-compressed meshes don't need this.
         mesh.deduplicate_point_ids();
 
-        Ok(mesh)
+        Ok((mesh, semantics))
     }
 
     fn read_and_add_standard_attribute(
@@ -947,7 +976,7 @@ impl GltfReader {
         expected_types: &[&str],
         allowed_component_types: &[u32],
         point_indices: Option<&[u32]>,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         let decoded = accessor_reader.read_attribute(
             accessor_idx,
             expected_types,
@@ -961,11 +990,13 @@ impl GltfReader {
         Self::add_decoded_attribute(mesh, attribute_type, decoded)
     }
 
+    /// Adds a decoded attribute to the mesh, returning the new attribute id
+    /// (which equals its Draco unique id).
     fn add_decoded_attribute(
         mesh: &mut Mesh,
         attribute_type: GeometryAttributeType,
         decoded: DecodedAccessor,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         if decoded.count != mesh.num_points() {
             return Err(GltfError::InvalidGltf(format!(
                 "Attribute {:?} has {} values but primitive has {} points",
@@ -984,8 +1015,7 @@ impl GltfReader {
             decoded.count,
         );
         attribute.buffer_mut().write(0, &decoded.bytes);
-        mesh.add_attribute(attribute);
-        Ok(())
+        Ok(mesh.add_attribute(attribute))
     }
 
     fn accessor_reader(&self) -> GltfAccessorReader<'_> {
@@ -1014,6 +1044,7 @@ impl GltfReader {
             self.decode_draco_mesh(&info)
         } else {
             self.decode_standard_primitive(mesh_idx, prim_idx, primitive)
+                .map(|(mesh, _)| mesh)
         }
     }
 
@@ -1301,25 +1332,16 @@ fn supported_semantic_spec(semantic: &str) -> Result<SemanticSpec> {
             expected_accessor_types: &["VEC3", "VEC4"],
             allowed_component_types: COLOR_COMPONENT_TYPES,
         }
-    } else if semantic.starts_with('_') {
+    } else {
+        // TANGENT, JOINTS_n, WEIGHTS_n, custom `_*`, and any other semantic are
+        // carried as generic attributes. The glTF semantic name is not stored on
+        // the Draco attribute itself; it is preserved by the caller through the
+        // `KHR_draco_mesh_compression` attributes map and `primitive.attributes`.
         SemanticSpec {
             attribute_type: GeometryAttributeType::Generic,
             expected_accessor_types: &["SCALAR", "VEC2", "VEC3", "VEC4"],
             allowed_component_types: GENERIC_COMPONENT_TYPES,
         }
-    } else if semantic == "TANGENT"
-        || semantic.starts_with("JOINTS_")
-        || semantic.starts_with("WEIGHTS_")
-    {
-        return Err(GltfError::Unsupported(format!(
-            "Attribute semantic {} is not supported by draco-io",
-            semantic
-        )));
-    } else {
-        return Err(GltfError::Unsupported(format!(
-            "Unknown glTF attribute semantic {}",
-            semantic
-        )));
     };
 
     Ok(spec)

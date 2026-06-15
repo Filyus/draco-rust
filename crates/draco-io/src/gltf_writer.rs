@@ -968,21 +968,6 @@ fn gltf_attribute_info(
     }
 }
 
-/// Maps an encoded mesh's Draco attributes to glTF semantics, returning
-/// `(semantic, draco_attribute_id)` pairs using the same naming the writer
-/// emits. Used by the compressor to build the `KHR_draco_mesh_compression`
-/// attributes map consistently with the rest of this crate.
-pub(crate) fn draco_semantic_map(encoded_info: &EncodedMeshInfo) -> Result<Vec<(String, usize)>> {
-    let mut counters = GltfSemanticCounters::default();
-    let mut out = Vec::with_capacity(encoded_info.attributes.len());
-    for att in &encoded_info.attributes {
-        let (semantic, _) =
-            gltf_attribute_info(att.attribute_type, att.num_components, &mut counters)?;
-        out.push((semantic, att.unique_id as usize));
-    }
-    Ok(out)
-}
-
 fn gltf_type_for_num_components(num_components: u8) -> Result<&'static str> {
     match num_components {
         1 => Ok("SCALAR"),

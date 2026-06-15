@@ -18,16 +18,20 @@
 //!
 //! - triangle list (`mode` 4 or absent) with an `indices` accessor,
 //! - not already Draco-compressed,
-//! - every attribute semantic is `POSITION`, `NORMAL`, `TEXCOORD_n`, or
-//!   `COLOR_n` (other semantics such as `TANGENT`, `JOINTS_n`, `WEIGHTS_n`, or
-//!   custom `_*` attributes are not yet round-trippable through the Draco
-//!   attribute model, so those primitives are left uncompressed),
 //! - its geometry accessors are not shared with any other primitive,
-//! - decoding, re-encoding, and the semantic mapping all succeed exactly.
+//! - decoding and re-encoding succeed and reproduce the exact attribute set.
 //!
-//! Any primitive that fails these checks is left uncompressed but fully
-//! preserved. Skinned/animated assets therefore round-trip losslessly even when
-//! their geometry cannot be compressed yet.
+//! All standard attribute semantics are compressed, including `TANGENT`,
+//! `JOINTS_n`, `WEIGHTS_n`, multiple `TEXCOORD_n`/`COLOR_n`, and custom `_*`
+//! attributes: non-standard ones ride along inside the Draco stream as generic
+//! attributes and are named by the extension's attribute map (the glTF semantic
+//! lives in the map, not in the Draco attribute). Skinned and tangent-bearing
+//! meshes are therefore compressed, not just preserved.
+//!
+//! Primitives that fall outside this scope — non-indexed, non-triangle, already
+//! Draco, sharing geometry accessors, sparse accessors, or an attribute layout
+//! the encoder rejects — are left uncompressed but fully preserved, along with
+//! the rest of the document.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -35,7 +39,7 @@ use std::path::Path;
 use serde_json::{Map, Value};
 
 use crate::gltf_reader::{GltfError, GltfReader};
-use crate::gltf_writer::{draco_semantic_map, encode_draco_mesh_with_info, QuantizationBits};
+use crate::gltf_writer::{encode_draco_mesh_with_info, QuantizationBits};
 
 type Result<T> = std::result::Result<T, GltfError>;
 
@@ -204,10 +208,7 @@ fn plan_for_primitive(
         return Ok(None);
     }
     let mut attribute_accessors = Vec::new();
-    for (semantic, accessor) in attributes {
-        if !is_round_trippable_semantic(semantic) {
-            return Ok(None);
-        }
+    for accessor in attributes.values() {
         let Some(acc) = accessor.as_u64() else {
             return Ok(None);
         };
@@ -222,27 +223,28 @@ fn plan_for_primitive(
         return Ok(None);
     }
 
-    // Decode geometry; an unsupported attribute/layout means "leave it alone".
-    let mesh = match reader.decode_primitive(mesh_idx, prim_idx) {
-        Ok(mesh) => mesh,
+    // Decode geometry with the original glTF semantic names. An unsupported
+    // attribute/layout means "leave this primitive uncompressed".
+    let (mesh, semantic_to_uid) = match reader.decode_primitive_with_semantics(mesh_idx, prim_idx) {
+        Ok(out) => out,
         Err(_) => return Ok(None),
     };
     let (draco_bytes, info) = match encode_draco_mesh_with_info(&mesh, quant) {
         Ok(out) => out,
         Err(_) => return Ok(None),
     };
-    let semantic_to_id = match draco_semantic_map(&info) {
-        Ok(map) => map,
-        Err(_) => return Ok(None),
-    };
 
-    // The reproduced semantics must match the source primitive exactly. This
-    // rejects any case where re-encoding would rename or reorder attributes.
-    let produced: BTreeSet<&str> = semantic_to_id.iter().map(|(s, _)| s.as_str()).collect();
+    // The decoded attribute set must match the source primitive exactly, so the
+    // extension's attribute map is faithful (no dropped or renamed attribute).
+    let produced: BTreeSet<&str> = semantic_to_uid.iter().map(|(s, _)| s.as_str()).collect();
     let original: BTreeSet<&str> = attributes.keys().map(String::as_str).collect();
     if produced != original {
         return Ok(None);
     }
+    let semantic_to_id: Vec<(String, usize)> = semantic_to_uid
+        .into_iter()
+        .map(|(s, u)| (s, u as usize))
+        .collect();
 
     Ok(Some(CompressPlan {
         mesh_idx,
@@ -254,20 +256,6 @@ fn plan_for_primitive(
         num_points: info.num_encoded_points,
         num_indices: info.num_encoded_faces * 3,
     }))
-}
-
-/// `POSITION`, `NORMAL`, `TEXCOORD_<n>`, `COLOR_<n>` are reproduced with their
-/// original names by the encoder; everything else is not (yet).
-fn is_round_trippable_semantic(semantic: &str) -> bool {
-    match semantic {
-        "POSITION" | "NORMAL" => true,
-        _ => {
-            let suffix = semantic
-                .strip_prefix("TEXCOORD_")
-                .or_else(|| semantic.strip_prefix("COLOR_"));
-            matches!(suffix, Some(n) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-        }
-    }
 }
 
 /// Counts, for each accessor index, how many primitives reference it (via
