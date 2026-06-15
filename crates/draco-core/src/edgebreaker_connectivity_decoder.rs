@@ -39,6 +39,33 @@ impl EdgebreakerConnectivityDecoder {
         }
     }
 
+    /// Fallible constructor mirroring [`EdgebreakerConnectivityDecoder::new`]
+    /// that reserves the corner table and per-vertex hole table through
+    /// `try_reserve`. Bitstream-controlled `num_faces` / `max_num_vertices`
+    /// counts that cannot be allocated return a `DracoError` instead of aborting
+    /// the process.
+    pub fn try_new(
+        num_faces: i32,
+        max_num_vertices: i32,
+    ) -> Result<Self, crate::status::DracoError> {
+        let corner_table = CornerTable::try_new(num_faces.max(0) as usize)?;
+        let num_vertices = max_num_vertices.max(0) as usize;
+        let mut is_vert_hole = Vec::new();
+        is_vert_hole.try_reserve_exact(num_vertices).map_err(|_| {
+            crate::status::DracoError::DracoError(
+                "Failed to allocate vertex hole table".to_string(),
+            )
+        })?;
+        is_vert_hole.resize(num_vertices, true);
+        Ok(Self {
+            corner_table,
+            is_vert_hole,
+            active_corner_stack: Vec::new(),
+            topology_split_active_corners: HashMap::new(),
+            invalid_vertices: Vec::new(),
+        })
+    }
+
     pub fn decode_connectivity<T: EdgebreakerTraversalDecoder>(
         &mut self,
         num_symbols: i32,

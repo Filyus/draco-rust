@@ -286,6 +286,18 @@ impl MeshDecoder {
                 let np = buffer.decode_varint()? as usize;
                 (nf, np)
             };
+            // Consistency guard: a sequential mesh encodes connectivity indices
+            // for each face and attribute data for each point in the bytes that
+            // follow, so a count beyond the remaining bit budget is malformed.
+            // This bounds the connectivity and per-attribute buffers that are
+            // sized by these counts and prevents memory amplification from a tiny
+            // header. Relative input-consistency check, runs once, off hot path.
+            let max_count = buffer.remaining_size().saturating_mul(8);
+            if num_faces > max_count || num_points > max_count {
+                return Err(DracoError::DracoError(
+                    "Sequential mesh face/point count exceeds remaining bitstream size".to_string(),
+                ));
+            }
             let num_indices = validate_mesh_index_count(num_faces)?;
             mesh.set_num_points(num_points);
 
@@ -1371,6 +1383,13 @@ impl MeshDecoder {
         corner_table: &CornerTable,
         processed_connectivity_corners: &[u32],
     ) -> Result<(Vec<PointIndex>, Vec<u32>, Vec<i32>), DracoError> {
+        // Reject an inconsistent (e.g. seam-modified) corner table before the DFS
+        // indexes per-vertex / per-face arrays by table-derived ids.
+        if !corner_table.is_index_consistent() {
+            return Err(DracoError::DracoError(
+                "Inconsistent corner table for attribute traversal".to_string(),
+            ));
+        }
         let num_vertices = corner_table.num_vertices();
         let num_faces = corner_table.num_faces();
 
@@ -1607,6 +1626,13 @@ impl MeshDecoder {
                 "Edgebreaker prediction-degree traversal missing corner table".to_string(),
             )
         })?;
+        // Reject an inconsistent corner table before the traversal indexes
+        // per-vertex / per-face arrays by table-derived ids.
+        if !corner_table.is_index_consistent() {
+            return Err(DracoError::DracoError(
+                "Inconsistent corner table for attribute traversal".to_string(),
+            ));
+        }
         let num_vertices = corner_table.num_vertices();
         let num_faces = corner_table.num_faces();
 

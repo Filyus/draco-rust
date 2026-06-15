@@ -65,6 +65,16 @@ impl<'a> RAnsSymbolDecoder<'a> {
             return true;
         }
 
+        // Each probability-table entry consumes at least one input byte while it
+        // is decoded below, and a single byte can cover at most 64 entries (a
+        // zero-frequency run encodes up to 63 extra symbols). A count beyond that
+        // bound cannot be backed by the remaining input, so reject it before
+        // resizing instead of allocating gigabytes for a malformed varint. This
+        // is a relative input-consistency check on a cold path, not a fixed cap.
+        if num_symbols > buffer.remaining_size().saturating_mul(64) {
+            return false;
+        }
+
         self.probability_table
             .resize(num_symbols, RAnsSymbol::default());
 

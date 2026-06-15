@@ -201,6 +201,17 @@ Run the decode fuzz target check:
 cargo check --manifest-path fuzz/Cargo.toml --bins
 ```
 
+Run the coverage-guided decode fuzzer (nightly + `cargo-fuzz`):
+
+```powershell
+pwsh fuzz/seed_corpus.ps1
+cargo +nightly fuzz run decode_drc --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
+```
+
+See [`FUZZING.md`](FUZZING.md) for the full fuzzing routine and
+[`SECURITY.md`](SECURITY.md) for the decode threat model and recommended caller
+resource limits for untrusted input.
+
 ## Repository Layout
 
 ```text

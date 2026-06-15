@@ -286,6 +286,16 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
         if num_orientations < 0 {
             return false;
         }
+        // Each orientation is decoded as a single rANS bit read from the
+        // remaining buffer, so a count far beyond the remaining bit budget cannot
+        // be backed by real data. C++ Draco omits this bound, which lets a
+        // malformed count (raw i32, up to ~2.1 billion) drive a multi-second loop
+        // and a multi-gigabyte reservation; this relative input-consistency guard
+        // rejects that without affecting valid streams (no real Draco encoder
+        // emits orientations below ~1 bit each). Cold path, runs once per decoder.
+        if num_orientations as usize > buffer.remaining_size().saturating_mul(8) {
+            return false;
+        }
 
         self.orientations.clear();
         self.orientations.reserve(num_orientations as usize);
@@ -441,41 +451,67 @@ fn float_to_i64(value: f64) -> Option<i64> {
     Some(value as i64)
 }
 
+// These integer vector helpers use wrapping arithmetic to match C++ Draco's
+// int64 intermediate math (which relies on two's-complement wraparound) and to
+// preserve the documented portable-texcoord cast/wrapping order. For valid
+// quantized streams the operands are in range, so wrapping is identical to plain
+// arithmetic; on malformed streams with out-of-range positions it wraps like C++
+// instead of panicking under overflow checks (debug/fuzz builds).
 fn vec3_sub(a: &[i64; 3], b: &[i64; 3]) -> [i64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    [
+        a[0].wrapping_sub(b[0]),
+        a[1].wrapping_sub(b[1]),
+        a[2].wrapping_sub(b[2]),
+    ]
 }
 #[cfg(feature = "encoder")]
 fn vec3_add(a: &[i64; 3], b: &[i64; 3]) -> [i64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+    [
+        a[0].wrapping_add(b[0]),
+        a[1].wrapping_add(b[1]),
+        a[2].wrapping_add(b[2]),
+    ]
 }
 fn vec3_squared_norm(a: &[i64; 3]) -> u64 {
-    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]) as u64
+    a[0].wrapping_mul(a[0])
+        .wrapping_add(a[1].wrapping_mul(a[1]))
+        .wrapping_add(a[2].wrapping_mul(a[2])) as u64
 }
 fn vec3_dot(a: &[i64; 3], b: &[i64; 3]) -> i64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    a[0].wrapping_mul(b[0])
+        .wrapping_add(a[1].wrapping_mul(b[1]))
+        .wrapping_add(a[2].wrapping_mul(b[2]))
 }
 #[cfg(feature = "encoder")]
 fn vec3_mul_scalar(a: &[i64; 3], s: i64) -> [i64; 3] {
-    [a[0] * s, a[1] * s, a[2] * s]
+    [
+        a[0].wrapping_mul(s),
+        a[1].wrapping_mul(s),
+        a[2].wrapping_mul(s),
+    ]
 }
 fn vec3_div_scalar(a: &[i64; 3], s: i64) -> [i64; 3] {
-    [a[0] / s, a[1] / s, a[2] / s]
+    [
+        a[0].wrapping_div(s),
+        a[1].wrapping_div(s),
+        a[2].wrapping_div(s),
+    ]
 }
 
 fn vec2_sub(a: &[i64; 2], b: &[i64; 2]) -> [i64; 2] {
-    [a[0] - b[0], a[1] - b[1]]
+    [a[0].wrapping_sub(b[0]), a[1].wrapping_sub(b[1])]
 }
 #[cfg(feature = "encoder")]
 fn vec2_add(a: &[i64; 2], b: &[i64; 2]) -> [i64; 2] {
-    [a[0] + b[0], a[1] + b[1]]
+    [a[0].wrapping_add(b[0]), a[1].wrapping_add(b[1])]
 }
 #[cfg(feature = "encoder")]
 fn vec2_mul(a: &[i64; 2], s: i64) -> [i64; 2] {
-    [a[0] * s, a[1] * s]
+    [a[0].wrapping_mul(s), a[1].wrapping_mul(s)]
 }
 #[cfg(feature = "encoder")]
 fn vec2_div_scalar(a: &[i64; 2], s: i64) -> [i64; 2] {
-    [a[0] / s, a[1] / s]
+    [a[0].wrapping_div(s), a[1].wrapping_div(s)]
 }
 
 #[cfg(feature = "decoder")]
@@ -580,6 +616,20 @@ fn vec2_wrapping_sub_div_u64(a: &[i64; 2], b: &[i64; 2], divisor: u64) -> [i64; 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_vector_helpers_wrap_instead_of_panicking_on_extreme_values() {
+        // Malformed streams can yield out-of-range i64 positions. These helpers
+        // must wrap (matching C++ int64 intermediate math) rather than panic
+        // under overflow checks. The values here would overflow plain `*`/`+`/`-`.
+        let big = [i64::MAX, i64::MIN, i64::MAX];
+        let _ = vec3_squared_norm(&big);
+        let _ = vec3_dot(&big, &big);
+        let _ = vec3_sub(&big, &[i64::MIN, i64::MAX, i64::MIN]);
+        let _ = vec3_div_scalar(&[i64::MIN, i64::MAX, 1], -1);
+        let _ = vec2_sub(&[i64::MAX, i64::MIN], &[i64::MIN, i64::MAX]);
+    }
+
     #[cfg(feature = "decoder")]
     use crate::corner_table::CornerTable;
     use crate::draco_types::DataType;

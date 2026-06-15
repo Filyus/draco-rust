@@ -241,6 +241,19 @@ impl PointCloudDecoder {
         // (method=1) encodings (see C++ PointCloudSequentialDecoder and
         // PointCloudKdTreeDecoder). It is NOT varint encoded, even for v2.x.
         let num_points: usize = buffer.decode_u32()? as usize;
+        // Consistency guard: a Draco point cloud encodes at least one bit per
+        // point (no real encoder, including C++ Draco, produces sub-bit-per-point
+        // streams), so a point count beyond the remaining bit budget is
+        // malformed. This bounds the per-attribute buffers that are sized by
+        // num_points and prevents memory amplification from a tiny malformed
+        // header, for both the sequential and KD-tree paths. It is a relative
+        // input-consistency check, not an artificial geometry cap, and runs once
+        // per decode off the hot path.
+        if num_points > buffer.remaining_size().saturating_mul(8) {
+            return Err(DracoError::DracoError(
+                "Point count exceeds remaining bitstream size".to_string(),
+            ));
+        }
         pc.set_num_points(num_points);
 
         let num_attributes_decoders = buffer.decode_u8()? as usize;

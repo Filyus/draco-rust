@@ -1,0 +1,135 @@
+# Fuzzing draco-rust
+
+Draco decodes attacker-controllable byte streams, so the decode path is fuzzed
+to confirm that malformed, truncated, or adversarial `.drc` input fails as a
+controlled `DracoError` instead of panicking, hanging, or over-allocating.
+
+This document is the operational routine for that fuzzing. The decode hardening
+status, threat model, and known residual risk live in
+[`hardening_status.yaml`](hardening_status.yaml) and [`SECURITY.md`](SECURITY.md).
+
+## What is fuzzed
+
+| Target | Path | Surface |
+|---|---|---|
+| `decode_drc` | [`fuzz/fuzz_targets/decode_drc.rs`](fuzz/fuzz_targets/decode_drc.rs) | Feeds each input through both `MeshDecoder` and `PointCloudDecoder` with default-disabled legacy features. |
+
+The fuzz crate builds `draco-core` with `default-features = false` and only the
+`decoder` + `point_cloud_decode` features, matching the smallest realistic
+untrusted-decode profile.
+
+### Build profile: production (release) semantics
+
+The fuzz profile (`fuzz/Cargo.toml`) disables `debug-assertions` and
+`overflow-checks` so the campaign exercises the actual shipped release behavior.
+The decoder intentionally relies on two's-complement wrapping (matching C++
+Draco) and uses `debug_assert!` / `DRACO_DCHECK`-equivalent invariants that are
+compiled out in release. With those checks on (cargo-fuzz's default) the fuzzer
+trips on dev-time assertions and benign intentional-overflow wraps instead of
+real hostile-input hazards. Disabling them keeps the memory-safety coverage that
+matters — out-of-bounds indexing still panics in release Rust and is still
+caught, as are OOMs, timeouts, and unbounded loops — while removing the
+debug-only noise. To hunt for logic-level invariant violations during
+development instead, fuzz a normal (assertions-on) build.
+
+## Prerequisites
+
+```powershell
+rustup toolchain install nightly
+cargo install cargo-fuzz
+```
+
+`cargo-fuzz` requires a nightly toolchain because it relies on libFuzzer and
+sanitizer instrumentation. On Linux/macOS AddressSanitizer is the default and
+recommended.
+
+On Windows MSVC the AddressSanitizer runtime DLL is frequently not on `PATH`,
+which makes the target fail at startup with `STATUS_DLL_NOT_FOUND`
+(`0xc0000135`). Because `draco-core` contains no `unsafe`, ASan adds little here
+— out-of-bounds access surfaces as a normal Rust panic that libFuzzer already
+catches as a crash. Run with the sanitizer disabled on Windows:
+
+```powershell
+cargo +nightly fuzz run decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
+```
+
+(If you have the ASan runtime on `PATH`, drop `--sanitizer none` to keep it on.)
+
+## Seeding the corpus
+
+The corpus directory (`fuzz/corpus/`) is git-ignored, so reconstruct it from the
+committed fixtures before the first run. The seed script copies every `*.drc`
+file under `testdata/` into `fuzz/corpus/decode_drc/`:
+
+```powershell
+pwsh fuzz/seed_corpus.ps1
+```
+
+```bash
+./fuzz/seed_corpus.sh
+```
+
+Seeding from the real fixture inventory (point clouds, sequential/EdgeBreaker
+meshes, legacy 1.0.0/1.1.0 streams, KD-tree streams) gives the fuzzer good
+coverage immediately instead of rediscovering the container format from scratch.
+
+## Running
+
+This repository keeps the workspace manifest under `crates/` and has no
+`Cargo.toml` at the root, so every `cargo fuzz` invocation must point at the
+fuzz project with `--fuzz-dir fuzz`.
+
+```powershell
+# Bounded smoke run (CI / pre-release gate)
+cargo +nightly fuzz run decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
+
+# Longer soak run
+cargo +nightly fuzz run decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=3600 -rss_limit_mb=4096
+```
+
+Useful libFuzzer flags (everything after `--` is passed straight to libFuzzer):
+
+- `-max_total_time=<seconds>` — wall-clock budget.
+- `-rss_limit_mb=<mb>` — abort on a single input that exceeds this RSS; catches
+  unbounded-allocation regressions.
+- `-max_len=<bytes>` — cap generated input size (the real fixtures stay larger).
+- `-timeout=<seconds>` — flag a single input that decodes too slowly; catches
+  CPU-amplification / pathological-complexity inputs as `slow-unit-*` artifacts.
+- `-jobs=<n> -workers=<n>` — parallel fuzzing.
+- `-print_final_stats=1` — coverage / corpus summary on exit.
+
+## Minimizing the corpus
+
+Shrink the corpus to the smallest set that preserves coverage before committing
+a refreshed seed set or before a long soak:
+
+```powershell
+cargo +nightly fuzz cmin decode_drc
+```
+
+## Reproducing and triaging a crash
+
+A failing input is written to `fuzz/artifacts/decode_drc/`. Re-run it
+deterministically and minimize it:
+
+```powershell
+# Replay a specific crashing input
+cargo +nightly fuzz run decode_drc fuzz/artifacts/decode_drc/crash-<hash>
+
+# Minimize the crashing input to the smallest reproducer
+cargo +nightly fuzz tmin decode_drc fuzz/artifacts/decode_drc/crash-<hash>
+```
+
+When a crash is confirmed, add the minimized reproducer as a deterministic
+regression in
+[`crates/draco-core/tests/drc_edge_cases_test.rs`](crates/draco-core/tests/drc_edge_cases_test.rs)
+(see the `*_do_not_panic` tests) so the case is covered on stable in CI without
+requiring the fuzzing toolchain.
+
+## CI / pre-release expectation
+
+- Stable CI runs the deterministic malformed-input regressions in
+  `drc_edge_cases_test.rs` on every change — no nightly toolchain needed.
+- A bounded `-max_total_time=120` libFuzzer run is the minimum pre-release gate.
+- Any new crash must be fixed and then pinned as a deterministic regression test
+  before the hostile-input readiness in `hardening_status.yaml` is upgraded.

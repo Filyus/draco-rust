@@ -150,7 +150,35 @@ impl MeshEdgebreakerDecoder {
             DracoError::DracoError("Failed to read attribute data count".to_string())
         })?;
 
-        out_mesh.set_num_faces(num_faces as usize);
+        // Reject impossible geometry counts before allocating face and
+        // connectivity storage. These mirror the C++ MeshEdgebreakerDecoderImpl
+        // checks and are pure geometric invariants, so they remain valid for
+        // heavily compressed (valence/rANS) streams where the input byte size is
+        // not a usable bound. Cheap, run once per decode, off the hot path.
+        if num_faces > u32::MAX / 3 {
+            return Err(DracoError::DracoError(
+                "Edgebreaker num_faces exceeds maximum".to_string(),
+            ));
+        }
+        if num_encoded_vertices as u64 > num_faces as u64 * 3 {
+            return Err(DracoError::DracoError(
+                "Edgebreaker num_encoded_vertices exceeds 3 * num_faces".to_string(),
+            ));
+        }
+        // A manifold mesh with |num_faces| faces needs at least 3*num_faces/2
+        // edges, while |num_encoded_vertices| vertices can form at most
+        // V*(V-1)/2 edges. If the latter is smaller the counts are impossible.
+        let min_num_face_edges = 3u64 * num_faces as u64 / 2;
+        let num_encoded_vertices_64 = num_encoded_vertices as u64;
+        let max_num_vertex_edges =
+            num_encoded_vertices_64 * num_encoded_vertices_64.saturating_sub(1) / 2;
+        if max_num_vertex_edges < min_num_face_edges {
+            return Err(DracoError::DracoError(
+                "Edgebreaker vertex/face counts cannot form a manifold mesh".to_string(),
+            ));
+        }
+
+        out_mesh.try_set_num_faces(num_faces as usize)?;
         out_mesh.set_num_points(num_encoded_vertices as usize);
 
         let num_symbols =
@@ -173,6 +201,28 @@ impl MeshEdgebreakerDecoder {
                 DracoError::DracoError("Failed to read split symbol count".to_string())
             })? as usize
         };
+
+        // Symbol-count invariants (mirrors C++): the initial face of each
+        // connected component may be unencoded, so |num_faces| is between
+        // |num_symbols| and num_symbols * 4/3, and split symbols are a subset of
+        // all symbols. These bound the connectivity allocations below without
+        // relying on input size.
+        if (num_faces as usize) < num_symbols {
+            return Err(DracoError::DracoError(
+                "Edgebreaker num_faces is smaller than num_symbols".to_string(),
+            ));
+        }
+        let max_encoded_faces = num_symbols + num_symbols / 3;
+        if num_faces as usize > max_encoded_faces {
+            return Err(DracoError::DracoError(
+                "Edgebreaker num_faces exceeds maximum implied by num_symbols".to_string(),
+            ));
+        }
+        if num_split_symbols > num_symbols {
+            return Err(DracoError::DracoError(
+                "Edgebreaker num_split_symbols exceeds num_symbols".to_string(),
+            ));
+        }
 
         // Read hole/topology split events.
         // Draco stores these events inline for v2.2+, but for older streams (<2.2)
@@ -281,8 +331,11 @@ impl MeshEdgebreakerDecoder {
             })? as u32
         };
 
+        // Cap the pre-reservation by the remaining byte budget: every event
+        // consumes at least one byte, so a larger count is malformed and must
+        // not drive a huge speculative allocation.
         let mut events: Vec<TopologySplitEventData> =
-            Vec::with_capacity(num_topology_splits as usize);
+            Vec::with_capacity((num_topology_splits as usize).min(in_buffer.remaining_size()));
         if num_topology_splits > 0 {
             if bitstream_version < 0x0102 {
                 // Legacy (<1.2): absolute IDs + explicit edge byte.
@@ -313,7 +366,9 @@ impl MeshEdgebreakerDecoder {
                     let delta = in_buffer.decode_varint().map_err(|_| {
                         DracoError::DracoError("Failed to read source symbol delta".to_string())
                     })? as i32;
-                    let source_symbol_id = last_source_symbol_id + delta;
+                    // Wrapping matches C++ int arithmetic; malformed deltas must
+                    // not panic under overflow checks.
+                    let source_symbol_id = last_source_symbol_id.wrapping_add(delta);
 
                     let split_delta = in_buffer.decode_varint().map_err(|_| {
                         DracoError::DracoError("Failed to read split symbol delta".to_string())
@@ -323,7 +378,7 @@ impl MeshEdgebreakerDecoder {
                             "Invalid split symbol delta".to_string(),
                         ));
                     }
-                    let split_symbol_id = source_symbol_id - split_delta;
+                    let split_symbol_id = source_symbol_id.wrapping_sub(split_delta);
 
                     events.push(TopologySplitEventData {
                         split_symbol_id: split_symbol_id as u32,
@@ -423,7 +478,9 @@ impl MeshEdgebreakerDecoder {
             .decode_varint()
             .map_err(|_| DracoError::DracoError("Failed to read split event count".to_string()))?
             as usize;
-        let mut events = Vec::with_capacity(num_events);
+        // Cap the pre-reservation by the remaining byte budget: each event
+        // consumes at least one byte, so a larger count cannot be satisfied.
+        let mut events = Vec::with_capacity(num_events.min(in_buffer.remaining_size()));
 
         if num_events > 0 {
             let mut last_source_symbol_id: i32 = 0;
@@ -431,12 +488,14 @@ impl MeshEdgebreakerDecoder {
                 let delta = in_buffer.decode_varint().map_err(|_| {
                     DracoError::DracoError("Failed to read source symbol delta".to_string())
                 })? as i32;
-                let source_symbol_id = last_source_symbol_id + delta;
+                // Wrapping matches C++ int arithmetic; malformed deltas must not
+                // panic under overflow checks.
+                let source_symbol_id = last_source_symbol_id.wrapping_add(delta);
 
                 let split_delta = in_buffer.decode_varint().map_err(|_| {
                     DracoError::DracoError("Failed to read split symbol delta".to_string())
                 })? as i32;
-                let split_symbol_id = source_symbol_id - split_delta;
+                let split_symbol_id = source_symbol_id.wrapping_sub(split_delta);
 
                 events.push(TopologySplitEventData {
                     split_symbol_id: split_symbol_id as u32,
@@ -549,8 +608,10 @@ impl MeshEdgebreakerDecoder {
             has_start_face_bits = start_face_decoder.start_decoding(in_buffer);
         }
 
-        let mut connectivity_decoder =
-            EdgebreakerConnectivityDecoder::new(mesh.num_faces() as i32, max_num_vertices as i32);
+        let mut connectivity_decoder = EdgebreakerConnectivityDecoder::try_new(
+            mesh.num_faces() as i32,
+            max_num_vertices as i32,
+        )?;
 
         // Choose traversal decoder based on the traversal_decoder_type read earlier.
         #[allow(unused_assignments)]
@@ -769,7 +830,11 @@ impl MeshEdgebreakerDecoder {
             DracoError::DracoError("Failed to start traversal symbol bit decoding".to_string())
         })?;
 
-        let mut symbols = Vec::with_capacity(num_symbols);
+        // Symbols are stored as a raw bit sequence (>=1 bit each), so the count
+        // cannot exceed the remaining bit budget. Cap the pre-reservation so a
+        // malformed count cannot trigger a multi-gigabyte allocation.
+        let mut symbols =
+            Vec::with_capacity(num_symbols.min(in_buffer.remaining_size().saturating_mul(8)));
         for _ in 0..num_symbols {
             let first_bit = in_buffer.decode_least_significant_bits32(1).map_err(|_| {
                 DracoError::DracoError("Failed to read traversal symbol".to_string())
@@ -797,6 +862,14 @@ impl MeshEdgebreakerDecoder {
         let corner_table = self.corner_table.as_ref().ok_or(DracoError::DracoError(
             "Corner table not initialized".to_string(),
         ))?;
+
+        // Reject an inconsistent corner table before the DFS below indexes the
+        // per-vertex / per-face arrays by table-derived ids.
+        if !corner_table.is_index_consistent() {
+            return Err(DracoError::DracoError(
+                "Inconsistent corner table for attribute traversal".to_string(),
+            ));
+        }
 
         let num_vertices = corner_table.num_vertices();
         let num_faces = corner_table.num_faces();
