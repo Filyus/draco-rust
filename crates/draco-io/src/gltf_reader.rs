@@ -1399,13 +1399,12 @@ fn validate_root_metadata(root: &GltfRoot) -> Result<()> {
         }
     }
 
+    // glTF validity: every required extension must also be listed as used.
+    // Whether an unknown required extension is *acceptable* is a scope decision
+    // left to reject_unsupported_features (strict readers only); the lenient
+    // document-preserving path tolerates them since it preserves, not
+    // interprets, the rest of the document.
     for required in &root.extensions_required {
-        if required != KHR_DRACO_MESH_COMPRESSION {
-            return Err(GltfError::Unsupported(format!(
-                "Unsupported required extension: {}",
-                required
-            )));
-        }
         if !root.extensions_used.iter().any(|used| used == required) {
             return Err(GltfError::InvalidGltf(format!(
                 "Required extension {} is not listed in extensionsUsed",
@@ -1449,6 +1448,18 @@ fn validate_root_metadata(root: &GltfRoot) -> Result<()> {
 /// interprets these features, it just carries them through untouched, so it
 /// does not reject them here.
 fn reject_unsupported_features(root: &GltfRoot) -> Result<()> {
+    // The strict reader cannot faithfully load an asset that *requires* an
+    // extension it does not implement. (KHR_draco_mesh_compression is the only
+    // one this crate honors.) The lenient/compressor path skips this check.
+    for required in &root.extensions_required {
+        if required != KHR_DRACO_MESH_COMPRESSION {
+            return Err(GltfError::Unsupported(format!(
+                "Unsupported required extension: {}",
+                required
+            )));
+        }
+    }
+
     for (mesh_idx, mesh) in root.meshes.iter().enumerate() {
         for (prim_idx, primitive) in mesh.primitives.iter().enumerate() {
             if !primitive.targets.is_empty() {

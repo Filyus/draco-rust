@@ -419,3 +419,65 @@ fn non_triangle_primitive_is_preserved_uncompressed() {
     );
     assert!(doc.get("extensionsRequired").is_none());
 }
+
+/// An asset that *requires* an extension this crate does not implement (here
+/// `KHR_materials_unlit`) must still compress: the compressor preserves the
+/// extension rather than rejecting the document. Regression test for the
+/// document-preserving guarantee.
+#[test]
+fn compresses_asset_requiring_unknown_extension() {
+    let mut bin = Vec::new();
+    push_f32s(&mut bin, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]); // pos 0..36
+    push_u16s(&mut bin, &[0, 1, 2]); // indices 36..42
+
+    let json = json!({
+        "asset": { "version": "2.0" },
+        "extensionsUsed": ["KHR_materials_unlit"],
+        "extensionsRequired": ["KHR_materials_unlit"],
+        "meshes": [ {
+            "primitives": [ {
+                "attributes": { "POSITION": 0 },
+                "indices": 1,
+                "mode": 4,
+                "material": 0
+            } ]
+        } ],
+        "materials": [ {
+            "name": "Unlit",
+            "extensions": { "KHR_materials_unlit": {} }
+        } ],
+        "accessors": [
+            { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+              "min": [0.0,0.0,0.0], "max": [1.0,1.0,0.0] },
+            { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+        ],
+        "bufferViews": [
+            { "buffer": 0, "byteOffset": 0, "byteLength": 36 },
+            { "buffer": 0, "byteOffset": 36, "byteLength": 6 }
+        ],
+        "buffers": [ { "byteLength": bin.len() } ]
+    });
+    let input = build_glb(&json, &bin);
+
+    let output = compress_gltf_bytes(&input, None).expect("must compress despite required ext");
+    let (doc, _) = split_glb(&output);
+
+    // The unknown extension and its material are preserved.
+    assert_eq!(
+        doc["materials"][0]["extensions"]["KHR_materials_unlit"],
+        json!({})
+    );
+    // Geometry compressed.
+    assert!(
+        doc["meshes"][0]["primitives"][0]["extensions"]["KHR_draco_mesh_compression"].is_object()
+    );
+    // Both extensions are now required (the pre-existing one is kept).
+    let required: Vec<&str> = doc["extensionsRequired"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(required.contains(&"KHR_materials_unlit"));
+    assert!(required.contains(&"KHR_draco_mesh_compression"));
+}
