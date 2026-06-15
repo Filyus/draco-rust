@@ -1,5 +1,6 @@
 use crate::version::DEFAULT_MESH_VERSION;
 
+/// Output buffer for writing Draco bitstream data.
 pub struct EncoderBuffer {
     buffer: Vec<u8>,
     bit_encoder_active: bool,
@@ -27,33 +28,40 @@ impl Default for EncoderBuffer {
 }
 
 impl EncoderBuffer {
+    /// Creates an empty encoder buffer.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Sets the target Draco bitstream version.
     pub fn set_version(&mut self, major: u8, minor: u8) {
         self.version_major = major;
         self.version_minor = minor;
     }
 
+    /// Returns the target major bitstream version.
     pub fn version_major(&self) -> u8 {
         self.version_major
     }
 
+    /// Returns the target minor bitstream version.
     pub fn version_minor(&self) -> u8 {
         self.version_minor
     }
 
+    /// Clears all encoded bytes and resets active bit encoding state.
     pub fn clear(&mut self) {
         self.buffer.clear();
         self.bit_encoder_active = false;
         self.current_bit_offset = 0;
     }
 
+    /// Resizes the underlying byte buffer.
     pub fn resize(&mut self, nbytes: usize) {
         self.buffer.resize(nbytes, 0);
     }
 
+    /// Starts writing a packed bit sequence.
     pub fn start_bit_encoding(&mut self, required_bits: usize, encode_size: bool) -> bool {
         if self.bit_encoder_active {
             return false;
@@ -73,6 +81,7 @@ impl EncoderBuffer {
         true
     }
 
+    /// Finishes the active packed bit sequence.
     pub fn end_bit_encoding(&mut self) {
         if !self.bit_encoder_active {
             return;
@@ -129,6 +138,7 @@ impl EncoderBuffer {
         }
     }
 
+    /// Writes the least significant `nbits` bits of a 32-bit value.
     pub fn encode_least_significant_bits32(&mut self, nbits: u32, value: u32) -> bool {
         if !self.bit_encoder_active {
             return false;
@@ -158,6 +168,7 @@ impl EncoderBuffer {
         true
     }
 
+    /// Appends a plain-old-data value in native memory representation.
     pub fn encode<T: bytemuck::NoUninit>(&mut self, data: T) -> bool {
         if self.bit_encoder_active {
             return false;
@@ -167,6 +178,7 @@ impl EncoderBuffer {
         true
     }
 
+    /// Appends raw bytes.
     pub fn encode_data(&mut self, data: &[u8]) -> bool {
         if self.bit_encoder_active {
             return false;
@@ -175,22 +187,27 @@ impl EncoderBuffer {
         true
     }
 
+    /// Appends one byte.
     pub fn encode_u8(&mut self, val: u8) {
         self.buffer.push(val);
     }
 
+    /// Appends a little-endian `u16`.
     pub fn encode_u16(&mut self, val: u16) {
         self.buffer.extend_from_slice(&val.to_le_bytes());
     }
 
+    /// Appends a little-endian `u32`.
     pub fn encode_u32(&mut self, val: u32) {
         self.buffer.extend_from_slice(&val.to_le_bytes());
     }
 
+    /// Appends a little-endian `u64`.
     pub fn encode_u64(&mut self, val: u64) {
         self.buffer.extend_from_slice(&val.to_le_bytes());
     }
 
+    /// Appends an unsigned LEB128-style Draco varint.
     pub fn encode_varint<T: Into<u64>>(&mut self, val: T) {
         let mut v = val.into();
         loop {
@@ -217,10 +234,12 @@ impl EncoderBuffer {
         self.encode_varint(symbol as u64);
     }
 
+    /// Returns the encoded byte slice.
     pub fn data(&self) -> &[u8] {
         &self.buffer
     }
 
+    /// Returns the encoded byte length.
     pub fn size(&self) -> usize {
         self.buffer.len()
     }

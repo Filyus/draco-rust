@@ -106,6 +106,7 @@ fn upsert_portable_attribute(
     }
 }
 
+/// Decoder for Draco triangle mesh bitstreams.
 pub struct MeshDecoder {
     geometry_type: EncodedGeometryType,
     method: u8,
@@ -130,6 +131,7 @@ impl Default for MeshDecoder {
 }
 
 impl MeshDecoder {
+    /// Creates a mesh decoder with default state.
     pub fn new() -> Self {
         Self {
             geometry_type: EncodedGeometryType::TriangularMesh,
@@ -149,6 +151,7 @@ impl MeshDecoder {
         }
     }
 
+    /// Decodes a Draco mesh from an input buffer.
     pub fn decode(&mut self, in_buffer: &mut DecoderBuffer, out_mesh: &mut Mesh) -> Status {
         // 1. Decode Header
         self.decode_header(in_buffer)?;

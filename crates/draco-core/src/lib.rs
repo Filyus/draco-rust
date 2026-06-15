@@ -70,15 +70,15 @@ pub mod bit_utils;
 pub mod compression_config;
 #[doc(hidden)]
 pub mod corner_table;
-#[doc(hidden)]
+/// Draco scalar data type identifiers.
 pub mod draco_types;
-#[doc(hidden)]
+/// Geometry attribute descriptors and point attribute storage.
 pub mod geometry_attribute;
-#[doc(hidden)]
+/// Strongly typed geometry index wrappers.
 pub mod geometry_indices;
-#[doc(hidden)]
+/// Triangle mesh geometry data.
 pub mod mesh;
-#[doc(hidden)]
+/// Draco metadata containers and bitstream serialization helpers.
 pub mod metadata;
 
 // Internal codec modules are kept public but hidden so existing parity tests can
@@ -101,7 +101,7 @@ pub mod mesh_edgebreaker_shared;
 pub mod mesh_prediction_scheme_data;
 #[doc(hidden)]
 pub mod normal_compression_utils;
-#[doc(hidden)]
+/// Point cloud geometry data.
 pub mod point_cloud;
 #[doc(hidden)]
 pub mod prediction_scheme;
@@ -153,7 +153,7 @@ pub mod prediction_scheme_wrap;
 pub mod quantization_utils;
 #[doc(hidden)]
 pub mod rans_symbol_coding;
-#[doc(hidden)]
+/// Error and status types.
 pub mod status;
 #[doc(hidden)]
 pub mod symbol_encoding;
@@ -168,7 +168,7 @@ pub mod version;
 
 #[cfg(feature = "decoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
-#[doc(hidden)]
+/// Decoder input buffer.
 pub mod decoder_buffer;
 #[cfg(feature = "decoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
@@ -183,7 +183,7 @@ pub mod direct_bit_decoder;
 pub mod kd_tree_attributes_decoder;
 #[cfg(feature = "decoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
-#[doc(hidden)]
+/// Mesh decoder entry point.
 pub mod mesh_decoder;
 #[cfg(feature = "decoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
@@ -198,7 +198,7 @@ pub mod mesh_edgebreaker_decoder;
 pub mod mesh_edgebreaker_traversal_valence_decoder;
 #[cfg(feature = "decoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
-#[doc(hidden)]
+/// Point cloud decoder entry point.
 pub mod point_cloud_decoder;
 #[cfg(feature = "decoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
@@ -239,11 +239,11 @@ pub mod sequential_normal_attribute_decoder;
 pub mod direct_bit_encoder;
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
-#[doc(hidden)]
+/// Encoder output buffer.
 pub mod encoder_buffer;
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
-#[doc(hidden)]
+/// Encoder configuration options.
 pub mod encoder_options;
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
@@ -262,11 +262,11 @@ pub mod mesh_edgebreaker_encoder;
 pub mod mesh_edgebreaker_traversal_valence_encoder;
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
-#[doc(hidden)]
+/// Mesh encoder entry point.
 pub mod mesh_encoder;
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
-#[doc(hidden)]
+/// Point cloud encoder entry point.
 pub mod point_cloud_encoder;
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]

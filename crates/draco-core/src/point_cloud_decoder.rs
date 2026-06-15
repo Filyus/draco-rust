@@ -26,16 +26,23 @@ use crate::attribute_transform::AttributeTransform;
 #[cfg(feature = "point_cloud_decode")]
 use crate::version::{version_at_least, VERSION_FLAGS_INTRODUCED};
 
+/// Internal geometry context used by attribute decoders.
 pub trait GeometryDecoder {
+    /// Returns point-cloud geometry when available.
     fn point_cloud(&self) -> Option<&PointCloud>;
+    /// Returns mesh geometry when available.
     fn mesh(&self) -> Option<&Mesh>;
+    /// Returns mesh corner-table topology when available.
     fn corner_table(&self) -> Option<&CornerTable>;
+    /// Returns the encoded geometry type.
     fn get_geometry_type(&self) -> EncodedGeometryType;
+    /// Returns the attribute encoding method for an attribute id, if known.
     fn get_attribute_encoding_method(&self, _att_id: i32) -> Option<i32> {
         None
     }
 }
 
+/// Decoder for Draco point cloud bitstreams.
 pub struct PointCloudDecoder {
     geometry_type: EncodedGeometryType,
     #[cfg(feature = "point_cloud_decode")]
@@ -150,6 +157,7 @@ fn decode_raw_attribute_values(
 }
 
 impl PointCloudDecoder {
+    /// Creates a point cloud decoder with default state.
     pub fn new() -> Self {
         Self {
             geometry_type: EncodedGeometryType::PointCloud,
@@ -165,6 +173,7 @@ impl PointCloudDecoder {
     }
 
     #[cfg(feature = "point_cloud_decode")]
+    /// Decodes a Draco point cloud from an input buffer.
     pub fn decode(&mut self, in_buffer: &mut DecoderBuffer, out_pc: &mut PointCloud) -> Status {
         // 1. Decode Header
         self.decode_header(in_buffer)?;
@@ -675,6 +684,7 @@ impl PointCloudDecoder {
         Ok(())
     }
 
+    /// Returns the encoded geometry type handled by this decoder.
     pub fn get_geometry_type(&self) -> EncodedGeometryType {
         self.geometry_type
     }

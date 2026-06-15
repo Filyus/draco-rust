@@ -7,24 +7,31 @@ use std::collections::BTreeMap;
 use std::mem::size_of;
 use std::str;
 
+/// Header flag bit indicating that geometry metadata follows the payload.
 pub const METADATA_FLAG_MASK: u16 = 0x8000;
 
 #[cfg(feature = "decoder")]
 const MAX_METADATA_NESTING_DEPTH: usize = 1000;
 const MAX_METADATA_NAME_LEN: usize = u8::MAX as usize;
 
+/// Raw Draco metadata map.
+///
+/// Entries store the exact byte payload written to the Draco bitstream. Typed
+/// helpers encode values using the same little-endian layout as C++ Draco.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Metadata {
     entries: BTreeMap<String, Vec<u8>>,
     sub_metadata: BTreeMap<String, Metadata>,
 }
 
+/// Metadata associated with one geometry attribute unique id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttributeMetadata {
     attribute_unique_id: u32,
     metadata: Metadata,
 }
 
+/// Geometry-level metadata plus per-attribute metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GeometryMetadata {
     metadata: Metadata,
@@ -32,26 +39,32 @@ pub struct GeometryMetadata {
 }
 
 impl Metadata {
+    /// Creates an empty metadata map.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Returns true when there are no entries or nested metadata blocks.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty() && self.sub_metadata.is_empty()
     }
 
+    /// Returns all raw metadata entries.
     pub fn entries(&self) -> &BTreeMap<String, Vec<u8>> {
         &self.entries
     }
 
+    /// Returns all nested metadata blocks.
     pub fn sub_metadata(&self) -> &BTreeMap<String, Metadata> {
         &self.sub_metadata
     }
 
+    /// Returns the raw byte value for an entry.
     pub fn get_raw(&self, name: &str) -> Option<&[u8]> {
         self.entries.get(name).map(Vec::as_slice)
     }
 
+    /// Sets a raw byte metadata entry.
     pub fn set_raw(
         &mut self,
         name: impl Into<String>,
@@ -69,16 +82,19 @@ impl Metadata {
         Ok(())
     }
 
+    /// Stores an `i32` metadata entry.
     pub fn set_i32(&mut self, name: impl Into<String>, value: i32) -> Result<(), DracoError> {
         self.set_raw(name, value.to_le_bytes().to_vec())
     }
 
+    /// Reads an `i32` metadata entry.
     pub fn get_i32(&self, name: &str) -> Option<i32> {
         let bytes = self.get_raw(name)?;
         let bytes: [u8; size_of::<i32>()] = bytes.try_into().ok()?;
         Some(i32::from_le_bytes(bytes))
     }
 
+    /// Stores an array of `i32` metadata values.
     pub fn set_i32_array(
         &mut self,
         name: impl Into<String>,
@@ -98,21 +114,25 @@ impl Metadata {
         self.set_raw(name, bytes)
     }
 
+    /// Reads an array of `i32` metadata values.
     pub fn get_i32_array(&self, name: &str) -> Option<Vec<i32>> {
         let bytes = self.get_raw(name)?;
         decode_le_array::<{ size_of::<i32>() }, i32>(bytes, i32::from_le_bytes)
     }
 
+    /// Stores an `f64` metadata entry.
     pub fn set_f64(&mut self, name: impl Into<String>, value: f64) -> Result<(), DracoError> {
         self.set_raw(name, value.to_le_bytes().to_vec())
     }
 
+    /// Reads an `f64` metadata entry.
     pub fn get_f64(&self, name: &str) -> Option<f64> {
         let bytes = self.get_raw(name)?;
         let bytes: [u8; size_of::<f64>()] = bytes.try_into().ok()?;
         Some(f64::from_le_bytes(bytes))
     }
 
+    /// Stores an array of `f64` metadata values.
     pub fn set_f64_array(
         &mut self,
         name: impl Into<String>,
@@ -132,11 +152,13 @@ impl Metadata {
         self.set_raw(name, bytes)
     }
 
+    /// Reads an array of `f64` metadata values.
     pub fn get_f64_array(&self, name: &str) -> Option<Vec<f64>> {
         let bytes = self.get_raw(name)?;
         decode_le_array::<{ size_of::<f64>() }, f64>(bytes, f64::from_le_bytes)
     }
 
+    /// Stores a UTF-8 string metadata entry.
     pub fn set_string(
         &mut self,
         name: impl Into<String>,
@@ -145,22 +167,27 @@ impl Metadata {
         self.set_raw(name, value.as_ref().as_bytes().to_vec())
     }
 
+    /// Reads a UTF-8 string metadata entry.
     pub fn get_string(&self, name: &str) -> Option<&str> {
         str::from_utf8(self.get_raw(name)?).ok()
     }
 
+    /// Removes and returns a raw metadata entry.
     pub fn remove_entry(&mut self, name: &str) -> Option<Vec<u8>> {
         self.entries.remove(name)
     }
 
+    /// Returns a nested metadata block by name.
     pub fn get_sub_metadata(&self, name: &str) -> Option<&Metadata> {
         self.sub_metadata.get(name)
     }
 
+    /// Returns a mutable nested metadata block by name.
     pub fn get_sub_metadata_mut(&mut self, name: &str) -> Option<&mut Metadata> {
         self.sub_metadata.get_mut(name)
     }
 
+    /// Inserts a nested metadata block.
     pub fn insert_sub_metadata(
         &mut self,
         name: impl Into<String>,
@@ -178,6 +205,7 @@ impl Metadata {
     }
 
     #[cfg(feature = "decoder")]
+    /// Decodes a metadata block from a Draco bitstream buffer.
     pub fn decode(buffer: &mut DecoderBuffer<'_>) -> Result<Self, DracoError> {
         Self::decode_with_depth(buffer, 0)
     }
@@ -232,6 +260,7 @@ impl Metadata {
     }
 
     #[cfg(feature = "encoder")]
+    /// Encodes this metadata block to a Draco bitstream buffer.
     pub fn encode(&self, buffer: &mut EncoderBuffer) -> Result<(), DracoError> {
         buffer.encode_varint(self.entries.len() as u64);
         for (name, value) in &self.entries {
@@ -256,6 +285,7 @@ impl Metadata {
 }
 
 impl AttributeMetadata {
+    /// Creates metadata for one attribute unique id.
     pub fn new(attribute_unique_id: u32, metadata: Metadata) -> Self {
         Self {
             attribute_unique_id,
@@ -263,40 +293,49 @@ impl AttributeMetadata {
         }
     }
 
+    /// Returns the Draco attribute unique id.
     pub fn attribute_unique_id(&self) -> u32 {
         self.attribute_unique_id
     }
 
+    /// Returns the metadata payload.
     pub fn metadata(&self) -> &Metadata {
         &self.metadata
     }
 
+    /// Returns the mutable metadata payload.
     pub fn metadata_mut(&mut self) -> &mut Metadata {
         &mut self.metadata
     }
 }
 
 impl GeometryMetadata {
+    /// Creates empty geometry metadata.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Returns true when no geometry or attribute metadata is present.
     pub fn is_empty(&self) -> bool {
         self.metadata.is_empty() && self.attribute_metadata.is_empty()
     }
 
+    /// Returns geometry-level metadata.
     pub fn metadata(&self) -> &Metadata {
         &self.metadata
     }
 
+    /// Returns mutable geometry-level metadata.
     pub fn metadata_mut(&mut self) -> &mut Metadata {
         &mut self.metadata
     }
 
+    /// Returns all per-attribute metadata blocks.
     pub fn attribute_metadata(&self) -> &[AttributeMetadata] {
         &self.attribute_metadata
     }
 
+    /// Finds per-attribute metadata by Draco attribute unique id.
     pub fn attribute_metadata_by_unique_id(
         &self,
         attribute_unique_id: u32,
@@ -306,6 +345,7 @@ impl GeometryMetadata {
             .find(|metadata| metadata.attribute_unique_id == attribute_unique_id)
     }
 
+    /// Finds per-attribute metadata by a string metadata entry.
     pub fn attribute_metadata_by_string_entry(
         &self,
         entry_name: &str,
@@ -316,6 +356,7 @@ impl GeometryMetadata {
             .find(|metadata| metadata.metadata.get_string(entry_name) == Some(entry_value))
     }
 
+    /// Finds mutable per-attribute metadata by Draco attribute unique id.
     pub fn attribute_metadata_by_unique_id_mut(
         &mut self,
         attribute_unique_id: u32,
@@ -325,6 +366,7 @@ impl GeometryMetadata {
             .find(|metadata| metadata.attribute_unique_id == attribute_unique_id)
     }
 
+    /// Inserts or replaces metadata for one Draco attribute unique id.
     pub fn set_attribute_metadata(&mut self, attribute_unique_id: u32, metadata: Metadata) {
         if let Some(existing) = self.attribute_metadata_by_unique_id_mut(attribute_unique_id) {
             existing.metadata = metadata;
@@ -335,6 +377,7 @@ impl GeometryMetadata {
     }
 
     #[cfg(feature = "decoder")]
+    /// Decodes geometry metadata from a Draco bitstream buffer.
     pub fn decode(buffer: &mut DecoderBuffer<'_>) -> Result<Self, DracoError> {
         let num_attribute_metadata = decode_bounded_count(buffer, "attribute metadata count")?;
         let mut geometry_metadata = GeometryMetadata::new();
@@ -357,6 +400,7 @@ impl GeometryMetadata {
     }
 
     #[cfg(feature = "encoder")]
+    /// Encodes geometry metadata to a Draco bitstream buffer.
     pub fn encode(&self, buffer: &mut EncoderBuffer) -> Result<(), DracoError> {
         buffer.encode_varint(self.attribute_metadata.len() as u64);
         for attribute_metadata in &self.attribute_metadata {

@@ -17,23 +17,33 @@ use crate::version::{
 
 use crate::corner_table::CornerTable;
 
+/// Geometry context used by attribute encoders and prediction selection.
 pub trait GeometryEncoder {
+    /// Returns point-cloud geometry when available.
     fn point_cloud(&self) -> Option<&PointCloud>;
+    /// Returns mesh geometry when available.
     fn mesh(&self) -> Option<&Mesh>;
+    /// Returns mesh corner-table topology when available.
     fn corner_table(&self) -> Option<&CornerTable>;
+    /// Returns the active encoder options.
     fn options(&self) -> &EncoderOptions;
+    /// Returns the encoded geometry type.
     fn get_geometry_type(&self) -> EncodedGeometryType;
+    /// Returns the forced encoding method, if one is active.
     fn get_encoding_method(&self) -> Option<i32> {
         None
     }
+    /// Returns a data-to-corner map for mesh attribute prediction, if present.
     fn get_data_to_corner_map(&self) -> Option<&[u32]> {
         None
     }
+    /// Returns a vertex-to-data map for mesh attribute prediction, if present.
     fn get_vertex_to_data_map(&self) -> Option<&[i32]> {
         None
     }
 }
 
+/// Encoder for Draco point cloud bitstreams.
 pub struct PointCloudEncoder {
     point_cloud: Option<PointCloud>,
     options: EncoderOptions,
@@ -68,6 +78,7 @@ impl Default for PointCloudEncoder {
 }
 
 impl PointCloudEncoder {
+    /// Creates an encoder without an assigned point cloud.
     pub fn new() -> Self {
         Self {
             point_cloud: None,
@@ -75,14 +86,17 @@ impl PointCloudEncoder {
         }
     }
 
+    /// Returns the point cloud assigned to this encoder, if any.
     pub fn point_cloud(&self) -> Option<&PointCloud> {
         self.point_cloud.as_ref()
     }
 
+    /// Assigns the point cloud to encode.
     pub fn set_point_cloud(&mut self, pc: PointCloud) {
         self.point_cloud = Some(pc);
     }
 
+    /// Encodes the assigned point cloud into an output buffer.
     pub fn encode(&mut self, options: &EncoderOptions, out_buffer: &mut EncoderBuffer) -> Status {
         self.options = options.clone();
 
@@ -387,6 +401,7 @@ impl PointCloudEncoder {
         Ok(())
     }
 
+    /// Returns the geometry type produced by this encoder.
     pub fn get_geometry_type(&self) -> EncodedGeometryType {
         EncodedGeometryType::PointCloud
     }

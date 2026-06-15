@@ -47,23 +47,36 @@ pub struct MeshEncoder {
 /// Geometry shape and attribute metadata produced by a successful mesh encode.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EncodedMeshInfo {
+    /// Numeric Draco mesh encoding method used for the output.
     pub encoding_method: i32,
+    /// Number of faces encoded into the bitstream.
     pub num_encoded_faces: usize,
+    /// Number of points encoded into the bitstream.
     pub num_encoded_points: usize,
+    /// Per-attribute information captured during encoding.
     pub attributes: Vec<EncodedAttributeInfo>,
 }
 
 /// Attribute metadata produced by a successful mesh encode.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EncodedAttributeInfo {
+    /// Source attribute id in the input mesh.
     pub source_attribute_id: i32,
+    /// Semantic type of the encoded attribute.
     pub attribute_type: GeometryAttributeType,
+    /// Scalar data type of the encoded attribute.
     pub data_type: DataType,
+    /// Number of scalar components per encoded value.
     pub num_components: u8,
+    /// Whether integer values are normalized.
     pub normalized: bool,
+    /// Draco unique id assigned to the attribute.
     pub unique_id: u32,
+    /// Number of unique values encoded for the attribute.
     pub num_encoded_values: usize,
+    /// Minimum position components when known for position attributes.
     pub position_min: Option<Vec<f64>>,
+    /// Maximum position components when known for position attributes.
     pub position_max: Option<Vec<f64>>,
 }
 
@@ -108,6 +121,7 @@ impl GeometryEncoder for MeshEncoder {
 }
 
 impl MeshEncoder {
+    /// Creates an encoder without an assigned mesh.
     pub fn new() -> Self {
         Self {
             mesh: None,
@@ -128,26 +142,32 @@ impl MeshEncoder {
         }
     }
 
+    /// Assigns the mesh to encode.
     pub fn set_mesh(&mut self, mesh: Mesh) {
         self.mesh = Some(mesh);
     }
 
+    /// Returns the assigned mesh, if any.
     pub fn mesh(&self) -> Option<&Mesh> {
         self.mesh.as_ref()
     }
 
+    /// Returns the number of faces encoded by the last successful encode.
     pub fn num_encoded_faces(&self) -> usize {
         self.num_encoded_faces
     }
 
+    /// Returns the corner table built during the last mesh encode, if any.
     pub fn corner_table(&self) -> Option<&CornerTable> {
         self.corner_table.as_ref()
     }
 
+    /// Returns information captured during the last successful mesh encode.
     pub fn encoded_mesh_info(&self) -> Option<&EncodedMeshInfo> {
         self.encoded_mesh_info.as_ref()
     }
 
+    /// Encodes the assigned mesh into an output buffer.
     pub fn encode(&mut self, options: &EncoderOptions, out_buffer: &mut EncoderBuffer) -> Status {
         self.options = options.clone();
         self.encoded_mesh_info = None;

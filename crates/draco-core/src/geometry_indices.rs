@@ -1,12 +1,16 @@
+/// Index of a unique attribute value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AttributeValueIndex(pub u32);
 
+/// Index of a point in point-cloud or mesh geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PointIndex(pub u32);
 
+/// Index of a corner-table vertex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VertexIndex(pub u32);
 
+/// Index of a corner in triangle corner-table topology.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CornerIndex(pub u32);
 
@@ -30,13 +34,19 @@ impl From<CornerIndex> for u32 {
     }
 }
 
+/// Index of a triangle face.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FaceIndex(pub u32);
 
+/// Sentinel attribute value index used for missing mappings.
 pub const INVALID_ATTRIBUTE_VALUE_INDEX: AttributeValueIndex = AttributeValueIndex(u32::MAX);
+/// Sentinel point index.
 pub const INVALID_POINT_INDEX: PointIndex = PointIndex(u32::MAX);
+/// Sentinel corner-table vertex index.
 pub const INVALID_VERTEX_INDEX: VertexIndex = VertexIndex(u32::MAX);
+/// Sentinel corner index.
 pub const INVALID_CORNER_INDEX: CornerIndex = CornerIndex(u32::MAX);
+/// Sentinel face index.
 pub const INVALID_FACE_INDEX: FaceIndex = FaceIndex(u32::MAX);
 
 impl From<u32> for AttributeValueIndex {
