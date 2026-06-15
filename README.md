@@ -230,6 +230,12 @@ fuzz/                      Decode fuzz target wiring
 testdata/                  Fixtures used by compatibility and hardening tests
 ```
 
+## AI Usage Note
+
+AI assistance is part of my development process for this project. I guide the
+architecture, review generated output carefully, and take responsibility for the
+crates as published.
+
 ## License
 
 Apache-2.0, matching the upstream Draco project.
