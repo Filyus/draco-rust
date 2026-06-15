@@ -3,7 +3,7 @@ name = "gltf-writer-wasm"
 version = "0.1.0"
 edition = "2021"
 description = "Draco web glTF/GLB writer (WASM)"
-repository = "https://github.com/google/draco"
+repository = "https://github.com/Filyus/draco-rust"
 license = "Apache-2.0"
 
 [package.metadata.wasm-pack.profile.release]
@@ -20,7 +20,7 @@ serde_json = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
 console_error_panic_hook = { workspace = true, optional = true }
 draco-core = { path = "../../crates/draco-core", default-features = false, features = ["encoder"] }
-draco-io = { path = "../../crates/draco-io", default-features = false, features = ["gltf-writer"] }
+draco-io = { path = "../../crates/draco-io", default-features = false, features = ["gltf-reader", "gltf-writer"] }
 
 [features]
 default = []

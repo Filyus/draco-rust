@@ -3,7 +3,7 @@ name = "gltf-reader-wasm"
 version = "0.1.0"
 edition = "2021"
 description = "Draco web glTF/GLB reader (WASM)"
-repository = "https://github.com/google/draco"
+repository = "https://github.com/Filyus/draco-rust"
 license = "Apache-2.0"
 
 [lib]

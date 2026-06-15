@@ -184,6 +184,42 @@ pub fn create_gltf(meshes_js: JsValue, options_js: JsValue) -> JsValue {
     serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
 }
 
+/// Compress a complete glTF/GLB document while preserving non-geometry content.
+#[wasm_bindgen]
+pub fn compress_gltf_document(data: &[u8], options_js: JsValue) -> JsValue {
+    let options: ExportOptions = serde_wasm_bindgen::from_value(options_js).unwrap_or_default();
+
+    let quantization = draco_io::gltf_writer::QuantizationBits {
+        position: options.position_quantization.unwrap_or(14),
+        normal: options.normal_quantization.unwrap_or(10),
+        color: 8,
+        texcoord: options.texcoord_quantization.unwrap_or(12),
+        generic: 8,
+    };
+
+    let result = match draco_io::compress_gltf_bytes(data, Some(quantization)) {
+        Ok(output) => ExportResult {
+            success: true,
+            json_data: None,
+            binary_data: Some(output),
+            error: None,
+            draco_stats: None,
+        },
+        Err(e) => ExportResult {
+            success: false,
+            json_data: None,
+            binary_data: None,
+            error: Some(format!(
+                "Document-preserving glTF compression failed: {}",
+                e
+            )),
+            draco_stats: None,
+        },
+    };
+
+    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+}
+
 /// Create glTF with scene graph.
 #[wasm_bindgen]
 pub fn create_gltf_with_scene(

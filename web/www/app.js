@@ -20,6 +20,7 @@ const modules = {
 // Current loaded mesh data
 let currentMeshData = null;
 let currentFileType = null;
+let currentSourceData = null;
 
 // DOM Elements
 const dropZone = document.getElementById('drop-zone');
@@ -203,6 +204,7 @@ async function handleFile(file) {
     try {
         const arrayBuffer = await file.arrayBuffer();
         const data = new Uint8Array(arrayBuffer);
+        currentSourceData = new Uint8Array(data);
         
         // Parse file based on extension
         let result;
@@ -475,6 +477,38 @@ async function exportToGltf(meshes, format) {
         texcoord_quantization: parseInt(texcoordBits.value),
         format: format,
     };
+
+    if (
+        currentSourceData &&
+        currentFileType === format &&
+        (format === 'glb' || format === 'gltf')
+    ) {
+        if (useDraco.checked) {
+            if (modules.gltfWriter.module.compress_gltf_document) {
+                log('Compressing original glTF document while preserving materials...', 'info');
+                return modules.gltfWriter.module.compress_gltf_document(currentSourceData, options);
+            }
+            log('Document-preserving glTF compression is unavailable; falling back to mesh export', 'warning');
+        } else {
+            log('Exporting original glTF document to preserve materials...', 'info');
+            if (format === 'gltf') {
+                return {
+                    success: true,
+                    json_data: new TextDecoder().decode(currentSourceData),
+                    binary_data: null,
+                    error: null,
+                    draco_stats: null,
+                };
+            }
+            return {
+                success: true,
+                json_data: null,
+                binary_data: currentSourceData,
+                error: null,
+                draco_stats: null,
+            };
+        }
+    }
     
     return modules.gltfWriter.module.create_gltf(meshes, options);
 }
@@ -559,6 +593,7 @@ function downloadResult(result, format) {
 function clearFile() {
     currentMeshData = null;
     currentFileType = null;
+    currentSourceData = null;
     
     fileInfo.style.display = 'none';
     dropZone.style.display = 'block';
