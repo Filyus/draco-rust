@@ -59,6 +59,40 @@ fn lantern_compress_reload_decode() {
 }
 
 #[test]
+fn invalid_document_is_rejected_by_validation() {
+    // An accessor references bufferView 99, which does not exist. Draco-aware
+    // validation must still catch this (it is not a Draco-specific error).
+    let doc = serde_json::json!({
+        "asset": { "version": "2.0" },
+        "accessors": [ { "bufferView": 99, "componentType": 5126, "count": 3, "type": "VEC3" } ],
+        "bufferViews": [], "buffers": []
+    });
+    let bytes = serde_json::to_vec(&doc).unwrap();
+    let err = draco_gltf::import_slice(&bytes, None).err();
+    assert!(
+        matches!(err, Some(draco_gltf::Error::Validation(_))),
+        "expected a validation error, got {err:?}"
+    );
+}
+
+#[test]
+fn validation_does_not_panic_on_a_hostile_document() {
+    // A primitive references accessor 99 with no accessors present. gltf-rs's
+    // own validator panics here (direct index); draco-gltf must turn that into a
+    // controlled error, never unwind through the caller.
+    let doc = serde_json::json!({
+        "asset": { "version": "2.0" },
+        "meshes": [ { "primitives": [ { "attributes": { "POSITION": 99 } } ] } ]
+    });
+    let bytes = serde_json::to_vec(&doc).unwrap();
+    let err = draco_gltf::import_slice(&bytes, None).err();
+    assert!(
+        matches!(err, Some(draco_gltf::Error::Validation(_))),
+        "expected a controlled validation error, got {err:?}"
+    );
+}
+
+#[test]
 fn decompress_in_place_makes_geometry_readable_by_gltf_rs() {
     let dir = testdata().join("Lantern").join("glTF");
     let scene = draco_gltf::import(dir.join("Lantern.gltf")).expect("load");

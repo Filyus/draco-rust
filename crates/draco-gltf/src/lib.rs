@@ -33,10 +33,11 @@
 //!
 //! # Validation
 //!
-//! `gltf-rs`'s validator rejects Draco assets, so [`import`] loads without it.
-//! The other content is still well-formed `gltf-rs` data; callers that need
-//! strict validation of the non-Draco parts can run `gltf-rs` validation
-//! themselves and ignore the `KHR_draco_mesh_compression`-related errors.
+//! `gltf-rs`'s own validator rejects Draco assets outright (it treats
+//! `KHR_draco_mesh_compression` as an unsupported required extension). [`import`]
+//! therefore runs *Draco-aware* validation: full gltf-rs validation with only
+//! that one expected error filtered out, so structurally invalid assets are
+//! still rejected. Use [`validate`] to check a document you built yourself.
 
 use std::path::Path;
 
@@ -71,6 +72,9 @@ pub enum Error {
     /// The `KHR_draco_mesh_compression` extension was malformed or absent.
     #[error("Draco extension error: {0}")]
     Extension(String),
+    /// The document failed glTF validation (ignoring Draco-specific errors).
+    #[error("glTF validation failed: {0:?}")]
+    Validation(Vec<String>),
 }
 
 /// Result alias for this crate.
@@ -268,8 +272,14 @@ pub fn import<P: AsRef<Path>>(path: P) -> Result<Import> {
 
 /// Loads glTF JSON or GLB bytes, resolving external resources relative to
 /// `base` when present.
+///
+/// The document is validated with [`validate`] (gltf-rs validation minus the
+/// expected Draco "unsupported extension" error), so a structurally invalid
+/// asset is rejected even though gltf-rs's own validator cannot be used on a
+/// Draco file directly.
 pub fn import_slice(bytes: &[u8], base: Option<&Path>) -> Result<Import> {
     let gltf::Gltf { document, blob } = gltf::Gltf::from_slice_without_validation(bytes)?;
+    validate(&document)?;
     let buffers = gltf::import_buffers(&document, base, blob)?;
     let images = gltf::import_images(&document, base, &buffers)?;
     Ok(Import {
@@ -277,6 +287,84 @@ pub fn import_slice(bytes: &[u8], base: Option<&Path>) -> Result<Import> {
         buffers,
         images,
     })
+}
+
+/// Runs gltf-rs validation on a document, ignoring the expected
+/// `KHR_draco_mesh_compression` "unsupported extension" error (which gltf-rs
+/// reports because it does not implement Draco). All other validation errors —
+/// out-of-range indices, malformed accessors, and so on — are reported.
+///
+/// [`import`]/[`import_slice`] call this for you; it is public so callers can
+/// validate a document they have built or modified.
+pub fn validate(document: &gltf::Document) -> Result<()> {
+    use gltf::json::validation::Validate;
+    // A Draco primitive's attribute/index accessors take their data from the
+    // Draco stream, so they legitimately have no bufferView. gltf-rs does not
+    // know this and reports "missing bufferView"; those are expected.
+    let draco_accessors = draco_accessor_indices(document);
+
+    let root = document.clone().into_json();
+
+    // gltf-rs's validator is not panic-safe on every malformed document (e.g. it
+    // directly indexes `accessors[n]` for a primitive's attribute, which panics
+    // when `n` is out of range). Isolate it so a hostile document yields a
+    // controlled error instead of unwinding through the caller.
+    let collected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut errors = Vec::new();
+        root.validate(&root, gltf::json::Path::new, &mut |path, error| {
+            let location = path().to_string();
+            // gltf-rs flags the required KHR_draco extension as unsupported.
+            if location.contains(KHR_DRACO) {
+                return;
+            }
+            // A Draco accessor legitimately has no bufferView.
+            if format!("{error:?}") == "Missing" {
+                if let Some(idx) = accessor_buffer_view_index(&location) {
+                    if draco_accessors.contains(&idx) {
+                        return;
+                    }
+                }
+            }
+            errors.push(format!("{error:?} at {location}"));
+        });
+        errors
+    }));
+
+    match collected {
+        Ok(errors) if errors.is_empty() => Ok(()),
+        Ok(errors) => Err(Error::Validation(errors)),
+        Err(_) => Err(Error::Validation(vec![
+            "glTF validation failed on a malformed document".into(),
+        ])),
+    }
+}
+
+/// Accessor indices used by Draco-compressed primitives (attributes + indices).
+fn draco_accessor_indices(document: &gltf::Document) -> std::collections::HashSet<usize> {
+    let mut set = std::collections::HashSet::new();
+    for mesh in document.meshes() {
+        for prim in mesh.primitives() {
+            if !is_draco(&prim) {
+                continue;
+            }
+            for (_, accessor) in prim.attributes() {
+                set.insert(accessor.index());
+            }
+            if let Some(indices) = prim.indices() {
+                set.insert(indices.index());
+            }
+        }
+    }
+    set
+}
+
+/// Parses `N` from a validation path of the form `accessors[N].bufferView`.
+fn accessor_buffer_view_index(location: &str) -> Option<usize> {
+    let rest = location.strip_prefix("accessors[")?;
+    if !rest.ends_with("].bufferView") {
+        return None;
+    }
+    rest[..rest.find(']')?].parse().ok()
 }
 
 /// Returns `true` if the primitive's geometry is Draco-compressed.

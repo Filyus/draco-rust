@@ -77,10 +77,16 @@ because it reuses `draco-io`'s document-preserving compressor.
 
 ## Validation
 
-gltf-rs's validator rejects Draco assets, so `import` loads without it. The rest
-of the document is still well-formed gltf-rs data. Callers that need strict
-validation of the non-Draco parts can run gltf-rs validation themselves and
-ignore the `KHR_draco_mesh_compression`-related errors.
+gltf-rs's own validator rejects Draco assets outright (it treats
+`KHR_draco_mesh_compression` as an unsupported required extension). `import`
+therefore runs **Draco-aware validation**: full gltf-rs validation with only the
+expected Draco errors filtered out (the unsupported-extension error, and the
+"missing bufferView" on accessors whose data comes from the Draco stream). A
+structurally invalid asset — out-of-range indices, malformed accessors — is
+still rejected. The validation is also panic-safe: gltf-rs's validator can panic
+on some malformed documents, so it is isolated and any panic becomes a
+controlled `Error::Validation`. Use `draco_gltf::validate(&document)` to check a
+document you built yourself.
 
 ## Where it sits
 
