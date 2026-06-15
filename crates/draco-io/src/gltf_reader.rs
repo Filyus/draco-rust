@@ -1612,12 +1612,14 @@ fn load_buffer(
         } else if let Some(base) = base_path {
             fs::read(base.join(uri))?
         } else {
-            if is_glb {
-                return Err(GltfError::Unsupported(
-                    "External buffer URIs require opening GLB from a filesystem path".into(),
-                ));
-            }
-            fs::read(Path::new(uri))?
+            // No base path means in-memory loading from untrusted bytes (e.g.
+            // `compress_gltf_bytes`). Refuse to resolve external resources so a
+            // hostile `buffer.uri` cannot make us read an arbitrary local file;
+            // only data URIs and the GLB BIN chunk are allowed here.
+            return Err(GltfError::Unsupported(
+                "External buffer URIs require a base path; cannot resolve from in-memory bytes"
+                    .into(),
+            ));
         };
         return trim_buffer_to_declared_length(index, buffer, data, false);
     }

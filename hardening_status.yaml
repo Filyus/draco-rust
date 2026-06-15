@@ -9,15 +9,17 @@
 #   behavior still belongs in implementation_state.yaml.
 
 version: 1
-last_reviewed: "2026-06-15"
+last_reviewed: "2026-06-16"
 
 scope:
   crate: "draco-core"
   surface: "Rust DRC decode of mesh and point-cloud streams"
+  secondary_surface: "draco-io glTF/GLB document-preserving compression (compress_gltf_bytes) and the lenient glTF reader it builds on, which parse untrusted glTF/GLB bytes."
   compatibility_floor: "Draco 1.0.0+ for supported compatibility claims"
   threat_model:
     controlled_assets: "Known-good generated/fixture streams from trusted pipelines."
     untrusted_assets: "Externally supplied .drc bytes that may be truncated, corrupted, inconsistent, oversized, or adversarial."
+    untrusted_gltf: "Externally supplied glTF/GLB bytes passed to compress_gltf_bytes; may reference out-of-range/oversized accessors, malformed GLB chunks, or hostile external resource URIs."
 
 readiness:
   controlled_assets: "good"
@@ -26,6 +28,19 @@ readiness:
   summary: "Positive-path decode coverage is strong for the supported fixture set. Malformed-input behavior has deterministic regression coverage and several panic/resource hazards have been converted into controlled failures. Coverage-guided fuzzing is now operationalized (seed corpus + documented routine in FUZZING.md) and has already found and fixed multiple malformed-input hazards: count-driven memory-amplification OOMs (EdgeBreaker geometry counts, point-cloud point count, rANS probability table), an integer-overflow panic in portable-texcoord prediction (now wrapping like C++), and a multi-second CPU/memory DoS from an unbounded texcoord orientation count. All are pinned as deterministic regression tests. Caller resource policy is now documented in SECURITY.md. After these fixes a 300-second local campaign (24,715 executions, peak RSS under 1 GB) over the seeded corpus completed with no panic, OOM, or timeout. Fuzzing now runs in CI on Linux/ASan with release semantics (cargo-fuzz -O): a bounded smoke gate on every PR/push (no scheduled runs) with a cache-persisted corpus, a longer soak and ClusterFuzzLite PR/batch/prune available on manual dispatch. Remaining confidence is a function of accumulated soak time before arbitrary-hostile-input claims; note that development (non -O) fuzzing additionally surfaces DRACO_DCHECK-equivalent debug_assert! invariant violations, which are debug-only and do not reproduce in the shipped release build."
 
 completed:
+  - id: gltf-compress-untrusted-input
+    status: covered
+    evidence:
+      - path: "crates/draco-io/tests/gltf_compress_fuzz_test.rs"
+        tests:
+          - "malformed_raw_inputs_do_not_panic"
+          - "malformed_documents_do_not_panic"
+          - "byte_mutations_of_a_valid_glb_do_not_panic"
+          - "external_buffer_uri_is_refused_without_base_path"
+      - path: "fuzz/fuzz_targets/compress_gltf.rs"
+      - path: "crates/draco-io/src/gltf_reader.rs"
+    note: "compress_gltf_bytes (and the lenient reader it uses) audited for malformed glTF/GLB. Findings: (1) an arbitrary-local-file-read via a hostile buffer.uri when loading from in-memory bytes (base_path = None) — load_buffer now refuses to resolve external resource URIs without a base path, allowing only data URIs and the GLB BIN chunk. Confirmed non-issues during the audit: accessor reads are bounded by accessor_layout (which validates the full element span against the bufferView/buffer before allocating, so a large `count` cannot drive an unbounded allocation), trim_buffer_to_declared_length rejects a declared byteLength larger than the resource (no zero-padding amplification), split_glb bounds all chunk ranges, and the compressor checks the JSON root is an object before unwrapping. A deterministic battery (malformed raw inputs, malformed documents with out-of-range/oversized accessors, byte mutations and truncations of a valid GLB) confirms no panic/abort. A libFuzzer target (fuzz/fuzz_targets/compress_gltf.rs) is added for CI soak. base_path-relative URI traversal for the file-opening reader path remains a documented residual (the caller supplies and trusts the directory)."
+
   - id: malformed-basic-drc-streams
     status: covered
     evidence:

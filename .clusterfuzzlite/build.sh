@@ -1,5 +1,6 @@
 #!/bin/bash -eu
-# ClusterFuzzLite / OSS-Fuzz build script for the cargo-fuzz `decode_drc` target.
+# ClusterFuzzLite / OSS-Fuzz build script for the cargo-fuzz targets
+# (`decode_drc`, `compress_gltf`).
 #
 # This repository keeps the workspace under crates/ and has no Cargo.toml at the
 # root, so cargo-fuzz must be pointed at the fuzz project with `--fuzz-dir fuzz`.
@@ -19,5 +20,6 @@ case "${SANITIZER:-address}" in
     ;;
 esac
 
-# cargo-fuzz emits the binary under the fuzz project's target dir.
+# cargo-fuzz emits the binaries under the fuzz project's target dir.
 cp fuzz/target/*/release/decode_drc "$OUT/"
+cp fuzz/target/*/release/compress_gltf "$OUT/"

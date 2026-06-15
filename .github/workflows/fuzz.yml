@@ -25,7 +25,7 @@ permissions:
 
 jobs:
   fuzz:
-    name: decode_drc
+    name: decode_drc + compress_gltf
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -69,6 +69,17 @@ jobs:
       - name: Fuzz decode_drc
         run: |
           cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz \
+            --target x86_64-unknown-linux-gnu -- \
+            -max_total_time=${{ steps.dur.outputs.seconds }} \
+            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
+
+      # The glTF compressor parses untrusted glTF/GLB bytes. No committed seed
+      # corpus yet (libFuzzer generates structure from empty); the deterministic
+      # battery in crates/draco-io/tests/gltf_compress_fuzz_test.rs is the gate
+      # that runs on every PR, this is the coverage-guided soak.
+      - name: Fuzz compress_gltf
+        run: |
+          cargo +nightly fuzz run -O compress_gltf --fuzz-dir fuzz \
             --target x86_64-unknown-linux-gnu -- \
             -max_total_time=${{ steps.dur.outputs.seconds }} \
             -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
