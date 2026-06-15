@@ -27,10 +27,20 @@
 //! `draco-io` maps source formats onto the Draco geometry model. Meshes use
 //! triangle faces, `Position` is the required attribute, and `Normal`, `Color`,
 //! `TexCoord`, and `Generic` are preserved when the file format can represent
-//! them as Draco attributes. Scene support is limited to names, hierarchy,
-//! transforms, and mesh parts; materials, textures, cameras, lights, animation,
-//! skinning, structural metadata, and arbitrary format extras are intentionally
-//! out of scope.
+//! them as Draco attributes. Scene support in the *geometry model* is limited to
+//! names, hierarchy, transforms, and mesh parts; materials, textures, cameras,
+//! lights, animation, skinning, structural metadata, and arbitrary format extras
+//! are not represented in that model.
+//!
+//! # Document-preserving glTF compression
+//!
+//! Decoding into the geometry model and re-emitting a fresh glTF necessarily
+//! drops anything the model does not represent (materials, textures, and so on).
+//! When the goal is to Draco-compress an existing glTF/GLB **in place**, use
+//! [`compress_gltf_bytes`]: it rewrites only the compressible mesh geometry and
+//! carries the rest of the document through untouched — materials, textures,
+//! images, samplers, cameras, nodes, animations, skins, `extras`, and unknown
+//! extensions all survive.
 //!
 //! # Unified Trait API
 //!
@@ -146,6 +156,13 @@ pub mod ply_reader;
 #[cfg(feature = "fbx-writer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "fbx-writer")))]
 pub mod fbx_writer;
+#[cfg(all(feature = "gltf-reader", feature = "gltf-writer"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "gltf-reader", feature = "gltf-writer")))
+)]
+/// Document-preserving glTF Draco compression (keeps materials, textures, etc.).
+pub mod gltf_compress;
 #[cfg(feature = "gltf-writer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-writer")))]
 /// glTF/GLB writer with Draco mesh compression support.
@@ -175,6 +192,12 @@ pub use fbx_reader::{FbxMemoryReader, FbxReader};
 #[cfg(feature = "fbx-writer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "fbx-writer")))]
 pub use fbx_writer::FbxWriter;
+#[cfg(all(feature = "gltf-reader", feature = "gltf-writer"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "gltf-reader", feature = "gltf-writer")))
+)]
+pub use gltf_compress::{compress_gltf_bytes, compress_gltf_bytes_with_base_path};
 #[cfg(feature = "gltf-reader")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-reader")))]
 pub use gltf_reader::{DracoPrimitiveInfo, GltfError, GltfReader};

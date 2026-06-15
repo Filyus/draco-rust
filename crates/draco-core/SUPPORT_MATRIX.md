@@ -176,8 +176,8 @@ builds, but they are not raw Draco bitstream features.
 |---|---:|---|---|---|
 | glTF / GLB read/write | yes | `draco-io` | n/a | Keep outside `draco-core`. |
 | `KHR_draco_mesh_compression` | yes | `draco-io` | n/a | Already the right layer for container validation. |
-| glTF materials/textures/cameras/lights | yes in C++ transcoder | `draco-io` rejects/ignores by scope | n/a | Not useful for `draco-core`. |
-| glTF animations/skins | yes in C++ transcoder | `draco-io` rejects today | n/a | Possible future `draco-io` scene work, not raw bitstream parity. |
+| glTF materials/textures/cameras/lights | yes in C++ transcoder | `draco-io`: not in geometry model, but **preserved** by document-preserving compression (`gltf_compress`) | n/a | Not useful for `draco-core`. The geometry model does not interpret them; the in-place glTF compressor carries them through untouched. |
+| glTF animations/skins | yes in C++ transcoder | `draco-io`: geometry model rejects; **preserved** by `gltf_compress` (carried through, geometry left uncompressed when skinned) | n/a | Possible future `draco-io` scene work, not raw bitstream parity. |
 | OBJ / PLY | yes | `draco-io` | n/a | File import/export helpers. |
 | FBX | yes-ish/transcoder-side | `draco-io` | n/a | Keep lightweight; not a full SDK target. |
 | EXT_structural_metadata / mesh features | yes in C++ glTF path | out of current scope | n/a | Semantic glTF/3D Tiles feature. Current `draco-io` should reject it when required, not silently claim support. |

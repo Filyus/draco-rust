@@ -634,6 +634,7 @@ impl GltfReader {
         let chunks = parse_glb_chunks(data)?;
         let root: GltfRoot = serde_json::from_slice(chunks.json)?;
         validate_root_metadata(&root)?;
+        reject_unsupported_features(&root)?;
         let buffers = load_buffers(&root, true, chunks.bin, base_path)?;
 
         Ok(Self { root, buffers })
@@ -643,9 +644,55 @@ impl GltfReader {
     pub fn from_gltf(json_data: &[u8], base_path: Option<&Path>) -> Result<Self> {
         let root: GltfRoot = serde_json::from_slice(json_data)?;
         validate_root_metadata(&root)?;
+        reject_unsupported_features(&root)?;
         let buffers = load_buffers(&root, false, None, base_path)?;
 
         Ok(Self { root, buffers })
+    }
+
+    /// Parse from glTF/GLB bytes without rejecting features outside the
+    /// geometry-decoding scope (skins, animations, morph targets).
+    ///
+    /// Intended for the document-preserving compressor, which never interprets
+    /// those features and only decodes per-primitive geometry it understands.
+    /// Per-primitive decoding still fails for unsupported attributes, so callers
+    /// must handle [`Self::decode_primitive`] errors per primitive.
+    pub(crate) fn from_bytes_lenient(data: &[u8], base_path: Option<&Path>) -> Result<Self> {
+        if data.len() >= 4 && read_u32_le(&data[0..4]) == GLB_MAGIC {
+            let chunks = parse_glb_chunks(data)?;
+            let root: GltfRoot = serde_json::from_slice(chunks.json)?;
+            validate_root_metadata(&root)?;
+            let buffers = load_buffers(&root, true, chunks.bin, base_path)?;
+            Ok(Self { root, buffers })
+        } else {
+            let root: GltfRoot = serde_json::from_slice(data)?;
+            validate_root_metadata(&root)?;
+            let buffers = load_buffers(&root, false, None, base_path)?;
+            Ok(Self { root, buffers })
+        }
+    }
+
+    /// Resolved buffer bytes, indexed by glTF buffer index.
+    pub(crate) fn buffers(&self) -> &[Vec<u8>] {
+        &self.buffers
+    }
+
+    /// Decode a single primitive's geometry into a [`Mesh`].
+    ///
+    /// Errors if the primitive uses an attribute semantic or layout this crate
+    /// cannot decode; the compressor treats that as "leave this primitive
+    /// uncompressed".
+    pub(crate) fn decode_primitive(&self, mesh_idx: usize, prim_idx: usize) -> Result<Mesh> {
+        let gltf_mesh = self.root.meshes.get(mesh_idx).ok_or_else(|| {
+            GltfError::InvalidGltf(format!("Mesh index {} out of range", mesh_idx))
+        })?;
+        let primitive = gltf_mesh.primitives.get(prim_idx).ok_or_else(|| {
+            GltfError::InvalidGltf(format!(
+                "Primitive index {}:{} out of range",
+                mesh_idx, prim_idx
+            ))
+        })?;
+        self.decode_primitive_mesh(mesh_idx, gltf_mesh, prim_idx, primitive)
     }
 
     /// Check if the glTF file uses Draco compression.
@@ -1338,14 +1385,8 @@ fn validate_root_metadata(root: &GltfRoot) -> Result<()> {
     }
 
     let mut has_draco_primitive = false;
-    for (mesh_idx, mesh) in root.meshes.iter().enumerate() {
-        for (prim_idx, primitive) in mesh.primitives.iter().enumerate() {
-            if !primitive.targets.is_empty() {
-                return Err(GltfError::Unsupported(format!(
-                    "Morph targets are not supported on primitive {}:{}",
-                    mesh_idx, prim_idx
-                )));
-            }
+    for mesh in &root.meshes {
+        for primitive in &mesh.primitives {
             if primitive
                 .extensions
                 .as_ref()
@@ -1366,6 +1407,27 @@ fn validate_root_metadata(root: &GltfRoot) -> Result<()> {
             "Primitive uses {} but extensionsUsed does not list it",
             KHR_DRACO_MESH_COMPRESSION
         )));
+    }
+
+    Ok(())
+}
+
+/// Rejects glTF features outside this crate's geometry-decoding scope.
+///
+/// Used by the strict readers ([`GltfReader::from_bytes`] and friends). The
+/// document-preserving compressor uses a lenient path instead: it never
+/// interprets these features, it just carries them through untouched, so it
+/// does not reject them here.
+fn reject_unsupported_features(root: &GltfRoot) -> Result<()> {
+    for (mesh_idx, mesh) in root.meshes.iter().enumerate() {
+        for (prim_idx, primitive) in mesh.primitives.iter().enumerate() {
+            if !primitive.targets.is_empty() {
+                return Err(GltfError::Unsupported(format!(
+                    "Morph targets are not supported on primitive {}:{}",
+                    mesh_idx, prim_idx
+                )));
+            }
+        }
     }
 
     if !root.skins.is_empty() {

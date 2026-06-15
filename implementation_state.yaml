@@ -1938,6 +1938,19 @@ files:
       - name: "read_scene"
         progress: "fully implemented"
         note: "Implements SceneReader; builds real node hierarchy from glTF scenes/nodes and attaches decoded meshes to correct nodes with transforms."
+      - name: "from_bytes_lenient"
+        progress: "fully implemented"
+        note: "pub(crate) constructor for the document-preserving compressor: runs validate_root_metadata (version/required/draco-consistency) but skips reject_unsupported_features (skins/animations/morph targets) since the compressor preserves those rather than interpreting them. Feature rejection was split out of validate_root_metadata into reject_unsupported_features, still called by the strict from_glb/from_gltf."
+      - name: "decode_primitive"
+        progress: "fully implemented"
+        note: "pub(crate) per-primitive geometry decode wrapper over decode_primitive_mesh; errors on unsupported attribute/layout so the compressor can skip+preserve that primitive."
+
+  - path: "crates/draco-io/src/gltf_compress.rs"
+    structures:
+      - name: "compress_gltf_bytes / compress_gltf_bytes_with_base_path"
+        type: "fn"
+        progress: "fully implemented"
+        note: "Document-preserving glTF/GLB Draco compressor. Parses the document as serde_json::Value and mutates only compressible triangle primitives (POSITION/NORMAL/TEXCOORD_n/COLOR_n, indexed, not already Draco, geometry accessors used exclusively by one primitive, decode+encode+semantic-set-equality all succeed). Adds KHR_draco_mesh_compression, strips compressed geometry accessors' bufferView and updates count, repacks one buffer keeping only still-referenced bufferViews (recursive scan by \"bufferView\" key covers accessors/images/unknown extensions), reindexes references, prunes orphaned geometry, sets extensionsUsed/Required. Everything else (materials/textures/images/samplers/cameras/nodes/animations/skins/extras/unknown) is carried through untouched. Output container matches input (GLB->GLB, glTF->embedded glTF). Skinned/animated/morph/custom-attribute primitives are left uncompressed but fully preserved."
 
   - path: "crates/draco-io/src/gltf_writer.rs"
     structures:
