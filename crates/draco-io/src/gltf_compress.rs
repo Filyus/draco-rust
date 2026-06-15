@@ -29,10 +29,17 @@
 //! lives in the map, not in the Draco attribute). Skinned and tangent-bearing
 //! meshes are therefore compressed, not just preserved.
 //!
-//! Primitives that fall outside this scope — non-triangle, already Draco,
-//! sharing geometry accessors, sparse accessors, or an attribute layout the
-//! encoder rejects — are left uncompressed but fully preserved, along with the
-//! rest of the document.
+//! Primitives that fall outside this scope — already Draco, sharing geometry
+//! accessors, sparse accessors, or an attribute layout the encoder rejects —
+//! are left uncompressed but fully preserved, along with the rest of the
+//! document.
+//!
+//! Non-triangle primitives are likewise left uncompressed, and this is required
+//! by the spec, not a limitation: `KHR_draco_mesh_compression` restricts the
+//! primitive `mode` to `TRIANGLES` or `TRIANGLE_STRIP` ("Restrictions on
+//! geometry type"), so point clouds (`POINTS`) and line modes cannot be
+//! Draco-compressed in glTF at all. (Only `TRIANGLES` is compressed here;
+//! `TRIANGLE_STRIP` is allowed by the spec but uncommon and left as-is.)
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -186,7 +193,10 @@ fn plan_for_primitive(
     accessor_users: &HashMap<usize, usize>,
     quant: &QuantizationBits,
 ) -> Result<Option<CompressPlan>> {
-    // Triangle list only.
+    // KHR_draco_mesh_compression restricts compressed primitives to TRIANGLES
+    // or TRIANGLE_STRIP ("Restrictions on geometry type"), so point clouds
+    // (POINTS) and line modes can never be Draco-compressed in glTF. We compress
+    // the triangle list (mode 4 / default); everything else is preserved as-is.
     let mode = prim
         .get("mode")
         .and_then(Value::as_u64)
