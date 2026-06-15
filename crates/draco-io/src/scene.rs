@@ -15,6 +15,7 @@ use crate::traits::{Reader, Writer};
 /// Simple transform placeholder (4x4 row-major matrix).
 #[derive(Debug, Clone)]
 pub struct Transform {
+    /// Row-major 4x4 transform matrix.
     pub matrix: [[f32; 4]; 4],
 }
 
@@ -25,21 +26,29 @@ pub struct Transform {
 /// into the containing node.
 #[derive(Debug, Clone)]
 pub struct MeshInstance {
+    /// Optional instance name.
     pub name: Option<String>,
+    /// Mesh data for this instance.
     pub mesh: Mesh,
+    /// Optional local transform for this instance.
     pub transform: Option<Transform>,
 }
 
 /// A node in a scene graph. Nodes can contain mesh instances and children.
 #[derive(Debug, Clone)]
 pub struct SceneNode {
+    /// Optional node name.
     pub name: Option<String>,
+    /// Optional local transform for this node.
     pub transform: Option<Transform>,
+    /// Mesh instances attached directly to this node.
     pub mesh_instances: Vec<MeshInstance>,
+    /// Child nodes.
     pub children: Vec<SceneNode>,
 }
 
 impl SceneNode {
+    /// Create an empty scene node.
     pub fn new(name: Option<String>) -> Self {
         Self {
             name,
@@ -49,6 +58,7 @@ impl SceneNode {
         }
     }
 
+    /// Create a scene node populated with mesh instances.
     pub fn with_mesh_instances(name: Option<String>, mesh_instances: Vec<MeshInstance>) -> Self {
         Self {
             name,
@@ -62,12 +72,14 @@ impl SceneNode {
 /// A simple scene container.
 #[derive(Debug, Clone)]
 pub struct Scene {
+    /// Optional scene name.
     pub name: Option<String>,
     /// Root nodes forming a hierarchy.
     pub root_nodes: Vec<SceneNode>,
 }
 
 impl Scene {
+    /// Create an empty scene.
     pub fn new(name: Option<String>) -> Self {
         Self {
             name,
@@ -75,6 +87,7 @@ impl Scene {
         }
     }
 
+    /// Create a flat scene containing one root node with the given mesh instances.
     pub fn from_mesh_instances(name: Option<String>, mesh_instances: Vec<MeshInstance>) -> Self {
         Self {
             root_nodes: vec![SceneNode::with_mesh_instances(name.clone(), mesh_instances)],

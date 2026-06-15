@@ -50,25 +50,32 @@ use crate::traits::ReadFromBytes;
 /// Errors that can occur when reading glTF files.
 #[derive(Error, Debug)]
 pub enum GltfError {
+    /// Filesystem or stream I/O failed.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
 
+    /// glTF JSON parsing failed.
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// Binary GLB structure is invalid.
     #[error("Invalid GLB: {0}")]
     InvalidGlb(String),
 
+    /// glTF JSON or accessor/buffer structure is invalid.
     #[error("Invalid glTF: {0}")]
     InvalidGltf(String),
 
+    /// Embedded Draco payload failed to decode.
     #[error("Draco decode error: {0}")]
     DracoDecode(String),
 
+    /// The asset uses a glTF feature outside this crate's geometry scope.
     #[error("Unsupported feature: {0}")]
     Unsupported(String),
 }
 
+/// Result type used by glTF readers.
 pub type Result<T> = std::result::Result<T, GltfError>;
 
 // ============================================================================

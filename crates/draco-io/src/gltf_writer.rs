@@ -1,10 +1,62 @@
+//! glTF/GLB writer with Draco mesh compression support.
+//!
+//! This module provides support for writing glTF 2.0 files with the
+//! `KHR_draco_mesh_compression` extension. Multiple output formats are supported:
+//!
+//! - **GLB** - Binary container (single .glb file)
+//! - **glTF + .bin** - JSON + separate binary file
+//! - **glTF (embedded)** - Single JSON file with base64-encoded data URIs
+//!
+//! # Example - GLB
+//!
+//! ```ignore
+//! use draco_io::gltf_writer::GltfWriter;
+//! use draco_core::mesh::Mesh;
+//!
+//! let mesh: Mesh = /* ... */;
+//! let mut writer = GltfWriter::new();
+//! writer.add_draco_mesh(&mesh, Some("MyMesh"), None)?;  // Uses default quantization
+//! writer.write_glb("output.glb")?;
+//! ```
+//!
+//! # Example - Pure Text glTF (Embedded)
+//!
+//! ```ignore
+//! writer.write_gltf_embedded("output.gltf")?;
+//! // Creates a single text file with base64-embedded binary data
+//! ```
+//!
+//! # Example - Writing a Scene Graph
+//!
+//! ```ignore
+//! use draco_io::gltf_writer::GltfWriter;
+//! use draco_io::{MeshInstance, Scene, SceneNode};
+//!
+//! let mut root = SceneNode::new(Some("Root".to_string()));
+//! root.mesh_instances.push(MeshInstance {
+//!     name: Some("Mesh".to_string()),
+//!     mesh,
+//!     transform: None,
+//! });
+//! let scene = Scene { name: Some("Scene".to_string()), root_nodes: vec![root] };
+//!
+//! let mut writer = GltfWriter::new();
+//! writer.add_scene(&scene, None)?;
+//! writer.write_glb("scene.glb")?;
+//! ```
+
 /// Quantization settings for each attribute type.
 #[derive(Clone, Copy, Debug)]
 pub struct QuantizationBits {
+    /// Quantization bits for positions.
     pub position: i32,
+    /// Quantization bits for normals.
     pub normal: i32,
+    /// Quantization bits for colors.
     pub color: i32,
+    /// Quantization bits for texture coordinates.
     pub texcoord: i32,
+    /// Quantization bits for generic attributes.
     pub generic: i32,
 }
 
@@ -19,52 +71,6 @@ impl Default for QuantizationBits {
         }
     }
 }
-// glTF/GLB writer with Draco mesh compression support.
-//
-// This module provides support for writing glTF 2.0 files with the
-// `KHR_draco_mesh_compression` extension. Multiple output formats are supported:
-//
-// - **GLB** - Binary container (single .glb file)
-// - **glTF + .bin** - JSON + separate binary file
-// - **glTF (embedded)** - Single JSON file with base64-encoded data URIs
-//
-// # Example - GLB
-//
-// ```ignore
-// use draco_io::gltf_writer::GltfWriter;
-// use draco_core::mesh::Mesh;
-//
-// let mesh: Mesh = /* ... */;
-// let mut writer = GltfWriter::new();
-// writer.add_draco_mesh(&mesh, Some("MyMesh"), None)?;  // Uses default quantization
-// writer.write_glb("output.glb")?;
-// ```
-//
-// # Example - Pure Text glTF (Embedded)
-//
-// ```ignore
-// writer.write_gltf_embedded("output.gltf")?;
-// // Creates a single text file with base64-embedded binary data
-// ```
-//
-// # Example - Writing a Scene Graph
-//
-// ```ignore
-// use draco_io::gltf_writer::GltfWriter;
-// use draco_io::{MeshInstance, Scene, SceneNode};
-//
-// let mut root = SceneNode::new(Some("Root".to_string()));
-// root.mesh_instances.push(MeshInstance {
-//     name: Some("Mesh".to_string()),
-//     mesh,
-//     transform: None,
-// });
-// let scene = Scene { name: Some("Scene".to_string()), root_nodes: vec![root] };
-//
-// let mut writer = GltfWriter::new();
-// writer.add_scene(&scene, None)?;
-// writer.write_glb("scene.glb")?;
-// ```
 
 use std::collections::HashMap;
 use std::fs;
@@ -85,22 +91,28 @@ use crate::traits::{WriteToBytes, Writer};
 /// Errors that can occur when writing glTF files.
 #[derive(Error, Debug)]
 pub enum GltfWriteError {
+    /// Filesystem or stream I/O failed.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
 
+    /// glTF JSON serialization failed.
     #[error("JSON serialize error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// Draco encoding failed.
     #[error("Draco encode error: {0}")]
     DracoEncode(String),
 
+    /// Mesh data cannot be represented as supported glTF Draco geometry.
     #[error("Invalid mesh: {0}")]
     InvalidMesh(String),
 
+    /// The mesh or scene uses a feature outside this writer's supported scope.
     #[error("Unsupported feature: {0}")]
     Unsupported(String),
 }
 
+/// Result type used by glTF writers.
 pub type Result<T> = std::result::Result<T, GltfWriteError>;
 
 // ============================================================================

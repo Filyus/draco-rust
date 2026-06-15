@@ -148,6 +148,7 @@ pub mod ply_reader;
 pub mod fbx_writer;
 #[cfg(feature = "gltf-writer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-writer")))]
+/// glTF/GLB writer with Draco mesh compression support.
 pub mod gltf_writer;
 #[cfg(feature = "obj-writer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "obj-writer")))]
@@ -156,8 +157,9 @@ pub mod obj_writer;
 #[cfg_attr(docsrs, doc(cfg(feature = "ply-writer")))]
 pub mod ply_writer;
 
-// Traits module is always available
+/// Shared PLY storage-format enum.
 pub mod ply_format;
+// Traits module is always available
 pub mod traits;
 
 // Scene-graph layer (data model + traits) is only compiled for hierarchical
