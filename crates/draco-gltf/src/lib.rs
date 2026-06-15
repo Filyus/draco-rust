@@ -40,8 +40,9 @@
 
 use std::path::Path;
 
-use draco_core::{DecoderBuffer, Mesh, MeshDecoder};
+use draco_core::{DecoderBuffer, FaceIndex, Mesh, MeshDecoder, PointIndex};
 use gltf::buffer;
+use serde_json::Value;
 
 /// Re-export so callers can use the scene model without depending on `gltf`
 /// directly.
@@ -106,6 +107,153 @@ impl Import {
     pub fn decode_primitive(&self, primitive: &gltf::Primitive<'_>) -> Result<Mesh> {
         decode_primitive(&self.document, &self.buffers, primitive)
     }
+
+    /// Replaces every Draco primitive with plain, uncompressed geometry, so the
+    /// rest of the document can be read through the normal `gltf-rs` API
+    /// (`primitive.reader(...)`) without any Draco awareness.
+    ///
+    /// Each Draco primitive's geometry is decoded and written into a new buffer;
+    /// the existing geometry accessors gain buffer views pointing at it, the
+    /// `KHR_draco_mesh_compression` extension is removed, and Draco is dropped
+    /// from `extensionsUsed`/`extensionsRequired`. Materials, textures, images,
+    /// nodes, animations, skins, and other content are untouched.
+    ///
+    /// The now-unreferenced Draco buffer views are left in place (not pruned);
+    /// they are small and harmless. This is a no-op if there are no Draco
+    /// primitives.
+    pub fn decompress_in_place(&mut self) -> Result<()> {
+        // Pass 1: decode geometry and record where each primitive's accessors
+        // live, without mutating anything yet.
+        let mut doc_json = serde_json::to_value(self.document.clone().into_json())?;
+        let mut plans = Vec::new();
+        for (mesh_idx, mesh) in self.document.meshes().enumerate() {
+            for (prim_idx, primitive) in mesh.primitives().enumerate() {
+                if !is_draco(&primitive) {
+                    continue;
+                }
+                let decoded = decode_primitive(&self.document, &self.buffers, &primitive)?;
+                let semantics = draco_attribute_map(&primitive)
+                    .ok_or_else(|| Error::Extension("missing attribute map".into()))?;
+                let attrs = semantics
+                    .into_iter()
+                    .map(|(sem, draco_id)| {
+                        let acc = doc_json["meshes"][mesh_idx]["primitives"][prim_idx]
+                            ["attributes"][&sem]
+                            .as_u64()
+                            .ok_or_else(|| {
+                                Error::Extension(format!("attribute {sem} has no accessor"))
+                            })?;
+                        Ok((acc as usize, draco_id))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let indices_acc = doc_json["meshes"][mesh_idx]["primitives"][prim_idx]["indices"]
+                    .as_u64()
+                    .map(|i| i as usize);
+                plans.push((mesh_idx, prim_idx, decoded, attrs, indices_acc));
+            }
+        }
+        if plans.is_empty() {
+            return Ok(());
+        }
+
+        // Pass 2: write decoded geometry into a fresh buffer and repoint the
+        // accessors at it.
+        let new_buffer_index = doc_json["buffers"].as_array().map_or(0, |b| b.len());
+        let mut bin: Vec<u8> = Vec::new();
+
+        for (mesh_idx, prim_idx, mesh, attrs, indices_acc) in &plans {
+            for (acc_idx, draco_id) in attrs {
+                let bytes = attribute_bytes(mesh, *draco_id);
+                let view = push_view(&mut doc_json, new_buffer_index, &mut bin, &bytes);
+                set_accessor_view(&mut doc_json, *acc_idx, view, mesh.num_points());
+            }
+            if let Some(acc_idx) = indices_acc {
+                let bytes = index_bytes(mesh);
+                let view = push_view(&mut doc_json, new_buffer_index, &mut bin, &bytes);
+                set_accessor_view(&mut doc_json, *acc_idx, view, mesh.num_faces() * 3);
+                // Indices were written as UNSIGNED_INT.
+                doc_json["accessors"][*acc_idx]["componentType"] = Value::from(5125u64);
+            }
+            // Drop the Draco extension from the primitive.
+            if let Some(ext) = doc_json["meshes"][*mesh_idx]["primitives"][*prim_idx]
+                .get_mut("extensions")
+                .and_then(Value::as_object_mut)
+            {
+                ext.remove(KHR_DRACO);
+            }
+        }
+
+        // Append the new buffer (its data is provided via `self.buffers`, so no
+        // URI is needed) and drop Draco from the extension lists.
+        if let Some(buffers) = doc_json["buffers"].as_array_mut() {
+            buffers.push(serde_json::json!({ "byteLength": bin.len() as u64 }));
+        }
+        for key in ["extensionsUsed", "extensionsRequired"] {
+            if let Some(arr) = doc_json.get_mut(key).and_then(Value::as_array_mut) {
+                arr.retain(|v| v.as_str() != Some(KHR_DRACO));
+            }
+        }
+
+        // Rebuild the document and attach the new buffer's data.
+        let root: gltf::json::Root = serde_json::from_value(doc_json)?;
+        self.document = gltf::Document::from_json_without_validation(root);
+        self.buffers.push(buffer::Data(bin));
+        Ok(())
+    }
+}
+
+/// Extracts an attribute's values as a tightly packed per-point byte array.
+fn attribute_bytes(mesh: &Mesh, draco_id: u32) -> Vec<u8> {
+    let att = mesh.attribute(draco_id as i32);
+    let stride = att.byte_stride() as usize;
+    let num_points = mesh.num_points();
+    let mut out = Vec::with_capacity(num_points * stride);
+    let mut tmp = vec![0u8; stride];
+    for p in 0..num_points {
+        let value_index = att.mapped_index(PointIndex(p as u32));
+        att.buffer().read(value_index.0 as usize * stride, &mut tmp);
+        out.extend_from_slice(&tmp);
+    }
+    out
+}
+
+/// Flattens the mesh faces into a tightly packed `UNSIGNED_INT` index array.
+fn index_bytes(mesh: &Mesh) -> Vec<u8> {
+    let mut out = Vec::with_capacity(mesh.num_faces() * 3 * 4);
+    for f in 0..mesh.num_faces() {
+        for point in mesh.face(FaceIndex(f as u32)) {
+            out.extend_from_slice(&point.0.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// Appends `bytes` (4-byte aligned) to `bin` and pushes a buffer view for it,
+/// returning the new buffer-view index.
+fn push_view(doc: &mut Value, buffer_index: usize, bin: &mut Vec<u8>, bytes: &[u8]) -> usize {
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    let offset = bin.len();
+    bin.extend_from_slice(bytes);
+    let views = doc["bufferViews"]
+        .as_array_mut()
+        .expect("bufferViews array");
+    let index = views.len();
+    views.push(serde_json::json!({
+        "buffer": buffer_index as u64,
+        "byteOffset": offset as u64,
+        "byteLength": bytes.len() as u64,
+    }));
+    index
+}
+
+/// Points an accessor at `view` with `count` elements and no byte offset.
+fn set_accessor_view(doc: &mut Value, accessor: usize, view: usize, count: usize) {
+    let acc = &mut doc["accessors"][accessor];
+    acc["bufferView"] = Value::from(view as u64);
+    acc["byteOffset"] = Value::from(0u64);
+    acc["count"] = Value::from(count as u64);
 }
 
 /// Loads a glTF/GLB file that may use Draco (and any other extensions).

@@ -59,6 +59,48 @@ fn lantern_compress_reload_decode() {
 }
 
 #[test]
+fn decompress_in_place_makes_geometry_readable_by_gltf_rs() {
+    let dir = testdata().join("Lantern").join("glTF");
+    let scene = draco_gltf::import(dir.join("Lantern.gltf")).expect("load");
+    let compressed = draco_gltf::compress(&scene.document, &scene.buffers).expect("compress");
+    let mut reloaded = draco_gltf::import_slice(&compressed, Some(&dir)).expect("reload");
+
+    assert!(
+        reloaded.draco_primitives().count() > 0,
+        "reloaded asset is Draco-compressed"
+    );
+
+    reloaded.decompress_in_place().expect("decompress");
+
+    // No Draco left anywhere.
+    assert_eq!(reloaded.draco_primitives().count(), 0, "Draco removed");
+    assert!(!reloaded
+        .document
+        .extensions_required()
+        .any(|e| e == "KHR_draco_mesh_compression"));
+
+    // The plain gltf-rs reader now returns geometry — no Draco awareness needed.
+    let buffers = &reloaded.buffers;
+    let mut total_positions = 0;
+    for mesh in reloaded.document.meshes() {
+        for prim in mesh.primitives() {
+            let reader = prim.reader(|b| buffers.get(b.index()).map(|d| d.0.as_slice()));
+            let positions = reader.read_positions().expect("positions readable").count();
+            assert!(positions > 0);
+            let indices = reader
+                .read_indices()
+                .expect("indices readable")
+                .into_u32()
+                .count();
+            assert_eq!(indices % 3, 0);
+            assert!(indices > 0);
+            total_positions += positions;
+        }
+    }
+    assert!(total_positions > 0);
+}
+
+#[test]
 fn fox_skinned_animated_roundtrip() {
     let dir = testdata().join("Fox").join("glTF");
     let scene = draco_gltf::import(dir.join("Fox.gltf")).expect("load Fox");

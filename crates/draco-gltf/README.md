@@ -42,6 +42,26 @@ for (mesh, prim) in scene.draco_primitives() {
 # Ok::<(), draco_gltf::Error>(())
 ```
 
+### Transparent reading
+
+If you would rather not deal with Draco at all, `decompress_in_place` replaces
+every Draco primitive with plain geometry, after which the normal gltf-rs reader
+works on the whole document:
+
+```rust,no_run
+let mut scene = draco_gltf::import("model.glb")?;
+scene.decompress_in_place()?; // Draco primitives become ordinary geometry
+
+for mesh in scene.document.meshes() {
+    for prim in mesh.primitives() {
+        let reader = prim.reader(|b| scene.buffers.get(b.index()).map(|d| &d.0[..]));
+        let positions: Vec<_> = reader.read_positions().unwrap().collect();
+        // ... use positions, just like any uncompressed glTF
+    }
+}
+# Ok::<(), draco_gltf::Error>(())
+```
+
 ## Compress a scene back to Draco
 
 ```rust,no_run
