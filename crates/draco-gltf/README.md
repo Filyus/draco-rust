@@ -54,7 +54,7 @@ scene.decompress_in_place()?; // Draco primitives become ordinary geometry
 
 for mesh in scene.document.meshes() {
     for prim in mesh.primitives() {
-        let reader = prim.reader(|b| scene.buffers.get(b.index()).map(|d| &d.0[..]));
+        let reader = prim.reader(|b| scene.buffers.get(b.index()).map(|d| &d[..]));
         let positions: Vec<_> = reader.read_positions().unwrap().collect();
         // ... use positions, just like any uncompressed glTF
     }
@@ -98,6 +98,17 @@ and [`Import::decompress_in_place`] — since the filesystem [`import`] is
 native-only. Fetch the glTF/GLB bytes (and any external resources) yourself and
 pass them in. For plugging a Draco decoder into a JavaScript glTF loader instead
 (three.js, babylon, …), use `draco-core` directly.
+
+## Features
+
+- **`image`** (default): decode embedded/external images into pixels via
+  gltf-rs, exposing them as `Import::images`. This pulls the `image` crate
+  (PNG/JPEG codecs), which is the largest part of the build. Disable it with
+  `default-features = false` when you only need geometry and the scene model —
+  e.g. on wasm, where the host usually decodes textures. Without it, images are
+  not decoded, `Import::images` is absent, and a small built-in loader resolves
+  buffers (data URIs and the GLB BIN chunk; external files only with a base
+  path). Measured size-optimized wasm: ~408 KB → ~304 KB gzip without `image`.
 
 ## Where it sits
 

@@ -17,8 +17,17 @@ rustdoc-args = ["--cfg", "docsrs"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 
 [dependencies]
-gltf = { version = "1.4", default-features = false, features = ["import", "utils", "names", "extensions"] }
+gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extensions"] }
 draco-core = { version = "0.1.0", path = "../draco-core", default-features = false, features = ["decoder", "point_cloud_decode", "edgebreaker_valence_decode"] }
 draco-io = { version = "0.1.0", path = "../draco-io", default-features = false, features = ["gltf-reader", "gltf-writer"] }
 serde_json = "1.0"
 thiserror = "2.0"
+
+[features]
+default = ["image"]
+# Decode embedded/external images via gltf-rs's `import` (pulls the `image`
+# crate with PNG/JPEG codecs — the largest part of the build). Without it,
+# images are not decoded, external resources are resolved by a small built-in
+# loader, and `Import.images` is absent. Useful for wasm and conversion
+# pipelines where the geometry, not the texture pixels, is what matters.
+image = ["gltf/import"]

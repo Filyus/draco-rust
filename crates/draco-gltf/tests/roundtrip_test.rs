@@ -119,7 +119,7 @@ fn decompress_in_place_makes_geometry_readable_by_gltf_rs() {
     let mut total_positions = 0;
     for mesh in reloaded.document.meshes() {
         for prim in mesh.primitives() {
-            let reader = prim.reader(|b| buffers.get(b.index()).map(|d| d.0.as_slice()));
+            let reader = prim.reader(|b| buffers.get(b.index()).map(|d| d.as_slice()));
             let positions = reader.read_positions().expect("positions readable").count();
             assert!(positions > 0);
             let indices = reader

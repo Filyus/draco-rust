@@ -42,6 +42,7 @@
 use std::path::Path;
 
 use draco_core::{DecoderBuffer, FaceIndex, Mesh, MeshDecoder, PointIndex};
+#[cfg(not(feature = "image"))]
 use gltf::buffer;
 use serde_json::Value;
 
@@ -89,9 +90,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Import {
     /// The parsed glTF document (full scene model).
     pub document: gltf::Document,
-    /// Buffer data, indexed by glTF buffer index.
-    pub buffers: Vec<buffer::Data>,
+    /// Resolved buffer bytes, indexed by glTF buffer index.
+    pub buffers: Vec<Vec<u8>>,
     /// Decoded image data, indexed by glTF image index.
+    ///
+    /// Only present with the `image` feature (enabled by default).
+    #[cfg(feature = "image")]
     pub images: Vec<gltf::image::Data>,
 }
 
@@ -201,7 +205,7 @@ impl Import {
         // Rebuild the document and attach the new buffer's data.
         let root: gltf::json::Root = serde_json::from_value(doc_json)?;
         self.document = gltf::Document::from_json_without_validation(root);
-        self.buffers.push(buffer::Data(bin));
+        self.buffers.push(bin);
         Ok(())
     }
 }
@@ -281,13 +285,103 @@ pub fn import<P: AsRef<Path>>(path: P) -> Result<Import> {
 pub fn import_slice(bytes: &[u8], base: Option<&Path>) -> Result<Import> {
     let gltf::Gltf { document, blob } = gltf::Gltf::from_slice_without_validation(bytes)?;
     validate(&document)?;
-    let buffers = gltf::import_buffers(&document, base, blob)?;
-    let images = gltf::import_images(&document, base, &buffers)?;
-    Ok(Import {
-        document,
-        buffers,
-        images,
-    })
+
+    #[cfg(feature = "image")]
+    {
+        let resolved = gltf::import_buffers(&document, base, blob)?;
+        let images = gltf::import_images(&document, base, &resolved)?;
+        let buffers = resolved.into_iter().map(|d| d.0).collect();
+        Ok(Import {
+            document,
+            buffers,
+            images,
+        })
+    }
+    #[cfg(not(feature = "image"))]
+    {
+        let buffers = load_buffers(&document, blob, base)?;
+        Ok(Import { document, buffers })
+    }
+}
+
+/// Built-in buffer loader used when the `image` feature is off (so gltf-rs's
+/// `import_buffers` is unavailable). Resolves data URIs and the GLB BIN chunk;
+/// external file URIs are read only when a base path is given (never on wasm).
+#[cfg(not(feature = "image"))]
+fn load_buffers(
+    document: &gltf::Document,
+    blob: Option<Vec<u8>>,
+    base: Option<&Path>,
+) -> Result<Vec<Vec<u8>>> {
+    let mut blob = blob;
+    let mut out = Vec::new();
+    for buffer in document.buffers() {
+        let data = match buffer.source() {
+            buffer::Source::Bin => blob
+                .take()
+                .ok_or_else(|| Error::Extension("GLB buffer has no BIN chunk".into()))?,
+            buffer::Source::Uri(uri) => load_uri(uri, base)?,
+        };
+        out.push(data);
+    }
+    Ok(out)
+}
+
+#[cfg(not(feature = "image"))]
+fn load_uri(uri: &str, base: Option<&Path>) -> Result<Vec<u8>> {
+    if let Some(rest) = uri.strip_prefix("data:") {
+        let comma = rest
+            .find(',')
+            .ok_or_else(|| Error::Extension("malformed data URI".into()))?;
+        if rest[..comma].contains(";base64") {
+            return base64_decode(&rest[comma + 1..])
+                .ok_or_else(|| Error::Extension("invalid base64 in data URI".into()));
+        }
+        return Err(Error::Extension(
+            "only base64 data URIs are supported without the `image` feature".into(),
+        ));
+    }
+    match base {
+        #[cfg(not(target_arch = "wasm32"))]
+        Some(base) => Ok(std::fs::read(base.join(uri))?),
+        #[cfg(target_arch = "wasm32")]
+        Some(_) => Err(Error::Extension(
+            "external file URIs are not available on wasm".into(),
+        )),
+        None => Err(Error::Extension(
+            "external resource URI requires a base path".into(),
+        )),
+    }
+}
+
+#[cfg(not(feature = "image"))]
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    fn val(b: u8) -> Option<u8> {
+        match b {
+            b'A'..=b'Z' => Some(b - b'A'),
+            b'a'..=b'z' => Some(b - b'a' + 26),
+            b'0'..=b'9' => Some(b - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(input.len() / 4 * 3);
+    let mut acc = 0u32;
+    let mut bits = 0u32;
+    for &b in input.as_bytes() {
+        if b == b'=' || b.is_ascii_whitespace() {
+            continue;
+        }
+        let v = val(b)? as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
 }
 
 /// Runs gltf-rs validation on a document, ignoring the expected
@@ -394,7 +488,7 @@ pub fn is_draco(primitive: &gltf::Primitive<'_>) -> bool {
 /// Decodes a Draco primitive's geometry into a [`draco_core::Mesh`].
 pub fn decode_primitive(
     document: &gltf::Document,
-    buffers: &[buffer::Data],
+    buffers: &[Vec<u8>],
     primitive: &gltf::Primitive<'_>,
 ) -> Result<Mesh> {
     let ext = primitive
@@ -415,12 +509,12 @@ pub fn decode_primitive(
     let start = view.offset();
     let end = start
         .checked_add(view.length())
-        .filter(|&e| e <= buffer.0.len())
+        .filter(|&e| e <= buffer.len())
         .ok_or_else(|| Error::Extension("Draco bufferView out of range".into()))?;
 
     let mut mesh = Mesh::new();
     MeshDecoder::new()
-        .decode(&mut DecoderBuffer::new(&buffer.0[start..end]), &mut mesh)
+        .decode(&mut DecoderBuffer::new(&buffer[start..end]), &mut mesh)
         .map_err(|e| Error::Decode(format!("{e:?}")))?;
     Ok(mesh)
 }
@@ -449,7 +543,7 @@ pub fn draco_attribute_map(primitive: &gltf::Primitive<'_>) -> Option<Vec<(Strin
 /// so there is a single compression implementation. It re-emits the `gltf-rs`
 /// document with its buffers embedded as data URIs and hands the bytes to the
 /// document-preserving compressor.
-pub fn compress(document: &gltf::Document, buffers: &[buffer::Data]) -> Result<Vec<u8>> {
+pub fn compress(document: &gltf::Document, buffers: &[Vec<u8>]) -> Result<Vec<u8>> {
     let mut root = document.clone().into_json();
     for (i, buf) in buffers.iter().enumerate() {
         let entry = root
@@ -458,9 +552,9 @@ pub fn compress(document: &gltf::Document, buffers: &[buffer::Data]) -> Result<V
             .ok_or_else(|| Error::Compress(format!("buffer {i} missing in document")))?;
         entry.uri = Some(format!(
             "data:application/octet-stream;base64,{}",
-            base64_encode(&buf.0)
+            base64_encode(buf)
         ));
-        entry.byte_length = gltf::json::validation::USize64(buf.0.len() as u64);
+        entry.byte_length = gltf::json::validation::USize64(buf.len() as u64);
     }
     let bytes = serde_json::to_vec(&root)?;
     draco_io::compress_gltf_bytes(&bytes, None).map_err(|e| Error::Compress(e.to_string()))
