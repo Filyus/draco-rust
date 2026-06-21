@@ -165,3 +165,57 @@ fn fox_skinned_animated_roundtrip() {
     assert!(sems.iter().any(|s| s == "JOINTS_0"));
     assert!(sems.iter().any(|s| s == "WEIGHTS_0"));
 }
+
+/// Axis-aligned bounding box over every primitive's POSITION values.
+fn position_bbox(
+    document: &draco_gltf::gltf::Document,
+    buffers: &[Vec<u8>],
+) -> ([f32; 3], [f32; 3]) {
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for mesh in document.meshes() {
+        for prim in mesh.primitives() {
+            let reader = prim.reader(|b| buffers.get(b.index()).map(|d| d.as_slice()));
+            if let Some(positions) = reader.read_positions() {
+                for p in positions {
+                    for i in 0..3 {
+                        min[i] = min[i].min(p[i]);
+                        max[i] = max[i].max(p[i]);
+                    }
+                }
+            }
+        }
+    }
+    (min, max)
+}
+
+#[test]
+fn compress_preserves_position_values() {
+    // Guards the gltf-rs accessor extraction in `compress`: a wrong stride or
+    // byte offset would feed garbage coordinates into the encoder. Compare the
+    // source POSITION bounding box against the box recovered after a full
+    // compress -> reload -> decompress round trip.
+    let dir = testdata().join("Lantern").join("glTF");
+    let scene = draco_gltf::import(dir.join("Lantern.gltf")).expect("load");
+    let (src_min, src_max) = position_bbox(&scene.document, &scene.buffers);
+
+    let compressed = draco_gltf::compress(&scene.document, &scene.buffers).expect("compress");
+    let mut reloaded = draco_gltf::import_slice(&compressed, Some(&dir)).expect("reload");
+    reloaded.decompress_in_place().expect("decompress");
+    let (dec_min, dec_max) = position_bbox(&reloaded.document, &reloaded.buffers);
+
+    // Default quantization (~11 bits) perturbs each coordinate by at most about
+    // diagonal/2048; a 1% per-axis tolerance is well above that yet far below the
+    // gross error a mis-extracted attribute would produce.
+    for i in 0..3 {
+        let tol = (src_max[i] - src_min[i]).abs().max(1e-6) * 0.01;
+        assert!(
+            (dec_min[i] - src_min[i]).abs() <= tol && (dec_max[i] - src_max[i]).abs() <= tol,
+            "axis {i}: source [{}, {}] vs decoded [{}, {}]",
+            src_min[i],
+            src_max[i],
+            dec_min[i],
+            dec_max[i]
+        );
+    }
+}

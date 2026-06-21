@@ -42,6 +42,7 @@
 use std::path::Path;
 
 use draco_core::{DecoderBuffer, FaceIndex, Mesh, MeshDecoder, PointIndex};
+use draco_io::{decode_geometry, AccessorSource, DecodedAccessor, GltfError};
 #[cfg(not(feature = "image"))]
 use gltf::buffer;
 use serde_json::Value;
@@ -539,22 +540,28 @@ pub fn draco_attribute_map(primitive: &gltf::Primitive<'_>) -> Option<Vec<(Strin
 /// buffer), preserving materials, textures, nodes, animations, skins, and any
 /// other content.
 ///
-/// The compression itself runs in [`draco_io::compress_gltf_value`] — the same
-/// document-preserving core `draco-io` uses for the byte API, so there is a
-/// single compression implementation. The already-parsed `gltf-rs` `document`
-/// and its resolved `buffers` are fed straight to that core: geometry is decoded
-/// through `draco-io`'s reader built directly from the in-memory document (no
-/// serialize-to-bytes / re-parse / re-resolve-buffers round trip).
+/// The document transform runs in [`draco_io::compress_gltf_value`] — the same
+/// core `draco-io` uses for its byte API — but geometry is decoded through the
+/// shared [`draco_io::decode_geometry`] fed by [`GltfRsSource`], which reads
+/// attribute bytes straight from the parsed `gltf-rs` accessors. So compression
+/// reuses one decode implementation without linking `draco-io`'s own glTF reader
+/// (no `GltfRoot` parse, no buffer re-resolution).
 pub fn compress(document: &gltf::Document, buffers: &[Vec<u8>]) -> Result<Vec<u8>> {
     let doc_value = serde_json::to_value(document.clone().into_json())?;
 
-    // Build draco-io's reader from the in-memory document + resolved buffers,
-    // then drive the shared compressor core with it as the geometry decoder.
-    let reader = draco_io::GltfReader::from_value(&doc_value, buffers.to_vec())
-        .map_err(|e| Error::Compress(e.to_string()))?;
+    // Pre-extract each primitive's (mode, semantic -> accessor index, indices)
+    // from the JSON before `doc_value` is moved into the compressor. The JSON
+    // carries the complete attribute set, including custom `_*` semantics that
+    // the gltf-rs typed model would hide without the `extras` feature.
+    let descriptors = primitive_descriptors(&doc_value);
+
+    let source = GltfRsSource { document, buffers };
     let (mut out_doc, bin) =
-        draco_io::compress_gltf_value(doc_value, buffers, None, |mesh, prim| {
-            reader.decode_primitive_with_semantics(mesh, prim)
+        draco_io::compress_gltf_value(doc_value, buffers, None, |mesh_idx, prim_idx| {
+            let (mode, attributes, indices) = descriptors
+                .get(&(mesh_idx, prim_idx))
+                .ok_or_else(|| GltfError::InvalidGltf("primitive descriptor missing".into()))?;
+            decode_geometry(&source, *mode, attributes, *indices)
         })
         .map_err(|e| Error::Compress(e.to_string()))?;
 
@@ -562,6 +569,191 @@ pub fn compress(document: &gltf::Document, buffers: &[Vec<u8>]) -> Result<Vec<u8
     // embed the bytes as a data URI to make the glTF self-contained.
     embed_single_buffer(&mut out_doc, &bin);
     Ok(serde_json::to_vec(&out_doc)?)
+}
+
+/// Collects each primitive's `(mode, [(semantic, accessor index)], indices)`
+/// from the glTF JSON, keyed by `(mesh index, primitive index)`.
+fn primitive_descriptors(
+    doc: &Value,
+) -> std::collections::HashMap<(usize, usize), (u32, Vec<(String, usize)>, Option<usize>)> {
+    let mut out = std::collections::HashMap::new();
+    let Some(meshes) = doc.get("meshes").and_then(Value::as_array) else {
+        return out;
+    };
+    for (mesh_idx, mesh) in meshes.iter().enumerate() {
+        let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) else {
+            continue;
+        };
+        for (prim_idx, prim) in primitives.iter().enumerate() {
+            let mode = prim.get("mode").and_then(Value::as_u64).unwrap_or(4) as u32;
+            let attributes = prim
+                .get("attributes")
+                .and_then(Value::as_object)
+                .map(|map| {
+                    map.iter()
+                        .filter_map(|(k, v)| Some((k.clone(), v.as_u64()? as usize)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let indices = prim
+                .get("indices")
+                .and_then(Value::as_u64)
+                .map(|i| i as usize);
+            out.insert((mesh_idx, prim_idx), (mode, attributes, indices));
+        }
+    }
+    out
+}
+
+/// [`AccessorSource`] over a parsed gltf-rs document: it copies attribute and
+/// index bytes straight out of the accessors' buffer views, reusing gltf-rs's
+/// already-parsed accessor metadata instead of `draco-io`'s glTF reader.
+struct GltfRsSource<'a> {
+    document: &'a gltf::Document,
+    buffers: &'a [Vec<u8>],
+}
+
+impl GltfRsSource<'_> {
+    fn accessor(&self, index: usize) -> std::result::Result<gltf::Accessor<'_>, GltfError> {
+        self.document
+            .accessors()
+            .nth(index)
+            .ok_or_else(|| GltfError::InvalidGltf(format!("accessor {index} out of range")))
+    }
+
+    /// Copies `row`-sized elements (stride removed) out of the accessor's buffer
+    /// view into a tightly packed block, `accessor.count()` rows total.
+    fn extract(
+        &self,
+        accessor: &gltf::Accessor<'_>,
+        row: usize,
+    ) -> std::result::Result<Vec<u8>, GltfError> {
+        let overflow = || GltfError::InvalidGltf("accessor range overflow".into());
+        let view = accessor
+            .view()
+            .ok_or_else(|| GltfError::Unsupported("sparse accessors are not supported".into()))?;
+        let buffer = self
+            .buffers
+            .get(view.buffer().index())
+            .ok_or_else(|| GltfError::InvalidGltf("buffer not resolved".into()))?;
+        let view_end = view
+            .offset()
+            .checked_add(view.length())
+            .ok_or_else(overflow)?;
+        let stride = view.stride().unwrap_or(row);
+        let base = view
+            .offset()
+            .checked_add(accessor.offset())
+            .ok_or_else(overflow)?;
+
+        let mut out = Vec::with_capacity(accessor.count().saturating_mul(row));
+        for i in 0..accessor.count() {
+            let start = base
+                .checked_add(i.checked_mul(stride).ok_or_else(overflow)?)
+                .ok_or_else(overflow)?;
+            let end = start.checked_add(row).ok_or_else(overflow)?;
+            if end > view_end || end > buffer.len() {
+                return Err(GltfError::InvalidGltf("accessor out of bounds".into()));
+            }
+            out.extend_from_slice(&buffer[start..end]);
+        }
+        Ok(out)
+    }
+}
+
+impl AccessorSource for GltfRsSource<'_> {
+    fn read_attribute(
+        &self,
+        accessor_idx: usize,
+        expected_types: &[&str],
+        allowed_component_types: &[u32],
+    ) -> std::result::Result<DecodedAccessor, GltfError> {
+        let accessor = self.accessor(accessor_idx)?;
+
+        let type_str = dimensions_str(accessor.dimensions())?;
+        if !expected_types.contains(&type_str) {
+            return Err(GltfError::InvalidGltf(format!(
+                "expected one of {expected_types:?} accessor, got {type_str}"
+            )));
+        }
+        let gl_enum = accessor.data_type().as_gl_enum();
+        if !allowed_component_types.contains(&gl_enum) {
+            return Err(GltfError::Unsupported(format!(
+                "unsupported {type_str} component type {gl_enum}"
+            )));
+        }
+
+        let num_components = accessor.dimensions().multiplicity() as u8;
+        let row = num_components as usize * accessor.data_type().size();
+        let bytes = self.extract(&accessor, row)?;
+
+        Ok(DecodedAccessor::new(
+            accessor.count(),
+            num_components,
+            draco_data_type(accessor.data_type()),
+            accessor.normalized(),
+            bytes,
+        ))
+    }
+
+    fn read_indices(&self, accessor_idx: usize) -> std::result::Result<Vec<u32>, GltfError> {
+        use gltf::accessor::DataType as G;
+        let accessor = self.accessor(accessor_idx)?;
+        if !matches!(accessor.dimensions(), gltf::accessor::Dimensions::Scalar) {
+            return Err(GltfError::InvalidGltf(
+                "indices accessor must be SCALAR".into(),
+            ));
+        }
+        let bytes = self.extract(&accessor, accessor.data_type().size())?;
+        let indices = match accessor.data_type() {
+            G::U8 => bytes.iter().map(|&b| b as u32).collect(),
+            G::U16 => bytes
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]) as u32)
+                .collect(),
+            G::U32 => bytes
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect(),
+            other => {
+                return Err(GltfError::Unsupported(format!(
+                    "unsupported index component type {other:?}"
+                )))
+            }
+        };
+        Ok(indices)
+    }
+}
+
+/// Maps a gltf-rs accessor dimension to its glTF type string, rejecting the
+/// matrix types Draco geometry attributes never use.
+fn dimensions_str(d: gltf::accessor::Dimensions) -> std::result::Result<&'static str, GltfError> {
+    use gltf::accessor::Dimensions::*;
+    Ok(match d {
+        Scalar => "SCALAR",
+        Vec2 => "VEC2",
+        Vec3 => "VEC3",
+        Vec4 => "VEC4",
+        _ => {
+            return Err(GltfError::Unsupported(
+                "matrix accessor not supported".into(),
+            ))
+        }
+    })
+}
+
+/// Maps a gltf-rs component type to the matching `draco-core` data type.
+fn draco_data_type(d: gltf::accessor::DataType) -> draco_core::draco_types::DataType {
+    use draco_core::draco_types::DataType as D;
+    use gltf::accessor::DataType as G;
+    match d {
+        G::I8 => D::Int8,
+        G::U8 => D::Uint8,
+        G::I16 => D::Int16,
+        G::U16 => D::Uint16,
+        G::U32 => D::Uint32,
+        G::F32 => D::Float32,
+    }
 }
 
 /// Fills the single output buffer's `uri` with `bin` as a base64 data URI.
