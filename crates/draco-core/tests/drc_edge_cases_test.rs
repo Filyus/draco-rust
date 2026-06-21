@@ -769,3 +769,65 @@ fn legacy_constrained_multi_parallelogram_decodes_to_reference_geometry() {
         "pre-2.2 constrained-multi geometry differs from the 2.2 encoding"
     );
 }
+
+/// Non-position attributes (normals via the octahedron transform, colors) must
+/// decode to the same *values* pre-2.2 as at 2.2, not merely without error. Each
+/// pair is the same mesh encoded by the C++ tools at bitstream 1.1.0 and 2.2 with
+/// identical quantization; every attribute's value set must match.
+#[cfg(feature = "legacy_bitstream_decode")]
+#[test]
+fn legacy_attribute_streams_decode_to_reference_values() {
+    fn decode(fixture: &str) -> Mesh {
+        let bytes = std::fs::read(repo_testdata_dir().join(fixture))
+            .unwrap_or_else(|e| panic!("read {fixture}: {e}"));
+        let mut buffer = DecoderBuffer::new(&bytes);
+        let mut mesh = Mesh::new();
+        MeshDecoder::new()
+            .decode(&mut buffer, &mut mesh)
+            .unwrap_or_else(|e| panic!("{fixture} decode: {e:?}"));
+        mesh
+    }
+    // For each attribute, its element byte patterns, sorted (order-independent).
+    fn sorted_attrs(mesh: &Mesh) -> Vec<Vec<Vec<u8>>> {
+        (0..mesh.num_attributes())
+            .map(|a| {
+                let att = mesh.attribute(a);
+                let stride = att.byte_stride() as usize;
+                let mut vals: Vec<Vec<u8>> = (0..att.size())
+                    .map(|i| {
+                        let mut b = vec![0u8; stride];
+                        att.buffer().read(i * stride, &mut b);
+                        b
+                    })
+                    .collect();
+                vals.sort();
+                vals
+            })
+            .collect()
+    }
+
+    for (early_f, modern_f) in [
+        (
+            "legacy_draco/sphere.mesh_eb_norm.1.1.0.drc",
+            "legacy_draco/sphere.mesh_eb_norm.2.2.drc",
+        ),
+        (
+            "legacy_draco/test.mesh_eb_color.1.1.0.drc",
+            "legacy_draco/test.mesh_eb_color.2.2.drc",
+        ),
+    ] {
+        let early = decode(early_f);
+        let modern = decode(modern_f);
+        assert_eq!(early.num_faces(), modern.num_faces(), "{early_f}: faces");
+        assert_eq!(
+            early.num_attributes(),
+            modern.num_attributes(),
+            "{early_f}: attribute count"
+        );
+        assert_eq!(
+            sorted_attrs(&early),
+            sorted_attrs(&modern),
+            "{early_f}: attribute values differ from the 2.2 encoding"
+        );
+    }
+}
