@@ -8,9 +8,11 @@ animations, skins, lights, and arbitrary extensions — and the Draco crates:
 
 - **decode** uses [`draco-core`](https://crates.io/crates/draco-core) to
   decompress `KHR_draco_mesh_compression` geometry;
-- **encode** delegates to
+- **encode** reuses
   [`draco-io`](https://crates.io/crates/draco-io)'s document-preserving
-  compressor, so the compression logic lives in exactly one place.
+  compressor core, so the compression logic lives in exactly one place — while
+  reading the geometry to compress through gltf-rs, so it depends on `draco-io`
+  with only its writer, never its glTF reader.
 
 It exists because neither side does the whole job alone: gltf-rs does not decode
 Draco (its validator even *rejects* a Draco asset, since
@@ -72,8 +74,12 @@ std::fs::write("model.draco.gltf", bytes)?;
 ```
 
 `compress` preserves everything the geometry change does not touch — materials,
-textures, images, nodes, animations, skins, `extras`, and unknown extensions —
-because it reuses `draco-io`'s document-preserving compressor.
+textures, images, nodes, animations, skins, `extras`, and unknown extensions. It
+runs `draco-io`'s shared document-preserving compressor core, decoding the
+geometry to compress straight from the gltf-rs accessors through `draco-io`'s
+reader-agnostic `decode_geometry`. So there is a single compression path, and
+`draco-gltf` depends on `draco-io` with only its `gltf-writer` feature — not its
+glTF reader (`gltf-rs` already parses the document).
 
 ## Validation
 
@@ -108,7 +114,7 @@ pass them in. For plugging a Draco decoder into a JavaScript glTF loader instead
   e.g. on wasm, where the host usually decodes textures. Without it, images are
   not decoded, `Import::images` is absent, and a small built-in loader resolves
   buffers (data URIs and the GLB BIN chunk; external files only with a base
-  path). Measured size-optimized wasm: ~400 KB → ~295 KB gzip without `image`.
+  path). Measured size-optimized wasm: ~384 KB → ~279 KB gzip without `image`.
 
 ## Where it sits
 

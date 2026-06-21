@@ -15,6 +15,8 @@ For the project overview, compatibility notes, and benchmarks, see the
 - **Unified API**: Common `Reader` and `Writer` traits across all formats
 - **In-Memory I/O**: Common `ReadFromBytes` and `WriteToBytes` traits
 - **Draco Compression**: Full support for `KHR_draco_mesh_compression` in glTF/GLB
+- **Document-Preserving Compression**: Draco-compress an existing glTF/GLB in
+  place, keeping materials, textures, animations, and other content (`compress_gltf_bytes`)
 - **Multiple Formats**: OBJ, PLY, FBX (ASCII/Binary), glTF (JSON/Binary/Embedded)
 - **Scene Graph Support**: Read and write scene hierarchies with transforms
 - **Point Cloud Support**: Read/write point clouds (OBJ, PLY)
@@ -357,12 +359,24 @@ draco-io
 │   ├── fbx_reader    - Autodesk FBX
 │   └── gltf_reader   - glTF/GLB with Draco support
 │
-└── Writers (feature = "all-writers")
-    ├── obj_writer    - Wavefront OBJ
-    ├── ply_writer    - Stanford PLY (ASCII/binary)
-    ├── fbx_writer    - Autodesk binary FBX
-    └── gltf_writer   - glTF/GLB with Draco compression
+├── Writers (feature = "all-writers")
+│   ├── obj_writer    - Wavefront OBJ
+│   ├── ply_writer    - Stanford PLY (ASCII/binary)
+│   ├── fbx_writer    - Autodesk binary FBX
+│   └── gltf_writer   - glTF/GLB with Draco compression
+│
+└── glTF geometry + Draco compression
+    ├── gltf_geometry - Reader-agnostic geometry decode + shared glTF error type
+    │                   (compiled with gltf-reader OR gltf-writer)
+    └── gltf_compress - Document-preserving Draco compression. The in-memory
+                        compress_gltf_value needs only gltf-writer; the byte API
+                        compress_gltf_bytes also needs gltf-reader
 ```
+
+The `gltf_geometry` split lets callers that already have a parsed glTF document
+(for example via [`draco-gltf`](https://crates.io/crates/draco-gltf) on gltf-rs)
+reuse the same geometry decoder and drive `compress_gltf_value` with only the
+writer — never linking the glTF reader.
 
 ## Dependencies
 
