@@ -1505,12 +1505,12 @@ impl MeshEdgebreakerEncoder {
         Ok(())
     }
 
-    /// Emit the legacy predictive (type-1) traversal block. Mirror of C++
-    /// `MeshEdgeBreakerTraversalPredictiveEncoder`: replay the standard-traversal
-    /// symbols, predicting the *preceding* symbol from the pivot vertex valence
-    /// (R if valence < 6, else C). Correct predictions cost one bit; mispredicted
-    /// and unpredicted symbols are stored in the main symbol stream. Predictive is
-    /// a pre-2.0 format, so counts are fixed u32.
+    /// Emit the legacy predictive (type-1) traversal block. The standard
+    /// traversal already collected the symbols and their corners, so this replays
+    /// them through [`MeshEdgebreakerTraversalPredictiveEncoder`] (which predicts
+    /// each preceding symbol from the pivot valence and records the prediction +
+    /// main-stream symbols), then writes the block. Predictive is a pre-2.0
+    /// format, so counts are fixed u32.
     #[cfg(feature = "legacy_bitstream_encode")]
     fn encode_predictive_traversal(
         &self,
@@ -1518,29 +1518,13 @@ impl MeshEdgebreakerEncoder {
         attribute_connectivity: &[EdgebreakerAttributeConnectivity],
         out_buffer: &mut EncoderBuffer,
     ) -> Result<(), DracoError> {
-        // A value that is never a real symbol id (0..4): forces a misprediction,
-        // matching C++ TOPOLOGY_INVALID for split (negative-valence) vertices.
-        const INVALID_SYMBOL: i32 = 99;
-
-        let mut vertex_valences: Vec<i32> = (0..corner_table.num_vertices())
-            .map(|v| corner_table.valence(VertexIndex(v as u32)))
-            .collect();
-        let predict = |valences: &[i32], pivot: VertexIndex| -> i32 {
-            match valences.get(pivot.0 as usize).copied() {
-                Some(v) if v < 0 => INVALID_SYMBOL,
-                Some(v) if v < 6 => 3, // R
-                Some(_) => 0,          // C
-                None => INVALID_SYMBOL,
-            }
+        use crate::mesh_edgebreaker_traversal_predictive_encoder::{
+            symbol_topology_bits, MeshEdgebreakerTraversalPredictiveEncoder,
         };
 
-        let mut predictions: Vec<bool> = Vec::new();
-        let mut stored_symbols: Vec<u32> = Vec::new();
-        let mut prev_symbol: i32 = -1;
-        let mut num_split_symbols: u32 = 0;
-
+        let mut encoder = MeshEdgebreakerTraversalPredictiveEncoder::new();
+        encoder.init(corner_table);
         for i in 0..self.symbols.len() {
-            let symbol = self.symbols[i];
             let last_corner = match self.symbol_to_encoder_corner.get(i) {
                 Some(&c)
                     if c != INVALID_CORNER_INDEX
@@ -1554,75 +1538,15 @@ impl MeshEdgebreakerEncoder {
                     ))
                 }
             };
-            let next_v = corner_table.vertex(corner_table.next(last_corner)).0 as usize;
-            let prev_v = corner_table.vertex(corner_table.previous(last_corner)).0 as usize;
-            let corner_v = corner_table.vertex(last_corner).0 as usize;
-
-            let mut predicted_symbol: i32 = -1;
-            match symbol {
-                0 => {
-                    // C
-                    predicted_symbol = predict(&vertex_valences, VertexIndex(next_v as u32));
-                    vertex_valences[next_v] -= 1;
-                    vertex_valences[prev_v] -= 1;
-                }
-                1 => {
-                    // S
-                    vertex_valences[next_v] -= 1;
-                    vertex_valences[prev_v] -= 1;
-                    vertex_valences[corner_v] = -1;
-                    num_split_symbols += 1;
-                }
-                3 => {
-                    // R
-                    predicted_symbol = predict(&vertex_valences, VertexIndex(next_v as u32));
-                    vertex_valences[corner_v] -= 1;
-                    vertex_valences[next_v] -= 1;
-                    vertex_valences[prev_v] -= 2;
-                }
-                2 => {
-                    // L
-                    vertex_valences[corner_v] -= 1;
-                    vertex_valences[next_v] -= 2;
-                    vertex_valences[prev_v] -= 1;
-                }
-                4 => {
-                    // E
-                    vertex_valences[corner_v] -= 2;
-                    vertex_valences[next_v] -= 2;
-                    vertex_valences[prev_v] -= 2;
-                }
-                _ => {}
-            }
-
-            let mut store_prev = true;
-            if predicted_symbol != -1 {
-                if predicted_symbol == prev_symbol {
-                    predictions.push(true);
-                    store_prev = false;
-                } else if prev_symbol != -1 {
-                    predictions.push(false);
-                }
-            }
-            if store_prev && prev_symbol != -1 {
-                stored_symbols.push(prev_symbol as u32);
-            }
-            prev_symbol = symbol as i32;
+            encoder.encode_symbol(self.symbols[i], corner_table, last_corner);
         }
-        if prev_symbol != -1 {
-            stored_symbols.push(prev_symbol as u32);
-        }
+        encoder.finish();
 
-        // Region 1: main symbol stream (stored symbols, reversed, raw 1-or-3 bits).
+        // Region 1: main symbol stream (stored symbols, reversed like the standard
+        // traversal stream, raw 1-or-3 bits each).
         out_buffer.start_bit_encoding(self.symbols.len().max(1) * 3, true);
-        for &sym in stored_symbols.iter().rev() {
-            let (bits, val) = match EdgebreakerSymbol::from(sym) {
-                EdgebreakerSymbol::Center => (1u32, 0u32),
-                EdgebreakerSymbol::Split => (3, 1),
-                EdgebreakerSymbol::Left => (3, 3),
-                EdgebreakerSymbol::Right => (3, 5),
-                EdgebreakerSymbol::End | EdgebreakerSymbol::Hole => (3, 7),
-            };
+        for &sym in encoder.stored_symbols().iter().rev() {
+            let (bits, val) = symbol_topology_bits(sym);
             out_buffer.encode_least_significant_bits32(bits, val);
         }
         out_buffer.end_bit_encoding();
@@ -1634,19 +1558,10 @@ impl MeshEdgebreakerEncoder {
         }
         out_buffer.end_bit_encoding();
 
-        // Attribute seams.
+        // Attribute seams, then the split count and the binary prediction stream.
         self.encode_attribute_seams(corner_table, attribute_connectivity, out_buffer);
-
-        // Split-symbol count (predictive is pre-2.0: fixed u32).
-        out_buffer.encode_u32(num_split_symbols);
-
-        // Prediction stream: bits stored in reverse (the decoder reads LIFO).
-        let mut prediction_encoder = RAnsBitEncoder::new();
-        prediction_encoder.start_encoding();
-        for &pred in predictions.iter().rev() {
-            prediction_encoder.encode_bit(pred);
-        }
-        prediction_encoder.end_encoding(out_buffer);
+        out_buffer.encode_u32(encoder.num_split_symbols());
+        encoder.encode_predictions(out_buffer);
 
         Ok(())
     }

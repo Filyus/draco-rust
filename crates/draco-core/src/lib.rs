@@ -280,6 +280,13 @@ pub mod mesh_edgebreaker_encoder;
 )]
 #[doc(hidden)]
 pub mod mesh_edgebreaker_traversal_valence_encoder;
+#[cfg(all(feature = "encoder", feature = "legacy_bitstream_encode"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "encoder", feature = "legacy_bitstream_encode")))
+)]
+#[doc(hidden)]
+pub mod mesh_edgebreaker_traversal_predictive_encoder;
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 /// Mesh encoder entry point.
