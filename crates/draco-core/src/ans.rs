@@ -47,11 +47,6 @@ impl AnsCoder {
             self.buf.push((state & 0xFF) as u8);
             self.buf.push(((state >> 8) & 0xFF) as u8);
             self.buf.push(((0x02 << 6) + ((state >> 16) & 0x3F)) as u8);
-        } else if state < (1 << 30) {
-            self.buf.push((state & 0xFF) as u8);
-            self.buf.push(((state >> 8) & 0xFF) as u8);
-            self.buf.push(((state >> 16) & 0xFF) as u8);
-            self.buf.push(((0x03 << 6) + ((state >> 24) & 0x3F)) as u8);
         } else {
             return Err(crate::status::DracoError::DracoError(format!(
                 "State is too large to be serialized: {}",
@@ -152,21 +147,12 @@ impl<'a> AnsDecoder<'a> {
             self.buf_offset -= 2;
             let state = ((val as u32 & 0x3F) << 16) | ((val0 as u32) << 8) | val1 as u32;
             self.state = state + self.l_base;
-        } else
-        /* 0xC0 */
-        {
-            if self.buf_offset < 3 {
-                return false;
-            }
-            let val0 = self.buf[self.buf_offset - 1];
-            let val1 = self.buf[self.buf_offset - 2];
-            let val2 = self.buf[self.buf_offset - 3];
-            self.buf_offset -= 3;
-            let state = ((val as u32 & 0x3F) << 24)
-                | ((val0 as u32) << 16)
-                | ((val1 as u32) << 8)
-                | val2 as u32;
-            self.state = state + self.l_base;
+        } else {
+            return false;
+        }
+
+        if self.state >= self.l_base * ANS_IO_BASE {
+            return false;
         }
         true
     }
@@ -187,5 +173,24 @@ impl<'a> AnsDecoder<'a> {
             self.state = x - xn - p;
         }
         val
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AnsDecoder, ANS_L_BASE};
+
+    #[test]
+    fn read_init_rejects_four_byte_final_state_tag() {
+        let mut decoder = AnsDecoder::new(&[0, 0, 0, 0xC0]);
+
+        assert!(!decoder.read_init(ANS_L_BASE));
+    }
+
+    #[test]
+    fn read_init_rejects_state_above_ans_window() {
+        let mut decoder = AnsDecoder::new(&[0xff, 0xff, 0xbf]);
+
+        assert!(!decoder.read_init(ANS_L_BASE));
     }
 }
