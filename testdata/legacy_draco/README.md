@@ -1,8 +1,9 @@
 # Legacy Draco compatibility fixtures
 
-These fixtures are small smoke-test assets generated with legacy C++ Draco
-release tools. They intentionally cover the Rust decoder policy floor of Draco
-1.0.0+ without adding a full version matrix.
+These fixtures are small compatibility assets generated with legacy C++ Draco
+release tools. They cover the Rust decoder policy floor of Draco 1.0.0+ plus
+targeted pre-1.0 compatibility paths that have historically differed from
+modern Draco output.
 
 The repository does not assume any local legacy tool directory. Optional tests
 that compare against legacy decoders can be enabled by setting:
@@ -18,3 +19,19 @@ that compare against legacy decoders can be enabled by setting:
 | `cube_att.mesh_eb.1.1.0.drc` | `../cube_att.obj` | Draco 1.1.0 | `-cl 10` | `v2.1 mesh method=1` |
 | `point_cloud_pos_norm.seq.1.0.0.drc` | `../point_cloud_test_pos_norm.ply` | Draco 1.0.0 | `-point_cloud -cl 0` | `v2.0 point_cloud method=0` |
 | `point_cloud_pos_norm.seq.1.1.0.drc` | `../point_cloud_test_pos_norm.ply` | Draco 1.1.0 | `-point_cloud -cl 0` | `v2.1 point_cloud method=0` |
+| `bun_zipper.mesh_eb_predictive.0.9.1.drc` | `../bun_zipper.ply` | Draco 0.9.1 | `-cl 10` | `v1.1 mesh method=1, predictive traversal` |
+| `bun_zipper.mesh_eb_valence.0.10.0.drc` | `../bun_zipper.ply` | Draco 0.10.0 | `-cl 10` | `v1.2 mesh method=1, valence traversal` |
+| `bun_zipper.mesh_eb_valence.1.0.0.drc` | `../bun_zipper.ply` | Draco 1.0.0 | `-cl 10` | `v2.0 mesh method=1, valence traversal` |
+| `bun_zipper.mesh_eb_valence.1.1.0.drc` | `../bun_zipper.ply` | Draco 1.1.0 | `-cl 10` | `v2.1 mesh method=1, valence traversal` |
+| `sphere_pos.mesh_eb_cmp.1.1.0.drc` | generated sphere positions | Draco 1.1.0 | `-cl 10` | `v2.1 mesh method=1, constrained multi-parallelogram` |
+| `sphere_pos.mesh_eb_cmp.2.2.drc` | generated sphere positions | modern Draco | `-cl 10` | `v2.2 mesh method=1, constrained multi-parallelogram reference` |
+| `sphere.mesh_eb_norm.0.9.1.drc` | generated sphere mesh with normals | Draco 0.9.1 | `-cl 10 -qn 10` | `v1.1 mesh method=1` |
+| `sphere.mesh_eb_norm.1.1.0.drc` | generated sphere mesh with normals | Draco 1.1.0 | `-cl 10 -qn 10` | `v2.1 mesh method=1, canonicalized normals` |
+| `sphere.mesh_eb_norm.2.2.drc` | generated sphere mesh with normals | modern Draco | `-cl 10 -qn 10` | `v2.2 mesh method=1, normal reference` |
+| `test.mesh_eb_color.1.1.0.drc` | generated color mesh | Draco 1.1.0 | `-cl 10` | `v2.1 mesh method=1, color attribute` |
+| `test.mesh_eb_color.2.2.drc` | generated color mesh | modern Draco | `-cl 10` | `v2.2 mesh method=1, color reference` |
+
+`sphere.mesh_eb_norm.0.9.1.normals_golden.bin` stores the sorted little-endian
+`f32` normal triplets decoded from `sphere.mesh_eb_norm.0.9.1.drc` by the
+historical Draco 0.9.1 C++ decoder. Its octahedron-to-vector float conversion
+differs from modern Draco, so the golden locks byte-exact legacy output.

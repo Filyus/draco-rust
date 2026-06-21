@@ -71,8 +71,15 @@ fn parse_header(bytes: &[u8]) -> (u8, u8, EncodedGeometryType, u8) {
 
 fn supports_mesh_bitstream(major: u8, _minor: u8) -> bool {
     // Rust MeshDecoder supports the modern v2.2+ layout and the v2.0/v2.1
-    // legacy mesh layout used by Draco 1.0.0/1.1.0 test fixtures.
-    major >= 2
+    // legacy mesh layout used by Draco 1.0.0/1.1.0 test fixtures. With the
+    // `legacy_bitstream_decode` feature it additionally handles the pre-2.0
+    // EdgeBreaker/sequential layouts (Draco 0.9.1 / 0.10.0). Anything that still
+    // fails to decode is caught by the decode attempt below, not by this gate.
+    if cfg!(feature = "legacy_bitstream_decode") {
+        major >= 1
+    } else {
+        major >= 2
+    }
 }
 
 fn supports_point_cloud_bitstream(major: u8, minor: u8, method: u8) -> bool {
@@ -742,6 +749,21 @@ fn inventory_skipped_testdata_drc_fixtures() {
         })
         .collect();
 
+    // With the default `legacy_bitstream_decode` feature draco-core decodes
+    // every pre-2.0 *mesh* fixture (EdgeBreaker valence/predictive, sequential),
+    // so the only fixture still skipped is the pre-2.0 point-cloud layout, whose
+    // legacy support is separate. Without the feature the bitstream gate rejects
+    // every pre-2.0 layout, so the whole pre-2.0 set is skipped.
+    #[cfg(feature = "legacy_bitstream_decode")]
+    let expected = vec![skipped(
+        "cube_pc.drc",
+        1,
+        1,
+        GeometryKind::PointCloud,
+        0,
+        SkipReason::UnsupportedBitstream,
+    )];
+    #[cfg(not(feature = "legacy_bitstream_decode"))]
     let expected = vec![
         skipped(
             "cube_att.drc",
@@ -757,6 +779,30 @@ fn inventory_skipped_testdata_drc_fixtures() {
             1,
             GeometryKind::PointCloud,
             0,
+            SkipReason::UnsupportedBitstream,
+        ),
+        skipped(
+            "legacy_draco/bun_zipper.mesh_eb_predictive.0.9.1.drc",
+            1,
+            1,
+            GeometryKind::Mesh,
+            1,
+            SkipReason::UnsupportedBitstream,
+        ),
+        skipped(
+            "legacy_draco/bun_zipper.mesh_eb_valence.0.10.0.drc",
+            1,
+            2,
+            GeometryKind::Mesh,
+            1,
+            SkipReason::UnsupportedBitstream,
+        ),
+        skipped(
+            "legacy_draco/sphere.mesh_eb_norm.0.9.1.drc",
+            1,
+            1,
+            GeometryKind::Mesh,
+            1,
             SkipReason::UnsupportedBitstream,
         ),
         skipped(

@@ -394,8 +394,9 @@ impl MeshEdgebreakerEncoder {
         let bitstream_version =
             ((out_buffer.version_major() as u16) << 8) | out_buffer.version_minor() as u16;
         // Pre-2.0 stores the connectivity counts as fixed u32; 2.0+ uses varints.
-        let legacy_u32_counts =
-            cfg!(feature = "legacy_bitstream_encode") && bitstream_version != 0 && bitstream_version < 0x0200;
+        let legacy_u32_counts = cfg!(feature = "legacy_bitstream_encode")
+            && bitstream_version != 0
+            && bitstream_version < 0x0200;
 
         // Pre-2.2 connectivity carries a leading "new vertices" count (vertices
         // introduced during encoding) that the modern layout dropped. The decoder
@@ -443,8 +444,7 @@ impl MeshEdgebreakerEncoder {
         // inline before the traversal block. Behind legacy_bitstream_encode.
         let bitstream_version =
             ((out_buffer.version_major() as u16) << 8) | out_buffer.version_minor() as u16;
-        let legacy_layout =
-            cfg!(feature = "legacy_bitstream_encode") && bitstream_version < 0x0202;
+        let legacy_layout = cfg!(feature = "legacy_bitstream_encode") && bitstream_version < 0x0202;
 
         if legacy_layout {
             let mut block = EncoderBuffer::new();
@@ -1388,7 +1388,11 @@ impl MeshEdgebreakerEncoder {
 
         #[cfg(feature = "legacy_bitstream_encode")]
         if self.force_predictive {
-            return self.encode_predictive_traversal(corner_table, attribute_connectivity, out_buffer);
+            return self.encode_predictive_traversal(
+                corner_table,
+                attribute_connectivity,
+                out_buffer,
+            );
         }
 
         #[cfg(feature = "edgebreaker_valence_encode")]
@@ -1527,8 +1531,7 @@ impl MeshEdgebreakerEncoder {
         for i in 0..self.symbols.len() {
             let last_corner = match self.symbol_to_encoder_corner.get(i) {
                 Some(&c)
-                    if c != INVALID_CORNER_INDEX
-                        && (c.0 as usize) < corner_table.num_corners() =>
+                    if c != INVALID_CORNER_INDEX && (c.0 as usize) < corner_table.num_corners() =>
                 {
                     c
                 }
@@ -1630,7 +1633,11 @@ impl MeshEdgebreakerEncoder {
         // Pre-2.0 stores the split count as a fixed u32; 2.0+ uses a varint.
         let split_count_u32 = legacy && bitstream_version < 0x0200;
         // Pre-2.2 codes the source-edge selector with 2 bits; 2.2+ uses 1.
-        let edge_bits = if legacy && bitstream_version < 0x0202 { 2 } else { 1 };
+        let edge_bits = if legacy && bitstream_version < 0x0202 {
+            2
+        } else {
+            1
+        };
 
         let num_events = self.topology_split_event_data.len();
         if split_count_u32 {

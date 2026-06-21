@@ -374,6 +374,11 @@ impl PointCloudEncoder {
 
                 if att.attribute_type() == GeometryAttributeType::Normal {
                     if let Some(ref att_encoder) = normal_encoders[i] {
+                        let (major, minor) = self.options.get_version();
+                        let bitstream_version = ((major as u16) << 8) | minor as u16;
+                        if bitstream_version != 0 && bitstream_version < 0x0102 {
+                            continue;
+                        }
                         if !att_encoder.encode_data_needed_by_portable_transform(out_buffer) {
                             return Err(DracoError::DracoError(format!(
                                 "Failed to encode normal attribute transform data {}",

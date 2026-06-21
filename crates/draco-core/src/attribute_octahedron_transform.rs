@@ -126,49 +126,25 @@ impl AttributeOctahedronTransform {
 
         Ok(())
     }
-}
 
-impl AttributeTransform for AttributeOctahedronTransform {
-    fn transform_type(&self) -> AttributeTransformType {
-        AttributeTransformType::OctahedronTransform
-    }
-
-    fn init_from_attribute(&mut self, attribute: &PointAttribute) -> bool {
-        if let Some(transform_data) = attribute.attribute_transform_data() {
-            if transform_data.transform_type() != AttributeTransformType::OctahedronTransform {
-                return false;
-            }
-            if let Some(bits) = transform_data.get_parameter_value(0) {
-                return self.set_parameters(bits);
-            }
-        }
-        false
-    }
-
-    fn copy_to_attribute_transform_data(&self, out_data: &mut AttributeTransformData) {
-        out_data.set_transform_type(AttributeTransformType::OctahedronTransform);
-        out_data.append_parameter_value(self.quantization_bits);
-    }
-
-    fn transform_attribute(
+    pub fn inverse_transform_attribute_with_legacy_octahedron(
         &self,
         attribute: &PointAttribute,
-        point_ids: &[PointIndex],
         target_attribute: &mut PointAttribute,
+        legacy_octahedron_to_vector: bool,
     ) -> bool {
-        self.generate_portable_attribute(
+        self.inverse_transform_attribute_impl(
             attribute,
-            point_ids,
-            target_attribute.size(),
             target_attribute,
+            legacy_octahedron_to_vector,
         )
-        .is_ok()
     }
 
-    fn inverse_transform_attribute(
+    fn inverse_transform_attribute_impl(
         &self,
         attribute: &PointAttribute,
         target_attribute: &mut PointAttribute,
+        legacy_octahedron_to_vector: bool,
     ) -> bool {
         if target_attribute.data_type() != DataType::Float32 {
             return false;
@@ -216,7 +192,11 @@ impl AttributeTransform for AttributeOctahedronTransform {
             let s = i32::from_le_bytes(s_array);
             let t = i32::from_le_bytes(t_array);
 
-            let att_val = converter.quantized_octahedral_coords_to_unit_vector(s, t);
+            let att_val = if legacy_octahedron_to_vector {
+                converter.quantized_octahedral_coords_to_unit_vector_legacy(s, t)
+            } else {
+                converter.quantized_octahedral_coords_to_unit_vector(s, t)
+            };
 
             let target_offset = i * 12;
             // Write floats using bytemuck
@@ -227,6 +207,52 @@ impl AttributeTransform for AttributeOctahedronTransform {
         }
 
         true
+    }
+}
+
+impl AttributeTransform for AttributeOctahedronTransform {
+    fn transform_type(&self) -> AttributeTransformType {
+        AttributeTransformType::OctahedronTransform
+    }
+
+    fn init_from_attribute(&mut self, attribute: &PointAttribute) -> bool {
+        if let Some(transform_data) = attribute.attribute_transform_data() {
+            if transform_data.transform_type() != AttributeTransformType::OctahedronTransform {
+                return false;
+            }
+            if let Some(bits) = transform_data.get_parameter_value(0) {
+                return self.set_parameters(bits);
+            }
+        }
+        false
+    }
+
+    fn copy_to_attribute_transform_data(&self, out_data: &mut AttributeTransformData) {
+        out_data.set_transform_type(AttributeTransformType::OctahedronTransform);
+        out_data.append_parameter_value(self.quantization_bits);
+    }
+
+    fn transform_attribute(
+        &self,
+        attribute: &PointAttribute,
+        point_ids: &[PointIndex],
+        target_attribute: &mut PointAttribute,
+    ) -> bool {
+        self.generate_portable_attribute(
+            attribute,
+            point_ids,
+            target_attribute.size(),
+            target_attribute,
+        )
+        .is_ok()
+    }
+
+    fn inverse_transform_attribute(
+        &self,
+        attribute: &PointAttribute,
+        target_attribute: &mut PointAttribute,
+    ) -> bool {
+        self.inverse_transform_attribute_impl(attribute, target_attribute, false)
     }
 
     #[cfg(feature = "encoder")]

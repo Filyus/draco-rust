@@ -679,7 +679,11 @@ impl PointCloudDecoder {
                         ));
                     }
                     let dst = pc.try_attribute_mut(n.att_id)?;
-                    if !oct.inverse_transform_attribute(&n.portable, dst) {
+                    if !oct.inverse_transform_attribute_with_legacy_octahedron(
+                        &n.portable,
+                        dst,
+                        bitstream_version < 0x0102,
+                    ) {
                         return Err(DracoError::DracoError(
                             "Failed to decode normals".to_string(),
                         ));

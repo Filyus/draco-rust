@@ -239,6 +239,16 @@ impl SequentialIntegerAttributeDecoder {
                     let predictor = PredictionSchemeDeltaDecoder::new(transform);
                     predictor_normal_octa_diff_opt = Some(predictor);
                 }
+                // Pre-0.10.0 normals use the legacy non-canonicalized octahedron
+                // transform (id 2). Without this case it fell through to Wrap below,
+                // silently decoding to wrong normals.
+                Some(PredictionSchemeTransformType::NormalOctahedron) => {
+                    let mut transform =
+                        PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new();
+                    transform.set_canonicalized(false);
+                    let predictor = PredictionSchemeDeltaDecoder::new(transform);
+                    predictor_normal_octa_diff_opt = Some(predictor);
+                }
                 _ => {
                     let transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
                     let predictor = PredictionSchemeDeltaDecoder::new(transform);
@@ -668,8 +678,16 @@ impl SequentialIntegerAttributeDecoder {
                     let mut mesh_data = MeshPredictionSchemeData::new();
                     mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
 
-                    let transform =
+                    let mut transform =
                         PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new();
+                    // Pre-0.10.0 streams use the legacy non-canonicalized octahedron
+                    // transform (id 2); 0.10.0+ use the canonicalized one (id 3).
+                    if matches!(
+                        selected_transform,
+                        Some(PredictionSchemeTransformType::NormalOctahedron)
+                    ) {
+                        transform.set_canonicalized(false);
+                    }
                     let mut predictor = MeshPredictionSchemeGeometricNormalDecoder::new(transform);
                     predictor.init(&mesh_data);
 

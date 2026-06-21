@@ -198,13 +198,6 @@ pub mod mesh_decoder;
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 #[doc(hidden)]
 pub mod mesh_edgebreaker_decoder;
-#[cfg(all(feature = "decoder", feature = "edgebreaker_valence_decode"))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(feature = "decoder", feature = "edgebreaker_valence_decode")))
-)]
-#[doc(hidden)]
-pub mod mesh_edgebreaker_traversal_valence_decoder;
 #[cfg(all(feature = "decoder", feature = "legacy_bitstream_decode"))]
 #[cfg_attr(
     docsrs,
@@ -212,6 +205,13 @@ pub mod mesh_edgebreaker_traversal_valence_decoder;
 )]
 #[doc(hidden)]
 pub mod mesh_edgebreaker_traversal_predictive_decoder;
+#[cfg(all(feature = "decoder", feature = "edgebreaker_valence_decode"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "decoder", feature = "edgebreaker_valence_decode")))
+)]
+#[doc(hidden)]
+pub mod mesh_edgebreaker_traversal_valence_decoder;
 #[cfg(feature = "decoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 /// Point cloud decoder entry point.
@@ -273,13 +273,6 @@ pub mod keyframe_animation_encoder;
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 #[doc(hidden)]
 pub mod mesh_edgebreaker_encoder;
-#[cfg(all(feature = "encoder", feature = "edgebreaker_valence_encode"))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(feature = "encoder", feature = "edgebreaker_valence_encode")))
-)]
-#[doc(hidden)]
-pub mod mesh_edgebreaker_traversal_valence_encoder;
 #[cfg(all(feature = "encoder", feature = "legacy_bitstream_encode"))]
 #[cfg_attr(
     docsrs,
@@ -287,6 +280,13 @@ pub mod mesh_edgebreaker_traversal_valence_encoder;
 )]
 #[doc(hidden)]
 pub mod mesh_edgebreaker_traversal_predictive_encoder;
+#[cfg(all(feature = "encoder", feature = "edgebreaker_valence_encode"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "encoder", feature = "edgebreaker_valence_encode")))
+)]
+#[doc(hidden)]
+pub mod mesh_edgebreaker_traversal_valence_encoder;
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 /// Mesh encoder entry point.

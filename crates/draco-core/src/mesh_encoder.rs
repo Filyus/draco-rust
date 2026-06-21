@@ -635,6 +635,9 @@ impl MeshEncoder {
         // This matches C++ behavior when use_single_connectivity_ = true (speed >= 6).
         let num_attributes = mesh.num_attributes();
         let num_encoders = if num_attributes > 0 { 1 } else { 0 };
+        // Use the buffer's version (set in encode_header) for version checks.
+        let major = out_buffer.version_major();
+        let minor = out_buffer.version_minor();
 
         out_buffer.encode_u8(num_encoders as u8);
 
@@ -646,18 +649,19 @@ impl MeshEncoder {
             out_buffer.encode_u8((-1i8) as u8); // att_data_id = -1
             out_buffer.encode_u8(0); // element_type = MESH_VERTEX_ATTRIBUTE
 
-            // Traversal method: PREDICTION_DEGREE (1) for speed 0, DEPTH_FIRST (0) otherwise
-            // This must match the traversal used in MeshEdgebreakerEncoder
-            let encoding_speed = self.options.get_speed();
-            let traversal_method: u8 = if encoding_speed == 0 { 1 } else { 0 };
-            out_buffer.encode_u8(traversal_method);
+            // Traversal method was added in bitstream 1.2. Older streams
+            // default to DEPTH_FIRST on decode and must not carry the byte.
+            if ((major as u16) << 8) | minor as u16 >= 0x0102 {
+                // PREDICTION_DEGREE (1) for speed 0, DEPTH_FIRST (0) otherwise.
+                // This must match the traversal used in MeshEdgebreakerEncoder.
+                let encoding_speed = self.options.get_speed();
+                let traversal_method: u8 = if encoding_speed == 0 { 1 } else { 0 };
+                out_buffer.encode_u8(traversal_method);
+            }
         }
         // For sequential, nothing is written in phase 1 (EncodeAttributesEncoderIdentifier does nothing)
 
         let mut decoder_types: Vec<u8> = Vec::with_capacity(mesh.num_attributes() as usize);
-        // Use the buffer's version (set in encode_header) for version checks
-        let major = out_buffer.version_major();
-        let minor = out_buffer.version_minor();
 
         // Phase 2: Encode attribute encoder data
         // Both sequential and edgebreaker now use single-encoder mode:
@@ -850,6 +854,10 @@ impl MeshEncoder {
             match decoder_type {
                 3 => {
                     // Normal attribute - encode octahedral transform data
+                    let bitstream_version = ((major as u16) << 8) | minor as u16;
+                    if bitstream_version != 0 && bitstream_version < 0x0200 {
+                        continue;
+                    }
                     if let Some(ref encoder) = normal_encoders[i as usize] {
                         if !encoder.encode_data_needed_by_portable_transform(out_buffer) {
                             return Err(DracoError::DracoError(
@@ -899,6 +907,9 @@ impl MeshEncoder {
 
         out_buffer.encode_u8(groups.len() as u8);
 
+        let major = out_buffer.version_major();
+        let minor = out_buffer.version_minor();
+        let writes_traversal_method = (((major as u16) << 8) | minor as u16) >= 0x0102;
         let traversal_method: u8 = if self.options.get_speed() == 0 { 1 } else { 0 };
         for (att_data_id, _) in &groups {
             out_buffer.encode_u8(*att_data_id as u8);
@@ -910,11 +921,11 @@ impl MeshEncoder {
                 0 // MESH_VERTEX_ATTRIBUTE
             };
             out_buffer.encode_u8(element_type);
-            out_buffer.encode_u8(traversal_method);
+            if writes_traversal_method {
+                out_buffer.encode_u8(traversal_method);
+            }
         }
 
-        let major = out_buffer.version_major();
-        let minor = out_buffer.version_minor();
         let mut decoder_types_by_group: Vec<Vec<u8>> = Vec::with_capacity(groups.len());
 
         for (_, attr_ids) in &groups {
@@ -1192,6 +1203,12 @@ impl MeshEncoder {
         for (local_i, &decoder_type) in decoder_types.iter().enumerate() {
             match decoder_type {
                 3 => {
+                    let major = out_buffer.version_major();
+                    let minor = out_buffer.version_minor();
+                    let bitstream_version = ((major as u16) << 8) | minor as u16;
+                    if bitstream_version != 0 && bitstream_version < 0x0200 {
+                        continue;
+                    }
                     if let Some(ref encoder) = normal_encoders[local_i] {
                         if !encoder.encode_data_needed_by_portable_transform(out_buffer) {
                             return Err(DracoError::DracoError(

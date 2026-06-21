@@ -11,6 +11,9 @@ use crate::prediction_scheme_normal_octahedron_canonicalized_transform_base::Pre
 pub struct PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform {
     base: PredictionSchemeNormalOctahedronCanonicalizedTransformBase,
     num_components: usize,
+    /// When false, emits and computes corrections for the legacy
+    /// non-canonicalized octahedron transform (id 2, Draco <= 0.9.1).
+    is_canonicalized: bool,
 }
 
 impl PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform {
@@ -20,7 +23,14 @@ impl PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform {
                 max_quantized_value,
             ),
             num_components: 0,
+            is_canonicalized: true,
         }
+    }
+
+    /// Selects the canonicalized (id 3) vs legacy non-canonicalized (id 2)
+    /// octahedron transform. Defaults to canonicalized.
+    pub fn set_canonicalized(&mut self, canonicalized: bool) {
+        self.is_canonicalized = canonicalized;
     }
 }
 
@@ -54,8 +64,9 @@ impl PredictionSchemeEncodingTransform<i32, i32>
             }
         }
 
-        // Match C++: Only rotate when pred is not in the bottom-left region.
-        if !self.base.is_in_bottom_left(&pred) {
+        // Match C++: canonicalized id 3 rotates to a canonical octant. Legacy
+        // id 2 skips the rotation while keeping the shared diamond handling.
+        if self.is_canonicalized && !self.base.is_in_bottom_left(&pred) {
             let rotation_count = self.base.get_rotation_count(&pred);
             pred = self.base.rotate_point(&pred, rotation_count);
             orig = self.base.rotate_point(&orig, rotation_count);
@@ -66,7 +77,11 @@ impl PredictionSchemeEncodingTransform<i32, i32>
     }
 
     fn get_type(&self) -> PredictionSchemeTransformType {
-        PredictionSchemeTransformType::NormalOctahedronCanonicalized
+        if self.is_canonicalized {
+            PredictionSchemeTransformType::NormalOctahedronCanonicalized
+        } else {
+            PredictionSchemeTransformType::NormalOctahedron
+        }
     }
 
     fn are_corrections_positive(&self) -> bool {

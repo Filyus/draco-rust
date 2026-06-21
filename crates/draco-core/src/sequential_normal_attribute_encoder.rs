@@ -112,8 +112,16 @@ impl SequentialNormalAttributeEncoder {
         // quantization_bits can be 31; avoid signed shift overflow.
         let max_value: i32 = ((1u64 << (quantization_bits as u32)) - 1) as i32;
 
-        let transform =
+        let mut transform =
             PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform::new(max_value);
+        let (major, minor) = options.get_version();
+        let bitstream_version = ((major as u16) << 8) | minor as u16;
+        if cfg!(feature = "legacy_bitstream_encode")
+            && bitstream_version != 0
+            && bitstream_version < 0x0102
+        {
+            transform.set_canonicalized(false);
+        }
 
         let prediction_scheme = Box::new(PredictionSchemeDeltaEncoder::new(transform));
         self.base.set_prediction_scheme(prediction_scheme);

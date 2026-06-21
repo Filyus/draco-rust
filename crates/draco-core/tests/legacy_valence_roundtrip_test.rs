@@ -61,6 +61,30 @@ fn build_grid(n: usize) -> Mesh {
     mesh
 }
 
+fn build_grid_with_normals(n: usize) -> Mesh {
+    let mut mesh = build_grid(n);
+    let num_points = n * n;
+    let mut normal = PointAttribute::new();
+    normal.init(
+        GeometryAttributeType::Normal,
+        3,
+        DataType::Float32,
+        false,
+        num_points,
+    );
+    {
+        let buf = normal.buffer_mut();
+        for i in 0..num_points {
+            let n = [0.0f32, 0.0, 1.0];
+            for k in 0..3 {
+                buf.write(i * 12 + k * 4, &n[k].to_le_bytes());
+            }
+        }
+    }
+    mesh.add_attribute(normal);
+    mesh
+}
+
 /// Encode `mesh` targeting bitstream `major.minor` with valence traversal
 /// (speed 0), then decode it back.
 fn encode_decode(mesh: &Mesh, major: u8, minor: u8) -> Result<Mesh, String> {
@@ -114,6 +138,29 @@ fn sorted_positions(mesh: &Mesh) -> Vec<[u32; 3]> {
     }
     out.sort_unstable();
     out
+}
+
+fn decoded_normals_point_up(mesh: &Mesh) -> bool {
+    let normal_id = mesh.named_attribute_id(GeometryAttributeType::Normal);
+    if normal_id < 0 {
+        return false;
+    }
+    let att = mesh.attribute(normal_id);
+    let stride = att.byte_stride() as usize;
+    let buffer = att.buffer();
+    for i in 0..att.size() {
+        let off = i * stride;
+        let mut v = [0.0f32; 3];
+        for k in 0..3 {
+            let mut b = [0u8; 4];
+            buffer.read(off + k * 4, &mut b);
+            v[k] = f32::from_le_bytes(b);
+        }
+        if v[2] <= 0.99 {
+            return false;
+        }
+    }
+    true
 }
 
 #[test]
@@ -189,10 +236,42 @@ fn legacy_predictive_roundtrip_preserves_geometry() {
         .decode(&mut buf, &mut decoded)
         .expect("predictive decode");
 
-    assert_eq!(decoded.num_faces(), mesh.num_faces(), "predictive: face count");
+    assert_eq!(
+        decoded.num_faces(),
+        mesh.num_faces(),
+        "predictive: face count"
+    );
     assert_eq!(
         sorted_positions(&decoded),
         reference_positions,
         "predictive geometry differs from the modern round-trip"
     );
+}
+
+#[test]
+fn legacy_normal_octahedron_transform_roundtrip() {
+    let mesh = build_grid_with_normals(33);
+
+    let mut opts = EncoderOptions::new();
+    opts.set_version(1, 1);
+    opts.set_encoding_method(1); // Edgebreaker
+    opts.set_global_int("encoding_speed", 0);
+    opts.set_global_int("decoding_speed", 0);
+    opts.set_global_int("force_predictive_traversal", 1);
+    opts.set_attribute_int(1, "quantization_bits", 10);
+
+    let mut enc = MeshEncoder::new();
+    enc.set_mesh(mesh.clone());
+    let mut out = EncoderBuffer::new();
+    enc.encode(&opts, &mut out)
+        .expect("legacy normal octahedron encode");
+
+    let mut buf = DecoderBuffer::new(out.data());
+    let mut decoded = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut buf, &mut decoded)
+        .expect("legacy normal octahedron decode");
+
+    assert_eq!(decoded.num_faces(), mesh.num_faces(), "face count");
+    assert!(decoded_normals_point_up(&decoded));
 }

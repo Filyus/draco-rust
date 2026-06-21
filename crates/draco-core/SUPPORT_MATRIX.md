@@ -94,7 +94,7 @@ automatically.
 |---|---:|---:|---:|---:|---|
 | Default/delta transform | yes | yes | yes | yes | Used by simple prediction paths. |
 | `PREDICTION_TRANSFORM_WRAP` | yes | yes | yes | yes | Integer wrap transform. |
-| `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON` | yes | legacy through `0.9.1` | shared base only | no | Legacy normal transform. Rust keeps the old octahedron base because canonicalized transform builds on the same math, but it does not currently accept old transform id `2` as a complete decode path. C++ emitted id `2` through `0.9.1` and switched normal encode to canonicalized in `0.10.0` in 2017; current C++ keeps decode compatibility. |
+| `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON` | yes | legacy through `0.9.1` | yes | explicit | Legacy normal transform. C++ emitted id `2` through `0.9.1` and switched normal encode to canonicalized in `0.10.0` in 2017; Rust decodes it behind `legacy_bitstream_decode`, including the historical 0.9.1 octahedron-to-vector float conversion for byte-exact legacy output. Rust encodes it behind `legacy_bitstream_encode` when targeting pre-1.2 normal streams. |
 | `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON_CANONICALIZED` | yes | yes, since `0.10.0` | yes | yes | Main modern normal prediction transform; C++ normal encoder switched to it in 2017. |
 
 ## Entropy and Bit Coding
@@ -186,7 +186,7 @@ builds, but they are not raw Draco bitstream features.
 
 | Priority | Item | Why |
 |---:|---|---|
-| 1 | Legacy decode/encode from real compatibility targets (largely done) | Every bitstream version from `0.9.1` to current decodes, including EdgeBreaker predictive type `1`, the pre-2.2 valence layout, and pre-2.2 constrained-multi-parallelogram prediction; every traversal (standard/predictive/valence) and bitstream 1.2 -> current round-trips. The remaining gap is decode-only: the old normal octahedron transform id `2` (0.9.1-era normals). |
+| 1 | Legacy decode/encode from real compatibility targets (largely done) | Every bitstream version from `0.9.1` to current decodes, including EdgeBreaker predictive type `1`, the pre-2.2 valence layout, pre-2.2 constrained-multi-parallelogram prediction, and the old normal octahedron transform id `2` with historical 0.9.1 float output. Every traversal (standard/predictive/valence) round-trips, including pre-1.2 normal octahedron streams behind the legacy encode feature. |
 | 2 | Keep deprecated prediction schemes explicit | C++ public encoder rejects them; supporting them is for compatibility, not defaults. |
 | 3 | Add broader metadata utilities when needed | Raw and typed `.drc` metadata roundtrip exists; future work is merge/copy helpers if they become useful. |
 | 4 | Keyframe animation wrapper (done) | Implemented as a point-cloud sequential encode/decode wrapper; future work is optional quantization tuning and ergonomics. |
@@ -221,9 +221,12 @@ Important examples:
 - `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON` follows the same compatibility shape:
   C++ emitted it for normal prediction through `0.9.1`, switched encoder output
   to `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON_CANONICALIZED` in `0.10.0` in
-  2017, and still decodes both transform ids. Rust keeps the old transform base
-  because the canonicalized transform reuses the same octahedron math; that is
-  not the same as supporting old transform id `2` in the decoder.
+  2017, and still decodes both transform ids. Rust decodes old transform id `2`
+  behind `legacy_bitstream_decode` and can emit it behind
+  `legacy_bitstream_encode` when targeting pre-1.2 normal streams. For pre-2.0
+  normal streams, Rust also uses the historical `0.9.1`
+  octahedron-to-vector float conversion instead of the modern Draco conversion
+  so byte output matches the old decoder exactly.
 - Metadata is preserved as raw bytes and roundtrips through Rust encode/decode.
   Typed helpers expose C++-compatible `int32`, `double`, array, and string
   convenience APIs over the same bytes; Rust writes numeric helpers in explicit

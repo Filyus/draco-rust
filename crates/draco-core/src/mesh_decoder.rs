@@ -1282,7 +1282,11 @@ impl MeshDecoder {
                 if dst.size() != n.portable.size() {
                     dst.resize_unique_entries(n.portable.size())?;
                 }
-                if !oct.inverse_transform_attribute(&n.portable, dst) {
+                if !oct.inverse_transform_attribute_with_legacy_octahedron(
+                    &n.portable,
+                    dst,
+                    bitstream_version < 0x0200,
+                ) {
                     return Err(DracoError::DracoError(
                         "Failed to decode normals".to_string(),
                     ));

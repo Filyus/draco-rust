@@ -1,10 +1,22 @@
 #[test]
 fn test_normal_octahedron_transform_encoding() {
-    use draco_core::prediction_scheme::PredictionSchemeEncodingTransform;
+    use draco_core::prediction_scheme::{
+        PredictionSchemeEncodingTransform, PredictionSchemeTransformType,
+    };
     use draco_core::prediction_scheme_normal_octahedron_canonicalized_encoding_transform::PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform;
 
     // 10-bit quantization: max_quantized_value = 1023
-    let transform = PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform::new(1023);
+    let mut transform = PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform::new(1023);
+    assert_eq!(
+        transform.get_type(),
+        PredictionSchemeTransformType::NormalOctahedronCanonicalized
+    );
+    transform.set_canonicalized(false);
+    assert_eq!(
+        transform.get_type(),
+        PredictionSchemeTransformType::NormalOctahedron
+    );
+    transform.set_canonicalized(true);
 
     // Test the octahedral coords for the 3 normals:
     // Normal (1,0,0) -> (511, 511) - center of diamond

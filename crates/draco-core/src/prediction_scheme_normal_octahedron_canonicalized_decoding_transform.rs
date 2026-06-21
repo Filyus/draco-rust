@@ -12,6 +12,11 @@ use crate::prediction_scheme_normal_octahedron_canonicalized_transform_base::Pre
 pub struct PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform {
     base: PredictionSchemeNormalOctahedronCanonicalizedTransformBase,
     num_components: usize,
+    /// When false, behaves as the pre-canonicalized octahedron transform (id 2,
+    /// Draco <= 0.9.1): it skips only the canonical-octant rotation while keeping
+    /// the shared diamond inversion/correction steps. The two share enough math
+    /// that a flag is cleaner than a separate type.
+    is_canonicalized: bool,
 }
 
 impl Default for PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform {
@@ -25,7 +30,14 @@ impl PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform {
         Self {
             base: PredictionSchemeNormalOctahedronCanonicalizedTransformBase::new(0),
             num_components: 0,
+            is_canonicalized: true,
         }
+    }
+
+    /// Selects the canonicalized (id 3) vs the legacy non-canonicalized (id 2)
+    /// octahedron transform. Defaults to canonicalized.
+    pub fn set_canonicalized(&mut self, canonicalized: bool) {
+        self.is_canonicalized = canonicalized;
     }
 
     pub fn max_quantized_value(&self) -> i32 {
@@ -93,22 +105,30 @@ impl PredictionSchemeDecodingTransform<i32, i32>
             self.base.base().invert_diamond(&mut s[0], &mut t[0]);
         }
 
-        let pred_is_in_bottom_left = self.base.is_in_bottom_left(&pred);
-        let rotation_count = self.base.get_rotation_count(&pred);
-
-        if !pred_is_in_bottom_left {
-            pred = self.base.rotate_point(&pred, rotation_count);
+        // The canonical-octant rotation is only part of the canonicalized (id 3)
+        // transform; the legacy id 2 transform applies the shared invert-in,
+        // correction, and trailing diamond inversion.
+        let mut pred_is_in_bottom_left = false;
+        let mut rotation_count = 0;
+        if self.is_canonicalized {
+            pred_is_in_bottom_left = self.base.is_in_bottom_left(&pred);
+            rotation_count = self.base.get_rotation_count(&pred);
+            if !pred_is_in_bottom_left {
+                pred = self.base.rotate_point(&pred, rotation_count);
+            }
         }
 
         let mut orig = [0; 2];
         orig[0] = self.base.base().mod_max(pred[0].wrapping_add(corr[0]));
         orig[1] = self.base.base().mod_max(pred[1].wrapping_add(corr[1]));
 
-        if !pred_is_in_bottom_left {
+        // Only the canonical-octant rotation is canonicalized-specific; the
+        // trailing diamond inversion is part of both the old (id 2) and the
+        // canonicalized (id 3) transform.
+        if self.is_canonicalized && !pred_is_in_bottom_left {
             let reverse_rotation_count = (4 - rotation_count) % 4;
             orig = self.base.rotate_point(&orig, reverse_rotation_count);
         }
-
         if !pred_is_in_diamond {
             let (s, t) = orig.split_at_mut(1);
             self.base.base().invert_diamond(&mut s[0], &mut t[0]);
@@ -119,7 +139,11 @@ impl PredictionSchemeDecodingTransform<i32, i32>
     }
 
     fn get_type(&self) -> PredictionSchemeTransformType {
-        PredictionSchemeTransformType::NormalOctahedronCanonicalized
+        if self.is_canonicalized {
+            PredictionSchemeTransformType::NormalOctahedronCanonicalized
+        } else {
+            PredictionSchemeTransformType::NormalOctahedron
+        }
     }
 
     fn are_corrections_positive(&self) -> bool {

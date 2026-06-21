@@ -8,6 +8,8 @@
 
 use crate::attribute_quantization_transform::AttributeQuantizationTransform;
 use crate::attribute_transform::AttributeTransform;
+#[cfg(feature = "legacy_bitstream_encode")]
+use crate::compression_config::EncodedGeometryType;
 use crate::data_buffer::DataBuffer;
 use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;
@@ -431,8 +433,7 @@ impl SequentialIntegerAttributeEncoder {
                                     transform, mesh_data,
                                 );
                             let (vmaj, vmin) = options.get_version();
-                            predictor
-                                .set_bitstream_version(((vmaj as u16) << 8) | vmin as u16);
+                            predictor.set_bitstream_version(((vmaj as u16) << 8) | vmin as u16);
                             selected_transform_type = predictor.get_transform_type();
 
                             if !predictor.compute_correction_values(
@@ -985,6 +986,29 @@ impl SequentialIntegerAttributeEncoder {
         if selected_method != PredictionSchemeMethod::None {
             // Encode transform type
             out_buffer.encode_u8(selected_transform_type as u8);
+        }
+
+        #[cfg(feature = "legacy_bitstream_encode")]
+        if matches!(
+            selected_transform_type,
+            PredictionSchemeTransformType::NormalOctahedron
+                | PredictionSchemeTransformType::NormalOctahedronCanonicalized
+        ) {
+            let (major, minor) = options.get_version();
+            let bitstream_version = ((major as u16) << 8) | minor as u16;
+            let uses_inline_normal_transform_data = bitstream_version != 0
+                && match encoder.get_geometry_type() {
+                    EncodedGeometryType::TriangularMesh => bitstream_version < 0x0200,
+                    EncodedGeometryType::PointCloud => bitstream_version < 0x0102,
+                    _ => false,
+                };
+            if uses_inline_normal_transform_data {
+                let quantization_bits = options.get_attribute_int(att_id, "quantization_bits", -1);
+                if !(2..=30).contains(&quantization_bits) {
+                    return false;
+                }
+                out_buffer.encode_u8(quantization_bits as u8);
+            }
         }
 
         // 5. Convert corrections to symbols (ZigZag) if needed

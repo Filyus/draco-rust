@@ -832,6 +832,61 @@ fn legacy_attribute_streams_decode_to_reference_values() {
     }
 }
 
+/// The 0.9.1 normals use the legacy non-canonicalized octahedron prediction
+/// transform (id 2) over a predictive EdgeBreaker connectivity. Unlike the
+/// 1.1.0/2.2 pair above, the 0.9.1 encoder quantizes the octahedral grid
+/// differently, so we compare against a golden reference captured from the
+/// historical Draco 0.9.1 C++ decoder rather than a 2.2 fixture.
+#[cfg(feature = "legacy_bitstream_decode")]
+#[test]
+fn legacy_091_octahedron_normals_match_historical_decoder() {
+    use draco_core::geometry_attribute::GeometryAttributeType;
+    let bytes =
+        std::fs::read(repo_testdata_dir().join("legacy_draco/sphere.mesh_eb_norm.0.9.1.drc"))
+            .expect("read 0.9.1 normal fixture");
+    let mut buffer = DecoderBuffer::new(&bytes);
+    let mut mesh = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut buffer, &mut mesh)
+        .expect("decode 0.9.1 normals");
+
+    let att = mesh.attribute(mesh.named_attribute_id(GeometryAttributeType::Normal));
+    let stride = att.byte_stride() as usize;
+    let mut got: Vec<[u32; 3]> = (0..att.size())
+        .map(|i| {
+            let off = i * stride;
+            let mut n = [0u32; 3];
+            for (k, c) in n.iter_mut().enumerate() {
+                let mut b = [0u8; 4];
+                att.buffer().read(off + k * 4, &mut b);
+                *c = u32::from_le_bytes(b);
+            }
+            n
+        })
+        .collect();
+    got.sort();
+
+    let golden = std::fs::read(
+        repo_testdata_dir().join("legacy_draco/sphere.mesh_eb_norm.0.9.1.normals_golden.bin"),
+    )
+    .expect("read golden normals");
+    let expected: Vec<[u32; 3]> = golden
+        .chunks_exact(12)
+        .map(|c| {
+            [
+                u32::from_le_bytes(c[0..4].try_into().unwrap()),
+                u32::from_le_bytes(c[4..8].try_into().unwrap()),
+                u32::from_le_bytes(c[8..12].try_into().unwrap()),
+            ]
+        })
+        .collect();
+
+    assert_eq!(
+        got, expected,
+        "0.9.1 octahedron normals are not byte-exact vs the historical Draco decoder"
+    );
+}
+
 /// Draco 0.9.1 and earlier used the predictive ("type 1") EdgeBreaker traversal
 /// by default (a binary prediction stream guessing R/C from local valence),
 /// replaced by the valence traversal in 0.10.0. The 0.9.1 bunny must decode to

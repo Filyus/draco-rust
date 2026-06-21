@@ -276,4 +276,51 @@ impl OctahedronToolBox {
             [x * d, y * d, z * d]
         }
     }
+
+    pub fn quantized_octahedral_coords_to_unit_vector_legacy(&self, s: i32, t: i32) -> [f32; 3] {
+        let max_quantized_value = self.max_value as f32;
+        let in_s = s as f32 / max_quantized_value;
+        let in_t = t as f32 / max_quantized_value;
+
+        let mut out_s = in_s;
+        let mut out_t = in_t;
+        let mut spt = out_s + out_t;
+        let mut smt = out_s - out_t;
+        let mut x_sign = 1.0;
+
+        if !(0.5..=1.5).contains(&spt) || !(-0.5..=0.5).contains(&smt) {
+            x_sign = -1.0;
+            if spt <= 0.5 {
+                out_s = 0.5 - in_t;
+                out_t = 0.5 - in_s;
+            } else if spt >= 1.5 {
+                out_s = 1.5 - in_t;
+                out_t = 1.5 - in_s;
+            } else if smt <= -0.5 {
+                out_s = in_t - 0.5;
+                out_t = in_s + 0.5;
+            } else {
+                out_s = in_t + 0.5;
+                out_t = in_s - 0.5;
+            }
+            spt = out_s + out_t;
+            smt = out_s - out_t;
+        }
+
+        let y = 2.0 * out_s - 1.0;
+        let z = 2.0 * out_t - 1.0;
+        let x = (2.0 * spt - 1.0)
+            .min(3.0 - 2.0 * spt)
+            .min(2.0 * smt + 1.0)
+            .min(1.0 - 2.0 * smt)
+            * x_sign;
+
+        let norm_squared = x * x + y * y + z * z;
+        if norm_squared < 1e-6 {
+            [0.0, 0.0, 0.0]
+        } else {
+            let d = 1.0 / norm_squared.sqrt();
+            [x * d, y * d, z * d]
+        }
+    }
 }
