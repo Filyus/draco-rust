@@ -5,7 +5,7 @@ explains how they behave with **glTF 2.1**.
 
 ## Status
 
-glTF 2.1 was announced on 2026-06-11 and, as of this writing, is at an early
+glTF 2.1 was announced on 2026-06-11 and, as of 2026-06-21, is at an early
 "explainer" stage — a **backward-compatible revision of the glTF 2.0 core** with
 no ratified schema yet. These crates do **not** implement 2.1-specific features
 yet. There is no urgency: every glTF 2.0 asset remains valid under 2.1, so
@@ -40,13 +40,21 @@ compressed where possible, preserved where not.
 
 ## Why 2.1 features are not implemented yet
 
-Implementing them now would be speculative, for reasons outside this library:
+As of 2026-06-21, implementing them would be speculative, for reasons largely
+outside this library:
 
-- the 2.1 specification has **no ratified schema** yet (explainer stage);
-- the underlying parser, [gltf-rs](https://crates.io/crates/gltf), does not model
-  the new accessor component types yet, so they cannot even be parsed;
+- the 2.1 specification is at the **explainer stage** with **no ratified schema**
+  ([tracking issue #2585](https://github.com/KhronosGroup/glTF/issues/2585),
+  opened 2026-05-27);
+- the underlying parser, [gltf-rs](https://crates.io/crates/gltf) (latest release
+  **1.4.1**, 2024-05), does not model the new accessor component types — its
+  `accessor::DataType` is still the six glTF 2.0 values — so they cannot even be
+  parsed;
 - the **Draco codec has no encoding** for half-, double-, or 64-bit-integer
   attributes (only `i32` maps to an existing Draco type).
+
+(Versions and status above are point-in-time; re-check the tracking issue and the
+gltf-rs release notes before relying on them.)
 
 Support will be added once the specification and the surrounding ecosystem
 stabilize. Until then, the safe preserve/skip behavior above is the intended
