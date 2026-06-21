@@ -83,6 +83,11 @@ impl<'a> EntryToPointIdMap<'a> {
     }
 
     #[inline]
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
     pub fn get(self, index: usize) -> Option<u32> {
         match self {
             Self::PointIndices(point_ids) => point_ids.get(index).map(|p| p.0),

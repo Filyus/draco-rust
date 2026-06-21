@@ -557,14 +557,13 @@ impl CornerTable {
             if !found_match {
                 // No opposite found, add to source vertex list
                 let num_corners_on_source = num_corners_on_vertices[source_v.0 as usize];
-                let mut offset = vertex_offset[source_v.0 as usize];
-                for _ in 0..num_corners_on_source {
+                let base = vertex_offset[source_v.0 as usize];
+                for offset in base..base + num_corners_on_source {
                     if vertex_edges[offset].sink_vert == INVALID_VERTEX_INDEX {
                         vertex_edges[offset].sink_vert = sink_v;
                         vertex_edges[offset].edge_corner = c_idx;
                         break;
                     }
-                    offset += 1;
                 }
             } else {
                 self.opposite_corners[c] = opposite_c;

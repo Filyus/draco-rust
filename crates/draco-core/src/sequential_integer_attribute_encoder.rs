@@ -992,8 +992,9 @@ impl SequentialIntegerAttributeEncoder {
         // Write compression level/type (1 = compressed with symbols)
         out_buffer.encode_u8(1);
 
-        let mut symbol_options = SymbolEncodingOptions::default();
-        symbol_options.compression_level = 10 - options.get_encoding_speed();
+        let symbol_options = SymbolEncodingOptions {
+            compression_level: 10 - options.get_encoding_speed(),
+        };
 
         let _start_len = out_buffer.size();
         let ok = encode_symbols(&symbols, num_components, &symbol_options, out_buffer);

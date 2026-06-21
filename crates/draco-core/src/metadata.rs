@@ -415,7 +415,7 @@ fn decode_le_array<const N: usize, T>(
     bytes: &[u8],
     decode: impl Fn([u8; N]) -> T,
 ) -> Option<Vec<T>> {
-    if bytes.is_empty() || bytes.len() % N != 0 {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(N) {
         return None;
     }
 

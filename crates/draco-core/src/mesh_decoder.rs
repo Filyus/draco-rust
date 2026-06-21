@@ -1056,10 +1056,8 @@ impl MeshDecoder {
                         let mut att_decoder = SequentialIntegerAttributeDecoder::new();
                         att_decoder.init(&pc_decoder, att_id);
                         let mut skip_hook_fn = move |buf: &mut DecoderBuffer<'_>| -> bool {
-                            if quant_skip_bytes > 0 {
-                                if buf.try_advance(quant_skip_bytes).is_err() {
-                                    return false;
-                                }
+                            if quant_skip_bytes > 0 && buf.try_advance(quant_skip_bytes).is_err() {
+                                return false;
                             }
                             true
                         };
@@ -1164,10 +1162,9 @@ impl MeshDecoder {
                         let mut att_decoder = SequentialIntegerAttributeDecoder::new();
                         att_decoder.init(&pc_decoder, att_id);
                         let mut normal_skip_fn = move |buf: &mut DecoderBuffer<'_>| -> bool {
-                            if normal_skip_bytes > 0 {
-                                if buf.try_advance(normal_skip_bytes).is_err() {
-                                    return false;
-                                }
+                            if normal_skip_bytes > 0 && buf.try_advance(normal_skip_bytes).is_err()
+                            {
+                                return false;
                             }
                             true
                         };
@@ -1223,47 +1220,37 @@ impl MeshDecoder {
             // (including all Rust-generated files), they are decoded here after all values.
             for (local_i, &att_id) in att_ids.iter().enumerate() {
                 match decoder_types[local_i] {
-                    2 => {
-                        if bitstream_version >= 0x0200 {
-                            let idx = pending_quant
-                                .iter()
-                                .position(|p| p.att_id == att_id)
-                                .ok_or_else(|| {
-                                    DracoError::DracoError(
-                                        "Missing pending quant entry".to_string(),
-                                    )
-                                })?;
-                            let original = mesh.try_attribute(att_id)?;
-                            if !pending_quant[idx]
-                                .transform
-                                .decode_parameters(original, buffer)
-                            {
-                                return Err(DracoError::DracoError(
-                                    "Failed to decode quantization parameters".to_string(),
-                                ));
-                            }
+                    2 if bitstream_version >= 0x0200 => {
+                        let idx = pending_quant
+                            .iter()
+                            .position(|p| p.att_id == att_id)
+                            .ok_or_else(|| {
+                                DracoError::DracoError("Missing pending quant entry".to_string())
+                            })?;
+                        let original = mesh.try_attribute(att_id)?;
+                        if !pending_quant[idx]
+                            .transform
+                            .decode_parameters(original, buffer)
+                        {
+                            return Err(DracoError::DracoError(
+                                "Failed to decode quantization parameters".to_string(),
+                            ));
                         }
                     }
-                    3 => {
-                        if bitstream_version >= 0x0200 {
-                            let idx = pending_normals
-                                .iter()
-                                .position(|p| p.att_id == att_id)
-                                .ok_or_else(|| {
-                                    DracoError::DracoError(
-                                        "Missing pending normal entry".to_string(),
-                                    )
-                                })?;
-                            let bits = buffer.decode_u8()?;
-                            if !AttributeOctahedronTransform::is_valid_quantization_bits(
-                                bits as i32,
-                            ) {
-                                return Err(DracoError::DracoError(
-                                    "Invalid normal quantization bits".to_string(),
-                                ));
-                            }
-                            pending_normals[idx].quantization_bits = bits;
+                    3 if bitstream_version >= 0x0200 => {
+                        let idx = pending_normals
+                            .iter()
+                            .position(|p| p.att_id == att_id)
+                            .ok_or_else(|| {
+                                DracoError::DracoError("Missing pending normal entry".to_string())
+                            })?;
+                        let bits = buffer.decode_u8()?;
+                        if !AttributeOctahedronTransform::is_valid_quantization_bits(bits as i32) {
+                            return Err(DracoError::DracoError(
+                                "Invalid normal quantization bits".to_string(),
+                            ));
                         }
+                        pending_normals[idx].quantization_bits = bits;
                     }
                     _ => {}
                 }
@@ -1397,6 +1384,7 @@ impl MeshDecoder {
     }
 
     #[allow(dead_code)]
+    #[allow(clippy::type_complexity)]
     fn generate_point_ids_and_corners_dfs(
         &self,
         mesh: &Mesh,
@@ -1414,6 +1402,7 @@ impl MeshDecoder {
         )
     }
 
+    #[allow(clippy::type_complexity)]
     fn generate_point_ids_and_corners_dfs_for_table(
         mesh: &Mesh,
         corner_table: &CornerTable,
@@ -1650,7 +1639,7 @@ impl MeshDecoder {
         Ok((point_ids, data_to_corner_map, vertex_to_data_map))
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::type_complexity)]
     fn generate_point_ids_and_corners_max_prediction_degree(
         &self,
         mesh: &Mesh,

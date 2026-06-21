@@ -496,9 +496,7 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             return None;
         }
 
-        let Some(out_len) = (self.num_points as usize).checked_mul(self.dimension as usize) else {
-            return None;
-        };
+        let out_len = (self.num_points as usize).checked_mul(self.dimension as usize)?;
         let mut out: Vec<u32> = Vec::new();
         if out.try_reserve_exact(out_len).is_err() {
             return None;

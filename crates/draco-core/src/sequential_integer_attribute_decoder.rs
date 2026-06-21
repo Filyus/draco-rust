@@ -139,9 +139,7 @@ impl SequentialIntegerAttributeDecoder {
         // Draco stores prediction method as int8 (0xFE == -2 == None).
         // Accept 0xFF as None as well for older Rust-produced streams that used
         // the wrong sentinel before this decoder matched the C++ enum exactly.
-        let selected_method = if method_byte == 0xFF {
-            PredictionSchemeMethod::None
-        } else if method_byte == 0xFE {
+        let selected_method = if method_byte == 0xFF || method_byte == 0xFE {
             PredictionSchemeMethod::None
         } else {
             match PredictionSchemeMethod::try_from(method_byte) {

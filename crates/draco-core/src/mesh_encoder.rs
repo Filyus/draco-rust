@@ -1307,6 +1307,7 @@ impl MeshEncoder {
         Ok(num_points)
     }
 
+    #[allow(clippy::type_complexity)]
     fn position_bounds_for_attribute(
         &self,
         att_id: i32,
@@ -1362,6 +1363,7 @@ impl MeshEncoder {
         Self::position_bounds_from_attribute(att, point_ids)
     }
 
+    #[allow(clippy::type_complexity)]
     fn position_bounds_from_attribute(
         att: &PointAttribute,
         point_ids: &[PointIndex],

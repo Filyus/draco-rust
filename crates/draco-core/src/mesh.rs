@@ -155,8 +155,9 @@ impl Mesh {
         // First pass: determine the mapping
         for face in &self.faces {
             for &point_idx in face.iter() {
-                if !old_to_new.contains_key(&point_idx.0) {
-                    old_to_new.insert(point_idx.0, new_id);
+                if let std::collections::hash_map::Entry::Vacant(e) = old_to_new.entry(point_idx.0)
+                {
+                    e.insert(new_id);
                     new_id += 1;
                 }
             }

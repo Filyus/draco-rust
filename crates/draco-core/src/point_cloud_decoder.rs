@@ -470,10 +470,10 @@ impl PointCloudDecoder {
                             att_decoder.init(self, att_id);
                             let mut skip_fn =
                                 move |buf: &mut crate::decoder_buffer::DecoderBuffer<'_>| -> bool {
-                                    if quant_skip_bytes > 0 {
-                                        if buf.try_advance(quant_skip_bytes).is_err() {
-                                            return false;
-                                        }
+                                    if quant_skip_bytes > 0
+                                        && buf.try_advance(quant_skip_bytes).is_err()
+                                    {
+                                        return false;
                                     }
                                     true
                                 };
@@ -559,10 +559,10 @@ impl PointCloudDecoder {
                             att_decoder.init(self, att_id);
                             let mut skip_fn =
                                 move |buf: &mut crate::decoder_buffer::DecoderBuffer<'_>| -> bool {
-                                    if normal_skip_bytes > 0 {
-                                        if buf.try_advance(normal_skip_bytes).is_err() {
-                                            return false;
-                                        }
+                                    if normal_skip_bytes > 0
+                                        && buf.try_advance(normal_skip_bytes).is_err()
+                                    {
+                                        return false;
                                     }
                                     true
                                 };
@@ -621,48 +621,43 @@ impl PointCloudDecoder {
 
                 for (local_i, &att_id) in att_ids.iter().enumerate() {
                     match decoder_types[local_i] {
-                        2 => {
-                            if bitstream_version >= 0x0102 {
-                                let idx = pending_quant
-                                    .iter()
-                                    .position(|p| p.att_id == att_id)
-                                    .ok_or_else(|| {
-                                        DracoError::DracoError(
-                                            "Missing pending quantized attribute transform"
-                                                .to_string(),
-                                        )
-                                    })?;
-                                let original = pc.try_attribute(att_id)?;
-                                if !pending_quant[idx]
-                                    .transform
-                                    .decode_parameters(original, buffer)
-                                {
-                                    return Err(DracoError::DracoError(
-                                        "Failed to decode quantization parameters".to_string(),
-                                    ));
-                                }
+                        2 if bitstream_version >= 0x0102 => {
+                            let idx = pending_quant
+                                .iter()
+                                .position(|p| p.att_id == att_id)
+                                .ok_or_else(|| {
+                                    DracoError::DracoError(
+                                        "Missing pending quantized attribute transform".to_string(),
+                                    )
+                                })?;
+                            let original = pc.try_attribute(att_id)?;
+                            if !pending_quant[idx]
+                                .transform
+                                .decode_parameters(original, buffer)
+                            {
+                                return Err(DracoError::DracoError(
+                                    "Failed to decode quantization parameters".to_string(),
+                                ));
                             }
                         }
-                        3 => {
-                            if bitstream_version >= 0x0102 {
-                                let idx = pending_normals
-                                    .iter()
-                                    .position(|p| p.att_id == att_id)
-                                    .ok_or_else(|| {
+                        3 if bitstream_version >= 0x0102 => {
+                            let idx = pending_normals
+                                .iter()
+                                .position(|p| p.att_id == att_id)
+                                .ok_or_else(|| {
                                     DracoError::DracoError(
                                         "Missing pending normal attribute transform".to_string(),
                                     )
                                 })?;
-                                let quantization_bits = buffer.decode_u8()?;
-                                if !AttributeOctahedronTransform::is_valid_quantization_bits(
-                                    quantization_bits as i32,
-                                ) {
-                                    return Err(DracoError::DracoError(
-                                        "Invalid normal quantization bits".to_string(),
-                                    ));
-                                }
-                                pending_normals[idx].quantization_bits = quantization_bits;
+                            let quantization_bits = buffer.decode_u8()?;
+                            if !AttributeOctahedronTransform::is_valid_quantization_bits(
+                                quantization_bits as i32,
+                            ) {
+                                return Err(DracoError::DracoError(
+                                    "Invalid normal quantization bits".to_string(),
+                                ));
                             }
+                            pending_normals[idx].quantization_bits = quantization_bits;
                         }
                         _ => {}
                     }

@@ -585,10 +585,8 @@ fn checked_vec2_mul_i64(a: &[i64; 2], s: i64) -> Option<[i64; 2]> {
 
 #[cfg(feature = "decoder")]
 fn checked_vec2_mul_u64(a: &[i64; 2], s: u64) -> Option<[i64; 2]> {
-    if s > i64::MAX as u64 {
-        if a[0] != 0 || a[1] != 0 {
-            return None;
-        }
+    if s > i64::MAX as u64 && (a[0] != 0 || a[1] != 0) {
+        return None;
     }
     checked_vec2_mul_i64(a, s as i64)
 }

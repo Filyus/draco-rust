@@ -20,6 +20,12 @@ pub struct MeshEdgebreakerTraversalValenceEncoder {
     context_symbols: Vec<Vec<u32>>,
 }
 
+impl Default for MeshEdgebreakerTraversalValenceEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MeshEdgebreakerTraversalValenceEncoder {
     pub fn new() -> Self {
         Self {
@@ -181,9 +187,7 @@ impl MeshEdgebreakerTraversalValenceEncoder {
                 // `MeshEdgebreakerTraversalValenceEncoder` doesn't seem to set distinct options.
                 // We'll use a default compression level (e.g. 7) or pass it in.
                 // Let's assume we can change signature of done later if needed.
-                let options = crate::symbol_encoding::SymbolEncodingOptions {
-                    compression_level: compression_level,
-                };
+                let options = crate::symbol_encoding::SymbolEncodingOptions { compression_level };
                 if !crate::symbol_encoding::encode_symbols(symbols, 1, &options, out_buffer) {
                     // Handle error? For now print to stderr
                     eprintln!("Error encoding valence symbols");

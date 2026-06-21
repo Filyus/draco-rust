@@ -897,7 +897,7 @@ impl MeshEdgebreakerEncoder {
                     }
 
                     // DEBUG: Add detailed trace for specific data_id range
-                    let debug_trace = debug_cmp && (data_id >= 1875 && data_id <= 1880);
+                    let debug_trace = debug_cmp && (1875..=1880).contains(&data_id);
 
                     if !on_boundary {
                         // Continue to right corner (GetRightCorner = Opposite(Next))

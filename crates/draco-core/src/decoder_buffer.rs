@@ -204,7 +204,7 @@ impl<'a> DecoderBuffer<'a> {
             bytes.copy_from_slice(&self.data[byte_offset..byte_offset + 8]);
             u64::from_le_bytes(bytes)
         } else {
-            let needed_bytes = ((bit_shift + nbits + 7) / 8) as usize;
+            let needed_bytes = (bit_shift + nbits).div_ceil(8) as usize;
             if remaining < needed_bytes {
                 return Err(DracoError::BufferError(
                     "Unexpected end of bit stream".into(),

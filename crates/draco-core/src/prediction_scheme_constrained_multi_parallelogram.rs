@@ -447,7 +447,7 @@ where
                         }
                     }
                     // C++ uses truncating integer division (not rounding)
-                    let val = sum / num_used as i32;
+                    let val = sum / num_used;
                     multi_pred_vals[k] = DataType::from(val);
                 }
 
@@ -520,7 +520,7 @@ where
                                     sum = (sum as u32).wrapping_add(pred_val as u32) as i32;
                                 }
                             }
-                            let val = sum / num_used as i32;
+                            let val = sum / num_used;
                             tmp_pred_vals[k] = DataType::from(val);
                         }
                     }
@@ -607,7 +607,7 @@ where
                         }
                     }
                     // C++ uses truncating integer division (not rounding)
-                    let val = sum / best_num_used as i32;
+                    let val = sum / best_num_used;
                     multi_pred_vals[k] = DataType::from(val);
                 }
 

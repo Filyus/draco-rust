@@ -270,7 +270,7 @@ impl<'a> EdgebreakerTraversalDecoder for MeshEdgebreakerTraversalValenceDecoder<
         } else {
             active_valence
         };
-        self.active_context = (clamped - self.min_valence) as i32;
+        self.active_context = clamped - self.min_valence;
 
         // Record processed connectivity corner (like InternalTraversalDecoder)
         self.processed_connectivity_corners.push(corner.0);

@@ -454,7 +454,10 @@ pub fn decode_symbols(
     if num_values == 0 {
         return true;
     }
-    if num_components == 0 || symbols.len() < num_values || num_values % num_components != 0 {
+    if num_components == 0
+        || symbols.len() < num_values
+        || !num_values.is_multiple_of(num_components)
+    {
         return false;
     }
 
@@ -521,7 +524,10 @@ fn decode_tagged_symbols(
     in_buffer: &mut DecoderBuffer,
     symbols: &mut [u32],
 ) -> bool {
-    if num_components == 0 || symbols.len() < num_values || num_values % num_components != 0 {
+    if num_components == 0
+        || symbols.len() < num_values
+        || !num_values.is_multiple_of(num_components)
+    {
         return false;
     }
 
