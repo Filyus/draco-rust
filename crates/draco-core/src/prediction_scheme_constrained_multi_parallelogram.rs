@@ -795,6 +795,22 @@ where
         // 2) crease-edge flag streams
         // 3) underlying transform data (e.g. Wrap bounds)
 
+        // Pre-2.2 streams prefix a prediction-mode byte (only the optimal
+        // multi-parallelogram mode is supported). 2.2+ dropped it; without this
+        // read the mode byte is consumed as the first context's flag count,
+        // leaving every crease-edge stream empty.
+        #[cfg(feature = "legacy_bitstream_decode")]
+        {
+            let bitstream_version =
+                ((buffer.version_major() as u16) << 8) | buffer.version_minor() as u16;
+            if bitstream_version < 0x0202 {
+                match buffer.decode_u8() {
+                    Ok(0) => {} // OPTIMAL_MULTI_PARALLELOGRAM
+                    _ => return false,
+                }
+            }
+        }
+
         // Decode crease edges.
         let corner_table = match self.mesh_data.corner_table() {
             Some(ct) => ct,

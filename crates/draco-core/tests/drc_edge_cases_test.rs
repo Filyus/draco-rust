@@ -719,3 +719,53 @@ fn legacy_valence_edgebreaker_streams_decode_to_reference_geometry() {
         );
     }
 }
+
+/// Pre-2.2 constrained-multi-parallelogram prediction prefixes a prediction-mode
+/// byte that the 2.2 layout dropped. Without reading it, that byte is consumed as
+/// the first crease-edge flag count, leaving the streams empty and breaking
+/// prediction. The same positions-only sphere encoded at bitstream 1.1.0 (cl 10,
+/// which selects this predictor) must decode to the same geometry as the 2.2
+/// encoding.
+#[cfg(feature = "legacy_bitstream_decode")]
+#[test]
+fn legacy_constrained_multi_parallelogram_decodes_to_reference_geometry() {
+    fn decode(fixture: &str) -> Mesh {
+        let bytes = std::fs::read(repo_testdata_dir().join(fixture))
+            .unwrap_or_else(|e| panic!("read {fixture}: {e}"));
+        let mut buffer = DecoderBuffer::new(&bytes);
+        let mut mesh = Mesh::new();
+        MeshDecoder::new()
+            .decode(&mut buffer, &mut mesh)
+            .unwrap_or_else(|e| panic!("{fixture} decode: {e:?}"));
+        mesh
+    }
+    fn sorted_positions(mesh: &Mesh) -> Vec<[u32; 3]> {
+        use draco_core::geometry_attribute::GeometryAttributeType;
+        let att = mesh.attribute(mesh.named_attribute_id(GeometryAttributeType::Position));
+        let buffer = att.buffer();
+        let stride = att.byte_stride() as usize;
+        let mut out = Vec::with_capacity(att.size());
+        for i in 0..att.size() {
+            let off = i * stride;
+            let mut v = [0u32; 3];
+            for k in 0..3 {
+                let mut b = [0u8; 4];
+                buffer.read(off + k * 4, &mut b);
+                v[k] = u32::from_le_bytes(b);
+            }
+            out.push(v);
+        }
+        out.sort_unstable();
+        out
+    }
+
+    let early = decode("legacy_draco/sphere_pos.mesh_eb_cmp.1.1.0.drc");
+    let modern = decode("legacy_draco/sphere_pos.mesh_eb_cmp.2.2.drc");
+    assert_eq!(early.num_faces(), modern.num_faces(), "face count");
+    assert_eq!(early.num_points(), modern.num_points(), "point count");
+    assert_eq!(
+        sorted_positions(&early),
+        sorted_positions(&modern),
+        "pre-2.2 constrained-multi geometry differs from the 2.2 encoding"
+    );
+}
