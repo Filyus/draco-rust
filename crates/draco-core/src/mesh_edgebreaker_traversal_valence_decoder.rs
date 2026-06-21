@@ -105,6 +105,7 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
         in_buffer: &mut DecoderBuffer,
         num_vertices: usize,
         bitstream_version: u16,
+        max_context_symbols: usize,
     ) -> bool {
         self.num_vertices = num_vertices;
 
@@ -148,11 +149,16 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
         self.context_counters = vec![0; num_unique_valences];
 
         // For each context, read count and symbols
+        let mut total_context_symbols = 0usize;
         for i in 0..num_unique_valences {
             // Read varint count
             let num_symbols = match in_buffer.decode_varint() {
                 Ok(v) => v as usize,
                 Err(_) => return false,
+            };
+            total_context_symbols = match total_context_symbols.checked_add(num_symbols) {
+                Some(v) if v <= max_context_symbols => v,
+                _ => return false,
             };
             if num_symbols > 0 {
                 self.context_symbols[i].resize(num_symbols, 0);
@@ -350,6 +356,45 @@ impl<'a> EdgebreakerTraversalDecoder for MeshEdgebreakerTraversalValenceDecoder<
 
         // Record processed connectivity corner (like InternalTraversalDecoder)
         self.processed_connectivity_corners.push(corner.0);
+    }
+}
+
+#[cfg(all(test, feature = "legacy_bitstream_decode"))]
+mod legacy_tests {
+    use super::*;
+
+    fn append_varint(bytes: &mut Vec<u8>, mut value: u64) {
+        loop {
+            let mut byte = (value & 0x7F) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            bytes.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_oversized_legacy_context_symbol_count_before_resize() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // legacy split-symbol count
+        bytes.push(0); // valence mode 2..7
+        append_varint(&mut bytes, u32::MAX as u64); // first context symbol count
+
+        let mut buffer = DecoderBuffer::new(&bytes);
+        buffer.set_version(1, 1);
+        let mut decoder = MeshEdgebreakerTraversalValenceDecoder::new(
+            RAnsBitDecoder::new(),
+            false,
+            Vec::new(),
+            None,
+            None,
+        );
+
+        assert!(!decoder.init_from_buffer(&mut buffer, 4, 0x0101, 4));
     }
 }
 

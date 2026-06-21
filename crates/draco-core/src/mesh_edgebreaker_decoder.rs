@@ -777,8 +777,12 @@ impl MeshEdgebreakerDecoder {
                 legacy_direct_symbol_bits.take(),
             );
                 // Initialize contexts by reading counts/symbol arrays from the buffer
-                if !valence_decoder.init_from_buffer(in_buffer, max_num_vertices, bitstream_version)
-                {
+                if !valence_decoder.init_from_buffer(
+                    in_buffer,
+                    max_num_vertices,
+                    bitstream_version,
+                    actual_num_symbols,
+                ) {
                     return Err(DracoError::DracoError(
                         "Failed to init valence traversal decoder".to_string(),
                     ));
