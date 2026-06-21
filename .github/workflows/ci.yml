@@ -20,6 +20,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+          targets: wasm32-unknown-unknown
 
       - name: Check crates formatting
         run: cargo fmt --manifest-path crates/Cargo.toml --all -- --check
@@ -60,6 +61,15 @@ jobs:
       - name: Test draco-gltf
         run: cargo test --manifest-path crates/Cargo.toml -p draco-gltf
 
+      # draco-gltf adds wasm support and an optional `image` feature (off = the
+      # smaller wasm build). Neither is exercised by the web workspace (which
+      # wraps draco-io), so guard the no-image build and the wasm32 target here.
+      - name: Check draco-gltf feature/target combinations
+        run: |
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --no-default-features
+
       - name: Test web workspace
         run: cargo test --manifest-path web/Cargo.toml --workspace
 
@@ -71,3 +81,8 @@ jobs:
       # set and metadata through --list.
       - name: Check draco-io package file list
         run: cargo package --manifest-path crates/draco-io/Cargo.toml --list
+
+      # draco-gltf depends on published draco-core + draco-io, so a full package
+      # is not possible pre-publication; still verify its file set and metadata.
+      - name: Check draco-gltf package file list
+        run: cargo package --manifest-path crates/draco-gltf/Cargo.toml --list
