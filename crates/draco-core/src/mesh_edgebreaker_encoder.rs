@@ -148,6 +148,10 @@ pub struct MeshEdgebreakerEncoder {
 
     #[cfg(feature = "edgebreaker_valence_encode")]
     valence_encoder: Option<MeshEdgebreakerTraversalValenceEncoder>,
+    /// When set, emit the legacy predictive (type-1) traversal instead of
+    /// standard/valence. Uses the standard traversal to collect symbols, then a
+    /// post-pass replays them to build the prediction + main symbol streams.
+    force_predictive: bool,
 }
 
 impl MeshEdgebreakerEncoder {
@@ -185,7 +189,13 @@ impl MeshEdgebreakerEncoder {
             verbose_logging: crate::debug_env_enabled("DRACO_VERBOSE"),
             #[cfg(feature = "edgebreaker_valence_encode")]
             valence_encoder: None,
+            force_predictive: false,
         }
+    }
+
+    /// Selects the legacy predictive (type-1) traversal for the next encode.
+    pub fn set_force_predictive(&mut self, force: bool) {
+        self.force_predictive = force;
     }
 
     /// Find the starting corner for encoding a component.
@@ -271,7 +281,7 @@ impl MeshEdgebreakerEncoder {
         let is_tiny_mesh = mesh.num_faces() < 1000;
 
         #[cfg(feature = "edgebreaker_valence_encode")]
-        if speed < 5 && !is_tiny_mesh {
+        if speed < 5 && !is_tiny_mesh && !self.force_predictive {
             let mut ve = MeshEdgebreakerTraversalValenceEncoder::new();
             ve.init(corner_table);
             self.valence_encoder = Some(ve);
@@ -368,11 +378,17 @@ impl MeshEdgebreakerEncoder {
             self.valence_encoder = valence_encoder;
         }
 
-        // Write traversal decoder type (Standard = 0, Valence = 2).
+        // Write traversal decoder type (Standard = 0, Predictive = 1, Valence = 2).
         #[cfg(feature = "edgebreaker_valence_encode")]
-        let traversal_decoder_type = if self.valence_encoder.is_some() { 2 } else { 0 };
+        let traversal_decoder_type = if self.force_predictive {
+            1
+        } else if self.valence_encoder.is_some() {
+            2
+        } else {
+            0
+        };
         #[cfg(not(feature = "edgebreaker_valence_encode"))]
-        let traversal_decoder_type = 0;
+        let traversal_decoder_type = if self.force_predictive { 1 } else { 0 };
         out_buffer.encode_u8(traversal_decoder_type);
 
         let bitstream_version =
@@ -1370,6 +1386,11 @@ impl MeshEdgebreakerEncoder {
             println!("DEBUG: Encoder symbol faces (forward): {:?}", faces);
         }
 
+        #[cfg(feature = "legacy_bitstream_encode")]
+        if self.force_predictive {
+            return self.encode_predictive_traversal(corner_table, attribute_connectivity, out_buffer);
+        }
+
         #[cfg(feature = "edgebreaker_valence_encode")]
         if let Some(valence_encoder) = self.valence_encoder.as_ref() {
             let bitstream_version =
@@ -1481,6 +1502,152 @@ impl MeshEdgebreakerEncoder {
         self.encode_attribute_seams(corner_table, attribute_connectivity, &mut traversal_buffer);
 
         out_buffer.encode_data(traversal_buffer.data());
+        Ok(())
+    }
+
+    /// Emit the legacy predictive (type-1) traversal block. Mirror of C++
+    /// `MeshEdgeBreakerTraversalPredictiveEncoder`: replay the standard-traversal
+    /// symbols, predicting the *preceding* symbol from the pivot vertex valence
+    /// (R if valence < 6, else C). Correct predictions cost one bit; mispredicted
+    /// and unpredicted symbols are stored in the main symbol stream. Predictive is
+    /// a pre-2.0 format, so counts are fixed u32.
+    #[cfg(feature = "legacy_bitstream_encode")]
+    fn encode_predictive_traversal(
+        &self,
+        corner_table: &CornerTable,
+        attribute_connectivity: &[EdgebreakerAttributeConnectivity],
+        out_buffer: &mut EncoderBuffer,
+    ) -> Result<(), DracoError> {
+        // A value that is never a real symbol id (0..4): forces a misprediction,
+        // matching C++ TOPOLOGY_INVALID for split (negative-valence) vertices.
+        const INVALID_SYMBOL: i32 = 99;
+
+        let mut vertex_valences: Vec<i32> = (0..corner_table.num_vertices())
+            .map(|v| corner_table.valence(VertexIndex(v as u32)))
+            .collect();
+        let predict = |valences: &[i32], pivot: VertexIndex| -> i32 {
+            match valences.get(pivot.0 as usize).copied() {
+                Some(v) if v < 0 => INVALID_SYMBOL,
+                Some(v) if v < 6 => 3, // R
+                Some(_) => 0,          // C
+                None => INVALID_SYMBOL,
+            }
+        };
+
+        let mut predictions: Vec<bool> = Vec::new();
+        let mut stored_symbols: Vec<u32> = Vec::new();
+        let mut prev_symbol: i32 = -1;
+        let mut num_split_symbols: u32 = 0;
+
+        for i in 0..self.symbols.len() {
+            let symbol = self.symbols[i];
+            let last_corner = match self.symbol_to_encoder_corner.get(i) {
+                Some(&c)
+                    if c != INVALID_CORNER_INDEX
+                        && (c.0 as usize) < corner_table.num_corners() =>
+                {
+                    c
+                }
+                _ => {
+                    return Err(DracoError::DracoError(
+                        "Invalid corner for predictive traversal".to_string(),
+                    ))
+                }
+            };
+            let next_v = corner_table.vertex(corner_table.next(last_corner)).0 as usize;
+            let prev_v = corner_table.vertex(corner_table.previous(last_corner)).0 as usize;
+            let corner_v = corner_table.vertex(last_corner).0 as usize;
+
+            let mut predicted_symbol: i32 = -1;
+            match symbol {
+                0 => {
+                    // C
+                    predicted_symbol = predict(&vertex_valences, VertexIndex(next_v as u32));
+                    vertex_valences[next_v] -= 1;
+                    vertex_valences[prev_v] -= 1;
+                }
+                1 => {
+                    // S
+                    vertex_valences[next_v] -= 1;
+                    vertex_valences[prev_v] -= 1;
+                    vertex_valences[corner_v] = -1;
+                    num_split_symbols += 1;
+                }
+                3 => {
+                    // R
+                    predicted_symbol = predict(&vertex_valences, VertexIndex(next_v as u32));
+                    vertex_valences[corner_v] -= 1;
+                    vertex_valences[next_v] -= 1;
+                    vertex_valences[prev_v] -= 2;
+                }
+                2 => {
+                    // L
+                    vertex_valences[corner_v] -= 1;
+                    vertex_valences[next_v] -= 2;
+                    vertex_valences[prev_v] -= 1;
+                }
+                4 => {
+                    // E
+                    vertex_valences[corner_v] -= 2;
+                    vertex_valences[next_v] -= 2;
+                    vertex_valences[prev_v] -= 2;
+                }
+                _ => {}
+            }
+
+            let mut store_prev = true;
+            if predicted_symbol != -1 {
+                if predicted_symbol == prev_symbol {
+                    predictions.push(true);
+                    store_prev = false;
+                } else if prev_symbol != -1 {
+                    predictions.push(false);
+                }
+            }
+            if store_prev && prev_symbol != -1 {
+                stored_symbols.push(prev_symbol as u32);
+            }
+            prev_symbol = symbol as i32;
+        }
+        if prev_symbol != -1 {
+            stored_symbols.push(prev_symbol as u32);
+        }
+
+        // Region 1: main symbol stream (stored symbols, reversed, raw 1-or-3 bits).
+        out_buffer.start_bit_encoding(self.symbols.len().max(1) * 3, true);
+        for &sym in stored_symbols.iter().rev() {
+            let (bits, val) = match EdgebreakerSymbol::from(sym) {
+                EdgebreakerSymbol::Center => (1u32, 0u32),
+                EdgebreakerSymbol::Split => (3, 1),
+                EdgebreakerSymbol::Left => (3, 3),
+                EdgebreakerSymbol::Right => (3, 5),
+                EdgebreakerSymbol::End | EdgebreakerSymbol::Hole => (3, 7),
+            };
+            out_buffer.encode_least_significant_bits32(bits, val);
+        }
+        out_buffer.end_bit_encoding();
+
+        // Region 2: start faces (raw bits).
+        out_buffer.start_bit_encoding(self.init_face_configurations.len().max(1), true);
+        for &is_interior in &self.init_face_configurations {
+            out_buffer.encode_least_significant_bits32(1, is_interior as u32);
+        }
+        out_buffer.end_bit_encoding();
+
+        // Attribute seams.
+        self.encode_attribute_seams(corner_table, attribute_connectivity, out_buffer);
+
+        // Split-symbol count (predictive is pre-2.0: fixed u32).
+        out_buffer.encode_u32(num_split_symbols);
+
+        // Prediction stream: bits stored in reverse (the decoder reads LIFO).
+        let mut prediction_encoder = RAnsBitEncoder::new();
+        prediction_encoder.start_encoding();
+        for &pred in predictions.iter().rev() {
+            prediction_encoder.encode_bit(pred);
+        }
+        prediction_encoder.end_encoding(out_buffer);
+
         Ok(())
     }
 

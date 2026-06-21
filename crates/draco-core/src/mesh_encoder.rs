@@ -428,6 +428,12 @@ impl MeshEncoder {
             .expect("corner_table must be set before edgebreaker encoding");
 
         let mut encoder = MeshEdgebreakerEncoder::new(mesh.num_faces(), mesh.num_points());
+        // Opt-in legacy predictive (type-1) traversal, for round-tripping the
+        // pre-0.10.0 connectivity. Requires a < 2.0 target version.
+        #[cfg(feature = "legacy_bitstream_encode")]
+        encoder.set_force_predictive(
+            self.options.get_global_int("force_predictive_traversal", 0) == 1,
+        );
         let (point_ids, data_to_corner_map, vertex_to_data_map) = encoder.encode_connectivity(
             mesh,
             corner_table,

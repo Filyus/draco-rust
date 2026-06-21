@@ -161,3 +161,38 @@ fn legacy_valence_roundtrip_high_compression() {
     );
 }
 
+/// The legacy predictive (type-1) traversal, forced via the encoder option, must
+/// round-trip to the same geometry as the modern path. It targets a pre-2.0
+/// stream (Draco 0.9.1-style); the decoder handles type-1 behind
+/// legacy_bitstream_decode.
+#[test]
+fn legacy_predictive_roundtrip_preserves_geometry() {
+    let mesh = build_grid(33);
+    let reference = encode_decode(&mesh, 2, 2).expect("modern reference round-trip");
+    let reference_positions = sorted_positions(&reference);
+
+    let mut opts = EncoderOptions::new();
+    opts.set_version(1, 2);
+    opts.set_encoding_method(1); // Edgebreaker
+    opts.set_global_int("encoding_speed", 0);
+    opts.set_global_int("decoding_speed", 0);
+    opts.set_global_int("force_predictive_traversal", 1);
+
+    let mut enc = MeshEncoder::new();
+    enc.set_mesh(mesh.clone());
+    let mut out = EncoderBuffer::new();
+    enc.encode(&opts, &mut out).expect("predictive encode");
+
+    let mut buf = DecoderBuffer::new(out.data());
+    let mut decoded = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut buf, &mut decoded)
+        .expect("predictive decode");
+
+    assert_eq!(decoded.num_faces(), mesh.num_faces(), "predictive: face count");
+    assert_eq!(
+        sorted_positions(&decoded),
+        reference_positions,
+        "predictive geometry differs from the modern round-trip"
+    );
+}
