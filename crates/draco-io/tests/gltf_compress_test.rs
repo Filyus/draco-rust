@@ -484,7 +484,7 @@ fn compresses_asset_requiring_unknown_extension() {
 
 /// A triangle whose `_FEATURE_ID` attribute uses a glTF 2.1 accessor component
 /// type (`5124` = `SIGNED_INT`/i32) that Draco cannot encode. See
-/// `dev/docs/format-research/gltf-2.1-readiness.md`.
+/// `crates/draco-gltf/GLTF_2_1.md`.
 fn triangle_with_2_1_component_type_glb() -> Vec<u8> {
     let mut bin = Vec::new();
     // positions (offset 0, len 36)
@@ -530,7 +530,7 @@ fn compress_skips_primitive_with_gltf_2_1_component_type() {
     // A primitive carrying an attribute typed with a glTF 2.1 component type the
     // Draco encoder cannot represent must be left uncompressed and preserved
     // verbatim — never silently corrupted. (Safe behavior pending real 2.1
-    // support; see dev/docs/format-research/gltf-2.1-readiness.md.)
+    // support; see crates/draco-gltf/GLTF_2_1.md.)
     let input = triangle_with_2_1_component_type_glb();
     let output = compress_gltf_bytes(&input, None).expect("compression must not fail");
     let (doc, _) = split_glb(&output);

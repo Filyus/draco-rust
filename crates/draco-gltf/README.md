@@ -116,6 +116,13 @@ pass them in. For plugging a Draco decoder into a JavaScript glTF loader instead
   buffers (data URIs and the GLB BIN chunk; external files only with a base
   path). Measured size-optimized wasm: ~384 KB → ~279 KB gzip without `image`.
 
+## glTF 2.1
+
+These crates target glTF 2.0. glTF 2.1 (announced 2026, backward-compatible) is
+not implemented yet, but a 2.1 asset is handled safely — 2.0 content is supported,
+new scene-level content is preserved, and attributes using new 2.1 component types
+are kept verbatim rather than corrupted. See [GLTF_2_1.md](GLTF_2_1.md).
+
 ## Where it sits
 
 | Crate | Role | depends on gltf-rs |
