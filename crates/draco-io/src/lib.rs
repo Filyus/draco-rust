@@ -202,7 +202,9 @@ pub use gltf_compress::{
 };
 #[cfg(feature = "gltf-reader")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-reader")))]
-pub use gltf_reader::{DracoPrimitiveInfo, GltfError, GltfReader};
+pub use gltf_reader::{
+    decode_geometry, AccessorSource, DecodedAccessor, DracoPrimitiveInfo, GltfError, GltfReader,
+};
 #[cfg(feature = "gltf-writer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-writer")))]
 pub use gltf_writer::{GltfWriteError, GltfWriter};
