@@ -43,8 +43,8 @@ The C++ reference used here is the local checkout at `D:\Projects\Draco\src`.
 | Point cloud, KD-tree | yes | yes | yes | yes | Core parity path; C++ notes KD-tree is not applicable to float values in some encoder tests. |
 | Triangle mesh, sequential | yes | yes | yes | yes | Core parity path. |
 | Triangle mesh, EdgeBreaker standard | yes | yes | yes | yes | Main compressed mesh path. |
-| Triangle mesh, EdgeBreaker valence | yes | yes | yes | yes | Behind `edgebreaker_valence_decode` / `edgebreaker_valence_encode`. |
-| Triangle mesh, EdgeBreaker predictive type `1` | yes | legacy through `0.9.1` | no | no | Legacy connectivity variant. C++ emitted type `1` in `0.9.1` and replaced it with valence type `2` in `0.10.0` in 2017; current C++ keeps decode compatibility. |
+| Triangle mesh, EdgeBreaker valence | yes | yes | yes | yes | Behind `edgebreaker_valence_decode` / `edgebreaker_valence_encode`. Decode covers every bitstream version (the pre-2.2 layout — main symbol stream, raw start faces, split/mode prefix, pre-2.0 fixed-u32 counts — is handled behind `legacy_bitstream_decode`); encode round-trips bitstream 1.2 through current behind `legacy_bitstream_encode`. |
+| Triangle mesh, EdgeBreaker predictive type `1` | yes | legacy through `0.9.1` | yes | no | Legacy connectivity variant (a binary prediction stream guessing R/C from local valence). C++ emitted type `1` in `0.9.1` and replaced it with valence type `2` in `0.10.0` in 2017. Decode is supported behind `legacy_bitstream_decode` (the 0.9.1 bunny round-trips); encode is not implemented — nothing emits type `1` to round-trip against. |
 
 ## Sequential Attribute Encoders
 
@@ -78,7 +78,7 @@ mapping, belongs above `draco-core`.
 | `MESH_PREDICTION_PARALLELOGRAM` | 1 | yes | yes | yes | yes | yes | Normal mesh path. |
 | `MESH_PREDICTION_MULTI_PARALLELOGRAM` | 2 | yes | deprecated/rejected by public C++ encoder | yes | explicit | no | Compatibility/testing only. |
 | `MESH_PREDICTION_TEX_COORDS_DEPRECATED` | 3 | yes | deprecated/rejected by public C++ encoder | yes | explicit | no | Compatibility/testing only. |
-| `MESH_PREDICTION_CONSTRAINED_MULTI_PARALLELOGRAM` | 4 | yes | yes | yes | yes | yes | Modern multi-parallelogram family. |
+| `MESH_PREDICTION_CONSTRAINED_MULTI_PARALLELOGRAM` | 4 | yes | yes | yes | yes | yes | Modern multi-parallelogram family. The pre-2.2 form (a leading optimal-mode byte; crease-edge rANS streams with a fixed-u32 size prefix) round-trips both directions behind the legacy features. |
 | `MESH_PREDICTION_TEX_COORDS_PORTABLE` | 5 | yes | yes | yes | yes | yes | Modern texcoord path; Rust preserves C++ wrapping behavior. |
 | `MESH_PREDICTION_GEOMETRIC_NORMAL` | 6 | yes | yes | yes | yes | yes | Normal-specific path. |
 
@@ -186,7 +186,7 @@ builds, but they are not raw Draco bitstream features.
 
 | Priority | Item | Why |
 |---:|---|---|
-| 1 | Support legacy decode only from real compatibility targets | EdgeBreaker predictive type `1` and old normal octahedron transform are still C++ decode compatibility targets, but modern C++ encoders do not emit them. |
+| 1 | Legacy decode from real compatibility targets (largely done) | Every bitstream version from `0.9.1` to current now decodes, including EdgeBreaker predictive type `1`, the pre-2.2 valence layout, and the pre-2.2 constrained-multi-parallelogram prediction. The remaining decode-only gap is the old normal octahedron transform id `2` (0.9.1-era normals); the remaining encode gap is predictive type `1`, which nothing emits to round-trip against. |
 | 2 | Keep deprecated prediction schemes explicit | C++ public encoder rejects them; supporting them is for compatibility, not defaults. |
 | 3 | Add broader metadata utilities when needed | Raw and typed `.drc` metadata roundtrip exists; future work is merge/copy helpers if they become useful. |
 | 4 | Keyframe animation wrapper (done) | Implemented as a point-cloud sequential encode/decode wrapper; future work is optional quantization tuning and ergonomics. |
@@ -206,8 +206,16 @@ Important examples:
 - EdgeBreaker predictive connectivity traversal type `1` is deprecated in C++.
   Public Draco `0.9.1` emitted type `1` on the predictive path. Public Draco
   `0.10.0` changed the same path to valence type `2` in 2017, and `1.0.0`
-  already used standard (`0`) or valence (`2`) for encoder output. Type `1`
-  remains a legacy decode compatibility target.
+  already used standard (`0`) or valence (`2`) for encoder output. `draco-core`
+  decodes type `1` (behind `legacy_bitstream_decode`); it does not encode it,
+  since no current tool emits type `1` to round-trip against.
+- The pre-2.2 valence and constrained-multi-parallelogram layouts round-trip in
+  both directions behind the legacy features. The pre-2.2 connectivity differs
+  from current streams in several ways the legacy paths handle: a separate main
+  traversal symbol stream, raw-bit (not rANS) start faces, a split-count/mode
+  prefix, hole events stored after the topology splits, a 2-bit split edge
+  selector, fixed-u32 counts before bitstream 2.0, and an always-present header
+  flags field.
 - `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON` follows the same compatibility shape:
   C++ emitted it for normal prediction through `0.9.1`, switched encoder output
   to `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON_CANONICALIZED` in `0.10.0` in
