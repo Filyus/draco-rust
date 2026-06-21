@@ -5,6 +5,10 @@ released **independently**, one crate per release. Each has its own version in
 `crates/<crate>/Cargo.toml`, its own `crates/<crate>/CHANGELOG.md`, and its own
 `<crate>-vX.Y.Z` release tags.
 
+In the steps below, **`C` is the crate being released** — substitute
+`draco-core`, `draco-io`, or `draco-gltf`. For example, `crate=C` means
+`crate=draco-gltf` when releasing `draco-gltf`.
+
 Normal releases are optimized for a solo maintainer working with an agent:
 
 1. The agent verifies the working tree is clean and current with `origin/main`.
@@ -37,7 +41,7 @@ treat each crate as its own release (its own commit, changelog, and tag).
 ## Normal Release
 
 Use this path after the crate already exists on crates.io and Trusted Publishing
-is configured for it. `C` below is the crate being released.
+is configured for it.
 
 ### 1. Prepare the release locally
 
@@ -151,8 +155,9 @@ tag with the one-off workflow.
 4. Revoke the token.
 5. Create the `C-vX.Y.Z` tag with the one-off workflow (it verifies the version
    is published, then tags): run `First release only: create tag`
-   (`tag-first-release.yml`) with `crate=C`, the version, and the confirmation
-   string. The tag triggers the GitHub Release.
+   (`tag-first-release.yml`) with the crate, the version, and the confirmation
+   string — e.g. for `draco-gltf`: `crate=draco-gltf`, `version=0.1.0`,
+   `confirm=tag draco-gltf`. The tag triggers the GitHub Release.
 6. Configure Trusted Publishing for `C` before its next release.
 
 ## One-Time Setup
