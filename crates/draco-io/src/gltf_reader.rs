@@ -428,7 +428,7 @@ impl<'a> GltfAccessorReader<'a> {
 
         let view_offset = buffer_view.byte_offset.unwrap_or(0);
         let accessor_offset = accessor.byte_offset.unwrap_or(0);
-        if accessor_offset % component_size != 0 {
+        if !accessor_offset.is_multiple_of(component_size) {
             return Err(GltfError::InvalidGltf(format!(
                 "{} byteOffset is not aligned to component size {}",
                 label, component_size
@@ -1049,7 +1049,7 @@ impl GltfReader {
     ) -> Result<()> {
         let accessor_reader = self.accessor_reader();
         let mut attributes: Vec<_> = primitive.attributes.iter().collect();
-        attributes.sort_by(|(left, _), (right, _)| left.cmp(right));
+        attributes.sort_by_key(|(left, _)| *left);
 
         for (semantic, accessor_idx) in attributes {
             if info.attributes.contains_key(semantic) {

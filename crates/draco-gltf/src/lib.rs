@@ -571,11 +571,14 @@ pub fn compress(document: &gltf::Document, buffers: &[Vec<u8>]) -> Result<Vec<u8
     Ok(serde_json::to_vec(&out_doc)?)
 }
 
-/// Collects each primitive's `(mode, [(semantic, accessor index)], indices)`
-/// from the glTF JSON, keyed by `(mesh index, primitive index)`.
+/// One primitive's geometry: `(mode, [(semantic, accessor index)], indices accessor)`.
+type PrimitiveDescriptor = (u32, Vec<(String, usize)>, Option<usize>);
+
+/// Collects each primitive's [`PrimitiveDescriptor`] from the glTF JSON, keyed by
+/// `(mesh index, primitive index)`.
 fn primitive_descriptors(
     doc: &Value,
-) -> std::collections::HashMap<(usize, usize), (u32, Vec<(String, usize)>, Option<usize>)> {
+) -> std::collections::HashMap<(usize, usize), PrimitiveDescriptor> {
     let mut out = std::collections::HashMap::new();
     let Some(meshes) = doc.get("meshes").and_then(Value::as_array) else {
         return out;

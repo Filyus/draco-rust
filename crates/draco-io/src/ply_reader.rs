@@ -1302,7 +1302,7 @@ fn read_ply_source(source: &PlyReaderSource) -> io::Result<ParsedPlyData> {
 }
 
 fn read_ply_bytes(bytes: &[u8]) -> io::Result<ParsedPlyData> {
-    let (header, body_offset) = parse_ply_header(&bytes)?;
+    let (header, body_offset) = parse_ply_header(bytes)?;
 
     match header.format {
         PlyFormat::Ascii => read_ply_ascii_body(&header, &bytes[body_offset..]),

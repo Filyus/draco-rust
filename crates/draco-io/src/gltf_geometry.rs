@@ -252,7 +252,7 @@ pub fn decode_geometry<S: AccessorSource>(
             }
         } else {
             // Non-indexed: generate sequential triangle faces.
-            if mesh.num_points() % 3 != 0 {
+            if !mesh.num_points().is_multiple_of(3) {
                 return Err(GltfError::InvalidGltf(
                     "Non-indexed primitive point count not divisible by 3".into(),
                 ));
