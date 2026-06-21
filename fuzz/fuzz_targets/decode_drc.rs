@@ -7,6 +7,9 @@ use draco_core::point_cloud::PointCloud;
 use draco_core::point_cloud_decoder::PointCloudDecoder;
 use libfuzzer_sys::fuzz_target;
 
+// The fuzz crate enables the legacy decode features for this target so the same
+// coverage-guided campaign exercises shipped legacy `.drc` support as well as
+// the current bitstream paths.
 fuzz_target!(|data: &[u8]| {
     decode_as_mesh(data);
     decode_as_point_cloud(data);

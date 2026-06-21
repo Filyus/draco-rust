@@ -1,9 +1,10 @@
 name: Fuzz
 
-# Coverage-guided decode fuzzing (level 1: bounded smoke on PR/push, with a
-# longer soak available on manual dispatch). The corpus is persisted across runs
-# via the GitHub Actions cache and re-seeded from the committed fixtures each
-# run, so coverage never starts from zero even if the cache is evicted.
+# Coverage-guided decode and glTF-compressor fuzzing (level 1: bounded smoke on
+# PR/push, with a longer soak available on manual dispatch). The decode corpus
+# is persisted across runs via the GitHub Actions cache and re-seeded from the
+# committed fixtures each run, so coverage never starts from zero even if the
+# cache is evicted.
 #
 # ClusterFuzzLite (cflite_*.yml) provides the heavier continuous-fuzzing layer
 # (crash dedup, batch mode); this workflow is the lightweight in-repo gate.
@@ -25,7 +26,7 @@ permissions:
 
 jobs:
   fuzz:
-    name: decode_drc + compress_gltf
+    name: decode_drc legacy + compress_gltf
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -60,6 +61,9 @@ jobs:
       - name: Seed corpus from fixtures
         run: ./fuzz/seed_corpus.sh
 
+      # The decode target includes legacy decode features so old bitstream paths
+      # get coverage-guided fuzzing, not just deterministic fixture tests.
+      #
       # -O builds in release mode WITHOUT cargo-fuzz's default debug-assertions
       # /overflow-checks, so the campaign targets shipped behavior. The decoder
       # intentionally wraps (matching C++) and keeps DRACO_DCHECK-equivalent

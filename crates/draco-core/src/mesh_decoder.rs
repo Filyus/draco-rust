@@ -523,7 +523,15 @@ impl MeshDecoder {
             let mut first_c = c;
             if is_vertex_on_seam[v] {
                 let mut act_c = seam_swing_left(first_c);
+                let mut swing_steps = 0usize;
+                let max_swing_steps = base_ct.num_corners().saturating_add(1);
                 while act_c != INVALID_CORNER_INDEX {
+                    swing_steps += 1;
+                    if swing_steps > max_swing_steps {
+                        return Err(DracoError::DracoError(
+                            "Attribute seam left-swing traversal did not terminate".to_string(),
+                        ));
+                    }
                     first_c = act_c;
                     act_c = seam_swing_left(act_c);
                 }
@@ -533,7 +541,15 @@ impl MeshDecoder {
             ct.vertex_corners.push(first_c);
 
             let mut act_c = base_ct.swing_right(first_c);
+            let mut swing_steps = 0usize;
+            let max_swing_steps = base_ct.num_corners().saturating_add(1);
             while act_c != INVALID_CORNER_INDEX && act_c != first_c {
+                swing_steps += 1;
+                if swing_steps > max_swing_steps {
+                    return Err(DracoError::DracoError(
+                        "Attribute seam right-swing traversal did not terminate".to_string(),
+                    ));
+                }
                 if is_edge_on_seam[base_ct.next(act_c).0 as usize] {
                     first_vertex_id = VertexIndex(num_new_vertices as u32);
                     num_new_vertices += 1;
@@ -614,7 +630,15 @@ impl MeshDecoder {
                     let vertex_at_first = attr_ct.vertex(c);
                     let mut act_c = base_ct.swing_right(c);
                     let mut seam_found = false;
+                    let mut swing_steps = 0usize;
+                    let max_swing_steps = base_ct.num_corners().saturating_add(1);
                     while act_c != INVALID_CORNER_INDEX && act_c != c {
+                        swing_steps += 1;
+                        if swing_steps > max_swing_steps {
+                            return Err(DracoError::DracoError(
+                                "Edgebreaker seam search traversal did not terminate".to_string(),
+                            ));
+                        }
                         if attr_ct.vertex(act_c) != vertex_at_first {
                             first_corner = act_c;
                             seam_found = true;
@@ -634,7 +658,15 @@ impl MeshDecoder {
 
             let mut prev_c = c;
             c = base_ct.swing_right(c);
+            let mut swing_steps = 0usize;
+            let max_swing_steps = base_ct.num_corners().saturating_add(1);
             while c != INVALID_CORNER_INDEX && c != first_corner {
+                swing_steps += 1;
+                if swing_steps > max_swing_steps {
+                    return Err(DracoError::DracoError(
+                        "Edgebreaker point assignment traversal did not terminate".to_string(),
+                    ));
+                }
                 let attribute_seam = self
                     .edgebreaker_attribute_corner_tables
                     .iter()

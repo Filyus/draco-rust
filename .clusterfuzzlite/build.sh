@@ -1,6 +1,7 @@
 #!/bin/bash -eu
 # ClusterFuzzLite / OSS-Fuzz build script for the cargo-fuzz targets
-# (`decode_drc`, `compress_gltf`).
+# (`decode_drc`, `compress_gltf`). The `decode_drc` target is built with legacy
+# decode features enabled by fuzz/Cargo.toml.
 #
 # This repository keeps the workspace under crates/ and has no Cargo.toml at the
 # root, so cargo-fuzz must be pointed at the fuzz project with `--fuzz-dir fuzz`.

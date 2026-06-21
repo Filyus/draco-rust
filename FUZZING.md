@@ -12,11 +12,13 @@ status, threat model, and known residual risk live in
 
 | Target | Path | Surface |
 |---|---|---|
-| `decode_drc` | [`fuzz/fuzz_targets/decode_drc.rs`](fuzz/fuzz_targets/decode_drc.rs) | Feeds each input through both `MeshDecoder` and `PointCloudDecoder` with default-disabled legacy features. |
+| `decode_drc` | [`fuzz/fuzz_targets/decode_drc.rs`](fuzz/fuzz_targets/decode_drc.rs) | Feeds each input through both `MeshDecoder` and `PointCloudDecoder`, including the legacy decode features used for old `.drc` streams. |
+| `compress_gltf` | [`fuzz/fuzz_targets/compress_gltf.rs`](fuzz/fuzz_targets/compress_gltf.rs) | Feeds arbitrary glTF/GLB bytes into the document-preserving glTF compressor with external file resolution disabled. |
 
-The fuzz crate builds `draco-core` with `default-features = false` and only the
-`decoder` + `point_cloud_decode` features, matching the smallest realistic
-untrusted-decode profile.
+The fuzz crate builds `draco-core` with `default-features = false` and enables
+only the decode surface needed by the target: `decoder`, `point_cloud_decode`,
+`edgebreaker_valence_decode`, and `legacy_bitstream_decode`. This keeps encoder
+code out of the campaign while still fuzzing the shipped legacy decode paths.
 
 ### `-O`: fuzz with production (release) semantics
 
@@ -76,8 +78,11 @@ pwsh fuzz/seed_corpus.ps1
 ```
 
 Seeding from the real fixture inventory (point clouds, sequential/EdgeBreaker
-meshes, legacy 1.0.0/1.1.0 streams, KD-tree streams) gives the fuzzer good
+meshes, legacy 0.9.1/1.0.0/1.1.0 streams, KD-tree streams) gives the fuzzer good
 coverage immediately instead of rediscovering the container format from scratch.
+The legacy fixtures are especially important because they exercise pre-2.2
+connectivity layouts, legacy valence/predictive traversal, and old normal
+octahedron transform data.
 
 ## Running
 
@@ -86,10 +91,13 @@ This repository keeps the workspace manifest under `crates/` and has no
 fuzz project with `--fuzz-dir fuzz`.
 
 ```powershell
-# Bounded smoke run (CI / pre-release gate)
+# Bounded decode smoke run (CI / pre-release gate)
 cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
 
-# Longer soak run
+# Bounded glTF compressor smoke run
+cargo +nightly fuzz run -O compress_gltf --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
+
+# Longer decode soak run
 cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=3600 -rss_limit_mb=4096
 ```
 
@@ -144,8 +152,9 @@ changes, plus deeper runs on demand. Trigger a manual run with
 
 **Level 1 — lightweight in-repo gate ([`.github/workflows/fuzz.yml`](.github/workflows/fuzz.yml)):**
 
-- Bounded smoke run (`-max_total_time=120`) on every pull request and push to
-  `main`. A manual dispatch runs a longer soak (`-max_total_time=1800`).
+- Bounded smoke runs (`-max_total_time=120`) for `decode_drc` and
+  `compress_gltf` on every pull request and push to `main`. A manual dispatch
+  runs longer soaks (`-max_total_time=1800`).
 - The corpus is persisted across runs via the GitHub Actions cache and
   re-seeded from the committed fixtures each run, so coverage never starts from
   zero even if the cache entry is evicted.
@@ -158,9 +167,9 @@ changes, plus deeper runs on demand. Trigger a manual run with
 - `cflite_batch.yml` runs a batch campaign (manual dispatch).
 - `cflite_cron.yml` prunes the corpus (manual dispatch).
 - Build integration lives in `.clusterfuzzlite/` (OSS-Fuzz Rust base image +
-  `build.sh` that calls `cargo fuzz build -O --fuzz-dir fuzz`); corpus and
-  crashes are stored in the GitHub Actions cache by default. This is also the
-  stepping stone to full OSS-Fuzz onboarding.
+  `build.sh` that calls `cargo fuzz build -O --fuzz-dir fuzz` and exports both
+  fuzz binaries); corpus and crashes are stored in the GitHub Actions cache by
+  default. This is also the stepping stone to full OSS-Fuzz onboarding.
 
 Stable CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) additionally
 runs the deterministic malformed-input regressions in `drc_edge_cases_test.rs`

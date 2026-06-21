@@ -8,7 +8,7 @@ edition = "2021"
 cargo-fuzz = true
 
 [dependencies]
-draco-core = { path = "../crates/draco-core", default-features = false, features = ["decoder", "point_cloud_decode"] }
+draco-core = { path = "../crates/draco-core", default-features = false, features = ["decoder", "point_cloud_decode", "edgebreaker_valence_decode", "legacy_bitstream_decode"] }
 draco-io = { path = "../crates/draco-io", default-features = false, features = ["gltf-reader", "gltf-writer"] }
 libfuzzer-sys = "0.4"
 

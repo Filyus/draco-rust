@@ -887,6 +887,30 @@ fn legacy_091_octahedron_normals_match_historical_decoder() {
     );
 }
 
+#[test]
+fn fuzz_timeout_edgebreaker_attribute_swing_reproducer_returns_quickly() {
+    let bytes = std::fs::read(
+        repo_testdata_dir()
+            .join("fuzz_regressions/decode_drc_edgebreaker_attribute_swing_timeout.drc"),
+    )
+    .expect("read timeout reproducer");
+
+    let start = std::time::Instant::now();
+    assert!(
+        decode_malformed_without_panic(DecoderKind::Mesh, &bytes).is_err(),
+        "malformed EdgeBreaker stream should be rejected"
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "malformed EdgeBreaker stream should not hang"
+    );
+
+    assert!(
+        decode_malformed_without_panic(DecoderKind::PointCloud, &bytes).is_err(),
+        "mesh reproducer should not decode as a point cloud"
+    );
+}
+
 /// Draco 0.9.1 and earlier used the predictive ("type 1") EdgeBreaker traversal
 /// by default (a binary prediction stream guessing R/C from local valence),
 /// replaced by the valence traversal in 0.10.0. The 0.9.1 bunny must decode to

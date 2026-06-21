@@ -340,9 +340,17 @@ impl MeshEdgebreakerDecoder {
             })? as u32
         };
 
-        // Cap the pre-reservation by the remaining byte budget: every event
-        // consumes at least one byte, so a larger count is malformed and must
-        // not drive a huge speculative allocation.
+        // Every topology split event consumes payload bytes. Reject impossible
+        // counts before entering the decode loop so a tiny malformed input cannot
+        // drive a large CPU-only scan through missing events.
+        if num_topology_splits as usize > in_buffer.remaining_size() {
+            return Err(DracoError::DracoError(
+                "Topology split count exceeds remaining bitstream size".to_string(),
+            ));
+        }
+
+        // Cap the pre-reservation by the remaining byte budget as a second line
+        // of defense against malformed counts.
         let mut events: Vec<TopologySplitEventData> =
             Vec::with_capacity((num_topology_splits as usize).min(in_buffer.remaining_size()));
         if num_topology_splits > 0 {

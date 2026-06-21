@@ -279,7 +279,13 @@ where
             let start_c = corner_id;
             let mut c = start_c;
             let mut first_pass = true;
+            let mut swing_steps = 0usize;
+            let max_swing_steps = corner_table.num_corners().saturating_add(1);
             while c != INVALID_CORNER_INDEX {
+                swing_steps += 1;
+                if swing_steps > max_swing_steps {
+                    return false;
+                }
                 let opp = corner_table.opposite(c);
                 if opp != INVALID_CORNER_INDEX {
                     let opp_v = corner_table.vertex(opp);
@@ -947,7 +953,13 @@ where
             let start_c = corner_id;
             let mut c = start_c;
             let mut first_pass = true;
+            let mut swing_steps = 0usize;
+            let max_swing_steps = corner_table.num_corners().saturating_add(1);
             while c != INVALID_CORNER_INDEX {
+                swing_steps += 1;
+                if swing_steps > max_swing_steps {
+                    return false;
+                }
                 let opp = corner_table.opposite(c);
                 if opp != INVALID_CORNER_INDEX {
                     let opp_v = corner_table.vertex(opp);
