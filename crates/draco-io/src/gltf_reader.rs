@@ -681,6 +681,25 @@ impl GltfReader {
         }
     }
 
+    /// Builds a lenient reader from an already-parsed glTF document (`doc`) and
+    /// its resolved buffer bytes.
+    ///
+    /// This lets a caller that already holds a parsed scene and its buffers
+    /// (for example a `gltf-rs` document and the bytes it resolved) decode
+    /// geometry through this reader without serializing back to glTF/GLB bytes
+    /// and re-resolving the buffers. The same lenient policy as
+    /// [`Self::from_bytes_lenient`] applies: skins, animations, and morph
+    /// targets are ignored (not rejected), and per-primitive decoding still
+    /// fails for unsupported attribute layouts.
+    ///
+    /// `buffers` must already be resolved and indexed by glTF buffer index; no
+    /// URI or BIN-chunk resolution is performed here.
+    pub fn from_value(doc: &serde_json::Value, buffers: Vec<Vec<u8>>) -> Result<Self> {
+        let root: GltfRoot = serde_json::from_value(doc.clone())?;
+        validate_root_metadata(&root)?;
+        Ok(Self { root, buffers })
+    }
+
     /// Resolved buffer bytes, indexed by glTF buffer index.
     pub(crate) fn buffers(&self) -> &[Vec<u8>] {
         &self.buffers
@@ -694,7 +713,12 @@ impl GltfReader {
     /// `TANGENT`, `JOINTS_n`, `WEIGHTS_n`, extra `TEXCOORD_n`/`COLOR_n`, and
     /// custom `_*` attributes), which the Draco attribute model alone cannot
     /// preserve. Errors if the primitive is already Draco-compressed.
-    pub(crate) fn decode_primitive_with_semantics(
+    ///
+    /// This is the geometry-decode callback expected by
+    /// [`crate::compress_gltf_value`], so a caller holding a parsed scene can
+    /// drive the compressor: build a reader with [`Self::from_value`] and pass
+    /// `|mesh, prim| reader.decode_primitive_with_semantics(mesh, prim)`.
+    pub fn decode_primitive_with_semantics(
         &self,
         mesh_idx: usize,
         prim_idx: usize,

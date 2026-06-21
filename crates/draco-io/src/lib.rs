@@ -197,7 +197,9 @@ pub use fbx_writer::FbxWriter;
     docsrs,
     doc(cfg(all(feature = "gltf-reader", feature = "gltf-writer")))
 )]
-pub use gltf_compress::{compress_gltf_bytes, compress_gltf_bytes_with_base_path};
+pub use gltf_compress::{
+    compress_gltf_bytes, compress_gltf_bytes_with_base_path, compress_gltf_value,
+};
 #[cfg(feature = "gltf-reader")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-reader")))]
 pub use gltf_reader::{DracoPrimitiveInfo, GltfError, GltfReader};

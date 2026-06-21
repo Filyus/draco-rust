@@ -539,25 +539,54 @@ pub fn draco_attribute_map(primitive: &gltf::Primitive<'_>) -> Option<Vec<(Strin
 /// buffer), preserving materials, textures, nodes, animations, skins, and any
 /// other content.
 ///
-/// This delegates the actual compression to [`draco_io::compress_gltf_bytes`],
-/// so there is a single compression implementation. It re-emits the `gltf-rs`
-/// document with its buffers embedded as data URIs and hands the bytes to the
-/// document-preserving compressor.
+/// The compression itself runs in [`draco_io::compress_gltf_value`] — the same
+/// document-preserving core `draco-io` uses for the byte API, so there is a
+/// single compression implementation. The already-parsed `gltf-rs` `document`
+/// and its resolved `buffers` are fed straight to that core: geometry is decoded
+/// through `draco-io`'s reader built directly from the in-memory document (no
+/// serialize-to-bytes / re-parse / re-resolve-buffers round trip).
 pub fn compress(document: &gltf::Document, buffers: &[Vec<u8>]) -> Result<Vec<u8>> {
-    let mut root = document.clone().into_json();
-    for (i, buf) in buffers.iter().enumerate() {
-        let entry = root
-            .buffers
-            .get_mut(i)
-            .ok_or_else(|| Error::Compress(format!("buffer {i} missing in document")))?;
-        entry.uri = Some(format!(
-            "data:application/octet-stream;base64,{}",
-            base64_encode(buf)
-        ));
-        entry.byte_length = gltf::json::validation::USize64(buf.len() as u64);
+    let doc_value = serde_json::to_value(document.clone().into_json())?;
+
+    // Build draco-io's reader from the in-memory document + resolved buffers,
+    // then drive the shared compressor core with it as the geometry decoder.
+    let reader = draco_io::GltfReader::from_value(&doc_value, buffers.to_vec())
+        .map_err(|e| Error::Compress(e.to_string()))?;
+    let (mut out_doc, bin) =
+        draco_io::compress_gltf_value(doc_value, buffers, None, |mesh, prim| {
+            reader.decode_primitive_with_semantics(mesh, prim)
+        })
+        .map_err(|e| Error::Compress(e.to_string()))?;
+
+    // The core collapses everything to one buffer carrying `byteLength` only;
+    // embed the bytes as a data URI to make the glTF self-contained.
+    embed_single_buffer(&mut out_doc, &bin);
+    Ok(serde_json::to_vec(&out_doc)?)
+}
+
+/// Fills the single output buffer's `uri` with `bin` as a base64 data URI.
+///
+/// [`draco_io::compress_gltf_value`] leaves `buffers[0]` with a `byteLength`
+/// but no URI (so the caller can choose GLB or embedded glTF); we always emit
+/// embedded glTF. A no-op when `bin` is empty (the core then emits no buffer).
+fn embed_single_buffer(doc: &mut Value, bin: &[u8]) {
+    if bin.is_empty() {
+        return;
     }
-    let bytes = serde_json::to_vec(&root)?;
-    draco_io::compress_gltf_bytes(&bytes, None).map_err(|e| Error::Compress(e.to_string()))
+    if let Some(buffer) = doc
+        .get_mut("buffers")
+        .and_then(Value::as_array_mut)
+        .and_then(|b| b.get_mut(0))
+        .and_then(Value::as_object_mut)
+    {
+        buffer.insert(
+            "uri".into(),
+            Value::from(format!(
+                "data:application/octet-stream;base64,{}",
+                base64_encode(bin)
+            )),
+        );
+    }
 }
 
 fn base64_encode(data: &[u8]) -> String {

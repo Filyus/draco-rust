@@ -108,7 +108,7 @@ pass them in. For plugging a Draco decoder into a JavaScript glTF loader instead
   e.g. on wasm, where the host usually decodes textures. Without it, images are
   not decoded, `Import::images` is absent, and a small built-in loader resolves
   buffers (data URIs and the GLB BIN chunk; external files only with a base
-  path). Measured size-optimized wasm: ~408 KB → ~304 KB gzip without `image`.
+  path). Measured size-optimized wasm: ~400 KB → ~295 KB gzip without `image`.
 
 ## Where it sits
 

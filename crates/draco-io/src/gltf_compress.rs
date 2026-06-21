@@ -85,31 +85,60 @@ pub fn compress_gltf_bytes_with_base_path(
     base_path: Option<&Path>,
     quantization: Option<QuantizationBits>,
 ) -> Result<Vec<u8>> {
-    let quant = quantization.unwrap_or_default();
-
     // Parse the full document as an opaque value we can mutate surgically.
     let is_glb = input.len() >= 4 && read_u32_le(&input[0..4]) == GLB_MAGIC;
-    let (mut doc, container) = if is_glb {
+    let (doc, container) = if is_glb {
         let (json_bytes, _) = split_glb(input)?;
         (serde_json::from_slice::<Value>(json_bytes)?, Container::Glb)
     } else {
         (serde_json::from_slice::<Value>(input)?, Container::Gltf)
     };
-    if !doc.is_object() {
-        return Err(GltfError::InvalidGltf("glTF root is not an object".into()));
-    }
 
     // Reuse the reader (lenient: do not reject skins/animations/morph targets,
     // we only preserve them) for geometry decoding and resolved buffer bytes.
     let reader = GltfReader::from_bytes_lenient_with_base_path(input, base_path)?;
     let source_buffers: Vec<Vec<u8>> = reader.buffers().to_vec();
 
+    let (doc, bin) = compress_gltf_value(doc, &source_buffers, quantization, |mesh, prim| {
+        reader.decode_primitive_with_semantics(mesh, prim)
+    })?;
+
+    serialize(&doc, &bin, container)
+}
+
+/// The document-preserving compression core: transforms a parsed glTF document
+/// (`doc`) in place, returning the mutated document plus the new single binary
+/// blob. Geometry decoding is supplied by `decode`, so callers that already have
+/// a parsed scene (e.g. a `gltf-rs` document) can compress without re-parsing
+/// through the byte API.
+///
+/// `decode(mesh_index, primitive_index)` returns the primitive's geometry as a
+/// [`draco_core::Mesh`] plus the `(glTF semantic, Draco attribute id)` mapping;
+/// an `Err` marks the primitive as not compressible (it is preserved). `buffers`
+/// holds the resolved bytes for each glTF buffer (used for repacking the
+/// non-compressed buffer views).
+///
+/// The returned document's single buffer carries `byteLength` but no URI; the
+/// caller embeds the returned `bin` (as a GLB BIN chunk or a data URI).
+pub fn compress_gltf_value<F>(
+    mut doc: Value,
+    buffers: &[Vec<u8>],
+    quantization: Option<QuantizationBits>,
+    decode: F,
+) -> Result<(Value, Vec<u8>)>
+where
+    F: Fn(usize, usize) -> Result<(draco_core::Mesh, Vec<(String, u32)>)>,
+{
+    if !doc.is_object() {
+        return Err(GltfError::InvalidGltf("glTF root is not an object".into()));
+    }
+    let quant = quantization.unwrap_or_default();
+
     // Reference-count accessor usage across every primitive so we only mutate
     // accessors that belong exclusively to a single primitive we compress.
     let accessor_users = count_accessor_users(&doc);
 
-    // --- decide + encode ---
-    let plans = build_plans(&doc, &reader, &accessor_users, &quant)?;
+    let plans = build_plans(&doc, &decode, &accessor_users, &quant)?;
 
     // Mutate accessors of compressed primitives: drop their buffer view and set
     // the count to the Draco-encoded value. Done before scanning for orphans so
@@ -123,7 +152,7 @@ pub fn compress_gltf_bytes_with_base_path(
     // Repack the binary: keep only buffer views still referenced by the JSON,
     // append one Draco buffer view per compressed primitive, and reindex every
     // buffer-view reference in the document.
-    let repack = repack_buffers(&mut doc, &source_buffers, &plans)?;
+    let repack = repack_buffers(&mut doc, buffers, &plans)?;
 
     // Write the Draco extension onto each compressed primitive (after reindex,
     // so the freshly appended buffer-view indices are not remapped).
@@ -137,9 +166,9 @@ pub fn compress_gltf_bytes_with_base_path(
         ensure_extension_listed(&mut doc, "extensionsRequired");
     }
 
-    set_single_buffer(&mut doc, repack.bin.len(), container);
+    set_single_buffer(&mut doc, repack.bin.len());
 
-    serialize(&doc, &repack.bin, container)
+    Ok((doc, repack.bin))
 }
 
 /// A primitive that will be compressed, with everything needed to rewrite it.
@@ -159,12 +188,15 @@ struct CompressPlan {
     num_indices: usize,
 }
 
-fn build_plans(
+fn build_plans<F>(
     doc: &Value,
-    reader: &GltfReader,
+    decode: &F,
     accessor_users: &HashMap<usize, usize>,
     quant: &QuantizationBits,
-) -> Result<Vec<CompressPlan>> {
+) -> Result<Vec<CompressPlan>>
+where
+    F: Fn(usize, usize) -> Result<(draco_core::Mesh, Vec<(String, u32)>)>,
+{
     let mut plans = Vec::new();
     let Some(meshes) = doc.get("meshes").and_then(Value::as_array) else {
         return Ok(plans);
@@ -176,7 +208,7 @@ fn build_plans(
         };
         for (prim_idx, prim) in primitives.iter().enumerate() {
             if let Some(plan) =
-                plan_for_primitive(prim, mesh_idx, prim_idx, reader, accessor_users, quant)?
+                plan_for_primitive(prim, mesh_idx, prim_idx, decode, accessor_users, quant)?
             {
                 plans.push(plan);
             }
@@ -185,14 +217,17 @@ fn build_plans(
     Ok(plans)
 }
 
-fn plan_for_primitive(
+fn plan_for_primitive<F>(
     prim: &Value,
     mesh_idx: usize,
     prim_idx: usize,
-    reader: &GltfReader,
+    decode: &F,
     accessor_users: &HashMap<usize, usize>,
     quant: &QuantizationBits,
-) -> Result<Option<CompressPlan>> {
+) -> Result<Option<CompressPlan>>
+where
+    F: Fn(usize, usize) -> Result<(draco_core::Mesh, Vec<(String, u32)>)>,
+{
     // KHR_draco_mesh_compression restricts compressed primitives to TRIANGLES
     // or TRIANGLE_STRIP ("Restrictions on geometry type"), so point clouds
     // (POINTS) and line modes can never be Draco-compressed in glTF. We compress
@@ -246,7 +281,7 @@ fn plan_for_primitive(
 
     // Decode geometry with the original glTF semantic names. An unsupported
     // attribute/layout means "leave this primitive uncompressed".
-    let (mesh, semantic_to_uid) = match reader.decode_primitive_with_semantics(mesh_idx, prim_idx) {
+    let (mesh, semantic_to_uid) = match decode(mesh_idx, prim_idx) {
         Ok(out) => out,
         Err(_) => return Ok(None),
     };
@@ -565,10 +600,10 @@ fn ensure_extension_listed(doc: &mut Value, key: &str) {
     }
 }
 
-/// Collapses the document to a single buffer of `bin_len` bytes. For glTF
-/// output the data URI is filled in by [`serialize`] (which owns the bytes); for
-/// GLB the buffer carries no URI (it is the BIN chunk).
-fn set_single_buffer(doc: &mut Value, bin_len: usize, _container: Container) {
+/// Collapses the document to a single buffer of `bin_len` bytes (carrying
+/// `byteLength` but no URI). The caller embeds the bytes: `serialize` fills a
+/// data URI for glTF output, or writes a GLB BIN chunk.
+fn set_single_buffer(doc: &mut Value, bin_len: usize) {
     let root = doc.as_object_mut().unwrap();
     if bin_len == 0 {
         root.remove("buffers");
