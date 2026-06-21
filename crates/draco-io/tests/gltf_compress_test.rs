@@ -481,3 +481,87 @@ fn compresses_asset_requiring_unknown_extension() {
     assert!(required.contains(&"KHR_materials_unlit"));
     assert!(required.contains(&"KHR_draco_mesh_compression"));
 }
+
+/// A triangle whose `_FEATURE_ID` attribute uses a glTF 2.1 accessor component
+/// type (`5124` = `SIGNED_INT`/i32) that Draco cannot encode. See
+/// `dev/docs/format-research/gltf-2.1-readiness.md`.
+fn triangle_with_2_1_component_type_glb() -> Vec<u8> {
+    let mut bin = Vec::new();
+    // positions (offset 0, len 36)
+    push_f32s(&mut bin, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+    // _FEATURE_ID as SIGNED_INT / i32 (offset 36, len 12) — the 2.1 type
+    for v in [10i32, 20, 30] {
+        bin.extend_from_slice(&v.to_le_bytes());
+    }
+    // indices (offset 48, len 6)
+    push_u16s(&mut bin, &[0, 1, 2]);
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+
+    let json = json!({
+        "asset": { "version": "2.0" },
+        "meshes": [ {
+            "primitives": [ {
+                "attributes": { "POSITION": 0, "_FEATURE_ID": 1 },
+                "indices": 2,
+                "mode": 4
+            } ]
+        } ],
+        "accessors": [
+            { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+            // glTF 2.1 SIGNED_INT (i32) — not a glTF 2.0 vertex attribute type.
+            { "bufferView": 1, "componentType": 5124, "count": 3, "type": "SCALAR" },
+            { "bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR" }
+        ],
+        "bufferViews": [
+            { "buffer": 0, "byteOffset": 0,  "byteLength": 36 },
+            { "buffer": 0, "byteOffset": 36, "byteLength": 12 },
+            { "buffer": 0, "byteOffset": 48, "byteLength": 6 }
+        ],
+        "buffers": [ { "byteLength": bin.len() } ]
+    });
+
+    build_glb(&json, &bin)
+}
+
+#[test]
+fn compress_skips_primitive_with_gltf_2_1_component_type() {
+    // A primitive carrying an attribute typed with a glTF 2.1 component type the
+    // Draco encoder cannot represent must be left uncompressed and preserved
+    // verbatim — never silently corrupted. (Safe behavior pending real 2.1
+    // support; see dev/docs/format-research/gltf-2.1-readiness.md.)
+    let input = triangle_with_2_1_component_type_glb();
+    let output = compress_gltf_bytes(&input, None).expect("compression must not fail");
+    let (doc, _) = split_glb(&output);
+
+    let prim = &doc["meshes"][0]["primitives"][0];
+
+    // Not Draco-compressed.
+    assert!(
+        prim["extensions"]["KHR_draco_mesh_compression"].is_null(),
+        "primitive with an unsupported component type must not be Draco-compressed"
+    );
+
+    // The 2.1-typed attribute and its accessor survive unchanged.
+    let feature_id = prim["attributes"]["_FEATURE_ID"]
+        .as_u64()
+        .expect("_FEATURE_ID attribute preserved") as usize;
+    assert_eq!(
+        doc["accessors"][feature_id]["componentType"], 5124,
+        "the SIGNED_INT (5124) accessor must be preserved verbatim"
+    );
+    // POSITION accessor is preserved too (it was never Draco-encoded).
+    let position = prim["attributes"]["POSITION"]
+        .as_u64()
+        .expect("POSITION preserved") as usize;
+    assert_eq!(doc["accessors"][position]["componentType"], 5126);
+
+    // Nothing was compressed, so Draco is not added as a required extension.
+    if let Some(required) = doc.get("extensionsRequired").and_then(|v| v.as_array()) {
+        assert!(
+            !required.iter().any(|v| v == "KHR_draco_mesh_compression"),
+            "no Draco requirement should be added when nothing is compressed"
+        );
+    }
+}
