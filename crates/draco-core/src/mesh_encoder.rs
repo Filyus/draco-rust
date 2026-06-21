@@ -294,10 +294,12 @@ impl MeshEncoder {
         };
         buffer.encode_u8(method);
 
-        if has_header_flags(major, minor) {
-            let flags = if has_metadata { METADATA_FLAG_MASK } else { 0 };
-            buffer.encode_u16(flags);
-        }
+        // The flags field is always present in the binary header (the decoder reads
+        // it unconditionally); only the metadata bit gains meaning at v1.3+, which
+        // is guarded by the metadata check above. Emitting it only for >= 1.3 left
+        // pre-1.3 streams two bytes short, misaligning the rest of the stream.
+        let flags = if has_metadata { METADATA_FLAG_MASK } else { 0 };
+        buffer.encode_u16(flags);
         Ok(())
     }
 

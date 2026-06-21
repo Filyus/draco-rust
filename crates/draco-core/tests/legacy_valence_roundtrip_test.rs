@@ -125,12 +125,11 @@ fn legacy_valence_roundtrip_preserves_geometry() {
     assert_eq!(reference.num_faces(), mesh.num_faces());
     let reference_positions = sorted_positions(&reference);
 
-    // v2.1 and v2.0 are pre-2.2 layouts this encoder mirrors (the valence/
-    // connectivity block split; v2.0 also prefixes an empty hole-event section).
-    // Both must decode back to the same geometry as the modern path. v1.2 still
-    // differs (pre-2.0 quantization-params layout) — see
-    // `legacy_valence_roundtrip_pre_2_0_is_unsupported`.
-    for (major, minor) in [(2u8, 1u8), (2, 0)] {
+    // v2.1, v2.0 and v1.2 are all pre-2.2 layouts this encoder mirrors (the
+    // valence/connectivity block split; v2.0 adds an empty hole-event section;
+    // v1.2 additionally uses fixed-u32 connectivity counts and the always-present
+    // header flags field). Each must decode back to the same geometry as modern.
+    for (major, minor) in [(2u8, 1u8), (2, 0), (1, 2)] {
         let decoded = encode_decode(&mesh, major, minor)
             .unwrap_or_else(|e| panic!("v{major}.{minor} round-trip failed: {e}"));
         assert_eq!(
@@ -162,18 +161,3 @@ fn legacy_valence_roundtrip_high_compression() {
     );
 }
 
-/// Encoding valence at bitstream < 2.0 (Draco 0.10.0) is not yet round-trippable:
-/// it uses the pre-2.0 quantization-params layout (params before symbols) that
-/// the encoder does not emit. The *decoder* handles it (the C++ fixtures cover
-/// 1.2/2.0/2.1 in drc_edge_cases_test); only the encode side is staged here.
-/// Documents the current boundary so a future fix flips this to a round-trip.
-#[test]
-fn legacy_valence_roundtrip_pre_2_0_is_unsupported() {
-    let mesh = build_grid(33);
-    let result = encode_decode(&mesh, 1, 2);
-    assert!(
-        result.is_err(),
-        "v1.2 unexpectedly round-tripped; promote it into \
-         legacy_valence_roundtrip_preserves_geometry"
-    );
-}

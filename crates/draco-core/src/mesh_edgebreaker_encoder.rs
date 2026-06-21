@@ -375,14 +375,18 @@ impl MeshEdgebreakerEncoder {
         let traversal_decoder_type = 0;
         out_buffer.encode_u8(traversal_decoder_type);
 
+        let bitstream_version =
+            ((out_buffer.version_major() as u16) << 8) | out_buffer.version_minor() as u16;
+        // Pre-2.0 stores the connectivity counts as fixed u32; 2.0+ uses varints.
+        let legacy_u32_counts =
+            cfg!(feature = "legacy_bitstream_encode") && bitstream_version != 0 && bitstream_version < 0x0200;
+
         // Pre-2.2 connectivity carries a leading "new vertices" count (vertices
         // introduced during encoding) that the modern layout dropped. The decoder
         // reads but ignores the value, so 0 keeps the byte layout aligned. Behind
         // legacy_bitstream_encode and only when targeting a < 2.2 stream.
         #[cfg(feature = "legacy_bitstream_encode")]
         {
-            let bitstream_version = ((out_buffer.version_major() as u16) << 8)
-                | out_buffer.version_minor() as u16;
             if bitstream_version < 0x0200 {
                 out_buffer.encode_u32(0);
             } else if bitstream_version < 0x0202 {
@@ -394,20 +398,25 @@ impl MeshEdgebreakerEncoder {
         let num_encoded_vertices =
             corner_table.num_vertices() - corner_table.num_isolated_vertices();
         let num_encoded_faces = corner_table.num_faces() - corner_table.num_degenerated_faces();
-        out_buffer.encode_varint(num_encoded_vertices as u64);
-        out_buffer.encode_varint(num_encoded_faces as u64);
-        out_buffer.encode_u8(attribute_connectivity.len() as u8);
-
-        // Encode number of symbols
-        out_buffer.encode_varint(self.symbols.len() as u64);
-
-        // Encode number of split symbols.
         let num_split_symbols = self
             .symbols
             .iter()
             .filter(|&&s| s == EdgebreakerSymbol::Split as u32)
             .count();
-        out_buffer.encode_varint(num_split_symbols as u64);
+
+        if legacy_u32_counts {
+            out_buffer.encode_u32(num_encoded_vertices as u32);
+            out_buffer.encode_u32(num_encoded_faces as u32);
+            out_buffer.encode_u8(attribute_connectivity.len() as u8);
+            out_buffer.encode_u32(self.symbols.len() as u32);
+            out_buffer.encode_u32(num_split_symbols as u32);
+        } else {
+            out_buffer.encode_varint(num_encoded_vertices as u64);
+            out_buffer.encode_varint(num_encoded_faces as u64);
+            out_buffer.encode_u8(attribute_connectivity.len() as u8);
+            out_buffer.encode_varint(self.symbols.len() as u64);
+            out_buffer.encode_varint(num_split_symbols as u64);
+        }
 
         // Sort split data by source symbol id
         self.topology_split_event_data
@@ -1395,13 +1404,18 @@ impl MeshEdgebreakerEncoder {
                 // Attribute seams.
                 self.encode_attribute_seams(corner_table, attribute_connectivity, out_buffer);
 
-                // Split-symbol count + valence mode (EDGEBREAKER_VALENCE_MODE_2_7 = 0).
+                // Split-symbol count (u32 pre-2.0, varint otherwise) + valence mode
+                // (EDGEBREAKER_VALENCE_MODE_2_7 = 0).
                 let num_split_symbols = self
                     .symbols
                     .iter()
                     .filter(|&&s| s == EdgebreakerSymbol::Split as u32)
                     .count();
-                out_buffer.encode_varint(num_split_symbols as u64);
+                if bitstream_version < 0x0200 {
+                    out_buffer.encode_u32(num_split_symbols as u32);
+                } else {
+                    out_buffer.encode_varint(num_split_symbols as u64);
+                }
                 out_buffer.encode_u8(0);
 
                 // Contexts.
@@ -1528,44 +1542,50 @@ impl MeshEdgebreakerEncoder {
     }
 
     fn encode_split_data(&self, out_buffer: &mut EncoderBuffer) -> Result<(), DracoError> {
-        // Pre-2.1 prefixes the split events with a hole-event count (and events).
-        // The decoder parses but never uses them (dead/legacy data), so emit an
-        // empty hole-event section to keep the byte layout aligned. < 2.0 uses a
-        // fixed u32 count, 2.0 a varint; 2.1+ has no hole-event section.
-        #[cfg(feature = "legacy_bitstream_encode")]
-        {
-            let bitstream_version = ((out_buffer.version_major() as u16) << 8)
-                | out_buffer.version_minor() as u16;
-            if bitstream_version != 0 && bitstream_version < 0x0200 {
-                out_buffer.encode_u32(0); // num_hole_events
-            } else if bitstream_version != 0 && bitstream_version < 0x0201 {
-                out_buffer.encode_varint(0u64); // num_hole_events
-            }
-        }
+        let bitstream_version =
+            ((out_buffer.version_major() as u16) << 8) | out_buffer.version_minor() as u16;
+        let legacy = cfg!(feature = "legacy_bitstream_encode") && bitstream_version != 0;
+        // Pre-2.0 stores the split count as a fixed u32; 2.0+ uses a varint.
+        let split_count_u32 = legacy && bitstream_version < 0x0200;
+        // Pre-2.2 codes the source-edge selector with 2 bits; 2.2+ uses 1.
+        let edge_bits = if legacy && bitstream_version < 0x0202 { 2 } else { 1 };
 
         let num_events = self.topology_split_event_data.len();
-        out_buffer.encode_varint(num_events as u64);
+        if split_count_u32 {
+            out_buffer.encode_u32(num_events as u32);
+        } else {
+            out_buffer.encode_varint(num_events as u64);
+        }
 
         if num_events > 0 {
             // Encode source/split symbol IDs using delta coding.
             let mut last_source_symbol_id: i32 = 0;
             for event in &self.topology_split_event_data {
-                // Delta from last source symbol id.
                 let delta = (event.source_symbol_id as i32) - last_source_symbol_id;
                 out_buffer.encode_varint(delta as u64);
-
-                // Delta from source to split (always positive since source > split).
                 let split_delta = (event.source_symbol_id as i32) - (event.split_symbol_id as i32);
                 out_buffer.encode_varint(split_delta as u64);
-
                 last_source_symbol_id = event.source_symbol_id as i32;
             }
-            // Encode source_edge bits using direct bit encoding (no size prefix), matching C++.
+            // Encode source_edge bits using direct bit encoding (no size prefix).
             out_buffer.start_bit_encoding(num_events, false);
             for event in &self.topology_split_event_data {
-                out_buffer.encode_least_significant_bits32(1, event.source_edge as u32);
+                out_buffer.encode_least_significant_bits32(edge_bits, event.source_edge as u32);
             }
             out_buffer.end_bit_encoding();
+        }
+
+        // Pre-2.1 stores hole events *after* the topology splits (a count plus the
+        // events). The decoder parses but never uses them (dead/legacy data), so an
+        // empty section keeps the byte layout aligned. < 2.0 uses a fixed u32 count,
+        // 2.0 a varint; 2.1+ has no hole-event section.
+        #[cfg(feature = "legacy_bitstream_encode")]
+        {
+            if bitstream_version != 0 && bitstream_version < 0x0200 {
+                out_buffer.encode_u32(0); // num_hole_events
+            } else if bitstream_version != 0 && bitstream_version < 0x0201 {
+                out_buffer.encode_varint(0u64); // num_hole_events
+            }
         }
 
         Ok(())
