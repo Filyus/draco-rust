@@ -1,0 +1,105 @@
+name: "First release only: create tag"
+run-name: "first-release: tag ${{ inputs.crate }} ${{ inputs.version }}"
+
+# For a brand-new crate the first publish is done locally with a short-lived
+# token (Trusted Publishing cannot publish a crate that does not exist yet). This
+# one-off workflow then creates the `<crate>-v<version>` tag, after confirming the
+# version is already on crates.io. The tag triggers the GitHub release.
+# Subsequent releases are tagged by publish.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      crate:
+        description: Crate to tag
+        required: true
+        type: choice
+        options:
+          - draco-core
+          - draco-io
+          - draco-gltf
+      version:
+        description: Cargo.toml version to tag (e.g. 0.1.0)
+        required: true
+        type: string
+      confirm:
+        description: Type 'tag <crate>' to confirm (e.g. tag draco-core)
+        required: true
+        type: string
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CRATE: ${{ inputs.crate }}
+  REQUESTED_VERSION: ${{ inputs.version }}
+
+jobs:
+  tag:
+    name: tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check release branch
+        run: |
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "Release tags must be created from main, got '$GITHUB_REF_NAME'."
+            exit 1
+          fi
+
+      - name: Check requested version matches Cargo.toml
+        run: |
+          actual="$(python3 -c "import tomllib; print(tomllib.load(open('crates/$CRATE/Cargo.toml', 'rb'))['package']['version'])")"
+          if [ "$actual" != "$REQUESTED_VERSION" ]; then
+            echo "crates/$CRATE/Cargo.toml version is '$actual', requested '$REQUESTED_VERSION'."
+            exit 1
+          fi
+
+      - name: Check confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          expected="tag $CRATE"
+          if [ "$CONFIRM" != "$expected" ]; then
+            echo "To create the release tag, set confirm to: $expected"
+            exit 1
+          fi
+
+      - name: Check version is published
+        run: |
+          status="$(curl --user-agent "$CRATE-release-tag-check" --silent --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$CRATE/$REQUESTED_VERSION")"
+          if [ "$status" != "200" ]; then
+            echo "$CRATE $REQUESTED_VERSION is not published on crates.io yet (status $status)."
+            exit 1
+          fi
+
+      - name: Check release tag is absent
+        run: |
+          tag="$CRATE-v$REQUESTED_VERSION"
+          tag_status=0
+          git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || tag_status=$?
+          if [ "$tag_status" = "0" ]; then
+            echo "Release tag '$tag' already exists."
+            exit 1
+          fi
+          if [ "$tag_status" != "2" ]; then
+            echo "Unable to check release tag '$tag'."
+            exit "$tag_status"
+          fi
+
+      - name: Create release tag
+        run: |
+          tag="$CRATE-v$REQUESTED_VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "$CRATE $REQUESTED_VERSION"
+          git push origin "refs/tags/$tag"
