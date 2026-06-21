@@ -673,3 +673,49 @@ fn encode_decode_empty_point_cloud() {
     assert_eq!(decoded.num_points(), 0);
     assert_eq!(decoded.num_attributes(), 0);
 }
+
+/// Legacy valence EdgeBreaker streams (bitstream < 2.2) carry a separate main
+/// traversal symbol stream plus a split-count/mode prefix that the modern
+/// (>= 2.2) valence layout dropped. These fixtures are the same Stanford bunny
+/// encoded by the official C++ tools of Draco 0.10.0 (bitstream 1.2), 1.0.0
+/// (2.0), and 1.1.0 (2.1) — the two distinct pre-2.2 split-count encodings — and
+/// must all decode to the same reference geometry as the modern encoders.
+#[cfg(all(
+    feature = "legacy_bitstream_decode",
+    feature = "edgebreaker_valence_decode"
+))]
+#[test]
+fn legacy_valence_edgebreaker_streams_decode_to_reference_geometry() {
+    // Identical to the modern-encoded bun_zipper.ply geometry.
+    const EXPECTED_FACES: usize = 69451;
+    const EXPECTED_POINTS: usize = 34834;
+
+    let fixtures = [
+        "legacy_draco/bun_zipper.mesh_eb_valence.0.10.0.drc",
+        "legacy_draco/bun_zipper.mesh_eb_valence.1.0.0.drc",
+        "legacy_draco/bun_zipper.mesh_eb_valence.1.1.0.drc",
+    ];
+
+    for fixture in fixtures {
+        let bytes = std::fs::read(repo_testdata_dir().join(fixture))
+            .unwrap_or_else(|e| panic!("failed to read {fixture}: {e}"));
+
+        let mut buffer = DecoderBuffer::new(&bytes);
+        let mut mesh = Mesh::new();
+        let mut decoder = MeshDecoder::new();
+        decoder
+            .decode(&mut buffer, &mut mesh)
+            .unwrap_or_else(|e| panic!("{fixture} failed to decode: {e:?}"));
+
+        assert_eq!(
+            mesh.num_faces(),
+            EXPECTED_FACES,
+            "{fixture}: unexpected face count"
+        );
+        assert_eq!(
+            mesh.num_points(),
+            EXPECTED_POINTS,
+            "{fixture}: unexpected point count"
+        );
+    }
+}

@@ -32,6 +32,11 @@ pub struct MeshEdgebreakerTraversalValenceDecoder<'a> {
     pub(crate) start_face_bits_legacy: Option<Vec<bool>>,
     start_face_bits_legacy_index: usize,
     pub(crate) processed_connectivity_corners: Vec<u32>,
+    /// Pre-1.0 (bitstream < 2.2) only: raw bits of the main traversal symbol
+    /// stream, replayed when no valence context is active (component starts /
+    /// mispredictions). `None` for modern streams, where that case is always E.
+    direct_symbol_bits: Option<Vec<bool>>,
+    direct_symbol_bit_index: usize,
 }
 
 impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
@@ -40,6 +45,7 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
         has_start_face_bits: bool,
         topology_split_data: Vec<TopologySplitEventData>,
         start_face_bits_legacy: Option<Vec<bool>>,
+        direct_symbol_bits: Option<Vec<bool>>,
     ) -> Self {
         let split_event_remaining = topology_split_data.len();
         Self {
@@ -59,12 +65,80 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
             start_face_bits_legacy,
             start_face_bits_legacy_index: 0,
             processed_connectivity_corners: Vec::new(),
+            direct_symbol_bits,
+            direct_symbol_bit_index: 0,
+        }
+    }
+
+    /// Decode the next "direct" EdgeBreaker symbol from the legacy main traversal
+    /// stream (bitstream < 2.2). Each symbol is `1` bit for `C`, otherwise `3`
+    /// bits (mirrors `MeshEdgeBreakerTraversalDecoder::DecodeSymbol`). Returns the
+    /// internal symbol id (C=0, S=1, L=2, R=3, E=4), or `None` if there is no
+    /// legacy stream or it is exhausted.
+    fn decode_direct_symbol(&mut self) -> Option<i32> {
+        let bits = self.direct_symbol_bits.as_ref()?;
+        let i = self.direct_symbol_bit_index;
+        let first = *bits.get(i)?;
+        let topology = if !first {
+            self.direct_symbol_bit_index += 1;
+            0u32
+        } else {
+            // Two suffix bits, LSB first: suffix = b1 | (b2 << 1); topology = 1 | (suffix << 1).
+            let b1 = *bits.get(i + 1)?;
+            let b2 = *bits.get(i + 2)?;
+            self.direct_symbol_bit_index += 3;
+            1u32 | ((b1 as u32) << 1) | ((b2 as u32) << 2)
+        };
+        match topology {
+            0 => Some(0),
+            1 => Some(1),
+            3 => Some(2),
+            5 => Some(3),
+            7 => Some(4),
+            _ => None,
         }
     }
 
     /// Initialize decoder contexts by reading varint counts and symbol streams from buffer.
-    pub fn init_from_buffer(&mut self, in_buffer: &mut DecoderBuffer, num_vertices: usize) -> bool {
+    pub fn init_from_buffer(
+        &mut self,
+        in_buffer: &mut DecoderBuffer,
+        num_vertices: usize,
+        bitstream_version: u16,
+    ) -> bool {
         self.num_vertices = num_vertices;
+
+        // Before bitstream 2.2, the valence stream prefixes its own split-symbol
+        // count and a valence-mode byte, right before the context symbol streams
+        // (current streams carry the split count in the connectivity header and
+        // always use the 2..7 mode). C++ keeps this behind
+        // DRACO_BACKWARDS_COMPATIBILITY_SUPPORTED; without the reads the buffer is
+        // misaligned and the context decode below fails.
+        #[cfg(feature = "legacy_bitstream_decode")]
+        if bitstream_version < 0x0202 {
+            // The split-symbol count is re-encoded in the valence stream here;
+            // read it only to keep the buffer aligned. The caller already folded
+            // it into `num_vertices` (max_num_vertices = encoded + split).
+            let _num_split_symbols = if bitstream_version < 0x0200 {
+                match in_buffer.decode_u32() {
+                    Ok(v) => v as usize,
+                    Err(_) => return false,
+                }
+            } else {
+                match in_buffer.decode_varint() {
+                    Ok(v) => v as usize,
+                    Err(_) => return false,
+                }
+            };
+            // Valence mode byte; only EDGEBREAKER_VALENCE_MODE_2_7 (0) is supported.
+            match in_buffer.decode_u8() {
+                Ok(0) => {}
+                _ => return false,
+            }
+        }
+        #[cfg(not(feature = "legacy_bitstream_decode"))]
+        let _ = bitstream_version;
+
         self.vertex_valences.resize(self.num_vertices, 0);
 
         self.min_valence = 2;
@@ -157,8 +231,10 @@ impl<'a> EdgebreakerTraversalDecoder for MeshEdgebreakerTraversalValenceDecoder<
             }
             self.last_symbol = symbol_id as i32;
         } else {
-            // If no context, for new sequence the first symbol must be E (End = 4)
-            self.last_symbol = 4;
+            // No active valence context (component start / misprediction). For
+            // bitstream < 2.2 the symbol is taken from the main traversal stream;
+            // modern streams always have E here (no legacy stream, so default 4).
+            self.last_symbol = self.decode_direct_symbol().unwrap_or(4);
         }
         Ok(self.last_symbol as u32)
     }
@@ -290,6 +366,7 @@ mod tests {
             false,
             Vec::new(),
             None,
+            None,
         );
         decoder.vertex_valences = vec![0; 3];
         decoder.last_symbol = 4;
@@ -310,6 +387,7 @@ mod tests {
             start_face_decoder,
             false,
             Vec::new(),
+            None,
             None,
         );
         decoder.vertex_valences = vec![0; 3];

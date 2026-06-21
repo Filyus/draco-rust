@@ -594,9 +594,41 @@ impl MeshEdgebreakerDecoder {
         let mut start_face_decoder = RAnsBitDecoder::new();
         let mut has_start_face_bits = false;
         let mut start_face_bits_legacy: Option<Vec<bool>> = None;
+        // Pre-1.0 (bitstream < 2.2) valence streams carry a separate main traversal
+        // symbol stream (region 1) that the standard path consumes via
+        // `decode_symbol_stream`. The valence path skips that (`symbols = Vec::new()`),
+        // so it must read region 1 here — otherwise the start-face region and the
+        // per-context symbols below land on the wrong bytes. Its bits are replayed
+        // for the "no active context" case in the valence decoder.
+        #[cfg(feature = "edgebreaker_valence_decode")]
+        let mut valence_direct_symbol_bits: Option<Vec<bool>> = None;
 
         if bitstream_version < 0x0202 {
-            // Read raw bit buffer for start faces
+            #[cfg(feature = "edgebreaker_valence_decode")]
+            if self.traversal_decoder_type == 2 {
+                in_buffer.start_bit_decoding(true).map_err(|_| {
+                    DracoError::DracoError(
+                        "Failed to start valence main-symbol bit decoding".to_string(),
+                    )
+                })?;
+                // Each direct symbol is 1 or 3 bits, at most |num_symbols| of them.
+                let cap = actual_num_symbols
+                    .saturating_mul(3)
+                    .min(in_buffer.remaining_size().saturating_mul(8));
+                let mut bits = Vec::new();
+                for _ in 0..cap {
+                    match in_buffer.decode_least_significant_bits32(1) {
+                        Ok(v) => bits.push(v != 0),
+                        Err(_) => break,
+                    }
+                }
+                in_buffer.end_bit_decoding();
+                valence_direct_symbol_bits = Some(bits);
+            }
+
+            // Read raw bit buffer for start faces (region 2 for valence streams;
+            // the standard path already consumed its symbol stream, so this is its
+            // first region).
             in_buffer.start_bit_decoding(true).map_err(|_| {
                 DracoError::DracoError("Failed to start start-face bit decoding".to_string())
             })?;
@@ -665,9 +697,10 @@ impl MeshEdgebreakerDecoder {
                 has_start_face_bits,
                 topology_split_data.to_vec(),
                 start_face_bits_legacy.take(),
+                valence_direct_symbol_bits.take(),
             );
                 // Initialize contexts by reading counts/symbol arrays from the buffer
-                if !valence_decoder.init_from_buffer(in_buffer, max_num_vertices) {
+                if !valence_decoder.init_from_buffer(in_buffer, max_num_vertices, bitstream_version) {
                     return Err(DracoError::DracoError(
                         "Failed to init valence traversal decoder".to_string(),
                     ));
