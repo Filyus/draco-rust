@@ -27,7 +27,7 @@ after the dependency version it pins is published on crates.io. If a release
 bumps `draco-core`, releasing the dependents that should pick it up is a
 **separate** release for each (bump the pin, then its own changelog/commit/tag).
 
-## Steps (for one crate `C` = draco-core | draco-io | draco-gltf)
+## Steps (for one crate `<crate>` = draco-core | draco-io | draco-gltf)
 
 1. **Preconditions.** On `main`, clean tree, in sync with `origin/main`:
    ```sh
@@ -38,21 +38,21 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
    If the tree is dirty, classify per `RELEASING.md`; never fold stray work into
    the release commit.
 
-2. **Decide the version** of `C` from *its* public API surface (pre-1.0):
+2. **Decide the version** of `<crate>` from *its* public API surface (pre-1.0):
    - new public API only -> minor (`0.Y+1.0`);
    - bug/behavior fix only -> patch;
    - removed/changed public API -> major.
 
-   Bump `version` in `crates/C/Cargo.toml`. If `C` is a dependency of a crate
+   Bump `version` in `crates/<crate>/Cargo.toml`. If `<crate>` is a dependency of a crate
    you are **also** releasing now, update that dependent's pin in the **same**
    release only when you intend to publish the dependent too (otherwise leave it).
 
-3. **Build the changelog section** in `crates/C/CHANGELOG.md` from
-   `git log C-vPREV..HEAD` (or all history for the first release):
+3. **Build the changelog section** in `crates/<crate>/CHANGELOG.md` from
+   `git log <crate>-vPREV..HEAD` (or all history for the first release):
    - Heading under `## [Unreleased]`:
-     `## [X.Y.Z](https://github.com/Filyus/draco-rust/compare/C-vPREV...C-vX.Y.Z) - YYYY-MM-DD`
+     `## [X.Y.Z](https://github.com/Filyus/draco-rust/compare/<crate>-vPREV...<crate>-vX.Y.Z) - YYYY-MM-DD`
    - First release: `## [X.Y.Z] - YYYY-MM-DD`.
-   - Include only commits that touched `C` (verify with `git show --stat`). Group
+   - Include only commits that touched `<crate>` (verify with `git show --stat`). Group
      by the [taxonomy](#changelog-taxonomy), in priority order.
    - Rewrite terse subjects into clear, **user-facing** notes: name the affected
      public types/formats/features and a one-line "why it matters".
@@ -60,28 +60,28 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
      C++ bridge, debug output, CI wiring, or benchmarks.
 
 4. **Version-facing docs.** If the minor changed, update install snippets in the
-   root `README.md` and `crates/C/README.md`. Touch no other docs in the release
+   root `README.md` and `crates/<crate>/README.md`. Touch no other docs in the release
    commit.
 
 5. **Show the diff and pause:**
    ```sh
-   git diff -- crates/C/Cargo.toml crates/C/CHANGELOG.md crates/C/README.md README.md
+   git diff -- crates/<crate>/Cargo.toml crates/<crate>/CHANGELOG.md crates/<crate>/README.md README.md
    ```
    Wait for the maintainer to OK the changelog wording. Do **not** commit first.
 
 6. **After the maintainer OKs**, commit exactly the release files with the exact
    subject, then push:
    ```sh
-   git commit -m "release: prepare C vX.Y.Z"
+   git commit -m "release: prepare <crate> vX.Y.Z"
    git push origin main
    ```
-   The subject must match `crates/C/Cargo.toml`'s version exactly (`C` is the
+   The subject must match `crates/<crate>/Cargo.toml`'s version exactly (`<crate>` is the
    crate name), or the publish workflow refuses to publish.
 
-7. **After CI passes, start the publish workflow for `C`** (it does not run
+7. **After CI passes, start the publish workflow for `<crate>`** (it does not run
    automatically):
    ```sh
-   gh workflow run publish.yml --ref main -f crate=C
+   gh workflow run publish.yml --ref main -f crate=<crate>
    ```
    It runs against `main` HEAD, which must still be the release commit. This only
    starts the pipeline; it gates at the `release` environment for the maintainer.

@@ -5,8 +5,8 @@ released **independently**, one crate per release. Each has its own version in
 `crates/<crate>/Cargo.toml`, its own `crates/<crate>/CHANGELOG.md`, and its own
 `<crate>-vX.Y.Z` release tags.
 
-In the steps below, **`C` is the crate being released** — substitute
-`draco-core`, `draco-io`, or `draco-gltf`. For example, `crate=C` means
+In the steps below, **`<crate>` is the crate being released** — substitute
+`draco-core`, `draco-io`, or `draco-gltf`. For example, `crate=<crate>` means
 `crate=draco-gltf` when releasing `draco-gltf`.
 
 Normal releases are optimized for a solo maintainer working with an agent:
@@ -59,14 +59,14 @@ the release (commit the missing change first and wait for CI, or ask). Do not
 fold in-progress work into the release commit.
 
 Prepare the bump and changelog by hand, following
-[`RELEASING-AGENT.md`](RELEASING-AGENT.md). In short, for crate `C`:
+[`RELEASING-AGENT.md`](RELEASING-AGENT.md). In short, for crate `<crate>`:
 
-- bump `version` in `crates/C/Cargo.toml`;
+- bump `version` in `crates/<crate>/Cargo.toml`;
 - if releasing a dependent that should pick up a just-published dependency,
   update that pin too (separate release per crate);
-- write the `crates/C/CHANGELOG.md` section, grouped by the
+- write the `crates/<crate>/CHANGELOG.md` section, grouped by the
   [changelog taxonomy](RELEASING-AGENT.md#changelog-taxonomy), including only
-  commits that touched `C`;
+  commits that touched `<crate>`;
 - rewrite terse subjects into clear, user-facing notes;
 - remove internal noise (C++ bridge, debug output, lint/CI/bench-only, or
   demo-only commits);
@@ -78,26 +78,26 @@ docs.rs-style docs, duplicate-version, duplicate-tag, and `--dry-run` checks.
 Show the maintainer the diff before committing:
 
 ```powershell
-git diff -- crates/C/Cargo.toml crates/C/CHANGELOG.md crates/C/README.md README.md
+git diff -- crates/<crate>/Cargo.toml crates/<crate>/CHANGELOG.md crates/<crate>/README.md README.md
 ```
 
 ### 2. Commit and push
 
-After approval, create one release commit with this exact subject (`C` is the
+After approval, create one release commit with this exact subject (`<crate>` is the
 crate name, e.g. `draco-gltf`):
 
 ```text
-release: prepare C vX.Y.Z
+release: prepare <crate> vX.Y.Z
 ```
 
 ```powershell
-git add crates/C/Cargo.toml crates/C/CHANGELOG.md crates/C/README.md README.md
-git commit -m "release: prepare C vX.Y.Z"
+git add crates/<crate>/Cargo.toml crates/<crate>/CHANGELOG.md crates/<crate>/README.md README.md
+git commit -m "release: prepare <crate> vX.Y.Z"
 git push origin main
 ```
 
 The exact subject matters: the publish workflow ignores ordinary pushes and only
-continues when the subject matches `crates/C/Cargo.toml`'s version.
+continues when the subject matches `crates/<crate>/Cargo.toml`'s version.
 
 ### 3. Start the publish workflow and preflight
 
@@ -105,21 +105,21 @@ The push to `main` starts `Rust CI`. Wait for it to pass, then start the publish
 workflow for the crate:
 
 ```powershell
-gh workflow run publish.yml --ref main -f crate=C
+gh workflow run publish.yml --ref main -f crate=<crate>
 ```
 
-Preflight checks, for crate `C`:
+Preflight checks, for crate `<crate>`:
 
 - a successful `Rust CI` run exists for this commit;
-- the commit subject is exactly `release: prepare C vX.Y.Z`;
-- `X.Y.Z` matches `crates/C/Cargo.toml`;
-- every internal dependency `C` pins is already published at the pinned version;
-- `crates/C/CHANGELOG.md` has a `## [X.Y.Z]` section;
-- `cargo semver-checks` succeeds if `C` already exists on crates.io;
-- docs.rs-style nightly docs build for `C`;
-- `C X.Y.Z` is not already published;
-- tag `C-vX.Y.Z` does not already exist;
-- `cargo publish --dry-run` succeeds for `C`.
+- the commit subject is exactly `release: prepare <crate> vX.Y.Z`;
+- `X.Y.Z` matches `crates/<crate>/Cargo.toml`;
+- every internal dependency `<crate>` pins is already published at the pinned version;
+- `crates/<crate>/CHANGELOG.md` has a `## [X.Y.Z]` section;
+- `cargo semver-checks` succeeds if `<crate>` already exists on crates.io;
+- docs.rs-style nightly docs build for `<crate>`;
+- `<crate> X.Y.Z` is not already published;
+- tag `<crate>-vX.Y.Z` does not already exist;
+- `cargo publish --dry-run` succeeds for `<crate>`.
 
 ### 4. Final approval
 
@@ -128,8 +128,8 @@ approving, check the workflow is `Release: publish crate`, the crate and version
 are intended, and the changelog section is the one reviewed.
 
 After approval, the workflow: authenticates to crates.io through Trusted
-Publishing; publishes `C`; creates annotated tag `C-vX.Y.Z`; extracts the
-`crates/C/CHANGELOG.md` section for `X.Y.Z`; and creates the GitHub Release.
+Publishing; publishes `<crate>`; creates annotated tag `<crate>-vX.Y.Z`; extracts the
+`crates/<crate>/CHANGELOG.md` section for `X.Y.Z`; and creates the GitHub Release.
 
 ## First Release
 
@@ -137,7 +137,7 @@ Trusted Publishing cannot publish a crate that does not exist yet. For a brand
 new crate, do the first publish locally with a short-lived token, then create the
 tag with the one-off workflow.
 
-1. Push the `release: prepare C vX.Y.Z` commit to `main` and wait for CI.
+1. Push the `release: prepare <crate> vX.Y.Z` commit to `main` and wait for CI.
 2. Create a crates.io token: short expiration; scope `publish-new`; unrestricted
    (the crate does not exist yet).
 3. Publish locally, in dependency order if releasing several for the first time:
@@ -153,12 +153,12 @@ tag with the one-off workflow.
    ```
 
 4. Revoke the token.
-5. Create the `C-vX.Y.Z` tag with the one-off workflow (it verifies the version
+5. Create the `<crate>-vX.Y.Z` tag with the one-off workflow (it verifies the version
    is published, then tags): run `First release only: create tag`
    (`tag-first-release.yml`) with the crate, the version, and the confirmation
    string — e.g. for `draco-gltf`: `crate=draco-gltf`, `version=0.1.0`,
    `confirm=tag draco-gltf`. The tag triggers the GitHub Release.
-6. Configure Trusted Publishing for `C` before its next release.
+6. Configure Trusted Publishing for `<crate>` before its next release.
 
 ## One-Time Setup
 
