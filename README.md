@@ -60,7 +60,7 @@ For detailed compatibility and scope notes, see the crate docs and
 
 ```toml
 [dependencies]
-draco-core = "0.1"
+draco-core = "1.0"
 draco-io = "0.1"
 ```
 
@@ -71,7 +71,7 @@ For raw `.drc` decode-only builds:
 
 ```toml
 [dependencies]
-draco-core = { version = "0.1", default-features = false, features = ["decoder"] }
+draco-core = { version = "1.0", default-features = false, features = ["decoder"] }
 ```
 
 Format-specific `draco-io` builds can enable only the readers or writers needed:

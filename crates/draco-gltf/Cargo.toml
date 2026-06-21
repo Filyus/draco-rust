@@ -18,7 +18,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 
 [dependencies]
 gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extensions"] }
-draco-core = { version = "0.1.0", path = "../draco-core", default-features = false, features = ["decoder", "point_cloud_decode", "edgebreaker_valence_decode"] }
+draco-core = { version = "1.0.0", path = "../draco-core", default-features = false, features = ["decoder", "point_cloud_decode", "edgebreaker_valence_decode"] }
 # Only the writer + the reader-agnostic geometry decoder are needed; draco-gltf
 # reads geometry through gltf-rs, not draco-io's glTF reader.
 draco-io = { version = "0.1.0", path = "../draco-io", default-features = false, features = ["gltf-writer"] }

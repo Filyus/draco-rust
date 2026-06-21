@@ -8,7 +8,11 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-06-15
+## [1.0.0] - 2026-06-15
+
+First stable release. The public API is now covered by SemVer (breaking changes
+mean a new major version). The `.drc` bitstream it reads and writes is Google
+Draco's stable format.
 
 ### Added
 
