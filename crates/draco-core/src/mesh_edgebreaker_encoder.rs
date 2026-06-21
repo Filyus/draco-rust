@@ -375,6 +375,21 @@ impl MeshEdgebreakerEncoder {
         let traversal_decoder_type = 0;
         out_buffer.encode_u8(traversal_decoder_type);
 
+        // Pre-2.2 connectivity carries a leading "new vertices" count (vertices
+        // introduced during encoding) that the modern layout dropped. The decoder
+        // reads but ignores the value, so 0 keeps the byte layout aligned. Behind
+        // legacy_bitstream_encode and only when targeting a < 2.2 stream.
+        #[cfg(feature = "legacy_bitstream_encode")]
+        {
+            let bitstream_version = ((out_buffer.version_major() as u16) << 8)
+                | out_buffer.version_minor() as u16;
+            if bitstream_version < 0x0200 {
+                out_buffer.encode_u32(0);
+            } else if bitstream_version < 0x0202 {
+                out_buffer.encode_varint(0u64);
+            }
+        }
+
         // Write header (C++ format)
         let num_encoded_vertices =
             corner_table.num_vertices() - corner_table.num_isolated_vertices();
@@ -398,11 +413,31 @@ impl MeshEdgebreakerEncoder {
         self.topology_split_event_data
             .sort_by_key(|e| e.source_symbol_id);
 
-        // Encode split event data
-        self.encode_split_data(out_buffer)?;
+        // Pre-2.2 stores the connectivity (traversal) block length-prefixed, with
+        // the hole/topology-split events placed *after* it; 2.2+ stores the events
+        // inline before the traversal block. Behind legacy_bitstream_encode.
+        let bitstream_version =
+            ((out_buffer.version_major() as u16) << 8) | out_buffer.version_minor() as u16;
+        let legacy_layout =
+            cfg!(feature = "legacy_bitstream_encode") && bitstream_version < 0x0202;
 
-        // Encode traversal buffer (C++ compatible): symbols + start faces.
-        self.encode_traversal_buffer(mesh, corner_table, attribute_connectivity, out_buffer)?;
+        if legacy_layout {
+            let mut block = EncoderBuffer::new();
+            block.set_version(out_buffer.version_major(), out_buffer.version_minor());
+            self.encode_traversal_buffer(mesh, corner_table, attribute_connectivity, &mut block)?;
+            if bitstream_version < 0x0200 {
+                out_buffer.encode_u32(block.data().len() as u32);
+            } else {
+                out_buffer.encode_varint(block.data().len() as u64);
+            }
+            out_buffer.encode_data(block.data());
+            self.encode_split_data(out_buffer)?;
+        } else {
+            // Encode split event data
+            self.encode_split_data(out_buffer)?;
+            // Encode traversal buffer (C++ compatible): symbols + start faces.
+            self.encode_traversal_buffer(mesh, corner_table, attribute_connectivity, out_buffer)?;
+        }
 
         // Generate attribute traversal order using DFS on the encoder's corner table.
         // This matches C++ MeshTraversalSequencer which uses SetCornerOrder(processed_connectivity_corners_).
@@ -1328,6 +1363,52 @@ impl MeshEdgebreakerEncoder {
 
         #[cfg(feature = "edgebreaker_valence_encode")]
         if let Some(valence_encoder) = self.valence_encoder.as_ref() {
+            let bitstream_version =
+                ((out_buffer.version_major() as u16) << 8) | out_buffer.version_minor() as u16;
+            if cfg!(feature = "legacy_bitstream_encode") && bitstream_version < 0x0202 {
+                // Pre-2.2 valence block:
+                //   [main symbol stream][start faces][seams][num_split][mode][contexts]
+                // The valence scheme leaves the last encoded symbol uncontexted (it is
+                // the first symbol decoded, when no valence context is active yet); the
+                // decoder replays it from this raw main symbol stream rather than
+                // assuming E as 2.2+ does.
+                out_buffer.start_bit_encoding(self.symbols.len().max(1) * 3, true);
+                if let Some(&last) = self.symbols.last() {
+                    let (bits, val) = match EdgebreakerSymbol::from(last) {
+                        EdgebreakerSymbol::Center => (1u32, 0u32),
+                        EdgebreakerSymbol::Split => (3, 1),
+                        EdgebreakerSymbol::Left => (3, 3),
+                        EdgebreakerSymbol::Right => (3, 5),
+                        EdgebreakerSymbol::End | EdgebreakerSymbol::Hole => (3, 7),
+                    };
+                    out_buffer.encode_least_significant_bits32(bits, val);
+                }
+                out_buffer.end_bit_encoding();
+
+                // Start faces as a raw bit buffer (pre-2.2 layout, not rANS).
+                out_buffer.start_bit_encoding(self.init_face_configurations.len().max(1), true);
+                for &is_interior in &self.init_face_configurations {
+                    out_buffer.encode_least_significant_bits32(1, is_interior as u32);
+                }
+                out_buffer.end_bit_encoding();
+
+                // Attribute seams.
+                self.encode_attribute_seams(corner_table, attribute_connectivity, out_buffer);
+
+                // Split-symbol count + valence mode (EDGEBREAKER_VALENCE_MODE_2_7 = 0).
+                let num_split_symbols = self
+                    .symbols
+                    .iter()
+                    .filter(|&&s| s == EdgebreakerSymbol::Split as u32)
+                    .count();
+                out_buffer.encode_varint(num_split_symbols as u64);
+                out_buffer.encode_u8(0);
+
+                // Contexts.
+                valence_encoder.done(out_buffer, 7);
+                return Ok(());
+            }
+
             // Valence encoding order: StartFaces -> Seams -> Symbols (Contexts).
             // This mirrors C++ MeshEdgebreakerTraversalValenceEncoder::Done().
             let mut start_face_encoder = RAnsBitEncoder::new();
