@@ -466,11 +466,10 @@ pub fn decode_symbols(
         Err(_) => return false,
     };
 
-    // Support both the older internal ids (0/1) and the Draco ids (2/3).
-    // Draco uses: 2 = TAGGED, 3 = RAW.
+    // Draco uses: 0 = TAGGED, 1 = RAW.
     match scheme {
-        0 | 2 => decode_tagged_symbols(num_values, num_components, in_buffer, symbols),
-        1 | 3 => decode_raw_symbols(num_values, in_buffer, symbols),
+        0 => decode_tagged_symbols(num_values, num_components, in_buffer, symbols),
+        1 => decode_raw_symbols(num_values, in_buffer, symbols),
         _ => false,
     }
 }
@@ -490,11 +489,8 @@ pub fn decode_raw_symbols(
         Ok(v) => v as u32,
         Err(_) => return false,
     };
-    if symbols_bit_length == 0 {
-        for i in 0..num_values {
-            symbols[i] = 0;
-        }
-        return true;
+    if !(1..=18).contains(&symbols_bit_length) {
+        return false;
     }
     let unique_symbols_bit_length = symbols_bit_length;
     let precision_bits =
@@ -586,6 +582,34 @@ mod tests {
         let bytes = [0u8]; // zero bit length would otherwise fill the output slice.
         let mut buffer = DecoderBuffer::new(&bytes);
         let mut symbols = [];
+
+        assert!(!decode_raw_symbols(1, &mut buffer, &mut symbols));
+    }
+
+    #[test]
+    fn decode_symbols_rejects_non_draco_scheme_ids() {
+        let bytes = [2u8];
+        let mut buffer = DecoderBuffer::new(&bytes);
+        let mut symbols = [0u32; 1];
+        let options = SymbolEncodingOptions::default();
+
+        assert!(!decode_symbols(1, 1, &options, &mut buffer, &mut symbols));
+    }
+
+    #[test]
+    fn decode_raw_symbols_rejects_zero_bit_length() {
+        let bytes = [0u8];
+        let mut buffer = DecoderBuffer::new(&bytes);
+        let mut symbols = [0u32; 1];
+
+        assert!(!decode_raw_symbols(1, &mut buffer, &mut symbols));
+    }
+
+    #[test]
+    fn decode_raw_symbols_rejects_bit_length_above_draco_limit() {
+        let bytes = [19u8];
+        let mut buffer = DecoderBuffer::new(&bytes);
+        let mut symbols = [0u32; 1];
 
         assert!(!decode_raw_symbols(1, &mut buffer, &mut symbols));
     }

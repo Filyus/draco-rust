@@ -263,11 +263,18 @@ impl MeshEdgebreakerDecoder {
             let mut event_buffer = DecoderBuffer::new(events_slice);
             event_buffer.set_version(version_major, version_minor);
 
-            let (events, decoded_bytes) =
-                Self::decode_hole_and_topology_split_events(&mut event_buffer, bitstream_version)?;
+            let (events, decoded_bytes) = Self::decode_hole_and_topology_split_events(
+                &mut event_buffer,
+                bitstream_version,
+                num_faces as usize,
+            )?;
             (events, decoded_bytes)
         } else {
-            let events = Self::decode_topology_split_events_inline(in_buffer, bitstream_version)?;
+            let events = Self::decode_topology_split_events_inline(
+                in_buffer,
+                bitstream_version,
+                num_faces as usize,
+            )?;
             (events, 0)
         };
 
@@ -328,6 +335,7 @@ impl MeshEdgebreakerDecoder {
     fn decode_hole_and_topology_split_events(
         in_buffer: &mut DecoderBuffer,
         bitstream_version: u16,
+        num_faces: usize,
     ) -> Result<(Vec<TopologySplitEventData>, usize), DracoError> {
         // Matches MeshEdgebreakerDecoderImpl::DecodeHoleAndTopologySplitEvents.
         let num_topology_splits = if bitstream_version < 0x0200 {
@@ -339,6 +347,12 @@ impl MeshEdgebreakerDecoder {
                 DracoError::DracoError("Failed to read num_topology_splits".to_string())
             })? as u32
         };
+
+        if num_topology_splits as usize > num_faces {
+            return Err(DracoError::DracoError(
+                "Topology split count exceeds face count".to_string(),
+            ));
+        }
 
         // Every topology split event consumes payload bytes. Reject impossible
         // counts before entering the decode loop so a tiny malformed input cannot
@@ -485,6 +499,7 @@ impl MeshEdgebreakerDecoder {
     fn decode_topology_split_events_inline(
         in_buffer: &mut DecoderBuffer,
         bitstream_version: u16,
+        num_faces: usize,
     ) -> Result<Vec<TopologySplitEventData>, DracoError> {
         // Inline event format is only used in v2.2+ streams.
         if bitstream_version < 0x0202 {
@@ -495,6 +510,11 @@ impl MeshEdgebreakerDecoder {
             .decode_varint()
             .map_err(|_| DracoError::DracoError("Failed to read split event count".to_string()))?
             as usize;
+        if num_events > num_faces {
+            return Err(DracoError::DracoError(
+                "Topology split count exceeds face count".to_string(),
+            ));
+        }
         // Cap the pre-reservation by the remaining byte budget: each event
         // consumes at least one byte, so a larger count cannot be satisfied.
         let mut events = Vec::with_capacity(num_events.min(in_buffer.remaining_size()));
@@ -1356,6 +1376,58 @@ mod tests {
             DracoError::UnsupportedFeature(
                 "Edgebreaker predictive traversal decode is not supported".to_string()
             )
+        );
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    fn append_varint(bytes: &mut Vec<u8>, mut value: u64) {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            bytes.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_topology_split_count_cannot_exceed_face_count() {
+        let bytes = 2u32.to_le_bytes();
+        let mut buffer = DecoderBuffer::new(&bytes);
+        buffer.set_version(1, 1);
+
+        let err =
+            MeshEdgebreakerDecoder::decode_hole_and_topology_split_events(&mut buffer, 0x0101, 1)
+                .expect_err("split events must be bounded by face count");
+
+        assert_eq!(
+            err,
+            DracoError::DracoError("Topology split count exceeds face count".to_string())
+        );
+    }
+
+    #[test]
+    fn inline_topology_split_count_cannot_exceed_face_count() {
+        let mut bytes = Vec::new();
+        append_varint(&mut bytes, 2);
+        let mut buffer = DecoderBuffer::new(&bytes);
+        buffer.set_version(2, 2);
+
+        let err =
+            MeshEdgebreakerDecoder::decode_topology_split_events_inline(&mut buffer, 0x0202, 1)
+                .expect_err("split events must be bounded by face count");
+
+        assert_eq!(
+            err,
+            DracoError::DracoError("Topology split count exceeds face count".to_string())
         );
     }
 }

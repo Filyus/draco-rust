@@ -120,7 +120,7 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
             // The split-symbol count is re-encoded in the valence stream here;
             // read it only to keep the buffer aligned. The caller already folded
             // it into `num_vertices` (max_num_vertices = encoded + split).
-            let _num_split_symbols = if bitstream_version < 0x0200 {
+            let num_split_symbols = if bitstream_version < 0x0200 {
                 match in_buffer.decode_u32() {
                     Ok(v) => v as usize,
                     Err(_) => return false,
@@ -131,6 +131,9 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
                     Err(_) => return false,
                 }
             };
+            if num_split_symbols >= self.num_vertices {
+                return false;
+            }
             // Valence mode byte; only EDGEBREAKER_VALENCE_MODE_2_7 (0) is supported.
             match in_buffer.decode_u8() {
                 Ok(0) => {}
@@ -383,6 +386,25 @@ mod legacy_tests {
         bytes.extend_from_slice(&0u32.to_le_bytes()); // legacy split-symbol count
         bytes.push(0); // valence mode 2..7
         append_varint(&mut bytes, u32::MAX as u64); // first context symbol count
+
+        let mut buffer = DecoderBuffer::new(&bytes);
+        buffer.set_version(1, 1);
+        let mut decoder = MeshEdgebreakerTraversalValenceDecoder::new(
+            RAnsBitDecoder::new(),
+            false,
+            Vec::new(),
+            None,
+            None,
+        );
+
+        assert!(!decoder.init_from_buffer(&mut buffer, 4, 0x0101, 4));
+    }
+
+    #[test]
+    fn rejects_legacy_split_symbol_count_at_or_above_vertex_count() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&4u32.to_le_bytes()); // legacy split-symbol count
+        bytes.push(0); // would be valid valence mode if the count were accepted
 
         let mut buffer = DecoderBuffer::new(&bytes);
         buffer.set_version(1, 1);
