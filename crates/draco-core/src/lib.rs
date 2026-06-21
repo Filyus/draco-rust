@@ -205,6 +205,13 @@ pub mod mesh_edgebreaker_decoder;
 )]
 #[doc(hidden)]
 pub mod mesh_edgebreaker_traversal_valence_decoder;
+#[cfg(all(feature = "decoder", feature = "legacy_bitstream_decode"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "decoder", feature = "legacy_bitstream_decode")))
+)]
+#[doc(hidden)]
+pub mod mesh_edgebreaker_traversal_predictive_decoder;
 #[cfg(feature = "decoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 /// Point cloud decoder entry point.

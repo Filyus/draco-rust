@@ -109,7 +109,7 @@ impl MeshEdgebreakerDecoder {
                 self.traversal_decoder_type
             )));
         }
-        if self.traversal_decoder_type == 1 {
+        if self.traversal_decoder_type == 1 && !cfg!(feature = "legacy_bitstream_decode") {
             return Err(DracoError::UnsupportedFeature(
                 "Edgebreaker predictive traversal decode is not supported".to_string(),
             ));
@@ -283,9 +283,10 @@ impl MeshEdgebreakerDecoder {
         // The encoder generates symbols Top-Down (Root->Leaf).
         // The decoder must process them Bottom-Up (Leaf->Root).
         // So we must reverse the stream.
-        // NOTE: For valence traversal (type 2), symbols are stored per-context and
-        // read during init_from_buffer, so we skip the main symbol stream here.
-        let symbols = if self.traversal_decoder_type == 2 {
+        // NOTE: The valence (type 2) and predictive (type 1) traversals read the
+        // main symbol stream on demand as region 1 below, so skip the eager
+        // standard-path decode here.
+        let symbols = if self.traversal_decoder_type == 1 || self.traversal_decoder_type == 2 {
             Vec::new()
         } else {
             Self::decode_symbol_stream(in_buffer, num_symbols)?
@@ -571,8 +572,9 @@ impl MeshEdgebreakerDecoder {
         num_symbols: usize,
         in_buffer: &mut DecoderBuffer<'a>,
     ) -> Result<usize, DracoError> {
-        // For standard traversal, use symbols.len(); for valence, use num_symbols parameter
-        let actual_num_symbols = if self.traversal_decoder_type == 2 {
+        // Standard traversal pre-decodes |symbols|; valence/predictive read them on
+        // demand, so fall back to the header symbol count.
+        let actual_num_symbols = if self.traversal_decoder_type == 1 || self.traversal_decoder_type == 2 {
             num_symbols
         } else {
             symbols.len()
@@ -600,12 +602,15 @@ impl MeshEdgebreakerDecoder {
         // so it must read region 1 here — otherwise the start-face region and the
         // per-context symbols below land on the wrong bytes. Its bits are replayed
         // for the "no active context" case in the valence decoder.
-        #[cfg(feature = "edgebreaker_valence_decode")]
-        let mut valence_direct_symbol_bits: Option<Vec<bool>> = None;
+        #[cfg(any(feature = "edgebreaker_valence_decode", feature = "legacy_bitstream_decode"))]
+        let mut legacy_direct_symbol_bits: Option<Vec<bool>> = None;
 
         if bitstream_version < 0x0202 {
-            #[cfg(feature = "edgebreaker_valence_decode")]
-            if self.traversal_decoder_type == 2 {
+            // The valence (type 2) and predictive (type 1) traversals both consume
+            // the main traversal symbol stream as region 1 (the standard path reads
+            // it via decode_symbol_stream instead).
+            #[cfg(any(feature = "edgebreaker_valence_decode", feature = "legacy_bitstream_decode"))]
+            if self.traversal_decoder_type == 1 || self.traversal_decoder_type == 2 {
                 in_buffer.start_bit_decoding(true).map_err(|_| {
                     DracoError::DracoError(
                         "Failed to start valence main-symbol bit decoding".to_string(),
@@ -623,7 +628,7 @@ impl MeshEdgebreakerDecoder {
                     }
                 }
                 in_buffer.end_bit_decoding();
-                valence_direct_symbol_bits = Some(bits);
+                legacy_direct_symbol_bits = Some(bits);
             }
 
             // Read raw bit buffer for start faces (region 2 for valence streams;
@@ -661,12 +666,74 @@ impl MeshEdgebreakerDecoder {
         #[allow(unused_assignments)]
         let mut processed_connectivity_corners: Vec<u32> = Vec::new();
 
-        // For valence mode, we need to save the seam decoders to use after connectivity.
-        #[cfg(feature = "edgebreaker_valence_decode")]
-        let mut valence_seam_decoders: Vec<RAnsBitDecoder> = Vec::new();
+        // Valence and predictive modes both save the seam decoders to use after
+        // connectivity (positioned between start faces and the per-context /
+        // prediction streams).
+        #[cfg(any(feature = "edgebreaker_valence_decode", feature = "legacy_bitstream_decode"))]
+        let mut legacy_seam_decoders: Vec<RAnsBitDecoder> = Vec::new();
         let remove_invalid_vertices = num_attribute_data == 0 || bitstream_version < 0x0202;
 
-        let num_vertices = if self.traversal_decoder_type == 2 {
+        let num_vertices = if self.traversal_decoder_type == 1 {
+            // Predictive mode (legacy, pre-0.10.0). Buffer order mirrors valence:
+            // start faces (already read), attribute seams, then a split-symbol
+            // count and the binary prediction stream (vs valence's contexts).
+            #[cfg(not(feature = "legacy_bitstream_decode"))]
+            {
+                return Err(DracoError::DracoError(
+                    "Edgebreaker predictive traversal decode support is disabled".to_string(),
+                ));
+            }
+            #[cfg(feature = "legacy_bitstream_decode")]
+            {
+                for _ in 0..num_attribute_data {
+                    let mut seam_decoder = RAnsBitDecoder::new();
+                    if !seam_decoder.start_decoding(in_buffer) {
+                        return Err(DracoError::DracoError(
+                            "Failed to start attribute seam decoding for predictive".to_string(),
+                        ));
+                    }
+                    legacy_seam_decoders.push(seam_decoder);
+                }
+
+                // Split-symbol count (raw int32 pre-2.0); already folded into
+                // max_num_vertices, so read only to advance the buffer.
+                if in_buffer.decode_u32().is_err() {
+                    return Err(DracoError::DracoError(
+                        "Failed to read predictive split-symbol count".to_string(),
+                    ));
+                }
+                // Binary prediction stream (whether each prediction was correct).
+                let mut prediction_decoder = RAnsBitDecoder::new();
+                if !prediction_decoder.start_decoding(in_buffer) {
+                    return Err(DracoError::DracoError(
+                        "Failed to start predictive prediction stream".to_string(),
+                    ));
+                }
+
+                let mut predictive_decoder = crate::mesh_edgebreaker_traversal_predictive_decoder::MeshEdgebreakerTraversalPredictiveDecoder::new(
+                    start_face_decoder,
+                    has_start_face_bits,
+                    topology_split_data.to_vec(),
+                    start_face_bits_legacy.take(),
+                    legacy_direct_symbol_bits.take(),
+                    prediction_decoder,
+                    max_num_vertices,
+                );
+
+                let nv = connectivity_decoder
+                    .decode_connectivity(
+                        actual_num_symbols as i32,
+                        &mut predictive_decoder,
+                        remove_invalid_vertices,
+                    )
+                    .map_err(DracoError::DracoError)? as usize;
+
+                has_start_face_bits_flag = predictive_decoder.has_start_face_bits;
+                start_face_decoder_opt = Some(predictive_decoder.start_face_decoder);
+                processed_connectivity_corners = predictive_decoder.processed_connectivity_corners;
+                nv
+            }
+        } else if self.traversal_decoder_type == 2 {
             // Valence mode
             #[cfg(not(feature = "edgebreaker_valence_decode"))]
             {
@@ -689,7 +756,7 @@ impl MeshEdgebreakerDecoder {
                             "Failed to start attribute seam decoding for valence".to_string(),
                         ));
                     }
-                    valence_seam_decoders.push(seam_decoder);
+                    legacy_seam_decoders.push(seam_decoder);
                 }
 
                 let mut valence_decoder = crate::mesh_edgebreaker_traversal_valence_decoder::MeshEdgebreakerTraversalValenceDecoder::new(
@@ -697,7 +764,7 @@ impl MeshEdgebreakerDecoder {
                 has_start_face_bits,
                 topology_split_data.to_vec(),
                 start_face_bits_legacy.take(),
-                valence_direct_symbol_bits.take(),
+                legacy_direct_symbol_bits.take(),
             );
                 // Initialize contexts by reading counts/symbol arrays from the buffer
                 if !valence_decoder.init_from_buffer(in_buffer, max_num_vertices, bitstream_version) {
@@ -785,16 +852,16 @@ impl MeshEdgebreakerDecoder {
 
         let uses_legacy_attribute_connectivity = bitstream_version < 0x0201;
 
-        if self.traversal_decoder_type == 2 {
-            // Valence mode - use the seam decoders we already started
-            #[cfg(not(feature = "edgebreaker_valence_decode"))]
+        if self.traversal_decoder_type == 1 || self.traversal_decoder_type == 2 {
+            // Valence/predictive mode - use the seam decoders we already started
+            #[cfg(not(any(feature = "edgebreaker_valence_decode", feature = "legacy_bitstream_decode")))]
             {
                 return Err(DracoError::DracoError(
                     "Edgebreaker valence traversal decode support is disabled".to_string(),
                 ));
             }
-            #[cfg(feature = "edgebreaker_valence_decode")]
-            for mut seam_decoder in valence_seam_decoders.into_iter() {
+            #[cfg(any(feature = "edgebreaker_valence_decode", feature = "legacy_bitstream_decode"))]
+            for mut seam_decoder in legacy_seam_decoders.into_iter() {
                 let mut seam_corners = Vec::new();
                 if let Some(ct) = &self.corner_table {
                     for f in 0..mesh.num_faces() {
@@ -1243,6 +1310,9 @@ impl<'a> EdgebreakerTraversalDecoder for InternalTraversalDecoder<'a> {
 mod tests {
     use super::*;
 
+    // Predictive (type-1) traversal is supported when legacy_bitstream_decode is
+    // enabled; the explicit rejection only applies without that feature.
+    #[cfg(not(feature = "legacy_bitstream_decode"))]
     #[test]
     fn predictive_traversal_type_is_rejected_explicitly() {
         let mut buffer = DecoderBuffer::new(&[1]);

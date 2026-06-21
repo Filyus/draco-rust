@@ -831,3 +831,51 @@ fn legacy_attribute_streams_decode_to_reference_values() {
         );
     }
 }
+
+/// Draco 0.9.1 and earlier used the predictive ("type 1") EdgeBreaker traversal
+/// by default (a binary prediction stream guessing R/C from local valence),
+/// replaced by the valence traversal in 0.10.0. The 0.9.1 bunny must decode to
+/// the same geometry as the valence-encoded bunny.
+#[cfg(feature = "legacy_bitstream_decode")]
+#[test]
+fn legacy_predictive_edgebreaker_decodes_to_reference_geometry() {
+    fn decode(fixture: &str) -> Mesh {
+        let bytes = std::fs::read(repo_testdata_dir().join(fixture))
+            .unwrap_or_else(|e| panic!("read {fixture}: {e}"));
+        let mut buffer = DecoderBuffer::new(&bytes);
+        let mut mesh = Mesh::new();
+        MeshDecoder::new()
+            .decode(&mut buffer, &mut mesh)
+            .unwrap_or_else(|e| panic!("{fixture} decode: {e:?}"));
+        mesh
+    }
+    fn sorted_positions(mesh: &Mesh) -> Vec<[u32; 3]> {
+        use draco_core::geometry_attribute::GeometryAttributeType;
+        let att = mesh.attribute(mesh.named_attribute_id(GeometryAttributeType::Position));
+        let buffer = att.buffer();
+        let stride = att.byte_stride() as usize;
+        let mut out = Vec::with_capacity(att.size());
+        for i in 0..att.size() {
+            let off = i * stride;
+            let mut v = [0u32; 3];
+            for k in 0..3 {
+                let mut b = [0u8; 4];
+                buffer.read(off + k * 4, &mut b);
+                v[k] = u32::from_le_bytes(b);
+            }
+            out.push(v);
+        }
+        out.sort_unstable();
+        out
+    }
+
+    let predictive = decode("legacy_draco/bun_zipper.mesh_eb_predictive.0.9.1.drc");
+    let valence = decode("legacy_draco/bun_zipper.mesh_eb_valence.1.1.0.drc");
+    assert_eq!(predictive.num_faces(), 69451, "predictive face count");
+    assert_eq!(predictive.num_points(), 34834, "predictive point count");
+    assert_eq!(
+        sorted_positions(&predictive),
+        sorted_positions(&valence),
+        "0.9.1 predictive geometry differs from the valence-encoded bunny"
+    );
+}
