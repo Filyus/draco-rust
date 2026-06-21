@@ -142,6 +142,14 @@
 #[cfg(feature = "fbx-reader")]
 #[cfg_attr(docsrs, doc(cfg(feature = "fbx-reader")))]
 pub mod fbx_reader;
+// Reader-agnostic glTF geometry decode + shared error type. Available with the
+// reader or the writer, so the compressor reuses it without the reader.
+#[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(feature = "gltf-reader", feature = "gltf-writer")))
+)]
+pub mod gltf_geometry;
 #[cfg(feature = "gltf-reader")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-reader")))]
 pub mod gltf_reader;
@@ -156,12 +164,12 @@ pub mod ply_reader;
 #[cfg(feature = "fbx-writer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "fbx-writer")))]
 pub mod fbx_writer;
-#[cfg(all(feature = "gltf-reader", feature = "gltf-writer"))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(feature = "gltf-reader", feature = "gltf-writer")))
-)]
+#[cfg(feature = "gltf-writer")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gltf-writer")))]
 /// Document-preserving glTF Draco compression (keeps materials, textures, etc.).
+///
+/// The in-memory [`gltf_compress::compress_gltf_value`] needs only the writer;
+/// the byte API ([`gltf_compress::compress_gltf_bytes`]) also needs the reader.
 pub mod gltf_compress;
 #[cfg(feature = "gltf-writer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-writer")))]
@@ -192,19 +200,27 @@ pub use fbx_reader::{FbxMemoryReader, FbxReader};
 #[cfg(feature = "fbx-writer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "fbx-writer")))]
 pub use fbx_writer::FbxWriter;
+// Reader-agnostic geometry decode + shared error type (reader or writer).
+#[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(feature = "gltf-reader", feature = "gltf-writer")))
+)]
+pub use gltf_geometry::{decode_geometry, AccessorSource, DecodedAccessor, GltfError};
+// In-memory compressor core: writer only.
+#[cfg(feature = "gltf-writer")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gltf-writer")))]
+pub use gltf_compress::compress_gltf_value;
+// Byte compressor API: needs the reader to parse + resolve buffers.
 #[cfg(all(feature = "gltf-reader", feature = "gltf-writer"))]
 #[cfg_attr(
     docsrs,
     doc(cfg(all(feature = "gltf-reader", feature = "gltf-writer")))
 )]
-pub use gltf_compress::{
-    compress_gltf_bytes, compress_gltf_bytes_with_base_path, compress_gltf_value,
-};
+pub use gltf_compress::{compress_gltf_bytes, compress_gltf_bytes_with_base_path};
 #[cfg(feature = "gltf-reader")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-reader")))]
-pub use gltf_reader::{
-    decode_geometry, AccessorSource, DecodedAccessor, DracoPrimitiveInfo, GltfError, GltfReader,
-};
+pub use gltf_reader::{DracoPrimitiveInfo, GltfReader};
 #[cfg(feature = "gltf-writer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-writer")))]
 pub use gltf_writer::{GltfWriteError, GltfWriter};

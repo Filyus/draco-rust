@@ -42,22 +42,34 @@
 //! `TRIANGLE_STRIP` is allowed by the spec but uncommon and left as-is.)
 
 use std::collections::{BTreeSet, HashMap};
+#[cfg(feature = "gltf-reader")]
 use std::path::Path;
 
 use serde_json::{Map, Value};
 
-use crate::gltf_reader::{GltfError, GltfReader};
+use crate::gltf_geometry::GltfError;
+// The byte API parses + resolves buffers through the reader; the in-memory
+// `compress_gltf_value` does not need it.
+#[cfg(feature = "gltf-reader")]
+use crate::gltf_reader::GltfReader;
 use crate::gltf_writer::{encode_draco_mesh_with_info, QuantizationBits};
 
 type Result<T> = std::result::Result<T, GltfError>;
 
 const KHR_DRACO: &str = "KHR_draco_mesh_compression";
-const GLB_MAGIC: u32 = 0x4654_6C67;
-const GLB_VERSION: u32 = 2;
-const GLB_CHUNK_JSON: u32 = 0x4E4F_534A;
-const GLB_CHUNK_BIN: u32 = 0x004E_4942;
 const MODE_TRIANGLES: u64 = 4;
 
+// GLB container handling is only used by the byte API (reader feature).
+#[cfg(feature = "gltf-reader")]
+const GLB_MAGIC: u32 = 0x4654_6C67;
+#[cfg(feature = "gltf-reader")]
+const GLB_VERSION: u32 = 2;
+#[cfg(feature = "gltf-reader")]
+const GLB_CHUNK_JSON: u32 = 0x4E4F_534A;
+#[cfg(feature = "gltf-reader")]
+const GLB_CHUNK_BIN: u32 = 0x004E_4942;
+
+#[cfg(feature = "gltf-reader")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Container {
     Glb,
@@ -71,6 +83,7 @@ enum Container {
 /// data URIs (use [`compress_gltf_bytes_with_base_path`] for external files).
 /// The output container matches the input (GLB in -> GLB out, glTF in -> glTF
 /// out with an embedded buffer).
+#[cfg(feature = "gltf-reader")]
 pub fn compress_gltf_bytes(
     input: &[u8],
     quantization: Option<QuantizationBits>,
@@ -80,6 +93,7 @@ pub fn compress_gltf_bytes(
 
 /// Like [`compress_gltf_bytes`], but resolves external buffers/`.bin` files
 /// relative to `base_path`.
+#[cfg(feature = "gltf-reader")]
 pub fn compress_gltf_bytes_with_base_path(
     input: &[u8],
     base_path: Option<&Path>,
@@ -614,6 +628,7 @@ fn set_single_buffer(doc: &mut Value, bin_len: usize) {
     root.insert("buffers".into(), Value::Array(vec![Value::Object(buffer)]));
 }
 
+#[cfg(feature = "gltf-reader")]
 fn serialize(doc: &Value, bin: &[u8], container: Container) -> Result<Vec<u8>> {
     match container {
         Container::Gltf => {
@@ -636,6 +651,7 @@ fn serialize(doc: &Value, bin: &[u8], container: Container) -> Result<Vec<u8>> {
     }
 }
 
+#[cfg(feature = "gltf-reader")]
 fn build_glb(doc: &Value, bin: &[u8]) -> Result<Vec<u8>> {
     let mut json = serde_json::to_vec(doc)?;
     while !json.len().is_multiple_of(4) {
@@ -671,6 +687,7 @@ fn build_glb(doc: &Value, bin: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Returns the GLB JSON chunk bytes and optional BIN chunk bytes.
+#[cfg(feature = "gltf-reader")]
 fn split_glb(data: &[u8]) -> Result<(&[u8], Option<&[u8]>)> {
     if data.len() < 12 {
         return Err(GltfError::InvalidGlb(
@@ -707,6 +724,7 @@ fn split_glb(data: &[u8]) -> Result<(&[u8], Option<&[u8]>)> {
     Ok((json, bin))
 }
 
+#[cfg(feature = "gltf-reader")]
 fn read_u32_le(bytes: &[u8]) -> u32 {
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
@@ -717,6 +735,7 @@ fn align_to_4(buf: &mut Vec<u8>) {
     }
 }
 
+#[cfg(feature = "gltf-reader")]
 fn base64_encode(data: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);

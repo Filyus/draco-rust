@@ -50,6 +50,13 @@ jobs:
       - name: Test draco-io
         run: cargo test --manifest-path crates/Cargo.toml -p draco-io
 
+      # draco-gltf compresses through the writer + the reader-agnostic geometry
+      # decoder, without the glTF reader. Lock in that feature combination.
+      - name: Check draco-io feature combinations
+        run: |
+          cargo check --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-writer
+          cargo check --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-reader
+
       - name: Test draco-gltf
         run: cargo test --manifest-path crates/Cargo.toml -p draco-gltf
 
