@@ -125,19 +125,25 @@ fn legacy_valence_roundtrip_preserves_geometry() {
     assert_eq!(reference.num_faces(), mesh.num_faces());
     let reference_positions = sorted_positions(&reference);
 
-    // v2.1 is the most recent pre-2.2 layout (the valence/connectivity block split
-    // that this encoder mirrors). It must decode back to the same geometry as the
-    // modern path. v2.0 and v1.2 additionally change the attribute-connectivity
-    // layout (decoder: `uses_legacy_attribute_connectivity = version < 0x0201`)
-    // and, for v1.2, the < 2.0 quantization-params layout — see
-    // `legacy_valence_roundtrip_pre_2_1_is_unsupported`.
-    let decoded = encode_decode(&mesh, 2, 1).expect("v2.1 round-trip");
-    assert_eq!(decoded.num_faces(), mesh.num_faces(), "v2.1: face count");
-    assert_eq!(
-        sorted_positions(&decoded),
-        reference_positions,
-        "v2.1: geometry differs from the modern round-trip"
-    );
+    // v2.1 and v2.0 are pre-2.2 layouts this encoder mirrors (the valence/
+    // connectivity block split; v2.0 also prefixes an empty hole-event section).
+    // Both must decode back to the same geometry as the modern path. v1.2 still
+    // differs (pre-2.0 quantization-params layout) — see
+    // `legacy_valence_roundtrip_pre_2_0_is_unsupported`.
+    for (major, minor) in [(2u8, 1u8), (2, 0)] {
+        let decoded = encode_decode(&mesh, major, minor)
+            .unwrap_or_else(|e| panic!("v{major}.{minor} round-trip failed: {e}"));
+        assert_eq!(
+            decoded.num_faces(),
+            mesh.num_faces(),
+            "v{major}.{minor}: face count"
+        );
+        assert_eq!(
+            sorted_positions(&decoded),
+            reference_positions,
+            "v{major}.{minor}: geometry differs from the modern round-trip"
+        );
+    }
 }
 
 /// At speed 0 with quantization the encoder selects the constrained-multi-
@@ -156,21 +162,18 @@ fn legacy_valence_roundtrip_high_compression() {
     );
 }
 
-/// Encoding valence at bitstream < 2.1 (Draco 0.10.0 / 1.0.0) is not yet
-/// round-trippable: those versions use a different attribute-connectivity layout
-/// (and, for 1.2, the pre-2.0 quantization-params layout) that the encoder does
-/// not emit. The *decoder* handles all of them (the C++ fixtures cover 1.2/2.0/2.1
-/// in drc_edge_cases_test); only the encode side is staged here. Documents the
-/// current boundary so a future fix flips this to a round-trip assertion.
+/// Encoding valence at bitstream < 2.0 (Draco 0.10.0) is not yet round-trippable:
+/// it uses the pre-2.0 quantization-params layout (params before symbols) that
+/// the encoder does not emit. The *decoder* handles it (the C++ fixtures cover
+/// 1.2/2.0/2.1 in drc_edge_cases_test); only the encode side is staged here.
+/// Documents the current boundary so a future fix flips this to a round-trip.
 #[test]
-fn legacy_valence_roundtrip_pre_2_1_is_unsupported() {
+fn legacy_valence_roundtrip_pre_2_0_is_unsupported() {
     let mesh = build_grid(33);
-    for (major, minor) in [(1u8, 2u8), (2, 0)] {
-        let result = encode_decode(&mesh, major, minor);
-        assert!(
-            result.is_err(),
-            "v{major}.{minor} unexpectedly round-tripped; promote it into \
-             legacy_valence_roundtrip_preserves_geometry"
-        );
-    }
+    let result = encode_decode(&mesh, 1, 2);
+    assert!(
+        result.is_err(),
+        "v1.2 unexpectedly round-tripped; promote it into \
+         legacy_valence_roundtrip_preserves_geometry"
+    );
 }

@@ -1528,6 +1528,21 @@ impl MeshEdgebreakerEncoder {
     }
 
     fn encode_split_data(&self, out_buffer: &mut EncoderBuffer) -> Result<(), DracoError> {
+        // Pre-2.1 prefixes the split events with a hole-event count (and events).
+        // The decoder parses but never uses them (dead/legacy data), so emit an
+        // empty hole-event section to keep the byte layout aligned. < 2.0 uses a
+        // fixed u32 count, 2.0 a varint; 2.1+ has no hole-event section.
+        #[cfg(feature = "legacy_bitstream_encode")]
+        {
+            let bitstream_version = ((out_buffer.version_major() as u16) << 8)
+                | out_buffer.version_minor() as u16;
+            if bitstream_version != 0 && bitstream_version < 0x0200 {
+                out_buffer.encode_u32(0); // num_hole_events
+            } else if bitstream_version != 0 && bitstream_version < 0x0201 {
+                out_buffer.encode_varint(0u64); // num_hole_events
+            }
+        }
+
         let num_events = self.topology_split_event_data.len();
         out_buffer.encode_varint(num_events as u64);
 
