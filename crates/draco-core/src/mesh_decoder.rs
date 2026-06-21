@@ -22,6 +22,10 @@ use crate::metadata::{GeometryMetadata, METADATA_FLAG_MASK};
 use crate::test_event_log;
 use crate::version::version_at_least;
 
+/// Output of an edgebreaker attribute traversal:
+/// `(point ids in traversal order, processed corners, vertex -> data-id map)`.
+type AttributeTraversalArrays = (Vec<PointIndex>, Vec<u32>, Vec<i32>);
+
 fn validate_num_attributes_in_decoder(
     num_attributes_in_decoder: usize,
     remaining_bytes: usize,
@@ -1056,10 +1060,10 @@ impl MeshDecoder {
                         let mut att_decoder = SequentialIntegerAttributeDecoder::new();
                         att_decoder.init(&pc_decoder, att_id);
                         let mut skip_hook_fn = move |buf: &mut DecoderBuffer<'_>| -> bool {
-                            if quant_skip_bytes > 0 && buf.try_advance(quant_skip_bytes).is_err() {
-                                return false;
+                            if quant_skip_bytes == 0 {
+                                return true;
                             }
-                            true
+                            buf.try_advance(quant_skip_bytes).is_ok()
                         };
                         let pre_hook_opt: Option<&mut dyn FnMut(&mut DecoderBuffer<'_>) -> bool> =
                             if quant_skip_bytes > 0 {
@@ -1162,11 +1166,10 @@ impl MeshDecoder {
                         let mut att_decoder = SequentialIntegerAttributeDecoder::new();
                         att_decoder.init(&pc_decoder, att_id);
                         let mut normal_skip_fn = move |buf: &mut DecoderBuffer<'_>| -> bool {
-                            if normal_skip_bytes > 0 && buf.try_advance(normal_skip_bytes).is_err()
-                            {
-                                return false;
+                            if normal_skip_bytes == 0 {
+                                return true;
                             }
-                            true
+                            buf.try_advance(normal_skip_bytes).is_ok()
                         };
                         let normal_hook: Option<&mut dyn FnMut(&mut DecoderBuffer<'_>) -> bool> =
                             if normal_skip_bytes > 0 {
@@ -1384,12 +1387,11 @@ impl MeshDecoder {
     }
 
     #[allow(dead_code)]
-    #[allow(clippy::type_complexity)]
     fn generate_point_ids_and_corners_dfs(
         &self,
         mesh: &Mesh,
         processed_connectivity_corners: &[u32],
-    ) -> Result<(Vec<PointIndex>, Vec<u32>, Vec<i32>), DracoError> {
+    ) -> Result<AttributeTraversalArrays, DracoError> {
         let corner_table = self.corner_table.as_ref().ok_or_else(|| {
             DracoError::DracoError(
                 "Edgebreaker DFS attribute traversal missing corner table".to_string(),
@@ -1402,12 +1404,11 @@ impl MeshDecoder {
         )
     }
 
-    #[allow(clippy::type_complexity)]
     fn generate_point_ids_and_corners_dfs_for_table(
         mesh: &Mesh,
         corner_table: &CornerTable,
         processed_connectivity_corners: &[u32],
-    ) -> Result<(Vec<PointIndex>, Vec<u32>, Vec<i32>), DracoError> {
+    ) -> Result<AttributeTraversalArrays, DracoError> {
         // Reject an inconsistent (e.g. seam-modified) corner table before the DFS
         // indexes per-vertex / per-face arrays by table-derived ids.
         if !corner_table.is_index_consistent() {
@@ -1639,12 +1640,12 @@ impl MeshDecoder {
         Ok((point_ids, data_to_corner_map, vertex_to_data_map))
     }
 
-    #[allow(dead_code, clippy::type_complexity)]
+    #[allow(dead_code)]
     fn generate_point_ids_and_corners_max_prediction_degree(
         &self,
         mesh: &Mesh,
         _processed_connectivity_corners: &[u32],
-    ) -> Result<(Vec<PointIndex>, Vec<u32>, Vec<i32>), DracoError> {
+    ) -> Result<AttributeTraversalArrays, DracoError> {
         // Matches C++ MaxPredictionDegreeTraverser (MESH_TRAVERSAL_PREDICTION_DEGREE).
         let corner_table = self.corner_table.as_ref().ok_or_else(|| {
             DracoError::DracoError(

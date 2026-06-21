@@ -21,6 +21,9 @@ use crate::version::{
     has_header_flags, uses_varint_encoding, uses_varint_unique_id, DEFAULT_MESH_VERSION,
 };
 
+/// `(min, max)` per-component position bounds, each present when computable.
+type PositionBounds = (Option<Vec<f64>>, Option<Vec<f64>>);
+
 /// Encoder for Draco triangle mesh bitstreams.
 ///
 /// A `MeshEncoder` takes a [`Mesh`] plus [`EncoderOptions`] and writes a
@@ -1307,12 +1310,11 @@ impl MeshEncoder {
         Ok(num_points)
     }
 
-    #[allow(clippy::type_complexity)]
     fn position_bounds_for_attribute(
         &self,
         att_id: i32,
         point_ids: &[PointIndex],
-    ) -> Result<(Option<Vec<f64>>, Option<Vec<f64>>), DracoError> {
+    ) -> Result<PositionBounds, DracoError> {
         let mesh = self
             .mesh
             .as_ref()
@@ -1363,11 +1365,10 @@ impl MeshEncoder {
         Self::position_bounds_from_attribute(att, point_ids)
     }
 
-    #[allow(clippy::type_complexity)]
     fn position_bounds_from_attribute(
         att: &PointAttribute,
         point_ids: &[PointIndex],
-    ) -> Result<(Option<Vec<f64>>, Option<Vec<f64>>), DracoError> {
+    ) -> Result<PositionBounds, DracoError> {
         let count = if point_ids.is_empty() {
             att.size()
         } else {
