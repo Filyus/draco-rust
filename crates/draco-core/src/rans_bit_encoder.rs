@@ -123,7 +123,19 @@ impl RAnsBitEncoder {
             println!("DEBUG: RAnsBitEncoder zero_prob: {}", zero_prob);
         }
 
-        target_buffer.encode_varint(size as u64);
+        // Pre-2.2 stores the rANS payload size as a fixed u32; 2.2+ uses a varint.
+        // The size prefix is read back the same way (see RAnsBitDecoder). Only fires
+        // when the target buffer carries a pre-2.2 version (default 2.2 -> varint).
+        let bitstream_version =
+            ((target_buffer.version_major() as u16) << 8) | target_buffer.version_minor() as u16;
+        if cfg!(feature = "legacy_bitstream_encode")
+            && bitstream_version != 0
+            && bitstream_version < 0x0202
+        {
+            target_buffer.encode_u32(size as u32);
+        } else {
+            target_buffer.encode_varint(size as u64);
+        }
         #[cfg(feature = "debug_logs")]
         {
             println!("DEBUG: RAnsBitEncoder size: {}", size);

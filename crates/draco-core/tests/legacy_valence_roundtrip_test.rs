@@ -64,11 +64,20 @@ fn build_grid(n: usize) -> Mesh {
 /// Encode `mesh` targeting bitstream `major.minor` with valence traversal
 /// (speed 0), then decode it back.
 fn encode_decode(mesh: &Mesh, major: u8, minor: u8) -> Result<Mesh, String> {
+    encode_decode_q(mesh, major, minor, None)
+}
+
+/// As [`encode_decode`], optionally quantizing positions to `qp` bits (which, at
+/// speed 0, selects the constrained-multi-parallelogram predictor).
+fn encode_decode_q(mesh: &Mesh, major: u8, minor: u8, qp: Option<u32>) -> Result<Mesh, String> {
     let mut opts = EncoderOptions::new();
     opts.set_version(major, minor);
     opts.set_encoding_method(1); // Edgebreaker
     opts.set_global_int("encoding_speed", 0);
     opts.set_global_int("decoding_speed", 0);
+    if let Some(q) = qp {
+        opts.set_attribute_int(0, "quantization_bits", q as i32);
+    }
 
     let mut enc = MeshEncoder::new();
     enc.set_mesh(mesh.clone());
@@ -128,6 +137,22 @@ fn legacy_valence_roundtrip_preserves_geometry() {
         sorted_positions(&decoded),
         reference_positions,
         "v2.1: geometry differs from the modern round-trip"
+    );
+}
+
+/// At speed 0 with quantization the encoder selects the constrained-multi-
+/// parallelogram position predictor, which pre-2.2 prefixes a mode byte. A v2.1
+/// valence stream using it must round-trip to the same geometry as 2.2.
+#[test]
+fn legacy_valence_roundtrip_high_compression() {
+    let mesh = build_grid(33);
+    let reference = encode_decode_q(&mesh, 2, 2, Some(14)).expect("2.2 quantized round-trip");
+    let decoded = encode_decode_q(&mesh, 2, 1, Some(14)).expect("v2.1 quantized round-trip");
+    assert_eq!(decoded.num_faces(), mesh.num_faces(), "v2.1: face count");
+    assert_eq!(
+        sorted_positions(&decoded),
+        sorted_positions(&reference),
+        "v2.1 constrained-multi geometry differs from the modern round-trip"
     );
 }
 

@@ -44,6 +44,9 @@ pub struct MeshPredictionSchemeConstrainedMultiParallelogramEncoder<
     transform: Transform,
     is_crease_edge: [Vec<bool>; MAX_NUM_PARALLELOGRAMS],
     entropy_tracker: ShannonEntropyTracker,
+    /// Target bitstream version (0 = default/2.2). Pre-2.2 crease-edge rANS
+    /// streams need a fixed-u32 size prefix instead of a varint.
+    bitstream_version: u16,
     _marker: PhantomData<(DataType, CorrType)>,
 }
 
@@ -59,8 +62,15 @@ where
             transform,
             is_crease_edge: Default::default(),
             entropy_tracker: ShannonEntropyTracker::new(),
+            bitstream_version: 0,
             _marker: PhantomData,
         }
+    }
+
+    /// Sets the target bitstream version so crease-edge rANS streams use the
+    /// correct (pre-2.2 u32 vs 2.2+ varint) size-prefix encoding.
+    pub fn set_bitstream_version(&mut self, version: u16) {
+        self.bitstream_version = version;
     }
 
     fn convert_signed_int_to_symbol(val: i64) -> u32 {
@@ -648,6 +658,12 @@ where
 
     fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> bool {
         let mut enc = EncoderBuffer::new();
+        // Propagate the target version so crease-edge rANS streams pick the right
+        // size-prefix encoding (pre-2.2 u32 vs 2.2+ varint).
+        enc.set_version(
+            (self.bitstream_version >> 8) as u8,
+            (self.bitstream_version & 0xff) as u8,
+        );
 
         // C++ bitstream order: crease edges FIRST, then transform data.
         // Encode crease edges.

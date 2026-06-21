@@ -430,6 +430,9 @@ impl SequentialIntegerAttributeEncoder {
                                 MeshPredictionSchemeConstrainedMultiParallelogramEncoder::new(
                                     transform, mesh_data,
                                 );
+                            let (vmaj, vmin) = options.get_version();
+                            predictor
+                                .set_bitstream_version(((vmaj as u16) << 8) | vmin as u16);
                             selected_transform_type = predictor.get_transform_type();
 
                             if !predictor.compute_correction_values(
@@ -951,6 +954,21 @@ impl SequentialIntegerAttributeEncoder {
                     return false;
                 }
                 pred_data_opt = Some(pred_data);
+            }
+        }
+
+        // Pre-2.2 prefixes the constrained-multi-parallelogram prediction data with
+        // an optimal-multi-parallelogram mode byte that the decoder reads before
+        // the crease-edge streams; 2.2+ dropped it. Mirror of the decode-side
+        // mode-byte read. get_version() is (0, 0) for the default (2.2).
+        #[cfg(feature = "legacy_bitstream_encode")]
+        if selected_method == PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram {
+            let (major, minor) = options.get_version();
+            let bitstream_version = ((major as u16) << 8) | minor as u16;
+            if bitstream_version != 0 && bitstream_version < 0x0202 {
+                if let Some(pd) = pred_data_opt.as_mut() {
+                    pd.insert(0, 0); // OPTIMAL_MULTI_PARALLELOGRAM
+                }
             }
         }
 
