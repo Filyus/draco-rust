@@ -1,20 +1,13 @@
 # Changelog
 
-All notable changes to the publishable Draco Rust crates are documented here.
+The publishable crates are versioned and released **independently**, each with
+its own changelog and its own `<crate>-vX.Y.Z` release tags:
 
-## [Unreleased]
+- **draco-core** — [`crates/draco-core/CHANGELOG.md`](crates/draco-core/CHANGELOG.md)
+- **draco-io** — [`crates/draco-io/CHANGELOG.md`](crates/draco-io/CHANGELOG.md)
+- **draco-gltf** — [`crates/draco-gltf/CHANGELOG.md`](crates/draco-gltf/CHANGELOG.md)
 
+The `web/` WASM wrappers and demo are not published to crates.io; their release
+assets are attached to GitHub Releases.
 
-## [0.1.0] - 2026-06-15
-
-### Initial Release
-- Publish `draco-core`, a pure Rust encoder and decoder for Draco `.drc` meshes
-  and point clouds, with sequential, KD-tree, EdgeBreaker, metadata, and legacy
-  bitstream compatibility paths.
-- Publish `draco-io`, format readers and writers for OBJ, PLY, binary FBX,
-  glTF, and GLB, including `KHR_draco_mesh_compression` support through
-  `draco-core`.
-- Include WASM wrapper crates and a browser demo in the repository; release
-  builds package the WASM modules as GitHub Release assets.
-- Document the decode threat model, fuzzing workflow, support matrix, benchmark
-  suite, and C++ parity test bridge.
+See [`RELEASING.md`](RELEASING.md) for the release process.

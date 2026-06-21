@@ -1,39 +1,47 @@
 # Releasing
 
-Normal releases are optimized for a solo maintainer working with Codex:
+The three crates — `draco-core`, `draco-io`, `draco-gltf` — are versioned and
+released **independently**, one crate per release. Each has its own version in
+`crates/<crate>/Cargo.toml`, its own `crates/<crate>/CHANGELOG.md`, and its own
+`<crate>-vX.Y.Z` release tags.
 
-1. Codex verifies that the working tree is clean and current with `origin/main`.
-2. Codex prepares the version bump and release notes locally.
-3. The maintainer reviews the `CHANGELOG.md` diff.
-4. Codex pushes one release commit to `main`.
+Normal releases are optimized for a solo maintainer working with an agent:
+
+1. The agent verifies the working tree is clean and current with `origin/main`.
+2. The agent prepares one crate's version bump and release notes locally.
+3. The maintainer reviews the crate's `CHANGELOG.md` diff.
+4. The agent pushes one release commit to `main`.
 5. CI validates that exact commit.
-6. Once CI is green, the `Release: publish crates` workflow is started manually
-   (`gh workflow run publish.yml --ref main`, or the Actions UI). It runs
-   preflight checks, then waits for the `release` environment approval.
+6. Once CI is green, the `Release: publish crate` workflow is started manually
+   for that crate (`gh workflow run publish.yml --ref main -f crate=<crate>`, or
+   the Actions UI). It runs preflight, then waits for the `release` environment
+   approval.
 7. The maintainer approves the environment deployment. Only then does the
-   workflow publish `draco-core`, wait for it to become visible to crates.io,
-   publish `draco-io`, create the annotated tag, and create the GitHub Release.
-8. The existing `Release` workflow builds the WASM assets for that tag and
-   uploads them to the same GitHub Release.
+   workflow publish the crate, create the annotated `<crate>-vX.Y.Z` tag, and
+   create the GitHub Release.
 
 The publish is started by hand rather than automatically after CI: crates.io
-Trusted Publishing rejects GitHub's `workflow_run` event, so crates.io publish
-uses the `workflow_dispatch` trigger.
+Trusted Publishing rejects GitHub's `workflow_run` event, so the publish uses the
+`workflow_dispatch` trigger.
 
 Release preparation (version bump + changelog) is done by hand following
-[`RELEASING-AGENT.md`](RELEASING-AGENT.md). Nothing in this flow publishes
-crates, pushes tags, or creates GitHub Releases outside the gated publish
-workflow.
+[`RELEASING-AGENT.md`](RELEASING-AGENT.md). Nothing in this flow publishes crates,
+pushes tags, or creates GitHub Releases outside the gated publish workflow.
+
+## Dependency order
+
+`draco-core` <- `draco-io` <- `draco-gltf`. A dependent can only be released once
+the dependency version it pins is published. Release in dependency order, and
+treat each crate as its own release (its own commit, changelog, and tag).
 
 ## Normal Release
 
-Use this path after both crates already exist on crates.io and Trusted
-Publishing is configured.
+Use this path after the crate already exists on crates.io and Trusted Publishing
+is configured for it. `C` below is the crate being released.
 
-### 1. Prepare the Release Locally
+### 1. Prepare the release locally
 
-Codex must start from `main` and inspect the working tree before generating
-anything:
+Start from `main` and inspect the working tree:
 
 ```powershell
 git fetch origin
@@ -43,193 +51,137 @@ git status --short
 ```
 
 If `git status --short` prints anything, classify the changes before preparing
-the release:
+the release (commit the missing change first and wait for CI, or ask). Do not
+fold in-progress work into the release commit.
 
-- If the current conversation makes it clear what normal feature/fix/docs commit
-  is missing, create that commit first, push it to `main`, and wait for CI.
-- If the changes are clearly unrelated local work, ask whether to commit, stash,
-  discard, or postpone them.
-- If the changes are ambiguous, stop and ask. Do not guess and do not fold them
-  into the release commit.
+Prepare the bump and changelog by hand, following
+[`RELEASING-AGENT.md`](RELEASING-AGENT.md). In short, for crate `C`:
 
-The release commit should be easy to review and should not accidentally absorb
-in-progress work.
-
-Codex prepares the version bump and changelog by hand, following the step list
-in [`RELEASING-AGENT.md`](RELEASING-AGENT.md). In short:
-
-- bump both `crates/draco-core/Cargo.toml` and `crates/draco-io/Cargo.toml` to
-  the same version;
-- update the `draco-core` dependency requirement in
-  `crates/draco-io/Cargo.toml` to the same version;
-- write the `CHANGELOG.md` section grouped by the
-  [changelog taxonomy](RELEASING-AGENT.md#changelog-taxonomy);
-- rewrite terse commit subjects into clear, user-facing notes;
-- remove internal noise (C++ bridge only, debug output, lint-only, CI-only,
-  benchmark-only, or web-demo-only commits unless the release asset behavior
-  changed);
+- bump `version` in `crates/C/Cargo.toml`;
+- if releasing a dependent that should pick up a just-published dependency,
+  update that pin too (separate release per crate);
+- write the `crates/C/CHANGELOG.md` section, grouped by the
+  [changelog taxonomy](RELEASING-AGENT.md#changelog-taxonomy), including only
+  commits that touched `C`;
+- rewrite terse subjects into clear, user-facing notes;
+- remove internal noise (C++ bridge, debug output, lint/CI/bench-only, or
+  demo-only commits);
 - keep feature/code changes out of the release commit.
 
-Do not run release-only checks manually. The publish workflow's preflight runs
-semver compatibility, docs.rs-style docs, duplicate-version, duplicate-tag, and
-`cargo publish --dry-run` checks where they can run before publication.
+Do not run release-only checks manually — the publish preflight runs semver,
+docs.rs-style docs, duplicate-version, duplicate-tag, and `--dry-run` checks.
 
-The release commit should normally change only:
-
-- `crates/draco-core/Cargo.toml`;
-- `crates/draco-io/Cargo.toml`;
-- `CHANGELOG.md`;
-- small release-facing docs, only when they must mention the new version.
-
-Codex must show the maintainer the diff before committing:
+Show the maintainer the diff before committing:
 
 ```powershell
-git diff -- crates/draco-core/Cargo.toml crates/draco-io/Cargo.toml CHANGELOG.md README.md crates/draco-core/README.md crates/draco-io/README.md
+git diff -- crates/C/Cargo.toml crates/C/CHANGELOG.md crates/C/README.md README.md
 ```
 
-The maintainer reviews the changelog wording and says whether it is ready.
+### 2. Commit and push
 
-### 2. Commit and Push
-
-After approval, Codex reads the version from `crates/draco-core/Cargo.toml` and
-creates one release commit with this exact subject:
+After approval, create one release commit with this exact subject (`C` is the
+crate name, e.g. `draco-gltf`):
 
 ```text
-release: prepare draco-rust vX.Y.Z
+release: prepare C vX.Y.Z
 ```
 
-Example:
-
 ```powershell
-$version = python -c "import tomllib; print(tomllib.load(open('crates/draco-core/Cargo.toml', 'rb'))['package']['version'])"
-
-git add crates/draco-core/Cargo.toml crates/draco-io/Cargo.toml CHANGELOG.md README.md crates/draco-core/README.md crates/draco-io/README.md
-git commit -m "release: prepare draco-rust v$version"
+git add crates/C/Cargo.toml crates/C/CHANGELOG.md crates/C/README.md README.md
+git commit -m "release: prepare C vX.Y.Z"
 git push origin main
 ```
 
-The exact commit subject matters. The publish workflow ignores ordinary pushes
-and only continues when the subject matches the shared crate version.
+The exact subject matters: the publish workflow ignores ordinary pushes and only
+continues when the subject matches `crates/C/Cargo.toml`'s version.
 
-### 3. Start the Publish Workflow and Preflight
+### 3. Start the publish workflow and preflight
 
-The push to `main` starts `Rust CI`. Wait for it to pass.
-
-Once CI is green, start `Release: publish crates` manually against `main`:
+The push to `main` starts `Rust CI`. Wait for it to pass, then start the publish
+workflow for the crate:
 
 ```powershell
-gh workflow run publish.yml --ref main
+gh workflow run publish.yml --ref main -f crate=C
 ```
 
-For a valid release commit, preflight checks:
+Preflight checks, for crate `C`:
 
 - a successful `Rust CI` run exists for this commit;
-- the commit subject is exactly `release: prepare draco-rust vX.Y.Z`;
-- `X.Y.Z` matches both publishable crate versions;
-- `draco-io` depends on `draco-core = X.Y.Z`;
-- `CHANGELOG.md` has a `## [X.Y.Z]` section;
-- `cargo semver-checks` succeeds for each crate that already exists on
-  crates.io;
-- docs.rs-style nightly documentation builds succeed;
-- neither crate version is already published on crates.io;
-- tag `vX.Y.Z` does not already exist;
-- `cargo publish --dry-run` succeeds for `draco-core`.
+- the commit subject is exactly `release: prepare C vX.Y.Z`;
+- `X.Y.Z` matches `crates/C/Cargo.toml`;
+- every internal dependency `C` pins is already published at the pinned version;
+- `crates/C/CHANGELOG.md` has a `## [X.Y.Z]` section;
+- `cargo semver-checks` succeeds if `C` already exists on crates.io;
+- docs.rs-style nightly docs build for `C`;
+- `C X.Y.Z` is not already published;
+- tag `C-vX.Y.Z` does not already exist;
+- `cargo publish --dry-run` succeeds for `C`.
 
-`draco-io` cannot complete a full dry run for a new shared version until
-`draco-core X.Y.Z` exists in the crates.io index. The publish job therefore
-publishes `draco-core`, waits for the index, then dry-runs and publishes
-`draco-io` before tagging the release.
+### 4. Final approval
 
-### 4. Final Approval
+The maintainer approves the waiting `release` environment deployment. Before
+approving, check the workflow is `Release: publish crate`, the crate and version
+are intended, and the changelog section is the one reviewed.
 
-The maintainer approves the waiting `release` environment deployment in GitHub
-Actions.
-
-Before approving, check:
-
-- the workflow is `Release: publish crates`;
-- the release SHA is the release commit that passed CI;
-- both crate versions are the intended version;
-- the changelog section is the one reviewed before the release commit.
-
-After approval, the workflow:
-
-1. authenticates to crates.io through Trusted Publishing;
-2. publishes `draco-core`;
-3. waits until crates.io can resolve `draco-core X.Y.Z`;
-4. runs `cargo publish --dry-run` for `draco-io`;
-5. publishes `draco-io`;
-6. creates annotated tag `vX.Y.Z`;
-7. extracts the `CHANGELOG.md` section for `X.Y.Z`;
-8. creates the GitHub Release from those notes.
+After approval, the workflow: authenticates to crates.io through Trusted
+Publishing; publishes `C`; creates annotated tag `C-vX.Y.Z`; extracts the
+`crates/C/CHANGELOG.md` section for `X.Y.Z`; and creates the GitHub Release.
 
 ## First Release
 
 Trusted Publishing cannot publish a crate that does not exist yet. For a brand
-new crate, do the first publish locally with a short-lived token, then configure
-Trusted Publishing for normal updates.
+new crate, do the first publish locally with a short-lived token, then create the
+tag with the one-off workflow.
 
-1. Push the release commit to `main` and wait for CI to pass.
-2. Create a crates.io token:
-   - expiration: short, for example one day;
-   - scope: `publish-new`;
-   - crate restriction: unrestricted, because the crates do not exist yet.
-3. Publish locally in dependency order:
+1. Push the `release: prepare C vX.Y.Z` commit to `main` and wait for CI.
+2. Create a crates.io token: short expiration; scope `publish-new`; unrestricted
+   (the crate does not exist yet).
+3. Publish locally, in dependency order if releasing several for the first time:
 
    ```bash
    cargo login <token>
    cargo publish --manifest-path crates/draco-core/Cargo.toml
-   # Wait until crates.io resolves draco-core X.Y.Z.
+   # wait until crates.io resolves draco-core X.Y.Z, then:
    cargo publish --manifest-path crates/draco-io/Cargo.toml
+   # wait, then:
+   cargo publish --manifest-path crates/draco-gltf/Cargo.toml
    cargo logout
    ```
 
 4. Revoke the token.
-5. Create annotated tag `vX.Y.Z` from the release commit and push it, or run a
-   one-off tag workflow if one exists.
-6. Create the GitHub Release from the matching `CHANGELOG.md` section.
-7. Configure Trusted Publishing before the next release.
+5. Create the `C-vX.Y.Z` tag with the one-off workflow (it verifies the version
+   is published, then tags): run `First release only: create tag`
+   (`tag-first-release.yml`) with `crate=C`, the version, and the confirmation
+   string. The tag triggers the GitHub Release.
+6. Configure Trusted Publishing for `C` before its next release.
 
 ## One-Time Setup
 
-### GitHub Actions Permissions
+### GitHub Actions permissions
 
-In the GitHub repository settings, open:
+`Settings` -> `Actions` -> `General` -> `Workflow permissions` -> enable
+`Read and write permissions`, so the publish/tag/release workflows can push tags
+and create Releases with `GITHUB_TOKEN`.
 
-`Settings` -> `Actions` -> `General` -> `Workflow permissions`
-
-Enable:
-
-- `Read and write permissions`.
-
-This is required so `Release: publish crates` can push the annotated tag and
-create the GitHub Release with `GITHUB_TOKEN`.
-
-### Release Environment Approval
+### Release environment approval
 
 The publish workflow uses `environment: release` for the real publish job.
-Configure that environment with required reviewers so a real publish cannot
-proceed without GitHub approval after preflight succeeds.
-
-Expected environment settings:
+Configure it with required reviewers so a publish cannot proceed without
+approval after preflight:
 
 - Environment name: `release`;
 - Required reviewers: `Filyus`;
-- Prevent self-review: disabled for a personal repository;
 - Wait timer: `0`;
-- Deployment branch policy: none. The workflow itself checks that it was started
-  from `main`, that `main` `HEAD` is a release commit, and that CI passed for it.
+- Deployment branch policy: none (the workflow checks it was started from `main`,
+  that `HEAD` is the matching release commit, and that CI passed).
 
 ### Trusted Publishing
 
-Trusted Publishing is the expected publishing path for normal updates after both
-crates exist on crates.io. Configure one Trusted Publisher entry per crate:
+Configure one Trusted Publisher entry **per crate** (`draco-core`, `draco-io`,
+`draco-gltf`), all pointing at the same workflow:
 
 - Publisher: `GitHub`;
 - Repository owner: `Filyus`;
 - Repository name: `draco-rust`;
 - Workflow filename: `publish.yml`;
 - Environment name: `release`.
-
-The crates.io form should show that the workflow file exists at
-`.github/workflows/publish.yml`.
