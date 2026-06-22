@@ -114,7 +114,7 @@ impl RAnsBitEncoder {
         }
 
         let size = ans_coder
-            .write_end()
+            .write_end(false)
             .expect("ANS state should always be valid for bit encoding");
 
         target_buffer.encode_u8(zero_prob);

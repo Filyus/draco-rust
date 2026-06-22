@@ -36,7 +36,16 @@ impl AnsCoder {
         self.state = l_base;
     }
 
-    pub fn write_end(&mut self) -> Result<usize, crate::status::DracoError> {
+    /// Serialize the final coder state to the buffer tail.
+    ///
+    /// `allow_four_byte_state` mirrors [`AnsDecoder::read_init`]: the multi-symbol
+    /// rANS coder uses the 4-byte (0xC0) encoding for states up to `1 << 30`,
+    /// while the binary rABS coder never exceeds a 3-byte state and treats the
+    /// 0xC0 tag as out of range.
+    pub fn write_end(
+        &mut self,
+        allow_four_byte_state: bool,
+    ) -> Result<usize, crate::status::DracoError> {
         let state = self.state - self.l_base;
         if state < (1 << 6) {
             self.buf.push(state as u8);
@@ -47,10 +56,14 @@ impl AnsCoder {
             self.buf.push((state & 0xFF) as u8);
             self.buf.push(((state >> 8) & 0xFF) as u8);
             self.buf.push(((0x02 << 6) + ((state >> 16) & 0x3F)) as u8);
+        } else if allow_four_byte_state && state < (1 << 30) {
+            self.buf.push((state & 0xFF) as u8);
+            self.buf.push(((state >> 8) & 0xFF) as u8);
+            self.buf.push(((state >> 16) & 0xFF) as u8);
+            self.buf.push(((0x03 << 6) + ((state >> 24) & 0x3F)) as u8);
         } else {
             return Err(crate::status::DracoError::DracoError(format!(
-                "State is too large to be serialized: {}",
-                state
+                "State is too large to be serialized: {state}"
             )));
         }
         Ok(self.buf.len())
@@ -118,7 +131,14 @@ impl<'a> AnsDecoder<'a> {
         }
     }
 
-    pub fn read_init(&mut self, l_base: u32) -> bool {
+    /// Initialize the decoder state from the tail of the buffer.
+    ///
+    /// `allow_four_byte_state` selects between the two C++ variants: the
+    /// multi-symbol rANS decoder (`RAnsDecoder::read_init`) accepts the `0xC0`
+    /// tag as a 4-byte (30-bit) final-state encoding, while the binary rABS
+    /// decoder (`ans_read_init`) treats that tag as malformed. Both then reject
+    /// any state that lands outside the `[l_base, l_base * ANS_IO_BASE)` window.
+    pub fn read_init(&mut self, l_base: u32, allow_four_byte_state: bool) -> bool {
         self.l_base = l_base;
         self.buf_offset = self.buf.len();
         if self.buf_offset == 0 {
@@ -146,6 +166,21 @@ impl<'a> AnsDecoder<'a> {
             let val1 = self.buf[self.buf_offset - 2];
             self.buf_offset -= 2;
             let state = ((val as u32 & 0x3F) << 16) | ((val0 as u32) << 8) | val1 as u32;
+            self.state = state + self.l_base;
+        } else if allow_four_byte_state {
+            // 0xC0 tag: 4-byte (30-bit) final state, only emitted by the
+            // multi-symbol rANS encoder.
+            if self.buf_offset < 3 {
+                return false;
+            }
+            let val0 = self.buf[self.buf_offset - 1];
+            let val1 = self.buf[self.buf_offset - 2];
+            let val2 = self.buf[self.buf_offset - 3];
+            self.buf_offset -= 3;
+            let state = ((val as u32 & 0x3F) << 24)
+                | ((val0 as u32) << 16)
+                | ((val1 as u32) << 8)
+                | val2 as u32;
             self.state = state + self.l_base;
         } else {
             return false;
@@ -181,16 +216,26 @@ mod tests {
     use super::{AnsDecoder, ANS_L_BASE};
 
     #[test]
-    fn read_init_rejects_four_byte_final_state_tag() {
+    fn read_init_rejects_four_byte_final_state_tag_for_binary() {
+        // The binary rABS path treats the 0xC0 tag as malformed.
         let mut decoder = AnsDecoder::new(&[0, 0, 0, 0xC0]);
 
-        assert!(!decoder.read_init(ANS_L_BASE));
+        assert!(!decoder.read_init(ANS_L_BASE, false));
+    }
+
+    #[test]
+    fn read_init_accepts_four_byte_final_state_tag_for_symbol() {
+        // The multi-symbol rANS path reads the 0xC0 tag as a 4-byte final state.
+        let mut decoder = AnsDecoder::new(&[0, 0, 0, 0xC0]);
+
+        assert!(decoder.read_init(ANS_L_BASE, true));
+        assert_eq!(decoder.state, ANS_L_BASE);
     }
 
     #[test]
     fn read_init_rejects_state_above_ans_window() {
         let mut decoder = AnsDecoder::new(&[0xff, 0xff, 0xbf]);
 
-        assert!(!decoder.read_init(ANS_L_BASE));
+        assert!(!decoder.read_init(ANS_L_BASE, false));
     }
 }

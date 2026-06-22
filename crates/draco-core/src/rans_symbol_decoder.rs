@@ -182,7 +182,8 @@ impl<'a> RAnsSymbolDecoder<'a> {
 
         let rans_data = &data[..bytes_to_read];
         self.ans = AnsDecoder::new(rans_data);
-        if !self.ans.read_init(self.l_rans_base) {
+        // Multi-symbol rANS may use the 4-byte (0xC0) final-state encoding.
+        if !self.ans.read_init(self.l_rans_base, true) {
             return false;
         }
 

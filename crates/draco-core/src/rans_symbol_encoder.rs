@@ -252,7 +252,7 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
     pub fn end_encoding(&mut self, buffer: &mut EncoderBuffer) {
         let _len = self
             .ans
-            .write_end()
+            .write_end(true)
             .expect("ANS state should always be valid for symbol encoding");
         let data = self.ans.data();
         let bytes_written = data.len() as u64;

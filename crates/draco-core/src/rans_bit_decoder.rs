@@ -63,7 +63,8 @@ impl<'a> RAnsBitDecoder<'a> {
                 println!("DEBUG: RAnsBitDecoder slice: {:?}", slice);
             }
             let mut decoder = AnsDecoder::new(slice);
-            if decoder.read_init(crate::ans::ANS_L_BASE) {
+            // Binary rABS uses the 1..=3 byte final-state encoding (no 0xC0 tag).
+            if decoder.read_init(crate::ans::ANS_L_BASE, false) {
                 self.ans_decoder = Some(decoder);
                 return true;
             }
