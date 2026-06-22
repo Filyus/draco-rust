@@ -860,6 +860,15 @@ fn decode_all_testdata_top_level_drc_files() {
 
     let mut decoded_any = false;
     for path in drc_files {
+        // Adversarial fuzz-corpus seeds are expected to reject (the C++ decoder
+        // rejects them too); they are covered by the do-not-panic tests and the
+        // fuzz target, not by this decode-correctness check.
+        if path
+            .components()
+            .any(|c| c.as_os_str() == "fuzz_regressions")
+        {
+            continue;
+        }
         let bytes = read_file_bytes(&path);
         let (major, minor, geometry_type, method) = parse_header(&bytes);
 
