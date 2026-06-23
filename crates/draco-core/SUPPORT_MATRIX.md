@@ -5,7 +5,8 @@ It is intentionally not a wishlist for a full 3D SDK. The baseline is:
 
 1. What C++ Draco actually implements.
 2. What is meaningful for `draco-core`, which is a raw Draco bitstream crate.
-3. What should live in `draco-io` instead because it is file-format or scene I/O.
+3. What should live in `draco-io` (format I/O) or `draco-gltf` (glTF scenes)
+   instead, because it is file-format or scene concern rather than raw bitstream.
 
 The C++ reference used here is the local checkout at `D:\Projects\Draco\src`.
 
@@ -32,11 +33,11 @@ gap when it is simply handled at a different level of abstraction.
 | Raw `.drc` triangle-mesh bitstream | yes | `draco-core` | Core compression format. |
 | Raw `.drc` keyframe animation bitstream | yes | `draco-core` | Implemented as a point-cloud-like sequential stream, matching C++. |
 | Geometry/attribute metadata in `.drc` | yes | `draco-core` | Bitstream-level metadata, not glTF metadata. |
-| Scene graph | yes, mainly transcoder | `draco-io` | `draco-core` is not a scene SDK. |
-| glTF node animation and skins | yes, transcoder | `draco-io` (rejected today) | File/scene concern; currently rejected by the `draco-io` glTF reader. |
-| glTF / GLB `KHR_draco_mesh_compression` | yes | `draco-io` | Container I/O around Draco payloads. |
+| glTF scene graph (nodes / cameras / lights) | yes, mainly transcoder | `draco-gltf` | The full scene is modeled through gltf-rs and preserved across a Draco round-trip; `draco-core` itself is not a scene SDK. |
+| glTF node animation and skins | yes, transcoder | `draco-gltf` | Preserved across compression (carried through untouched). Skinned geometry *is* compressed — `JOINTS_n`/`WEIGHTS_n` ride in the Draco stream as generic attributes, like C++. |
+| glTF / GLB `KHR_draco_mesh_compression` | yes | `draco-gltf` (+ `draco-core` / `draco-io`) | `draco-gltf` decodes the compressed geometry via `draco-core` and re-compresses via `draco-io`'s document-preserving core. |
 | OBJ / PLY / FBX I/O | yes | `draco-io` | Format import/export, not raw bitstream logic. |
-| Structural metadata for glTF | yes, transcoder | `draco-io` (future) | Scene/file-format concern, not raw Draco metadata; belongs with `EXT_mesh_features` / 3D Tiles-style workflows. |
+| glTF `EXT_structural_metadata` / `EXT_mesh_features` | yes in C++ glTF path | `draco-gltf` (preserved, not interpreted) | The extension data is carried through compression as an opaque extension; semantic interpretation (3D-Tiles-style metadata) is future work. |
 
 ## Raw Geometry Bitstreams
 
@@ -156,13 +157,14 @@ concern carried as uncompressed data.
 | `KeyframeAnimationEncoder` | yes | yes | Routes through sequential point-cloud encoding. |
 | `KeyframeAnimationDecoder` | yes | yes | Routes through sequential point-cloud decoding. |
 | Quantized keyframe data | yes | yes | Reuses the existing quantization attribute path via encoder options. |
-| glTF node animations | yes, transcoder | n/a | `draco-io` concern, not `draco-core`. |
-| Skins / inverse bind matrices | yes, transcoder | n/a | `draco-io` concern unless a Rust scene crate appears. |
+| glTF node animations | yes, transcoder | n/a | Preserved by `draco-gltf` across compression; not a `draco-core` concern. |
+| Skins / inverse bind matrices | yes, transcoder | n/a | Preserved by `draco-gltf` (the scene crate); skinned geometry is compressed. |
 
 The raw keyframe animation container, encoder, and decoder are implemented as a
 thin wrapper around the existing sequential point-cloud path, matching the C++
-architecture. It is still separate from the mesh-focused `draco-io` glTF scope,
-where node animations and skins are intentionally rejected today.
+architecture. It is separate from `draco-gltf`'s scene scope, where node
+animations and skins are preserved across a compression round-trip rather than
+reinterpreted.
 
 This was ported to complete raw-bitstream parity, not because a consumer
 requires it. Because it is just a typed view over the already-supported
@@ -177,13 +179,13 @@ builds, but they are not raw Draco bitstream features.
 
 | Feature | C++ Draco | Current Rust location | `draco-core` status | Practical status |
 |---|---:|---|---|---|
-| glTF / GLB read/write | yes | `draco-io` | n/a | Keep outside `draco-core`. |
-| `KHR_draco_mesh_compression` | yes | `draco-io` | n/a | Already the right layer for container validation. |
-| glTF materials/textures/cameras/lights | yes in C++ transcoder | `draco-io`: not in geometry model, but **preserved** by document-preserving compression (`gltf_compress`) | n/a | Not useful for `draco-core`. The geometry model does not interpret them; the in-place glTF compressor carries them through untouched. |
-| glTF animations/skins | yes in C++ transcoder | `draco-io`: geometry model rejects; **preserved** by `gltf_compress` (animations/skins carried through; skinned geometry *is* compressed — `JOINTS_n`/`WEIGHTS_n` ride in the Draco stream as generic attributes named via the extension map, like C++) | n/a | Possible future `draco-io` scene work, not raw bitstream parity. |
+| glTF / GLB read/write | yes | `draco-gltf` | n/a | Full scene through gltf-rs (`import` / `compress`); geometry through `draco-core`. |
+| `KHR_draco_mesh_compression` | yes | `draco-gltf` (+ `draco-core` / `draco-io`) | n/a | `draco-gltf` decodes via `draco-core` and re-compresses via `draco-io`'s document-preserving core. gltf-rs itself rejects Draco assets; `draco-gltf` is what makes them loadable. |
+| glTF materials / textures / cameras / lights | yes in C++ transcoder | `draco-gltf` | n/a | Exposed through the gltf-rs document and **preserved** untouched across a compression round-trip. |
+| glTF animations / skins | yes in C++ transcoder | `draco-gltf` | n/a | **Preserved** across compression; skinned geometry *is* compressed — `JOINTS_n`/`WEIGHTS_n` ride in the Draco stream as generic attributes, like C++. |
 | OBJ / PLY | yes | `draco-io` | n/a | File import/export helpers. |
 | FBX | yes-ish/transcoder-side | `draco-io` | n/a | Keep lightweight; not a full SDK target. |
-| EXT_structural_metadata / mesh features | yes in C++ glTF path | out of current scope | n/a | Semantic glTF/3D Tiles feature. Current `draco-io` should reject it when required, not silently claim support. |
+| `EXT_structural_metadata` / `EXT_mesh_features` | yes in C++ glTF path | `draco-gltf` (preserved, not interpreted) | n/a | Carried through compression as an opaque extension; semantic interpretation (3D-Tiles-style metadata) is future work. |
 
 ## Practical Priorities
 
@@ -193,7 +195,7 @@ builds, but they are not raw Draco bitstream features.
 | 2 | Keep deprecated prediction schemes explicit | C++ public encoder rejects them; supporting them is for compatibility, not defaults. |
 | 3 | Add broader metadata utilities when needed | Raw and typed `.drc` metadata roundtrip exists; future work is merge/copy helpers if they become useful. |
 | 4 | Keyframe animation wrapper (done) | Implemented as a point-cloud sequential encode/decode wrapper; future work is optional quantization tuning and ergonomics. |
-| 5 | Keep semantic glTF features outside `draco-core` | Animations, skins, `EXT_structural_metadata`, and `EXT_mesh_features` are scene/container concerns; `draco-io` may handle them later as a separate semantic glTF layer. |
+| 5 | Keep semantic glTF features outside `draco-core` | `draco-gltf` already preserves animations, skins, and unknown extensions across a compression round-trip; semantic interpretation of `EXT_structural_metadata` / `EXT_mesh_features` is future scene-layer work, not a `draco-core` concern. |
 
 ## Compatibility Notes
 
@@ -234,9 +236,10 @@ Important examples:
   Typed helpers expose C++-compatible `int32`, `double`, array, and string
   convenience APIs over the same bytes; Rust writes numeric helpers in explicit
   little-endian order for deterministic streams.
-- glTF `EXT_structural_metadata` is separate from raw `.drc` metadata. It should
-  be treated as unsupported when required by a glTF asset unless a future
-  semantic glTF / 3D Tiles layer is added together with `EXT_mesh_features`.
+- glTF `EXT_structural_metadata` is separate from raw `.drc` metadata. `draco-gltf`
+  carries the extension through compression untouched (as an opaque unknown
+  extension), but does not *interpret* it; semantic support, together with
+  `EXT_mesh_features` and 3D-Tiles-style workflows, is future scene-layer work.
 - Keyframe animation is implemented as a typed wrapper around the existing
   point-cloud path (`KeyframeAnimation`, `KeyframeAnimationEncoder`,
   `KeyframeAnimationDecoder`), mirroring the C++ point-cloud-like sequential
