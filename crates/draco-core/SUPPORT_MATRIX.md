@@ -1,248 +1,138 @@
 # draco-core Support Matrix
 
-This document maps `draco-core` against the official C++ Draco implementation.
-It is intentionally not a wishlist for a full 3D SDK. The baseline is:
+How `draco-core` maps onto upstream C++ Draco. `draco-core` is the raw `.drc`
+**bitstream** layer only; file and scene formats live one level up in `draco-io`
+(OBJ / PLY / FBX) and `draco-gltf` (full glTF / GLB scenes). The C++ reference is
+the local checkout at `D:\Projects\Draco\src`.
 
-1. What C++ Draco actually implements.
-2. What is meaningful for `draco-core`, which is a raw Draco bitstream crate.
-3. What should live in `draco-io` (format I/O) or `draco-gltf` (glTF scenes)
-   instead, because it is file-format or scene concern rather than raw bitstream.
-
-The C++ reference used here is the local checkout at `D:\Projects\Draco\src`.
-
-## Status Labels
+## Status labels
 
 | Label | Meaning |
 |---|---|
-| yes | Implemented in the relevant project path. |
-| partial | Some useful path exists, but important C++ behavior/API is missing. |
-| skip-only | Parser advances over the data but does not retain or expose it. |
-| raw roundtrip | Raw bitstream data is decoded, exposed, and encoded; higher-level helpers are tracked separately. |
-| explicit | Available only by manual selection; not part of default encoder choice. |
-| no | Not implemented. |
-| n/a | Not meaningful for this layer. |
+| yes | Implemented. |
+| explicit | Supported, but only by manual selection — never auto-chosen. |
+| — | Supported, but not a default choice for new streams (only on explicit request). |
 
-## Scope Boundary
+## Crate boundary
 
-The **Crate** column shows which layer owns each area, so nothing reads as a
-gap when it is simply handled at a different level of abstraction.
+Which crate owns each area — so nothing reads as a gap when it is simply handled
+at a different level of abstraction.
 
-| Area | C++ Draco | Crate | Notes |
-|---|---:|---|---|
-| Raw `.drc` point-cloud bitstream | yes | `draco-core` | Core compression format. |
-| Raw `.drc` triangle-mesh bitstream | yes | `draco-core` | Core compression format. |
-| Raw `.drc` keyframe animation bitstream | yes | `draco-core` | Implemented as a point-cloud-like sequential stream, matching C++. |
-| Geometry/attribute metadata in `.drc` | yes | `draco-core` | Bitstream-level metadata, not glTF metadata. |
-| glTF scene graph (nodes / cameras / lights) | yes, mainly transcoder | `draco-gltf` | The full scene is modeled through gltf-rs and preserved across a Draco round-trip; `draco-core` itself is not a scene SDK. |
-| glTF node animation and skins | yes, transcoder | `draco-gltf` | Preserved across compression (carried through untouched). Skinned geometry *is* compressed — `JOINTS_n`/`WEIGHTS_n` ride in the Draco stream as generic attributes, like C++. |
-| glTF / GLB `KHR_draco_mesh_compression` | yes | `draco-gltf` (+ `draco-core` / `draco-io`) | `draco-gltf` decodes the compressed geometry via `draco-core` and re-compresses via `draco-io`'s document-preserving core. |
-| OBJ / PLY / FBX I/O | yes | `draco-io` | Format import/export, not raw bitstream logic. |
-| glTF `EXT_structural_metadata` / `EXT_mesh_features` | yes in C++ glTF path | `draco-gltf` (preserved, not interpreted) | The extension data is carried through compression as an opaque extension; semantic interpretation (3D-Tiles-style metadata) is future work. |
+| Area | C++ | Crate |
+|---|---:|---|
+| `.drc` point-cloud / triangle-mesh / keyframe bitstream | yes | `draco-core` |
+| `.drc` geometry & attribute metadata | yes | `draco-core` |
+| glTF / GLB scenes + `KHR_draco_mesh_compression` | yes | `draco-gltf` (geometry via `draco-core`, document-preserving compress via `draco-io`) |
+| glTF materials / textures / nodes / animations / skins / lights / extensions | yes (transcoder) | `draco-gltf` — preserved across a Draco round-trip; skinned geometry *is* compressed (`JOINTS_n`/`WEIGHTS_n`) |
+| glTF `EXT_structural_metadata` / `EXT_mesh_features` | yes (glTF path) | `draco-gltf` — carried through as an opaque extension; semantic interpretation is future scene-layer work |
+| OBJ / PLY / FBX | yes | `draco-io` |
 
-## Raw Geometry Bitstreams
+## Raw geometry bitstreams
 
-| Draco path | C++ decode | C++ encode | `draco-core` decode | `draco-core` encode | Practical status |
-|---|---:|---:|---:|---:|---|
-| Point cloud, sequential | yes | yes | yes | yes | Core parity path. |
-| Point cloud, KD-tree | yes | yes | yes | yes | Core parity path; C++ notes KD-tree is not applicable to float values in some encoder tests. |
-| Triangle mesh, sequential | yes | yes | yes | yes | Core parity path. |
-| Triangle mesh, EdgeBreaker standard | yes | yes | yes | yes | Main compressed mesh path. |
-| Triangle mesh, EdgeBreaker valence | yes | yes | yes | yes | Behind `edgebreaker_valence_decode` / `edgebreaker_valence_encode`. Decode covers every bitstream version (the pre-2.2 layout — main symbol stream, raw start faces, split/mode prefix, pre-2.0 fixed-u32 counts — is handled behind `legacy_bitstream_decode`); encode round-trips bitstream 1.2 through current behind `legacy_bitstream_encode`. |
-| Triangle mesh, EdgeBreaker predictive type `1` | yes | legacy through `0.9.1` | yes | explicit | Legacy connectivity variant (a binary prediction stream guessing R/C from local valence). C++ emitted type `1` in `0.9.1` and replaced it with valence type `2` in `0.10.0` in 2017. Decode is supported behind `legacy_bitstream_decode`; encode is opt-in via the `force_predictive_traversal` option behind `legacy_bitstream_encode` (never auto-selected — no modern tool emits type `1`). Round-trips both directions. |
+All decode and encode in `draco-core`.
 
-## Sequential Attribute Encoders
+| Draco path | C++ | `draco-core` | Notes |
+|---|---:|:--|---|
+| Point cloud, sequential | yes | yes | Core parity path. |
+| Point cloud, KD-tree | yes | yes | Core parity path. |
+| Triangle mesh, sequential | yes | yes | Core parity path. |
+| Triangle mesh, EdgeBreaker standard | yes | yes | Main compressed mesh path. |
+| Triangle mesh, EdgeBreaker valence | yes | yes | Behind `edgebreaker_valence_*`; decode covers every version, encode round-trips 1.2→current behind `legacy_bitstream_encode`. |
+| Triangle mesh, EdgeBreaker predictive (type `1`) | yes (≤ `0.9.1`) | decode yes, encode explicit | Legacy connectivity; behind the legacy features. See [Legacy & compatibility](#legacy--compatibility). |
 
-| Attribute encoder | C++ decode | C++ encode | `draco-core` decode | `draco-core` encode | Practical status |
-|---|---:|---:|---:|---:|---|
-| `SEQUENTIAL_ATTRIBUTE_ENCODER_GENERIC` | yes | yes | yes | yes | Raw/sequential attribute coding. |
-| `SEQUENTIAL_ATTRIBUTE_ENCODER_INTEGER` | yes | yes | yes | yes | Integer attributes and prediction corrections. |
-| `SEQUENTIAL_ATTRIBUTE_ENCODER_QUANTIZATION` | yes | yes | yes | yes | Quantized floating-point attributes. |
-| `SEQUENTIAL_ATTRIBUTE_ENCODER_NORMALS` | yes | yes | yes | yes | Octahedral normal transform path. |
+## Attribute encoders & semantics
 
-## Attribute Semantics
+All four sequential attribute encoders decode and encode in `draco-core`:
+`GENERIC`, `INTEGER`, `QUANTIZATION`, `NORMALS` (octahedral transform).
 
-| Semantic | C++ support | `draco-core` support | Practical status |
-|---|---:|---:|---|
-| `POSITION` | yes | yes | Required for mesh encoding. |
-| `NORMAL` | yes | yes | Includes normal transform and geometric normal prediction paths. |
-| `TEX_COORD` | yes | yes | Includes portable texcoord prediction. |
-| `COLOR` | yes | yes | Integer and normalized paths are covered through generic attribute handling. |
-| `GENERIC` | yes | yes | Generic point attribute path. |
+Semantics `POSITION`, `NORMAL`, `TEX_COORD`, `COLOR`, `GENERIC` are all
+supported. Draco attributes are typed point attributes plus a semantic tag;
+format-specific meaning (glTF accessors, FBX layers) belongs above `draco-core`.
 
-Draco attributes are fundamentally typed point attributes plus a semantic. Most
-file-format-specific meaning, such as glTF accessor semantics or FBX layer
-mapping, belongs above `draco-core`.
+## Prediction schemes
 
-## Prediction Schemes
+| Scheme | Id | C++ | `draco-core` | Default |
+|---|---:|:--|:--|:--|
+| `PREDICTION_NONE` | -2 | yes | yes | — |
+| `PREDICTION_DIFFERENCE` | 0 | yes | yes | yes |
+| `MESH_PREDICTION_PARALLELOGRAM` | 1 | yes | yes | yes |
+| `MESH_PREDICTION_MULTI_PARALLELOGRAM` | 2 | decode only* | decode yes, encode explicit | — |
+| `MESH_PREDICTION_TEX_COORDS_DEPRECATED` | 3 | decode only* | decode yes, encode explicit | — |
+| `MESH_PREDICTION_CONSTRAINED_MULTI_PARALLELOGRAM` | 4 | yes | yes | yes |
+| `MESH_PREDICTION_TEX_COORDS_PORTABLE` | 5 | yes | yes | yes |
+| `MESH_PREDICTION_GEOMETRIC_NORMAL` | 6 | yes | yes | yes |
 
-| Prediction scheme | Id | C++ decode | C++ encode | `draco-core` decode | `draco-core` encode | Default in new Rust streams | Practical status |
-|---|---:|---:|---:|---:|---:|---:|---|
-| `PREDICTION_NONE` | -2 | yes | yes | yes | yes | possible | Normal path. |
-| `PREDICTION_DIFFERENCE` | 0 | yes | yes | yes | yes | yes | Normal path. |
-| `MESH_PREDICTION_PARALLELOGRAM` | 1 | yes | yes | yes | yes | yes | Normal mesh path. |
-| `MESH_PREDICTION_MULTI_PARALLELOGRAM` | 2 | yes | deprecated/rejected by public C++ encoder | yes | explicit | — | Compatibility/testing only. |
-| `MESH_PREDICTION_TEX_COORDS_DEPRECATED` | 3 | yes | deprecated/rejected by public C++ encoder | yes | explicit | — | Compatibility/testing only. |
-| `MESH_PREDICTION_CONSTRAINED_MULTI_PARALLELOGRAM` | 4 | yes | yes | yes | yes | yes | Modern multi-parallelogram family. The pre-2.2 form (a leading optimal-mode byte; crease-edge rANS streams with a fixed-u32 size prefix) round-trips both directions behind the legacy features. |
-| `MESH_PREDICTION_TEX_COORDS_PORTABLE` | 5 | yes | yes | yes | yes | yes | Modern texcoord path; Rust preserves C++ wrapping behavior. |
-| `MESH_PREDICTION_GEOMETRIC_NORMAL` | 6 | yes | yes | yes | yes | yes | Normal-specific path. |
+\* The public C++ encoder rejects ids 2 and 3; they remain real C++ *decoders*.
+`draco-core` keeps their encode behind `legacy_bitstream_encode` + manual
+selection, never auto-chosen.
 
-The legacy schemes are real C++ decoders, and C++ still has implementation
-files for them. They are also explicitly rejected by the public C++ encoder
-validation path. `draco-core` therefore keeps legacy encode support behind
-`legacy_bitstream_encode` and manual selection instead of choosing it
-automatically.
+## Prediction transforms
 
-## Prediction Transforms
+| Transform | C++ | `draco-core` | Notes |
+|---|---:|:--|---|
+| Default / delta, `PREDICTION_TRANSFORM_WRAP` | yes | yes | Simple prediction paths. |
+| `NORMAL_OCTAHEDRON` (id 2) | encode ≤ `0.9.1` | decode yes, encode explicit | Legacy normal transform; see [Legacy & compatibility](#legacy--compatibility). |
+| `NORMAL_OCTAHEDRON_CANONICALIZED` (id 3) | yes (since `0.10.0`) | yes | Modern normal transform. |
 
-| Transform | C++ decode | C++ encode | `draco-core` decode | `draco-core` encode | Practical status |
-|---|---:|---:|---:|---:|---|
-| Default/delta transform | yes | yes | yes | yes | Used by simple prediction paths. |
-| `PREDICTION_TRANSFORM_WRAP` | yes | yes | yes | yes | Integer wrap transform. |
-| `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON` | yes | legacy through `0.9.1` | yes | explicit | Legacy normal transform. C++ emitted id `2` through `0.9.1` and switched normal encode to canonicalized in `0.10.0` in 2017; Rust decodes it behind `legacy_bitstream_decode`, including the historical 0.9.1 octahedron-to-vector float conversion for byte-exact legacy output. Rust encodes it behind `legacy_bitstream_encode` when targeting pre-1.2 normal streams. |
-| `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON_CANONICALIZED` | yes | yes, since `0.10.0` | yes | yes | Main modern normal prediction transform; C++ normal encoder switched to it in 2017. |
+## Entropy & bit coding
 
-## Entropy and Bit Coding
-
-| Coder | C++ decode | C++ encode | `draco-core` decode | `draco-core` encode | Practical status |
-|---|---:|---:|---:|---:|---|
-| rANS bit coding | yes | yes | yes | yes | Core bit path. |
-| rANS symbol coding | yes | yes | yes | yes | Core entropy path. |
-| Tagged symbols | yes | yes | yes | yes | Modern symbol coding path. |
-| Raw symbols | yes | yes | yes | yes | Raw symbol fallback/path. |
-| Direct bit coding | yes | yes | yes | yes | Direct bitstream helper. |
-| Folded bit32 coding | yes | yes | yes | yes | Folded integer bit helper. |
+All decode and encode in `draco-core`: rANS bit coding, rANS symbol coding,
+tagged symbols, raw symbols, direct bit coding, folded bit32 coding.
 
 ## Metadata
 
-C++ Draco metadata stores entries as untyped byte blobs. Its `int32`, `double`,
-array, and string APIs are convenience helpers over those bytes, not a tagged
-schema. `draco-core` follows the same model: raw bytes are the base API, and
-typed helpers read/write the same entry payloads.
+C++ Draco stores metadata entries as untyped byte blobs, with typed (`int32`,
+`double`, array, string) APIs layered over the same bytes. `draco-core` follows
+the same model and round-trips it through encode/decode.
 
-| Metadata feature | C++ support | `draco-core` status | Notes |
-|---|---:|---|---|
-| Geometry-level metadata entries | yes | yes | Stored on `PointCloud`; `Mesh` gets it through its point-cloud base. |
-| Attribute metadata keyed by attribute unique id | yes | yes | Preserved by Draco attribute unique id, not attribute vector index. |
-| Attribute metadata lookup by string entry | yes | yes | Mirrors C++ `GetAttributeMetadataByStringEntry` for helpers such as `"name" = "position"`. |
-| Nested sub-metadata | yes | yes | Preserved with C++-matching nesting limit. |
-| Binary/raw entry values | yes | yes | Raw `Vec<u8>` values remain the lossless public surface. |
-| Typed helpers for `int32`, `double`, arrays, strings | yes | yes | Rust-style helpers mirror C++ byte layout without type tags. |
-| Metadata encode/decode roundtrip | yes | yes | Metadata roundtrips for point clouds and meshes when bitstream header flags are available. |
+| Feature | `draco-core` | Notes |
+|---|:--|---|
+| Geometry-level entries | yes | On `PointCloud`; `Mesh` inherits via its base. |
+| Attribute metadata (by unique id) | yes | Keyed by Draco unique id, not vector index. |
+| Lookup by string entry | yes | Mirrors C++ `GetAttributeMetadataByStringEntry`. |
+| Nested sub-metadata | yes | C++-matching nesting limit. |
+| Binary + typed (`int32`/`double`/array/string) values | yes | Raw bytes are the base API; typed helpers mirror C++ byte layout (explicit little-endian). |
+| Encode/decode round-trip | yes | When bitstream header flags are available. |
 
-Rust numeric helpers use explicit little-endian encoding for deterministic
-output. Empty values are rejected because C++ Draco's metadata decoder rejects
-zero-length entry data.
+Empty values are rejected, matching C++ Draco's metadata decoder.
 
-## Keyframe Animation
+## Keyframe animation
 
-> Likely legacy. C++ Draco's `KeyframeAnimation` dates to 2017 (copyright
-> `2017`, first public snapshot around Draco `1.3.4` in 2018). It predates the
-> glTF/USD transcoder and is **used nowhere in Draco's own pipeline** — no CLI
-> tool, no glTF/USD I/O, no JavaScript binding references it; only its own unit
-> tests do. glTF does not use it either: glTF compresses only mesh geometry via
-> `KHR_draco_mesh_compression`, while animation/skin data stays uncompressed
-> (see [Scene and Format I/O](#scene-and-format-io)). Treat the Rust port as
-> bitstream-parity completeness, not a recommended path — there is no known
-> consumer that needs it.
+> Likely legacy. C++ Draco's `KeyframeAnimation` (2017, ~Draco `1.3.4`) is used
+> nowhere in Draco's own pipeline — no CLI, no glTF/USD I/O, no JS binding, only
+> its own unit tests. glTF does not use it either (it compresses only geometry).
+> Treat the Rust port as bitstream-parity completeness, not a recommended path.
 
-C++ Draco has a raw keyframe animation path, but it is narrower than general
-scene animation. It is unrelated to glTF node animation, which is a transcoder
-concern carried as uncompressed data.
+`draco-core` ports the container, encoder, and decoder as a thin typed wrapper
+over the sequential point-cloud path (`KeyframeAnimation`,
+`KeyframeAnimationEncoder`, `KeyframeAnimationDecoder`): timestamp track
+(unique id `0`), multiple tracks, and quantized data all work. It adds no
+dependencies and could be dropped without affecting any other path. This is
+unrelated to glTF node animation, which `draco-gltf` preserves at the scene
+level (see [Crate boundary](#crate-boundary)).
 
-| Animation feature | C++ support | `draco-core` status | Notes |
-|---|---:|---|---|
-| `KeyframeAnimation` container | yes | yes | Thin wrapper over `PointCloud` (`keyframe_animation::KeyframeAnimation`). |
-| Timestamp track | yes | yes | Attribute unique id `0` reserved for `f32` timestamps. |
-| Multiple keyframe tracks | yes | yes | Each track stored as a generic point attribute with matching frame count. |
-| `KeyframeAnimationEncoder` | yes | yes | Routes through sequential point-cloud encoding. |
-| `KeyframeAnimationDecoder` | yes | yes | Routes through sequential point-cloud decoding. |
-| Quantized keyframe data | yes | yes | Reuses the existing quantization attribute path via encoder options. |
-| glTF node animations | yes, transcoder | n/a | Preserved by `draco-gltf` across compression; not a `draco-core` concern. |
-| Skins / inverse bind matrices | yes, transcoder | n/a | Preserved by `draco-gltf` (the scene crate); skinned geometry is compressed. |
+## Legacy & compatibility
 
-The raw keyframe animation container, encoder, and decoder are implemented as a
-thin wrapper around the existing sequential point-cloud path, matching the C++
-architecture. It is separate from `draco-gltf`'s scene scope, where node
-animations and skins are preserved across a compression round-trip rather than
-reinterpreted.
+`draco-core` matches observable C++ behavior for existing streams, including
+awkward but compatibility-sensitive details. Every bitstream version from
+`0.9.1` to current decodes, and every traversal (standard / predictive /
+valence) round-trips behind the legacy features.
 
-This was ported to complete raw-bitstream parity, not because a consumer
-requires it. Because it is just a typed view over the already-supported
-sequential point-cloud encode/decode, it adds no new dependencies and minimal
-maintenance surface. If a future cleanup prefers to carry only actively used
-surface, it can be dropped without affecting any other path.
-
-## Scene and Format I/O
-
-These features exist in C++ Draco's broader repository, especially transcoder
-builds, but they are not raw Draco bitstream features.
-
-| Feature | C++ Draco | Current Rust location | `draco-core` status | Practical status |
-|---|---:|---|---|---|
-| glTF / GLB read/write | yes | `draco-gltf` | n/a | Full scene through gltf-rs (`import` / `compress`); geometry through `draco-core`. |
-| `KHR_draco_mesh_compression` | yes | `draco-gltf` (+ `draco-core` / `draco-io`) | n/a | `draco-gltf` decodes via `draco-core` and re-compresses via `draco-io`'s document-preserving core. gltf-rs itself rejects Draco assets; `draco-gltf` is what makes them loadable. |
-| glTF materials / textures / cameras / lights | yes in C++ transcoder | `draco-gltf` | n/a | Exposed through the gltf-rs document and **preserved** untouched across a compression round-trip. |
-| glTF animations / skins | yes in C++ transcoder | `draco-gltf` | n/a | **Preserved** across compression; skinned geometry *is* compressed — `JOINTS_n`/`WEIGHTS_n` ride in the Draco stream as generic attributes, like C++. |
-| OBJ / PLY | yes | `draco-io` | n/a | File import/export helpers. |
-| FBX | yes-ish/transcoder-side | `draco-io` | n/a | Keep lightweight; not a full SDK target. |
-| `EXT_structural_metadata` / `EXT_mesh_features` | yes in C++ glTF path | `draco-gltf` (preserved, not interpreted) | n/a | Carried through compression as an opaque extension; semantic interpretation (3D-Tiles-style metadata) is future work. |
-
-## Practical Priorities
-
-| Priority | Item | Why |
-|---:|---|---|
-| 1 | Legacy decode/encode from real compatibility targets (largely done) | Every bitstream version from `0.9.1` to current decodes, including EdgeBreaker predictive type `1`, the pre-2.2 valence layout, pre-2.2 constrained-multi-parallelogram prediction, and the old normal octahedron transform id `2` with historical 0.9.1 float output. Every traversal (standard/predictive/valence) round-trips, including pre-1.2 normal octahedron streams behind the legacy encode feature. |
-| 2 | Keep deprecated prediction schemes explicit | C++ public encoder rejects them; supporting them is for compatibility, not defaults. |
-| 3 | Add broader metadata utilities when needed | Raw and typed `.drc` metadata roundtrip exists; future work is merge/copy helpers if they become useful. |
-| 4 | Keyframe animation wrapper (done) | Implemented as a point-cloud sequential encode/decode wrapper; future work is optional quantization tuning and ergonomics. |
-| 5 | Keep semantic glTF features outside `draco-core` | `draco-gltf` already preserves animations, skins, and unknown extensions across a compression round-trip; semantic interpretation of `EXT_structural_metadata` / `EXT_mesh_features` is future scene-layer work, not a `draco-core` concern. |
-
-## Compatibility Notes
-
-`draco-core` aims to match observable C++ Draco behavior for existing streams,
-including behavior that is awkward but compatibility-sensitive.
-
-Important examples:
-
-- Portable texcoord prediction preserves the C++ cast/wrapping order around
+- **Feature flags.** Legacy decode/encode live behind `legacy_bitstream_decode`
+  / `legacy_bitstream_encode`; valence behind `edgebreaker_valence_*`.
+- **EdgeBreaker predictive (type `1`).** C++ emitted it in `0.9.1` and replaced
+  it with valence (type `2`) in `0.10.0`; `1.0.0`+ never emit it. `draco-core`
+  decodes it, and encodes it only via the `force_predictive_traversal` option —
+  never auto-selected.
+- **Normal octahedron (id 2).** C++ used it through `0.9.1`, then switched to the
+  canonicalized transform (id 3) in `0.10.0`. `draco-core` decodes id 2 and, for
+  pre-2.0 streams, also uses the historical `0.9.1` octahedron-to-vector float
+  conversion so byte output matches the old decoder exactly.
+- **Pre-2.2 layout.** The pre-2.2 valence and constrained-multi-parallelogram
+  layouts round-trip both ways behind the legacy features. They differ from
+  current streams in: a separate main traversal symbol stream, raw-bit (not
+  rANS) start faces, a split-count/mode prefix, hole events after topology
+  splits, a 2-bit split-edge selector, fixed-u32 counts before bitstream 2.0,
+  and an always-present header flags field.
+- **Portable texcoord prediction** preserves the C++ cast/wrapping order around
   unsigned intermediate arithmetic.
-- Legacy prediction schemes are behind `legacy_bitstream_decode` and
-  `legacy_bitstream_encode`.
-- EdgeBreaker predictive connectivity traversal type `1` is deprecated in C++.
-  Public Draco `0.9.1` emitted type `1` on the predictive path. Public Draco
-  `0.10.0` changed the same path to valence type `2` in 2017, and `1.0.0`
-  already used standard (`0`) or valence (`2`) for encoder output. `draco-core`
-  decodes type `1` (behind `legacy_bitstream_decode`) and can encode it on
-  request (the `force_predictive_traversal` option behind
-  `legacy_bitstream_encode`); it is never auto-selected, since no current tool
-  emits type `1`.
-- The pre-2.2 valence and constrained-multi-parallelogram layouts round-trip in
-  both directions behind the legacy features. The pre-2.2 connectivity differs
-  from current streams in several ways the legacy paths handle: a separate main
-  traversal symbol stream, raw-bit (not rANS) start faces, a split-count/mode
-  prefix, hole events stored after the topology splits, a 2-bit split edge
-  selector, fixed-u32 counts before bitstream 2.0, and an always-present header
-  flags field.
-- `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON` follows the same compatibility shape:
-  C++ emitted it for normal prediction through `0.9.1`, switched encoder output
-  to `PREDICTION_TRANSFORM_NORMAL_OCTAHEDRON_CANONICALIZED` in `0.10.0` in
-  2017, and still decodes both transform ids. Rust decodes old transform id `2`
-  behind `legacy_bitstream_decode` and can emit it behind
-  `legacy_bitstream_encode` when targeting pre-1.2 normal streams. For pre-2.0
-  normal streams, Rust also uses the historical `0.9.1`
-  octahedron-to-vector float conversion instead of the modern Draco conversion
-  so byte output matches the old decoder exactly.
-- Metadata is preserved as raw bytes and roundtrips through Rust encode/decode.
-  Typed helpers expose C++-compatible `int32`, `double`, array, and string
-  convenience APIs over the same bytes; Rust writes numeric helpers in explicit
-  little-endian order for deterministic streams.
-- glTF `EXT_structural_metadata` is separate from raw `.drc` metadata. `draco-gltf`
-  carries the extension through compression untouched (as an opaque unknown
-  extension), but does not *interpret* it; semantic support, together with
-  `EXT_mesh_features` and 3D-Tiles-style workflows, is future scene-layer work.
-- Keyframe animation is implemented as a typed wrapper around the existing
-  point-cloud path (`KeyframeAnimation`, `KeyframeAnimationEncoder`,
-  `KeyframeAnimationDecoder`), mirroring the C++ point-cloud-like sequential
-  stream. This is a 2017-era, likely-legacy C++ feature that nothing in Draco's
-  own pipeline (or glTF) consumes; the Rust port exists for bitstream-parity
-  completeness only. glTF node animations and skins remain out of scope.
