@@ -28,7 +28,7 @@ Supported high-level paths:
 | Draco triangle mesh, sequential | yes | yes | Generic mesh path. |
 | Draco triangle mesh, EdgeBreaker standard | yes | yes | Main compressed mesh path. |
 | Draco triangle mesh, EdgeBreaker valence | yes | yes | Behind valence feature flags. |
-| glTF / GLB container I/O | no | no | Use `draco-io` for file formats and `KHR_draco_mesh_compression`. |
+| glTF / GLB container I/O | `draco-io` | `draco-io` | File formats and `KHR_draco_mesh_compression` live in `draco-io`, not this crate. |
 
 For the detailed algorithm matrix, see
 [`SUPPORT_MATRIX.md`](SUPPORT_MATRIX.md).

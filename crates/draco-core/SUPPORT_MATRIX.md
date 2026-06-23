@@ -23,17 +23,20 @@ The C++ reference used here is the local checkout at `D:\Projects\Draco\src`.
 
 ## Scope Boundary
 
-| Area | C++ Draco | Belongs in `draco-core`? | Belongs in `draco-io`? | Notes |
-|---|---:|---:|---:|---|
-| Raw `.drc` point-cloud bitstream | yes | yes | no | Core compression format. |
-| Raw `.drc` triangle-mesh bitstream | yes | yes | no | Core compression format. |
-| Raw `.drc` keyframe animation bitstream | yes | yes | no | Implemented as a point-cloud-like sequential stream, matching C++. |
-| Geometry/attribute metadata in `.drc` | yes | yes | no | Bitstream-level metadata, not glTF metadata. |
-| Scene graph | yes, mainly transcoder | no | yes | `draco-core` should not become a scene SDK. |
-| glTF node animation and skins | yes, transcoder | no | possible | File/scene concern, currently rejected by `draco-io` glTF reader. |
-| glTF / GLB `KHR_draco_mesh_compression` | yes | no | yes | Container I/O around Draco payloads. |
-| OBJ / PLY / FBX I/O | yes | no | yes | Format import/export, not raw bitstream logic. |
-| Structural metadata for glTF | yes, transcoder | no | future semantic glTF layer | Scene/file-format concern, not raw Draco metadata; support belongs with `EXT_mesh_features` / 3D Tiles-style workflows. |
+The **Crate** column shows which layer owns each area, so nothing reads as a
+gap when it is simply handled at a different level of abstraction.
+
+| Area | C++ Draco | Crate | Notes |
+|---|---:|---|---|
+| Raw `.drc` point-cloud bitstream | yes | `draco-core` | Core compression format. |
+| Raw `.drc` triangle-mesh bitstream | yes | `draco-core` | Core compression format. |
+| Raw `.drc` keyframe animation bitstream | yes | `draco-core` | Implemented as a point-cloud-like sequential stream, matching C++. |
+| Geometry/attribute metadata in `.drc` | yes | `draco-core` | Bitstream-level metadata, not glTF metadata. |
+| Scene graph | yes, mainly transcoder | `draco-io` | `draco-core` is not a scene SDK. |
+| glTF node animation and skins | yes, transcoder | `draco-io` (rejected today) | File/scene concern; currently rejected by the `draco-io` glTF reader. |
+| glTF / GLB `KHR_draco_mesh_compression` | yes | `draco-io` | Container I/O around Draco payloads. |
+| OBJ / PLY / FBX I/O | yes | `draco-io` | Format import/export, not raw bitstream logic. |
+| Structural metadata for glTF | yes, transcoder | `draco-io` (future) | Scene/file-format concern, not raw Draco metadata; belongs with `EXT_mesh_features` / 3D Tiles-style workflows. |
 
 ## Raw Geometry Bitstreams
 
@@ -76,8 +79,8 @@ mapping, belongs above `draco-core`.
 | `PREDICTION_NONE` | -2 | yes | yes | yes | yes | possible | Normal path. |
 | `PREDICTION_DIFFERENCE` | 0 | yes | yes | yes | yes | yes | Normal path. |
 | `MESH_PREDICTION_PARALLELOGRAM` | 1 | yes | yes | yes | yes | yes | Normal mesh path. |
-| `MESH_PREDICTION_MULTI_PARALLELOGRAM` | 2 | yes | deprecated/rejected by public C++ encoder | yes | explicit | no | Compatibility/testing only. |
-| `MESH_PREDICTION_TEX_COORDS_DEPRECATED` | 3 | yes | deprecated/rejected by public C++ encoder | yes | explicit | no | Compatibility/testing only. |
+| `MESH_PREDICTION_MULTI_PARALLELOGRAM` | 2 | yes | deprecated/rejected by public C++ encoder | yes | explicit | — | Compatibility/testing only. |
+| `MESH_PREDICTION_TEX_COORDS_DEPRECATED` | 3 | yes | deprecated/rejected by public C++ encoder | yes | explicit | — | Compatibility/testing only. |
 | `MESH_PREDICTION_CONSTRAINED_MULTI_PARALLELOGRAM` | 4 | yes | yes | yes | yes | yes | Modern multi-parallelogram family. The pre-2.2 form (a leading optimal-mode byte; crease-edge rANS streams with a fixed-u32 size prefix) round-trips both directions behind the legacy features. |
 | `MESH_PREDICTION_TEX_COORDS_PORTABLE` | 5 | yes | yes | yes | yes | yes | Modern texcoord path; Rust preserves C++ wrapping behavior. |
 | `MESH_PREDICTION_GEOMETRIC_NORMAL` | 6 | yes | yes | yes | yes | yes | Normal-specific path. |
@@ -153,8 +156,8 @@ concern carried as uncompressed data.
 | `KeyframeAnimationEncoder` | yes | yes | Routes through sequential point-cloud encoding. |
 | `KeyframeAnimationDecoder` | yes | yes | Routes through sequential point-cloud decoding. |
 | Quantized keyframe data | yes | yes | Reuses the existing quantization attribute path via encoder options. |
-| glTF node animations | yes, transcoder | no | `draco-io` concern, not `draco-core`. |
-| Skins / inverse bind matrices | yes, transcoder | no | `draco-io` concern unless a Rust scene crate appears. |
+| glTF node animations | yes, transcoder | n/a | `draco-io` concern, not `draco-core`. |
+| Skins / inverse bind matrices | yes, transcoder | n/a | `draco-io` concern unless a Rust scene crate appears. |
 
 The raw keyframe animation container, encoder, and decoder are implemented as a
 thin wrapper around the existing sequential point-cloud path, matching the C++
