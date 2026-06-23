@@ -899,70 +899,29 @@ impl SequentialIntegerAttributeEncoder {
             }
             pred_data_opt = Some(pred_data);
         }
-        if pred_data_opt.is_none() {
-            if let Some(mut predictor) = predictor_delta {
-                let mut pred_data = Vec::new();
-                if !predictor.encode_prediction_data(&mut pred_data) {
-                    return false;
-                }
-                pred_data_opt = Some(pred_data);
-            }
+        if !try_encode_prediction_data(predictor_delta, &mut pred_data_opt) {
+            return false;
         }
-        if pred_data_opt.is_none() {
-            if let Some(mut predictor) = predictor_parallelogram {
-                let mut pred_data = Vec::new();
-                if !predictor.encode_prediction_data(&mut pred_data) {
-                    return false;
-                }
-                pred_data_opt = Some(pred_data);
-            }
+        if !try_encode_prediction_data(predictor_parallelogram, &mut pred_data_opt) {
+            return false;
         }
         #[cfg(feature = "legacy_bitstream_encode")]
-        if pred_data_opt.is_none() {
-            if let Some(mut predictor) = predictor_multi_parallelogram {
-                let mut pred_data = Vec::new();
-                if !predictor.encode_prediction_data(&mut pred_data) {
-                    return false;
-                }
-                pred_data_opt = Some(pred_data);
-            }
+        if !try_encode_prediction_data(predictor_multi_parallelogram, &mut pred_data_opt) {
+            return false;
         }
         #[cfg(feature = "legacy_bitstream_encode")]
-        if pred_data_opt.is_none() {
-            if let Some(mut predictor) = predictor_tex_coords_deprecated {
-                let mut pred_data = Vec::new();
-                if !predictor.encode_prediction_data(&mut pred_data) {
-                    return false;
-                }
-                pred_data_opt = Some(pred_data);
-            }
+        if !try_encode_prediction_data(predictor_tex_coords_deprecated, &mut pred_data_opt) {
+            return false;
         }
-        if pred_data_opt.is_none() {
-            if let Some(mut predictor) = predictor_constrained_multi_parallelogram {
-                let mut pred_data = Vec::new();
-                if !predictor.encode_prediction_data(&mut pred_data) {
-                    return false;
-                }
-                pred_data_opt = Some(pred_data);
-            }
+        if !try_encode_prediction_data(predictor_constrained_multi_parallelogram, &mut pred_data_opt)
+        {
+            return false;
         }
-        if pred_data_opt.is_none() {
-            if let Some(mut predictor) = predictor_tex_coords_portable {
-                let mut pred_data = Vec::new();
-                if !predictor.encode_prediction_data(&mut pred_data) {
-                    return false;
-                }
-                pred_data_opt = Some(pred_data);
-            }
+        if !try_encode_prediction_data(predictor_tex_coords_portable, &mut pred_data_opt) {
+            return false;
         }
-        if pred_data_opt.is_none() {
-            if let Some(mut predictor) = predictor_geometric_normal {
-                let mut pred_data = Vec::new();
-                if !predictor.encode_prediction_data(&mut pred_data) {
-                    return false;
-                }
-                pred_data_opt = Some(pred_data);
-            }
+        if !try_encode_prediction_data(predictor_geometric_normal, &mut pred_data_opt) {
+            return false;
         }
 
         // Pre-2.2 prefixes the constrained-multi-parallelogram prediction data with
@@ -1108,4 +1067,24 @@ fn replace_vec_from_slice<T: Copy>(dst: &mut Vec<T>, src: &[T]) {
         dst.clear();
         dst.extend_from_slice(src);
     }
+}
+
+/// If `out` is still empty and `predictor` was built, encodes its
+/// prediction-data bytes into `out`. Returns false only on an actual encode
+/// failure. Collapses the seven identical "try this predictor next" blocks in
+/// the prediction-data emission phase.
+fn try_encode_prediction_data<'a, P: PredictionSchemeEncoder<'a, i32, i32>>(
+    predictor: Option<P>,
+    out: &mut Option<Vec<u8>>,
+) -> bool {
+    if out.is_none() {
+        if let Some(mut predictor) = predictor {
+            let mut pred_data = Vec::new();
+            if !predictor.encode_prediction_data(&mut pred_data) {
+                return false;
+            }
+            *out = Some(pred_data);
+        }
+    }
+    true
 }
