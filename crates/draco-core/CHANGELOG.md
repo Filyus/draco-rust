@@ -8,6 +8,16 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-06-24
+
+### Fixed
+
+- EdgeBreaker mesh encoding now reports a clear error when a pre-2.2 bitstream
+  or forced predictive traversal is requested without `legacy_bitstream_encode`,
+  instead of producing an invalid legacy-shaped stream.
+- Legacy prediction-scheme encode requests now report a clear error when
+  `legacy_bitstream_encode` is disabled.
+
 ## [1.0.0] - 2026-06-24
 
 First stable release. The public API is now covered by SemVer (breaking changes

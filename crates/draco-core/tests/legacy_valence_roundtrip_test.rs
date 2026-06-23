@@ -6,15 +6,17 @@
 //! and confirm a < 2.2 valence stream decodes back to the same geometry the
 //! modern (2.2) path produces.
 
-use draco_core::decoder_buffer::DecoderBuffer;
 use draco_core::draco_types::DataType;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::encoder_options::EncoderOptions;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::FaceIndex;
 use draco_core::mesh::Mesh;
-use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
+#[cfg(not(feature = "legacy_bitstream_encode"))]
+use draco_core::DracoError;
+#[cfg(feature = "legacy_bitstream_encode")]
+use draco_core::{decoder_buffer::DecoderBuffer, mesh_decoder::MeshDecoder};
 
 /// Build an `n` x `n` vertex grid (>= 1000 faces for n >= 24), positions only.
 /// Large enough that the encoder selects the valence traversal at speed < 5.
@@ -61,6 +63,7 @@ fn build_grid(n: usize) -> Mesh {
     mesh
 }
 
+#[cfg(feature = "legacy_bitstream_encode")]
 fn build_grid_with_normals(n: usize) -> Mesh {
     let mut mesh = build_grid(n);
     let num_points = n * n;
@@ -87,12 +90,14 @@ fn build_grid_with_normals(n: usize) -> Mesh {
 
 /// Encode `mesh` targeting bitstream `major.minor` with valence traversal
 /// (speed 0), then decode it back.
+#[cfg(feature = "legacy_bitstream_encode")]
 fn encode_decode(mesh: &Mesh, major: u8, minor: u8) -> Result<Mesh, String> {
     encode_decode_q(mesh, major, minor, None)
 }
 
 /// As [`encode_decode`], optionally quantizing positions to `qp` bits (which, at
 /// speed 0, selects the constrained-multi-parallelogram predictor).
+#[cfg(feature = "legacy_bitstream_encode")]
 fn encode_decode_q(mesh: &Mesh, major: u8, minor: u8, qp: Option<u32>) -> Result<Mesh, String> {
     let mut opts = EncoderOptions::new();
     opts.set_version(major, minor);
@@ -120,6 +125,7 @@ fn encode_decode_q(mesh: &Mesh, major: u8, minor: u8, qp: Option<u32>) -> Result
 /// Decoded vertex positions as raw bit patterns, sorted — comparable regardless
 /// of vertex ordering. Both versions quantize identically, so an exact match
 /// means the geometry round-tripped.
+#[cfg(feature = "legacy_bitstream_encode")]
 fn sorted_positions(mesh: &Mesh) -> Vec<[u32; 3]> {
     let att = mesh.attribute(mesh.named_attribute_id(GeometryAttributeType::Position));
     let buffer = att.buffer();
@@ -140,6 +146,7 @@ fn sorted_positions(mesh: &Mesh) -> Vec<[u32; 3]> {
     out
 }
 
+#[cfg(feature = "legacy_bitstream_encode")]
 fn decoded_normals_point_up(mesh: &Mesh) -> bool {
     let normal_id = mesh.named_attribute_id(GeometryAttributeType::Normal);
     if normal_id < 0 {
@@ -164,6 +171,7 @@ fn decoded_normals_point_up(mesh: &Mesh) -> bool {
 }
 
 #[test]
+#[cfg(feature = "legacy_bitstream_encode")]
 fn legacy_valence_roundtrip_preserves_geometry() {
     let mesh = build_grid(33); // 2048 faces -> valence at speed < 5
 
@@ -196,6 +204,7 @@ fn legacy_valence_roundtrip_preserves_geometry() {
 /// parallelogram position predictor, which pre-2.2 prefixes a mode byte. A v2.1
 /// valence stream using it must round-trip to the same geometry as 2.2.
 #[test]
+#[cfg(feature = "legacy_bitstream_encode")]
 fn legacy_valence_roundtrip_high_compression() {
     let mesh = build_grid(33);
     let reference = encode_decode_q(&mesh, 2, 2, Some(14)).expect("2.2 quantized round-trip");
@@ -213,6 +222,7 @@ fn legacy_valence_roundtrip_high_compression() {
 /// stream (Draco 0.9.1-style); the decoder handles type-1 behind
 /// legacy_bitstream_decode.
 #[test]
+#[cfg(feature = "legacy_bitstream_encode")]
 fn legacy_predictive_roundtrip_preserves_geometry() {
     let mesh = build_grid(33);
     let reference = encode_decode(&mesh, 2, 2).expect("modern reference round-trip");
@@ -249,6 +259,7 @@ fn legacy_predictive_roundtrip_preserves_geometry() {
 }
 
 #[test]
+#[cfg(feature = "legacy_bitstream_encode")]
 fn legacy_normal_octahedron_transform_roundtrip() {
     let mesh = build_grid_with_normals(33);
 
@@ -274,4 +285,59 @@ fn legacy_normal_octahedron_transform_roundtrip() {
 
     assert_eq!(decoded.num_faces(), mesh.num_faces(), "face count");
     assert!(decoded_normals_point_up(&decoded));
+}
+
+#[test]
+#[cfg(not(feature = "legacy_bitstream_encode"))]
+fn legacy_edgebreaker_version_requires_legacy_encode_feature() {
+    let mesh = build_grid(4);
+    let mut opts = EncoderOptions::new();
+    opts.set_version(2, 1);
+    opts.set_encoding_method(1);
+
+    let mut enc = MeshEncoder::new();
+    enc.set_mesh(mesh);
+    let mut out = EncoderBuffer::new();
+    let err = enc
+        .encode(&opts, &mut out)
+        .expect_err("pre-2.2 EdgeBreaker encode should require legacy feature");
+
+    match err {
+        DracoError::UnsupportedVersion(message) => {
+            assert!(message.contains("legacy_bitstream_encode"));
+        }
+        other => panic!("expected UnsupportedVersion, got {other:?}"),
+    }
+    assert!(
+        out.data().is_empty(),
+        "encode should fail before writing a partial header"
+    );
+}
+
+#[test]
+#[cfg(not(feature = "legacy_bitstream_encode"))]
+fn force_predictive_traversal_requires_legacy_encode_feature() {
+    let mesh = build_grid(4);
+    let mut opts = EncoderOptions::new();
+    opts.set_version(2, 2);
+    opts.set_encoding_method(1);
+    opts.set_global_int("force_predictive_traversal", 1);
+
+    let mut enc = MeshEncoder::new();
+    enc.set_mesh(mesh);
+    let mut out = EncoderBuffer::new();
+    let err = enc
+        .encode(&opts, &mut out)
+        .expect_err("predictive traversal encode should require legacy feature");
+
+    match err {
+        DracoError::UnsupportedFeature(message) => {
+            assert!(message.contains("legacy_bitstream_encode"));
+        }
+        other => panic!("expected UnsupportedFeature, got {other:?}"),
+    }
+    assert!(
+        out.data().is_empty(),
+        "encode should fail before writing a partial header"
+    );
 }

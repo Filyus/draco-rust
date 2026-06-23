@@ -16,9 +16,10 @@ This project is independent and is not an official Google Draco release.
 
 ## Status
 
-The crate is pre-1.0, but the bitstream implementation is already tested
-against reference fixtures and C++ interop paths. Remaining compatibility notes
-and scope boundaries are tracked in the support matrix.
+The crate has reached 1.0.0 and its public API is covered by SemVer. The
+bitstream implementation is tested against reference fixtures and C++ interop
+paths. Remaining compatibility notes and scope boundaries are tracked in the
+support matrix.
 
 Supported high-level paths:
 
@@ -27,7 +28,7 @@ Supported high-level paths:
 | Draco point cloud | yes | yes | Sequential and KD-tree attribute paths are covered. |
 | Draco triangle mesh, sequential | yes | yes | Generic mesh path. |
 | Draco triangle mesh, EdgeBreaker standard | yes | yes | Main compressed mesh path. |
-| Draco triangle mesh, EdgeBreaker valence | yes | yes | Behind valence feature flags. |
+| Draco triangle mesh, EdgeBreaker valence | yes | yes | Modern EdgeBreaker valence traversal, behind valence feature flags. |
 | glTF / GLB container I/O | `draco-io` | `draco-io` | File formats and `KHR_draco_mesh_compression` live in `draco-io`, not this crate. |
 
 For the detailed algorithm matrix, see
@@ -61,10 +62,10 @@ draco-core = { version = "1.0", default-features = false, features = ["encoder"]
 | `encoder` | yes | Mesh and point-cloud encoding APIs. |
 | `decoder` | yes | Mesh and point-cloud decoding APIs. |
 | `point_cloud_decode` | yes | Point-cloud decoder path. |
-| `edgebreaker_valence_encode` | yes | EdgeBreaker valence encoder path. |
-| `edgebreaker_valence_decode` | yes | EdgeBreaker valence decoder path. |
-| `legacy_bitstream_encode` | yes | Manual/testing encode support for deprecated legacy prediction schemes. |
-| `legacy_bitstream_decode` | yes | Decode support for deprecated legacy prediction schemes. |
+| `edgebreaker_valence_encode` | yes | Modern EdgeBreaker valence traversal for high-compression mesh encoding. |
+| `edgebreaker_valence_decode` | yes | Decode EdgeBreaker valence traversal streams. |
+| `legacy_bitstream_encode` | yes | Compatibility support for writing older Draco bitstream layouts and deprecated prediction schemes. |
+| `legacy_bitstream_decode` | yes | Decode older Draco bitstreams and deprecated prediction schemes. |
 | `debug_logs` | no | Internal diagnostics. |
 | `force_sequential_seeds` | no | Test/debug control for deterministic seed behavior. |
 

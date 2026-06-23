@@ -7,6 +7,8 @@ use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
+#[cfg(not(feature = "legacy_bitstream_encode"))]
+use draco_core::DracoError;
 
 fn make_unit_quad_mesh() -> (Mesh, [f32; 12]) {
     let mut mesh = Mesh::new();
@@ -210,6 +212,7 @@ fn test_mesh_encode_decode_constrained_multi_parallelogram_edgebreaker() {
 }
 
 #[test]
+#[cfg(feature = "legacy_bitstream_encode")]
 fn test_mesh_encode_decode_legacy_multi_parallelogram_sequential() {
     let (mesh, positions) = make_unit_quad_mesh();
 
@@ -225,6 +228,7 @@ fn test_mesh_encode_decode_legacy_multi_parallelogram_sequential() {
 }
 
 #[test]
+#[cfg(feature = "legacy_bitstream_encode")]
 fn test_mesh_encode_decode_legacy_multi_parallelogram_edgebreaker() {
     let (mesh, positions) = make_unit_quad_mesh();
 
@@ -237,4 +241,33 @@ fn test_mesh_encode_decode_legacy_multi_parallelogram_edgebreaker() {
 
     let decoded_mesh = encode_decode_with_options(mesh, &options);
     assert_quad_mesh_edgebreaker(&decoded_mesh, &positions);
+}
+
+#[test]
+#[cfg(not(feature = "legacy_bitstream_encode"))]
+fn legacy_multi_parallelogram_requires_legacy_encode_feature() {
+    let (mesh, _) = make_unit_quad_mesh();
+
+    let mut options = EncoderOptions::new();
+    options.set_attribute_int(0, "quantization_bits", 10);
+    options.set_global_int("encoding_method", 0);
+    options.set_prediction_scheme(2);
+
+    let mut encoder = MeshEncoder::new();
+    encoder.set_mesh(mesh);
+    let mut enc_buffer = EncoderBuffer::new();
+    let err = encoder
+        .encode(&options, &mut enc_buffer)
+        .expect_err("legacy prediction scheme should require legacy feature");
+
+    match err {
+        DracoError::UnsupportedFeature(message) => {
+            assert!(message.contains("legacy_bitstream_encode"));
+        }
+        other => panic!("expected UnsupportedFeature, got {other:?}"),
+    }
+    assert!(
+        enc_buffer.data().is_empty(),
+        "encode should fail before writing a partial header"
+    );
 }

@@ -37,7 +37,7 @@ All decode and encode in `draco-core`.
 | Point cloud, KD-tree | yes | yes | Core parity path. |
 | Triangle mesh, sequential | yes | yes | Core parity path. |
 | Triangle mesh, EdgeBreaker standard | yes | yes | Main compressed mesh path. |
-| Triangle mesh, EdgeBreaker valence | yes | yes | Behind `edgebreaker_valence_*`; decode covers every version, encode round-trips 1.2→current behind `legacy_bitstream_encode`. |
+| Triangle mesh, EdgeBreaker valence | yes | yes | Behind `edgebreaker_valence_*`; decode covers every version, encode writes current streams by default and round-trips 1.2→current with `legacy_bitstream_encode`. |
 | Triangle mesh, EdgeBreaker predictive (type `1`) | yes (≤ `0.9.1`) | decode yes, encode explicit | Legacy connectivity; behind the legacy features. See [Legacy & compatibility](#legacy--compatibility). |
 
 ## Attribute encoders & semantics
@@ -118,8 +118,9 @@ awkward but compatibility-sensitive details. Every bitstream version from
 `0.9.1` to current decodes, and every traversal (standard / predictive /
 valence) round-trips behind the legacy features.
 
-- **Feature flags.** Legacy decode/encode live behind `legacy_bitstream_decode`
-  / `legacy_bitstream_encode`; valence behind `edgebreaker_valence_*`.
+- **Feature flags.** Legacy decode lives behind `legacy_bitstream_decode`;
+  legacy encode lives behind `legacy_bitstream_encode`; valence lives behind
+  `edgebreaker_valence_*`.
 - **EdgeBreaker predictive (type `1`).** C++ emitted it in `0.9.1` and replaced
   it with valence (type `2`) in `0.10.0`; `1.0.0`+ never emit it. `draco-core`
   decodes it, and encodes it only via the `force_predictive_traversal` option —
@@ -129,7 +130,8 @@ valence) round-trips behind the legacy features.
   pre-2.0 streams, also uses the historical `0.9.1` octahedron-to-vector float
   conversion so byte output matches the old decoder exactly.
 - **Pre-2.2 layout.** The pre-2.2 valence and constrained-multi-parallelogram
-  layouts round-trip both ways behind the legacy features. They differ from
+  layouts decode with the default compatibility feature and encode with
+  `legacy_bitstream_encode`. They differ from
   current streams in: a separate main traversal symbol stream, raw-bit (not
   rANS) start faces, a split-count/mode prefix, hole events after topology
   splits, a 2-bit split-edge selector, fixed-u32 counts before bitstream 2.0,

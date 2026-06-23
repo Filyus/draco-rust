@@ -1,6 +1,6 @@
 [package]
 name = "draco-core"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "Pure Rust core encoder and decoder for Draco geometry compression"
 license = "Apache-2.0"
@@ -43,4 +43,3 @@ bytemuck = { version = "1.24.0", features = ["derive"] }
 [dev-dependencies]
 draco-io = { path = "../draco-io" }
 tempfile = "3.24.0"
-

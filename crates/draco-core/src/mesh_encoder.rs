@@ -272,13 +272,6 @@ impl MeshEncoder {
             ));
         }
 
-        buffer.encode_data(b"DRACO");
-
-        buffer.encode_u8(major);
-        buffer.encode_u8(minor);
-        buffer.set_version(major, minor);
-        buffer.encode_u8(self.get_geometry_type() as u8);
-
         // C++ default behavior: Edgebreaker if speed != 10, Sequential if speed == 10
         let method_int = self.options.get_global_int("encoding_method", -1);
         let method = if method_int == -1 {
@@ -292,6 +285,41 @@ impl MeshEncoder {
         } else {
             0
         };
+
+        #[cfg(not(feature = "legacy_bitstream_encode"))]
+        if method == 1 {
+            let bitstream_version = crate::version::bitstream_version(major, minor);
+            if bitstream_version < 0x0202 {
+                return Err(DracoError::UnsupportedVersion(
+                    "EdgeBreaker mesh encoding before bitstream 2.2 requires the \
+                     legacy_bitstream_encode feature"
+                        .to_string(),
+                ));
+            }
+            if self.options.get_global_int("force_predictive_traversal", 0) != 0 {
+                return Err(DracoError::UnsupportedFeature(
+                    "force_predictive_traversal requires the legacy_bitstream_encode feature"
+                        .to_string(),
+                ));
+            }
+        }
+        #[cfg(not(feature = "legacy_bitstream_encode"))]
+        match self.options.get_prediction_scheme() {
+            2 | 3 => {
+                return Err(DracoError::UnsupportedFeature(
+                    "legacy prediction schemes require the legacy_bitstream_encode feature"
+                        .to_string(),
+                ));
+            }
+            _ => {}
+        }
+
+        buffer.encode_data(b"DRACO");
+
+        buffer.encode_u8(major);
+        buffer.encode_u8(minor);
+        buffer.set_version(major, minor);
+        buffer.encode_u8(self.get_geometry_type() as u8);
         buffer.encode_u8(method);
 
         // The flags field is always present in the binary header (the decoder reads

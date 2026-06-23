@@ -433,6 +433,17 @@ impl PointCloudEncoder {
             ));
         }
 
+        #[cfg(not(feature = "legacy_bitstream_encode"))]
+        match self.options.get_prediction_scheme() {
+            2 | 3 => {
+                return Err(DracoError::UnsupportedFeature(
+                    "legacy prediction schemes require the legacy_bitstream_encode feature"
+                        .to_string(),
+                ));
+            }
+            _ => {}
+        }
+
         buffer.encode_data(b"DRACO");
 
         buffer.encode_u8(major);
