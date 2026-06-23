@@ -166,7 +166,9 @@ impl SequentialIntegerAttributeEncoder {
         {
             debug_log!(
                 "DEBUG: encode_values: num_points={} num_components={} num_values={}",
-                num_points, num_components, num_values
+                num_points,
+                num_components,
+                num_values
             );
             debug_log!("DEBUG: is_portable_attribute={}", is_portable_attribute);
         }
@@ -203,7 +205,12 @@ impl SequentialIntegerAttributeEncoder {
                     let z = values[i * 3 + 2];
                     debug_log!(
                         "  data_id={} -> point_ids[{}]={:?}: quantized({}, {}, {})",
-                        i, i, point_ids[i], x, y, z
+                        i,
+                        i,
+                        point_ids[i],
+                        x,
+                        y,
+                        z
                     );
                 }
             }
@@ -978,7 +985,9 @@ impl SequentialIntegerAttributeEncoder {
         if crate::debug_env_enabled("DRACO_DEBUG_CMP_CPP") {
             debug_log!(
                 "RUST: Encoding prediction method {} (0x{:x}), transform type {:?}",
-                selected_method as i8, selected_method as u8, selected_transform_type
+                selected_method as i8,
+                selected_method as u8,
+                selected_transform_type
             );
         }
         out_buffer.encode_u8(selected_method as u8);

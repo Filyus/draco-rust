@@ -391,8 +391,7 @@ impl MeshEdgebreakerEncoder {
         let traversal_decoder_type = if self.force_predictive { 1 } else { 0 };
         out_buffer.encode_u8(traversal_decoder_type);
 
-        let bitstream_version =
-            out_buffer.bitstream_version();
+        let bitstream_version = out_buffer.bitstream_version();
         // Pre-2.0 stores the connectivity counts as fixed u32; 2.0+ uses varints.
         let legacy_u32_counts = cfg!(feature = "legacy_bitstream_encode")
             && bitstream_version != 0
@@ -442,8 +441,7 @@ impl MeshEdgebreakerEncoder {
         // Pre-2.2 stores the connectivity (traversal) block length-prefixed, with
         // the hole/topology-split events placed *after* it; 2.2+ stores the events
         // inline before the traversal block. Behind legacy_bitstream_encode.
-        let bitstream_version =
-            out_buffer.bitstream_version();
+        let bitstream_version = out_buffer.bitstream_version();
         let legacy_layout = cfg!(feature = "legacy_bitstream_encode") && bitstream_version < 0x0202;
 
         if legacy_layout {
@@ -831,7 +829,9 @@ impl MeshEdgebreakerEncoder {
             let mesh_point = mesh.face(mesh_face)[corner_offset];
             debug_log!(
                 "Encoder PREVISIT Next: corner={} vertex={} -> point={}",
-                next_c.0, next_vert.0, mesh_point.0
+                next_c.0,
+                next_vert.0,
+                mesh_point.0
             );
         }
         visit_vertex(next_c, next_vert);
@@ -842,7 +842,9 @@ impl MeshEdgebreakerEncoder {
             let mesh_point = mesh.face(mesh_face)[corner_offset];
             debug_log!(
                 "Encoder PREVISIT Prev: corner={} vertex={} -> point={}",
-                prev_c.0, prev_vert.0, mesh_point.0
+                prev_c.0,
+                prev_vert.0,
+                mesh_point.0
             );
         }
         visit_vertex(prev_c, prev_vert);
@@ -856,7 +858,8 @@ impl MeshEdgebreakerEncoder {
                 if verbose && point_ids.len() < 30 {
                     debug_log!(
                         "  DFS: popped corner={} face={} - SKIP (invalid or visited)",
-                        corner_id.0, face_id.0
+                        corner_id.0,
+                        face_id.0
                     );
                 }
                 continue;
@@ -864,7 +867,8 @@ impl MeshEdgebreakerEncoder {
             if verbose && point_ids.len() < 30 {
                 debug_log!(
                     "  DFS: popped corner={} face={} - processing",
-                    corner_id.0, face_id.0
+                    corner_id.0,
+                    face_id.0
                 );
             }
 
@@ -936,7 +940,9 @@ impl MeshEdgebreakerEncoder {
                     {
                         debug_log!(
                             "RUST OnNewVertexVisited: data_id={} vertex={} corner={}",
-                            data_id, vert_id.0, corner_id.0
+                            data_id,
+                            vert_id.0,
+                            corner_id.0
                         );
                     }
 
@@ -965,7 +971,9 @@ impl MeshEdgebreakerEncoder {
                         if verbose && point_ids.len() < 30 {
                             debug_log!(
                                 "  DFS: corner={} vertex={} NOT on boundary -> right_corner={}",
-                                corner_id.0, vert_id.0, right_c.0
+                                corner_id.0,
+                                vert_id.0,
+                                right_c.0
                             );
                         }
                         if debug_trace {
@@ -982,7 +990,8 @@ impl MeshEdgebreakerEncoder {
                         if verbose && point_ids.len() < 30 {
                             debug_log!(
                                 "  DFS: corner={} vertex={} ON BOUNDARY",
-                                corner_id.0, vert_id.0
+                                corner_id.0,
+                                vert_id.0
                             );
                         }
                         if debug_trace {
@@ -994,7 +1003,8 @@ impl MeshEdgebreakerEncoder {
                     if verbose && point_ids.len() < 30 {
                         debug_log!(
                             "  DFS: corner={} vertex={} ALREADY VISITED - check neighbors",
-                            corner_id.0, vert_id.0
+                            corner_id.0,
+                            vert_id.0
                         );
                     }
                 }
@@ -1035,7 +1045,10 @@ impl MeshEdgebreakerEncoder {
                 if right_visited {
                     if left_visited {
                         if debug_trace {
-                            debug_log!("  TRACE data_id={}: both visited -> break", point_ids.len());
+                            debug_log!(
+                                "  TRACE data_id={}: both visited -> break",
+                                point_ids.len()
+                            );
                         }
                         break;
                     } else {
@@ -1397,8 +1410,7 @@ impl MeshEdgebreakerEncoder {
 
         #[cfg(feature = "edgebreaker_valence_encode")]
         if let Some(valence_encoder) = self.valence_encoder.as_ref() {
-            let bitstream_version =
-                out_buffer.bitstream_version();
+            let bitstream_version = out_buffer.bitstream_version();
             if cfg!(feature = "legacy_bitstream_encode") && bitstream_version < 0x0202 {
                 // Pre-2.2 valence block:
                 //   [main symbol stream][start faces][seams][num_split][mode][contexts]
@@ -1627,8 +1639,7 @@ impl MeshEdgebreakerEncoder {
     }
 
     fn encode_split_data(&self, out_buffer: &mut EncoderBuffer) -> Result<(), DracoError> {
-        let bitstream_version =
-            out_buffer.bitstream_version();
+        let bitstream_version = out_buffer.bitstream_version();
         let legacy = cfg!(feature = "legacy_bitstream_encode") && bitstream_version != 0;
         // Pre-2.0 stores the split count as a fixed u32; 2.0+ uses a varint.
         let split_count_u32 = legacy && bitstream_version < 0x0200;
@@ -1910,7 +1921,9 @@ impl MeshEdgebreakerEncoder {
                     let v = corner_table.vertex(corner_id).0;
                     debug_log!(
                         "Encoder: pushed seed corner {} (face {}) vertex={}",
-                        corner_id.0, face_id.0, v
+                        corner_id.0,
+                        face_id.0,
+                        v
                     );
                 }
 

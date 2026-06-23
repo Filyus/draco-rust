@@ -616,8 +616,7 @@ impl MeshEdgebreakerDecoder {
             return Ok(0);
         }
 
-        let bitstream_version =
-            in_buffer.bitstream_version();
+        let bitstream_version = in_buffer.bitstream_version();
 
         // For v < 2.2, start face configuration bits are stored as a raw bit buffer
         // (u64 size prefix + raw bits), NOT as rANS-encoded data.

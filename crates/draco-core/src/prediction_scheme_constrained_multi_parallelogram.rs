@@ -823,8 +823,7 @@ where
         // leaving every crease-edge stream empty.
         #[cfg(feature = "legacy_bitstream_decode")]
         {
-            let bitstream_version =
-                buffer.bitstream_version();
+            let bitstream_version = buffer.bitstream_version();
             if bitstream_version < 0x0202 {
                 match buffer.decode_u8() {
                     Ok(0) => {} // OPTIMAL_MULTI_PARALLELOGRAM

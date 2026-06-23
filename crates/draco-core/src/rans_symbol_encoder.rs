@@ -61,7 +61,8 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
         if debug_cmp {
             debug_log!(
                 "RUST RANS create: num_symbols={} total_freq={}",
-                num_symbols, total_freq
+                num_symbols,
+                total_freq
             );
             debug_log!(
                 "RUST RANS frequencies: {:?}",
@@ -193,8 +194,7 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
 
     fn encode_table(&self, buffer: &mut EncoderBuffer) -> bool {
         // C++ v1.x writes num_symbols as u32; v2.0+ uses varint.
-        let bitstream_version =
-            buffer.bitstream_version();
+        let bitstream_version = buffer.bitstream_version();
         if bitstream_version < 0x0200 {
             buffer.encode_u32(self.num_symbols as u32);
         } else {
@@ -258,8 +258,7 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
         let bytes_written = data.len() as u64;
 
         // C++ v1.x writes the byte count as a fixed u64; v2.0+ uses varint.
-        let bitstream_version =
-            buffer.bitstream_version();
+        let bitstream_version = buffer.bitstream_version();
         if bitstream_version < 0x0200 {
             buffer.encode_u64(bytes_written);
         } else {

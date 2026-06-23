@@ -102,8 +102,7 @@ impl EncoderBuffer {
         if self.encode_bit_sequence_size {
             let encoded_bits = self.current_bit_offset;
             let encoded_bytes = encoded_bits.div_ceil(8);
-            let bitstream_version =
-                self.bitstream_version();
+            let bitstream_version = self.bitstream_version();
 
             let mut var_size_buffer = Vec::new();
             if bitstream_version >= 0x0202 {

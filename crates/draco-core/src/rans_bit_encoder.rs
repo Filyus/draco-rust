@@ -80,7 +80,8 @@ impl RAnsBitEncoder {
         {
             debug_log!(
                 "DEBUG: RAnsBitEncoder bit_counts: [{}, {}]",
-                self.bit_counts[0], self.bit_counts[1]
+                self.bit_counts[0],
+                self.bit_counts[1]
             );
         }
         let total = self.bit_counts[1] + self.bit_counts[0];
@@ -126,8 +127,7 @@ impl RAnsBitEncoder {
         // Pre-2.2 stores the rANS payload size as a fixed u32; 2.2+ uses a varint.
         // The size prefix is read back the same way (see RAnsBitDecoder). Only fires
         // when the target buffer carries a pre-2.2 version (default 2.2 -> varint).
-        let bitstream_version =
-            target_buffer.bitstream_version();
+        let bitstream_version = target_buffer.bitstream_version();
         if cfg!(feature = "legacy_bitstream_encode")
             && bitstream_version != 0
             && bitstream_version < 0x0202

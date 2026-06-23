@@ -562,8 +562,7 @@ where
     Transform: PredictionSchemeDecodingTransform<i32, i32>,
 {
     fn decode_prediction_data(&mut self, buffer: &mut DecoderBuffer) -> bool {
-        let bitstream_version =
-            buffer.bitstream_version();
+        let bitstream_version = buffer.bitstream_version();
         let num_orientations = if bitstream_version < 0x0202 {
             match buffer.decode_u32() {
                 Ok(v) => v,
