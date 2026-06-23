@@ -1,4 +1,4 @@
-# draco-core Support Matrix
+# Support Matrix: draco-core vs C++ Draco
 
 How `draco-core` maps onto upstream C++ Draco. `draco-core` is the raw `.drc`
 **bitstream** layer only; file and scene formats live one level up in `draco-io`
