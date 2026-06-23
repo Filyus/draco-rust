@@ -169,6 +169,13 @@ Run the full Rust workspace:
 cargo test --manifest-path crates/Cargo.toml --all-features
 ```
 
+### Architecture notes
+
+For why `draco-core` favors compile-time dispatch (generics, `enum`/`match`,
+`Option<Concrete>`) over the `unique_ptr<Interface>` + factory pattern used by
+upstream C++ Draco — with side-by-side snippets — see
+[`DISPATCH.md`](DISPATCH.md).
+
 ## License
 
 Apache-2.0, matching the upstream Draco project.
