@@ -59,11 +59,11 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
         let debug_cmp = false;
 
         if debug_cmp {
-            eprintln!(
+            debug_log!(
                 "RUST RANS create: num_symbols={} total_freq={}",
                 num_symbols, total_freq
             );
-            eprintln!(
+            debug_log!(
                 "RUST RANS frequencies: {:?}",
                 &frequencies[..num_symbols.min(frequencies.len())]
             );
@@ -89,14 +89,14 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
         }
 
         if debug_cmp {
-            eprintln!(
+            debug_log!(
                 "RUST RANS initial probs (before norm): {:?}",
                 self.probability_table
                     .iter()
                     .map(|s| s.prob)
                     .collect::<Vec<_>>()
             );
-            eprintln!(
+            debug_log!(
                 "RUST RANS total_rans_prob: {} vs precision: {}",
                 total_rans_prob,
                 Self::RANS_PRECISION
@@ -114,8 +114,8 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
             });
 
             if debug_cmp {
-                eprintln!("RUST RANS sorted_probabilities: {:?}", sorted_probabilities);
-                eprintln!("RUST RANS total_rans_prob before fix: {}", total_rans_prob);
+                debug_log!("RUST RANS sorted_probabilities: {:?}", sorted_probabilities);
+                debug_log!("RUST RANS total_rans_prob before fix: {}", total_rans_prob);
             }
 
             if total_rans_prob < Self::RANS_PRECISION {
@@ -168,14 +168,14 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
         }
 
         if debug_cmp {
-            eprintln!(
+            debug_log!(
                 "RUST RANS probability_table (probs): {:?}",
                 self.probability_table
                     .iter()
                     .map(|s| s.prob)
                     .collect::<Vec<_>>()
             );
-            eprintln!(
+            debug_log!(
                 "RUST RANS probability_table (cums): {:?}",
                 self.probability_table
                     .iter()

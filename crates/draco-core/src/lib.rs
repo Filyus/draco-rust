@@ -52,6 +52,22 @@ pub(crate) fn debug_env_enabled(name: &str) -> bool {
     std::env::var_os(name).is_some()
 }
 
+/// Emit a diagnostic line to stderr, but only when the `debug_logs` feature is
+/// enabled. `draco-core` is a library, so decode/encode paths must not print on
+/// their own. Using `if cfg!(...)` keeps the formatting arguments type-checked
+/// yet dead-code-eliminated in normal builds: nothing is evaluated and nothing
+/// is printed, so there is no runtime cost and no unused-variable churn.
+///
+/// Defined at the crate root before the module declarations below so every
+/// module can use it by bare name via textual macro scoping.
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if cfg!(feature = "debug_logs") {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 // =============================================================================
 // Core modules - always available
 // =============================================================================

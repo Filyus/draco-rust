@@ -406,7 +406,7 @@ fn encode_tagged_symbols(
     #[cfg(not(feature = "debug_logs"))]
     let debug_cmp = false;
     if debug_cmp {
-        eprintln!(
+        debug_log!(
             "RUST TAGGED tag frequencies: {:?}",
             &frequencies[..15.min(frequencies.len())]
         );

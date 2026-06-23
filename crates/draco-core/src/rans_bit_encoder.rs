@@ -78,7 +78,7 @@ impl RAnsBitEncoder {
     pub fn end_encoding(&mut self, target_buffer: &mut EncoderBuffer) {
         #[cfg(feature = "debug_logs")]
         {
-            println!(
+            debug_log!(
                 "DEBUG: RAnsBitEncoder bit_counts: [{}, {}]",
                 self.bit_counts[0], self.bit_counts[1]
             );
@@ -120,7 +120,7 @@ impl RAnsBitEncoder {
         target_buffer.encode_u8(zero_prob);
         #[cfg(feature = "debug_logs")]
         {
-            println!("DEBUG: RAnsBitEncoder zero_prob: {}", zero_prob);
+            debug_log!("DEBUG: RAnsBitEncoder zero_prob: {}", zero_prob);
         }
 
         // Pre-2.2 stores the rANS payload size as a fixed u32; 2.2+ uses a varint.
@@ -138,13 +138,13 @@ impl RAnsBitEncoder {
         }
         #[cfg(feature = "debug_logs")]
         {
-            println!("DEBUG: RAnsBitEncoder size: {}", size);
+            debug_log!("DEBUG: RAnsBitEncoder size: {}", size);
         }
 
         let data = ans_coder.data();
         #[cfg(feature = "debug_logs")]
         {
-            println!("DEBUG: RAnsBitEncoder data: {:?}", data);
+            debug_log!("DEBUG: RAnsBitEncoder data: {:?}", data);
         }
         target_buffer.encode_data(data);
     }

@@ -256,7 +256,7 @@ impl AttributeQuantizationTransform {
                 {
                     if debug_cmp_cpp && i < debug_cmp_cpp_max_print {
                         let orig_pt = point_idx.0;
-                        eprintln!("RUST QT orig_pt={} P{}: {:?}", orig_pt, i, qvals);
+                        debug_log!("RUST QT orig_pt={} P{}: {:?}", orig_pt, i, qvals);
                         if let Some(fname) = debug_cmp_cpp_file.as_deref() {
                             use std::io::Write;
                             if let Ok(mut f) = std::fs::OpenOptions::new()

@@ -1017,7 +1017,7 @@ where
                     // Check bounds - if we've exhausted the flags, this is an error
                     if pos >= self.is_crease_edge[context].len() {
                         // This should never happen if encoder/decoder are in sync
-                        eprintln!("ERROR: is_crease_edge bounds exceeded: pos={} >= len={}, context={}, data_id={}", 
+                        debug_log!("ERROR: is_crease_edge bounds exceeded: pos={} >= len={}, context={}, data_id={}", 
                             pos, self.is_crease_edge[context].len(), context, data_id);
                         return false;
                     }

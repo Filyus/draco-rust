@@ -446,16 +446,16 @@ impl EdgebreakerConnectivityDecoder {
         // Debug output: show corner table after connectivity decoding
         #[cfg(feature = "debug_logs")]
         if crate::debug_env_enabled("DRACO_VERBOSE") {
-            eprintln!("Rust CONN: Corner table after connectivity:");
+            debug_log!("Rust CONN: Corner table after connectivity:");
             let max_corners = 12.min(self.corner_table.num_faces() * 3);
             for c in 0..max_corners {
-                eprintln!(
+                debug_log!(
                     "  corner {} -> vertex {}",
                     c,
                     self.corner_table.vertex(CornerIndex(c as u32)).0
                 );
             }
-            eprintln!(
+            debug_log!(
                 "Rust CONN: num_vertices after compaction = {}",
                 num_vertices
             );

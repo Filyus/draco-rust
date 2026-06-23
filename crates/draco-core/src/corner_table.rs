@@ -673,7 +673,7 @@ impl CornerTable {
             let ci = CornerIndex(c as u32);
             let o = self.opposite(ci);
             if o != INVALID_CORNER_INDEX && self.opposite(o) != ci {
-                eprintln!(
+                debug_log!(
                     "CornerTable invariant failed: opposite(opposite({})) != {} (got {})",
                     c,
                     c,
@@ -694,7 +694,7 @@ impl CornerTable {
                 || self.vertex(self.next(c0)) == INVALID_VERTEX_INDEX
                 || self.vertex(self.previous(c0)) == INVALID_VERTEX_INDEX
             {
-                eprintln!(
+                debug_log!(
                     "CornerTable invariant failed: face {} contains INVALID vertex mapping",
                     f
                 );
@@ -709,7 +709,7 @@ impl CornerTable {
                 continue;
             }
             if self.vertex(c) != VertexIndex(v as u32) {
-                eprintln!("CornerTable invariant failed: vertex_corners[{}] -> corner {} maps to vertex {}", v, c.0, self.vertex(c).0);
+                debug_log!("CornerTable invariant failed: vertex_corners[{}] -> corner {} maps to vertex {}", v, c.0, self.vertex(c).0);
                 return false;
             }
         }

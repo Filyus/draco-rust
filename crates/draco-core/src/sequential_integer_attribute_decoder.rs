@@ -131,7 +131,7 @@ impl SequentialIntegerAttributeDecoder {
         let method_byte = match in_buffer.decode_u8() {
             Ok(v) => v,
             Err(_) => {
-                eprintln!("Failed to decode prediction method");
+                debug_log!("Failed to decode prediction method");
                 return false;
             }
         };
@@ -168,9 +168,9 @@ impl SequentialIntegerAttributeDecoder {
         }
 
         if let Some(ref scheme) = self.prediction_scheme {
-            // println!("DEBUG: Decoder scheme method: {:?}", scheme.get_prediction_method());
+            // debug_log!("DEBUG: Decoder scheme method: {:?}", scheme.get_prediction_method());
             if scheme.get_prediction_method() != selected_method {
-                eprintln!(
+                debug_log!(
                     "Prediction method mismatch. Stream: {:?}, Scheme: {:?}",
                     selected_method,
                     scheme.get_prediction_method()
@@ -265,7 +265,7 @@ impl SequentialIntegerAttributeDecoder {
                     if let Some(map) = vertex_to_data_map_override {
                         // Use the pre-built vertex_to_data_map from mesh decoder
                         if map.len() != corner_table.num_vertices() {
-                            eprintln!("Invalid vertex_to_data_map_override length");
+                            debug_log!("Invalid vertex_to_data_map_override length");
                             return false;
                         }
                         vertex_to_data_map.resize(map.len(), 0);
@@ -274,14 +274,14 @@ impl SequentialIntegerAttributeDecoder {
                         // Also set data_to_corner_map if override is available
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                eprintln!("Invalid data_to_corner_map_override length");
+                                debug_log!("Invalid data_to_corner_map_override length");
                                 return false;
                             }
                             data_to_corner_map.copy_from_slice(dcm);
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            eprintln!("Invalid data_to_corner_map_override length");
+                            debug_log!("Invalid data_to_corner_map_override length");
                             return false;
                         }
                         data_to_corner_map.copy_from_slice(map);
@@ -294,7 +294,7 @@ impl SequentialIntegerAttributeDecoder {
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
                         ) {
-                            eprintln!("Invalid data_to_corner_map corner id");
+                            debug_log!("Invalid data_to_corner_map corner id");
                             return false;
                         }
                     } else {
@@ -305,7 +305,7 @@ impl SequentialIntegerAttributeDecoder {
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
                         ) {
-                            eprintln!("Invalid data_to_corner_map corner id");
+                            debug_log!("Invalid data_to_corner_map corner id");
                             return false;
                         }
                     }
@@ -319,7 +319,7 @@ impl SequentialIntegerAttributeDecoder {
                     );
                     predictor_parallelogram_opt = Some(predictor);
                 } else {
-                    eprintln!("Parallelogram prediction requires corner table");
+                    debug_log!("Parallelogram prediction requires corner table");
                     return false;
                 }
             }
@@ -330,7 +330,7 @@ impl SequentialIntegerAttributeDecoder {
 
                     if let Some(map) = vertex_to_data_map_override {
                         if map.len() != corner_table.num_vertices() {
-                            eprintln!("Invalid vertex_to_data_map_override length");
+                            debug_log!("Invalid vertex_to_data_map_override length");
                             return false;
                         }
                         vertex_to_data_map.resize(map.len(), 0);
@@ -338,14 +338,14 @@ impl SequentialIntegerAttributeDecoder {
 
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                eprintln!("Invalid data_to_corner_map_override length");
+                                debug_log!("Invalid data_to_corner_map_override length");
                                 return false;
                             }
                             data_to_corner_map.copy_from_slice(dcm);
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            eprintln!("Invalid data_to_corner_map_override length");
+                            debug_log!("Invalid data_to_corner_map_override length");
                             return false;
                         }
                         data_to_corner_map.copy_from_slice(map);
@@ -355,7 +355,7 @@ impl SequentialIntegerAttributeDecoder {
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
                         ) {
-                            eprintln!("Invalid data_to_corner_map corner id");
+                            debug_log!("Invalid data_to_corner_map corner id");
                             return false;
                         }
                     } else {
@@ -364,7 +364,7 @@ impl SequentialIntegerAttributeDecoder {
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
                         ) {
-                            eprintln!("Invalid data_to_corner_map corner id");
+                            debug_log!("Invalid data_to_corner_map corner id");
                             return false;
                         }
                     }
@@ -377,13 +377,13 @@ impl SequentialIntegerAttributeDecoder {
                         MeshPredictionSchemeMultiParallelogramDecoder::new(transform, mesh_data);
                     predictor_multi_parallelogram_opt = Some(predictor);
                 } else {
-                    eprintln!("MultiParallelogram prediction requires corner table");
+                    debug_log!("MultiParallelogram prediction requires corner table");
                     return false;
                 }
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                eprintln!("MultiParallelogram prediction is disabled");
+                debug_log!("MultiParallelogram prediction is disabled");
                 return false;
             }
             PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
@@ -396,7 +396,7 @@ impl SequentialIntegerAttributeDecoder {
                     if let Some(map) = vertex_to_data_map_override {
                         // Use the pre-built vertex_to_data_map from mesh decoder
                         if map.len() != corner_table.num_vertices() {
-                            eprintln!("Invalid vertex_to_data_map_override length");
+                            debug_log!("Invalid vertex_to_data_map_override length");
                             return false;
                         }
                         vertex_to_data_map.resize(map.len(), 0);
@@ -405,14 +405,14 @@ impl SequentialIntegerAttributeDecoder {
                         // Also set data_to_corner_map if override is available
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                eprintln!("Invalid data_to_corner_map_override length");
+                                debug_log!("Invalid data_to_corner_map_override length");
                                 return false;
                             }
                             data_to_corner_map.copy_from_slice(dcm);
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            eprintln!("Invalid data_to_corner_map_override length");
+                            debug_log!("Invalid data_to_corner_map_override length");
                             return false;
                         }
                         data_to_corner_map.copy_from_slice(map);
@@ -422,7 +422,7 @@ impl SequentialIntegerAttributeDecoder {
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
                         ) {
-                            eprintln!("Invalid data_to_corner_map corner id");
+                            debug_log!("Invalid data_to_corner_map corner id");
                             return false;
                         }
                     } else {
@@ -433,7 +433,7 @@ impl SequentialIntegerAttributeDecoder {
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
                         ) {
-                            eprintln!("Invalid data_to_corner_map corner id");
+                            debug_log!("Invalid data_to_corner_map corner id");
                             return false;
                         }
                     }
@@ -447,7 +447,7 @@ impl SequentialIntegerAttributeDecoder {
                     );
                     predictor_constrained_multi_parallelogram_opt = Some(predictor);
                 } else {
-                    eprintln!("ConstrainedMultiParallelogram prediction requires corner table");
+                    debug_log!("ConstrainedMultiParallelogram prediction requires corner table");
                     return false;
                 }
             }
@@ -458,7 +458,7 @@ impl SequentialIntegerAttributeDecoder {
 
                     if let Some(map) = vertex_to_data_map_override {
                         if map.len() != corner_table.num_vertices() {
-                            eprintln!("Invalid vertex_to_data_map_override length");
+                            debug_log!("Invalid vertex_to_data_map_override length");
                             return false;
                         }
                         vertex_to_data_map.resize(map.len(), 0);
@@ -466,14 +466,14 @@ impl SequentialIntegerAttributeDecoder {
 
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                eprintln!("Invalid data_to_corner_map_override length");
+                                debug_log!("Invalid data_to_corner_map_override length");
                                 return false;
                             }
                             data_to_corner_map.copy_from_slice(dcm);
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            eprintln!("Invalid data_to_corner_map_override length");
+                            debug_log!("Invalid data_to_corner_map_override length");
                             return false;
                         }
                         data_to_corner_map.copy_from_slice(map);
@@ -483,7 +483,7 @@ impl SequentialIntegerAttributeDecoder {
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
                         ) {
-                            eprintln!("Invalid data_to_corner_map corner id");
+                            debug_log!("Invalid data_to_corner_map corner id");
                             return false;
                         }
                     } else {
@@ -492,7 +492,7 @@ impl SequentialIntegerAttributeDecoder {
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
                         ) {
-                            eprintln!("Invalid data_to_corner_map corner id");
+                            debug_log!("Invalid data_to_corner_map corner id");
                             return false;
                         }
                     }
@@ -518,23 +518,23 @@ impl SequentialIntegerAttributeDecoder {
                             attribute
                         };
                         if !predictor.set_parent_attribute(pos_att) {
-                            eprintln!("Failed to set parent attribute for TexCoordsDeprecated");
+                            debug_log!("Failed to set parent attribute for TexCoordsDeprecated");
                             return false;
                         }
                     } else {
-                        eprintln!("Position attribute not found for TexCoordsDeprecated");
+                        debug_log!("Position attribute not found for TexCoordsDeprecated");
                         return false;
                     }
 
                     predictor_tex_coords_deprecated_opt = Some(predictor);
                 } else {
-                    eprintln!("TexCoordsDeprecated prediction requires corner table");
+                    debug_log!("TexCoordsDeprecated prediction requires corner table");
                     return false;
                 }
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                eprintln!("TexCoordsDeprecated prediction is disabled");
+                debug_log!("TexCoordsDeprecated prediction is disabled");
                 return false;
             }
             PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
@@ -546,7 +546,7 @@ impl SequentialIntegerAttributeDecoder {
                     if let Some(map) = vertex_to_data_map_override {
                         // Use the pre-built vertex_to_data_map from mesh decoder
                         if map.len() != corner_table.num_vertices() {
-                            eprintln!("Invalid vertex_to_data_map_override length");
+                            debug_log!("Invalid vertex_to_data_map_override length");
                             return false;
                         }
                         vertex_to_data_map.resize(map.len(), 0);
@@ -555,14 +555,14 @@ impl SequentialIntegerAttributeDecoder {
                         // Also set data_to_corner_map if override is available
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                eprintln!("Invalid data_to_corner_map_override length");
+                                debug_log!("Invalid data_to_corner_map_override length");
                                 return false;
                             }
                             data_to_corner_map.copy_from_slice(dcm);
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            eprintln!("Invalid data_to_corner_map_override length");
+                            debug_log!("Invalid data_to_corner_map_override length");
                             return false;
                         }
                         data_to_corner_map.copy_from_slice(map);
@@ -572,7 +572,7 @@ impl SequentialIntegerAttributeDecoder {
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
                         ) {
-                            eprintln!("Invalid data_to_corner_map corner id");
+                            debug_log!("Invalid data_to_corner_map corner id");
                             return false;
                         }
                     } else {
@@ -583,7 +583,7 @@ impl SequentialIntegerAttributeDecoder {
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
                         ) {
-                            eprintln!("Invalid data_to_corner_map corner id");
+                            debug_log!("Invalid data_to_corner_map corner id");
                             return false;
                         }
                     }
@@ -610,17 +610,17 @@ impl SequentialIntegerAttributeDecoder {
                             attribute
                         };
                         if !predictor.set_parent_attribute(pos_att) {
-                            eprintln!("Failed to set parent attribute for TexCoordsPortable");
+                            debug_log!("Failed to set parent attribute for TexCoordsPortable");
                             return false;
                         }
                     } else {
-                        eprintln!("Position attribute not found for TexCoordsPortable");
+                        debug_log!("Position attribute not found for TexCoordsPortable");
                         return false;
                     }
 
                     predictor_tex_coords_opt = Some(predictor);
                 } else {
-                    eprintln!("TexCoordsPortable prediction requires corner table");
+                    debug_log!("TexCoordsPortable prediction requires corner table");
                     return false;
                 }
             }
@@ -633,7 +633,7 @@ impl SequentialIntegerAttributeDecoder {
                     if let Some(map) = vertex_to_data_map_override {
                         // Use the pre-built vertex_to_data_map from mesh decoder
                         if map.len() != corner_table.num_vertices() {
-                            eprintln!("Invalid vertex_to_data_map_override length");
+                            debug_log!("Invalid vertex_to_data_map_override length");
                             return false;
                         }
                         vertex_to_data_map.resize(map.len(), 0);
@@ -642,14 +642,14 @@ impl SequentialIntegerAttributeDecoder {
                         // Also set data_to_corner_map if override is available
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                eprintln!("Invalid data_to_corner_map_override length");
+                                debug_log!("Invalid data_to_corner_map_override length");
                                 return false;
                             }
                             data_to_corner_map.copy_from_slice(dcm);
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            eprintln!("Invalid data_to_corner_map_override length");
+                            debug_log!("Invalid data_to_corner_map_override length");
                             return false;
                         }
                         data_to_corner_map.copy_from_slice(map);
@@ -659,7 +659,7 @@ impl SequentialIntegerAttributeDecoder {
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
                         ) {
-                            eprintln!("Invalid data_to_corner_map corner id");
+                            debug_log!("Invalid data_to_corner_map corner id");
                             return false;
                         }
                     } else {
@@ -670,7 +670,7 @@ impl SequentialIntegerAttributeDecoder {
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
                         ) {
-                            eprintln!("Invalid data_to_corner_map corner id");
+                            debug_log!("Invalid data_to_corner_map corner id");
                             return false;
                         }
                     }
@@ -710,23 +710,23 @@ impl SequentialIntegerAttributeDecoder {
                             attribute
                         };
                         if !predictor.set_parent_attribute(pos_att) {
-                            eprintln!("Failed to set parent attribute for GeometricNormal");
+                            debug_log!("Failed to set parent attribute for GeometricNormal");
                             return false;
                         }
                     } else {
-                        eprintln!("Position attribute not found for GeometricNormal");
+                        debug_log!("Position attribute not found for GeometricNormal");
                         return false;
                     }
 
                     predictor_geometric_normal_opt = Some(predictor);
                 } else {
-                    eprintln!("GeometricNormal prediction requires corner table");
+                    debug_log!("GeometricNormal prediction requires corner table");
                     return false;
                 }
             }
             PredictionSchemeMethod::None => {}
             _ => {
-                eprintln!("Unsupported prediction method: {:?}", selected_method);
+                debug_log!("Unsupported prediction method: {:?}", selected_method);
                 return false;
             }
         }
@@ -829,11 +829,11 @@ impl SequentialIntegerAttributeDecoder {
         match selected_method {
             _ if self.prediction_scheme.is_some() => {
                 let Some(scheme) = self.prediction_scheme.as_mut() else {
-                    eprintln!("Prediction scheme was selected but not initialized");
+                    debug_log!("Prediction scheme was selected but not initialized");
                     return false;
                 };
                 if !scheme.decode_prediction_data(in_buffer) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -843,7 +843,7 @@ impl SequentialIntegerAttributeDecoder {
             PredictionSchemeMethod::Difference => {
                 if let Some(predictor) = predictor_normal_octa_diff_opt.as_mut() {
                     if !predictor.decode_prediction_data(in_buffer) {
-                        eprintln!(
+                        debug_log!(
                             "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
                             att_id, selected_method, selected_transform
                         );
@@ -851,11 +851,11 @@ impl SequentialIntegerAttributeDecoder {
                     }
                 } else {
                     let Some(predictor) = predictor_opt.as_mut() else {
-                        eprintln!("Difference predictor was selected but not initialized");
+                        debug_log!("Difference predictor was selected but not initialized");
                         return false;
                     };
                     if !predictor.decode_prediction_data(in_buffer) {
-                        eprintln!(
+                        debug_log!(
                             "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
                             att_id, selected_method, selected_transform
                         );
@@ -865,11 +865,11 @@ impl SequentialIntegerAttributeDecoder {
             }
             PredictionSchemeMethod::MeshPredictionParallelogram => {
                 let Some(predictor) = predictor_parallelogram_opt.as_mut() else {
-                    eprintln!("Parallelogram predictor was selected but not initialized");
+                    debug_log!("Parallelogram predictor was selected but not initialized");
                     return false;
                 };
                 if !predictor.decode_prediction_data(in_buffer) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -879,11 +879,11 @@ impl SequentialIntegerAttributeDecoder {
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
                 let Some(predictor) = predictor_multi_parallelogram_opt.as_mut() else {
-                    eprintln!("MultiParallelogram predictor was selected but not initialized");
+                    debug_log!("MultiParallelogram predictor was selected but not initialized");
                     return false;
                 };
                 if !predictor.decode_prediction_data(in_buffer) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -892,18 +892,18 @@ impl SequentialIntegerAttributeDecoder {
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                eprintln!("MultiParallelogram prediction is disabled");
+                debug_log!("MultiParallelogram prediction is disabled");
                 return false;
             }
             PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
                 let Some(predictor) = predictor_constrained_multi_parallelogram_opt.as_mut() else {
-                    eprintln!(
+                    debug_log!(
                         "ConstrainedMultiParallelogram predictor was selected but not initialized"
                     );
                     return false;
                 };
                 if !predictor.decode_prediction_data(in_buffer) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -913,11 +913,11 @@ impl SequentialIntegerAttributeDecoder {
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
                 let Some(predictor) = predictor_tex_coords_deprecated_opt.as_mut() else {
-                    eprintln!("TexCoordsDeprecated predictor was selected but not initialized");
+                    debug_log!("TexCoordsDeprecated predictor was selected but not initialized");
                     return false;
                 };
                 if !predictor.decode_prediction_data(in_buffer) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -926,16 +926,16 @@ impl SequentialIntegerAttributeDecoder {
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                eprintln!("TexCoordsDeprecated prediction is disabled");
+                debug_log!("TexCoordsDeprecated prediction is disabled");
                 return false;
             }
             PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
                 let Some(predictor) = predictor_tex_coords_opt.as_mut() else {
-                    eprintln!("TexCoordsPortable predictor was selected but not initialized");
+                    debug_log!("TexCoordsPortable predictor was selected but not initialized");
                     return false;
                 };
                 if !predictor.decode_prediction_data(in_buffer) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -944,11 +944,11 @@ impl SequentialIntegerAttributeDecoder {
             }
             PredictionSchemeMethod::MeshPredictionGeometricNormal => {
                 let Some(predictor) = predictor_geometric_normal_opt.as_mut() else {
-                    eprintln!("GeometricNormal predictor was selected but not initialized");
+                    debug_log!("GeometricNormal predictor was selected but not initialized");
                     return false;
                 };
                 if !predictor.decode_prediction_data(in_buffer) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -965,7 +965,7 @@ impl SequentialIntegerAttributeDecoder {
         match selected_method {
             _ if self.prediction_scheme.is_some() => {
                 let Some(scheme) = self.prediction_scheme.as_mut() else {
-                    eprintln!("Prediction scheme was selected but not initialized");
+                    debug_log!("Prediction scheme was selected but not initialized");
                     return false;
                 };
                 let map_opt = match selected_method {
@@ -986,7 +986,7 @@ impl SequentialIntegerAttributeDecoder {
                     num_components,
                     map_opt,
                 ) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -1002,7 +1002,7 @@ impl SequentialIntegerAttributeDecoder {
                         num_components,
                         None,
                     ) {
-                        eprintln!(
+                        debug_log!(
                             "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
                             att_id, selected_method, selected_transform
                         );
@@ -1010,7 +1010,7 @@ impl SequentialIntegerAttributeDecoder {
                     }
                 } else {
                     let Some(predictor) = predictor_opt.as_mut() else {
-                        eprintln!("Difference predictor was selected but not initialized");
+                        debug_log!("Difference predictor was selected but not initialized");
                         return false;
                     };
                     if !predictor.compute_original_values(
@@ -1020,7 +1020,7 @@ impl SequentialIntegerAttributeDecoder {
                         num_components,
                         None,
                     ) {
-                        eprintln!(
+                        debug_log!(
                             "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
                             att_id, selected_method, selected_transform
                         );
@@ -1030,7 +1030,7 @@ impl SequentialIntegerAttributeDecoder {
             }
             PredictionSchemeMethod::MeshPredictionParallelogram => {
                 let Some(predictor) = predictor_parallelogram_opt.as_mut() else {
-                    eprintln!("Parallelogram predictor was selected but not initialized");
+                    debug_log!("Parallelogram predictor was selected but not initialized");
                     return false;
                 };
                 if !predictor.compute_original_values(
@@ -1040,7 +1040,7 @@ impl SequentialIntegerAttributeDecoder {
                     num_components,
                     None,
                 ) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -1050,7 +1050,7 @@ impl SequentialIntegerAttributeDecoder {
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
                 let Some(predictor) = predictor_multi_parallelogram_opt.as_mut() else {
-                    eprintln!("MultiParallelogram predictor was selected but not initialized");
+                    debug_log!("MultiParallelogram predictor was selected but not initialized");
                     return false;
                 };
                 if !predictor.compute_original_values(
@@ -1060,7 +1060,7 @@ impl SequentialIntegerAttributeDecoder {
                     num_components,
                     None,
                 ) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -1069,12 +1069,12 @@ impl SequentialIntegerAttributeDecoder {
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                eprintln!("MultiParallelogram prediction is disabled");
+                debug_log!("MultiParallelogram prediction is disabled");
                 return false;
             }
             PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
                 let Some(predictor) = predictor_constrained_multi_parallelogram_opt.as_mut() else {
-                    eprintln!(
+                    debug_log!(
                         "ConstrainedMultiParallelogram predictor was selected but not initialized"
                     );
                     return false;
@@ -1086,7 +1086,7 @@ impl SequentialIntegerAttributeDecoder {
                     num_components,
                     None,
                 ) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -1096,7 +1096,7 @@ impl SequentialIntegerAttributeDecoder {
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
                 let Some(predictor) = predictor_tex_coords_deprecated_opt.as_mut() else {
-                    eprintln!("TexCoordsDeprecated predictor was selected but not initialized");
+                    debug_log!("TexCoordsDeprecated predictor was selected but not initialized");
                     return false;
                 };
                 if !predictor.compute_original_values(
@@ -1108,7 +1108,7 @@ impl SequentialIntegerAttributeDecoder {
                         crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
                     ),
                 ) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -1117,12 +1117,12 @@ impl SequentialIntegerAttributeDecoder {
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                eprintln!("TexCoordsDeprecated prediction is disabled");
+                debug_log!("TexCoordsDeprecated prediction is disabled");
                 return false;
             }
             PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
                 let Some(predictor) = predictor_tex_coords_opt.as_mut() else {
-                    eprintln!("TexCoordsPortable predictor was selected but not initialized");
+                    debug_log!("TexCoordsPortable predictor was selected but not initialized");
                     return false;
                 };
                 if !predictor.compute_original_values(
@@ -1134,7 +1134,7 @@ impl SequentialIntegerAttributeDecoder {
                         crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
                     ),
                 ) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -1143,7 +1143,7 @@ impl SequentialIntegerAttributeDecoder {
             }
             PredictionSchemeMethod::MeshPredictionGeometricNormal => {
                 let Some(predictor) = predictor_geometric_normal_opt.as_mut() else {
-                    eprintln!("GeometricNormal predictor was selected but not initialized");
+                    debug_log!("GeometricNormal predictor was selected but not initialized");
                     return false;
                 };
                 if !predictor.compute_original_values(
@@ -1155,7 +1155,7 @@ impl SequentialIntegerAttributeDecoder {
                         crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
                     ),
                 ) {
-                    eprintln!(
+                    debug_log!(
                         "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
                         att_id, selected_method, selected_transform
                     );
@@ -1166,7 +1166,7 @@ impl SequentialIntegerAttributeDecoder {
                 values = corrections;
             }
             _ => {
-                eprintln!("Unsupported prediction method: {:?}", selected_method);
+                debug_log!("Unsupported prediction method: {:?}", selected_method);
                 return false;
             }
         }
@@ -1174,18 +1174,18 @@ impl SequentialIntegerAttributeDecoder {
         #[cfg(feature = "debug_logs")]
         {
             if num_points > 0 {
-                println!(
+                debug_log!(
                     "Sequential Decoded: Point 0 ID = {:?}, Value[0] = {}",
                     point_ids[0], values[0]
                 );
                 // Debug: print all decoded values (quantized) and where they go
-                println!("DEBUG decoded values (first 25 x/y/z):");
+                debug_log!("DEBUG decoded values (first 25 x/y/z):");
                 if num_components >= 3 {
                     for i in 0..std::cmp::min(25, num_points) {
                         let x = values[i * num_components];
                         let y = values[i * num_components + 1];
                         let z = values[i * num_components + 2];
-                        println!(
+                        debug_log!(
                             "  data_id={} -> point_ids[{}]={:?}: quantized({}, {}, {})",
                             i, i, point_ids[i], x, y, z
                         );

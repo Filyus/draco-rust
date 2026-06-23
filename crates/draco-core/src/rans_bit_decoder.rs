@@ -25,7 +25,7 @@ impl<'a> RAnsBitDecoder<'a> {
         if let Ok(prob) = source_buffer.decode::<u8>() {
             #[cfg(feature = "debug_logs")]
             {
-                println!("DEBUG: RAnsBitDecoder prob_zero: {}", prob);
+                debug_log!("DEBUG: RAnsBitDecoder prob_zero: {}", prob);
             }
             self.prob_zero = prob;
         } else {
@@ -54,13 +54,13 @@ impl<'a> RAnsBitDecoder<'a> {
         };
         #[cfg(feature = "debug_logs")]
         {
-            println!("DEBUG: RAnsBitDecoder size: {}", size);
+            debug_log!("DEBUG: RAnsBitDecoder size: {}", size);
         }
 
         if let Ok(slice) = source_buffer.decode_slice(size as usize) {
             #[cfg(feature = "debug_logs")]
             {
-                println!("DEBUG: RAnsBitDecoder slice: {:?}", slice);
+                debug_log!("DEBUG: RAnsBitDecoder slice: {:?}", slice);
             }
             let mut decoder = AnsDecoder::new(slice);
             // Binary rABS uses the 1..=3 byte final-state encoding (no 0xC0 tag).

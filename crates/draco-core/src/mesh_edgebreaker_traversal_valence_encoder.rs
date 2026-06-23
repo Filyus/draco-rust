@@ -190,7 +190,7 @@ impl MeshEdgebreakerTraversalValenceEncoder {
                 let options = crate::symbol_encoding::SymbolEncodingOptions { compression_level };
                 if !crate::symbol_encoding::encode_symbols(symbols, 1, &options, out_buffer) {
                     // Handle error? For now print to stderr
-                    eprintln!("Error encoding valence symbols");
+                    debug_log!("Error encoding valence symbols");
                 }
             }
         }

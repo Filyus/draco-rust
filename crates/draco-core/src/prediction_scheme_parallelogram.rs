@@ -101,7 +101,7 @@ pub(crate) fn compute_parallelogram_prediction<DataType: ParallelogramDataType>(
 
         #[cfg(feature = "debug_logs")]
         if crate::debug_env_enabled("DRACO_VERBOSE") {
-            println!(
+            debug_log!(
                 "Parallelogram pred p={} c={} (o={}): entries({}, {}, {})",
                 data_entry_id, ci.0, oci.0, vert_opp, vert_next, vert_prev
             );

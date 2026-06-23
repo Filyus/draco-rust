@@ -443,7 +443,7 @@ impl MeshEncoder {
         )?;
         #[cfg(feature = "debug_logs")]
         {
-            println!("DEBUG: encode_edgebreaker_connectivity: point_ids.len()={}, data_to_corner_map.len()={}, vertex_to_data_map.len()={}",
+            debug_log!("DEBUG: encode_edgebreaker_connectivity: point_ids.len()={}, data_to_corner_map.len()={}, vertex_to_data_map.len()={}",
                  point_ids.len(), data_to_corner_map.len(), vertex_to_data_map.len());
         }
         self.point_ids = point_ids;
@@ -527,7 +527,7 @@ impl MeshEncoder {
 
         #[cfg(feature = "debug_logs")]
         {
-            eprintln!(
+            debug_log!(
                 "Rust created faces (first 12): {:?}",
                 faces
                     .iter()
@@ -535,7 +535,7 @@ impl MeshEncoder {
                     .map(|f| [f[0].0, f[1].0, f[2].0])
                     .collect::<Vec<_>>()
             );
-            eprintln!(
+            debug_log!(
                 "Rust point_to_vertex (first 25): {:?}",
                 point_to_vertex.iter().take(25).cloned().collect::<Vec<_>>()
             );
@@ -684,7 +684,7 @@ impl MeshEncoder {
 
                 #[cfg(feature = "debug_logs")]
                 {
-                    println!("DEBUG: Encoder encoding attribute {} metadata. Type: {:?}, Components: {}, Data: {:?}", i, att.attribute_type(), att.num_components(), att.data_type());
+                    debug_log!("DEBUG: Encoder encoding attribute {} metadata. Type: {:?}, Components: {}, Data: {:?}", i, att.attribute_type(), att.num_components(), att.data_type());
                 }
                 out_buffer.encode_u8(att.attribute_type() as u8);
                 out_buffer.encode_u8(att.data_type() as u8);
