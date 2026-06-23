@@ -150,10 +150,10 @@ but they are not selected by default. The official C++ public encoder rejects
 `MESH_PREDICTION_TEX_COORDS_DEPRECATED` as deprecated; `draco-core` follows the
 same spirit by keeping legacy encode support explicit.
 
-## Related Crates
+## Workspace Crates
 
-- `draco-io`: OBJ, PLY, FBX, glTF, and GLB readers/writers around `draco-core`.
-- `draco-cpp-test-bridge`: unpublished test infrastructure for C++ parity.
+- `draco-io`: the primary consumer of `draco-core` — OBJ, PLY, FBX, glTF, and GLB readers/writers.
+- `draco-cpp-test-bridge`: test infrastructure for C++ parity.
 
 ## Development
 
