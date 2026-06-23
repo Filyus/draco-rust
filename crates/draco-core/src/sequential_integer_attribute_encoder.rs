@@ -440,7 +440,9 @@ impl SequentialIntegerAttributeEncoder {
                                     transform, mesh_data,
                                 );
                             let (vmaj, vmin) = options.get_version();
-                            predictor.set_bitstream_version(crate::version::bitstream_version(vmaj, vmin));
+                            predictor.set_bitstream_version(crate::version::bitstream_version(
+                                vmaj, vmin,
+                            ));
                             selected_transform_type = predictor.get_transform_type();
 
                             if !predictor.compute_correction_values(
@@ -913,8 +915,10 @@ impl SequentialIntegerAttributeEncoder {
         if !try_encode_prediction_data(predictor_tex_coords_deprecated, &mut pred_data_opt) {
             return false;
         }
-        if !try_encode_prediction_data(predictor_constrained_multi_parallelogram, &mut pred_data_opt)
-        {
+        if !try_encode_prediction_data(
+            predictor_constrained_multi_parallelogram,
+            &mut pred_data_opt,
+        ) {
             return false;
         }
         if !try_encode_prediction_data(predictor_tex_coords_portable, &mut pred_data_opt) {
