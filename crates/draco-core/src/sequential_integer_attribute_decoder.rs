@@ -59,6 +59,53 @@ fn build_vertex_to_data_map_from_data_to_corner_map(
     true
 }
 
+/// Runs `decode_prediction_data` on the selected predictor, logging and failing
+/// when the slot is empty or the call fails. Collapses the identical
+/// extract-and-check boilerplate that the apply matches repeat per method.
+/// `?Sized` lets it accept both the concrete locally-built predictors and the
+/// `dyn`-typed `self.prediction_scheme`.
+fn run_decode_prediction_data<'a, P: PredictionSchemeDecoder<'a, i32, i32> + ?Sized>(
+    predictor: Option<&mut P>,
+    buffer: &mut DecoderBuffer,
+) -> bool {
+    let Some(predictor) = predictor else {
+        debug_log!("Predictor was selected but not initialized");
+        return false;
+    };
+    if !predictor.decode_prediction_data(buffer) {
+        debug_log!("Failed to decode prediction data");
+        return false;
+    }
+    true
+}
+
+/// Runs `compute_original_values` on the selected predictor, with the same
+/// empty-slot / failure handling as [`run_decode_prediction_data`].
+fn run_compute_original_values<'a, P: PredictionSchemeDecoder<'a, i32, i32> + ?Sized>(
+    predictor: Option<&mut P>,
+    corrections: &[i32],
+    values: &mut [i32],
+    num_values: usize,
+    num_components: usize,
+    entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
+) -> bool {
+    let Some(predictor) = predictor else {
+        debug_log!("Predictor was selected but not initialized");
+        return false;
+    };
+    if !predictor.compute_original_values(
+        corrections,
+        values,
+        num_values,
+        num_components,
+        entry_to_point_id_map,
+    ) {
+        debug_log!("Failed to compute original values");
+        return false;
+    }
+    true
+}
+
 impl Default for SequentialIntegerAttributeDecoder {
     fn default() -> Self {
         Self::new()
@@ -828,65 +875,31 @@ impl SequentialIntegerAttributeDecoder {
         // 3. Decode prediction scheme data (if any).
         match selected_method {
             _ if self.prediction_scheme.is_some() => {
-                let Some(scheme) = self.prediction_scheme.as_mut() else {
-                    debug_log!("Prediction scheme was selected but not initialized");
-                    return false;
-                };
-                if !scheme.decode_prediction_data(in_buffer) {
-                    debug_log!(
-                        "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
+                if !run_decode_prediction_data(self.prediction_scheme.as_deref_mut(), in_buffer) {
                     return false;
                 }
             }
             PredictionSchemeMethod::Difference => {
-                if let Some(predictor) = predictor_normal_octa_diff_opt.as_mut() {
-                    if !predictor.decode_prediction_data(in_buffer) {
-                        debug_log!(
-                            "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
-                            att_id, selected_method, selected_transform
-                        );
-                        return false;
-                    }
+                let ok = if predictor_normal_octa_diff_opt.is_some() {
+                    run_decode_prediction_data(predictor_normal_octa_diff_opt.as_mut(), in_buffer)
                 } else {
-                    let Some(predictor) = predictor_opt.as_mut() else {
-                        debug_log!("Difference predictor was selected but not initialized");
-                        return false;
-                    };
-                    if !predictor.decode_prediction_data(in_buffer) {
-                        debug_log!(
-                            "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
-                            att_id, selected_method, selected_transform
-                        );
-                        return false;
-                    }
+                    run_decode_prediction_data(predictor_opt.as_mut(), in_buffer)
+                };
+                if !ok {
+                    return false;
                 }
             }
             PredictionSchemeMethod::MeshPredictionParallelogram => {
-                let Some(predictor) = predictor_parallelogram_opt.as_mut() else {
-                    debug_log!("Parallelogram predictor was selected but not initialized");
-                    return false;
-                };
-                if !predictor.decode_prediction_data(in_buffer) {
-                    debug_log!(
-                        "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
+                if !run_decode_prediction_data(predictor_parallelogram_opt.as_mut(), in_buffer) {
                     return false;
                 }
             }
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                let Some(predictor) = predictor_multi_parallelogram_opt.as_mut() else {
-                    debug_log!("MultiParallelogram predictor was selected but not initialized");
-                    return false;
-                };
-                if !predictor.decode_prediction_data(in_buffer) {
-                    debug_log!(
-                        "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
+                if !run_decode_prediction_data(
+                    predictor_multi_parallelogram_opt.as_mut(),
+                    in_buffer,
+                ) {
                     return false;
                 }
             }
@@ -896,31 +909,19 @@ impl SequentialIntegerAttributeDecoder {
                 return false;
             }
             PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
-                let Some(predictor) = predictor_constrained_multi_parallelogram_opt.as_mut() else {
-                    debug_log!(
-                        "ConstrainedMultiParallelogram predictor was selected but not initialized"
-                    );
-                    return false;
-                };
-                if !predictor.decode_prediction_data(in_buffer) {
-                    debug_log!(
-                        "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
+                if !run_decode_prediction_data(
+                    predictor_constrained_multi_parallelogram_opt.as_mut(),
+                    in_buffer,
+                ) {
                     return false;
                 }
             }
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                let Some(predictor) = predictor_tex_coords_deprecated_opt.as_mut() else {
-                    debug_log!("TexCoordsDeprecated predictor was selected but not initialized");
-                    return false;
-                };
-                if !predictor.decode_prediction_data(in_buffer) {
-                    debug_log!(
-                        "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
+                if !run_decode_prediction_data(
+                    predictor_tex_coords_deprecated_opt.as_mut(),
+                    in_buffer,
+                ) {
                     return false;
                 }
             }
@@ -930,28 +931,12 @@ impl SequentialIntegerAttributeDecoder {
                 return false;
             }
             PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
-                let Some(predictor) = predictor_tex_coords_opt.as_mut() else {
-                    debug_log!("TexCoordsPortable predictor was selected but not initialized");
-                    return false;
-                };
-                if !predictor.decode_prediction_data(in_buffer) {
-                    debug_log!(
-                        "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
+                if !run_decode_prediction_data(predictor_tex_coords_opt.as_mut(), in_buffer) {
                     return false;
                 }
             }
             PredictionSchemeMethod::MeshPredictionGeometricNormal => {
-                let Some(predictor) = predictor_geometric_normal_opt.as_mut() else {
-                    debug_log!("GeometricNormal predictor was selected but not initialized");
-                    return false;
-                };
-                if !predictor.decode_prediction_data(in_buffer) {
-                    debug_log!(
-                        "Failed to decode prediction data (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
+                if !run_decode_prediction_data(predictor_geometric_normal_opt.as_mut(), in_buffer) {
                     return false;
                 }
             }
@@ -964,10 +949,6 @@ impl SequentialIntegerAttributeDecoder {
         // 4. Apply Inverse Prediction.
         match selected_method {
             _ if self.prediction_scheme.is_some() => {
-                let Some(scheme) = self.prediction_scheme.as_mut() else {
-                    debug_log!("Prediction scheme was selected but not initialized");
-                    return false;
-                };
                 let map_opt = match selected_method {
                     PredictionSchemeMethod::MeshPredictionParallelogram
                     | PredictionSchemeMethod::MeshPredictionMultiParallelogram
@@ -979,91 +960,63 @@ impl SequentialIntegerAttributeDecoder {
                     ),
                     _ => None,
                 };
-                if !scheme.compute_original_values(
+                if !run_compute_original_values(
+                    self.prediction_scheme.as_deref_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
                     map_opt,
                 ) {
-                    debug_log!(
-                        "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
                     return false;
                 }
             }
             PredictionSchemeMethod::Difference => {
-                if let Some(predictor) = predictor_normal_octa_diff_opt.as_mut() {
-                    if !predictor.compute_original_values(
+                let ok = if predictor_normal_octa_diff_opt.is_some() {
+                    run_compute_original_values(
+                        predictor_normal_octa_diff_opt.as_mut(),
                         &corrections,
                         &mut values,
                         num_values,
                         num_components,
                         None,
-                    ) {
-                        debug_log!(
-                            "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
-                            att_id, selected_method, selected_transform
-                        );
-                        return false;
-                    }
+                    )
                 } else {
-                    let Some(predictor) = predictor_opt.as_mut() else {
-                        debug_log!("Difference predictor was selected but not initialized");
-                        return false;
-                    };
-                    if !predictor.compute_original_values(
+                    run_compute_original_values(
+                        predictor_opt.as_mut(),
                         &corrections,
                         &mut values,
                         num_values,
                         num_components,
                         None,
-                    ) {
-                        debug_log!(
-                            "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
-                            att_id, selected_method, selected_transform
-                        );
-                        return false;
-                    }
+                    )
+                };
+                if !ok {
+                    return false;
                 }
             }
             PredictionSchemeMethod::MeshPredictionParallelogram => {
-                let Some(predictor) = predictor_parallelogram_opt.as_mut() else {
-                    debug_log!("Parallelogram predictor was selected but not initialized");
-                    return false;
-                };
-                if !predictor.compute_original_values(
+                if !run_compute_original_values(
+                    predictor_parallelogram_opt.as_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
                     None,
                 ) {
-                    debug_log!(
-                        "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
                     return false;
                 }
             }
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                let Some(predictor) = predictor_multi_parallelogram_opt.as_mut() else {
-                    debug_log!("MultiParallelogram predictor was selected but not initialized");
-                    return false;
-                };
-                if !predictor.compute_original_values(
+                if !run_compute_original_values(
+                    predictor_multi_parallelogram_opt.as_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
                     None,
                 ) {
-                    debug_log!(
-                        "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
                     return false;
                 }
             }
@@ -1073,45 +1026,30 @@ impl SequentialIntegerAttributeDecoder {
                 return false;
             }
             PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
-                let Some(predictor) = predictor_constrained_multi_parallelogram_opt.as_mut() else {
-                    debug_log!(
-                        "ConstrainedMultiParallelogram predictor was selected but not initialized"
-                    );
-                    return false;
-                };
-                if !predictor.compute_original_values(
+                if !run_compute_original_values(
+                    predictor_constrained_multi_parallelogram_opt.as_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
                     None,
                 ) {
-                    debug_log!(
-                        "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
                     return false;
                 }
             }
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                let Some(predictor) = predictor_tex_coords_deprecated_opt.as_mut() else {
-                    debug_log!("TexCoordsDeprecated predictor was selected but not initialized");
-                    return false;
-                };
-                if !predictor.compute_original_values(
+                let map = Some(
+                    crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
+                );
+                if !run_compute_original_values(
+                    predictor_tex_coords_deprecated_opt.as_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
-                    Some(
-                        crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
-                    ),
+                    map,
                 ) {
-                    debug_log!(
-                        "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
                     return false;
                 }
             }
@@ -1121,44 +1059,32 @@ impl SequentialIntegerAttributeDecoder {
                 return false;
             }
             PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
-                let Some(predictor) = predictor_tex_coords_opt.as_mut() else {
-                    debug_log!("TexCoordsPortable predictor was selected but not initialized");
-                    return false;
-                };
-                if !predictor.compute_original_values(
+                let map = Some(
+                    crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
+                );
+                if !run_compute_original_values(
+                    predictor_tex_coords_opt.as_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
-                    Some(
-                        crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
-                    ),
+                    map,
                 ) {
-                    debug_log!(
-                        "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
                     return false;
                 }
             }
             PredictionSchemeMethod::MeshPredictionGeometricNormal => {
-                let Some(predictor) = predictor_geometric_normal_opt.as_mut() else {
-                    debug_log!("GeometricNormal predictor was selected but not initialized");
-                    return false;
-                };
-                if !predictor.compute_original_values(
+                let map = Some(
+                    crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
+                );
+                if !run_compute_original_values(
+                    predictor_geometric_normal_opt.as_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
-                    Some(
-                        crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
-                    ),
+                    map,
                 ) {
-                    debug_log!(
-                        "Failed to compute original values (att_id={}, method={:?}, transform={:?})",
-                        att_id, selected_method, selected_transform
-                    );
                     return false;
                 }
             }
@@ -1176,7 +1102,8 @@ impl SequentialIntegerAttributeDecoder {
             if num_points > 0 {
                 debug_log!(
                     "Sequential Decoded: Point 0 ID = {:?}, Value[0] = {}",
-                    point_ids[0], values[0]
+                    point_ids[0],
+                    values[0]
                 );
                 // Debug: print all decoded values (quantized) and where they go
                 debug_log!("DEBUG decoded values (first 25 x/y/z):");
@@ -1187,7 +1114,12 @@ impl SequentialIntegerAttributeDecoder {
                         let z = values[i * num_components + 2];
                         debug_log!(
                             "  data_id={} -> point_ids[{}]={:?}: quantized({}, {}, {})",
-                            i, i, point_ids[i], x, y, z
+                            i,
+                            i,
+                            point_ids[i],
+                            x,
+                            y,
+                            z
                         );
                     }
                 }
