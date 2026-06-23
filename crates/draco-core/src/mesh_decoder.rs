@@ -720,7 +720,7 @@ impl MeshDecoder {
 
         let pc_decoder = PointCloudDecoder::new();
         let bitstream_version: u16 =
-            ((self.version_major as u16) << 8) | (self.version_minor as u16);
+            crate::version::bitstream_version(self.version_major, self.version_minor);
 
         struct PendingQuant {
             att_id: i32,

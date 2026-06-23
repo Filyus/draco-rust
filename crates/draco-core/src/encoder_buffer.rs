@@ -55,6 +55,11 @@ impl EncoderBuffer {
         self.version_minor
     }
 
+    /// Returns the packed `0xMMmm` target bitstream version for ordered comparisons.
+    pub fn bitstream_version(&self) -> u16 {
+        crate::version::bitstream_version(self.version_major, self.version_minor)
+    }
+
     /// Clears all encoded bytes and resets active bit encoding state.
     pub fn clear(&mut self) {
         self.buffer.clear();
@@ -98,7 +103,7 @@ impl EncoderBuffer {
             let encoded_bits = self.current_bit_offset;
             let encoded_bytes = encoded_bits.div_ceil(8);
             let bitstream_version =
-                ((self.version_major as u16) << 8) | (self.version_minor as u16);
+                self.bitstream_version();
 
             let mut var_size_buffer = Vec::new();
             if bitstream_version >= 0x0202 {

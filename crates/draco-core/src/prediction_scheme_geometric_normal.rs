@@ -342,7 +342,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
     fn decode_prediction_data(&mut self, buffer: &mut DecoderBuffer) -> bool {
         let start_pos = buffer.position();
         let bitstream_version: u16 =
-            ((buffer.version_major() as u16) << 8) | (buffer.version_minor() as u16);
+            buffer.bitstream_version();
         if bitstream_version < 0x0202 && !cfg!(feature = "legacy_bitstream_decode") {
             return false;
         }

@@ -93,7 +93,7 @@ impl MeshEdgebreakerDecoder {
 
         let version_major = in_buffer.version_major();
         let version_minor = in_buffer.version_minor();
-        let bitstream_version = ((version_major as u16) << 8) | (version_minor as u16);
+        let bitstream_version = crate::version::bitstream_version(version_major, version_minor);
         if bitstream_version < 0x0202 && !cfg!(feature = "legacy_bitstream_decode") {
             return Err(DracoError::BitstreamVersionUnsupported);
         }
@@ -617,7 +617,7 @@ impl MeshEdgebreakerDecoder {
         }
 
         let bitstream_version =
-            ((in_buffer.version_major() as u16) << 8) | (in_buffer.version_minor() as u16);
+            in_buffer.bitstream_version();
 
         // For v < 2.2, start face configuration bits are stored as a raw bit buffer
         // (u64 size prefix + raw bits), NOT as rANS-encoded data.

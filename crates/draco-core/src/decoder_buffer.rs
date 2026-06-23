@@ -64,6 +64,11 @@ impl<'a> DecoderBuffer<'a> {
         self.version_minor
     }
 
+    /// Returns the packed `0xMMmm` bitstream version for ordered comparisons.
+    pub fn bitstream_version(&self) -> u16 {
+        crate::version::bitstream_version(self.version_major, self.version_minor)
+    }
+
     /// Returns the current read position in bytes.
     pub fn position(&self) -> usize {
         self.pos
@@ -118,7 +123,7 @@ impl<'a> DecoderBuffer<'a> {
                 "Bit decoding already active".into(),
             ));
         }
-        let bitstream_version = ((self.version_major as u16) << 8) | (self.version_minor as u16);
+        let bitstream_version = self.bitstream_version();
         // Draco stores the bit-sequence size in BYTES (not bits) when |decode_size| is true.
         let mut size_bytes: u64 = 0;
         if decode_size {

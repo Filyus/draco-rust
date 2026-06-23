@@ -35,7 +35,7 @@ impl<'a> RAnsBitDecoder<'a> {
         // Read size_in_bytes.
         // C++: v < 2.2 uses fixed u32, v >= 2.2 uses varint.
         let bitstream_version =
-            ((source_buffer.version_major() as u16) << 8) | (source_buffer.version_minor() as u16);
+            source_buffer.bitstream_version();
         let size: u32 = if bitstream_version < 0x0202 {
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             {

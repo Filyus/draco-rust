@@ -256,7 +256,7 @@ impl PointCloudDecoder {
     #[cfg(feature = "point_cloud_decode")]
     fn decode_geometry_data(&mut self, buffer: &mut DecoderBuffer, pc: &mut PointCloud) -> Status {
         let bitstream_version: u16 =
-            ((self.version_major as u16) << 8) | (self.version_minor as u16);
+            crate::version::bitstream_version(self.version_major, self.version_minor);
         // Note: Draco point cloud bitstreams encode the number of points as a
         // fixed-width int32 for both sequential (method=0) and KD-tree
         // (method=1) encodings (see C++ PointCloudSequentialDecoder and

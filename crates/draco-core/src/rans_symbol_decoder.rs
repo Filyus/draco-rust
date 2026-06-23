@@ -50,7 +50,7 @@ impl<'a> RAnsSymbolDecoder<'a> {
     fn decode_table(&mut self, buffer: &mut DecoderBuffer) -> bool {
         let _start_pos = buffer.position();
         let bitstream_version =
-            ((buffer.version_major() as u16) << 8) | (buffer.version_minor() as u16);
+            buffer.bitstream_version();
         let num_symbols = if bitstream_version < 0x0200 {
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             {
@@ -151,7 +151,7 @@ impl<'a> RAnsSymbolDecoder<'a> {
         // number of symbols (the encoded size prefix is always present).
         // C++: v < 2.0 uses fixed u64, v >= 2.0 uses varint u64.
         let bitstream_version =
-            ((buffer.version_major() as u16) << 8) | (buffer.version_minor() as u16);
+            buffer.bitstream_version();
         let bytes_to_read = if bitstream_version < 0x0200 {
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             {

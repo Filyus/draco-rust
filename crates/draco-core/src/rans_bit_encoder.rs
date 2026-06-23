@@ -127,7 +127,7 @@ impl RAnsBitEncoder {
         // The size prefix is read back the same way (see RAnsBitDecoder). Only fires
         // when the target buffer carries a pre-2.2 version (default 2.2 -> varint).
         let bitstream_version =
-            ((target_buffer.version_major() as u16) << 8) | target_buffer.version_minor() as u16;
+            target_buffer.bitstream_version();
         if cfg!(feature = "legacy_bitstream_encode")
             && bitstream_version != 0
             && bitstream_version < 0x0202

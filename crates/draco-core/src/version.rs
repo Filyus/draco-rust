@@ -105,6 +105,14 @@ pub fn uses_varint_unique_id(major: u8, minor: u8) -> bool {
     version_at_least(major, minor, VERSION_VARINT_UNIQUE_ID)
 }
 
+/// Packs a `(major, minor)` bitstream version into the single `0xMMmm` value
+/// used for ordered comparisons such as `bitstream_version(maj, min) < 0x0202`.
+/// Centralizes the encoding so call sites cannot transpose major/minor.
+#[inline]
+pub fn bitstream_version(major: u8, minor: u8) -> u16 {
+    ((major as u16) << 8) | (minor as u16)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +151,15 @@ mod tests {
         assert!(!has_header_flags(1, 2));
         assert!(has_header_flags(1, 3));
         assert!(has_header_flags(2, 0));
+    }
+
+    #[test]
+    fn test_bitstream_version() {
+        assert_eq!(bitstream_version(2, 2), 0x0202);
+        assert_eq!(bitstream_version(1, 1), 0x0101);
+        assert_eq!(bitstream_version(2, 0), 0x0200);
+        // The packed form must preserve version ordering.
+        assert!(bitstream_version(1, 2) < bitstream_version(2, 0));
+        assert!(bitstream_version(2, 1) < bitstream_version(2, 2));
     }
 }

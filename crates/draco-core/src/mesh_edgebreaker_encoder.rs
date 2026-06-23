@@ -392,7 +392,7 @@ impl MeshEdgebreakerEncoder {
         out_buffer.encode_u8(traversal_decoder_type);
 
         let bitstream_version =
-            ((out_buffer.version_major() as u16) << 8) | out_buffer.version_minor() as u16;
+            out_buffer.bitstream_version();
         // Pre-2.0 stores the connectivity counts as fixed u32; 2.0+ uses varints.
         let legacy_u32_counts = cfg!(feature = "legacy_bitstream_encode")
             && bitstream_version != 0
@@ -443,7 +443,7 @@ impl MeshEdgebreakerEncoder {
         // the hole/topology-split events placed *after* it; 2.2+ stores the events
         // inline before the traversal block. Behind legacy_bitstream_encode.
         let bitstream_version =
-            ((out_buffer.version_major() as u16) << 8) | out_buffer.version_minor() as u16;
+            out_buffer.bitstream_version();
         let legacy_layout = cfg!(feature = "legacy_bitstream_encode") && bitstream_version < 0x0202;
 
         if legacy_layout {
@@ -1398,7 +1398,7 @@ impl MeshEdgebreakerEncoder {
         #[cfg(feature = "edgebreaker_valence_encode")]
         if let Some(valence_encoder) = self.valence_encoder.as_ref() {
             let bitstream_version =
-                ((out_buffer.version_major() as u16) << 8) | out_buffer.version_minor() as u16;
+                out_buffer.bitstream_version();
             if cfg!(feature = "legacy_bitstream_encode") && bitstream_version < 0x0202 {
                 // Pre-2.2 valence block:
                 //   [main symbol stream][start faces][seams][num_split][mode][contexts]
@@ -1628,7 +1628,7 @@ impl MeshEdgebreakerEncoder {
 
     fn encode_split_data(&self, out_buffer: &mut EncoderBuffer) -> Result<(), DracoError> {
         let bitstream_version =
-            ((out_buffer.version_major() as u16) << 8) | out_buffer.version_minor() as u16;
+            out_buffer.bitstream_version();
         let legacy = cfg!(feature = "legacy_bitstream_encode") && bitstream_version != 0;
         // Pre-2.0 stores the split count as a fixed u32; 2.0+ uses a varint.
         let split_count_u32 = legacy && bitstream_version < 0x0200;
