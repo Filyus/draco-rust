@@ -375,7 +375,7 @@ impl PointCloudEncoder {
                 if att.attribute_type() == GeometryAttributeType::Normal {
                     if let Some(ref att_encoder) = normal_encoders[i] {
                         let (major, minor) = self.options.get_version();
-                        let bitstream_version = ((major as u16) << 8) | minor as u16;
+                        let bitstream_version = crate::version::bitstream_version(major, minor);
                         if bitstream_version != 0 && bitstream_version < 0x0102 {
                             continue;
                         }

@@ -651,7 +651,7 @@ impl MeshEncoder {
 
             // Traversal method was added in bitstream 1.2. Older streams
             // default to DEPTH_FIRST on decode and must not carry the byte.
-            if ((major as u16) << 8) | minor as u16 >= 0x0102 {
+            if crate::version::bitstream_version(major, minor) >= 0x0102 {
                 // PREDICTION_DEGREE (1) for speed 0, DEPTH_FIRST (0) otherwise.
                 // This must match the traversal used in MeshEdgebreakerEncoder.
                 let encoding_speed = self.options.get_speed();
@@ -854,7 +854,7 @@ impl MeshEncoder {
             match decoder_type {
                 3 => {
                     // Normal attribute - encode octahedral transform data
-                    let bitstream_version = ((major as u16) << 8) | minor as u16;
+                    let bitstream_version = crate::version::bitstream_version(major, minor);
                     if bitstream_version != 0 && bitstream_version < 0x0200 {
                         continue;
                     }
@@ -909,7 +909,7 @@ impl MeshEncoder {
 
         let major = out_buffer.version_major();
         let minor = out_buffer.version_minor();
-        let writes_traversal_method = (((major as u16) << 8) | minor as u16) >= 0x0102;
+        let writes_traversal_method = crate::version::bitstream_version(major, minor) >= 0x0102;
         let traversal_method: u8 = if self.options.get_speed() == 0 { 1 } else { 0 };
         for (att_data_id, _) in &groups {
             out_buffer.encode_u8(*att_data_id as u8);
@@ -1205,7 +1205,7 @@ impl MeshEncoder {
                 3 => {
                     let major = out_buffer.version_major();
                     let minor = out_buffer.version_minor();
-                    let bitstream_version = ((major as u16) << 8) | minor as u16;
+                    let bitstream_version = crate::version::bitstream_version(major, minor);
                     if bitstream_version != 0 && bitstream_version < 0x0200 {
                         continue;
                     }

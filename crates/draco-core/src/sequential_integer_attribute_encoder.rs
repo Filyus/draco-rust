@@ -440,7 +440,7 @@ impl SequentialIntegerAttributeEncoder {
                                     transform, mesh_data,
                                 );
                             let (vmaj, vmin) = options.get_version();
-                            predictor.set_bitstream_version(((vmaj as u16) << 8) | vmin as u16);
+                            predictor.set_bitstream_version(crate::version::bitstream_version(vmaj, vmin));
                             selected_transform_type = predictor.get_transform_type();
 
                             if !predictor.compute_correction_values(
@@ -972,7 +972,7 @@ impl SequentialIntegerAttributeEncoder {
         #[cfg(feature = "legacy_bitstream_encode")]
         if selected_method == PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram {
             let (major, minor) = options.get_version();
-            let bitstream_version = ((major as u16) << 8) | minor as u16;
+            let bitstream_version = crate::version::bitstream_version(major, minor);
             if bitstream_version != 0 && bitstream_version < 0x0202 {
                 if let Some(pd) = pred_data_opt.as_mut() {
                     pd.insert(0, 0); // OPTIMAL_MULTI_PARALLELOGRAM
@@ -1004,7 +1004,7 @@ impl SequentialIntegerAttributeEncoder {
                 | PredictionSchemeTransformType::NormalOctahedronCanonicalized
         ) {
             let (major, minor) = options.get_version();
-            let bitstream_version = ((major as u16) << 8) | minor as u16;
+            let bitstream_version = crate::version::bitstream_version(major, minor);
             let uses_inline_normal_transform_data = bitstream_version != 0
                 && match encoder.get_geometry_type() {
                     EncodedGeometryType::TriangularMesh => bitstream_version < 0x0200,

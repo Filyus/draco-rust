@@ -115,7 +115,7 @@ impl SequentialNormalAttributeEncoder {
         let mut transform =
             PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform::new(max_value);
         let (major, minor) = options.get_version();
-        let bitstream_version = ((major as u16) << 8) | minor as u16;
+        let bitstream_version = crate::version::bitstream_version(major, minor);
         if cfg!(feature = "legacy_bitstream_encode")
             && bitstream_version != 0
             && bitstream_version < 0x0102
