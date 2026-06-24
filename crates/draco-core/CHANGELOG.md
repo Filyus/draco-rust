@@ -8,6 +8,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-06-24
+
+### Fixed
+
+- Malformed legacy EdgeBreaker streams now validate symbol-count invariants
+  before allocating mesh face storage, avoiding a fuzz-discovered OOM path.
+- `PointCloudDecoder` now rejects mesh bitstream headers directly.
+
 ## [1.0.1] - 2026-06-24
 
 ### Fixed
