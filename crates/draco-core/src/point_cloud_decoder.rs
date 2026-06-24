@@ -242,6 +242,11 @@ impl PointCloudDecoder {
             1 => EncodedGeometryType::TriangularMesh,
             _ => return Err(DracoError::DracoError("Invalid geometry type".to_string())),
         };
+        if self.geometry_type != EncodedGeometryType::PointCloud {
+            return Err(DracoError::DracoError(
+                "PointCloudDecoder cannot decode mesh bitstreams".to_string(),
+            ));
+        }
 
         self.method = buffer.decode_u8()?;
 

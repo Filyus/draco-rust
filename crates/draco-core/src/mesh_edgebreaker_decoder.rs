@@ -186,9 +186,6 @@ impl MeshEdgebreakerDecoder {
             ));
         }
 
-        out_mesh.try_set_num_faces(num_faces as usize)?;
-        out_mesh.set_num_points(num_encoded_vertices as usize);
-
         let num_symbols =
             if bitstream_version < 0x0200 {
                 in_buffer.decode_u32().map_err(|_| {
@@ -231,6 +228,9 @@ impl MeshEdgebreakerDecoder {
                 "Edgebreaker num_split_symbols exceeds num_symbols".to_string(),
             ));
         }
+
+        out_mesh.try_set_num_faces(num_faces as usize)?;
+        out_mesh.set_num_points(num_encoded_vertices as usize);
 
         // Read hole/topology split events.
         // Draco stores these events inline for v2.2+, but for older streams (<2.2)

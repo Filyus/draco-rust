@@ -149,6 +149,42 @@ fn decode_rejects_invalid_geometry_type_in_header() {
 }
 
 #[test]
+fn point_cloud_decoder_rejects_mesh_geometry_header() {
+    let bytes = draco_header(2, 3, 1, 1);
+
+    let error = decode_malformed_without_panic(DecoderKind::PointCloud, &bytes)
+        .expect_err("point-cloud decoder should reject mesh geometry headers");
+    assert!(
+        error.contains("cannot decode mesh"),
+        "unexpected point-cloud error: {error}"
+    );
+}
+
+#[test]
+fn malformed_legacy_edgebreaker_counts_fail_before_allocation() {
+    let fuzz_17_oom = [
+        68, 82, 65, 67, 79, 0, 155, 1, 1, 0, 0, 2, 99, 170, 1, 1, 170, 1, 17, 2, 35, 34, 18, 39,
+        37, 3, 47, 111, 219, 182, 221, 243, 54, 218, 214, 163, 165, 165, 165, 197, 195, 163, 109,
+        161, 69, 181, 236, 121, 208, 210, 226, 225, 209, 210, 238, 105, 8, 165, 22, 164, 30, 255,
+        211, 120, 193, 87, 216, 136, 85, 41, 187, 216, 20, 146, 56, 109, 22, 211, 235, 3, 217, 96,
+        243, 151, 241, 81, 129, 184, 247, 187, 116, 60, 21, 176, 7, 174, 189, 73, 191, 114, 255,
+        69, 146, 73, 26, 217, 209, 67, 181, 43, 140, 138, 37, 239, 175, 12, 92, 130, 201, 55, 10,
+        59, 3, 215, 35, 10, 120, 170, 200, 48, 242, 22, 56, 162, 11, 89, 40, 57, 169, 80, 33, 140,
+        255, 15, 0, 0, 255, 7, 0, 0, 255, 2, 207, 71, 12,
+    ];
+
+    let mesh_error = decode_malformed_without_panic(DecoderKind::Mesh, &fuzz_17_oom)
+        .expect_err("mesh decoder should reject malformed legacy counts before allocation");
+    assert!(
+        mesh_error.contains("num_faces is smaller than num_symbols"),
+        "unexpected mesh error: {mesh_error}"
+    );
+
+    decode_malformed_without_panic(DecoderKind::PointCloud, &fuzz_17_oom)
+        .expect_err("point-cloud decoder should reject the fuzz artifact before allocation");
+}
+
+#[test]
 fn malformed_drc_inputs_fail_without_panic() {
     let mut truncated_mesh_payload = draco_header(2, 0, 1, 0);
     truncated_mesh_payload.extend_from_slice(&8u32.to_le_bytes());
