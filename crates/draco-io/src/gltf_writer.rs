@@ -9,28 +9,31 @@
 //!
 //! # Example - GLB
 //!
-//! ```ignore
+//! ```no_run
 //! use draco_io::gltf_writer::GltfWriter;
-//! use draco_core::mesh::Mesh;
 //!
-//! let mesh: Mesh = /* ... */;
+//! let mesh = draco_core::mesh::Mesh::new();
 //! let mut writer = GltfWriter::new();
 //! writer.add_draco_mesh(&mesh, Some("MyMesh"), None)?;  // Uses default quantization
 //! writer.write_glb("output.glb")?;
+//! # Ok::<(), draco_io::GltfWriteError>(())
 //! ```
 //!
 //! # Example - Pure Text glTF (Embedded)
 //!
-//! ```ignore
+//! ```no_run
+//! # let writer = draco_io::gltf_writer::GltfWriter::new();
 //! writer.write_gltf_embedded("output.gltf")?;
 //! // Creates a single text file with base64-embedded binary data
+//! # Ok::<(), draco_io::GltfWriteError>(())
 //! ```
 //!
 //! # Example - Writing a Scene Graph
 //!
-//! ```ignore
+//! ```no_run
 //! use draco_io::gltf_writer::GltfWriter;
 //! use draco_io::{MeshInstance, Scene, SceneNode};
+//! # let mesh = draco_core::mesh::Mesh::new();
 //!
 //! let mut root = SceneNode::new(Some("Root".to_string()));
 //! root.mesh_instances.push(MeshInstance {
@@ -43,6 +46,7 @@
 //! let mut writer = GltfWriter::new();
 //! writer.add_scene(&scene, None)?;
 //! writer.write_glb("scene.glb")?;
+//! # Ok::<(), draco_io::GltfWriteError>(())
 //! ```
 
 /// Quantization settings for each attribute type.
@@ -579,12 +583,18 @@ impl GltfWriter {
     /// The index of the added mesh.
     ///
     /// # Examples
-    /// ```ignore
+    /// ```no_run
+    /// use draco_io::gltf_writer::{GltfWriter, QuantizationBits};
+    /// # let mesh = draco_core::mesh::Mesh::new();
+    ///
+    /// let mut writer = GltfWriter::new();
+    ///
     /// // Using defaults (recommended for most cases)
     /// writer.add_draco_mesh(&mesh, Some("MyMesh"), None)?;
     ///
     /// // Custom quantization
     /// writer.add_draco_mesh(&mesh, Some("HighQuality"), QuantizationBits { position: 16, ..Default::default() })?;
+    /// # Ok::<(), draco_io::GltfWriteError>(())
     /// ```
     pub fn add_draco_mesh(
         &mut self,
@@ -655,8 +665,10 @@ impl GltfWriter {
     /// The binary data is embedded directly in the JSON using base64 encoding.
     ///
     /// # Example
-    /// ```ignore
+    /// ```no_run
+    /// # let writer = draco_io::gltf_writer::GltfWriter::new();
     /// writer.write_gltf_embedded("model.gltf")?;
+    /// # Ok::<(), draco_io::GltfWriteError>(())
     /// ```
     pub fn write_gltf_embedded<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let data_uri = Self::encode_data_uri(&self.binary_data);

@@ -8,19 +8,19 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use draco_io::ObjWriter;
-//! use draco_core::mesh::Mesh;
+//! ```no_run
+//! use draco_io::{ObjWriter, PointCloudWriter, Writer};
 //!
-//! let mesh: Mesh = /* ... */;
+//! let mesh = draco_core::mesh::Mesh::new();
 //! let mut writer = ObjWriter::new();
-//! writer.add_mesh(&mesh, Some("MyMesh"));
+//! writer.add_mesh(&mesh, Some("MyMesh"))?;
 //! writer.write("output.obj")?;
 //!
 //! // Or write point cloud
 //! let mut writer = ObjWriter::new();
 //! writer.add_points(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]);
 //! writer.write("points.obj")?;
+//! # Ok::<(), std::io::Error>(())
 //! ```
 
 use std::fs::File;
@@ -41,12 +41,14 @@ use crate::traits::{PointCloudWriter, WriteToBytes, Writer};
 ///
 /// # Example
 ///
-/// ```ignore
-/// use draco_io::ObjWriter;
+/// ```no_run
+/// use draco_io::{ObjWriter, Writer};
+/// # let mesh = draco_core::mesh::Mesh::new();
 ///
 /// let mut writer = ObjWriter::new();
-/// writer.add_mesh(&mesh, Some("Cube"));
+/// writer.add_mesh(&mesh, Some("Cube"))?;
 /// writer.write("cube.obj")?;
+/// # Ok::<(), std::io::Error>(())
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct ObjWriter {

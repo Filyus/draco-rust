@@ -11,14 +11,16 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```no_run
 //! use draco_io::fbx_reader::FbxReader;
+//! use draco_io::Reader;
 //!
-//! let reader = FbxReader::open("model.fbx")?;
+//! let mut reader = FbxReader::open("model.fbx")?;
 //! let meshes = reader.read_meshes()?;
 //! for mesh in meshes {
 //!     println!("Mesh has {} vertices", mesh.num_points());
 //! }
+//! # Ok::<(), std::io::Error>(())
 //! ```
 
 use std::fs::{self, File};

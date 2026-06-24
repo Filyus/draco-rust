@@ -13,19 +13,20 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```no_run
 //! use draco_io::fbx_writer::FbxWriter;
-//! use draco_core::mesh::Mesh;
+//! use draco_io::Writer;
 //!
-//! let mesh: Mesh = /* ... */;
+//! let mesh = draco_core::mesh::Mesh::new();
 //! let mut writer = FbxWriter::new();
-//! writer.add_mesh(&mesh, Some("MyMesh"));
+//! writer.add_mesh(&mesh, Some("MyMesh"))?;
 //! writer.write("output.fbx")?;
 //!
 //! // With compression (requires 'compression' feature)
 //! let mut writer = FbxWriter::new().with_compression(true);
-//! writer.add_mesh(&mesh, Some("MyMesh"));
+//! writer.add_mesh(&mesh, Some("MyMesh"))?;
 //! writer.write("output_compressed.fbx")?;
+//! # Ok::<(), std::io::Error>(())
 //! ```
 
 use std::fs::File;
@@ -57,15 +58,18 @@ const NULL_RECORD_SIZE_32: usize = 13;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```no_run
 /// use draco_io::fbx_writer::FbxWriter;
+/// use draco_io::Writer;
+/// # let mesh = draco_core::mesh::Mesh::new();
 ///
 /// let mut writer = FbxWriter::new()
 ///     .with_compression(true)
 ///     .with_compression_threshold(64);
 ///
-/// writer.add_mesh(&mesh, Some("CubeMesh"));
+/// writer.add_mesh(&mesh, Some("CubeMesh"))?;
 /// writer.write("output.fbx")?;
+/// # Ok::<(), std::io::Error>(())
 /// ```
 #[derive(Debug, Clone)]
 pub struct FbxWriter {

@@ -30,7 +30,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```no_run
 //! use draco_core::{DecoderBuffer, Mesh, MeshDecoder};
 //!
 //! let bytes = std::fs::read("mesh.drc")?;

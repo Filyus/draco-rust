@@ -6,17 +6,23 @@
 //!
 //! Import the trait to access its methods:
 //!
-//! ```ignore
+//! ```no_run
 //! use draco_io::{Writer, ObjWriter};
+//! # let mesh = draco_core::mesh::Mesh::new();
 //!
 //! let mut writer = ObjWriter::new();
 //! writer.add_mesh(&mesh, Some("Name"))?;  // Calls trait method
 //! writer.write("output.obj")?;
+//! # Ok::<(), std::io::Error>(())
 //! ```
 //!
 //! This enables generic functions:
 //!
-//! ```ignore
+//! ```no_run
+//! use std::io;
+//! use draco_core::mesh::Mesh;
+//! use draco_io::Writer;
+//!
 //! fn save<W: Writer>(mut w: W, mesh: &Mesh) -> io::Result<()> {
 //!     w.add_mesh(mesh, Some("Model"))?;
 //!     w.write("output.ext")
@@ -32,8 +38,10 @@ use draco_core::mesh::Mesh;
 ///
 /// All format writers implement this trait, providing a consistent API:
 ///
-/// ```ignore
-/// use draco_io::{Writer, ObjWriter};
+/// ```no_run
+/// use std::io;
+/// use draco_core::mesh::Mesh;
+/// use draco_io::Writer;
 ///
 /// fn write_mesh<W: Writer>(mut writer: W, mesh: &Mesh) -> io::Result<()> {
 ///     writer.add_mesh(mesh, Some("MyMesh"))?;
@@ -74,8 +82,10 @@ pub trait Writer: Sized {
 ///
 /// All format readers implement this trait, providing a consistent API:
 ///
-/// ```ignore
-/// use draco_io::{Reader, ObjReader};
+/// ```no_run
+/// use std::io;
+/// use draco_core::mesh::Mesh;
+/// use draco_io::Reader;
 ///
 /// fn load_mesh<R: Reader>(path: &str) -> io::Result<Mesh> {
 ///     let mut reader = R::open(path)?;

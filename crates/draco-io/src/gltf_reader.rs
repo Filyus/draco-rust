@@ -8,7 +8,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```no_run
 //! use draco_io::gltf_reader::GltfReader;
 //! use draco_io::SceneReader;
 //!
@@ -26,6 +26,7 @@
 //!         node.mesh_instances.len()
 //!     );
 //! }
+//! # Ok::<(), draco_io::GltfError>(())
 //! ```
 
 use std::collections::HashMap;

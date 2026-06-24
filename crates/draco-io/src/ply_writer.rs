@@ -12,19 +12,19 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use draco_io::PlyWriter;
-//! use draco_core::mesh::Mesh;
+//! ```no_run
+//! use draco_io::{PlyWriter, PointCloudWriter, Writer};
 //!
-//! let mesh: Mesh = /* ... */;
+//! let mesh = draco_core::mesh::Mesh::new();
 //! let mut writer = PlyWriter::new();
-//! writer.add_mesh(&mesh);
+//! writer.add_mesh(&mesh, None)?;
 //! writer.write("output.ply")?;
 //!
 //! // Or write point cloud
 //! let mut writer = PlyWriter::new();
 //! writer.add_points(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]);
 //! writer.write("points.ply")?;
+//! # Ok::<(), std::io::Error>(())
 //! ```
 
 use std::fs::File;
@@ -46,12 +46,14 @@ use crate::traits::{PointCloudWriter, WriteToBytes, Writer};
 ///
 /// # Example
 ///
-/// ```ignore
-/// use draco_io::PlyWriter;
+/// ```no_run
+/// use draco_io::{PlyWriter, Writer};
+/// # let mesh = draco_core::mesh::Mesh::new();
 ///
 /// let mut writer = PlyWriter::new();
-/// writer.add_mesh(&mesh);
+/// writer.add_mesh(&mesh, None)?;
 /// writer.write("cube.ply")?;
+/// # Ok::<(), std::io::Error>(())
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct PlyWriter {

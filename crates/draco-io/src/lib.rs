@@ -46,8 +46,10 @@
 //!
 //! All readers implement [`Reader`] and all writers implement [`Writer`]:
 //!
-//! ```ignore
-//! use draco_io::{Reader, Writer, ObjReader, ObjWriter};
+//! ```no_run
+//! use std::io;
+//! use draco_core::mesh::Mesh;
+//! use draco_io::{ObjReader, ObjWriter, PlyWriter, Reader, Writer};
 //!
 //! // Generic read function
 //! fn load<R: Reader>(path: &str) -> io::Result<Mesh> {
@@ -65,16 +67,23 @@
 //! let mesh = load::<ObjReader>("input.obj")?;
 //! save(ObjWriter::new(), &mesh)?;
 //! save(PlyWriter::new(), &mesh)?;
+//! # Ok::<(), io::Error>(())
 //! ```
 //!
 //! # Format-Specific Features
 //!
 //! While the trait provides a common interface, each writer has format-specific methods:
 //!
-//! ```ignore
+//! ```no_run
+//! use draco_io::{FbxWriter, GltfWriter, ObjWriter, PlyWriter};
+//! use draco_io::{PointCloudWriter, Writer};
+//! # let mesh = draco_core::mesh::Mesh::new();
+//! # let points = [[0.0, 0.0, 0.0]];
+//! # let colors = [[255, 255, 255, 255]];
+//!
 //! // OBJ: Named groups
 //! let mut obj = ObjWriter::new();
-//! obj.add_mesh(&mesh, Some("Cube"));
+//! obj.add_mesh(&mesh, Some("Cube"))?;
 //!
 //! // PLY: Point clouds with colors
 //! let mut ply = PlyWriter::new();
@@ -82,7 +91,7 @@
 //!
 //! // FBX: Optional compression
 //! let mut fbx = FbxWriter::new().with_compression(true);
-//! fbx.add_mesh(&mesh, Some("Model"));
+//! fbx.add_mesh(&mesh, Some("Model"))?;
 //!
 //! // glTF: Custom quantization, multiple output formats
 //! let mut gltf = GltfWriter::new();
@@ -90,6 +99,7 @@
 //! gltf.write_glb("output.glb")?;              // Binary GLB
 //! gltf.write_gltf("out.gltf", "out.bin")?;   // Separate files
 //! gltf.write_gltf_embedded("embedded.gltf")?; // Pure text
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
 //! # glTF/GLB with Draco Compression
@@ -107,7 +117,7 @@
 //!
 //! ## Reading Draco-compressed glTF
 //!
-//! ```ignore
+//! ```no_run
 //! use draco_io::gltf_reader::GltfReader;
 //!
 //! let reader = GltfReader::open("model.glb")?;
@@ -116,12 +126,14 @@
 //!         info.mesh_name.unwrap_or_default(),
 //!         mesh.num_faces());
 //! }
+//! # Ok::<(), draco_io::GltfError>(())
 //! ```
 //!
 //! ## Writing Draco-compressed GLB
 //!
-//! ```ignore
+//! ```no_run
 //! use draco_io::gltf_writer::GltfWriter;
+//! # let mesh = draco_core::mesh::Mesh::new();
 //!
 //! let mut writer = GltfWriter::new();
 //! writer.add_draco_mesh(&mesh, Some("MyMesh"), None)?;  // Use default quantization
@@ -134,6 +146,7 @@
 //!
 //! // Option 3: Pure text with embedded data (no external files)
 //! writer.write_gltf_embedded("output.gltf")?;
+//! # Ok::<(), draco_io::GltfWriteError>(())
 //! ```
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
