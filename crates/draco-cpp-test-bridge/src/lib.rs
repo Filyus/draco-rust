@@ -17,6 +17,19 @@ mod ffi {
         pub output_size: usize,
     }
 
+    /// Re-encode profiling result structure from C++.
+    #[repr(C)]
+    pub struct DracoReencodeProfileResult {
+        pub decode_setup_us: i64,
+        pub encoder_setup_us: i64,
+        pub encode_time_us: i64,
+        pub total_encode_us: i64,
+        pub output_size: usize,
+        pub num_points: u32,
+        pub num_faces: u32,
+        pub num_attributes: u32,
+    }
+
     /// Decode profiling result structure from C++
     #[repr(C)]
     pub struct DracoDecodeProfileResult {
@@ -127,6 +140,17 @@ mod ffi {
             result: *mut DracoProfileResult,
         ) -> c_int;
 
+        /// Profile re-encoding a mesh decoded from C++ .drc bytes.
+        pub fn draco_profile_reencode_mesh(
+            encoded_data: *const u8,
+            encoded_size: usize,
+            encoding_speed: c_int,
+            decoding_speed: c_int,
+            quantization_bits: c_int,
+            iterations: u32,
+            result: *mut DracoReencodeProfileResult,
+        ) -> c_int;
+
         /// Benchmark decoding
         pub fn draco_benchmark_decode_mesh(
             encoded_data: *const u8,
@@ -171,6 +195,19 @@ pub struct CppProfileResult {
     pub encode_time_us: i64,
     pub total_time_us: i64,
     pub output_size: usize,
+}
+
+/// Detailed profiling result from re-encoding a C++-decoded mesh.
+#[derive(Debug, Clone)]
+pub struct CppReencodeProfileResult {
+    pub decode_setup_us: i64,
+    pub encoder_setup_us: i64,
+    pub encode_time_us: i64,
+    pub total_encode_us: i64,
+    pub output_size: usize,
+    pub num_points: u32,
+    pub num_faces: u32,
+    pub num_attributes: u32,
 }
 
 /// Check if the C++ test bridge is available
@@ -442,6 +479,65 @@ pub fn profile_cpp_encode(
     _quantization_bits: i32,
     _iterations: u32,
 ) -> Option<CppProfileResult> {
+    None
+}
+
+/// Profile C++ re-encoding of a mesh decoded from existing .drc bytes.
+#[cfg(not(cpp_test_bridge_disabled))]
+pub fn profile_cpp_reencode_mesh(
+    encoded_data: &[u8],
+    encoding_speed: i32,
+    decoding_speed: i32,
+    quantization_bits: i32,
+    iterations: u32,
+) -> Option<CppReencodeProfileResult> {
+    let mut result = ffi::DracoReencodeProfileResult {
+        decode_setup_us: 0,
+        encoder_setup_us: 0,
+        encode_time_us: 0,
+        total_encode_us: 0,
+        output_size: 0,
+        num_points: 0,
+        num_faces: 0,
+        num_attributes: 0,
+    };
+
+    let status = unsafe {
+        ffi::draco_profile_reencode_mesh(
+            encoded_data.as_ptr(),
+            encoded_data.len(),
+            encoding_speed,
+            decoding_speed,
+            quantization_bits,
+            iterations,
+            &mut result,
+        )
+    };
+
+    if status != 0 {
+        return None;
+    }
+
+    Some(CppReencodeProfileResult {
+        decode_setup_us: result.decode_setup_us,
+        encoder_setup_us: result.encoder_setup_us,
+        encode_time_us: result.encode_time_us,
+        total_encode_us: result.total_encode_us,
+        output_size: result.output_size,
+        num_points: result.num_points,
+        num_faces: result.num_faces,
+        num_attributes: result.num_attributes,
+    })
+}
+
+#[cfg(cpp_test_bridge_disabled)]
+pub fn profile_cpp_reencode_mesh(
+    _encoded_data: &[u8],
+    _encoding_speed: i32,
+    _decoding_speed: i32,
+    _quantization_bits: i32,
+    _iterations: u32,
+) -> Option<CppReencodeProfileResult> {
     None
 }
 

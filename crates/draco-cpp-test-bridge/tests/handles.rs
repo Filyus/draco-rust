@@ -1,4 +1,6 @@
-use draco_cpp_test_bridge::{encode_cpp_mesh, encode_with_handles, is_available, CppMesh};
+use draco_cpp_test_bridge::{
+    encode_cpp_mesh, encode_with_handles, is_available, profile_cpp_reencode_mesh, CppMesh,
+};
 
 #[test]
 fn test_handle_encode_matches_single() {
@@ -29,4 +31,30 @@ fn test_handle_encode_matches_single() {
         single, handled,
         "Encoded bytes should match between single-shot and handle encode"
     );
+}
+
+#[test]
+fn test_reencode_profile_decodes_real_drc_before_encoding() {
+    if !is_available() {
+        println!("C++ test bridge disabled; skipping test");
+        return;
+    }
+
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("testdata")
+        .join("bunny_cpp_standard.drc");
+    let data = std::fs::read(path).expect("read bunny_cpp_standard.drc");
+
+    let profile =
+        profile_cpp_reencode_mesh(&data, 5, 5, 10, 2).expect("C++ re-encode profile failed");
+
+    assert_eq!(profile.num_points, 34_834);
+    assert_eq!(profile.num_faces, 69_451);
+    assert!(profile.num_attributes > 0);
+    assert!(profile.output_size > 0);
+    assert!(profile.encode_time_us > 0);
 }
