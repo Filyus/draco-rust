@@ -2,13 +2,17 @@
 
 mod common;
 
+use draco_core::decoder_buffer::DecoderBuffer;
 use draco_core::draco_types::DataType;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
+use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::EncoderOptions;
+use std::f32::consts::PI;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -20,6 +24,44 @@ fn duration_to_us(duration: Duration) -> f64 {
 
 fn avg_duration_us(duration: Duration, iterations: u32) -> f64 {
     duration_to_us(duration) / f64::from(iterations)
+}
+
+fn create_position_mesh(positions: Vec<f32>, faces: Vec<u32>) -> (Mesh, Vec<f32>, Vec<u32>) {
+    debug_assert_eq!(positions.len() % 3, 0);
+    debug_assert_eq!(faces.len() % 3, 0);
+
+    let num_points = positions.len() / 3;
+    let num_faces = faces.len() / 3;
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(num_points);
+    mesh.set_num_faces(num_faces);
+
+    let mut pos_attr = PointAttribute::new();
+    pos_attr.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        num_points,
+    );
+
+    for i in 0..num_points {
+        let offset = i * 3 * 4;
+        pos_attr
+            .buffer_mut()
+            .update(&positions[i * 3].to_le_bytes(), Some(offset));
+        pos_attr
+            .buffer_mut()
+            .update(&positions[i * 3 + 1].to_le_bytes(), Some(offset + 4));
+        pos_attr
+            .buffer_mut()
+            .update(&positions[i * 3 + 2].to_le_bytes(), Some(offset + 8));
+    }
+    mesh.add_attribute(pos_attr);
+    mesh.set_faces_from_flat_indices(&faces);
+
+    (mesh, positions, faces)
 }
 
 fn create_grid_mesh(grid_size: usize) -> (Mesh, Vec<f32>, Vec<u32>) {
@@ -58,45 +100,644 @@ fn create_grid_mesh(grid_size: usize) -> (Mesh, Vec<f32>, Vec<u32>) {
         }
     }
 
+    create_position_mesh(positions, faces)
+}
+
+fn create_bipyramid_fan_mesh(ring_segments: usize) -> (Mesh, Vec<f32>, Vec<u32>) {
+    assert!(ring_segments >= 3);
+
+    let mut positions = Vec::with_capacity((ring_segments + 2) * 3);
+    positions.extend_from_slice(&[0.0, 0.0, 1.0]);
+    positions.extend_from_slice(&[0.0, 0.0, -1.0]);
+
+    let step = 2.0 * PI / ring_segments as f32;
+    for i in 0..ring_segments {
+        let a = i as f32 * step;
+        positions.extend_from_slice(&[a.cos(), a.sin(), 0.0]);
+    }
+
+    let mut faces = Vec::with_capacity(ring_segments * 2 * 3);
+    for i in 0..ring_segments {
+        let current = 2 + i as u32;
+        let next = 2 + ((i + 1) % ring_segments) as u32;
+        faces.extend_from_slice(&[0, current, next]);
+        faces.extend_from_slice(&[1, next, current]);
+    }
+
+    create_position_mesh(positions, faces)
+}
+
+fn create_boundary_ribbon_mesh(length: usize) -> (Mesh, Vec<f32>, Vec<u32>) {
+    assert!(length >= 2);
+
+    let mut positions = Vec::with_capacity(length * 2 * 3);
+    for i in 0..length {
+        let x = i as f32;
+        let z = (i as f32 * 0.07).sin() * 0.1;
+        positions.extend_from_slice(&[x, 0.0, z]);
+        positions.extend_from_slice(&[x, 1.0, z]);
+    }
+
+    let mut faces = Vec::with_capacity((length - 1) * 2 * 3);
+    for i in 0..length - 1 {
+        let p0 = (i * 2) as u32;
+        let p1 = p0 + 1;
+        let p2 = p0 + 2;
+        let p3 = p0 + 3;
+
+        faces.extend_from_slice(&[p0, p2, p1]);
+        faces.extend_from_slice(&[p1, p2, p3]);
+    }
+
+    create_position_mesh(positions, faces)
+}
+
+fn create_torus_mesh(
+    major_segments: usize,
+    minor_segments: usize,
+    irregular_diagonals: bool,
+) -> (Mesh, Vec<f32>, Vec<u32>) {
+    assert!(major_segments >= 3);
+    assert!(minor_segments >= 3);
+
+    let mut positions = Vec::with_capacity(major_segments * minor_segments * 3);
+    for major in 0..major_segments {
+        let u = 2.0 * PI * major as f32 / major_segments as f32;
+        for minor in 0..minor_segments {
+            let v = 2.0 * PI * minor as f32 / minor_segments as f32;
+            let tube_radius = if irregular_diagonals {
+                0.75 + 0.07 * (u * 3.0 + v * 5.0).sin()
+            } else {
+                0.75
+            };
+            let major_radius = 2.0;
+            let ring = major_radius + tube_radius * v.cos();
+            positions.extend_from_slice(&[ring * u.cos(), ring * u.sin(), tube_radius * v.sin()]);
+        }
+    }
+
+    let mut faces = Vec::with_capacity(major_segments * minor_segments * 2 * 3);
+    for major in 0..major_segments {
+        let next_major = (major + 1) % major_segments;
+        for minor in 0..minor_segments {
+            let next_minor = (minor + 1) % minor_segments;
+            let p00 = (major * minor_segments + minor) as u32;
+            let p10 = (next_major * minor_segments + minor) as u32;
+            let p01 = (major * minor_segments + next_minor) as u32;
+            let p11 = (next_major * minor_segments + next_minor) as u32;
+
+            let flip_diagonal =
+                irregular_diagonals && ((major * 31 + minor * 17 + (major ^ minor) * 7) % 5 < 2);
+            if flip_diagonal {
+                faces.extend_from_slice(&[p00, p10, p11]);
+                faces.extend_from_slice(&[p00, p11, p01]);
+            } else {
+                faces.extend_from_slice(&[p00, p10, p01]);
+                faces.extend_from_slice(&[p10, p11, p01]);
+            }
+        }
+    }
+
+    create_position_mesh(positions, faces)
+}
+
+struct SeededRng {
+    state: u64,
+}
+
+impl SeededRng {
+    fn new(seed: u64) -> Self {
+        Self {
+            state: seed ^ 0x9e37_79b9_7f4a_7c15,
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    fn next_unit_f64(&mut self) -> f64 {
+        ((self.next_u64() >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+    }
+
+    fn normal_f64(&mut self, mean: f64, stddev: f64) -> f64 {
+        let u1 = self.next_unit_f64().max(f64::MIN_POSITIVE);
+        let u2 = self.next_unit_f64();
+        let z0 = (-2.0 * u1.ln()).sqrt() * (2.0 * PI as f64 * u2).cos();
+        mean + z0 * stddev
+    }
+
+    fn normal_usize(&mut self, mean: f64, stddev: f64, min: usize, max: usize) -> usize {
+        self.normal_f64(mean, stddev)
+            .round()
+            .clamp(min as f64, max as f64) as usize
+    }
+
+    fn normal_f32(&mut self, mean: f64, stddev: f64, min: f64, max: f64) -> f32 {
+        self.normal_f64(mean, stddev).clamp(min, max) as f32
+    }
+
+    fn chance(&mut self, probability: f32) -> bool {
+        self.next_unit_f64() < f64::from(probability)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SeededMeshFamily {
+    Grid,
+    Fan,
+    Ribbon,
+    Torus,
+}
+
+impl SeededMeshFamily {
+    const ALL: [Self; 4] = [Self::Grid, Self::Fan, Self::Ribbon, Self::Torus];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Grid => "grid",
+            Self::Fan => "fan",
+            Self::Ribbon => "ribbon",
+            Self::Torus => "torus",
+        }
+    }
+}
+
+struct SeededMeshStats {
+    seed: u64,
+    family: SeededMeshFamily,
+}
+
+fn create_seeded_grid_mesh(seed: u64) -> (Mesh, Vec<f32>, Vec<u32>, SeededMeshStats) {
+    let mut rng = SeededRng::new(seed);
+    let grid_size = rng.normal_usize(100.0, 12.0, 72, 128);
+    let (mesh, positions, faces) = create_grid_mesh(grid_size);
+    (
+        mesh,
+        positions,
+        faces,
+        SeededMeshStats {
+            seed,
+            family: SeededMeshFamily::Grid,
+        },
+    )
+}
+
+fn create_seeded_fan_mesh(seed: u64) -> (Mesh, Vec<f32>, Vec<u32>, SeededMeshStats) {
+    let mut rng = SeededRng::new(seed);
+    let ring_segments = rng.normal_usize(8192.0, 1024.0, 4096, 12_288);
+    let (mesh, positions, faces) = create_bipyramid_fan_mesh(ring_segments);
+    (
+        mesh,
+        positions,
+        faces,
+        SeededMeshStats {
+            seed,
+            family: SeededMeshFamily::Fan,
+        },
+    )
+}
+
+fn create_seeded_ribbon_mesh(seed: u64) -> (Mesh, Vec<f32>, Vec<u32>, SeededMeshStats) {
+    let mut rng = SeededRng::new(seed);
+    let length = rng.normal_usize(10_000.0, 1500.0, 6000, 14_000);
+    let (mesh, positions, faces) = create_boundary_ribbon_mesh(length);
+    (
+        mesh,
+        positions,
+        faces,
+        SeededMeshStats {
+            seed,
+            family: SeededMeshFamily::Ribbon,
+        },
+    )
+}
+
+fn create_seeded_torus_mesh(seed: u64) -> (Mesh, Vec<f32>, Vec<u32>, SeededMeshStats) {
+    let mut rng = SeededRng::new(seed);
+    let major_segments = rng.normal_usize(120.0, 12.0, 84, 156);
+    let minor_segments = rng.normal_usize(84.0, 8.0, 60, 108);
+    let flip_probability = rng.normal_f32(0.40, 0.12, 0.10, 0.70);
+    let warp = rng.normal_f32(0.07, 0.025, 0.02, 0.14);
+    let phase = (seed as f32 * 0.000_001).sin();
+
+    let mut positions = Vec::with_capacity(major_segments * minor_segments * 3);
+    for major in 0..major_segments {
+        let u = 2.0 * PI * major as f32 / major_segments as f32;
+        for minor in 0..minor_segments {
+            let v = 2.0 * PI * minor as f32 / minor_segments as f32;
+            let tube_radius = 0.75
+                + warp * (u * 3.0 + v * 5.0 + phase).sin()
+                + warp * 0.5 * (u * 11.0 - v * 2.0).cos();
+            let major_radius = 2.0;
+            let ring = major_radius + tube_radius * v.cos();
+            positions.extend_from_slice(&[ring * u.cos(), ring * u.sin(), tube_radius * v.sin()]);
+        }
+    }
+
+    let mut faces = Vec::with_capacity(major_segments * minor_segments * 2 * 3);
+    for major in 0..major_segments {
+        let next_major = (major + 1) % major_segments;
+        for minor in 0..minor_segments {
+            let next_minor = (minor + 1) % minor_segments;
+            let p00 = (major * minor_segments + minor) as u32;
+            let p10 = (next_major * minor_segments + minor) as u32;
+            let p01 = (major * minor_segments + next_minor) as u32;
+            let p11 = (next_major * minor_segments + next_minor) as u32;
+
+            if rng.chance(flip_probability) {
+                faces.extend_from_slice(&[p00, p10, p11]);
+                faces.extend_from_slice(&[p00, p11, p01]);
+            } else {
+                faces.extend_from_slice(&[p00, p10, p01]);
+                faces.extend_from_slice(&[p10, p11, p01]);
+            }
+        }
+    }
+
+    let stats = SeededMeshStats {
+        seed,
+        family: SeededMeshFamily::Torus,
+    };
+    let (mesh, positions, faces) = create_position_mesh(positions, faces);
+    (mesh, positions, faces, stats)
+}
+
+fn create_seeded_mesh(
+    family: SeededMeshFamily,
+    seed: u64,
+) -> (Mesh, Vec<f32>, Vec<u32>, SeededMeshStats) {
+    match family {
+        SeededMeshFamily::Grid => create_seeded_grid_mesh(seed),
+        SeededMeshFamily::Fan => create_seeded_fan_mesh(seed),
+        SeededMeshFamily::Ribbon => create_seeded_ribbon_mesh(seed),
+        SeededMeshFamily::Torus => create_seeded_torus_mesh(seed),
+    }
+}
+
+struct RealDrcCase {
+    label: &'static str,
+    path: &'static [&'static str],
+}
+
+struct RealMeshCase {
+    label: &'static str,
+    bytes: Vec<u8>,
+    mesh: Mesh,
+    num_points: usize,
+    num_faces: usize,
+    num_attributes: usize,
+}
+
+const REAL_DRC_CASES: &[RealDrcCase] = &[
+    RealDrcCase {
+        label: "annulus-eb",
+        path: &["annulus_eb.drc"],
+    },
+    RealDrcCase {
+        label: "annulus",
+        path: &["annulus.drc"],
+    },
+    RealDrcCase {
+        label: "ngon12",
+        path: &["ngon12.drc"],
+    },
+    RealDrcCase {
+        label: "grid5x5-cpp",
+        path: &["grid5x5_cpp.drc"],
+    },
+    RealDrcCase {
+        label: "test-nm-eb",
+        path: &["test_nm.obj.edgebreaker.cl4.2.2.drc"],
+    },
+    RealDrcCase {
+        label: "test-nm-seq",
+        path: &["test_nm.obj.sequential.cl3.2.2.drc"],
+    },
+    RealDrcCase {
+        label: "legacy-sphere-pos",
+        path: &["legacy_draco", "sphere_pos.mesh_eb_cmp.2.2.drc"],
+    },
+    RealDrcCase {
+        label: "legacy-sphere-norm",
+        path: &["legacy_draco", "sphere.mesh_eb_norm.2.2.drc"],
+    },
+    RealDrcCase {
+        label: "legacy-color",
+        path: &["legacy_draco", "test.mesh_eb_color.2.2.drc"],
+    },
+    RealDrcCase {
+        label: "legacy-bunny",
+        path: &["legacy_draco", "bun_zipper.mesh_eb_valence.1.1.0.drc"],
+    },
+    RealDrcCase {
+        label: "prod-pos-color",
+        path: &[
+            "production_draco",
+            "test_pos_color.mesh_eb.v2.2.pos_color.drc",
+        ],
+    },
+    RealDrcCase {
+        label: "prod-cube",
+        path: &["production_draco", "cube_att.mesh_eb.v2.2.pos_norm_uv.drc"],
+    },
+    RealDrcCase {
+        label: "prod-blender",
+        path: &[
+            "production_draco",
+            "blender_multi_color.mesh_eb.v2.2.pos_norm_uv_color012.drc",
+        ],
+    },
+    RealDrcCase {
+        label: "car",
+        path: &["car.drc"],
+    },
+    RealDrcCase {
+        label: "lamp",
+        path: &["lamp_cpp_std.drc"],
+    },
+    RealDrcCase {
+        label: "bunny",
+        path: &["bunny_cpp_standard.drc"],
+    },
+];
+
+fn testdata_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("testdata")
+}
+
+fn decode_rust_mesh_once(encoded_data: &[u8]) -> Option<Mesh> {
+    let mut decoder_buffer = DecoderBuffer::new(encoded_data);
     let mut mesh = Mesh::new();
-    mesh.set_num_points(num_points);
-    mesh.set_num_faces(num_faces);
+    let mut decoder = MeshDecoder::new();
+    decoder.decode(&mut decoder_buffer, &mut mesh).ok()?;
+    Some(mesh)
+}
 
-    let mut pos_attr = PointAttribute::new();
-    pos_attr.init(
-        GeometryAttributeType::Position,
-        3,
-        DataType::Float32,
-        false,
-        num_points,
-    );
+fn profile_rust_reencode_mesh(mesh: &Mesh, speed: i32, iterations: u32) -> Option<(f64, usize)> {
+    let mut rust_encode_us = 0.0;
+    let mut rust_output_size = 0;
 
-    for i in 0..num_points {
-        let offset = i * 3 * 4;
-        pos_attr
-            .buffer_mut()
-            .update(&positions[i * 3].to_le_bytes(), Some(offset));
-        pos_attr
-            .buffer_mut()
-            .update(&positions[i * 3 + 1].to_le_bytes(), Some(offset + 4));
-        pos_attr
-            .buffer_mut()
-            .update(&positions[i * 3 + 2].to_le_bytes(), Some(offset + 8));
-    }
-    mesh.add_attribute(pos_attr);
+    for _ in 0..iterations {
+        let mut options = EncoderOptions::new();
+        options.set_global_int("encoding_speed", speed);
+        options.set_global_int("decoding_speed", speed);
+        options.set_attribute_int(0, "quantization_bits", 10);
 
-    for i in 0..num_faces {
-        mesh.set_face(
-            FaceIndex(i as u32),
-            [
-                PointIndex(faces[i * 3]),
-                PointIndex(faces[i * 3 + 1]),
-                PointIndex(faces[i * 3 + 2]),
-            ],
-        );
+        let mut encoder = MeshEncoder::new();
+        encoder.set_mesh(mesh.clone());
+        let mut encoder_buffer = EncoderBuffer::new();
+
+        let start = Instant::now();
+        encoder.encode(&options, &mut encoder_buffer).ok()?;
+        rust_encode_us += duration_to_us(start.elapsed());
+        rust_output_size = encoder_buffer.data().len();
     }
 
-    (mesh, positions, faces)
+    Some((rust_encode_us / f64::from(iterations), rust_output_size))
+}
+
+fn load_real_mesh_corpus() -> Vec<RealMeshCase> {
+    let base = testdata_dir();
+    let mut cases = Vec::new();
+
+    for case in REAL_DRC_CASES {
+        let mut path = base.clone();
+        for segment in case.path {
+            path = path.join(segment);
+        }
+
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+
+        let Some(mesh) = decode_rust_mesh_once(&bytes) else {
+            continue;
+        };
+        if mesh.num_faces() == 0 {
+            continue;
+        }
+
+        let Some(cpp_decode) = draco_cpp_test_bridge::profile_cpp_decode(&bytes, 1) else {
+            continue;
+        };
+        if cpp_decode.num_points as usize != mesh.num_points()
+            || cpp_decode.num_faces as usize != mesh.num_faces()
+        {
+            continue;
+        }
+
+        let Some(cpp_encode) =
+            draco_cpp_test_bridge::profile_cpp_reencode_mesh(&bytes, 5, 5, 10, 1)
+        else {
+            continue;
+        };
+        if cpp_encode.num_points as usize != mesh.num_points()
+            || cpp_encode.num_faces as usize != mesh.num_faces()
+            || cpp_encode.num_attributes as usize != mesh.num_attributes() as usize
+        {
+            continue;
+        }
+
+        if profile_rust_reencode_mesh(&mesh, 5, 1).is_none() {
+            continue;
+        }
+
+        cases.push(RealMeshCase {
+            label: case.label,
+            bytes,
+            num_points: mesh.num_points(),
+            num_faces: mesh.num_faces(),
+            num_attributes: mesh.num_attributes() as usize,
+            mesh,
+        });
+    }
+
+    cases.sort_by_key(|case| case.num_faces);
+    cases
+}
+
+fn gaussian_corpus_index(rng: &mut SeededRng, len: usize) -> usize {
+    debug_assert!(len > 0);
+    let mean = (len - 1) as f64 * 0.5;
+    let stddev = (len as f64 * 0.32).max(1.0);
+
+    for _ in 0..8 {
+        let index = rng.normal_f64(mean, stddev).round();
+        if index >= 0.0 && index < len as f64 {
+            return index as usize;
+        }
+    }
+
+    rng.normal_f64(mean, stddev)
+        .round()
+        .clamp(0.0, (len - 1) as f64) as usize
+}
+
+#[derive(Clone, Copy)]
+struct DistributionSummary {
+    mean: f64,
+    p10: f64,
+    p50: f64,
+    p90: f64,
+    min: f64,
+    max: f64,
+}
+
+fn percentile(sorted_values: &[f64], percentile: f64) -> f64 {
+    debug_assert!(!sorted_values.is_empty());
+    let rank = percentile.clamp(0.0, 1.0) * (sorted_values.len() - 1) as f64;
+    let lower = rank.floor() as usize;
+    let upper = rank.ceil() as usize;
+    if lower == upper {
+        sorted_values[lower]
+    } else {
+        let t = rank - lower as f64;
+        sorted_values[lower] * (1.0 - t) + sorted_values[upper] * t
+    }
+}
+
+fn summarize_distribution(values: &[f64]) -> DistributionSummary {
+    assert!(!values.is_empty());
+
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let mut sorted_values = values.to_vec();
+    sorted_values.sort_by(|left, right| left.total_cmp(right));
+    let min = sorted_values[0];
+    let max = sorted_values[sorted_values.len() - 1];
+
+    DistributionSummary {
+        mean,
+        p10: percentile(&sorted_values, 0.10),
+        p50: percentile(&sorted_values, 0.50),
+        p90: percentile(&sorted_values, 0.90),
+        min,
+        max,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CleanTopologyCase {
+    RegularGrid,
+    ClosedFan,
+    BoundaryRibbon,
+    RegularTorus,
+    IrregularTorus,
+}
+
+impl CleanTopologyCase {
+    const ALL: [Self; 5] = [
+        Self::RegularGrid,
+        Self::ClosedFan,
+        Self::BoundaryRibbon,
+        Self::RegularTorus,
+        Self::IrregularTorus,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::RegularGrid => "regular-grid-100x100",
+            Self::ClosedFan => "closed-bipyramid-fan-8192",
+            Self::BoundaryRibbon => "boundary-ribbon-10000",
+            Self::RegularTorus => "regular-torus-120x84",
+            Self::IrregularTorus => "irregular-torus-120x84",
+        }
+    }
+
+    fn focus(self) -> &'static str {
+        match self {
+            Self::RegularGrid => "regular open baseline; easy traversal and prediction",
+            Self::ClosedFan => "two high-valence vertices without boundary noise",
+            Self::BoundaryRibbon => "large boundary ratio on a clean manifold strip",
+            Self::RegularTorus => "closed genus-1 handle with uniform valence",
+            Self::IrregularTorus => "closed genus-1 handle with deterministic valence churn",
+        }
+    }
+
+    fn create_mesh(self) -> (Mesh, Vec<f32>, Vec<u32>) {
+        match self {
+            Self::RegularGrid => create_grid_mesh(100),
+            Self::ClosedFan => create_bipyramid_fan_mesh(8192),
+            Self::BoundaryRibbon => create_boundary_ribbon_mesh(10_000),
+            Self::RegularTorus => create_torus_mesh(120, 84, false),
+            Self::IrregularTorus => create_torus_mesh(120, 84, true),
+        }
+    }
+}
+
+fn profile_rust_encode_only(mesh: &Mesh, speed: i32, iterations: u32) -> (f64, usize) {
+    let mut rust_encode_us = 0.0;
+    let mut rust_output_size = 0;
+
+    for _ in 0..iterations {
+        let mut options = EncoderOptions::new();
+        options.set_global_int("encoding_speed", speed);
+        options.set_global_int("decoding_speed", speed);
+        options.set_attribute_int(0, "quantization_bits", 10);
+
+        let mut encoder = MeshEncoder::new();
+        encoder.set_mesh(mesh.clone());
+        let mut encoder_buffer = EncoderBuffer::new();
+
+        let start = Instant::now();
+        encoder
+            .encode(&options, &mut encoder_buffer)
+            .expect("Rust encode failed");
+        rust_encode_us += duration_to_us(start.elapsed());
+        rust_output_size = encoder_buffer.data().len();
+    }
+
+    (rust_encode_us / f64::from(iterations), rust_output_size)
+}
+
+fn encode_mesh_once(mesh: &Mesh, speed: i32) -> Vec<u8> {
+    let mut options = EncoderOptions::new();
+    options.set_global_int("encoding_speed", speed);
+    options.set_global_int("decoding_speed", speed);
+    options.set_attribute_int(0, "quantization_bits", 10);
+
+    let mut encoder = MeshEncoder::new();
+    encoder.set_mesh(mesh.clone());
+    let mut encoder_buffer = EncoderBuffer::new();
+    encoder
+        .encode(&options, &mut encoder_buffer)
+        .expect("Rust encode failed");
+    encoder_buffer.data().to_vec()
+}
+
+fn profile_rust_decode_only(encoded_data: &[u8], iterations: u32) -> (f64, usize, usize) {
+    let mut rust_decode_us = 0.0;
+    let mut rust_num_points = 0;
+    let mut rust_num_faces = 0;
+
+    for _ in 0..iterations {
+        let mut decoder_buffer = DecoderBuffer::new(encoded_data);
+        let mut out_mesh = Mesh::new();
+        let mut decoder = MeshDecoder::new();
+
+        let start = Instant::now();
+        decoder
+            .decode(&mut decoder_buffer, &mut out_mesh)
+            .expect("Rust decode failed");
+        rust_decode_us += duration_to_us(start.elapsed());
+        rust_num_points = out_mesh.num_points();
+        rust_num_faces = out_mesh.num_faces();
+    }
+
+    (
+        rust_decode_us / f64::from(iterations),
+        rust_num_points,
+        rust_num_faces,
+    )
 }
 
 #[test]
@@ -1124,6 +1765,521 @@ fn profile_full_encode_breakdown() {
 }
 
 #[test]
+fn profile_clean_topologies() {
+    let _output_lock = OUTPUT_LOCK.lock().unwrap();
+    common::disable_noisy_debug_env();
+    if common::skip_if_cpp_bridge_unavailable() {
+        return;
+    }
+
+    println!("\n=== Clean Topology Cases ===\n");
+
+    let iterations = 20;
+    for case in CleanTopologyCase::ALL {
+        let (mesh, positions, faces) = case.create_mesh();
+        let num_points = positions.len() / 3;
+        let num_faces = faces.len() / 3;
+
+        println!(
+            "{}: {} points, {} faces",
+            case.name(),
+            num_points,
+            num_faces
+        );
+        println!("  Focus: {}", case.focus());
+
+        for speed in 0..=10 {
+            let cpp_profile = draco_cpp_test_bridge::profile_cpp_encode(
+                &positions, &faces, speed, speed, 10, iterations,
+            )
+            .expect("C++ profile failed");
+            let (rust_encode_us, rust_output_size) =
+                profile_rust_encode_only(&mesh, speed, iterations);
+            let cpp_encode_us = cpp_profile.encode_time_us as f64;
+
+            println!(
+                "  speed {speed}: C++ encode {:7.1} µs, Rust encode {:7.1} µs, \
+                 speedup {:4.2}x, bytes C++={} Rust={} {}",
+                cpp_encode_us,
+                rust_encode_us,
+                cpp_encode_us / rust_encode_us,
+                cpp_profile.output_size,
+                rust_output_size,
+                if rust_output_size == cpp_profile.output_size {
+                    "match"
+                } else {
+                    "mismatch"
+                }
+            );
+        }
+
+        println!();
+    }
+}
+
+#[test]
+fn profile_seeded_mesh_sweep() {
+    let _output_lock = OUTPUT_LOCK.lock().unwrap();
+    common::disable_noisy_debug_env();
+    if common::skip_if_cpp_bridge_unavailable() {
+        return;
+    }
+
+    println!("\n=== Seeded Mesh Sweep ===\n");
+
+    let seeds_per_family = 3;
+    let samples = SeededMeshFamily::ALL.len() * seeds_per_family;
+    let iterations = 10;
+    let base_seed = 0xd1ac_0c0d_ebba_5eed_u64;
+    let seed_step = 0x517c_c1b7_2722_0a95_u64;
+    let mut cases = Vec::with_capacity(samples);
+
+    for (family_index, family) in SeededMeshFamily::ALL.iter().copied().enumerate() {
+        for seed_index in 0..seeds_per_family {
+            let sample_index = family_index * seeds_per_family + seed_index;
+            let seed = base_seed.wrapping_add((sample_index as u64).wrapping_mul(seed_step));
+            cases.push(create_seeded_mesh(family, seed));
+        }
+    }
+
+    let points: Vec<f64> = cases
+        .iter()
+        .map(|(_, positions, _, _)| (positions.len() / 3) as f64)
+        .collect();
+    let faces: Vec<f64> = cases
+        .iter()
+        .map(|(_, _, faces, _)| (faces.len() / 3) as f64)
+        .collect();
+
+    let point_counts = summarize_distribution(&points);
+    let face_counts = summarize_distribution(&faces);
+
+    let first_seed = cases.first().map(|(_, _, _, stats)| stats.seed).unwrap();
+    let last_seed = cases.last().map(|(_, _, _, stats)| stats.seed).unwrap();
+    println!(
+        "samples: {samples}, iterations/sample: {iterations}, seeds: {first_seed:#018x}..{last_seed:#018x}"
+    );
+    for family in SeededMeshFamily::ALL {
+        let count = cases
+            .iter()
+            .filter(|(_, _, _, stats)| stats.family == family)
+            .count();
+        println!("{} samples: {}", family.name(), count);
+    }
+    println!(
+        "points: avg {:.0}, p50 {:.0}, p10..p90 [{:.0}..{:.0}], min..max [{:.0}..{:.0}]",
+        point_counts.mean,
+        point_counts.p50,
+        point_counts.p10,
+        point_counts.p90,
+        point_counts.min,
+        point_counts.max
+    );
+    println!(
+        "faces: avg {:.0}, p50 {:.0}, p10..p90 [{:.0}..{:.0}], min..max [{:.0}..{:.0}]\n",
+        face_counts.mean,
+        face_counts.p50,
+        face_counts.p10,
+        face_counts.p90,
+        face_counts.min,
+        face_counts.max
+    );
+
+    for speed in 0..=10 {
+        let mut cpp_times = Vec::with_capacity(samples);
+        let mut cpp_us_per_k_faces = Vec::with_capacity(samples);
+        let mut rust_times = Vec::with_capacity(samples);
+        let mut rust_us_per_k_faces = Vec::with_capacity(samples);
+        let mut speedups = Vec::with_capacity(samples);
+        let mut bytes_matches = 0;
+
+        for (mesh, positions, faces, _) in &cases {
+            let num_faces = faces.len() / 3;
+            let cpp_profile = draco_cpp_test_bridge::profile_cpp_encode(
+                positions,
+                faces,
+                speed,
+                speed,
+                10,
+                iterations as u32,
+            )
+            .expect("C++ profile failed");
+            let (rust_encode_us, rust_output_size) =
+                profile_rust_encode_only(mesh, speed, iterations as u32);
+            let cpp_encode_us = cpp_profile.encode_time_us as f64;
+
+            cpp_times.push(cpp_encode_us);
+            cpp_us_per_k_faces.push(cpp_encode_us / num_faces as f64 * 1000.0);
+            rust_times.push(rust_encode_us);
+            rust_us_per_k_faces.push(rust_encode_us / num_faces as f64 * 1000.0);
+            speedups.push(cpp_encode_us / rust_encode_us);
+            if rust_output_size == cpp_profile.output_size {
+                bytes_matches += 1;
+            }
+        }
+
+        let cpp = summarize_distribution(&cpp_times);
+        let cpp_per_k = summarize_distribution(&cpp_us_per_k_faces);
+        let rust = summarize_distribution(&rust_times);
+        let rust_per_k = summarize_distribution(&rust_us_per_k_faces);
+        let speedup = summarize_distribution(&speedups);
+        println!(
+            "speed {speed}: raw us C++ avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}], \
+             Rust avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}]",
+            cpp.mean, cpp.p50, cpp.p10, cpp.p90, rust.mean, rust.p50, rust.p10, rust.p90,
+        );
+        println!(
+            "speed {speed}: us/1k faces C++ avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}], \
+             Rust avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}]",
+            cpp_per_k.mean,
+            cpp_per_k.p50,
+            cpp_per_k.p10,
+            cpp_per_k.p90,
+            rust_per_k.mean,
+            rust_per_k.p50,
+            rust_per_k.p10,
+            rust_per_k.p90,
+        );
+        println!(
+            "speed {speed}: speedup avg {:.2}x, p50 {:.2}x, p10..p90 [{:.2}..{:.2}], \
+             bytes match {}/{}",
+            speedup.mean, speedup.p50, speedup.p10, speedup.p90, bytes_matches, samples
+        );
+    }
+
+    println!();
+
+    for speed in 0..=10 {
+        let mut cpp_times = Vec::with_capacity(samples);
+        let mut cpp_us_per_k_faces = Vec::with_capacity(samples);
+        let mut rust_times = Vec::with_capacity(samples);
+        let mut rust_us_per_k_faces = Vec::with_capacity(samples);
+        let mut speedups = Vec::with_capacity(samples);
+        let mut decoded_matches = 0;
+
+        for (mesh, _, faces, _) in &cases {
+            let num_faces = faces.len() / 3;
+            let encoded_data = encode_mesh_once(mesh, speed);
+            let cpp_result =
+                draco_cpp_test_bridge::profile_cpp_decode(&encoded_data, iterations as u32)
+                    .expect("C++ decode failed");
+            let (rust_decode_us, rust_num_points, rust_num_faces) =
+                profile_rust_decode_only(&encoded_data, iterations as u32);
+            let cpp_decode_us = cpp_result.decode_time_us as f64;
+
+            cpp_times.push(cpp_decode_us);
+            cpp_us_per_k_faces.push(cpp_decode_us / num_faces as f64 * 1000.0);
+            rust_times.push(rust_decode_us);
+            rust_us_per_k_faces.push(rust_decode_us / num_faces as f64 * 1000.0);
+            speedups.push(cpp_decode_us / rust_decode_us);
+
+            if cpp_result.num_points as usize == rust_num_points
+                && cpp_result.num_faces as usize == rust_num_faces
+            {
+                decoded_matches += 1;
+            }
+        }
+
+        let cpp = summarize_distribution(&cpp_times);
+        let cpp_per_k = summarize_distribution(&cpp_us_per_k_faces);
+        let rust = summarize_distribution(&rust_times);
+        let rust_per_k = summarize_distribution(&rust_us_per_k_faces);
+        let speedup = summarize_distribution(&speedups);
+        println!(
+            "decode speed {speed}: raw us C++ avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}], \
+             Rust avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}]",
+            cpp.mean, cpp.p50, cpp.p10, cpp.p90, rust.mean, rust.p50, rust.p10, rust.p90,
+        );
+        println!(
+            "decode speed {speed}: us/1k faces C++ avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}], \
+             Rust avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}]",
+            cpp_per_k.mean,
+            cpp_per_k.p50,
+            cpp_per_k.p10,
+            cpp_per_k.p90,
+            rust_per_k.mean,
+            rust_per_k.p50,
+            rust_per_k.p10,
+            rust_per_k.p90,
+        );
+        println!(
+            "decode speed {speed}: speedup avg {:.2}x, p50 {:.2}x, p10..p90 [{:.2}..{:.2}], \
+             decoded size match {}/{}",
+            speedup.mean, speedup.p50, speedup.p10, speedup.p90, decoded_matches, samples
+        );
+    }
+}
+
+#[test]
+fn profile_real_corpus_gaussian_sweep() {
+    let _output_lock = OUTPUT_LOCK.lock().unwrap();
+    common::disable_noisy_debug_env();
+    if common::skip_if_cpp_bridge_unavailable() {
+        return;
+    }
+
+    println!("\n=== Real Corpus Gaussian Sweep ===\n");
+
+    let corpus = load_real_mesh_corpus();
+    assert!(!corpus.is_empty(), "real mesh corpus is empty");
+
+    let samples = 24;
+    let iterations = 5;
+    let decode_iterations = 10;
+    let seed = 0x6a75_7373_7265_616c_u64;
+    let mut rng = SeededRng::new(seed);
+    let sample_indices: Vec<usize> = (0..samples)
+        .map(|_| gaussian_corpus_index(&mut rng, corpus.len()))
+        .collect();
+
+    let selected_points: Vec<f64> = sample_indices
+        .iter()
+        .map(|&index| corpus[index].num_points as f64)
+        .collect();
+    let selected_faces: Vec<f64> = sample_indices
+        .iter()
+        .map(|&index| corpus[index].num_faces as f64)
+        .collect();
+    let point_counts = summarize_distribution(&selected_points);
+    let face_counts = summarize_distribution(&selected_faces);
+
+    println!(
+        "corpus meshes: {}, samples: {}, iterations/sample: {}, decode iterations/sample: {}, seed: {seed:#018x}",
+        corpus.len(),
+        samples,
+        iterations,
+        decode_iterations
+    );
+    println!(
+        "sampled points: avg {:.0}, p50 {:.0}, p10..p90 [{:.0}..{:.0}], min..max [{:.0}..{:.0}]",
+        point_counts.mean,
+        point_counts.p50,
+        point_counts.p10,
+        point_counts.p90,
+        point_counts.min,
+        point_counts.max
+    );
+    println!(
+        "sampled faces: avg {:.0}, p50 {:.0}, p10..p90 [{:.0}..{:.0}], min..max [{:.0}..{:.0}]",
+        face_counts.mean,
+        face_counts.p50,
+        face_counts.p10,
+        face_counts.p90,
+        face_counts.min,
+        face_counts.max
+    );
+    println!("sampled files:");
+    for (sample, &index) in sample_indices.iter().enumerate() {
+        let case = &corpus[index];
+        println!(
+            "  {sample:02}: {:<18} {:>6} points {:>6} faces {:>2} attrs",
+            case.label, case.num_points, case.num_faces, case.num_attributes
+        );
+    }
+    println!();
+
+    let mut source_cpp_times = Vec::with_capacity(samples);
+    let mut source_cpp_us_per_k_faces = Vec::with_capacity(samples);
+    let mut source_rust_times = Vec::with_capacity(samples);
+    let mut source_rust_us_per_k_faces = Vec::with_capacity(samples);
+    let mut source_speedups = Vec::with_capacity(samples);
+    let mut source_decoded_matches = 0;
+
+    for &index in &sample_indices {
+        let case = &corpus[index];
+        let cpp_decode =
+            draco_cpp_test_bridge::profile_cpp_decode(&case.bytes, decode_iterations as u32)
+                .expect("C++ source decode failed");
+        let (rust_decode_us, rust_num_points, rust_num_faces) =
+            profile_rust_decode_only(&case.bytes, decode_iterations as u32);
+        let cpp_decode_us = cpp_decode.decode_time_us as f64;
+
+        source_cpp_times.push(cpp_decode_us);
+        source_cpp_us_per_k_faces.push(cpp_decode_us / case.num_faces as f64 * 1000.0);
+        source_rust_times.push(rust_decode_us);
+        source_rust_us_per_k_faces.push(rust_decode_us / case.num_faces as f64 * 1000.0);
+        source_speedups.push(cpp_decode_us / rust_decode_us);
+
+        if cpp_decode.num_points as usize == rust_num_points
+            && cpp_decode.num_faces as usize == rust_num_faces
+        {
+            source_decoded_matches += 1;
+        }
+    }
+
+    let cpp = summarize_distribution(&source_cpp_times);
+    let cpp_per_k = summarize_distribution(&source_cpp_us_per_k_faces);
+    let rust = summarize_distribution(&source_rust_times);
+    let rust_per_k = summarize_distribution(&source_rust_us_per_k_faces);
+    let speedup = summarize_distribution(&source_speedups);
+    println!(
+        "source decode: raw us C++ avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}], \
+         Rust avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}]",
+        cpp.mean, cpp.p50, cpp.p10, cpp.p90, rust.mean, rust.p50, rust.p10, rust.p90,
+    );
+    println!(
+        "source decode: us/1k faces C++ avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}], \
+         Rust avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}]",
+        cpp_per_k.mean,
+        cpp_per_k.p50,
+        cpp_per_k.p10,
+        cpp_per_k.p90,
+        rust_per_k.mean,
+        rust_per_k.p50,
+        rust_per_k.p10,
+        rust_per_k.p90,
+    );
+    println!(
+        "source decode: speedup avg {:.2}x, p50 {:.2}x, p10..p90 [{:.2}..{:.2}], \
+         decoded size match {}/{}\n",
+        speedup.mean, speedup.p50, speedup.p10, speedup.p90, source_decoded_matches, samples
+    );
+
+    for speed in 0..=10 {
+        let mut cpp_times = Vec::with_capacity(samples);
+        let mut cpp_us_per_k_faces = Vec::with_capacity(samples);
+        let mut rust_times = Vec::with_capacity(samples);
+        let mut rust_us_per_k_faces = Vec::with_capacity(samples);
+        let mut speedups = Vec::with_capacity(samples);
+        let mut attr_matches = 0;
+
+        for &index in &sample_indices {
+            let case = &corpus[index];
+            let cpp_profile = draco_cpp_test_bridge::profile_cpp_reencode_mesh(
+                &case.bytes,
+                speed,
+                speed,
+                10,
+                iterations as u32,
+            )
+            .expect("C++ real re-encode profile failed");
+            let (rust_encode_us, _) =
+                profile_rust_reencode_mesh(&case.mesh, speed, iterations as u32)
+                    .expect("Rust real re-encode failed");
+            let cpp_encode_us = cpp_profile.encode_time_us as f64;
+
+            cpp_times.push(cpp_encode_us);
+            cpp_us_per_k_faces.push(cpp_encode_us / case.num_faces as f64 * 1000.0);
+            rust_times.push(rust_encode_us);
+            rust_us_per_k_faces.push(rust_encode_us / case.num_faces as f64 * 1000.0);
+            speedups.push(cpp_encode_us / rust_encode_us);
+            if cpp_profile.num_attributes as usize == case.num_attributes {
+                attr_matches += 1;
+            }
+        }
+
+        let cpp = summarize_distribution(&cpp_times);
+        let cpp_per_k = summarize_distribution(&cpp_us_per_k_faces);
+        let rust = summarize_distribution(&rust_times);
+        let rust_per_k = summarize_distribution(&rust_us_per_k_faces);
+        let speedup = summarize_distribution(&speedups);
+        println!(
+            "real encode speed {speed}: raw us C++ avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}], \
+             Rust avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}]",
+            cpp.mean, cpp.p50, cpp.p10, cpp.p90, rust.mean, rust.p50, rust.p10, rust.p90,
+        );
+        println!(
+            "real encode speed {speed}: us/1k faces C++ avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}], \
+             Rust avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}]",
+            cpp_per_k.mean,
+            cpp_per_k.p50,
+            cpp_per_k.p10,
+            cpp_per_k.p90,
+            rust_per_k.mean,
+            rust_per_k.p50,
+            rust_per_k.p10,
+            rust_per_k.p90,
+        );
+        println!(
+            "real encode speed {speed}: speedup avg {:.2}x, p50 {:.2}x, p10..p90 [{:.2}..{:.2}], \
+             attr count match {}/{}",
+            speedup.mean, speedup.p50, speedup.p10, speedup.p90, attr_matches, samples
+        );
+    }
+
+    println!();
+
+    for speed in 0..=10 {
+        let mut cpp_times = Vec::with_capacity(samples);
+        let mut cpp_us_per_k_faces = Vec::with_capacity(samples);
+        let mut rust_times = Vec::with_capacity(samples);
+        let mut rust_us_per_k_faces = Vec::with_capacity(samples);
+        let mut speedups = Vec::with_capacity(samples);
+        let mut decoded_matches = 0;
+        let mut decode_failures = 0;
+
+        for &index in &sample_indices {
+            let case = &corpus[index];
+            let encoded_data = encode_mesh_once(&case.mesh, speed);
+            let Some(cpp_result) =
+                draco_cpp_test_bridge::profile_cpp_decode(&encoded_data, decode_iterations as u32)
+            else {
+                decode_failures += 1;
+                continue;
+            };
+            let (rust_decode_us, rust_num_points, rust_num_faces) =
+                profile_rust_decode_only(&encoded_data, decode_iterations as u32);
+            let cpp_decode_us = cpp_result.decode_time_us as f64;
+
+            cpp_times.push(cpp_decode_us);
+            cpp_us_per_k_faces.push(cpp_decode_us / case.num_faces as f64 * 1000.0);
+            rust_times.push(rust_decode_us);
+            rust_us_per_k_faces.push(rust_decode_us / case.num_faces as f64 * 1000.0);
+            speedups.push(cpp_decode_us / rust_decode_us);
+
+            if cpp_result.num_points as usize == rust_num_points
+                && cpp_result.num_faces as usize == rust_num_faces
+            {
+                decoded_matches += 1;
+            }
+        }
+
+        if cpp_times.is_empty() {
+            println!(
+                "real decode speed {speed}: no C++-decodable Rust outputs, decode failures {decode_failures}/{samples}"
+            );
+            continue;
+        }
+
+        let cpp = summarize_distribution(&cpp_times);
+        let cpp_per_k = summarize_distribution(&cpp_us_per_k_faces);
+        let rust = summarize_distribution(&rust_times);
+        let rust_per_k = summarize_distribution(&rust_us_per_k_faces);
+        let speedup = summarize_distribution(&speedups);
+        let comparable_samples = cpp_times.len();
+        println!(
+            "real decode speed {speed}: raw us C++ avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}], \
+             Rust avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}]",
+            cpp.mean, cpp.p50, cpp.p10, cpp.p90, rust.mean, rust.p50, rust.p10, rust.p90,
+        );
+        println!(
+            "real decode speed {speed}: us/1k faces C++ avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}], \
+             Rust avg {:.1}, p50 {:.1}, p10..p90 [{:.1}..{:.1}]",
+            cpp_per_k.mean,
+            cpp_per_k.p50,
+            cpp_per_k.p10,
+            cpp_per_k.p90,
+            rust_per_k.mean,
+            rust_per_k.p50,
+            rust_per_k.p10,
+            rust_per_k.p90,
+        );
+        println!(
+            "real decode speed {speed}: speedup avg {:.2}x, p50 {:.2}x, p10..p90 [{:.2}..{:.2}], \
+             decoded size match {}/{}, decode failures {}/{}",
+            speedup.mean,
+            speedup.p50,
+            speedup.p10,
+            speedup.p90,
+            decoded_matches,
+            comparable_samples,
+            decode_failures,
+            samples
+        );
+    }
+}
+
+#[test]
 fn profile_mesh_clone_overhead() {
     let _output_lock = OUTPUT_LOCK.lock().unwrap();
     common::disable_noisy_debug_env();
@@ -1189,7 +2345,7 @@ fn profile_rust_vs_cpp_breakdown() {
         grid_size, grid_size, num_points, num_faces, iterations
     );
 
-    for speed in [0, 5, 10] {
+    for speed in 0..=10 {
         println!("=== Speed {} ===\n", speed);
 
         // C++ Profile
@@ -1359,7 +2515,7 @@ fn profile_decode_rust_vs_cpp() {
         grid_size, grid_size, num_points, num_faces, iterations
     );
 
-    for speed in [0, 5, 10] {
+    for speed in 0..=10 {
         println!("=== Speed {} ===\n", speed);
 
         // First encode to get data to decode
