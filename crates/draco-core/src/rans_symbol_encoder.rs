@@ -260,7 +260,7 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
     }
 
     /// Starts rANS encoding and reserves space for the expected output bytes.
-    pub fn start_encoding_with_capacity(
+    pub(crate) fn start_encoding_with_capacity(
         &mut self,
         _buffer: &mut EncoderBuffer,
         byte_capacity: usize,
