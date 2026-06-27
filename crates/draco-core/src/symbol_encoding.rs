@@ -46,7 +46,7 @@ pub fn encode_symbols(
     }
 
     // Compute bit lengths
-    let mut bit_lengths = Vec::with_capacity(symbols.len());
+    let mut bit_lengths = Vec::with_capacity(symbols.len().div_ceil(num_components));
     let mut max_value = 0;
 
     for chunk in symbols.chunks(num_components) {
@@ -120,7 +120,7 @@ pub fn estimate_bits(symbols: &[u32], num_components: usize) -> u64 {
     }
 
     // Compute bit lengths
-    let mut bit_lengths = Vec::with_capacity(symbols.len());
+    let mut bit_lengths = Vec::with_capacity(symbols.len().div_ceil(num_components));
     let mut max_value = 0;
 
     for chunk in symbols.chunks(num_components) {
@@ -340,7 +340,10 @@ fn encode_raw_symbols_internal<const RANS_PRECISION_BITS: u32>(
 ) -> bool {
     let mut encoder = RAnsSymbolEncoder::<RANS_PRECISION_BITS>::new();
     encoder.create(frequencies, frequencies.len(), target_buffer);
-    encoder.start_encoding(target_buffer);
+    encoder.start_encoding_with_capacity(
+        target_buffer,
+        symbols.len().saturating_mul(2).saturating_add(4),
+    );
 
     // Reverse encoding
     for &sym in symbols.iter().rev() {
@@ -417,7 +420,10 @@ fn encode_tagged_symbols(
     let value_bits = 32 * (symbols.len()); // safe upper bound
     value_buffer.start_bit_encoding(value_bits, false);
 
-    tag_encoder.start_encoding(target_buffer);
+    tag_encoder.start_encoding_with_capacity(
+        target_buffer,
+        bit_lengths.len().saturating_mul(2).saturating_add(4),
+    );
 
     // 1. Encode bits in FORWARD order (because our BitEncoder is FIFO).
     for (i, &len) in bit_lengths.iter().enumerate() {

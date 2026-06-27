@@ -104,7 +104,28 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
             );
         }
 
-        if total_rans_prob != Self::RANS_PRECISION {
+        if total_rans_prob < Self::RANS_PRECISION {
+            let mut largest_probability = 0;
+            for i in 1..num_symbols {
+                if self.probability_table[i].prob
+                    >= self.probability_table[largest_probability].prob
+                {
+                    largest_probability = i;
+                }
+            }
+
+            if debug_cmp {
+                debug_log!(
+                    "RUST RANS largest_probability: {} prob={}",
+                    largest_probability,
+                    self.probability_table[largest_probability].prob
+                );
+                debug_log!("RUST RANS total_rans_prob before fix: {}", total_rans_prob);
+            }
+
+            self.probability_table[largest_probability].prob +=
+                Self::RANS_PRECISION - total_rans_prob;
+        } else if total_rans_prob > Self::RANS_PRECISION {
             let mut sorted_probabilities: Vec<usize> = (0..num_symbols).collect();
             // Use stable sort to match C++ std::stable_sort behavior
             // Rust Vec::sort_by is documented to be stable
@@ -119,44 +140,38 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
                 debug_log!("RUST RANS total_rans_prob before fix: {}", total_rans_prob);
             }
 
-            if total_rans_prob < Self::RANS_PRECISION {
-                let last = *sorted_probabilities.last().unwrap();
-                self.probability_table[last].prob += Self::RANS_PRECISION - total_rans_prob;
-            } else {
-                let mut error = total_rans_prob as i32 - Self::RANS_PRECISION as i32;
-                while error > 0 {
-                    let act_total_prob_d = total_rans_prob as f64;
-                    let act_rel_error_d = rans_precision_d / act_total_prob_d;
+            let mut error = total_rans_prob as i32 - Self::RANS_PRECISION as i32;
+            while error > 0 {
+                let act_total_prob_d = total_rans_prob as f64;
+                let act_rel_error_d = rans_precision_d / act_total_prob_d;
 
-                    for j in (1..num_symbols).rev() {
-                        let symbol_id = sorted_probabilities[j];
-                        if self.probability_table[symbol_id].prob <= 1 {
-                            if j == num_symbols - 1 {
-                                return false;
-                            }
-                            break;
+                for j in (1..num_symbols).rev() {
+                    let symbol_id = sorted_probabilities[j];
+                    if self.probability_table[symbol_id].prob <= 1 {
+                        if j == num_symbols - 1 {
+                            return false;
                         }
+                        break;
+                    }
 
-                        let new_prob = (act_rel_error_d
-                            * self.probability_table[symbol_id].prob as f64)
-                            .floor() as i32;
-                        let mut fix = self.probability_table[symbol_id].prob as i32 - new_prob;
-                        if fix == 0 {
-                            fix = 1;
-                        }
-                        if fix >= self.probability_table[symbol_id].prob as i32 {
-                            fix = self.probability_table[symbol_id].prob as i32 - 1;
-                        }
-                        if fix > error {
-                            fix = error;
-                        }
+                    let new_prob = (act_rel_error_d * self.probability_table[symbol_id].prob as f64)
+                        .floor() as i32;
+                    let mut fix = self.probability_table[symbol_id].prob as i32 - new_prob;
+                    if fix == 0 {
+                        fix = 1;
+                    }
+                    if fix >= self.probability_table[symbol_id].prob as i32 {
+                        fix = self.probability_table[symbol_id].prob as i32 - 1;
+                    }
+                    if fix > error {
+                        fix = error;
+                    }
 
-                        self.probability_table[symbol_id].prob -= fix as u32;
-                        total_rans_prob -= fix as u32;
-                        error -= fix;
-                        if total_rans_prob == Self::RANS_PRECISION {
-                            break;
-                        }
+                    self.probability_table[symbol_id].prob -= fix as u32;
+                    total_rans_prob -= fix as u32;
+                    error -= fix;
+                    if total_rans_prob == Self::RANS_PRECISION {
+                        break;
                     }
                 }
             }
@@ -242,6 +257,16 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
 
     pub fn start_encoding(&mut self, _buffer: &mut EncoderBuffer) {
         self.ans.write_init(Self::L_RANS_BASE);
+    }
+
+    /// Starts rANS encoding and reserves space for the expected output bytes.
+    pub fn start_encoding_with_capacity(
+        &mut self,
+        _buffer: &mut EncoderBuffer,
+        byte_capacity: usize,
+    ) {
+        self.ans
+            .write_init_with_capacity(Self::L_RANS_BASE, byte_capacity);
     }
 
     pub fn encode_symbol(&mut self, symbol: u32) {

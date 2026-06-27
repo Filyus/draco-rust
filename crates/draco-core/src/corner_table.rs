@@ -457,17 +457,21 @@ impl CornerTable {
         self.opposite_corners
             .resize(self.num_corners(), INVALID_CORNER_INDEX);
 
-        // 1. Count outgoing half-edges per vertex
-        let mut num_corners_on_vertices = Vec::new();
-        for c in 0..self.num_corners() {
-            let v1 = self.vertex(CornerIndex(c as u32));
+        // 1. Count outgoing half-edges per vertex.
+        let mut num_vertices_seen = 0;
+        for &v1 in &self.corner_to_vertex_map {
+            if v1 == INVALID_VERTEX_INDEX {
+                continue;
+            }
+            num_vertices_seen = num_vertices_seen.max(v1.0 as usize + 1);
+        }
+
+        let mut num_corners_on_vertices = vec![0; num_vertices_seen];
+        for &v1 in &self.corner_to_vertex_map {
             if v1 == INVALID_VERTEX_INDEX {
                 continue;
             }
             let v1_val = v1.0 as usize;
-            if v1_val >= num_corners_on_vertices.len() {
-                num_corners_on_vertices.resize(v1_val + 1, 0);
-            }
             num_corners_on_vertices[v1_val] += 1;
         }
 
@@ -500,12 +504,7 @@ impl CornerTable {
             let source_v = self.vertex(self.next(c_idx));
             let sink_v = self.vertex(self.previous(c_idx));
 
-            // Check for degenerated faces
-            let f_first = self.first_corner(self.face(c_idx));
-            let v0 = self.vertex(f_first);
-            let v1 = self.vertex(self.next(f_first));
-            let v2 = self.vertex(self.previous(f_first));
-            if v0 == v1 || v1 == v2 || v2 == v0 {
+            if tip_v == source_v || source_v == sink_v || sink_v == tip_v {
                 continue;
             }
 

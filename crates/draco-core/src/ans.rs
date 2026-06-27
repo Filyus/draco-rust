@@ -36,6 +36,12 @@ impl AnsCoder {
         self.state = l_base;
     }
 
+    /// Initializes the encoder state and reserves space for the emitted byte stream.
+    pub fn write_init_with_capacity(&mut self, l_base: u32, byte_capacity: usize) {
+        self.write_init(l_base);
+        self.buf.reserve(byte_capacity);
+    }
+
     /// Serialize the final coder state to the buffer tail.
     ///
     /// `allow_four_byte_state` mirrors [`AnsDecoder::read_init`]: the multi-symbol

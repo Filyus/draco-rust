@@ -133,9 +133,7 @@ impl<'a> RAnsSymbolDecoder<'a> {
                 // Malformed probability table - probabilities exceed precision
                 return false;
             }
-            for j in 0..prob {
-                self.lut[(cum_prob + j) as usize] = i as u32;
-            }
+            self.lut[cum_prob as usize..end_idx as usize].fill(i as u32);
             cum_prob = end_idx;
         }
 
