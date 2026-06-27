@@ -183,11 +183,9 @@ That bridge crate is test infrastructure only and is marked `publish = false`.
 
 ## Performance
 
-Local Rust/C++ interop benchmarks show a clear advantage in this setup,
-especially on compressed mesh decoding. Encoding also measures faster on the
-generated mesh cases tracked by the benchmark suite. Decode can be dramatically
-faster; encode also shows solid gains. Exact results depend on the mesh,
-encoder settings, and hardware.
+The Rust/C++ bridge benchmarks compare matching meshes and encoder settings
+across encode and decode. The current snapshots cover a stratified generated
+mesh sweep and a normal-distribution sample over real `.drc` fixtures.
 
 The benchmark suite lives mostly under `draco-cpp-test-bridge`:
 
@@ -195,8 +193,16 @@ The benchmark suite lives mostly under `draco-cpp-test-bridge`:
 cargo test --manifest-path crates/Cargo.toml -p draco-cpp-test-bridge --release -- --nocapture
 ```
 
-See [`BENCHMARK_TESTS.md`](BENCHMARK_TESTS.md) for the available benchmark
-targets and what each one measures.
+Release-profile speedup summaries:
+
+| Workload | Encode | Decode |
+| --- | ---: | ---: |
+| Stratified generated meshes, speeds `0..9` | `3.03x..5.89x` | `24.59x..39.26x` |
+| Real `.drc` corpus sample, speeds `0..9` | `4.18x..6.61x` | `11.94x..21.55x` |
+| Fast mode, speed `10` | `1.31x` generated, `1.49x` real | `1.18x` generated, `1.54x` real |
+
+See [`BENCHMARK_TESTS.md`](BENCHMARK_TESTS.md) for detailed speed tables and
+the available benchmark targets.
 
 ## Development
 
