@@ -1,6 +1,6 @@
 [package]
 name = "draco-core"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 description = "Pure Rust core encoder and decoder for Draco geometry compression"
 license = "Apache-2.0"

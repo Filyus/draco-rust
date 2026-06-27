@@ -8,6 +8,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.3](https://github.com/Filyus/draco-rust/compare/draco-core-v1.0.2...draco-core-v1.0.3) - 2026-06-27
+
+### Performance
+
+- Reduced allocation and setup overhead in selected mesh codec hot paths.
+
 ## [1.0.2] - 2026-06-24
 
 ### Fixed
