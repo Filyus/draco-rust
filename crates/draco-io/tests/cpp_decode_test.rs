@@ -1,7 +1,9 @@
 //! Test decoding C++ encoded files with Rust decoder
 
+#![cfg(feature = "test")]
+
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 
 #[test]
 fn test_decode_cpp_encoded_bunny() {
@@ -9,17 +11,18 @@ fn test_decode_cpp_encoded_bunny() {
     use draco_core::mesh::Mesh as DracoMesh;
     use draco_core::mesh_decoder::MeshDecoder;
 
-    let cpp_encoded_path = std::env::var_os("DRACO_CPP_ENCODED_BUNNY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("../../testdata/cpp_encoded_bunny.drc"));
-
-    if !cpp_encoded_path.exists() {
-        println!(
-            "Skipping test - C++ encoded file not found at {}",
-            cpp_encoded_path.display()
-        );
-        return;
-    }
+    let cpp_encoded_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("testdata")
+        .join("bunny_cpp_standard.drc");
+    assert!(
+        cpp_encoded_path.is_file(),
+        "committed C++ fixture is missing: {}",
+        cpp_encoded_path.display()
+    );
 
     let data = fs::read(&cpp_encoded_path).expect("Failed to read C++ encoded file");
     println!("C++ encoded file size: {} bytes", data.len());

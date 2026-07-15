@@ -49,33 +49,6 @@
 //! # Ok::<(), draco_io::GltfWriteError>(())
 //! ```
 
-/// Quantization settings for each attribute type.
-#[derive(Clone, Copy, Debug)]
-pub struct QuantizationBits {
-    /// Quantization bits for positions.
-    pub position: i32,
-    /// Quantization bits for normals.
-    pub normal: i32,
-    /// Quantization bits for colors.
-    pub color: i32,
-    /// Quantization bits for texture coordinates.
-    pub texcoord: i32,
-    /// Quantization bits for generic attributes.
-    pub generic: i32,
-}
-
-impl Default for QuantizationBits {
-    fn default() -> Self {
-        Self {
-            position: 14,
-            normal: 10,
-            color: 8,
-            texcoord: 12,
-            generic: 8,
-        }
-    }
-}
-
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
@@ -90,6 +63,8 @@ use draco_core::mesh_encoder::{EncodedAttributeInfo, EncodedMeshInfo, MeshEncode
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::gltf_compress::{EncodingMethod, GltfCompressionOptions};
+use crate::gltf_container::{serialize_gltf_document, GltfContainerFormat, OutputFormat};
 use crate::traits::{WriteToBytes, Writer};
 
 /// Errors that can occur when writing glTF files.
@@ -105,7 +80,11 @@ pub enum GltfWriteError {
 
     /// Draco encoding failed.
     #[error("Draco encode error: {0}")]
-    DracoEncode(String),
+    DracoEncode(#[source] draco_core::DracoError),
+
+    /// The encoder violated its documented postcondition.
+    #[error("Draco encoder invariant failed: {0}")]
+    EncoderInvariant(String),
 
     /// Mesh data cannot be represented as supported glTF Draco geometry.
     #[error("Invalid mesh: {0}")]
@@ -114,6 +93,18 @@ pub enum GltfWriteError {
     /// The mesh or scene uses a feature outside this writer's supported scope.
     #[error("Unsupported feature: {0}")]
     Unsupported(String),
+
+    /// Compression options are outside their supported range.
+    #[error("Invalid compression options: {0}")]
+    InvalidOptions(String),
+
+    /// A checked size computation or allocation failed.
+    #[error("Resource limit exceeded: {0}")]
+    ResourceLimit(String),
+
+    /// Generated JSON was unexpectedly not UTF-8.
+    #[error("UTF-8 conversion error: {0}")]
+    Utf8(#[from] std::string::FromUtf8Error),
 }
 
 /// Result type used by glTF writers.
@@ -150,13 +141,16 @@ struct GltfRoot {
 #[derive(Debug, Serialize)]
 struct Asset {
     version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     generator: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AccessorOut {
+    #[serde(skip_serializing_if = "Option::is_none")]
     buffer_view: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     byte_offset: Option<usize>,
     component_type: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -247,11 +241,6 @@ struct SceneOut {
 // GLB Constants
 // ============================================================================
 
-const GLB_MAGIC: u32 = 0x46546C67; // "glTF"
-const GLB_VERSION: u32 = 2;
-const GLB_CHUNK_JSON: u32 = 0x4E4F534A; // "JSON"
-const GLB_CHUNK_BIN: u32 = 0x004E4942; // "BIN\0"
-
 // ============================================================================
 // GltfWriter
 // ============================================================================
@@ -276,8 +265,11 @@ impl Default for GltfWriter {
 
 pub(crate) fn encode_draco_mesh_with_info(
     mesh: &Mesh,
-    quantization: &QuantizationBits,
+    compression: &GltfCompressionOptions,
 ) -> Result<(Vec<u8>, EncodedMeshInfo)> {
+    compression
+        .validate()
+        .map_err(|error| GltfWriteError::InvalidOptions(error.to_string()))?;
     validate_mesh_for_gltf_draco(mesh)?;
 
     if mesh.num_faces() == 0 {
@@ -288,35 +280,48 @@ pub(crate) fn encode_draco_mesh_with_info(
     encoder.set_mesh(mesh.clone());
 
     let mut options = EncoderOptions::new();
+    options.set_global_int("encoding_speed", compression.encoding_speed as i32);
+    options.set_global_int("decoding_speed", compression.decoding_speed as i32);
+    match compression.encoding_method {
+        EncodingMethod::Auto => {}
+        EncodingMethod::Sequential => options.set_encoding_method(0),
+        EncodingMethod::Edgebreaker => options.set_encoding_method(1),
+    }
 
-    // Set quantization for each attribute type, clamped to 1..=31.
-    // This matches the behavior used by the glTF writer.
+    // `None` deliberately leaves a floating-point attribute unquantized.
     for i in 0..mesh.num_attributes() {
         let att = mesh.attribute(i);
         if att.data_type() == draco_core::draco_types::DataType::Float32 {
             let bits = match att.attribute_type() {
-                GeometryAttributeType::Position => quantization.position,
-                GeometryAttributeType::Normal => quantization.normal,
-                GeometryAttributeType::Color => quantization.color,
-                GeometryAttributeType::TexCoord => quantization.texcoord,
-                GeometryAttributeType::Generic => quantization.generic,
-                GeometryAttributeType::Invalid => 8,
+                GeometryAttributeType::Position => compression.quantization.position,
+                GeometryAttributeType::Normal => compression.quantization.normal,
+                GeometryAttributeType::Color => compression.quantization.color,
+                GeometryAttributeType::TexCoord => compression.quantization.texcoord,
+                GeometryAttributeType::Generic | GeometryAttributeType::Invalid => {
+                    compression.quantization.generic
+                }
             };
-            let bits = bits.clamp(1, 31);
-            options.set_attribute_int(i, "quantization_bits", bits);
+            if let Some(bits) = bits {
+                options.set_attribute_int(i, "quantization_bits", bits as i32);
+            }
         }
     }
 
     let mut enc_buffer = EncoderBuffer::new();
     encoder
         .encode(&options, &mut enc_buffer)
-        .map_err(|e| GltfWriteError::DracoEncode(format!("{:?}", e)))?;
-    let encoded_info = encoder
-        .encoded_mesh_info()
-        .cloned()
-        .ok_or_else(|| GltfWriteError::DracoEncode("encoder did not return mesh info".into()))?;
+        .map_err(GltfWriteError::DracoEncode)?;
+    let encoded_info = encoder.encoded_mesh_info().cloned().ok_or_else(|| {
+        GltfWriteError::EncoderInvariant("encoder did not return mesh info".into())
+    })?;
 
-    Ok((enc_buffer.data().to_vec(), encoded_info))
+    let encoded = enc_buffer.data();
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(encoded.len())
+        .map_err(|_| GltfWriteError::ResourceLimit("Draco output allocation failed".into()))?;
+    bytes.extend_from_slice(encoded);
+    Ok((bytes, encoded_info))
 }
 
 /// Encode a mesh to a Draco bitstream using the same settings as `GltfWriter`.
@@ -325,10 +330,10 @@ pub(crate) fn encode_draco_mesh_with_info(
 /// wrapping them into a glTF/GLB container.
 pub fn encode_draco_mesh(
     mesh: &Mesh,
-    quantization: impl Into<Option<QuantizationBits>>,
+    options: impl Into<Option<GltfCompressionOptions>>,
 ) -> Result<Vec<u8>> {
-    let quantization = quantization.into().unwrap_or_default();
-    encode_draco_mesh_with_info(mesh, &quantization).map(|(bytes, _)| bytes)
+    let options = options.into().unwrap_or_default();
+    encode_draco_mesh_with_info(mesh, &options).map(|(bytes, _)| bytes)
 }
 
 impl GltfWriter {
@@ -353,14 +358,19 @@ impl GltfWriter {
     pub fn add_scene(
         &mut self,
         scene: &crate::scene::Scene,
-        quantization: impl Into<Option<QuantizationBits>>,
+        options: impl Into<Option<GltfCompressionOptions>>,
     ) -> Result<usize> {
-        let quantization = quantization.into().unwrap_or_default();
+        let options = options.into().unwrap_or_default();
 
         // Build nodes recursively and record root node indices.
-        let mut root_node_indices = Vec::with_capacity(scene.root_nodes.len());
+        let mut root_node_indices = Vec::new();
+        root_node_indices
+            .try_reserve_exact(scene.root_nodes.len())
+            .map_err(|_| {
+                GltfWriteError::ResourceLimit("scene root table allocation failed".into())
+            })?;
         for root in &scene.root_nodes {
-            let node_idx = self.push_scene_node(root, &quantization)?;
+            let node_idx = self.push_scene_node(root, &options)?;
             root_node_indices.push(node_idx);
         }
 
@@ -389,7 +399,7 @@ impl GltfWriter {
     fn push_scene_node(
         &mut self,
         node: &crate::scene::SceneNode,
-        quantization: &QuantizationBits,
+        options: &GltfCompressionOptions,
     ) -> Result<usize> {
         // glTF nodes can reference at most one mesh; if multiple mesh instances
         // exist, we create child nodes for each instance.
@@ -409,7 +419,7 @@ impl GltfWriter {
             let mesh_idx = self.encode_draco_mesh_internal(
                 &mesh_instance.mesh,
                 mesh_instance.name.as_deref(),
-                quantization,
+                options,
             )?;
             self.nodes[node_idx].mesh = Some(mesh_idx);
         } else if !node.mesh_instances.is_empty() {
@@ -417,7 +427,7 @@ impl GltfWriter {
                 let mesh_idx = self.encode_draco_mesh_internal(
                     &mesh_instance.mesh,
                     mesh_instance.name.as_deref(),
-                    quantization,
+                    options,
                 )?;
                 let child_idx = self.nodes.len();
                 self.nodes.push(NodeOut {
@@ -439,7 +449,7 @@ impl GltfWriter {
 
         // Recurse into children.
         for child in &node.children {
-            let child_idx = self.push_scene_node(child, quantization)?;
+            let child_idx = self.push_scene_node(child, options)?;
             self.nodes[node_idx].children.push(child_idx);
         }
 
@@ -450,10 +460,10 @@ impl GltfWriter {
         &mut self,
         mesh: &Mesh,
         name: Option<&str>,
-        quantization: &QuantizationBits,
+        options: &GltfCompressionOptions,
     ) -> Result<usize> {
-        let (draco_data, encoded_info) = encode_draco_mesh_with_info(mesh, quantization)?;
-        let draco_buffer_view_idx = self.append_buffer_view(&draco_data);
+        let (draco_data, encoded_info) = encode_draco_mesh_with_info(mesh, options)?;
+        let draco_buffer_view_idx = self.append_buffer_view(&draco_data)?;
         let primitive = self.build_draco_primitive(&encoded_info, draco_buffer_view_idx)?;
 
         let mesh_idx = self.meshes.len();
@@ -466,10 +476,19 @@ impl GltfWriter {
         Ok(mesh_idx)
     }
 
-    fn append_buffer_view(&mut self, data: &[u8]) -> usize {
-        while !self.binary_data.len().is_multiple_of(4) {
-            self.binary_data.push(0);
-        }
+    fn append_buffer_view(&mut self, data: &[u8]) -> Result<usize> {
+        let padding = (4 - self.binary_data.len() % 4) % 4;
+        let additional = padding
+            .checked_add(data.len())
+            .ok_or_else(|| GltfWriteError::ResourceLimit("binary buffer size overflow".into()))?;
+        let aligned_len =
+            self.binary_data.len().checked_add(padding).ok_or_else(|| {
+                GltfWriteError::ResourceLimit("binary buffer size overflow".into())
+            })?;
+        self.binary_data
+            .try_reserve_exact(additional)
+            .map_err(|_| GltfWriteError::ResourceLimit("binary buffer allocation failed".into()))?;
+        self.binary_data.resize(aligned_len, 0);
         let aligned_offset = self.binary_data.len();
 
         self.binary_data.extend_from_slice(data);
@@ -480,7 +499,7 @@ impl GltfWriter {
             byte_length: data.len(),
         });
 
-        buffer_view_idx
+        Ok(buffer_view_idx)
     }
 
     fn build_draco_primitive(
@@ -489,7 +508,11 @@ impl GltfWriter {
         draco_buffer_view_idx: usize,
     ) -> Result<PrimitiveOut> {
         let (attributes, draco_attributes) = self.add_mesh_attribute_accessors(encoded_info)?;
-        let indices_accessor_idx = self.add_indices_accessor(encoded_info.num_encoded_faces * 3);
+        let index_count = encoded_info
+            .num_encoded_faces
+            .checked_mul(3)
+            .ok_or_else(|| GltfWriteError::ResourceLimit("index count overflow".into()))?;
+        let indices_accessor_idx = self.add_indices_accessor(index_count);
 
         Ok(PrimitiveOut {
             attributes,
@@ -577,14 +600,14 @@ impl GltfWriter {
     /// # Arguments
     /// * `mesh` - The mesh to encode
     /// * `name` - Optional name for the mesh
-    /// * `quantization` - Optional quantization settings. Pass `None` for defaults.
+    /// * `options` - Optional compression settings. Pass `None` for defaults.
     ///
     /// # Returns
     /// The index of the added mesh.
     ///
     /// # Examples
     /// ```no_run
-    /// use draco_io::gltf_writer::{GltfWriter, QuantizationBits};
+    /// use draco_io::{GltfCompressionOptions, GltfWriter, QuantizationOptions};
     /// # let mesh = draco_core::mesh::Mesh::new();
     ///
     /// let mut writer = GltfWriter::new();
@@ -593,17 +616,20 @@ impl GltfWriter {
     /// writer.add_draco_mesh(&mesh, Some("MyMesh"), None)?;
     ///
     /// // Custom quantization
-    /// writer.add_draco_mesh(&mesh, Some("HighQuality"), QuantizationBits { position: 16, ..Default::default() })?;
+    /// writer.add_draco_mesh(&mesh, Some("HighQuality"), GltfCompressionOptions {
+    ///     quantization: QuantizationOptions { position: Some(16), ..Default::default() },
+    ///     ..Default::default()
+    /// })?;
     /// # Ok::<(), draco_io::GltfWriteError>(())
     /// ```
     pub fn add_draco_mesh(
         &mut self,
         mesh: &Mesh,
         name: Option<&str>,
-        quantization: impl Into<Option<QuantizationBits>>,
+        options: impl Into<Option<GltfCompressionOptions>>,
     ) -> Result<usize> {
-        let quantization = quantization.into().unwrap_or_default();
-        let mesh_idx = self.encode_draco_mesh_internal(mesh, name, &quantization)?;
+        let options = options.into().unwrap_or_default();
+        let mesh_idx = self.encode_draco_mesh_internal(mesh, name, &options)?;
 
         // Add a root node for this mesh.
         let node_idx = self.nodes.len();
@@ -671,26 +697,33 @@ impl GltfWriter {
     /// # Ok::<(), draco_io::GltfWriteError>(())
     /// ```
     pub fn write_gltf_embedded<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let data_uri = Self::encode_data_uri(&self.binary_data);
-        let root = self.build_gltf_root(Some(&data_uri));
-        let json = serde_json::to_string_pretty(&root)?;
-        fs::write(path, json)?;
+        fs::write(path, self.to_gltf_embedded()?)?;
         Ok(())
     }
 
     /// Convert to glTF JSON string with embedded base64 data.
     pub fn to_gltf_embedded(&self) -> Result<String> {
-        let data_uri = Self::encode_data_uri(&self.binary_data);
-        let root = self.build_gltf_root(Some(&data_uri));
-        let json = serde_json::to_string_pretty(&root)?;
-        Ok(json)
+        let root = serde_json::to_value(self.build_gltf_root(None))?;
+        let bytes = serialize_gltf_document(
+            &root,
+            &self.binary_data,
+            GltfContainerFormat::Gltf,
+            OutputFormat::GltfEmbeddedBuffers,
+        )
+        .map_err(|error| GltfWriteError::InvalidMesh(error.to_string()))?;
+        Ok(String::from_utf8(bytes)?)
     }
 
     /// Convert to GLB bytes.
     pub fn to_glb(&self) -> Result<Vec<u8>> {
-        let root = self.build_gltf_root(None);
-        let json = serde_json::to_string(&root)?;
-        Ok(build_glb(json.as_bytes(), &self.binary_data))
+        let root = serde_json::to_value(self.build_gltf_root(None))?;
+        serialize_gltf_document(
+            &root,
+            &self.binary_data,
+            GltfContainerFormat::Glb,
+            OutputFormat::Glb,
+        )
+        .map_err(|error| GltfWriteError::InvalidMesh(error.to_string()))
     }
 
     /// Write the default GLB output into a byte vector.
@@ -702,38 +735,6 @@ impl GltfWriter {
     pub fn write_to<W: Write>(&self, writer: &mut W) -> Result<()> {
         writer.write_all(&self.write_to_vec()?)?;
         Ok(())
-    }
-
-    fn encode_data_uri(data: &[u8]) -> String {
-        const ENCODE_TABLE: &[u8; 64] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-        let mut output = String::from("data:application/octet-stream;base64,");
-
-        for chunk in data.chunks(3) {
-            let b1 = chunk[0];
-            let b2 = chunk.get(1).copied().unwrap_or(0);
-            let b3 = chunk.get(2).copied().unwrap_or(0);
-
-            let n = ((b1 as u32) << 16) | ((b2 as u32) << 8) | (b3 as u32);
-
-            output.push(ENCODE_TABLE[((n >> 18) & 0x3F) as usize] as char);
-            output.push(ENCODE_TABLE[((n >> 12) & 0x3F) as usize] as char);
-
-            if chunk.len() > 1 {
-                output.push(ENCODE_TABLE[((n >> 6) & 0x3F) as usize] as char);
-            } else {
-                output.push('=');
-            }
-
-            if chunk.len() > 2 {
-                output.push(ENCODE_TABLE[(n & 0x3F) as usize] as char);
-            } else {
-                output.push('=');
-            }
-        }
-
-        output
     }
 
     fn build_gltf_root(&self, bin_uri: Option<&str>) -> GltfRoot {
@@ -802,7 +803,9 @@ fn validate_mesh_for_gltf_draco(mesh: &Mesh) -> Result<()> {
     }
 
     for face_id in 0..mesh.num_faces() {
-        let face = mesh.face(draco_core::geometry_indices::FaceIndex(face_id as u32));
+        let face_id_u32 = u32::try_from(face_id)
+            .map_err(|_| GltfWriteError::InvalidMesh("mesh has more than u32::MAX faces".into()))?;
+        let face = mesh.face(draco_core::geometry_indices::FaceIndex(face_id_u32));
         for point in face {
             if point.0 as usize >= mesh.num_points() {
                 return Err(GltfWriteError::InvalidMesh(format!(
@@ -991,50 +994,6 @@ fn gltf_type_for_num_components(num_components: u8) -> Result<&'static str> {
             num_components
         ))),
     }
-}
-
-fn build_glb(json_bytes: &[u8], bin_bytes: &[u8]) -> Vec<u8> {
-    let json_padding = padding_len(json_bytes.len());
-    let padded_json_len = json_bytes.len() + json_padding;
-    let padded_bin_len = if bin_bytes.is_empty() {
-        0
-    } else {
-        bin_bytes.len() + padding_len(bin_bytes.len())
-    };
-    let total_len = 12
-        + 8
-        + padded_json_len
-        + if bin_bytes.is_empty() {
-            0
-        } else {
-            8 + padded_bin_len
-        };
-
-    let mut output = Vec::with_capacity(total_len);
-    output.extend_from_slice(&GLB_MAGIC.to_le_bytes());
-    output.extend_from_slice(&GLB_VERSION.to_le_bytes());
-    output.extend_from_slice(&(total_len as u32).to_le_bytes());
-
-    append_glb_chunk(&mut output, GLB_CHUNK_JSON, json_bytes, b' ');
-    if !bin_bytes.is_empty() {
-        append_glb_chunk(&mut output, GLB_CHUNK_BIN, bin_bytes, 0);
-    }
-
-    output
-}
-
-fn append_glb_chunk(output: &mut Vec<u8>, chunk_type: u32, data: &[u8], padding_byte: u8) {
-    let padding = padding_len(data.len());
-    let padded_len = data.len() + padding;
-
-    output.extend_from_slice(&(padded_len as u32).to_le_bytes());
-    output.extend_from_slice(&chunk_type.to_le_bytes());
-    output.extend_from_slice(data);
-    output.extend(std::iter::repeat_n(padding_byte, padding));
-}
-
-fn padding_len(len: usize) -> usize {
-    (4 - (len % 4)) % 4
 }
 
 // ============================================================================
@@ -1232,12 +1191,15 @@ mod tests {
             .add_draco_mesh(
                 &mesh,
                 Some("Triangle"),
-                QuantizationBits {
-                    position: 10,
-                    normal: 10,
-                    color: 8,
-                    texcoord: 8,
-                    generic: 8,
+                GltfCompressionOptions {
+                    quantization: crate::QuantizationOptions {
+                        position: Some(10),
+                        normal: Some(10),
+                        color: Some(8),
+                        texcoord: Some(8),
+                        generic: Some(8),
+                    },
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -1286,6 +1248,35 @@ mod tests {
             encoded[8], 1,
             "default mesh encoding method should match C++ ExpertEncoder selection"
         );
+    }
+
+    #[test]
+    fn compression_method_and_ranges_are_honored() {
+        let mesh = create_test_triangle();
+        let sequential = GltfCompressionOptions {
+            encoding_method: EncodingMethod::Sequential,
+            encoding_speed: 0,
+            decoding_speed: 10,
+            ..Default::default()
+        };
+        let encoded = encode_draco_mesh(&mesh, sequential).unwrap();
+        assert_eq!(encoded[8], 0, "sequential method must reach the encoder");
+
+        let edgebreaker = GltfCompressionOptions {
+            encoding_method: EncodingMethod::Edgebreaker,
+            ..Default::default()
+        };
+        let encoded = encode_draco_mesh(&mesh, edgebreaker).unwrap();
+        assert_eq!(encoded[8], 1, "EdgeBreaker method must reach the encoder");
+
+        let invalid = GltfCompressionOptions {
+            encoding_speed: 11,
+            ..Default::default()
+        };
+        assert!(matches!(
+            encode_draco_mesh(&mesh, invalid),
+            Err(GltfWriteError::InvalidOptions(_))
+        ));
     }
 
     #[cfg(feature = "gltf-reader")]
@@ -1476,12 +1467,12 @@ mod tests {
     fn test_base64_encoding() {
         // Test base64 encoding
         let data = b"Hello";
-        let encoded = GltfWriter::encode_data_uri(data);
+        let encoded = crate::encode_data_uri("application/octet-stream", data).unwrap();
         assert!(encoded.starts_with("data:application/octet-stream;base64,"));
         assert!(encoded.contains("SGVsbG8="));
 
         let data = b"Hello World";
-        let encoded = GltfWriter::encode_data_uri(data);
+        let encoded = crate::encode_data_uri("application/octet-stream", data).unwrap();
         assert!(encoded.contains("SGVsbG8gV29ybGQ="));
     }
 
@@ -1515,8 +1506,9 @@ mod tests {
         writer
             .add_draco_mesh(&mesh, Some("Triangle"), None)
             .unwrap();
-        let json: serde_json::Value = serde_json::from_str(&writer.to_gltf_embedded().unwrap())
-            .expect("writer JSON should parse");
+        let json_text = writer.to_gltf_embedded().unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&json_text).expect("writer JSON should parse");
 
         let primitive = &json["meshes"][0]["primitives"][0];
         let position_accessor = primitive["attributes"]["POSITION"].as_u64().unwrap() as usize;
@@ -1525,6 +1517,13 @@ mod tests {
         let draco_attributes = &primitive["extensions"]["KHR_draco_mesh_compression"]["attributes"];
 
         assert_eq!(json["accessors"][position_accessor]["count"], 3);
+        assert!(json["accessors"][position_accessor]
+            .get("bufferView")
+            .is_none());
+        assert!(json["accessors"][position_accessor]
+            .get("byteOffset")
+            .is_none());
+        assert!(json["asset"]["generator"].is_string());
         assert_eq!(json["accessors"][color_accessor]["count"], 3);
         assert_eq!(json["accessors"][texcoord_accessor]["count"], 3);
         assert_eq!(draco_attributes["POSITION"], 10);
@@ -1546,6 +1545,25 @@ mod tests {
         );
         assert_eq!(json["accessors"][color_accessor]["normalized"], true);
         assert_eq!(json["accessors"][texcoord_accessor]["normalized"], true);
+
+        #[cfg(feature = "gltf-reader")]
+        {
+            let reader = crate::GltfReader::from_gltf(json_text.as_bytes(), None).unwrap();
+            let info = reader.draco_primitives().remove(0);
+            let decoded = reader.decode_draco_mesh(&info).unwrap();
+            assert!(decoded.attribute_by_unique_id(10).is_some());
+            assert!(decoded.attribute_by_unique_id(20).is_some());
+            assert!(decoded.attribute_by_unique_id(30).is_some());
+
+            let mut invalid_json = json.clone();
+            invalid_json["meshes"][0]["primitives"][0]["extensions"]
+                ["KHR_draco_mesh_compression"]["attributes"]["POSITION"] =
+                serde_json::Value::from(99);
+            let invalid = serde_json::to_vec(&invalid_json).unwrap();
+            let reader = crate::GltfReader::from_gltf(&invalid, None).unwrap();
+            let info = reader.draco_primitives().remove(0);
+            assert!(reader.decode_draco_mesh(&info).is_err());
+        }
     }
 
     #[test]

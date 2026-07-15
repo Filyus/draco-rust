@@ -39,11 +39,31 @@ pub enum GltfError {
 
     /// Embedded Draco payload failed to decode.
     #[error("Draco decode error: {0}")]
-    DracoDecode(String),
+    DracoDecode(#[source] draco_core::DracoError),
+
+    /// Draco encoding failed with a typed codec error.
+    #[error("Draco encode error: {0}")]
+    DracoEncode(#[source] draco_core::DracoError),
 
     /// The asset uses a glTF feature outside this crate's geometry scope.
     #[error("Unsupported feature: {0}")]
     Unsupported(String),
+
+    /// An external resource was rejected by policy or confinement.
+    #[error("External resource denied: {0}")]
+    ExternalResourceDenied(String),
+
+    /// A configured resource quota or a checked allocation was exceeded.
+    #[error("Resource limit exceeded: {0}")]
+    ResourceLimitExceeded(String),
+
+    /// Unknown extension JSON contains binary references that cannot be remapped safely.
+    #[error("Opaque binary reference: {0}")]
+    OpaqueBinaryReference(String),
+
+    /// Compression options are outside their supported range.
+    #[error("Invalid compression options: {0}")]
+    InvalidOptions(String),
 }
 
 /// Result type used by glTF readers and the geometry decoder.
@@ -83,19 +103,38 @@ impl DecodedAccessor {
         data_type: DataType,
         normalized: bool,
         bytes: Vec<u8>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let expected = count
+            .checked_mul(num_components as usize)
+            .and_then(|count| count.checked_mul(data_type.byte_length()))
+            .ok_or_else(|| GltfError::InvalidGltf("accessor byte size overflow".into()))?;
+        if bytes.len() != expected {
+            return Err(GltfError::InvalidGltf(format!(
+                "accessor has {} bytes, expected {expected}",
+                bytes.len()
+            )));
+        }
+        Ok(Self {
             count,
             num_components,
             data_type,
             normalized,
             bytes,
-        }
+        })
     }
 
     fn gather(&self, indices: &[u32]) -> Result<Self> {
-        let stride = self.num_components as usize * self.data_type.byte_length();
-        let mut bytes = Vec::with_capacity(indices.len() * stride);
+        let stride = (self.num_components as usize)
+            .checked_mul(self.data_type.byte_length())
+            .ok_or_else(|| GltfError::InvalidGltf("accessor stride overflow".into()))?;
+        let byte_len = indices
+            .len()
+            .checked_mul(stride)
+            .ok_or_else(|| GltfError::InvalidGltf("gathered accessor size overflow".into()))?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(byte_len).map_err(|_| {
+            GltfError::ResourceLimitExceeded("gathered accessor allocation failed".into())
+        })?;
 
         for &index in indices {
             let index = index as usize;
@@ -105,8 +144,14 @@ impl DecodedAccessor {
                     index, self.count
                 )));
             }
-            let offset = index * stride;
-            bytes.extend_from_slice(&self.bytes[offset..offset + stride]);
+            let offset = index
+                .checked_mul(stride)
+                .ok_or_else(|| GltfError::InvalidGltf("accessor offset overflow".into()))?;
+            let end = offset
+                .checked_add(stride)
+                .filter(|end| *end <= self.bytes.len())
+                .ok_or_else(|| GltfError::InvalidGltf("accessor bytes are truncated".into()))?;
+            bytes.extend_from_slice(&self.bytes[offset..end]);
         }
 
         Ok(Self {
@@ -145,10 +190,19 @@ pub trait AccessorSource {
     fn read_indices(&self, accessor: usize) -> Result<Vec<u32>>;
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct SemanticSpec {
     pub(crate) attribute_type: GeometryAttributeType,
     pub(crate) expected_accessor_types: &'static [&'static str],
     pub(crate) allowed_component_types: &'static [u32],
+    normalization: NormalizationPolicy,
+}
+
+#[derive(Clone, Copy)]
+enum NormalizationPolicy {
+    Forbidden,
+    RequiredForInteger,
+    Generic,
 }
 
 const FLOAT_ONLY: &[u32] = &[GLTF_COMPONENT_FLOAT];
@@ -158,6 +212,13 @@ const TEXCOORD_COMPONENT_TYPES: &[u32] = &[
     GLTF_COMPONENT_UNSIGNED_SHORT,
 ];
 const COLOR_COMPONENT_TYPES: &[u32] = &[
+    GLTF_COMPONENT_FLOAT,
+    GLTF_COMPONENT_UNSIGNED_BYTE,
+    GLTF_COMPONENT_UNSIGNED_SHORT,
+];
+const JOINT_COMPONENT_TYPES: &[u32] =
+    &[GLTF_COMPONENT_UNSIGNED_BYTE, GLTF_COMPONENT_UNSIGNED_SHORT];
+const WEIGHT_COMPONENT_TYPES: &[u32] = &[
     GLTF_COMPONENT_FLOAT,
     GLTF_COMPONENT_UNSIGNED_BYTE,
     GLTF_COMPONENT_UNSIGNED_SHORT,
@@ -190,8 +251,6 @@ pub fn decode_geometry<S: AccessorSource>(
     attributes: &[(String, usize)],
     indices: Option<usize>,
 ) -> Result<(Mesh, Vec<(String, u32)>)> {
-    use draco_core::geometry_indices::PointIndex;
-
     if mode != GLTF_MODE_TRIANGLES && mode != GLTF_MODE_POINTS {
         return Err(GltfError::Unsupported(format!(
             "Primitive mode {} not supported (only POINTS=0 and TRIANGLES=4)",
@@ -207,6 +266,7 @@ pub fn decode_geometry<S: AccessorSource>(
         .ok_or_else(|| GltfError::InvalidGltf("primitive has no POSITION attribute".into()))?;
 
     let positions = src.read_attribute(pos_accessor_idx, &["VEC3"], &[GLTF_COMPONENT_FLOAT])?;
+    validate_decoded_semantic("POSITION", &positions)?;
 
     let mut mesh = Mesh::new();
     let point_indices = if mode == GLTF_MODE_POINTS {
@@ -222,6 +282,9 @@ pub fn decode_geometry<S: AccessorSource>(
     mesh.set_num_points(positions.count);
 
     let mut semantics: Vec<(String, u32)> = Vec::new();
+    semantics.try_reserve_exact(attributes.len()).map_err(|_| {
+        GltfError::ResourceLimitExceeded("attribute semantic table allocation failed".into())
+    })?;
     let pos_id = add_decoded_attribute(&mut mesh, GeometryAttributeType::Position, positions)?;
     semantics.push(("POSITION".to_string(), pos_id as u32));
 
@@ -243,12 +306,10 @@ pub fn decode_geometry<S: AccessorSource>(
                 }
             }
             let num_faces = indices.len() / 3;
-            for i in 0..num_faces {
-                mesh.add_face([
-                    PointIndex(indices[i * 3]),
-                    PointIndex(indices[i * 3 + 1]),
-                    PointIndex(indices[i * 3 + 2]),
-                ]);
+            mesh.try_set_num_faces(num_faces)
+                .map_err(GltfError::DracoEncode)?;
+            for (face_id, face) in indices.chunks_exact(3).enumerate() {
+                mesh.set_face_from_indices(face_id, [face[0], face[1], face[2]]);
             }
         } else {
             // Non-indexed: generate sequential triangle faces.
@@ -257,9 +318,25 @@ pub fn decode_geometry<S: AccessorSource>(
                     "Non-indexed primitive point count not divisible by 3".into(),
                 ));
             }
-            for i in 0..(mesh.num_points() / 3) {
-                let base = (i * 3) as u32;
-                mesh.add_face([PointIndex(base), PointIndex(base + 1), PointIndex(base + 2)]);
+            let num_faces = mesh.num_points() / 3;
+            mesh.try_set_num_faces(num_faces)
+                .map_err(GltfError::DracoEncode)?;
+            for face_id in 0..num_faces {
+                let base = face_id
+                    .checked_mul(3)
+                    .and_then(|base| u32::try_from(base).ok())
+                    .ok_or_else(|| {
+                        GltfError::InvalidGltf(
+                            "Non-indexed primitive exceeds Draco's u32 point-id limit".into(),
+                        )
+                    })?;
+                let second = base
+                    .checked_add(1)
+                    .ok_or_else(|| GltfError::InvalidGltf("Triangle point-id overflow".into()))?;
+                let third = base
+                    .checked_add(2)
+                    .ok_or_else(|| GltfError::InvalidGltf("Triangle point-id overflow".into()))?;
+                mesh.set_face_from_indices(face_id, [base, second, third]);
             }
         }
     }
@@ -270,13 +347,13 @@ pub fn decode_geometry<S: AccessorSource>(
         .find(|(semantic, _)| semantic == "NORMAL")
         .map(|(_, accessor)| *accessor)
     {
+        let spec = supported_semantic_spec("NORMAL")?;
         let normal_id = read_and_add_standard_attribute(
             &mut mesh,
             src,
             normal_idx,
-            GeometryAttributeType::Normal,
-            &["VEC3"],
-            &[GLTF_COMPONENT_FLOAT],
+            "NORMAL",
+            spec,
             point_indices.as_deref(),
         )?;
         semantics.push(("NORMAL".to_string(), normal_id as u32));
@@ -285,7 +362,11 @@ pub fn decode_geometry<S: AccessorSource>(
     // Read every remaining semantic in sorted order. Draco can carry multiple
     // attributes with the same semantic type (extra TEXCOORD_n/COLOR_n), plus
     // TANGENT, JOINTS_n, WEIGHTS_n, and custom `_*`.
-    let mut sorted: Vec<&(String, usize)> = attributes.iter().collect();
+    let mut sorted: Vec<&(String, usize)> = Vec::new();
+    sorted.try_reserve_exact(attributes.len()).map_err(|_| {
+        GltfError::ResourceLimitExceeded("attribute sort table allocation failed".into())
+    })?;
+    sorted.extend(attributes.iter());
     sorted.sort_by(|(left, _), (right, _)| left.cmp(right));
     for (semantic, accessor_idx) in sorted {
         if semantic == "POSITION" || semantic == "NORMAL" {
@@ -296,9 +377,8 @@ pub fn decode_geometry<S: AccessorSource>(
             &mut mesh,
             src,
             *accessor_idx,
-            attribute_spec.attribute_type,
-            attribute_spec.expected_accessor_types,
-            attribute_spec.allowed_component_types,
+            semantic,
+            attribute_spec,
             point_indices.as_deref(),
         )?;
         semantics.push((semantic.clone(), att_id as u32));
@@ -324,33 +404,29 @@ pub(crate) fn add_named_attribute<S: AccessorSource>(
     point_indices: Option<&[u32]>,
 ) -> Result<i32> {
     let spec = supported_semantic_spec(semantic)?;
-    read_and_add_standard_attribute(
-        mesh,
-        src,
-        accessor_idx,
-        spec.attribute_type,
-        spec.expected_accessor_types,
-        spec.allowed_component_types,
-        point_indices,
-    )
+    read_and_add_standard_attribute(mesh, src, accessor_idx, semantic, spec, point_indices)
 }
 
 fn read_and_add_standard_attribute<S: AccessorSource>(
     mesh: &mut Mesh,
     src: &S,
     accessor_idx: usize,
-    attribute_type: GeometryAttributeType,
-    expected_types: &[&str],
-    allowed_component_types: &[u32],
+    semantic: &str,
+    spec: SemanticSpec,
     point_indices: Option<&[u32]>,
 ) -> Result<i32> {
-    let decoded = src.read_attribute(accessor_idx, expected_types, allowed_component_types)?;
+    let decoded = src.read_attribute(
+        accessor_idx,
+        spec.expected_accessor_types,
+        spec.allowed_component_types,
+    )?;
+    validate_decoded_semantic(semantic, &decoded)?;
     let decoded = if let Some(indices) = point_indices {
         decoded.gather(indices)?
     } else {
         decoded
     };
-    add_decoded_attribute(mesh, attribute_type, decoded)
+    add_decoded_attribute(mesh, spec.attribute_type, decoded)
 }
 
 /// Adds a decoded attribute to the mesh, returning the new attribute id (which
@@ -370,14 +446,20 @@ fn add_decoded_attribute(
     }
 
     let mut attribute = PointAttribute::new();
-    attribute.init(
-        attribute_type,
-        decoded.num_components,
-        decoded.data_type,
-        decoded.normalized,
-        decoded.count,
-    );
-    attribute.buffer_mut().write(0, &decoded.bytes);
+    attribute
+        .try_init(
+            attribute_type,
+            decoded.num_components,
+            decoded.data_type,
+            decoded.normalized,
+            decoded.count,
+        )
+        .map_err(GltfError::DracoEncode)?;
+    if !attribute.buffer_mut().try_write(0, &decoded.bytes) {
+        return Err(GltfError::DracoEncode(draco_core::DracoError::BufferError(
+            "Decoded glTF attribute does not fit its Draco buffer".into(),
+        )));
+    }
     Ok(mesh.add_attribute(attribute))
 }
 
@@ -387,36 +469,139 @@ pub(crate) fn supported_semantic_spec(semantic: &str) -> Result<SemanticSpec> {
             attribute_type: GeometryAttributeType::Position,
             expected_accessor_types: &["VEC3"],
             allowed_component_types: FLOAT_ONLY,
+            normalization: NormalizationPolicy::Forbidden,
         }
     } else if semantic == "NORMAL" {
         SemanticSpec {
             attribute_type: GeometryAttributeType::Normal,
             expected_accessor_types: &["VEC3"],
             allowed_component_types: FLOAT_ONLY,
+            normalization: NormalizationPolicy::Forbidden,
         }
-    } else if semantic.starts_with("TEXCOORD_") {
+    } else if semantic == "TANGENT" {
+        SemanticSpec {
+            attribute_type: GeometryAttributeType::Generic,
+            expected_accessor_types: &["VEC4"],
+            allowed_component_types: FLOAT_ONLY,
+            normalization: NormalizationPolicy::Forbidden,
+        }
+    } else if indexed_semantic(semantic, "TEXCOORD_") {
         SemanticSpec {
             attribute_type: GeometryAttributeType::TexCoord,
             expected_accessor_types: &["VEC2"],
             allowed_component_types: TEXCOORD_COMPONENT_TYPES,
+            normalization: NormalizationPolicy::RequiredForInteger,
         }
-    } else if semantic.starts_with("COLOR_") {
+    } else if indexed_semantic(semantic, "COLOR_") {
         SemanticSpec {
             attribute_type: GeometryAttributeType::Color,
             expected_accessor_types: &["VEC3", "VEC4"],
             allowed_component_types: COLOR_COMPONENT_TYPES,
+            normalization: NormalizationPolicy::RequiredForInteger,
         }
-    } else {
-        // TANGENT, JOINTS_n, WEIGHTS_n, custom `_*`, and any other semantic are
-        // carried as generic attributes. The glTF semantic name is not stored on
-        // the Draco attribute itself; it is preserved by the caller through the
-        // `KHR_draco_mesh_compression` attributes map and `primitive.attributes`.
+    } else if indexed_semantic(semantic, "JOINTS_") {
+        SemanticSpec {
+            attribute_type: GeometryAttributeType::Generic,
+            expected_accessor_types: &["VEC4"],
+            allowed_component_types: JOINT_COMPONENT_TYPES,
+            normalization: NormalizationPolicy::Forbidden,
+        }
+    } else if indexed_semantic(semantic, "WEIGHTS_") {
+        SemanticSpec {
+            attribute_type: GeometryAttributeType::Generic,
+            expected_accessor_types: &["VEC4"],
+            allowed_component_types: WEIGHT_COMPONENT_TYPES,
+            normalization: NormalizationPolicy::RequiredForInteger,
+        }
+    } else if semantic.starts_with('_') && semantic.len() > 1 {
+        // Application-specific semantics are carried as generic Draco
+        // attributes. The semantic name remains in primitive.attributes and in
+        // the KHR_draco_mesh_compression attribute map.
         SemanticSpec {
             attribute_type: GeometryAttributeType::Generic,
             expected_accessor_types: &["SCALAR", "VEC2", "VEC3", "VEC4"],
             allowed_component_types: GENERIC_COMPONENT_TYPES,
+            normalization: NormalizationPolicy::Generic,
         }
+    } else {
+        return Err(GltfError::InvalidGltf(format!(
+            "invalid glTF attribute semantic {semantic}"
+        )));
     };
 
     Ok(spec)
+}
+
+fn indexed_semantic(semantic: &str, prefix: &str) -> bool {
+    semantic
+        .strip_prefix(prefix)
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+pub(crate) fn validate_semantic_accessor(
+    semantic: &str,
+    accessor_type: &str,
+    component_type: u32,
+    normalized: bool,
+) -> Result<SemanticSpec> {
+    let spec = supported_semantic_spec(semantic)?;
+    if !spec.expected_accessor_types.contains(&accessor_type) {
+        return Err(GltfError::InvalidGltf(format!(
+            "{semantic} accessor type {accessor_type} is invalid"
+        )));
+    }
+    if !spec.allowed_component_types.contains(&component_type) {
+        return Err(GltfError::InvalidGltf(format!(
+            "{semantic} accessor componentType {component_type} is invalid"
+        )));
+    }
+    let integer = component_type != GLTF_COMPONENT_FLOAT;
+    let valid_normalized = match spec.normalization {
+        NormalizationPolicy::Forbidden => !normalized,
+        NormalizationPolicy::RequiredForInteger => normalized == integer,
+        NormalizationPolicy::Generic => !normalized || integer,
+    };
+    if !valid_normalized {
+        return Err(GltfError::InvalidGltf(format!(
+            "{semantic} accessor normalized={normalized} is invalid for componentType {component_type}"
+        )));
+    }
+    Ok(spec)
+}
+
+fn validate_decoded_semantic(semantic: &str, accessor: &DecodedAccessor) -> Result<()> {
+    validate_semantic_accessor(
+        semantic,
+        gltf_type_for_num_components(accessor.num_components)?,
+        component_type_for_data_type(accessor.data_type)?,
+        accessor.normalized,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn gltf_type_for_num_components(num_components: u8) -> Result<&'static str> {
+    match num_components {
+        1 => Ok("SCALAR"),
+        2 => Ok("VEC2"),
+        3 => Ok("VEC3"),
+        4 => Ok("VEC4"),
+        _ => Err(GltfError::InvalidGltf(format!(
+            "Invalid accessor component count: {num_components}"
+        ))),
+    }
+}
+
+pub(crate) fn component_type_for_data_type(data_type: DataType) -> Result<u32> {
+    match data_type {
+        DataType::Int8 => Ok(GLTF_COMPONENT_BYTE),
+        DataType::Uint8 => Ok(GLTF_COMPONENT_UNSIGNED_BYTE),
+        DataType::Int16 => Ok(GLTF_COMPONENT_SHORT),
+        DataType::Uint16 => Ok(GLTF_COMPONENT_UNSIGNED_SHORT),
+        #[cfg(feature = "gltf-reader")]
+        DataType::Uint32 => Ok(GLTF_COMPONENT_UNSIGNED_INT),
+        DataType::Float32 => Ok(GLTF_COMPONENT_FLOAT),
+        _ => Err(GltfError::Unsupported(format!(
+            "Unsupported Draco attribute data type for glTF: {data_type:?}"
+        ))),
+    }
 }

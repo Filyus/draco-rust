@@ -260,14 +260,23 @@ fn encode_mesh_like_gltf_writer(
         draco_mesh.add_face([i0, i1, i2]);
     }
 
-    let quant = draco_io::gltf_writer::QuantizationBits {
-        position: position_quantization,
-        normal: normal_quantization,
-        texcoord: texcoord_quantization,
-        ..Default::default()
+    let quantization_bit = |name: &str, value: i32| {
+        u8::try_from(value)
+            .map(Some)
+            .map_err(|_| format!("{name} quantization bits {value} do not fit u8"))
+    };
+    let options = draco_io::GltfCompressionOptions {
+        quantization: draco_io::QuantizationOptions {
+            position: quantization_bit("position", position_quantization)?,
+            normal: quantization_bit("normal", normal_quantization)?,
+            texcoord: quantization_bit("texcoord", texcoord_quantization)?,
+            ..draco_io::QuantizationOptions::default()
+        },
+        encoding_method: draco_io::EncodingMethod::Sequential,
+        ..draco_io::GltfCompressionOptions::default()
     };
 
-    draco_io::gltf_writer::encode_draco_mesh(&draco_mesh, quant).map_err(|e| e.to_string())
+    draco_io::gltf_writer::encode_draco_mesh(&draco_mesh, options).map_err(|e| e.to_string())
 }
 
 fn parse_obj_positions(obj_content: &str) -> Vec<[f32; 3]> {

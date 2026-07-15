@@ -2,6 +2,8 @@
 //!
 //! This test verifies that GLB files can be decoded and re-encoded correctly.
 
+#![cfg(feature = "test")]
+
 use draco_core::decoder_buffer::DecoderBuffer;
 use draco_core::geometry_attribute::GeometryAttributeType;
 use draco_core::geometry_indices::FaceIndex;
@@ -21,10 +23,11 @@ fn test_glb_decode_and_inspect() {
         .join("testdata")
         .join("IridescenceLamp.glb");
 
-    if !test_file.exists() {
-        eprintln!("Test file not found: {:?}, skipping", test_file);
-        return;
-    }
+    assert!(
+        test_file.is_file(),
+        "committed fixture missing: {:?}",
+        test_file
+    );
 
     println!("Loading GLB file: {:?}", test_file);
 
@@ -90,10 +93,11 @@ fn test_glb_roundtrip_with_draco() {
         .join("testdata")
         .join("IridescenceLamp.glb");
 
-    if !test_file.exists() {
-        eprintln!("Test file not found: {:?}, skipping", test_file);
-        return;
-    }
+    assert!(
+        test_file.is_file(),
+        "committed fixture missing: {:?}",
+        test_file
+    );
 
     // Read the original GLB
     let reader = GltfReader::open(&test_file).expect("Failed to open GLB");
@@ -181,10 +185,11 @@ fn test_decode_cpp_encoded_bunny() {
         .join("testdata")
         .join("bunny_cpp_standard.drc");
 
-    if !drc_path.exists() {
-        println!("Skipping test - bunny_cpp.drc not found at {:?}", drc_path);
-        return;
-    }
+    assert!(
+        drc_path.is_file(),
+        "committed fixture missing: {:?}",
+        drc_path
+    );
 
     let data = std::fs::read(&drc_path).expect("Failed to read bunny_cpp.drc");
     println!("Read {} bytes from {:?}", data.len(), drc_path);
@@ -217,13 +222,11 @@ fn test_glb_mesh_topology() {
         .join("testdata")
         .join("IridescenceLamp.glb");
 
-    if !glb_path.exists() {
-        println!(
-            "Skipping test - IridescenceLamp.glb not found at {:?}",
-            glb_path
-        );
-        return;
-    }
+    assert!(
+        glb_path.is_file(),
+        "committed fixture missing: {:?}",
+        glb_path
+    );
 
     let reader = GltfReader::open(&glb_path).expect("Failed to open GLB");
     let meshes = reader.decode_all_meshes().expect("Failed to decode meshes");
@@ -286,13 +289,16 @@ fn test_glb_roundtrip_sequential() {
     let test_file = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
+        .parent()
+        .unwrap()
         .join("testdata")
         .join("IridescenceLamp.glb");
 
-    if !test_file.exists() {
-        eprintln!("Test file not found: {:?}, skipping", test_file);
-        return;
-    }
+    assert!(
+        test_file.is_file(),
+        "committed fixture missing: {:?}",
+        test_file
+    );
 
     let reader = GltfReader::open(&test_file).expect("Failed to open GLB");
     let original_meshes = reader.decode_all_meshes().expect("Failed to decode meshes");

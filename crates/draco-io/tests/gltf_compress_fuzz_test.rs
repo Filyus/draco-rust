@@ -69,7 +69,7 @@ fn valid_glb() -> Vec<u8> {
 
 /// Calling the compressor must never panic; the result is irrelevant.
 fn must_not_panic(input: &[u8]) {
-    let _ = compress_gltf_bytes(input, None);
+    let _ = compress_gltf_bytes(input);
 }
 
 #[test]
@@ -176,7 +176,7 @@ fn external_buffer_uri_is_refused_without_base_path() {
                 { "buffer": 0, "byteOffset": 0, "byteLength": 36 },
                 { "buffer": 0, "byteOffset": 36, "byteLength": 6 } ],
             "buffers": [ { "byteLength": 42, "uri": uri } ] });
-        let result = compress_gltf_bytes(&serde_json::to_vec(&doc).unwrap(), None);
+        let result = compress_gltf_bytes(&serde_json::to_vec(&doc).unwrap());
         assert!(
             result.is_err(),
             "external uri {uri:?} must be refused without a base path"

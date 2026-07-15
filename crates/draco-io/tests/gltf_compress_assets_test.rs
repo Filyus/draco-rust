@@ -8,7 +8,7 @@
 //!   compression (JOINTS_0/WEIGHTS_0), indices generation for a non-indexed
 //!   mesh, and skin/animation preservation on a complex real asset.
 
-#![cfg(all(feature = "gltf-reader", feature = "gltf-writer"))]
+#![cfg(all(feature = "test", feature = "gltf-reader", feature = "gltf-writer"))]
 
 use std::path::{Path, PathBuf};
 
@@ -38,7 +38,13 @@ fn lantern_compresses_preserves_materials_and_roundtrips() {
     let bytes = std::fs::read(&path).expect("testdata/Lantern/glTF/Lantern.gltf must exist");
     let before: Value = serde_json::from_slice(&bytes).unwrap();
 
-    let output = compress_gltf_bytes_with_base_path(&bytes, Some(&dir), None).expect("compress");
+    let output = compress_gltf_bytes_with_base_path(
+        &bytes,
+        Some(&dir),
+        &draco_io::GltfCompressionOptions::default(),
+    )
+    .expect("compress")
+    .data;
     let after: Value = serde_json::from_slice(&output).unwrap();
 
     // Materials and textures/images carried through untouched.
@@ -61,7 +67,7 @@ fn lantern_compresses_preserves_materials_and_roundtrips() {
 
     // Full round-trip: Lantern has no skins/animations, so the strict reader
     // accepts the compressed output and decodes the geometry.
-    let reader = GltfReader::from_bytes_with_base_path(&output, None)
+    let reader = GltfReader::from_bytes_with_base_path(&output, Some(&dir))
         .expect("compressed Lantern must be readable");
     let meshes = reader.decode_all_meshes().expect("decode");
     assert_eq!(meshes.len(), mesh_count);
@@ -79,7 +85,13 @@ fn fox_skinned_animated_compresses_and_preserves_scene() {
     let bytes = std::fs::read(&path).expect("testdata/Fox/glTF/Fox.gltf must exist");
     let before: Value = serde_json::from_slice(&bytes).unwrap();
 
-    let output = compress_gltf_bytes_with_base_path(&bytes, Some(&dir), None).expect("compress");
+    let output = compress_gltf_bytes_with_base_path(
+        &bytes,
+        Some(&dir),
+        &draco_io::GltfCompressionOptions::default(),
+    )
+    .expect("compress")
+    .data;
     let after: Value = serde_json::from_slice(&output).unwrap();
 
     // Skin / animation / image content carried through untouched.
@@ -107,8 +119,8 @@ fn fox_skinned_animated_compresses_and_preserves_scene() {
 
     // The strict reader rejects skinned/animated assets, but the lenient reader
     // decodes their geometry — closing the round-trip for the compressed output.
-    let reader =
-        GltfReader::from_bytes_lenient(&output).expect("lenient read of compressed skinned glTF");
+    let reader = GltfReader::from_bytes_lenient_with_base_path(&output, Some(&dir))
+        .expect("lenient read of compressed skinned glTF");
     let meshes = reader.decode_all_meshes().expect("decode skinned geometry");
     assert!(!meshes.is_empty() && meshes.iter().all(|m| m.num_faces() > 0));
 }

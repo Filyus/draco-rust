@@ -8,6 +8,15 @@ repository = "https://github.com/Filyus/draco-rust"
 readme = "README.md"
 keywords = ["draco", "gltf", "obj", "ply", "fbx"]
 categories = ["compression", "encoding", "graphics", "parser-implementations"]
+exclude = [
+    "tests/cpp_decode_test.rs",
+    "tests/encoding_speed_test.rs",
+    "tests/glb_roundtrip_test.rs",
+    "tests/gltf_compress_assets_test.rs",
+    "tests/ply_bunny_test.rs",
+    "tests/roundtrip.rs",
+    "tools/blender_roundtrip.py",
+]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -20,8 +29,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 draco-core = { version = "1.0.0", path = "../draco-core", default-features = false }
 thiserror = "2.0.17"
 byteorder = { version = "1.5.0", optional = true }
-serde = { version = "1.0.228", features = ["derive"], optional = true }
-serde_json = { version = "1.0.148", optional = true }
+serde = { version = "1.0.228", default-features = false, features = ["alloc", "derive"], optional = true }
+serde_json = { version = "1.0.148", optional = true, default-features = false, features = ["alloc"] }
 miniz_oxide = { version = "0.6", optional = true }
 
 [features]
@@ -39,7 +48,15 @@ all-writers = ["fbx-writer", "gltf-writer", "obj-writer", "ply-writer"]
 fbx-reader = ["scene"]
 fbx-writer = []
 gltf-reader = ["draco-core/decoder", "scene", "dep:serde", "dep:serde_json"]
-gltf-writer = ["draco-core/encoder", "scene", "dep:serde", "dep:serde_json"]
+gltf-writer = [
+    "draco-core/decoder",
+    "draco-core/encoder",
+    "scene",
+    "dep:serde",
+    "dep:serde_json",
+    "serde/std",
+    "serde_json/std",
+]
 # Optional compatibility mode for reading older Draco bitstreams embedded in
 # KHR_draco_mesh_compression payloads. Writers still emit the current bitstream.
 legacy-bitstream-decode = ["draco-core/legacy_bitstream_decode"]
@@ -51,6 +68,8 @@ ply-writer = []
 scene = []
 point_cloud_decode = ["draco-core/point_cloud_decode"]
 compression = ["miniz_oxide"]
+# Repository-only fixtures and local external-tool tests.
+test = []
 
 [dev-dependencies]
 tempfile = "3.24.0"
@@ -100,25 +119,13 @@ name = "api_alignment"
 required-features = ["all-writers", "all-readers"]
 
 [[test]]
-name = "cpp_decode_test"
-required-features = ["all-readers"]
-
-[[test]]
-name = "encoding_speed_test"
-required-features = ["all-writers", "all-readers"]
-
-[[test]]
-name = "glb_roundtrip_test"
-required-features = ["gltf-writer", "gltf-reader"]
-
-[[test]]
 name = "geometry_contract"
 required-features = ["all-writers", "all-readers"]
 
 [[test]]
-name = "ply_bunny_test"
-required-features = ["ply-writer", "ply-reader"]
+name = "gltf_compress_fuzz_test"
+required-features = ["gltf-writer", "gltf-reader"]
 
 [[test]]
-name = "roundtrip"
-required-features = ["all-writers", "all-readers"]
+name = "gltf_compress_test"
+required-features = ["gltf-writer", "gltf-reader"]

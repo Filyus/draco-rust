@@ -7,13 +7,18 @@
 //! Import the trait to access its methods:
 //!
 //! ```no_run
+//! # #[cfg(feature = "obj-writer")]
+//! # fn main() -> Result<(), std::io::Error> {
 //! use draco_io::{Writer, ObjWriter};
 //! # let mesh = draco_core::mesh::Mesh::new();
 //!
 //! let mut writer = ObjWriter::new();
 //! writer.add_mesh(&mesh, Some("Name"))?;  // Calls trait method
 //! writer.write("output.obj")?;
-//! # Ok::<(), std::io::Error>(())
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "obj-writer"))]
+//! # fn main() {}
 //! ```
 //!
 //! This enables generic functions:

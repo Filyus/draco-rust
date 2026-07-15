@@ -40,13 +40,18 @@
 //! [`compress_gltf_bytes`]: it rewrites only the compressible mesh geometry and
 //! carries the rest of the document through untouched — materials, textures,
 //! images, samplers, cameras, nodes, animations, skins, `extras`, and unknown
-//! extensions all survive.
+//! JSON extensions survive. Unknown extension content that appears to contain
+//! binary buffer/view/offset references is rejected because it cannot be
+//! remapped safely. Default attribute quantization is lossy. Embedding glTF
+//! buffers does not embed external image URIs.
 //!
 //! # Unified Trait API
 //!
 //! All readers implement [`Reader`] and all writers implement [`Writer`]:
 //!
 //! ```no_run
+//! # #[cfg(all(feature = "obj-reader", feature = "obj-writer", feature = "ply-writer"))]
+//! # fn main() -> Result<(), std::io::Error> {
 //! use std::io;
 //! use draco_core::mesh::Mesh;
 //! use draco_io::{ObjReader, ObjWriter, PlyWriter, Reader, Writer};
@@ -67,7 +72,10 @@
 //! let mesh = load::<ObjReader>("input.obj")?;
 //! save(ObjWriter::new(), &mesh)?;
 //! save(PlyWriter::new(), &mesh)?;
-//! # Ok::<(), io::Error>(())
+//! # Ok(())
+//! # }
+//! # #[cfg(not(all(feature = "obj-reader", feature = "obj-writer", feature = "ply-writer")))]
+//! # fn main() {}
 //! ```
 //!
 //! # Format-Specific Features
@@ -75,6 +83,8 @@
 //! While the trait provides a common interface, each writer has format-specific methods:
 //!
 //! ```no_run
+//! # #[cfg(all(feature = "fbx-writer", feature = "gltf-writer", feature = "obj-writer", feature = "ply-writer"))]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use draco_io::{FbxWriter, GltfWriter, ObjWriter, PlyWriter};
 //! use draco_io::{PointCloudWriter, Writer};
 //! # let mesh = draco_core::mesh::Mesh::new();
@@ -99,7 +109,10 @@
 //! gltf.write_glb("output.glb")?;              // Binary GLB
 //! gltf.write_gltf("out.gltf", "out.bin")?;   // Separate files
 //! gltf.write_gltf_embedded("embedded.gltf")?; // Pure text
-//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! # Ok(())
+//! # }
+//! # #[cfg(not(all(feature = "fbx-writer", feature = "gltf-writer", feature = "obj-writer", feature = "ply-writer")))]
+//! # fn main() {}
 //! ```
 //!
 //! # glTF/GLB with Draco Compression
@@ -118,6 +131,8 @@
 //! ## Reading Draco-compressed glTF
 //!
 //! ```no_run
+//! # #[cfg(feature = "gltf-reader")]
+//! # fn main() -> Result<(), draco_io::GltfError> {
 //! use draco_io::gltf_reader::GltfReader;
 //!
 //! let reader = GltfReader::open("model.glb")?;
@@ -126,12 +141,17 @@
 //!         info.mesh_name.unwrap_or_default(),
 //!         mesh.num_faces());
 //! }
-//! # Ok::<(), draco_io::GltfError>(())
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "gltf-reader"))]
+//! # fn main() {}
 //! ```
 //!
 //! ## Writing Draco-compressed GLB
 //!
 //! ```no_run
+//! # #[cfg(feature = "gltf-writer")]
+//! # fn main() -> Result<(), draco_io::GltfWriteError> {
 //! use draco_io::gltf_writer::GltfWriter;
 //! # let mesh = draco_core::mesh::Mesh::new();
 //!
@@ -146,7 +166,10 @@
 //!
 //! // Option 3: Pure text with embedded data (no external files)
 //! writer.write_gltf_embedded("output.gltf")?;
-//! # Ok::<(), draco_io::GltfWriteError>(())
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "gltf-writer"))]
+//! # fn main() {}
 //! ```
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -162,7 +185,19 @@ pub mod fbx_reader;
     docsrs,
     doc(cfg(any(feature = "gltf-reader", feature = "gltf-writer")))
 )]
+pub mod gltf_container;
+#[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(feature = "gltf-reader", feature = "gltf-writer")))
+)]
 pub mod gltf_geometry;
+#[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(feature = "gltf-reader", feature = "gltf-writer")))
+)]
+pub mod gltf_khr_draco;
 #[cfg(feature = "gltf-reader")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-reader")))]
 pub mod gltf_reader;
@@ -214,26 +249,51 @@ pub use fbx_reader::{FbxMemoryReader, FbxReader};
 #[cfg_attr(docsrs, doc(cfg(feature = "fbx-writer")))]
 pub use fbx_writer::FbxWriter;
 // Reader-agnostic geometry decode + shared error type (reader or writer).
+#[cfg(feature = "gltf-writer")]
+pub use gltf_container::{
+    build_glb_container, encode_data_uri, serialize_gltf_document, OutputFormat,
+};
+#[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
+pub use gltf_container::{
+    decode_data_uri, parse_gltf_container, resolve_gltf_buffers, resolve_resource_uri,
+    ExternalFilePolicy, FileResourceResolver, GltfBufferReference, GltfContainer,
+    GltfContainerFormat, ResourceLimits, ResourceResolver,
+};
 #[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
 #[cfg_attr(
     docsrs,
     doc(cfg(any(feature = "gltf-reader", feature = "gltf-writer")))
 )]
 pub use gltf_geometry::{decode_geometry, AccessorSource, DecodedAccessor, GltfError};
+#[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
+pub use gltf_khr_draco::{
+    parse_khr_draco_extension_value, parse_khr_draco_mesh_compression, validate_khr_draco_document,
+    KhrDracoExtension, KhrDracoMeshCompression, KHR_DRACO_MESH_COMPRESSION,
+};
 // In-memory compressor core: writer only.
 #[cfg(feature = "gltf-writer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-writer")))]
-pub use gltf_compress::compress_gltf_value;
+pub use gltf_compress::{
+    compress_gltf_value, consolidate_gltf_buffers, validate_gltf_document_binary_layout,
+    validate_gltf_document_for_repacking, CompressionOutput, CompressionReport, EncodingMethod,
+    GltfCompressionOptions, PreserveReason, PreservedPrimitive, PrimitiveLocation,
+    QuantizationOptions,
+};
 // Byte compressor API: needs the reader to parse + resolve buffers.
 #[cfg(all(feature = "gltf-reader", feature = "gltf-writer"))]
 #[cfg_attr(
     docsrs,
     doc(cfg(all(feature = "gltf-reader", feature = "gltf-writer")))
 )]
-pub use gltf_compress::{compress_gltf_bytes, compress_gltf_bytes_with_base_path};
+pub use gltf_compress::{
+    compress_gltf_bytes, compress_gltf_bytes_with_base_path, compress_gltf_bytes_with_options,
+    compress_gltf_bytes_with_resolver,
+};
 #[cfg(feature = "gltf-reader")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-reader")))]
-pub use gltf_reader::{DracoPrimitiveInfo, GltfReader};
+pub use gltf_reader::{
+    DracoPrimitiveInfo, GltfDocumentMetadata, GltfNodeMetadata, GltfReader, GltfSceneMetadata,
+};
 #[cfg(feature = "gltf-writer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-writer")))]
 pub use gltf_writer::{GltfWriteError, GltfWriter};

@@ -667,6 +667,7 @@ pub fn write_ply_positions<P: AsRef<Path>>(path: P, points: &[[f32; 3]]) -> io::
 // ============================================================================
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     #[cfg(feature = "ply-reader")]

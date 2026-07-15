@@ -121,6 +121,8 @@ pub trait SceneReader: Reader {
 /// # Example
 ///
 /// ```no_run
+/// # #[cfg(feature = "gltf-writer")]
+/// # fn main() -> Result<(), std::io::Error> {
 /// use draco_io::{GltfWriter, Scene, SceneWriter, Writer};
 ///
 /// let scene = Scene::new(Some("MyScene".to_string()));
@@ -128,7 +130,10 @@ pub trait SceneReader: Reader {
 /// let mut writer = GltfWriter::new();
 /// SceneWriter::add_scene(&mut writer, &scene)?;
 /// writer.write("output.glb")?; // Writer::write defaults to GLB for GltfWriter
-/// # Ok::<(), std::io::Error>(())
+/// # Ok(())
+/// # }
+/// # #[cfg(not(feature = "gltf-writer"))]
+/// # fn main() {}
 /// ```
 pub trait SceneWriter: Writer {
     /// Add a scene graph to be written.

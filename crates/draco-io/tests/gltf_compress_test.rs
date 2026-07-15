@@ -6,7 +6,7 @@
 
 #![cfg(all(feature = "gltf-reader", feature = "gltf-writer"))]
 
-use draco_io::{compress_gltf_bytes, GltfReader};
+use draco_io::{compress_gltf_bytes, GltfError, GltfReader, PreserveReason, PrimitiveLocation};
 use serde_json::{json, Value};
 
 const GLB_MAGIC: u32 = 0x4654_6C67;
@@ -27,27 +27,7 @@ fn push_u16s(buf: &mut Vec<u8>, values: &[u16]) {
 }
 
 fn build_glb(json: &Value, bin: &[u8]) -> Vec<u8> {
-    let mut json_bytes = serde_json::to_vec(json).unwrap();
-    while !json_bytes.len().is_multiple_of(4) {
-        json_bytes.push(b' ');
-    }
-    let mut bin_bytes = bin.to_vec();
-    while !bin_bytes.len().is_multiple_of(4) {
-        bin_bytes.push(0);
-    }
-    let total = 12 + 8 + json_bytes.len() + 8 + bin_bytes.len();
-
-    let mut out = Vec::new();
-    out.extend_from_slice(&GLB_MAGIC.to_le_bytes());
-    out.extend_from_slice(&2u32.to_le_bytes());
-    out.extend_from_slice(&(total as u32).to_le_bytes());
-    out.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
-    out.extend_from_slice(&GLB_CHUNK_JSON.to_le_bytes());
-    out.extend_from_slice(&json_bytes);
-    out.extend_from_slice(&(bin_bytes.len() as u32).to_le_bytes());
-    out.extend_from_slice(&GLB_CHUNK_BIN.to_le_bytes());
-    out.extend_from_slice(&bin_bytes);
-    out
+    draco_io::build_glb_container(json, bin).unwrap()
 }
 
 fn read_u32(b: &[u8], at: usize) -> u32 {
@@ -144,7 +124,16 @@ fn compress_preserves_materials_textures_images_samplers() {
     let input = textured_triangle_glb();
     let (input_json, _) = split_glb(&input);
 
-    let output = compress_gltf_bytes(&input, None).expect("compression failed");
+    let compressed = compress_gltf_bytes(&input).expect("compression failed");
+    assert_eq!(
+        compressed.report.compressed_primitives,
+        vec![PrimitiveLocation {
+            mesh: 0,
+            primitive: 0
+        }]
+    );
+    assert!(compressed.report.preserved_primitives.is_empty());
+    let output = compressed.data;
     let (doc, bin) = split_glb(&output);
 
     // Material / texture / sampler blocks survive byte-for-byte (structurally).
@@ -210,7 +199,9 @@ fn compress_preserves_materials_textures_images_samplers() {
 #[test]
 fn compressed_output_roundtrips_through_decoder() {
     let input = textured_triangle_glb();
-    let output = compress_gltf_bytes(&input, None).expect("compression failed");
+    let output = compress_gltf_bytes(&input)
+        .expect("compression failed")
+        .data;
 
     let reader = GltfReader::from_glb(&output).expect("compressed GLB must be readable");
     assert!(reader.has_draco_extension());
@@ -223,13 +214,47 @@ fn compressed_output_roundtrips_through_decoder() {
 }
 
 #[test]
+fn repeated_compression_validates_existing_draco_before_preserving() {
+    let compressed = compress_gltf_bytes(&textured_triangle_glb()).unwrap().data;
+    let repeated = compress_gltf_bytes(&compressed).expect("valid Draco must be preserved");
+    assert!(matches!(
+        repeated.report.preserved_primitives[0].reason,
+        PreserveReason::AlreadyDraco
+    ));
+
+    let (document, bin) = split_glb(&compressed);
+    let mut corrupt_bin = bin.clone();
+    let view_index = document["meshes"][0]["primitives"][0]["extensions"]
+        ["KHR_draco_mesh_compression"]["bufferView"]
+        .as_u64()
+        .unwrap() as usize;
+    let view = &document["bufferViews"][view_index];
+    let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize;
+    let length = view["byteLength"].as_u64().unwrap() as usize;
+    corrupt_bin[offset..offset + length.min(8)].fill(0);
+    assert!(compress_gltf_bytes(&build_glb(&document, &corrupt_bin)).is_err());
+
+    let mut missing_id = document.clone();
+    missing_id["meshes"][0]["primitives"][0]["extensions"]["KHR_draco_mesh_compression"]
+        ["attributes"]["POSITION"] = Value::from(999);
+    assert!(compress_gltf_bytes(&build_glb(&missing_id, &bin)).is_err());
+
+    let mut wrong_contract = document.clone();
+    let position_accessor = wrong_contract["meshes"][0]["primitives"][0]["attributes"]["POSITION"]
+        .as_u64()
+        .unwrap() as usize;
+    wrong_contract["accessors"][position_accessor]["type"] = Value::from("VEC4");
+    assert!(compress_gltf_bytes(&build_glb(&wrong_contract, &bin)).is_err());
+}
+
+#[test]
 fn original_geometry_buffer_views_are_pruned() {
     // The repacked binary must not retain the original uncompressed geometry
     // buffer views; only the image and the appended Draco stream remain. (Size
     // is not asserted: Draco has fixed header overhead that exceeds the raw
     // bytes of a single trivial triangle.)
     let input = textured_triangle_glb();
-    let output = compress_gltf_bytes(&input, None).unwrap();
+    let output = compress_gltf_bytes(&input).unwrap().data;
     let (doc, _) = split_glb(&output);
 
     let buffer_views = doc["bufferViews"].as_array().unwrap();
@@ -305,7 +330,9 @@ fn skinned_primitive_is_compressed_and_roundtrips() {
     });
     let input = build_glb(&json, &bin);
 
-    let output = compress_gltf_bytes(&input, None).expect("skinned compression failed");
+    let output = compress_gltf_bytes(&input)
+        .expect("skinned compression failed")
+        .data;
     let (doc, _) = split_glb(&output);
 
     // Material preserved.
@@ -353,7 +380,7 @@ fn non_indexed_primitive_is_compressed_with_generated_indices() {
     });
     let input = build_glb(&json, &bin);
 
-    let output = compress_gltf_bytes(&input, None).expect("must not fail");
+    let output = compress_gltf_bytes(&input).expect("must not fail").data;
     let (doc, _) = split_glb(&output);
 
     assert_eq!(doc["materials"][0]["name"], "KeepMe");
@@ -405,7 +432,12 @@ fn non_triangle_primitive_is_preserved_uncompressed() {
     });
     let input = build_glb(&json, &bin);
 
-    let output = compress_gltf_bytes(&input, None).expect("must not fail");
+    let compressed = compress_gltf_bytes(&input).expect("must not fail");
+    assert!(matches!(
+        compressed.report.preserved_primitives[0].reason,
+        PreserveReason::UnsupportedMode { mode: 0 }
+    ));
+    let output = compressed.data;
     let (doc, _) = split_glb(&output);
 
     assert_eq!(doc["materials"][0]["name"], "KeepMe");
@@ -418,6 +450,262 @@ fn non_triangle_primitive_is_preserved_uncompressed() {
         "POINTS primitive must not be compressed"
     );
     assert!(doc.get("extensionsRequired").is_none());
+}
+
+#[test]
+fn morph_target_is_preserved_with_original_bytes() {
+    let mut bin = Vec::new();
+    push_f32s(&mut bin, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+    let morph_offset = bin.len();
+    push_f32s(&mut bin, &[0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1]);
+    let morph_bytes = bin[morph_offset..].to_vec();
+    let indices_offset = bin.len();
+    push_u16s(&mut bin, &[0, 1, 2]);
+    let document = json!({
+        "asset": {"version": "2.0"},
+        "meshes": [{"primitives": [{
+            "attributes": {"POSITION": 0},
+            "targets": [{"POSITION": 1}],
+            "indices": 2,
+            "mode": 4
+        }]}],
+        "accessors": [
+            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+            {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+            {"bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR"}
+        ],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+            {"buffer": 0, "byteOffset": morph_offset, "byteLength": 36},
+            {"buffer": 0, "byteOffset": indices_offset, "byteLength": 6}
+        ],
+        "buffers": [{"byteLength": bin.len()}]
+    });
+    let compressed = compress_gltf_bytes(&build_glb(&document, &bin)).unwrap();
+    assert!(matches!(
+        compressed.report.preserved_primitives[0].reason,
+        PreserveReason::MorphTargets
+    ));
+    let (output, output_bin) = split_glb(&compressed.data);
+    assert!(output["meshes"][0]["primitives"][0]
+        .get("extensions")
+        .is_none());
+    let view_index = output["accessors"][1]["bufferView"].as_u64().unwrap() as usize;
+    let view = &output["bufferViews"][view_index];
+    let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize;
+    let length = view["byteLength"].as_u64().unwrap() as usize;
+    assert_eq!(&output_bin[offset..offset + length], morph_bytes);
+}
+
+#[test]
+fn valid_sparse_is_preserved_but_malformed_sparse_is_an_error() {
+    let mut bin = vec![0, 0, 0, 0];
+    push_f32s(&mut bin, &[0.0, 0.0, 0.0]);
+    let mut document = json!({
+        "asset": {"version": "2.0"},
+        "meshes": [{"primitives": [{
+            "attributes": {"POSITION": 0},
+            "mode": 4
+        }]}],
+        "accessors": [{
+            "componentType": 5126,
+            "count": 3,
+            "type": "VEC3",
+            "sparse": {
+                "count": 1,
+                "indices": {"bufferView": 0, "componentType": 5121},
+                "values": {"bufferView": 1}
+            }
+        }],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": 1},
+            {"buffer": 0, "byteOffset": 4, "byteLength": 12}
+        ],
+        "buffers": [{"byteLength": bin.len()}]
+    });
+
+    let output = compress_gltf_bytes(&build_glb(&document, &bin)).unwrap();
+    assert!(matches!(
+        output.report.preserved_primitives[0].reason,
+        PreserveReason::SparseAccessor { accessor: 0 }
+    ));
+
+    let valid = document.clone();
+    document["accessors"][0]["sparse"]["count"] = Value::from(4);
+    assert!(compress_gltf_bytes(&build_glb(&document, &bin)).is_err());
+
+    let mut out_of_range = bin.clone();
+    out_of_range[0] = 3;
+    assert!(compress_gltf_bytes(&build_glb(&valid, &out_of_range)).is_err());
+
+    let mut duplicate_bin = vec![1, 1, 0, 0];
+    push_f32s(&mut duplicate_bin, &[0.0; 6]);
+    let duplicate = json!({
+        "asset": {"version": "2.0"},
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "mode": 4}]}],
+        "accessors": [{
+            "componentType": 5126, "count": 3, "type": "VEC3",
+            "sparse": {
+                "count": 2,
+                "indices": {"bufferView": 0, "componentType": 5121},
+                "values": {"bufferView": 1}
+            }
+        }],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": 2},
+            {"buffer": 0, "byteOffset": 4, "byteLength": 24}
+        ],
+        "buffers": [{"byteLength": duplicate_bin.len()}]
+    });
+    assert!(compress_gltf_bytes(&build_glb(&duplicate, &duplicate_bin)).is_err());
+}
+
+#[test]
+fn malformed_preserved_primitive_data_is_never_downgraded_to_a_report() {
+    let mut bin = Vec::new();
+    push_f32s(&mut bin, &[0.0, 0.0, 0.0]);
+    let huge = json!({
+        "asset": {"version": "2.0"},
+        "meshes": [{"primitives": [{
+            "attributes": {"POSITION": 0},
+            "mode": 0
+        }]}],
+        "accessors": [{
+            "bufferView": 0,
+            "componentType": 5126,
+            "count": u64::MAX,
+            "type": "VEC3"
+        }],
+        "bufferViews": [{"buffer": 0, "byteLength": bin.len()}],
+        "buffers": [{"byteLength": bin.len()}]
+    });
+    assert!(compress_gltf_bytes(&build_glb(&huge, &bin)).is_err());
+
+    let invalid_morph = json!({
+        "asset": {"version": "2.0"},
+        "meshes": [{"primitives": [{
+            "attributes": {"POSITION": 0},
+            "targets": [{"POSITION": 99}],
+            "mode": 4
+        }]}],
+        "accessors": [{
+            "bufferView": 0,
+            "componentType": 5126,
+            "count": 1,
+            "type": "VEC3"
+        }],
+        "bufferViews": [{"buffer": 0, "byteLength": bin.len()}],
+        "buffers": [{"byteLength": bin.len()}]
+    });
+    assert!(compress_gltf_bytes(&build_glb(&invalid_morph, &bin)).is_err());
+
+    let (mut unsupported, mut unsupported_bin) = split_glb(&textured_triangle_glb());
+    unsupported["meshes"][0]["primitives"][0]["mode"] = Value::from(0);
+    unsupported_bin[96..98].copy_from_slice(&99u16.to_le_bytes());
+    assert!(compress_gltf_bytes(&build_glb(&unsupported, &unsupported_bin)).is_err());
+
+    let (mut shared, shared_bin) = split_glb(&textured_triangle_glb());
+    let duplicate = shared["meshes"][0]["primitives"][0].clone();
+    shared["meshes"][0]["primitives"]
+        .as_array_mut()
+        .unwrap()
+        .push(duplicate);
+    shared["accessors"][0]["normalized"] = Value::Bool(true);
+    assert!(compress_gltf_bytes(&build_glb(&shared, &shared_bin)).is_err());
+
+    let mut morph_bin = Vec::new();
+    push_f32s(&mut morph_bin, &[0.0; 18]);
+    let morph_count_mismatch = json!({
+        "asset": {"version": "2.0"},
+        "meshes": [{"primitives": [{
+            "attributes": {"POSITION": 0}, "targets": [{"POSITION": 1}], "mode": 4
+        }]}],
+        "accessors": [
+            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+            {"bufferView": 1, "componentType": 5126, "count": 2, "type": "VEC3"}
+        ],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+            {"buffer": 0, "byteOffset": 36, "byteLength": 24}
+        ],
+        "buffers": [{"byteLength": morph_bin.len()}]
+    });
+    assert!(compress_gltf_bytes(&build_glb(&morph_count_mismatch, &morph_bin)).is_err());
+}
+
+#[test]
+fn unknown_binary_extension_is_rejected_but_texture_offset_is_safe() {
+    let input = textured_triangle_glb();
+    let (mut document, bin) = split_glb(&input);
+    document["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["extensions"] =
+        json!({"KHR_texture_transform": {"offset": [0.25, 0.5]}});
+    document["extensionsUsed"] = json!(["KHR_texture_transform"]);
+    compress_gltf_bytes(&build_glb(&document, &bin)).expect("texture transform is safe");
+
+    document["materials"][0]["extensions"] =
+        json!({"VENDOR_binary": {"bufferView": 0, "byteOffset": 4}});
+    let error = compress_gltf_bytes(&build_glb(&document, &bin)).unwrap_err();
+    assert!(matches!(error, GltfError::OpaqueBinaryReference(_)));
+
+    document["materials"][0]["extensions"] = json!({"VENDOR_binary": {"buffer_view_index": 0}});
+    let error = compress_gltf_bytes(&build_glb(&document, &bin)).unwrap_err();
+    assert!(matches!(error, GltfError::OpaqueBinaryReference(_)));
+
+    document["materials"][0]["extensions"] = json!({
+        "KHR_materials_clearcoat": {
+            "extensions": {"VENDOR_nested_binary": {"bufferView": 0}}
+        }
+    });
+    let error = compress_gltf_bytes(&build_glb(&document, &bin)).unwrap_err();
+    assert!(matches!(error, GltfError::OpaqueBinaryReference(_)));
+
+    document["materials"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("extensions");
+    document["materials"][0]["extras"] = json!({"buffer_view_index": 0});
+    compress_gltf_bytes(&build_glb(&document, &bin)).expect("extras is opaque user data");
+}
+
+#[test]
+fn structural_metadata_buffer_views_are_remapped() {
+    let input = textured_triangle_glb();
+    let (mut document, mut bin) = split_glb(&input);
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    let metadata_offset = bin.len();
+    let metadata = [9u8, 8, 7, 6];
+    bin.extend_from_slice(&metadata);
+    let metadata_view = document["bufferViews"].as_array().unwrap().len();
+    document["bufferViews"].as_array_mut().unwrap().push(json!({
+        "buffer": 0,
+        "byteOffset": metadata_offset,
+        "byteLength": metadata.len()
+    }));
+    document["buffers"][0]["byteLength"] = Value::from(bin.len() as u64);
+    document["extensionsUsed"] = json!(["EXT_structural_metadata"]);
+    document["extensions"] = json!({
+        "EXT_structural_metadata": {
+            "schema": {"classes": {}},
+            "propertyTables": [{
+                "class": "x",
+                "count": 1,
+                "properties": {"value": {"values": metadata_view}}
+            }]
+        }
+    });
+
+    let compressed = compress_gltf_bytes(&build_glb(&document, &bin)).unwrap();
+    let (output, output_bin) = split_glb(&compressed.data);
+    let remapped = output["extensions"]["EXT_structural_metadata"]["propertyTables"][0]
+        ["properties"]["value"]["values"]
+        .as_u64()
+        .unwrap() as usize;
+    let view = &output["bufferViews"][remapped];
+    let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize;
+    let length = view["byteLength"].as_u64().unwrap() as usize;
+    assert_eq!(&output_bin[offset..offset + length], &metadata);
 }
 
 /// An asset that *requires* an extension this crate does not implement (here
@@ -459,7 +747,9 @@ fn compresses_asset_requiring_unknown_extension() {
     });
     let input = build_glb(&json, &bin);
 
-    let output = compress_gltf_bytes(&input, None).expect("must compress despite required ext");
+    let output = compress_gltf_bytes(&input)
+        .expect("must compress despite required ext")
+        .data;
     let (doc, _) = split_glb(&output);
 
     // The unknown extension and its material are preserved.
@@ -532,7 +822,9 @@ fn compress_skips_primitive_with_gltf_2_1_component_type() {
     // verbatim — never silently corrupted. (Safe behavior pending real 2.1
     // support; see crates/draco-gltf/GLTF_2_1.md.)
     let input = triangle_with_2_1_component_type_glb();
-    let output = compress_gltf_bytes(&input, None).expect("compression must not fail");
+    let output = compress_gltf_bytes(&input)
+        .expect("compression must not fail")
+        .data;
     let (doc, _) = split_glb(&output);
 
     let prim = &doc["meshes"][0]["primitives"][0];

@@ -10,6 +10,8 @@
 //!
 //! Some speeds may have bugs that cause incorrect output (e.g., only 1 vertex).
 
+#![cfg(feature = "test")]
+
 use draco_core::decoder_buffer::DecoderBuffer;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::encoder_options::EncoderOptions;
@@ -166,7 +168,7 @@ fn verify_positions(
     // Variance should be within 50% (generous for quantization effects)
     if orig_variance > 0.0 {
         let variance_ratio = dec_variance / orig_variance;
-        if variance_ratio < 0.5 || variance_ratio > 2.0 {
+        if !(0.5..=2.0).contains(&variance_ratio) {
             return Err(format!(
                 "Position variance mismatch: original={}, decoded={}, ratio={}",
                 orig_variance, dec_variance, variance_ratio

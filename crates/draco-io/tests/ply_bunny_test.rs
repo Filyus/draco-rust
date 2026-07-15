@@ -1,5 +1,7 @@
 //! Test PLY bunny file parsing and encoding.
 
+#![cfg(feature = "test")]
+
 use std::fs;
 
 use std::path::Path;
@@ -36,23 +38,19 @@ fn test_ply_bunny_structure() {
         }
 
         match parts[0] {
-            "element" => {
-                if parts.len() >= 3 {
-                    if parts[1] == "vertex" {
-                        vertex_count = parts[2].parse().unwrap_or(0);
-                        in_vertex_element = true;
-                    } else {
-                        in_vertex_element = false;
-                        if parts[1] == "face" {
-                            face_count = parts[2].parse().unwrap_or(0);
-                        }
+            "element" if parts.len() >= 3 => {
+                if parts[1] == "vertex" {
+                    vertex_count = parts[2].parse().unwrap_or(0);
+                    in_vertex_element = true;
+                } else {
+                    in_vertex_element = false;
+                    if parts[1] == "face" {
+                        face_count = parts[2].parse().unwrap_or(0);
                     }
                 }
             }
-            "property" => {
-                if in_vertex_element && parts.len() >= 3 {
-                    vertex_properties.push(parts[2].to_string());
-                }
+            "property" if in_vertex_element && parts.len() >= 3 => {
+                vertex_properties.push(parts[2].to_string());
             }
             _ => {}
         }

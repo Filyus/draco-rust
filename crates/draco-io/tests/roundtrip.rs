@@ -3,6 +3,7 @@
 // - useless_format: format!("{}", x) used for consistency even where .to_string() would work
 // - useless_vec: vec![...] used for clarity even where slices suffice
 // - len_zero: .len() == 0 comparisons are clearer in test assertions than .is_empty()
+#![cfg(feature = "test")]
 #![allow(
     clippy::io_other_error,
     clippy::useless_format,
@@ -98,6 +99,7 @@ fn run_blender_script(blender: &str, args: &[&str]) -> io::Result<String> {
 }
 
 #[test]
+#[ignore = "requires local Blender; run with --ignored and BLENDER_BIN"]
 fn roundtrip_with_blender() -> io::Result<()> {
     // Use persistent input/output folders in the crate root by default
     // unless USE_TEMP_DIR is set to "1", in which case use a temp dir that auto-cleans.
@@ -122,14 +124,12 @@ fn roundtrip_with_blender() -> io::Result<()> {
     println!("Using input folder: {}", input_dir.display());
     println!("Using output folder: {}", output_dir.display());
 
-    // Skip actual Blender operations if BLENDER_BIN not set.
-    let blender = match env::var("BLENDER_BIN") {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("BLENDER_BIN not set; skipping Blender roundtrip test");
-            return Ok(());
-        }
-    };
+    let blender = env::var("BLENDER_BIN").map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "BLENDER_BIN is required for the ignored Blender roundtrip test",
+        )
+    })?;
 
     // Export test scene using Blender script
     let script = PathBuf::from("tools/blender_roundtrip.py");
@@ -297,12 +297,9 @@ fn roundtrip_with_blender() -> io::Result<()> {
     // Write GLB with Draco compression
     let mut gltf_w = draco_io::GltfWriter::new();
     // Use safe quantization bits for each attribute type
-    let quant = draco_io::gltf_writer::QuantizationBits {
-        position: 14,
-        normal: 10,
-        color: 8,
-        texcoord: 12,
-        generic: 8,
+    let quant = draco_io::GltfCompressionOptions {
+        quantization: draco_io::QuantizationOptions::default(),
+        ..Default::default()
     };
     gltf_w
         .add_draco_mesh(&g_mesh, Some("Roundtrip"), quant)
