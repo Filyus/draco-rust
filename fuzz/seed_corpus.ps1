@@ -1,13 +1,12 @@
 <#
 .SYNOPSIS
-  Seed the libFuzzer corpus for the `decode_drc` target from repository fixtures.
+  Seed a libFuzzer target from repository fixtures and committed seed inputs.
 
 .DESCRIPTION
-  Copies every `*.drc` fixture under `testdata/` into
-  `fuzz/corpus/decode_drc/`, using a path-derived file name so fixtures in
-  different directories never collide. The corpus directory is git-ignored
-  (see fuzz/.gitignore); this script reconstructs it deterministically so a
-  fresh checkout can start fuzzing from good coverage instead of an empty set.
+  `decode_drc` receives every `*.drc` fixture. The glTF targets receive every
+  `*.gltf` and `*.glb` fixture plus target-specific files under `fuzz/seeds/`.
+  Path-derived names avoid collisions. The corpus directory is git-ignored and
+  reconstructed deterministically.
 
 .EXAMPLE
   pwsh fuzz/seed_corpus.ps1
@@ -30,12 +29,31 @@ if (-not (Test-Path $testdata)) {
 
 New-Item -ItemType Directory -Force -Path $corpus | Out-Null
 
+$patterns = switch ($Target) {
+    'decode_drc' { @('*.drc') }
+    'compress_gltf' { @('*.gltf', '*.glb') }
+    'draco_gltf_import' { @('*.gltf', '*.glb') }
+    default { throw "Unknown fuzz target '$Target'" }
+}
+
+$fixtures = foreach ($pattern in $patterns) {
+    Get-ChildItem -Path $testdata -Recurse -Filter $pattern -File
+}
+
 $count = 0
-Get-ChildItem -Path $testdata -Recurse -Filter '*.drc' -File | ForEach-Object {
+$fixtures | Sort-Object FullName -Unique | ForEach-Object {
     $relative = $_.FullName.Substring($testdata.Length).TrimStart('\', '/')
-    $flatName = $relative -replace '[\\/]', '__'
+    $flatName = "fixture__" + ($relative -replace '[\\/]', '__')
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $corpus $flatName) -Force
     $count++
+}
+
+$seedDir = Join-Path $fuzzDir "seeds/$Target"
+if (Test-Path $seedDir) {
+    Get-ChildItem -Path $seedDir -File | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $corpus "seed__$($_.Name)") -Force
+        $count++
+    }
 }
 
 Write-Host "Seeded $count fixture(s) into $corpus"

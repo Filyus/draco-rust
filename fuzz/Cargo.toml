@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 draco-core = { path = "../crates/draco-core", default-features = false, features = ["decoder", "point_cloud_decode", "edgebreaker_valence_decode", "legacy_bitstream_decode"] }
 draco-io = { path = "../crates/draco-io", default-features = false, features = ["gltf-reader", "gltf-writer"] }
+draco-gltf = { path = "../crates/draco-gltf", default-features = false }
 libfuzzer-sys = "0.4"
 
 [[bin]]
@@ -22,6 +23,13 @@ bench = false
 [[bin]]
 name = "compress_gltf"
 path = "fuzz_targets/compress_gltf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "draco_gltf_import"
+path = "fuzz_targets/draco_gltf_import.rs"
 test = false
 doc = false
 bench = false

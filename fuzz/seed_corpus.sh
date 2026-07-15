@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# Seed the libFuzzer corpus for the `decode_drc` target from repository fixtures.
+# Seed a libFuzzer target from repository fixtures and committed seed inputs.
 #
-# Copies every `*.drc` fixture under `testdata/` into
-# `fuzz/corpus/decode_drc/`, using a path-derived file name so fixtures in
-# different directories never collide. The corpus directory is git-ignored
-# (see fuzz/.gitignore); this script reconstructs it deterministically so a
-# fresh checkout can start fuzzing from good coverage instead of an empty set.
+# `decode_drc` receives every `*.drc` fixture. The glTF targets receive every
+# `*.gltf` and `*.glb` fixture plus target-specific files under `fuzz/seeds/`.
 #
 # Usage: fuzz/seed_corpus.sh [target_name]
 set -euo pipefail
@@ -23,12 +20,33 @@ fi
 
 mkdir -p "$corpus"
 
+case "$target" in
+  decode_drc)
+    find_args=( -name '*.drc' )
+    ;;
+  compress_gltf|draco_gltf_import)
+    find_args=( \( -name '*.gltf' -o -name '*.glb' \) )
+    ;;
+  *)
+    echo "Unknown fuzz target '$target'" >&2
+    exit 1
+    ;;
+esac
+
 count=0
 while IFS= read -r -d '' file; do
     relative="${file#"$testdata"/}"
     flat_name="${relative//\//__}"
-    cp -f "$file" "$corpus/$flat_name"
+    cp -f "$file" "$corpus/fixture__$flat_name"
     count=$((count + 1))
-done < <(find "$testdata" -type f -name '*.drc' -print0)
+done < <(find "$testdata" -type f "${find_args[@]}" -print0)
+
+seed_dir="$fuzz_dir/seeds/$target"
+if [ -d "$seed_dir" ]; then
+  while IFS= read -r -d '' file; do
+    cp -f "$file" "$corpus/seed__$(basename "$file")"
+    count=$((count + 1))
+  done < <(find "$seed_dir" -maxdepth 1 -type f -print0)
+fi
 
 echo "Seeded $count fixture(s) into $corpus"

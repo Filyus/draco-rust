@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   fuzz:
-    name: decode_drc legacy + compress_gltf
+    name: decode_drc + glTF compression/import
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -54,12 +54,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: fuzz/corpus
-          key: fuzz-corpus-decode_drc-${{ github.run_id }}
+          key: fuzz-corpus-v2-${{ github.run_id }}
           restore-keys: |
-            fuzz-corpus-decode_drc-
+            fuzz-corpus-v2-
 
       - name: Seed corpus from fixtures
-        run: ./fuzz/seed_corpus.sh
+        run: |
+          ./fuzz/seed_corpus.sh decode_drc
+          ./fuzz/seed_corpus.sh compress_gltf
+          ./fuzz/seed_corpus.sh draco_gltf_import
 
       # The decode target includes legacy decode features so old bitstream paths
       # get coverage-guided fuzzing, not just deterministic fixture tests.
@@ -77,10 +80,9 @@ jobs:
             -max_total_time=${{ steps.dur.outputs.seconds }} \
             -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
 
-      # The glTF compressor parses untrusted glTF/GLB bytes. No committed seed
-      # corpus yet (libFuzzer generates structure from empty); the deterministic
-      # battery in crates/draco-io/tests/gltf_compress_fuzz_test.rs is the gate
-      # that runs on every PR, this is the coverage-guided soak.
+      # The glTF targets parse untrusted glTF/GLB bytes. Repository fixtures and
+      # committed self-contained seeds give libFuzzer valid structure before it
+      # starts mutating; deterministic regressions still run in stable CI.
       - name: Fuzz compress_gltf
         run: |
           cargo +nightly fuzz run -O compress_gltf --fuzz-dir fuzz \
@@ -88,9 +90,20 @@ jobs:
             -max_total_time=${{ steps.dur.outputs.seconds }} \
             -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
 
-      - name: Minimize corpus
+      - name: Fuzz draco_gltf_import
+        run: |
+          cargo +nightly fuzz run -O draco_gltf_import --fuzz-dir fuzz \
+            --target x86_64-unknown-linux-gnu -- \
+            -max_total_time=${{ steps.dur.outputs.seconds }} \
+            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
+
+      - name: Minimize corpora
         if: always()
-        run: cargo +nightly fuzz cmin -O decode_drc --fuzz-dir fuzz --target x86_64-unknown-linux-gnu
+        run: |
+          for target in decode_drc compress_gltf draco_gltf_import; do
+            cargo +nightly fuzz cmin -O "$target" --fuzz-dir fuzz \
+              --target x86_64-unknown-linux-gnu
+          done
 
       - name: Upload crash artifacts
         if: failure()
