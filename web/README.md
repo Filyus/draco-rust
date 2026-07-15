@@ -214,7 +214,7 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-Release builds enforce a `gltf_reader_bg.wasm` budget of at most 150 KiB gzip after `wasm-opt`. `--no-optimize` intentionally skips this release budget check.
+Release builds enforce a `gltf_reader_bg.wasm` budget of at most 100 KiB gzip after `wasm-opt`. `--no-optimize` intentionally skips this release budget check.
 
 ## Development
 
@@ -222,7 +222,7 @@ Release builds enforce a `gltf_reader_bg.wasm` budget of at most 150 KiB gzip af
 
 Each WASM module is a separate Rust crate that depends on:
 - `draco-core`: Core mesh encoding/decoding functionality
-- `draco-io`: shared hardened format/container implementations
+- `draco-io`: shared strict GLB container and Draco interoperability helpers
 - `wasm-bindgen`: Rust/JavaScript interop
 - `serde`: Data serialization
 

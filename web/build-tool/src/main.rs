@@ -24,12 +24,14 @@ const MODULES: &[&str] = &[
 
 const WASM_OPT_ARGS: &[&str] = &[
     "-Oz",
+    "--converge",
+    "--low-memory-unused",
     "--enable-bulk-memory",
     "--enable-nontrapping-float-to-int",
     "--enable-sign-ext",
     "--enable-mutable-globals",
 ];
-const GLTF_READER_GZIP_BUDGET: usize = 150 * 1024;
+const GLTF_READER_GZIP_BUDGET: usize = 100 * 1024;
 
 #[derive(Clone, Debug)]
 struct Config {
@@ -186,7 +188,7 @@ fn check_gltf_reader_size(path: &Path) -> Result<(usize, usize), String> {
         .ok_or("gzip size overflow")?;
     if gzip_size > GLTF_READER_GZIP_BUDGET {
         return Err(format!(
-            "{} is {:.1} KiB gzip, exceeding the {:.0} KiB glTF reader budget",
+            "{} is {gzip_size} bytes ({:.1} KiB) gzip, exceeding the {:.0} KiB glTF reader budget",
             path.display(),
             gzip_size as f64 / 1024.0,
             GLTF_READER_GZIP_BUDGET as f64 / 1024.0
