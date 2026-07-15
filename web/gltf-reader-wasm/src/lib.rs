@@ -1,28 +1,32 @@
-//! glTF/GLB Reader WASM module.
+//! Hardened glTF/GLB reader for the browser.
 //!
-//! Provides glTF 2.0 file parsing functionality for web applications.
-//! Supports both .gltf (JSON) and .glb (binary) formats with Draco compression.
-//!
-//! Uses nanoserde for minimal WASM binary size (no serde_json monomorphization).
+//! Container parsing, resource resolution, accessor decoding, and Draco
+//! extension validation are delegated to `draco-io`. This crate only adapts
+//! decoded meshes and scene metadata to the compact JavaScript result shape.
 
-use nanoserde::{DeJson, SerJson};
-use std::collections::HashMap;
+use draco_core::draco_types::DataType;
+use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use draco_core::geometry_indices::{FaceIndex, PointIndex};
+use draco_core::mesh::Mesh;
+use draco_io::{GltfError, GltfReader, ResourceLimits, ResourceResolver};
+use nanoserde::SerJson;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 /// Mesh data structure for JavaScript interop.
 #[derive(SerJson, Clone, Default)]
 pub struct MeshData {
-    /// Mesh name
+    /// Mesh name.
     pub name: Option<String>,
-    /// Vertex positions as flat array [x0, y0, z0, x1, y1, z1, ...]
+    /// Vertex positions as `[x0, y0, z0, ...]`.
     pub positions: Vec<f32>,
-    /// Face indices as flat array (triangles)
+    /// Triangle indices as `[i0, i1, i2, ...]`.
     pub indices: Vec<u32>,
-    /// Vertex normals (if present)
+    /// Vertex normals, when present.
     pub normals: Vec<f32>,
-    /// Texture coordinates (if present)
+    /// First texture-coordinate set, when present.
     pub uvs: Vec<f32>,
-    /// Vertex colors (if present)
+    /// First color set, when present.
     pub colors: Vec<f32>,
 }
 
@@ -45,7 +49,7 @@ pub struct SceneData {
     pub nodes: Vec<usize>,
 }
 
-/// Parse result containing meshes and scene graph.
+/// Parse result containing decoded geometry and scene metadata.
 #[derive(SerJson, Default)]
 pub struct ParseResult {
     pub success: bool,
@@ -56,21 +60,70 @@ pub struct ParseResult {
     pub default_scene: Option<usize>,
     pub error: Option<String>,
     pub warnings: Vec<String>,
-    /// Whether the file uses Draco compression
     #[nserde(rename = "usesDraco")]
     pub uses_draco: bool,
 }
 
-/// Initialize panic hook for better error messages in browser console.
-#[wasm_bindgen(start)]
-pub fn init() {
-    // Panic hook removed for smaller binary size
+impl ParseResult {
+    fn error(message: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            error: Some(message.into()),
+            ..Self::default()
+        }
+    }
 }
 
-/// Get the version of this WASM module.
+struct CompanionResolver {
+    resources: Vec<(String, Vec<u8>)>,
+}
+
+impl ResourceResolver for CompanionResolver {
+    fn resolve(&self, uri: &str) -> Result<Vec<u8>, GltfError> {
+        let resource = self
+            .resources
+            .iter()
+            .find_map(|(candidate, bytes)| (candidate == uri).then_some(bytes))
+            .ok_or_else(|| GltfError::InvalidGltf(format!("missing external resource: {uri}")))?;
+        copy_bytes(resource, &format!("external resource {uri}"))
+    }
+}
+
+fn copy_bytes(data: &[u8], what: &str) -> Result<Vec<u8>, GltfError> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(data.len()).map_err(|_| {
+        GltfError::ResourceLimitExceeded(format!(
+            "failed to allocate {what} ({} bytes)",
+            data.len()
+        ))
+    })?;
+    copy.extend_from_slice(data);
+    Ok(copy)
+}
+
+fn copy_uint8_array(array: &js_sys::Uint8Array, uri: &str) -> Result<Vec<u8>, String> {
+    let len = usize::try_from(array.length())
+        .map_err(|_| format!("companion resource {uri} length does not fit usize"))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(len)
+        .map_err(|_| format!("failed to allocate companion resource {uri} ({len} bytes)"))?;
+    bytes.resize(len, 0);
+    array.copy_to(&mut bytes);
+    Ok(bytes)
+}
+
+/// Initialize the WASM module.
+#[wasm_bindgen(start)]
+pub fn init() {
+    #[cfg(feature = "console_error_panic_hook")]
+    console_error_panic_hook::set_once();
+}
+
+/// Get the crate version used to build this module.
 #[wasm_bindgen]
 pub fn version() -> String {
-    "0.1.0".to_string()
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 /// Get the module name.
@@ -85,627 +138,423 @@ pub fn supported_extensions() -> Vec<String> {
     vec!["gltf".to_string(), "glb".to_string()]
 }
 
-/// Helper to convert a ParseResult to JsValue via JSON.
 fn to_js_value(result: &ParseResult) -> JsValue {
     let json = SerJson::serialize_json(result);
     js_sys::JSON::parse(&json).unwrap_or(JsValue::NULL)
 }
 
-/// Parse glTF JSON content.
+/// Parse an embedded/self-contained glTF JSON document.
 #[wasm_bindgen]
 pub fn parse_gltf(json_content: &str) -> JsValue {
-    let result = parse_gltf_json(json_content, None);
-    to_js_value(&result)
+    to_js_value(&parse_document(json_content.as_bytes(), None))
 }
 
-/// Parse GLB binary content.
+/// Parse a GLB document.
 #[wasm_bindgen]
 pub fn parse_glb(data: &[u8]) -> JsValue {
-    let result = parse_glb_internal(data);
-    to_js_value(&result)
+    to_js_value(&parse_document(data, None))
 }
 
-/// Parse glTF with external binary buffer.
+/// Parse glTF/GLB bytes with a map of companion URI to exact resource bytes.
+///
+/// JavaScript should pass an object such as
+/// `{ "model.bin": Uint8Array, "albedo.png": Uint8Array }`. Missing external
+/// buffers are reported as controlled errors; the resolver never reads files.
 #[wasm_bindgen]
-pub fn parse_gltf_with_buffer(json_content: &str, buffer: &[u8]) -> JsValue {
-    let result = parse_gltf_json(json_content, Some(buffer));
-    to_js_value(&result)
-}
-
-// GLB magic and header
-const GLB_MAGIC: u32 = 0x46546C67; // "glTF"
-const GLB_CHUNK_JSON: u32 = 0x4E4F534A; // "JSON"
-const GLB_CHUNK_BIN: u32 = 0x004E4942; // "BIN\0"
-
-fn parse_glb_internal(data: &[u8]) -> ParseResult {
-    if data.len() < 12 {
-        return ParseResult {
-            success: false,
-            error: Some("Invalid GLB: file too small".to_string()),
-            ..Default::default()
-        };
-    }
-
-    // Parse header
-    let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    if magic != GLB_MAGIC {
-        return ParseResult {
-            success: false,
-            error: Some("Invalid GLB: wrong magic number".to_string()),
-            ..Default::default()
-        };
-    }
-
-    let _version = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-    let _length = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
-
-    // Parse chunks
-    let mut offset = 12usize;
-    let mut json_data: Option<String> = None;
-    let mut bin_data: Option<&[u8]> = None;
-
-    while offset + 8 <= data.len() {
-        let chunk_length = u32::from_le_bytes([
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-        ]) as usize;
-        let chunk_type = u32::from_le_bytes([
-            data[offset + 4],
-            data[offset + 5],
-            data[offset + 6],
-            data[offset + 7],
-        ]);
-
-        offset += 8;
-
-        if offset + chunk_length > data.len() {
-            break;
-        }
-
-        match chunk_type {
-            GLB_CHUNK_JSON => {
-                if let Ok(s) = std::str::from_utf8(&data[offset..offset + chunk_length]) {
-                    json_data = Some(s.to_string());
-                }
-            }
-            GLB_CHUNK_BIN => {
-                bin_data = Some(&data[offset..offset + chunk_length]);
-            }
-            _ => {} // Unknown chunk type
-        }
-
-        offset += chunk_length;
-    }
-
-    match json_data {
-        Some(json) => parse_gltf_json(&json, bin_data),
-        None => ParseResult {
-            success: false,
-            error: Some("Invalid GLB: no JSON chunk found".to_string()),
-            ..Default::default()
-        },
-    }
-}
-
-// glTF data structures using nanoserde
-#[derive(DeJson, Default)]
-struct GltfRoot {
-    #[nserde(default)]
-    accessors: Vec<Accessor>,
-    #[nserde(default, rename = "bufferViews")]
-    buffer_views: Vec<BufferView>,
-    #[nserde(default)]
-    #[allow(dead_code)]
-    buffers: Vec<Buffer>,
-    #[nserde(default)]
-    meshes: Vec<GltfMesh>,
-    #[nserde(default)]
-    nodes: Vec<GltfNode>,
-    #[nserde(default)]
-    scenes: Vec<GltfScene>,
-    #[nserde(default)]
-    scene: Option<usize>,
-    #[nserde(default, rename = "extensionsUsed")]
-    extensions_used: Vec<String>,
-}
-
-#[derive(DeJson, Default)]
-struct Accessor {
-    #[nserde(default, rename = "bufferView")]
-    buffer_view: Option<usize>,
-    #[nserde(default, rename = "byteOffset")]
-    byte_offset: Option<usize>,
-    #[nserde(default, rename = "componentType")]
-    component_type: u32,
-    #[nserde(default)]
-    count: usize,
-    #[nserde(default, rename = "type")]
-    #[allow(dead_code)]
-    accessor_type: String,
-}
-
-#[derive(DeJson, Default)]
-struct BufferView {
-    #[nserde(default)]
-    #[allow(dead_code)]
-    buffer: usize,
-    #[nserde(default, rename = "byteOffset")]
-    byte_offset: Option<usize>,
-    #[nserde(default, rename = "byteLength")]
-    byte_length: usize,
-    #[nserde(default, rename = "byteStride")]
-    #[allow(dead_code)]
-    byte_stride: Option<usize>,
-}
-
-#[derive(DeJson, Default)]
-struct Buffer {
-    #[nserde(default, rename = "byteLength")]
-    #[allow(dead_code)]
-    byte_length: usize,
-    #[nserde(default)]
-    #[allow(dead_code)]
-    uri: Option<String>,
-}
-
-#[derive(DeJson, Default)]
-struct GltfMesh {
-    #[nserde(default)]
-    name: Option<String>,
-    #[nserde(default)]
-    primitives: Vec<Primitive>,
-}
-
-#[derive(DeJson, Default)]
-struct Primitive {
-    #[nserde(default)]
-    attributes: HashMap<String, usize>,
-    #[nserde(default)]
-    indices: Option<usize>,
-    #[nserde(default)]
-    extensions: Option<PrimitiveExtensions>,
-}
-
-#[derive(DeJson, Default)]
-struct PrimitiveExtensions {
-    #[nserde(default, rename = "KHR_draco_mesh_compression")]
-    khr_draco: Option<DracoExtension>,
-}
-
-#[derive(DeJson, Default)]
-struct DracoExtension {
-    #[nserde(default, rename = "bufferView")]
-    buffer_view: usize,
-    #[nserde(default)]
-    #[allow(dead_code)]
-    attributes: HashMap<String, usize>,
-}
-
-#[derive(DeJson, Default)]
-struct GltfNode {
-    #[nserde(default)]
-    name: Option<String>,
-    #[nserde(default)]
-    mesh: Option<usize>,
-    #[nserde(default)]
-    translation: Option<Vec<f32>>,
-    #[nserde(default)]
-    rotation: Option<Vec<f32>>,
-    #[nserde(default)]
-    scale: Option<Vec<f32>>,
-    #[nserde(default)]
-    children: Vec<usize>,
-}
-
-#[derive(DeJson, Default)]
-struct GltfScene {
-    #[nserde(default)]
-    name: Option<String>,
-    #[nserde(default)]
-    nodes: Vec<usize>,
-}
-
-fn parse_gltf_json(json_content: &str, bin_buffer: Option<&[u8]>) -> ParseResult {
-    let root: GltfRoot = match DeJson::deserialize_json(json_content) {
-        Ok(r) => r,
-        Err(e) => {
-            return ParseResult {
-                success: false,
-                error: Some(format!("Failed to parse glTF JSON: {:?}", e)),
-                ..Default::default()
-            };
+pub fn parse_gltf_with_resources(data: &[u8], resources_js: JsValue) -> JsValue {
+    let resources = match parse_companion_resources(resources_js) {
+        Ok(resources) => resources,
+        Err(error) => {
+            return to_js_value(&ParseResult::error(format!(
+                "Invalid companion resource map: {error}"
+            )));
         }
     };
+    let resolver = CompanionResolver { resources };
+    to_js_value(&parse_document(data, Some(&resolver)))
+}
 
-    let uses_draco = root
-        .extensions_used
-        .iter()
-        .any(|e| e == "KHR_draco_mesh_compression");
-    let mut warnings: Vec<String> = Vec::new();
-    let mut meshes: Vec<MeshData> = Vec::new();
-
-    // Parse meshes
-    for gltf_mesh in &root.meshes {
-        for primitive in &gltf_mesh.primitives {
-            let mut mesh = MeshData {
-                name: gltf_mesh.name.clone(),
-                ..Default::default()
-            };
-
-            // Check for Draco extension
-            if let Some(ref extensions) = primitive.extensions {
-                if let Some(ref draco) = extensions.khr_draco {
-                    if let Some(buffer_data) = bin_buffer {
-                        if let Some(bv) = root.buffer_views.get(draco.buffer_view) {
-                            let offset = bv.byte_offset.unwrap_or(0);
-                            let end = offset + bv.byte_length;
-                            if end <= buffer_data.len() {
-                                let draco_data = &buffer_data[offset..end];
-                                match decode_draco_mesh(draco_data) {
-                                    Ok(decoded) => {
-                                        mesh = decoded;
-                                        mesh.name = gltf_mesh.name.clone();
-                                        meshes.push(mesh);
-                                        continue;
-                                    }
-                                    Err(e) => {
-                                        warnings
-                                            .push(format!("Failed to decode Draco mesh: {}", e));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Standard accessor-based geometry
-            if let Some(bin) = bin_buffer {
-                // Positions
-                if let Some(&pos_idx) = primitive.attributes.get("POSITION") {
-                    mesh.positions =
-                        read_accessor_vec3(&root.accessors, &root.buffer_views, bin, pos_idx);
-                }
-
-                // Normals
-                if let Some(&norm_idx) = primitive.attributes.get("NORMAL") {
-                    mesh.normals =
-                        read_accessor_vec3(&root.accessors, &root.buffer_views, bin, norm_idx);
-                }
-
-                // UVs
-                if let Some(&uv_idx) = primitive.attributes.get("TEXCOORD_0") {
-                    mesh.uvs = read_accessor_vec2(&root.accessors, &root.buffer_views, bin, uv_idx);
-                }
-
-                // Indices
-                if let Some(indices_idx) = primitive.indices {
-                    mesh.indices = read_accessor_indices(
-                        &root.accessors,
-                        &root.buffer_views,
-                        bin,
-                        indices_idx,
-                    );
-                }
-            }
-
-            meshes.push(mesh);
+fn parse_companion_resources(resources_js: JsValue) -> Result<Vec<(String, Vec<u8>)>, String> {
+    if !resources_js.is_object() || resources_js.is_null() {
+        return Err("expected an object whose values are Uint8Array instances".to_string());
+    }
+    let object: js_sys::Object = resources_js.unchecked_into();
+    let entries = js_sys::Object::entries(&object);
+    let mut resources = Vec::new();
+    resources
+        .try_reserve(entries.length() as usize)
+        .map_err(|_| "failed to allocate companion resource map".to_string())?;
+    for index in 0..entries.length() {
+        let pair = js_sys::Array::from(&entries.get(index));
+        if pair.length() != 2 {
+            return Err("invalid companion resource entry".to_string());
         }
+        let uri = pair
+            .get(0)
+            .as_string()
+            .ok_or("companion resource key is not a string")?;
+        let value = pair.get(1);
+        if !value.is_instance_of::<js_sys::Uint8Array>() {
+            return Err(format!("companion resource {uri} is not a Uint8Array"));
+        }
+        let bytes = copy_uint8_array(&js_sys::Uint8Array::new(&value), &uri)?;
+        if resources.iter().any(|(candidate, _)| candidate == &uri) {
+            return Err(format!("duplicate companion resource URI: {uri}"));
+        }
+        resources.push((uri, bytes));
+    }
+    Ok(resources)
+}
+
+fn parse_document(data: &[u8], resolver: Option<&dyn ResourceResolver>) -> ParseResult {
+    match parse_document_result(data, resolver) {
+        Ok(result) => result,
+        Err(error) => ParseResult::error(error.to_string()),
+    }
+}
+
+fn parse_document_result(
+    data: &[u8],
+    resolver: Option<&dyn ResourceResolver>,
+) -> Result<ParseResult, GltfError> {
+    let reader = match resolver {
+        Some(resolver) => GltfReader::from_bytes_lenient_with_resolver(
+            data,
+            resolver,
+            &ResourceLimits::default(),
+        )?,
+        None => GltfReader::from_bytes_lenient(data)?,
+    };
+    let metadata = reader.document_metadata();
+    let decoded = reader.decode_all_meshes()?;
+    if decoded.is_empty() {
+        return Err(GltfError::InvalidGltf(
+            "document contains no decodable mesh primitives".into(),
+        ));
     }
 
-    // Parse nodes
-    let nodes: Vec<SceneNode> = root
+    let names = metadata.primitive_names;
+    if names.len() != decoded.len() {
+        return Err(GltfError::InvalidGltf(format!(
+            "decoded primitive count {} does not match document primitive count {}",
+            decoded.len(),
+            names.len()
+        )));
+    }
+
+    let mut meshes = Vec::new();
+    meshes
+        .try_reserve_exact(decoded.len())
+        .map_err(|_| GltfError::InvalidGltf("failed to allocate mesh result".into()))?;
+    for (mesh, name) in decoded.iter().zip(names) {
+        meshes.push(mesh_to_data(mesh, name)?);
+    }
+
+    let nodes = metadata
         .nodes
-        .iter()
-        .map(|n| SceneNode {
-            name: n.name.clone(),
-            mesh_index: n.mesh,
-            translation: n.translation.clone(),
-            rotation: n.rotation.clone(),
-            scale: n.scale.clone(),
-            children: n.children.clone(),
+        .into_iter()
+        .map(|node| SceneNode {
+            name: node.name,
+            mesh_index: node.mesh,
+            translation: node.translation.map(|value| value.to_vec()),
+            rotation: node.rotation.map(|value| value.to_vec()),
+            scale: node.scale.map(|value| value.to_vec()),
+            children: node.children,
         })
         .collect();
-
-    // Parse scenes
-    let scenes: Vec<SceneData> = root
+    let scenes = metadata
         .scenes
-        .iter()
-        .map(|s| SceneData {
-            name: s.name.clone(),
-            nodes: s.nodes.clone(),
+        .into_iter()
+        .map(|scene| SceneData {
+            name: scene.name,
+            nodes: scene.nodes,
         })
         .collect();
-
-    ParseResult {
+    Ok(ParseResult {
         success: true,
         meshes,
         scenes,
         nodes,
-        default_scene: root.scene,
+        default_scene: metadata.default_scene,
         error: None,
-        warnings,
-        uses_draco,
-    }
+        warnings: Vec::new(),
+        uses_draco: metadata.uses_draco,
+    })
 }
 
-fn read_accessor_vec3(
-    accessors: &[Accessor],
-    buffer_views: &[BufferView],
-    buffer: &[u8],
-    accessor_idx: usize,
-) -> Vec<f32> {
-    let accessor = match accessors.get(accessor_idx) {
-        Some(a) => a,
-        None => return vec![],
-    };
-
-    let bv_idx = match accessor.buffer_view {
-        Some(idx) => idx,
-        None => return vec![],
-    };
-
-    let bv = match buffer_views.get(bv_idx) {
-        Some(bv) => bv,
-        None => return vec![],
-    };
-
-    let byte_offset = bv.byte_offset.unwrap_or(0) + accessor.byte_offset.unwrap_or(0);
-    let mut result = Vec::with_capacity(accessor.count * 3);
-
-    for i in 0..accessor.count {
-        let offset = byte_offset + i * 12; // 3 * 4 bytes for float32
-        if offset + 12 <= buffer.len() {
-            let x = f32::from_le_bytes([
-                buffer[offset],
-                buffer[offset + 1],
-                buffer[offset + 2],
-                buffer[offset + 3],
-            ]);
-            let y = f32::from_le_bytes([
-                buffer[offset + 4],
-                buffer[offset + 5],
-                buffer[offset + 6],
-                buffer[offset + 7],
-            ]);
-            let z = f32::from_le_bytes([
-                buffer[offset + 8],
-                buffer[offset + 9],
-                buffer[offset + 10],
-                buffer[offset + 11],
-            ]);
-            result.push(x);
-            result.push(y);
-            result.push(z);
-        }
+fn mesh_to_data(mesh: &Mesh, name: Option<String>) -> Result<MeshData, GltfError> {
+    let positions = read_named_attribute(mesh, GeometryAttributeType::Position, &[3])?
+        .ok_or_else(|| GltfError::InvalidGltf("decoded mesh has no POSITION attribute".into()))?;
+    if positions.is_empty() {
+        return Err(GltfError::InvalidGltf(
+            "decoded mesh has an empty POSITION attribute".into(),
+        ));
     }
 
-    result
-}
+    let normals =
+        read_named_attribute(mesh, GeometryAttributeType::Normal, &[3])?.unwrap_or_default();
+    let uvs =
+        read_named_attribute(mesh, GeometryAttributeType::TexCoord, &[2])?.unwrap_or_default();
+    let colors =
+        read_named_attribute(mesh, GeometryAttributeType::Color, &[3, 4])?.unwrap_or_default();
 
-fn read_accessor_vec2(
-    accessors: &[Accessor],
-    buffer_views: &[BufferView],
-    buffer: &[u8],
-    accessor_idx: usize,
-) -> Vec<f32> {
-    let accessor = match accessors.get(accessor_idx) {
-        Some(a) => a,
-        None => return vec![],
-    };
-
-    let bv_idx = match accessor.buffer_view {
-        Some(idx) => idx,
-        None => return vec![],
-    };
-
-    let bv = match buffer_views.get(bv_idx) {
-        Some(bv) => bv,
-        None => return vec![],
-    };
-
-    let byte_offset = bv.byte_offset.unwrap_or(0) + accessor.byte_offset.unwrap_or(0);
-    let mut result = Vec::with_capacity(accessor.count * 2);
-
-    for i in 0..accessor.count {
-        let offset = byte_offset + i * 8; // 2 * 4 bytes for float32
-        if offset + 8 <= buffer.len() {
-            let u = f32::from_le_bytes([
-                buffer[offset],
-                buffer[offset + 1],
-                buffer[offset + 2],
-                buffer[offset + 3],
-            ]);
-            let v = f32::from_le_bytes([
-                buffer[offset + 4],
-                buffer[offset + 5],
-                buffer[offset + 6],
-                buffer[offset + 7],
-            ]);
-            result.push(u);
-            result.push(v);
-        }
-    }
-
-    result
-}
-
-fn read_accessor_indices(
-    accessors: &[Accessor],
-    buffer_views: &[BufferView],
-    buffer: &[u8],
-    accessor_idx: usize,
-) -> Vec<u32> {
-    let accessor = match accessors.get(accessor_idx) {
-        Some(a) => a,
-        None => return vec![],
-    };
-
-    let bv_idx = match accessor.buffer_view {
-        Some(idx) => idx,
-        None => return vec![],
-    };
-
-    let bv = match buffer_views.get(bv_idx) {
-        Some(bv) => bv,
-        None => return vec![],
-    };
-
-    let byte_offset = bv.byte_offset.unwrap_or(0) + accessor.byte_offset.unwrap_or(0);
-    let mut result = Vec::with_capacity(accessor.count);
-
-    // Component types: 5121 = UNSIGNED_BYTE, 5123 = UNSIGNED_SHORT, 5125 = UNSIGNED_INT
-    let elem_size = match accessor.component_type {
-        5121 => 1,
-        5123 => 2,
-        5125 => 4,
-        _ => return vec![],
-    };
-
-    for i in 0..accessor.count {
-        let offset = byte_offset + i * elem_size;
-        if offset + elem_size <= buffer.len() {
-            let idx = match accessor.component_type {
-                5121 => buffer[offset] as u32,
-                5123 => u16::from_le_bytes([buffer[offset], buffer[offset + 1]]) as u32,
-                5125 => u32::from_le_bytes([
-                    buffer[offset],
-                    buffer[offset + 1],
-                    buffer[offset + 2],
-                    buffer[offset + 3],
-                ]),
-                _ => 0,
-            };
-            result.push(idx);
-        }
-    }
-
-    result
-}
-
-fn decode_draco_mesh(data: &[u8]) -> Result<MeshData, String> {
-    use draco_core::decoder_buffer::DecoderBuffer;
-    use draco_core::geometry_attribute::GeometryAttributeType;
-    use draco_core::geometry_indices::{FaceIndex, PointIndex};
-    use draco_core::mesh::Mesh;
-    use draco_core::mesh_decoder::MeshDecoder;
-
-    let mut decoder_buffer = DecoderBuffer::new(data);
-    let mut mesh = Mesh::new();
-    let mut decoder = MeshDecoder::new();
-    decoder
-        .decode(&mut decoder_buffer, &mut mesh)
-        .map_err(|e| format!("{:?}", e))?;
-
-    let mut result = MeshData::default();
-
-    // Extract positions
-    let pos_att_id = mesh.named_attribute_id(GeometryAttributeType::Position);
-    if pos_att_id != -1 {
-        let pos_attr = mesh.attribute(pos_att_id);
-        let num_points = mesh.num_points();
-        result.positions.reserve(num_points * 3);
-        for i in 0..num_points {
-            let val_index = pos_attr.mapped_index(PointIndex(i as u32));
-            if val_index.0 != u32::MAX {
-                let byte_stride = pos_attr.byte_stride() as usize;
-                let byte_offset = val_index.0 as usize * byte_stride;
-                let mut bytes = [0u8; 12];
-                pos_attr.buffer().read(byte_offset, &mut bytes);
-                result
-                    .positions
-                    .push(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
-                result
-                    .positions
-                    .push(f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]));
-                result.positions.push(f32::from_le_bytes([
-                    bytes[8], bytes[9], bytes[10], bytes[11],
-                ]));
+    let index_count = mesh
+        .num_faces()
+        .checked_mul(3)
+        .ok_or_else(|| GltfError::InvalidGltf("triangle index count overflow".into()))?;
+    let mut indices = Vec::new();
+    indices
+        .try_reserve_exact(index_count)
+        .map_err(|_| GltfError::InvalidGltf("failed to allocate triangle indices".into()))?;
+    for face_index in 0..mesh.num_faces() {
+        let face = mesh
+            .face(FaceIndex(u32::try_from(face_index).map_err(|_| {
+                GltfError::InvalidGltf("face index exceeds u32".into())
+            })?));
+        for point in face {
+            if point.0 as usize >= mesh.num_points() {
+                return Err(GltfError::InvalidGltf(format!(
+                    "decoded face references point {} but mesh has {} points",
+                    point.0,
+                    mesh.num_points()
+                )));
             }
+            indices.push(point.0);
         }
     }
 
-    // Extract normals
-    let norm_att_id = mesh.named_attribute_id(GeometryAttributeType::Normal);
-    if norm_att_id != -1 {
-        let norm_attr = mesh.attribute(norm_att_id);
-        let num_points = mesh.num_points();
-        result.normals.reserve(num_points * 3);
-        for i in 0..num_points {
-            let val_index = norm_attr.mapped_index(PointIndex(i as u32));
-            if val_index.0 != u32::MAX {
-                let byte_stride = norm_attr.byte_stride() as usize;
-                let byte_offset = val_index.0 as usize * byte_stride;
-                let mut bytes = [0u8; 12];
-                norm_attr.buffer().read(byte_offset, &mut bytes);
-                result
-                    .normals
-                    .push(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
-                result
-                    .normals
-                    .push(f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]));
-                result.normals.push(f32::from_le_bytes([
-                    bytes[8], bytes[9], bytes[10], bytes[11],
-                ]));
-            }
+    Ok(MeshData {
+        name,
+        positions,
+        indices,
+        normals,
+        uvs,
+        colors,
+    })
+}
+
+fn read_named_attribute(
+    mesh: &Mesh,
+    attribute_type: GeometryAttributeType,
+    allowed_components: &[u8],
+) -> Result<Option<Vec<f32>>, GltfError> {
+    let id = mesh.named_attribute_id(attribute_type);
+    if id < 0 {
+        return Ok(None);
+    }
+    let attribute = mesh
+        .try_attribute(id)
+        .map_err(|error| GltfError::InvalidGltf(format!("invalid decoded attribute: {error}")))?;
+    if !allowed_components.contains(&attribute.num_components()) {
+        return Err(GltfError::InvalidGltf(format!(
+            "decoded {:?} attribute has {} components; expected one of {:?}",
+            attribute_type,
+            attribute.num_components(),
+            allowed_components
+        )));
+    }
+
+    let components = usize::from(attribute.num_components());
+    let value_count = mesh
+        .num_points()
+        .checked_mul(components)
+        .ok_or_else(|| GltfError::InvalidGltf("attribute result size overflow".into()))?;
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(value_count)
+        .map_err(|_| GltfError::InvalidGltf("failed to allocate attribute result".into()))?;
+
+    for point_index in 0..mesh.num_points() {
+        let point = PointIndex(
+            u32::try_from(point_index)
+                .map_err(|_| GltfError::InvalidGltf("point index exceeds u32".into()))?,
+        );
+        let mapped = attribute.mapped_index(point);
+        if mapped.0 == u32::MAX {
+            return Err(GltfError::InvalidGltf(format!(
+                "decoded {:?} attribute has no value for point {point_index}",
+                attribute_type
+            )));
         }
+        read_attribute_value(attribute, mapped.0 as usize, &mut values)?;
     }
+    Ok(Some(values))
+}
 
-    // Extract UVs
-    let uv_att_id = mesh.named_attribute_id(GeometryAttributeType::TexCoord);
-    if uv_att_id != -1 {
-        let uv_attr = mesh.attribute(uv_att_id);
-        let num_points = mesh.num_points();
-        result.uvs.reserve(num_points * 2);
-        for i in 0..num_points {
-            let val_index = uv_attr.mapped_index(PointIndex(i as u32));
-            if val_index.0 != u32::MAX {
-                let byte_stride = uv_attr.byte_stride() as usize;
-                let byte_offset = val_index.0 as usize * byte_stride;
-                let mut bytes = [0u8; 8];
-                uv_attr.buffer().read(byte_offset, &mut bytes);
-                result
-                    .uvs
-                    .push(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
-                result
-                    .uvs
-                    .push(f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]));
-            }
+fn read_attribute_value(
+    attribute: &PointAttribute,
+    value_index: usize,
+    output: &mut Vec<f32>,
+) -> Result<(), GltfError> {
+    let stride = usize::try_from(attribute.byte_stride())
+        .map_err(|_| GltfError::InvalidGltf("decoded attribute has a negative stride".into()))?;
+    let component_size = match attribute.data_type() {
+        DataType::Int8 | DataType::Uint8 => 1,
+        DataType::Int16 | DataType::Uint16 => 2,
+        DataType::Float32 => 4,
+        DataType::Int32
+        | DataType::Uint32
+        | DataType::Int64
+        | DataType::Uint64
+        | DataType::Float64
+        | DataType::Bool
+        | DataType::Invalid => {
+            return Err(GltfError::InvalidGltf(
+                "decoded attribute uses a component type that glTF 2.0 vertex attributes cannot represent"
+                    .into(),
+            ));
         }
+    };
+    let row_size = usize::from(attribute.num_components())
+        .checked_mul(component_size)
+        .ok_or_else(|| GltfError::InvalidGltf("decoded attribute row size overflow".into()))?;
+    if stride < row_size {
+        return Err(GltfError::InvalidGltf(format!(
+            "decoded attribute stride {stride} is smaller than row size {row_size}"
+        )));
     }
-
-    // Extract faces
-    let num_faces = mesh.num_faces();
-    result.indices.reserve(num_faces * 3);
-    for face_idx in 0..num_faces {
-        let face = mesh.face(FaceIndex(face_idx as u32));
-        result.indices.push(face[0].0);
-        result.indices.push(face[1].0);
-        result.indices.push(face[2].0);
+    let start = value_index
+        .checked_mul(stride)
+        .ok_or_else(|| GltfError::InvalidGltf("decoded attribute offset overflow".into()))?;
+    let end = start
+        .checked_add(row_size)
+        .ok_or_else(|| GltfError::InvalidGltf("decoded attribute range overflow".into()))?;
+    let row = attribute.buffer().data().get(start..end).ok_or_else(|| {
+        GltfError::InvalidGltf("decoded attribute value extends past its buffer".into())
+    })?;
+    for component in row.chunks_exact(component_size) {
+        output.push(scalar_to_f32(
+            attribute.data_type(),
+            attribute.normalized(),
+            component,
+        )?);
     }
+    Ok(())
+}
 
-    Ok(result)
+fn scalar_to_f32(data_type: DataType, normalized: bool, bytes: &[u8]) -> Result<f32, GltfError> {
+    let value = match data_type {
+        DataType::Int8 => normalize_signed(
+            i8::from_le_bytes(exact_bytes(bytes)?) as i32,
+            i8::MAX as i32,
+            normalized,
+        ),
+        DataType::Uint8 => normalize_unsigned(
+            u8::from_le_bytes(exact_bytes(bytes)?) as u32,
+            u8::MAX as u32,
+            normalized,
+        ),
+        DataType::Int16 => normalize_signed(
+            i16::from_le_bytes(exact_bytes(bytes)?) as i32,
+            i16::MAX as i32,
+            normalized,
+        ),
+        DataType::Uint16 => normalize_unsigned(
+            u16::from_le_bytes(exact_bytes(bytes)?) as u32,
+            u16::MAX as u32,
+            normalized,
+        ),
+        DataType::Float32 => f32::from_le_bytes(exact_bytes(bytes)?),
+        DataType::Int32
+        | DataType::Uint32
+        | DataType::Int64
+        | DataType::Uint64
+        | DataType::Float64
+        | DataType::Bool
+        | DataType::Invalid => {
+            return Err(GltfError::InvalidGltf(
+                "decoded attribute uses a component type that glTF 2.0 vertex attributes cannot represent"
+                    .into(),
+            ));
+        }
+    };
+    if !value.is_finite() {
+        return Err(GltfError::InvalidGltf(
+            "decoded attribute contains a non-finite value".into(),
+        ));
+    }
+    Ok(value)
+}
+
+fn exact_bytes<const N: usize>(bytes: &[u8]) -> Result<[u8; N], GltfError> {
+    bytes.try_into().map_err(|_| {
+        GltfError::InvalidGltf(format!(
+            "decoded scalar has {} bytes, expected {N}",
+            bytes.len()
+        ))
+    })
+}
+
+fn normalize_signed(value: i32, max: i32, normalized: bool) -> f32 {
+    if normalized {
+        ((value as f32) / (max as f32)).max(-1.0)
+    } else {
+        value as f32
+    }
+}
+
+fn normalize_unsigned(value: u32, max: u32, normalized: bool) -> f32 {
+    if normalized {
+        (value as f32) / (max as f32)
+    } else {
+        value as f32
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_parse_minimal_gltf() {
-        let gltf = r#"{
-            "asset": { "version": "2.0" },
-            "scene": 0,
-            "scenes": [{ "nodes": [0] }],
-            "nodes": [{ "name": "TestNode" }],
-            "meshes": []
-        }"#;
+    fn triangle_resource() -> Vec<u8> {
+        [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect()
+    }
 
-        let result = parse_gltf_json(gltf, None);
+    fn external_triangle_json() -> Vec<u8> {
+        br#"{
+          "asset":{"version":"2.0"},
+          "buffers":[{"uri":"triangle.bin","byteLength":36}],
+          "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],
+          "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+          "meshes":[{"name":"Triangle","primitives":[{"attributes":{"POSITION":0}}]}],
+          "nodes":[{"mesh":0}],
+          "scenes":[{"nodes":[0]}],
+          "scene":0
+        }"#
+        .to_vec()
+    }
+
+    #[test]
+    fn common_reader_decodes_external_resource_and_materializes_faces() {
+        let resources = vec![("triangle.bin".to_string(), triangle_resource())];
+        let resolver = CompanionResolver { resources };
+
+        let result = parse_document_result(&external_triangle_json(), Some(&resolver)).unwrap();
         assert!(result.success);
-        assert_eq!(result.nodes.len(), 1);
-        assert_eq!(result.nodes[0].name, Some("TestNode".to_string()));
+        assert_eq!(result.meshes.len(), 1);
+        assert_eq!(result.meshes[0].positions.len(), 9);
+        assert_eq!(result.meshes[0].indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn missing_external_resource_is_a_controlled_error() {
+        let resolver = CompanionResolver {
+            resources: Vec::new(),
+        };
+        let error = match parse_document_result(&external_triangle_json(), Some(&resolver)) {
+            Ok(_) => panic!("missing companion resource unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("triangle.bin"));
+    }
+
+    #[test]
+    fn zero_geometry_is_not_reported_as_success() {
+        let input = br#"{"asset":{"version":"2.0"},"meshes":[]}"#;
+        let result = parse_document(input, None);
+        assert!(!result.success);
+        assert!(result.meshes.is_empty());
     }
 }

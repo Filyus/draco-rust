@@ -37,7 +37,7 @@ pub fn init() {
 /// Get the version of this WASM module.
 #[wasm_bindgen]
 pub fn version() -> String {
-    "0.1.0".to_string()
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 /// Get the module name.
@@ -76,11 +76,13 @@ pub fn parse_obj_bytes(data: &[u8]) -> JsValue {
     }
 }
 
+type ObjVertexRef = (usize, Option<usize>, Option<usize>);
+
 fn parse_obj_internal(content: &str) -> ParseResult {
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut normals: Vec<[f32; 3]> = Vec::new();
     let mut texcoords: Vec<[f32; 2]> = Vec::new();
-    let mut faces: Vec<Vec<(usize, Option<usize>, Option<usize>)>> = Vec::new();
+    let mut faces: Vec<Vec<ObjVertexRef>> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
     for (line_num, line) in content.lines().enumerate() {
@@ -95,41 +97,35 @@ fn parse_obj_internal(content: &str) -> ParseResult {
         }
 
         match parts[0] {
-            "v" => {
-                if parts.len() >= 4 {
-                    if let (Ok(x), Ok(y), Ok(z)) = (
-                        parts[1].parse::<f32>(),
-                        parts[2].parse::<f32>(),
-                        parts[3].parse::<f32>(),
-                    ) {
-                        positions.push([x, y, z]);
-                    } else {
-                        warnings.push(format!("Line {}: Invalid vertex coordinates", line_num + 1));
-                    }
+            "v" if parts.len() >= 4 => {
+                if let (Ok(x), Ok(y), Ok(z)) = (
+                    parts[1].parse::<f32>(),
+                    parts[2].parse::<f32>(),
+                    parts[3].parse::<f32>(),
+                ) {
+                    positions.push([x, y, z]);
+                } else {
+                    warnings.push(format!("Line {}: Invalid vertex coordinates", line_num + 1));
                 }
             }
-            "vn" => {
-                if parts.len() >= 4 {
-                    if let (Ok(x), Ok(y), Ok(z)) = (
-                        parts[1].parse::<f32>(),
-                        parts[2].parse::<f32>(),
-                        parts[3].parse::<f32>(),
-                    ) {
-                        normals.push([x, y, z]);
-                    }
+            "vn" if parts.len() >= 4 => {
+                if let (Ok(x), Ok(y), Ok(z)) = (
+                    parts[1].parse::<f32>(),
+                    parts[2].parse::<f32>(),
+                    parts[3].parse::<f32>(),
+                ) {
+                    normals.push([x, y, z]);
                 }
             }
-            "vt" => {
-                if parts.len() >= 3 {
-                    if let (Ok(u), Ok(v)) = (parts[1].parse::<f32>(), parts[2].parse::<f32>()) {
-                        texcoords.push([u, v]);
-                    }
+            "vt" if parts.len() >= 3 => {
+                if let (Ok(u), Ok(v)) = (parts[1].parse::<f32>(), parts[2].parse::<f32>()) {
+                    texcoords.push([u, v]);
                 }
             }
             "f" => {
-                let mut face_verts: Vec<(usize, Option<usize>, Option<usize>)> = Vec::new();
-                for i in 1..parts.len() {
-                    let indices: Vec<&str> = parts[i].split('/').collect();
+                let mut face_verts: Vec<ObjVertexRef> = Vec::new();
+                for part in parts.iter().skip(1) {
+                    let indices: Vec<&str> = part.split('/').collect();
                     let vi: usize = indices[0].parse::<usize>().unwrap_or(1) - 1;
                     let ti: Option<usize> = indices
                         .get(1)

@@ -47,7 +47,7 @@ pub fn init() {
 /// Get the version of this WASM module.
 #[wasm_bindgen]
 pub fn version() -> String {
-    "0.1.0".to_string()
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 /// Get the module name.
@@ -180,8 +180,6 @@ fn create_fbx_internal(meshes: &[MeshInput], options: &ExportOptions) -> ExportR
     // Footer
     write_footer(&mut cursor, version);
 
-    drop(cursor);
-
     ExportResult {
         success: true,
         binary_data: Some(buffer),
@@ -235,9 +233,9 @@ fn write_node_with_children<W: Write + Seek>(
 
     // Go back and fill in header
     let _ = writer.seek(SeekFrom::Start(start_pos));
-    let _ = writer.write_all(&(end_pos as u64).to_le_bytes()); // end offset
+    let _ = writer.write_all(&end_pos.to_le_bytes()); // end offset
     let _ = writer.write_all(&(properties.len() as u64).to_le_bytes()); // num properties
-    let _ = writer.write_all(&(props_len as u64).to_le_bytes()); // properties list len
+    let _ = writer.write_all(&props_len.to_le_bytes()); // properties list len
     let _ = writer.write_all(&[name.len() as u8]); // name len
 
     // Seek back to end
@@ -257,20 +255,20 @@ enum FbxProp {
 fn write_property<W: Write>(writer: &mut W, prop: &FbxProp) {
     match prop {
         FbxProp::I64(v) => {
-            let _ = writer.write_all(&[b'L']);
+            let _ = writer.write_all(b"L");
             let _ = writer.write_all(&v.to_le_bytes());
         }
         FbxProp::F64(v) => {
-            let _ = writer.write_all(&[b'D']);
+            let _ = writer.write_all(b"D");
             let _ = writer.write_all(&v.to_le_bytes());
         }
         FbxProp::String(s) => {
-            let _ = writer.write_all(&[b'S']);
+            let _ = writer.write_all(b"S");
             let _ = writer.write_all(&(s.len() as u32).to_le_bytes());
             let _ = writer.write_all(s.as_bytes());
         }
         FbxProp::F64Array(arr) => {
-            let _ = writer.write_all(&[b'd']);
+            let _ = writer.write_all(b"d");
             let _ = writer.write_all(&(arr.len() as u32).to_le_bytes());
             let _ = writer.write_all(&0u32.to_le_bytes()); // encoding (0 = uncompressed)
             let _ = writer.write_all(&((arr.len() * 8) as u32).to_le_bytes()); // byte length
@@ -279,7 +277,7 @@ fn write_property<W: Write>(writer: &mut W, prop: &FbxProp) {
             }
         }
         FbxProp::I32Array(arr) => {
-            let _ = writer.write_all(&[b'i']);
+            let _ = writer.write_all(b"i");
             let _ = writer.write_all(&(arr.len() as u32).to_le_bytes());
             let _ = writer.write_all(&0u32.to_le_bytes()); // encoding
             let _ = writer.write_all(&((arr.len() * 4) as u32).to_le_bytes());

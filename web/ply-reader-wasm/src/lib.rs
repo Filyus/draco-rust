@@ -60,7 +60,7 @@ pub fn init() {
 /// Get the version of this WASM module.
 #[wasm_bindgen]
 pub fn version() -> String {
-    "0.1.0".to_string()
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 /// Get the module name.
@@ -287,11 +287,8 @@ fn parse_ply_internal(content: &str) -> ParseResult {
     let mut property_names: Vec<String> = Vec::new();
 
     // Parse header lines
-    loop {
-        let line = match lines.next() {
-            Some(l) => l.trim(),
-            None => break,
-        };
+    for line in lines.by_ref() {
+        let line = line.trim();
 
         if line == "end_header" {
             break;
@@ -303,49 +300,43 @@ fn parse_ply_internal(content: &str) -> ParseResult {
         }
 
         match parts[0] {
-            "format" => {
-                if parts.len() >= 2 {
-                    format = parts[1].to_string();
+            "format" if parts.len() >= 2 => {
+                format = parts[1].to_string();
+            }
+            "element" if parts.len() >= 3 => {
+                current_element = parts[1].to_string();
+                let count: usize = parts[2].parse().unwrap_or(0);
+                if current_element == "vertex" {
+                    vertex_count = count;
+                } else if current_element == "face" {
+                    face_count = count;
                 }
             }
-            "element" => {
-                if parts.len() >= 3 {
-                    current_element = parts[1].to_string();
-                    let count: usize = parts[2].parse().unwrap_or(0);
-                    if current_element == "vertex" {
-                        vertex_count = count;
-                    } else if current_element == "face" {
-                        face_count = count;
+            "property" if parts.len() >= 3 => {
+                let prop = if parts[1] == "list" && parts.len() >= 5 {
+                    PlyProperty {
+                        name: parts[4].to_string(),
+                        data_type: parts[3].to_string(),
+                        is_list: true,
+                        list_count_type: Some(parts[2].to_string()),
+                        list_elem_type: Some(parts[3].to_string()),
                     }
-                }
-            }
-            "property" => {
-                if parts.len() >= 3 {
-                    let prop = if parts[1] == "list" && parts.len() >= 5 {
-                        PlyProperty {
-                            name: parts[4].to_string(),
-                            data_type: parts[3].to_string(),
-                            is_list: true,
-                            list_count_type: Some(parts[2].to_string()),
-                            list_elem_type: Some(parts[3].to_string()),
-                        }
-                    } else {
-                        PlyProperty {
-                            name: parts[2].to_string(),
-                            data_type: parts[1].to_string(),
-                            is_list: false,
-                            list_count_type: None,
-                            list_elem_type: None,
-                        }
-                    };
-
-                    property_names.push(prop.name.clone());
-
-                    if current_element == "vertex" {
-                        vertex_properties.push(prop);
-                    } else if current_element == "face" {
-                        face_properties.push(prop);
+                } else {
+                    PlyProperty {
+                        name: parts[2].to_string(),
+                        data_type: parts[1].to_string(),
+                        is_list: false,
+                        list_count_type: None,
+                        list_elem_type: None,
                     }
+                };
+
+                property_names.push(prop.name.clone());
+
+                if current_element == "vertex" {
+                    vertex_properties.push(prop);
+                } else if current_element == "face" {
+                    face_properties.push(prop);
                 }
             }
             _ => {}

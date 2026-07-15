@@ -28,8 +28,8 @@ jobs:
       - name: Check web formatting
         run: cargo fmt --manifest-path web/Cargo.toml --all -- --check
 
-      - name: Test draco-core (unit + doc)
-        run: cargo test --manifest-path crates/Cargo.toml -p draco-core --lib
+      - name: Test draco-core (full suite)
+        run: cargo test --manifest-path crates/Cargo.toml -p draco-core
 
       # Feature-combination compile guard. Default tests enable every feature,
       # which hides feature-gating mistakes (e.g. a decoder module that secretly
@@ -42,47 +42,135 @@ jobs:
           cargo check --manifest-path crates/Cargo.toml -p draco-core --no-default-features --features encoder
           cargo check --manifest-path crates/Cargo.toml -p draco-core --all-features
 
-      # Malformed-input / hardening regressions. Kept separate from the C++
-      # interop integration tests (rust_*_cpp_*), which require the external
-      # draco_decoder/draco_encoder tools not present on the CI runner.
-      - name: Test draco-core malformed-input regressions
-        run: cargo test --manifest-path crates/Cargo.toml -p draco-core --test drc_edge_cases_test
-
       - name: Test draco-io
-        run: cargo test --manifest-path crates/Cargo.toml -p draco-io
+        run: cargo test --manifest-path crates/Cargo.toml -p draco-io --features test
 
-      # draco-gltf compresses through the writer + the reader-agnostic geometry
-      # decoder, without the glTF reader. Lock in that feature combination.
+      # Lock in the meaningful draco-io reader/writer feature combinations used
+      # by the standalone crate, draco-gltf, and the WASM wrappers.
       - name: Check draco-io feature combinations
         run: |
-          cargo check --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-writer
-          cargo check --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-reader
+          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --doc
+          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-writer
+          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-reader
+          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-reader,gltf-writer
 
       - name: Test draco-gltf
-        run: cargo test --manifest-path crates/Cargo.toml -p draco-gltf
+        run: cargo test --manifest-path crates/Cargo.toml -p draco-gltf --features test
 
       # draco-gltf adds wasm support and an optional `image` feature (off = the
       # smaller wasm build). Neither is exercised by the web workspace (which
       # wraps draco-io), so guard the no-image build and the wasm32 target here.
       - name: Check draco-gltf feature/target combinations
         run: |
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features
+          cargo test --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --no-default-features
+          cargo check --manifest-path crates/Cargo.toml -p draco-io --target wasm32-unknown-unknown --no-default-features --features gltf-reader,gltf-writer
+
+      - name: Check fuzz targets compile
+        run: cargo check --manifest-path fuzz/Cargo.toml --bins
 
       - name: Test web workspace
         run: cargo test --manifest-path web/Cargo.toml --workspace
 
+      - name: Clippy glTF crates
+        run: cargo clippy --manifest-path crates/Cargo.toml -p draco-io -p draco-gltf --all-targets --all-features -- -D warnings
+
+      - name: Clippy web workspace
+        run: cargo clippy --manifest-path web/Cargo.toml --workspace --all-targets -- -D warnings
+
       - name: Package draco-core
         run: cargo package --manifest-path crates/draco-core/Cargo.toml
 
-      # Full verification of draco-io requires the matching draco-core version
-      # to exist on crates.io. Before publication, still check the package file
-      # set and metadata through --list.
-      - name: Check draco-io package file list
-        run: cargo package --manifest-path crates/draco-io/Cargo.toml --list
+      - name: Test packaged draco-io and draco-gltf archives
+        shell: pwsh
+        run: ./.github/scripts/test-packaged-crates.ps1
 
-      # draco-gltf depends on published draco-core + draco-io, so a full package
-      # is not possible pre-publication; still verify its file set and metadata.
-      - name: Check draco-gltf package file list
-        run: cargo package --manifest-path crates/draco-gltf/Cargo.toml --list
+  web-runtime:
+    name: WASM runtime and browser smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Install wasm-opt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binaryen
+
+      - name: Install Node dependencies
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web test tools
+        run: npm ci --ignore-scripts
+        working-directory: web
+
+      - name: Build optimized WASM and enforce size budget
+        run: bash ./build.sh
+        working-directory: web
+
+      - name: Run Node binding smoke
+        run: npm run test:node
+        working-directory: web
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+
+      - name: Run browser smoke
+        run: npm run test:browser
+        working-directory: web
+
+  gltf-interop:
+    name: Khronos and Google glTF interoperability
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node dependencies
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install pinned validator and decoder
+        run: npm ci --ignore-scripts
+        working-directory: web
+
+      - name: Decode official Box_Draco with Rust
+        run: >-
+          cargo run --manifest-path crates/Cargo.toml -p draco-gltf
+          --no-default-features --example gltf_tool --
+          testdata/Box/glTF_Binary/Box_Draco.glb
+
+      - name: Produce a Draco GLB with Rust
+        run: |
+          mkdir -p target/gltf-interop
+          cargo run --manifest-path crates/Cargo.toml -p draco-gltf \
+            --no-default-features --example gltf_tool -- \
+            testdata/Box/glTF/Box.gltf target/gltf-interop/rust-box.glb
+
+      - name: Validate and decode Rust output independently
+        run: >-
+          node .github/scripts/gltf-interop.mjs
+          target/gltf-interop/rust-box.glb
+          testdata/Box/glTF/Box.gltf

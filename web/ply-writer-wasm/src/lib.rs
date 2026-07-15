@@ -55,7 +55,7 @@ pub fn init() {
 /// Get the version of this WASM module.
 #[wasm_bindgen]
 pub fn version() -> String {
-    "0.1.0".to_string()
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 /// Get the module name.
@@ -154,10 +154,10 @@ fn create_ply_with_core(
 }
 
 fn mesh_input_to_core_mesh(input: &MeshInput, options: &ExportOptions) -> Result<Mesh, String> {
-    if input.positions.len() % 3 != 0 {
+    if !input.positions.len().is_multiple_of(3) {
         return Err("positions length must be divisible by 3".to_string());
     }
-    if input.indices.len() % 3 != 0 {
+    if !input.indices.len().is_multiple_of(3) {
         return Err("indices length must be divisible by 3".to_string());
     }
 

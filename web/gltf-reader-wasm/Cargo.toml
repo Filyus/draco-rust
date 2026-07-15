@@ -12,7 +12,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
-# Use nanoserde for JSON parsing - much smaller binary size than serde_json
 nanoserde = { version = "0.2", default-features = false, features = ["std", "json"] }
 console_error_panic_hook = { workspace = true, optional = true }
 draco-core = { path = "../../crates/draco-core", default-features = false, features = ["decoder"] }

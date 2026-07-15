@@ -1,0 +1,14 @@
+{
+  "name": "draco-rust-web-smoke",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:node": "node tests/node-smoke.mjs",
+    "test:browser": "playwright test --config tests/playwright.config.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "draco3d": "1.5.7",
+    "gltf-validator": "2.0.0-dev.3.10"
+  }
+}

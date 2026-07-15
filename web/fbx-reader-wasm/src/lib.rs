@@ -43,7 +43,7 @@ pub fn init() {
 /// Get the version of this WASM module.
 #[wasm_bindgen]
 pub fn version() -> String {
-    "0.1.0".to_string()
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 /// Get the module name.
@@ -462,8 +462,8 @@ fn extract_mesh_from_geometry(node: &FbxNode) -> Option<MeshData> {
             // Triangulate polygon (fan triangulation)
             for i in 1..polygon.len() - 1 {
                 tri_indices.push(polygon[0]);
-                tri_indices.push(polygon[i] as u32);
-                tri_indices.push(polygon[i + 1] as u32);
+                tri_indices.push(polygon[i]);
+                tri_indices.push(polygon[i + 1]);
             }
             polygon.clear();
         } else {

@@ -48,3 +48,6 @@ if ($Force) {
 }
 
 cargo run --manifest-path $toolManifest -- @toolArgs
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}

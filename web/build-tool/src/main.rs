@@ -9,6 +9,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use miniz_oxide::deflate::compress_to_vec;
+
 const MODULES: &[&str] = &[
     "obj-reader-wasm",
     "obj-writer-wasm",
@@ -27,6 +29,7 @@ const WASM_OPT_ARGS: &[&str] = &[
     "--enable-sign-ext",
     "--enable-mutable-globals",
 ];
+const GLTF_READER_GZIP_BUDGET: usize = 150 * 1024;
 
 #[derive(Clone, Debug)]
 struct Config {
@@ -84,7 +87,7 @@ fn run() -> Result<(), String> {
     println!("Parallel jobs: {jobs}");
 
     let config = Arc::new(config);
-    let queue = Arc::new(Mutex::new(MODULES.iter().copied().collect::<Vec<_>>()));
+    let queue = Arc::new(Mutex::new(MODULES.to_vec()));
     let (sender, receiver) = mpsc::channel();
 
     for _ in 0..jobs {
@@ -115,6 +118,21 @@ fn run() -> Result<(), String> {
         write_build_result(&config, &result);
         if !result.success {
             failed.push(result.module);
+        }
+    }
+
+    if failed.is_empty() && !config.debug && !config.no_optimize {
+        let reader_wasm = config.output_dir.join("gltf_reader_bg.wasm");
+        match check_gltf_reader_size(&reader_wasm) {
+            Ok((raw_size, gzip_size)) => println!(
+                "glTF reader size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB / {:.0} KiB budget)",
+                gzip_size as f64 / 1024.0,
+                GLTF_READER_GZIP_BUDGET as f64 / 1024.0
+            ),
+            Err(error) => {
+                eprintln!("Error: {error}");
+                failed.push("gltf-reader-size".to_string());
+            }
         }
     }
 
@@ -155,6 +173,26 @@ fn run() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn check_gltf_reader_size(path: &Path) -> Result<(usize, usize), String> {
+    let wasm = fs::read(path)
+        .map_err(|error| format!("failed to read {} for size check: {error}", path.display()))?;
+    // RFC 1952 framing is 10 bytes of header and 8 bytes of trailer around the
+    // raw DEFLATE stream. Only the exact byte length matters for this budget.
+    let gzip_size = 10usize
+        .checked_add(compress_to_vec(&wasm, 9).len())
+        .and_then(|size| size.checked_add(8))
+        .ok_or("gzip size overflow")?;
+    if gzip_size > GLTF_READER_GZIP_BUDGET {
+        return Err(format!(
+            "{} is {:.1} KiB gzip, exceeding the {:.0} KiB glTF reader budget",
+            path.display(),
+            gzip_size as f64 / 1024.0,
+            GLTF_READER_GZIP_BUDGET as f64 / 1024.0
+        ));
+    }
+    Ok((wasm.len(), gzip_size))
 }
 
 fn parse_args() -> Result<Config, String> {
@@ -522,6 +560,8 @@ fn input_latest(web_dir: &Path, module: &str) -> Result<u128, String> {
         module_path.join("src"),
         web_dir.join("Cargo.toml"),
         web_dir.join("Cargo.lock"),
+        web_dir.join("build-tool").join("Cargo.toml"),
+        web_dir.join("build-tool").join("src"),
         repo_root
             .join("crates")
             .join("draco-core")
@@ -598,10 +638,11 @@ fn write_build_stamp(
 
 fn config_key(config: &Config) -> String {
     format!(
-        "debug={};no_optimize={};features={}",
+        "debug={};no_optimize={};features={};wasm_opt_args={}",
         config.debug,
         config.no_optimize,
-        effective_features(config).join(",")
+        effective_features(config).join(","),
+        WASM_OPT_ARGS.join(",")
     )
 }
 

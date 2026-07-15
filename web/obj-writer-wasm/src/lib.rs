@@ -49,7 +49,7 @@ pub fn init() {
 /// Get the version of this WASM module.
 #[wasm_bindgen]
 pub fn version() -> String {
-    "0.1.0".to_string()
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 /// Get the module name.
@@ -105,7 +105,7 @@ pub fn create_obj_multi(meshes_js: JsValue, options_js: JsValue) -> JsValue {
 }
 
 fn create_obj_internal(mesh: &MeshInput, options: &ExportOptions) -> ExportResult {
-    create_obj_multi_internal(&[mesh.clone()], options)
+    create_obj_multi_internal(std::slice::from_ref(mesh), options)
 }
 
 fn create_obj_multi_internal(meshes: &[MeshInput], options: &ExportOptions) -> ExportResult {

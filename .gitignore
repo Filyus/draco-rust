@@ -108,3 +108,9 @@ crates/**/tests/symbol_parity_test.rs
 __pycache__/
 *.pyc
 *.pyo
+
+# JavaScript tooling dependencies and browser-test output
+node_modules/
+playwright-report/
+test-results/
+.playwright/

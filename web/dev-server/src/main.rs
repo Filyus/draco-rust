@@ -26,7 +26,7 @@ fn main() -> io::Result<()> {
     ctrlc::set_handler(move || {
         shutdown.store(false, Ordering::SeqCst);
     })
-    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    .map_err(io::Error::other)?;
 
     println!("Serving from: {}", root.display());
     println!("WASM gzip compression: enabled");

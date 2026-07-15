@@ -21,6 +21,7 @@ const modules = {
 let currentMeshData = null;
 let currentFileType = null;
 let currentSourceData = null;
+let currentSourceResources = Object.create(null);
 
 // DOM Elements
 const dropZone = document.getElementById('drop-zone');
@@ -142,14 +143,14 @@ function setupEventListeners() {
         
         const files = e.dataTransfer.files;
         if (files.length > 0) {
-            handleFile(files[0]);
+            handleFiles(files);
         }
     });
     
     // File input
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
-            handleFile(e.target.files[0]);
+            handleFiles(e.target.files);
         }
     });
     
@@ -183,7 +184,25 @@ function setupEventListeners() {
 }
 
 // Handle file selection
-async function handleFile(file) {
+async function handleFiles(fileList) {
+    const files = Array.from(fileList);
+    const supportedMain = files.filter((file) =>
+        ['obj', 'ply', 'gltf', 'glb', 'fbx'].includes(file.name.split('.').pop().toLowerCase())
+    );
+    if (supportedMain.length === 0) {
+        log('No supported main 3D file found in the selection', 'error');
+        return;
+    }
+    const gltfMain = supportedMain.filter((file) => /\.(gltf|glb)$/i.test(file.name));
+    const file = gltfMain.length === 1 ? gltfMain[0] : supportedMain[0];
+    if (supportedMain.length > 1) {
+        log('Select exactly one main model file; additional files are only companions for glTF', 'error');
+        return;
+    }
+    await handleFile(file, files.filter((candidate) => candidate !== file));
+}
+
+async function handleFile(file, companionFiles = []) {
     const extension = file.name.split('.').pop().toLowerCase();
     
     if (!['obj', 'ply', 'gltf', 'glb', 'fbx'].includes(extension)) {
@@ -194,8 +213,11 @@ async function handleFile(file) {
     log(`Loading ${file.name}...`, 'info');
     
     // Show file info
-    fileName.textContent = file.name;
-    fileSize.textContent = formatFileSize(file.size);
+    fileName.textContent = companionFiles.length > 0
+        ? `${file.name} (+${companionFiles.length} resources)`
+        : file.name;
+    const totalSize = companionFiles.reduce((sum, companion) => sum + companion.size, file.size);
+    fileSize.textContent = formatFileSize(totalSize);
     fileInfo.style.display = 'flex';
     dropZone.style.display = 'none';
     
@@ -205,6 +227,13 @@ async function handleFile(file) {
         const arrayBuffer = await file.arrayBuffer();
         const data = new Uint8Array(arrayBuffer);
         currentSourceData = new Uint8Array(data);
+        currentSourceResources = Object.create(null);
+        for (const companion of companionFiles) {
+            if (Object.prototype.hasOwnProperty.call(currentSourceResources, companion.name)) {
+                throw new Error(`Duplicate companion resource name: ${companion.name}`);
+            }
+            currentSourceResources[companion.name] = new Uint8Array(await companion.arrayBuffer());
+        }
         
         // Parse file based on extension
         let result;
@@ -217,7 +246,7 @@ async function handleFile(file) {
                 break;
             case 'gltf':
             case 'glb':
-                result = await parseGltfFile(data, extension);
+                result = await parseGltfFile(data, extension, currentSourceResources);
                 break;
             case 'fbx':
                 result = await parseFbxFile(data);
@@ -267,11 +296,17 @@ async function parsePlyFile(data) {
 }
 
 // Parse glTF/GLB file
-async function parseGltfFile(data, extension) {
+async function parseGltfFile(data, extension, resources = Object.create(null)) {
     if (!modules.gltfReader.loaded) {
         return { success: false, error: 'glTF Reader module not loaded' };
     }
     
+    if (Object.keys(resources).length > 0) {
+        if (!modules.gltfReader.module.parse_gltf_with_resources) {
+            return { success: false, error: 'This glTF reader does not support companion resources' };
+        }
+        return modules.gltfReader.module.parse_gltf_with_resources(data, resources);
+    }
     if (extension === 'glb') {
         return modules.gltfReader.module.parse_glb(data);
     } else {
@@ -380,6 +415,11 @@ async function exportFile() {
                 // Hide stats if not using Draco
                 document.getElementById('compression-stats').style.display = 'none';
             }
+            if (result.compression_report) {
+                const compressed = result.compression_report.compressed_primitives?.length || 0;
+                const preserved = result.compression_report.preserved_primitives?.length || 0;
+                log(`Compression report: ${compressed} compressed, ${preserved} preserved`, preserved > 0 ? 'warning' : 'success');
+            }
             
             log(`Export complete!`, 'success');
         } else {
@@ -472,7 +512,9 @@ async function exportToGltf(meshes, format) {
         use_draco: useDraco.checked,
         encoding_speed: parseInt(encodingSpeed.value),
         encoding_method: parseInt(encodingMethod.value),
-        position_quantization: parseInt(positionBits.value),
+        position_quantization: parseInt(positionBits.value) === 0
+            ? null
+            : parseInt(positionBits.value),
         normal_quantization: parseInt(normalBits.value),
         texcoord_quantization: parseInt(texcoordBits.value),
         format: format,
@@ -486,6 +528,16 @@ async function exportToGltf(meshes, format) {
         if (useDraco.checked) {
             if (modules.gltfWriter.module.compress_gltf_document) {
                 log('Compressing original glTF document while preserving materials...', 'info');
+                if (
+                    Object.keys(currentSourceResources).length > 0 &&
+                    modules.gltfWriter.module.compress_gltf_document_with_resources
+                ) {
+                    return modules.gltfWriter.module.compress_gltf_document_with_resources(
+                        currentSourceData,
+                        currentSourceResources,
+                        options,
+                    );
+                }
                 return modules.gltfWriter.module.compress_gltf_document(currentSourceData, options);
             }
             log('Document-preserving glTF compression is unavailable; falling back to mesh export', 'warning');
@@ -594,6 +646,7 @@ function clearFile() {
     currentMeshData = null;
     currentFileType = null;
     currentSourceData = null;
+    currentSourceResources = Object.create(null);
     
     fileInfo.style.display = 'none';
     dropZone.style.display = 'block';
@@ -617,7 +670,10 @@ function log(message, type = 'info') {
     const timestamp = new Date().toLocaleTimeString();
     const line = document.createElement('div');
     line.className = `console-line ${type}`;
-    line.innerHTML = `<span class="timestamp">[${timestamp}]</span> ${message}`;
+    const timestampEl = document.createElement('span');
+    timestampEl.className = 'timestamp';
+    timestampEl.textContent = `[${timestamp}]`;
+    line.append(timestampEl, document.createTextNode(` ${String(message)}`));
     consoleEl.appendChild(line);
     consoleEl.scrollTop = consoleEl.scrollHeight;
 }
