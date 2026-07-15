@@ -99,7 +99,7 @@ ruby -run -e httpd www -p 8080
 
 ## Usage
 
-1. **Load a File**: Drag and drop a 3D file onto the drop zone, or click to browse
+1. **Load a File**: Drag and drop a 3D file onto the drop zone, or click to browse. For external-buffer `.gltf`, select the main file and its `.bin`/image companions together.
 2. **Review**: Check the mesh information displayed (vertex count, triangles, etc.)
 3. **Configure Export**: Select output format and options
 4. **Export**: Click the Export button to download the converted file
@@ -110,7 +110,7 @@ ruby -run -e httpd www -p 8080
 |--------|------|-------|-------|
 | OBJ | ✓ | ✓ | ASCII format, vertices, normals, UVs, faces |
 | PLY | ✓ | ✓ | ASCII format, vertices, normals, colors |
-| glTF | ✓ | ✓ | JSON format with embedded/external buffers |
+| glTF | ✓ | ✓ | Reads embedded/external resources; writes embedded buffers |
 | GLB | ✓ | ✓ | Binary glTF container |
 | FBX | ✓ | ✓ | Binary FBX 7.x format |
 
@@ -118,11 +118,13 @@ ruby -run -e httpd www -p 8080
 
 When exporting to glTF/GLB, you can enable Draco compression:
 
-- **Position Quantization**: 8-16 bits (default: 14)
-- **Normal Quantization**: 6-14 bits (default: 10)
-- **TexCoord Quantization**: 8-14 bits (default: 12)
+- **Position Quantization**: 1-31 bits (default: 14; `null` disables quantization)
+- **Normal Quantization**: 2-30 bits (default: 10; `null` disables quantization)
+- **TexCoord Quantization**: 1-31 bits (default: 12; `null` disables quantization)
 
 Higher values = better quality, larger file size.
+
+The defaults are lossy. Embedded output always embeds geometry buffers, but it does not rewrite external image URIs; keep companion images with the output document.
 
 ## API Reference
 
@@ -132,7 +134,7 @@ Each WASM module exposes the following functions:
 
 ```javascript
 // Get module version
-const version = module.version();  // "0.1.0"
+const version = module.version();  // crate package version
 
 // Get module name
 const name = module.module_name();  // e.g., "OBJ Reader"
@@ -150,15 +152,22 @@ const result = objReader.parse_obj(textContent);
 // Parse file content (bytes for binary formats)
 const result = fbxReader.parse_fbx(uint8Array);
 
+// glTF with external buffers/resources. Keys must exactly match resource URIs.
+const gltf = gltfReader.parse_gltf_with_resources(mainBytes, {
+    "model.bin": modelBinBytes,
+    "albedo.png": albedoBytes,
+});
+// Missing buffer or image companions return { success: false, error: ... }.
+
 // Result structure:
 {
     success: boolean,
     meshes: [{
         name: string | null,
-        positions: Float32Array,  // [x0, y0, z0, x1, y1, z1, ...]
-        indices: Uint32Array,     // [i0, i1, i2, ...]
-        normals: Float32Array,    // [nx0, ny0, nz0, ...]
-        uvs: Float32Array,        // [u0, v0, u1, v1, ...]
+        positions: number[],  // [x0, y0, z0, x1, y1, z1, ...]
+        indices: number[],    // [i0, i1, i2, ...]
+        normals: number[],    // [nx0, ny0, nz0, ...]
+        uvs: number[],        // [u0, v0, u1, v1, ...]
     }],
     error: string | null,
     warnings: string[],
@@ -183,11 +192,29 @@ const result = objWriter.create_obj(meshData, options);
 // Result structure:
 {
     success: boolean,
-    data: string,           // For text formats (OBJ, PLY, glTF)
-    binary_data: Uint8Array, // For binary formats (GLB, FBX)
+    data: string,             // For text formats such as OBJ and PLY
+    json_data: string,        // For embedded .gltf output
+    binary_data: number[],    // For binary formats such as GLB and FBX
     error: string | null,
+    compression_report: {
+        compressed_primitives: [{ mesh: number, primitive: number }],
+        preserved_primitives: [{ mesh: number, primitive: number, reason: string }],
+    } | null,
 }
 ```
+
+## Runtime smoke tests and size budget
+
+After building the WASM packages, run:
+
+```bash
+npm install
+npm run test:node
+npx playwright install chromium
+npm run test:browser
+```
+
+Release builds enforce a `gltf_reader_bg.wasm` budget of at most 150 KiB gzip after `wasm-opt`. `--no-optimize` intentionally skips this release budget check.
 
 ## Development
 
@@ -195,7 +222,7 @@ const result = objWriter.create_obj(meshData, options);
 
 Each WASM module is a separate Rust crate that depends on:
 - `draco-core`: Core mesh encoding/decoding functionality
-- `draco-io`: I/O traits and implementations (used for reference)
+- `draco-io`: shared hardened format/container implementations
 - `wasm-bindgen`: Rust/JavaScript interop
 - `serde`: Data serialization
 

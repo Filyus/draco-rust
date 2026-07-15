@@ -23,8 +23,8 @@ at a different level of abstraction.
 | `.drc` point-cloud / triangle-mesh / keyframe bitstream | yes | `draco-core` |
 | `.drc` geometry & attribute metadata | yes | `draco-core` |
 | glTF / GLB scenes + `KHR_draco_mesh_compression` | yes | `draco-gltf` (geometry via `draco-core`, document-preserving compress via `draco-io`) |
-| glTF materials / textures / nodes / animations / skins / lights / extensions | yes (transcoder) | `draco-gltf` — preserved across a Draco round-trip; skinned geometry *is* compressed (`JOINTS_n`/`WEIGHTS_n`) |
-| glTF `EXT_structural_metadata` / `EXT_mesh_features` | yes (glTF path) | `draco-gltf` — carried through as an opaque extension; semantic interpretation is future scene-layer work |
+| glTF materials / textures / nodes / animations / skins / lights / extensions | yes (transcoder) | `draco-gltf` — understood references are preserved across a Draco round-trip; opaque unknown binary references are rejected rather than guessed |
+| glTF `EXT_structural_metadata` / `EXT_mesh_features` | yes (glTF path) | `draco-gltf` — known accessor/bufferView slots participate in safe remapping; richer semantic interpretation is future scene-layer work |
 | OBJ / PLY / FBX | yes | `draco-io` |
 
 ## Raw geometry bitstreams

@@ -9,6 +9,36 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Clean compression API on `Import`: shared `GltfCompressionOptions`,
+  `CompressionOutput`, typed preserve reports, `SameAsInput`/embedded/GLB
+  output, and `to_bytes` after decompression.
+- `ImportOptions` with synchronous resource resolvers, external-file policy,
+  and optional per-resource, total-buffer, and image-pixel quotas.
+- Custom `_*` semantics, `extras`, unknown extension JSON, and arbitrary object
+  field preservation, plus a deterministic `gltf_tool` interoperability
+  example.
+
+### Changed
+
+- `draco_attribute_map` is strict and returns
+  `Result<Option<BTreeMap<String, u32>>>`; IDs are Draco unique IDs, not
+  positional attribute indices.
+- Compression uses the common `draco-io` container, resource, KHR schema, and
+  options/report types. The former free `compress(document, buffers)` API is
+  replaced by `Import::compress[_with_options]`.
+
+### Fixed
+
+- `decompress_in_place` is atomic, validates its replacement document, clones
+  shared accessors, preserves unmapped attributes, and always materializes
+  indexed `TRIANGLES` for strips and non-indexed primitives.
+- Decoded attributes and indices are checked against accessor semantic, layout,
+  component type, normalization, and count contracts.
+- Checked range arithmetic, preflight bounds checks, fallible allocations, and
+  fallible Draco buffer reads replace panic/OOM-prone paths.
+
 ## [0.1.0] - 2026-06-24
 
 ### Added

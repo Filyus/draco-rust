@@ -10,9 +10,8 @@ animations, skins, lights, and arbitrary extensions — and the Draco crates:
   decompress `KHR_draco_mesh_compression` geometry;
 - **encode** reuses
   [`draco-io`](https://crates.io/crates/draco-io)'s document-preserving
-  compressor core, so the compression logic lives in exactly one place — while
-  reading the geometry to compress through gltf-rs, so it depends on `draco-io`
-  with only its writer, never its glTF reader.
+  compressor and hardened container/resource layer, so the format logic lives
+  in exactly one place while geometry is exposed through gltf-rs.
 
 It exists because neither side does the whole job alone: gltf-rs does not decode
 Draco (its validator even *rejects* a Draco asset, since
@@ -68,18 +67,29 @@ for mesh in scene.document.meshes() {
 
 ```rust,no_run
 let scene = draco_gltf::import("model.gltf")?;
-let bytes = draco_gltf::compress(&scene.document, &scene.buffers)?;
-std::fs::write("model.draco.gltf", bytes)?;
+let compressed = scene.compress()?;
+std::fs::write("model.draco.gltf", compressed.data)?;
+println!("{:?}", compressed.report);
 # Ok::<(), draco_gltf::Error>(())
 ```
 
-`compress` preserves everything the geometry change does not touch — materials,
-textures, images, nodes, animations, skins, `extras`, and unknown extensions. It
-runs `draco-io`'s shared document-preserving compressor core, decoding the
-geometry to compress straight from the gltf-rs accessors through `draco-io`'s
-reader-agnostic `decode_geometry`. So there is a single compression path, and
-`draco-gltf` depends on `draco-io` with only its `gltf-writer` feature — not its
-glTF reader (`gltf-rs` already parses the document).
+`Import::compress` preserves everything the geometry change does not touch —
+materials, textures, images, nodes, animations, skins, `extras`, arbitrary
+extension JSON, and unknown object fields. `Import` retains the original JSON
+alongside the typed gltf-rs document so fields outside gltf-rs's model are not
+dropped. Its `CompressionReport` distinguishes compressed primitives from
+valid but unsupported primitives that were preserved (for example morph
+targets or a non-triangle layout). Malformed input is always an error, never a
+preserve reason.
+
+The default quantization is lossy. `GltfCompressionOptions` selects
+quantization per attribute class (`None` disables it), encoding/decoding speed,
+encoding method, and `SameAsInput`, embedded glTF, or GLB output. Out-of-range
+values are rejected rather than clamped.
+
+Unknown JSON is preserved, but repacking refuses an extension that contains
+opaque `buffer`/`bufferView`/offset-like references. Such an extension needs
+explicit reference semantics before its binary data can be moved safely.
 
 ## Validation
 
@@ -88,8 +98,10 @@ gltf-rs's own validator rejects Draco assets outright (it treats
 therefore runs **Draco-aware validation**: full gltf-rs validation with only the
 expected Draco errors filtered out (the unsupported-extension error, and the
 "missing bufferView" on accessors whose data comes from the Draco stream). A
-structurally invalid asset — out-of-range indices, malformed accessors — is
-still rejected. The validation is also panic-safe: gltf-rs 1.4's validator can
+shared strict KHR parser additionally checks the extension schema, u32 unique
+IDs, primitive mode, semantic subset, declarations, and fallback accessors. A
+structurally invalid asset is rejected. The validation is also panic-safe:
+gltf-rs 1.4's validator can
 panic on a primitive that references an out-of-range accessor, so `validate`
 pre-checks those references and returns a controlled `Error::Validation` before
 the panic can happen (this holds even on wasm targets built with
@@ -99,29 +111,34 @@ the panic can happen (this holds even on wasm targets built with
 ## WebAssembly
 
 `draco-gltf` works on `wasm32` for native-Rust web apps that want the full glTF
-scene model in the browser. Use the byte API — [`import_slice`], [`compress`],
-and [`Import::decompress_in_place`] — since the filesystem [`import`] is
-native-only. Fetch the glTF/GLB bytes (and any external resources) yourself and
-pass them in. For plugging a Draco decoder into a JavaScript glTF loader instead
-(three.js, babylon, …), use `draco-core` directly.
+scene model in the browser. Use `import_slice_with_options`,
+`Import::compress`, and `Import::decompress_in_place` because filesystem
+`import` is native-only. `ImportOptions` accepts a synchronous
+`ResourceResolver`, an `ExternalFilePolicy`, and optional per-resource,
+total-buffer, and image-pixel quotas. For plugging a Draco decoder into a
+JavaScript glTF loader instead (three.js, babylon, …), use `draco-core`
+directly.
 
 ## Features
 
-- **`image`** (default): decode embedded/external images into pixels via
-  gltf-rs, exposing them as `Import::images`. This pulls the `image` crate
+- **`image`** (default): decode embedded/external images into pixels, exposing
+  them as `Import::images`. This pulls the `image` crate
   (PNG/JPEG codecs), which is the largest part of the build. Disable it with
   `default-features = false` when you only need geometry and the scene model —
   e.g. on wasm, where the host usually decodes textures. Without it, images are
-  not decoded, `Import::images` is absent, and a small built-in loader resolves
-  buffers (data URIs and the GLB BIN chunk; external files only with a base
-  path). Measured size-optimized wasm: ~384 KB → ~279 KB gzip without `image`.
+  not decoded and `Import::images` is absent; buffers still use the shared
+  strict resolver.
+
+`GltfEmbeddedBuffers` embeds glTF buffers. It does not turn external image URIs
+into data URIs; images remain external unless the caller performs that separate
+document transform.
 
 ## glTF 2.1
 
-These crates target glTF 2.0. glTF 2.1 (announced 2026, backward-compatible) is
-not implemented yet, but a 2.1 asset is handled safely — 2.0 content is supported,
-new scene-level content is preserved, and attributes using new 2.1 component types
-are kept verbatim rather than corrupted. See [GLTF_2_1.md](GLTF_2_1.md).
+These crates target glTF 2.0. glTF 2.1-specific component types and 64-bit GLB
+are not implemented. Unsupported geometry is preserved only when its structure
+can be understood safely; malformed containers and opaque binary references are
+errors. See [GLTF_2_1.md](GLTF_2_1.md).
 
 ## Where it sits
 

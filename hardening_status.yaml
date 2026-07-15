@@ -9,7 +9,7 @@
 #   behavior still belongs in implementation_state.yaml.
 
 version: 1
-last_reviewed: "2026-06-16"
+last_reviewed: "2026-07-16"
 
 scope:
   crate: "draco-core"
@@ -39,7 +39,7 @@ completed:
           - "external_buffer_uri_is_refused_without_base_path"
       - path: "fuzz/fuzz_targets/compress_gltf.rs"
       - path: "crates/draco-io/src/gltf_reader.rs"
-    note: "compress_gltf_bytes (and the lenient reader it uses) audited for malformed glTF/GLB. Findings: (1) an arbitrary-local-file-read via a hostile buffer.uri when loading from in-memory bytes (base_path = None) — load_buffer now refuses to resolve external resource URIs without a base path, allowing only data URIs and the GLB BIN chunk. Confirmed non-issues during the audit: accessor reads are bounded by accessor_layout (which validates the full element span against the bufferView/buffer before allocating, so a large `count` cannot drive an unbounded allocation), trim_buffer_to_declared_length rejects a declared byteLength larger than the resource (no zero-padding amplification), split_glb bounds all chunk ranges, and the compressor checks the JSON root is an object before unwrapping. A deterministic battery (malformed raw inputs, malformed documents with out-of-range/oversized accessors, byte mutations and truncations of a valid GLB) confirms no panic/abort. A libFuzzer target (fuzz/fuzz_targets/compress_gltf.rs) is added for CI soak. base_path-relative URI traversal for the file-opening reader path remains a documented residual (the caller supplies and trusts the directory)."
+    note: "The shared glTF container/KHR layer now performs checked GLB parsing/building, strict data-URI decoding, fallible bounded buffer reads, accessor-contract validation, and explicit resource resolution through ImportOptions. ExternalFilePolicy can deny access, allow it, or confine it to the base directory; optional per-resource and aggregate quotas bound resource use. Unknown extension binary references fail as OpaqueBinaryReference. Deterministic malformed-input regressions cover hostile counts, offsets, sparse indices, KHR unique IDs, scene/animation/skin references, and repeat compression. Both compress_gltf and draco_gltf_import libFuzzer targets are seeded and run in CI/ClusterFuzzLite."
 
   - id: malformed-basic-drc-streams
     status: covered

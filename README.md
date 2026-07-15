@@ -40,7 +40,12 @@ This project is not an official Google Draco release.
 - Read and write glTF, GLB, OBJ, PLY, and binary FBX.
 - Use `KHR_draco_mesh_compression` for Draco-compressed glTF and GLB.
 - Compress an existing glTF/GLB in place, preserving materials, textures,
-  animations, skins, and other content the geometry change does not touch.
+  animations, skins, `extras`, custom semantics, and unknown JSON that the
+  geometry change does not touch. Unknown extension fields that look like
+  opaque binary references are rejected instead of being guessed and remapped.
+
+The default glTF quantization is lossy. Embedded-buffer output embeds geometry
+buffers only; it does not rewrite external image URIs.
 
 `draco-gltf` handles full glTF scenes (optional, pulls in `gltf-rs`):
 
@@ -62,10 +67,13 @@ For detailed compatibility and scope notes, see the crate docs and
 [dependencies]
 draco-core = "1.0"
 draco-io = "0.1"
+draco-gltf = "0.1"
 ```
 
 Use only the crate you need. `draco-core` is enough for raw Draco bitstreams;
-`draco-io` adds file-format readers and writers.
+`draco-io` adds geometry-oriented format readers, writers, and a
+document-preserving glTF compressor; `draco-gltf` adds the complete gltf-rs
+scene model.
 
 For raw `.drc` decode-only builds:
 
@@ -160,9 +168,11 @@ fn read_glb(path: &str) -> Result<(), draco_io::GltfError> {
 | PLY | yes | yes | ASCII and binary paths with mesh/point data. |
 | FBX | yes | yes | Binary FBX with optional array compression. |
 
-`draco-io` is not a full scene SDK. Materials, textures, cameras, lights,
-animation, skinning, and semantic glTF metadata are outside the supported
-format scope.
+`draco-io` does not model a full glTF scene when reading geometry into
+`draco-core::Mesh`. Its document-preserving compression route nevertheless
+retains understood scene JSON and bytes. Use `draco-gltf` when materials,
+textures, cameras, lights, animation, skinning, and other scene data must be
+available as a typed API.
 
 ## Compatibility
 
@@ -230,6 +240,7 @@ Run the coverage-guided fuzzers (nightly + `cargo-fuzz`):
 pwsh fuzz/seed_corpus.ps1
 cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
 cargo +nightly fuzz run -O compress_gltf --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
+cargo +nightly fuzz run -O draco_gltf_import --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
 ```
 
 See [`FUZZING.md`](FUZZING.md) for the full fuzzing routine and

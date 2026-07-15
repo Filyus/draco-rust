@@ -34,7 +34,7 @@ Complete API documentation for the draco-io crate.
   - [glTF/GLB Format](#gltfglb-format)
     - [GltfReader](#gltfreader)
     - [GltfWriter](#gltfwriter)
-    - [QuantizationBits](#quantizationbits)
+    - [glTF compression options](#gltf-compression-options)
     - [DracoPrimitiveInfo](#dracoprimitiveinfo)
   - [Error Types](#error-types)
     - [GltfError](#gltferror)
@@ -644,8 +644,10 @@ let scene = reader.read_scene()?;
 
 **API Surface:**
 
-Construction: `open`, `from_glb`, `from_gltf`, `from_bytes`, and
-`from_bytes_with_base_path`.
+Construction: `open`, `from_glb`, `from_gltf`, `from_bytes`,
+`from_bytes_with_base_path`, and `from_bytes_with_resolver`. The corresponding
+`from_bytes_lenient*` constructors keep valid non-geometry scene content while
+still rejecting malformed containers, accessors, and Draco extensions.
 
 Draco payload access: `has_draco_extension`, `draco_primitives`,
 `get_draco_data`, `decode_draco_mesh`, `decode_draco_point_cloud`
@@ -656,6 +658,12 @@ General mesh and scene decode: `read_mesh`, `read_meshes`, `read_scene`,
 
 Metadata inspection: `num_meshes`, `num_buffers`, `extensions_used`, and
 `extensions_required`.
+
+External resources are resolved synchronously through `ResourceResolver`.
+`FileResourceResolver` supports `Deny`, `Allow`, and `ConfineToBase` policies;
+`ResourceLimits` can independently cap one resource, the combined glTF buffer
+bytes, and decoded image pixels. Every quota is optional, and the native
+convenience path has no fixed byte cap.
 
 ```rust
 use draco_io::gltf_reader::GltfReader;
@@ -677,7 +685,7 @@ for (info, mesh) in reader.decode_all_draco_meshes()? {
 Writes glTF 2.0 and GLB files with Draco compression.
 
 ```rust
-use draco_io::gltf_writer::{GltfWriter, QuantizationBits};
+use draco_io::{GltfCompressionOptions, GltfWriter, QuantizationOptions};
 
 let mut writer = GltfWriter::new();
 
@@ -685,14 +693,17 @@ let mut writer = GltfWriter::new();
 writer.add_draco_mesh(&mesh, Some("Model"), None)?;
 
 // Or with custom quantization
-let quant = QuantizationBits {
-    position: 16,  // Higher = more precision
-    normal: 10,
-    color: 8,
-    texcoord: 12,
-    generic: 8,
+let options = GltfCompressionOptions {
+    quantization: QuantizationOptions {
+        position: Some(16), // Higher = more precision
+        normal: Some(10),
+        color: Some(8),
+        texcoord: Some(12),
+        generic: None,
+    },
+    ..GltfCompressionOptions::default()
 };
-writer.add_draco_mesh(&mesh, Some("HighQuality"), Some(quant))?;
+writer.add_draco_mesh(&mesh, Some("HighQuality"), Some(options))?;
 
 // Multiple output formats
 writer.write_glb("output.glb")?;              // Binary GLB
@@ -722,36 +733,47 @@ In-memory output: `to_gltf_embedded`, `to_glb`, `write_to_vec`, and `write_to`.
 
 | Function | Description |
 |----------|-------------|
-| `encode_draco_mesh(mesh, quantization) -> Result<Vec<u8>>` | Encode raw Draco bytes with the same validation and quantization defaults as `GltfWriter` |
+| `encode_draco_mesh(mesh, options) -> Result<Vec<u8>>` | Encode raw Draco bytes with the same validation and options as `GltfWriter` |
 
 ---
 
-### QuantizationBits
+### glTF compression options
 
 Configures Draco quantization precision per attribute type.
 
 ```rust
 #[derive(Clone, Copy, Debug)]
-pub struct QuantizationBits {
-    pub position: i32,   // Default: 14
-    pub normal: i32,     // Default: 10
-    pub color: i32,      // Default: 8
-    pub texcoord: i32,   // Default: 12
-    pub generic: i32,    // Default: 8
+pub struct QuantizationOptions {
+    pub position: Option<u8>, // Default: Some(14)
+    pub normal: Option<u8>,   // Default: Some(10)
+    pub color: Option<u8>,    // Default: Some(8)
+    pub texcoord: Option<u8>, // Default: Some(12)
+    pub generic: Option<u8>,  // Default: Some(8)
 }
 
-impl Default for QuantizationBits {
-    fn default() -> Self {
-        Self {
-            position: 14,
-            normal: 10,
-            color: 8,
-            texcoord: 12,
-            generic: 8,
-        }
-    }
+pub struct GltfCompressionOptions {
+    pub quantization: QuantizationOptions,
+    pub encoding_speed: u8, // Default: 5
+    pub decoding_speed: u8, // Default: 5
+    pub encoding_method: EncodingMethod,
+    pub output_format: OutputFormat,
+}
+
+pub enum EncodingMethod {
+    Auto,
+    Sequential,
+    Edgebreaker,
+}
+
+pub enum OutputFormat {
+    SameAsInput,
+    GltfEmbeddedBuffers,
+    Glb,
 }
 ```
+
+Default compression is lossy. `None` disables quantization for that attribute
+class. Invalid bit and speed ranges return an error and are never clamped.
 
 **Quantization Guidelines:**
 
@@ -761,6 +783,36 @@ impl Default for QuantizationBits {
 | 12-14 | Medium | General use (default) |
 | 16-18 | High | CAD, precision work |
 | 20+ | Very High | Scientific data |
+
+---
+
+### Document-preserving glTF compression
+
+`compress_gltf_bytes` and `compress_gltf_bytes_with_options` accept embedded
+glTF or GLB bytes. External resources can be supplied through
+`compress_gltf_bytes_with_resolver`; native callers can use the base-path
+convenience function. Every entry point returns:
+
+```rust
+pub struct CompressionOutput<T> {
+    pub data: T,
+    pub report: CompressionReport,
+}
+```
+
+The report lists compressed primitive locations and primitives that were copied
+unchanged with a typed `PreserveReason` (`AlreadyDraco`, unsupported mode or
+layout, sparse accessor, morph targets, or shared accessor). Invalid input is
+never converted into a preserve reason.
+
+`OutputFormat::SameAsInput` keeps GLB as GLB and emits an embedded-buffer glTF
+for JSON input; `GltfEmbeddedBuffers` and `Glb` force an explicit container.
+Embedded buffers do not imply embedded external images.
+
+The compressor retains `extras`, custom `_*` semantics, and unknown JSON whose
+binary references are understood. Unknown extension content containing opaque
+buffer, buffer-view, or offset-like references returns
+`GltfError::OpaqueBinaryReference` rather than undergoing heuristic remapping.
 
 ---
 
@@ -782,8 +834,8 @@ pub struct DracoPrimitiveInfo {
     /// Buffer view containing the Draco data.
     pub buffer_view: usize,
 
-    /// Attribute mappings from glTF semantic to Draco attribute ID.
-    pub attributes: HashMap<String, usize>,
+    /// Attribute mappings from glTF semantic to Draco unique ID.
+    pub attributes: BTreeMap<String, u32>,
 }
 ```
 
@@ -811,10 +863,24 @@ pub enum GltfError {
     InvalidGltf(String),
 
     #[error("Draco decode error: {0}")]
-    DracoDecode(String),
+    DracoDecode(#[source] draco_core::DracoError),
+
+    DracoEncode(#[source] draco_core::DracoError),
 
     #[error("Unsupported feature: {0}")]
     Unsupported(String),
+
+    #[error("External resource denied: {0}")]
+    ExternalResourceDenied(String),
+
+    #[error("Resource limit exceeded: {0}")]
+    ResourceLimitExceeded(String),
+
+    #[error("Opaque binary reference: {0}")]
+    OpaqueBinaryReference(String),
+
+    #[error("Invalid compression options: {0}")]
+    InvalidOptions(String),
 }
 ```
 
@@ -832,13 +898,25 @@ pub enum GltfWriteError {
     Json(#[from] serde_json::Error),
 
     #[error("Draco encode error: {0}")]
-    DracoEncode(String),
+    DracoEncode(#[source] draco_core::DracoError),
+
+    #[error("Draco encoder invariant failed: {0}")]
+    EncoderInvariant(String),
 
     #[error("Invalid mesh: {0}")]
     InvalidMesh(String),
 
     #[error("Unsupported feature: {0}")]
     Unsupported(String),
+
+    #[error("Invalid compression options: {0}")]
+    InvalidOptions(String),
+
+    #[error("Resource limit exceeded: {0}")]
+    ResourceLimit(String),
+
+    #[error("UTF-8 conversion error: {0}")]
+    Utf8(#[from] std::string::FromUtf8Error),
 }
 ```
 

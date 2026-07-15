@@ -1943,7 +1943,7 @@ files:
         note: "Public constructor (+ from_bytes_lenient_with_base_path): runs validate_root_metadata (version + glTF validity that extensionsRequired is a subset of extensionsUsed + draco-consistency) but skips reject_unsupported_features, decoding geometry from assets the strict from_bytes rejects. reject_unsupported_features (strict-only) covers skins/animations/morph targets AND unknown required extensions; the lenient/compressor path tolerates unknown required extensions (e.g. KHR_materials_unlit, KHR_texture_transform) so document-preserving compression is not blocked by them. Used by the compressor and to read back compressed skinned/animated output."
       - name: "decode_primitive_with_semantics"
         progress: "fully implemented"
-        note: "pub(crate) per-primitive decode returning (Mesh, Vec<(glTF semantic, Draco unique_id)>). The unique_id equals the attribute index, which is what the KHR_draco attributes map references and what the encoder preserves in the bitstream. Lets the compressor build the extension map with the original glTF names (incl. TANGENT/JOINTS_n/WEIGHTS_n/extra TEXCOORD_n/COLOR_n/custom _*)."
+        note: "pub(crate) per-primitive decode returning (Mesh, Vec<(glTF semantic, Draco unique_id)>). KHR_draco attribute values are interpreted strictly as u32 Draco unique IDs and resolved with attribute_by_unique_id; they are not attribute-array indices. Lets the compressor preserve the original glTF names (including TANGENT/JOINTS_n/WEIGHTS_n/extra TEXCOORD_n/COLOR_n/custom _*)."
       - name: "supported_semantic_spec"
         progress: "fully implemented"
         note: "Generalized: TANGENT/JOINTS_n/WEIGHTS_n/custom _*/unknown now map to Generic (VEC*/byte..float) instead of erroring, so standard and Draco decode accept them. The glTF semantic name is preserved by the caller via the extension map / primitive.attributes, not on the Draco attribute (mirrors how C++ uses generic attributes for these semantics)."
@@ -1953,7 +1953,7 @@ files:
       - name: "compress_gltf_bytes / compress_gltf_bytes_with_base_path"
         type: "fn"
         progress: "fully implemented"
-        note: "Document-preserving glTF/GLB Draco compressor. Parses the document as serde_json::Value and mutates only compressible triangle primitives (indexed or non-indexed; a fresh SCALAR/UNSIGNED_INT indices accessor is generated for non-indexed; not already Draco; geometry accessors used by exactly one primitive; decode+encode succeed and reproduce the exact attribute set). Compresses ALL standard semantics including TANGENT/JOINTS_n/WEIGHTS_n/extra TEXCOORD_n/COLOR_n/custom _*: non-standard ones ride in the Draco stream as generic attributes, named via the extension's attribute map (semantic->unique_id from decode_primitive_with_semantics). Adds KHR_draco_mesh_compression, strips compressed geometry accessors' bufferView and updates count, repacks one buffer keeping only still-referenced bufferViews (recursive scan by \"bufferView\" key covers accessors/images/unknown extensions), reindexes references, prunes orphaned geometry, sets extensionsUsed/Required. Everything else (materials/textures/images/samplers/cameras/nodes/animations/skins/extras/unknown) is carried through untouched. Output container matches input (GLB->GLB, glTF->embedded glTF). Already-Draco/shared-accessor/sparse/encoder-rejected primitives are left uncompressed but fully preserved. Non-triangle primitives are also preserved, but by spec: KHR_draco_mesh_compression restricts mode to TRIANGLES/TRIANGLE_STRIP ('Restrictions on geometry type'), so POINTS/line modes cannot be Draco-compressed in glTF (only TRIANGLES is compressed here; TRIANGLE_STRIP is allowed but uncommon and left as-is)."
+        note: "Document-preserving glTF/GLB Draco compressor using the shared strict container/KHR parser, checked resource resolution, GltfCompressionOptions, and CompressionOutput report. Compresses understood TRIANGLES/TRIANGLE_STRIP primitives, preserves valid unsupported primitives with typed PreserveReason, and treats malformed input as an error. Accessor usage includes primitives, morph targets, animations, skins, and known extension slots. Unknown JSON is retained, but unknown extension content with opaque buffer/bufferView/offset-like references fails with OpaqueBinaryReference instead of heuristic recursive remapping. Output defaults to SameAsInput; embedded glTF embeds buffers but not external images."
 
   - path: "crates/draco-io/src/gltf_writer.rs"
     structures:
@@ -1965,10 +1965,10 @@ files:
         type: "enum"
         progress: "fully implemented"
         note: "Error type for glTF write/encode failures."
-      - name: "QuantizationBits"
+      - name: "GltfCompressionOptions / QuantizationOptions"
         type: "struct"
         progress: "fully implemented"
-        note: "Attribute quantization configuration for Draco encoding; defaults match typical Draco settings."
+        note: "Shared fallible compression configuration from draco-io: per-attribute optional quantization, speed, encoding method, and output format. Invalid ranges are rejected rather than clamped."
     functions:
       - name: "encode_draco_mesh"
         progress: "fully implemented"

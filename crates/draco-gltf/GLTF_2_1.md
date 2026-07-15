@@ -22,21 +22,19 @@ accessor component types, relaxed (non-sequential) attribute indices, and a
 ## What happens if you use a glTF 2.1 asset today
 
 - **glTF 2.0 content** — fully supported, unchanged.
-- **New scene-level 2.1 content** (external assets, packaging, shapes, BVH,
-  thumbnails, unique IDs) — **preserved**. Compression rewrites only the mesh
-  geometry it compresses and carries the rest of the document through untouched,
-  so content the library does not model still survives a round-trip.
-- **New accessor component types** — `SIGNED_INT` (i32), `DOUBLE` (f64),
-  `HALF_FLOAT` (f16), `SIGNED_INT64` (i64), `UNSIGNED_INT64` (u64): a primitive
-  whose attribute uses one of these is **left uncompressed and preserved
-  verbatim — never silently corrupted**. (In 2.1 these types are opt-in through
-  extensions; standard meshes still use the 2.0 types.)
-- **64-bit GLB (binary version 3)** — not yet read or written; the byte API works
-  with standard (version 2) GLB. `draco-gltf` itself emits embedded glTF, so it
-  is unaffected.
+- **Valid but unsupported geometry in the `draco-io` document compressor** —
+  preserved with a typed report when its JSON and binary references are fully
+  understood.
+- **`draco-gltf` parsing** — still follows gltf-rs's glTF 2.0 model. A 2.1
+  component type that gltf-rs cannot represent is rejected; it is not promised
+  to round-trip through the full-scene typed API.
+- **Unknown scene JSON** — preserved when it has no opaque binary-reference
+  semantics. Unknown extension fields named like `buffer`, `bufferView`, or
+  offsets cause an explicit `OpaqueBinaryReference` error before repacking.
+- **64-bit GLB (binary version 3)** — rejected. Only GLB 2.0 is read or written.
 
-In short: your 2.0 assets are unaffected, and a 2.1 asset is handled safely —
-compressed where possible, preserved where not.
+In short: glTF 2.0 is the supported contract. 2.1 input is never silently
+reinterpreted, but preservation is conditional rather than universal.
 
 ## Why 2.1 features are not implemented yet
 
@@ -56,9 +54,9 @@ outside this library:
 (Versions and status above are point-in-time; re-check the tracking issue and the
 gltf-rs release notes before relying on them.)
 
-Support will be added once the specification and the surrounding ecosystem
-stabilize. Until then, the safe preserve/skip behavior above is the intended
-response — and it is covered by a regression test so it cannot silently change.
+Support will be added once the specification and surrounding ecosystem
+stabilize. Until then, typed preserve reports and controlled errors define the
+boundary; there is no blanket 2.1 round-trip promise.
 
 ## References
 
@@ -78,7 +76,7 @@ When 2.1 features are implemented, the relevant extension points are:
   `validate_attribute_for_gltf`.
 - `draco-gltf`: `draco_data_type` (gltf-rs `DataType` → `draco_core::DataType`),
   once gltf-rs models the new types.
-- `draco-io` `gltf_compress`: `build_glb` / `split_glb` for GLB version 3.
+- `draco-io` `gltf_container` for any future GLB version 3 work.
 
 Plus Draco encoder support for any non-`i32` type before claiming it. The safe
 behavior is guarded by `compress_skips_primitive_with_gltf_2_1_component_type` in

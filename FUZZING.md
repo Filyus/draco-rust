@@ -14,11 +14,12 @@ status, threat model, and known residual risk live in
 |---|---|---|
 | `decode_drc` | [`fuzz/fuzz_targets/decode_drc.rs`](fuzz/fuzz_targets/decode_drc.rs) | Feeds each input through both `MeshDecoder` and `PointCloudDecoder`, including the legacy decode features used for old `.drc` streams. |
 | `compress_gltf` | [`fuzz/fuzz_targets/compress_gltf.rs`](fuzz/fuzz_targets/compress_gltf.rs) | Feeds arbitrary glTF/GLB bytes into the document-preserving glTF compressor with external file resolution disabled. |
+| `draco_gltf_import` | [`fuzz/fuzz_targets/draco_gltf_import.rs`](fuzz/fuzz_targets/draco_gltf_import.rs) | Imports a full scene through `draco-gltf`, decodes every Draco primitive, then exercises atomic in-place decompression. |
 
-The fuzz crate builds `draco-core` with `default-features = false` and enables
-only the decode surface needed by the target: `decoder`, `point_cloud_decode`,
-`edgebreaker_valence_decode`, and `legacy_bitstream_decode`. This keeps encoder
-code out of the campaign while still fuzzing the shipped legacy decode paths.
+`decode_drc` builds `draco-core` with `default-features = false` and enables the
+legacy decode features needed for old streams. The two glTF targets also reach
+the encoder through `draco-io/gltf-writer`, so malformed document parsing,
+decode, compression, and atomic decompression all receive coverage.
 
 ### `-O`: fuzz with production (release) semantics
 
@@ -67,14 +68,19 @@ cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz --sanitizer none -- -max_t
 
 The corpus directory (`fuzz/corpus/`) is git-ignored, so reconstruct it from the
 committed fixtures before the first run. The seed script copies every `*.drc`
-file under `testdata/` into `fuzz/corpus/decode_drc/`:
+file for `decode_drc`; the glTF targets receive all repository `*.gltf`/`*.glb`
+fixtures plus target-specific self-contained seeds under `fuzz/seeds/`:
 
 ```powershell
 pwsh fuzz/seed_corpus.ps1
+pwsh fuzz/seed_corpus.ps1 -Target compress_gltf
+pwsh fuzz/seed_corpus.ps1 -Target draco_gltf_import
 ```
 
 ```bash
 ./fuzz/seed_corpus.sh
+./fuzz/seed_corpus.sh compress_gltf
+./fuzz/seed_corpus.sh draco_gltf_import
 ```
 
 Seeding from the real fixture inventory (point clouds, sequential/EdgeBreaker
@@ -96,6 +102,9 @@ cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz --sanitizer none -- -max_t
 
 # Bounded glTF compressor smoke run
 cargo +nightly fuzz run -O compress_gltf --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
+
+# Full-scene import, Draco decode, and decompression smoke run
+cargo +nightly fuzz run -O draco_gltf_import --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
 
 # Longer decode soak run
 cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=3600 -rss_limit_mb=4096
@@ -119,26 +128,33 @@ a refreshed seed set or before a long soak:
 
 ```powershell
 cargo +nightly fuzz cmin -O decode_drc --fuzz-dir fuzz
+cargo +nightly fuzz cmin -O compress_gltf --fuzz-dir fuzz
+cargo +nightly fuzz cmin -O draco_gltf_import --fuzz-dir fuzz
 ```
 
 ## Reproducing and triaging a crash
 
-A failing input is written to `fuzz/artifacts/decode_drc/`. Re-run it
-deterministically and minimize it:
+A failing input is written to `fuzz/artifacts/<target>/`. Re-run it
+deterministically and minimize it by substituting the affected target below:
 
 ```powershell
+$Target = "draco_gltf_import" # decode_drc, compress_gltf, or draco_gltf_import
+$Crash = "fuzz/artifacts/$Target/crash-<hash>"
+
 # Replay a specific crashing input (use -O to match the CI gate's build)
-cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz fuzz/artifacts/decode_drc/crash-<hash>
+cargo +nightly fuzz run -O $Target --fuzz-dir fuzz $Crash
 
 # Minimize the crashing input to the smallest reproducer
-cargo +nightly fuzz tmin -O decode_drc --fuzz-dir fuzz fuzz/artifacts/decode_drc/crash-<hash>
+cargo +nightly fuzz tmin -O $Target --fuzz-dir fuzz $Crash
 ```
 
-When a crash is confirmed, add the minimized reproducer as a deterministic
-regression in
+When a crash is confirmed, keep the minimized input under
+`fuzz/seeds/<target>/` and add a deterministic regression to the crate that owns
+the affected surface. Decoder regressions belong in
 [`crates/draco-core/tests/drc_edge_cases_test.rs`](crates/draco-core/tests/drc_edge_cases_test.rs)
-(see the `*_do_not_panic` tests) so the case is covered on stable in CI without
-requiring the fuzzing toolchain.
+(see the `*_do_not_panic` tests); glTF compressor/import regressions belong in
+the corresponding `draco-io` or `draco-gltf` test suite. This keeps every case
+covered on stable CI without requiring the fuzzing toolchain.
 
 ## CI
 
@@ -152,9 +168,9 @@ changes, plus deeper runs on demand. Trigger a manual run with
 
 **Level 1 — lightweight in-repo gate ([`.github/workflows/fuzz.yml`](.github/workflows/fuzz.yml)):**
 
-- Bounded smoke runs (`-max_total_time=120`) for `decode_drc` and
-  `compress_gltf` on every pull request and push to `main`. A manual dispatch
-  runs longer soaks (`-max_total_time=1800`).
+- Bounded smoke runs (`-max_total_time=120`) for `decode_drc`,
+  `compress_gltf`, and `draco_gltf_import` on every pull request and push to
+  `main`. A manual dispatch runs longer soaks (`-max_total_time=1800`).
 - The corpus is persisted across runs via the GitHub Actions cache and
   re-seeded from the committed fixtures each run, so coverage never starts from
   zero even if the cache entry is evicted.
@@ -167,9 +183,10 @@ changes, plus deeper runs on demand. Trigger a manual run with
 - `cflite_batch.yml` runs a batch campaign (manual dispatch).
 - `cflite_cron.yml` prunes the corpus (manual dispatch).
 - Build integration lives in `.clusterfuzzlite/` (OSS-Fuzz Rust base image +
-  `build.sh` that calls `cargo fuzz build -O --fuzz-dir fuzz` and exports both
-  fuzz binaries); corpus and crashes are stored in the GitHub Actions cache by
-  default. This is also the stepping stone to full OSS-Fuzz onboarding.
+  `build.sh` that calls `cargo fuzz build -O --fuzz-dir fuzz` and exports all
+  fuzz binaries together with a fixture-backed seed corpus for each target);
+  corpus and crashes are stored in the GitHub Actions cache by default. This is
+  also the stepping stone to full OSS-Fuzz onboarding.
 
 Stable CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) additionally
 runs the deterministic malformed-input regressions in `drc_edge_cases_test.rs`

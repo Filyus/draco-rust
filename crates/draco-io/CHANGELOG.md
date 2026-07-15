@@ -9,6 +9,44 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Shared strict glTF/GLB container, data-URI, companion-resource, and embedded
+  serialization APIs, including configurable external-file policies and
+  resource quotas.
+- A clean compression-options API (`GltfCompressionOptions`, optional
+  per-semantic quantization, encoding method/speeds, and `OutputFormat`) shared
+  by the document compressor and writer.
+- Typed `CompressionReport` / `PreserveReason` output for valid primitives that
+  remain uncompressed, including morph targets, sparse accessors, shared
+  accessors, unsupported layouts, and existing Draco payloads.
+- Strict shared `KHR_draco_mesh_compression` parsing and validation, with Draco
+  unique IDs represented as `u32` and looked up by unique ID when decoding.
+
+### Changed
+
+- `compress_gltf_bytes*` and `compress_gltf_value` now return
+  `CompressionOutput`; invalid input is always an error rather than a preserve
+  reason. Default compression remains lossy (`14/10/8/12/8` quantization).
+- Resource resolution is synchronous and policy-driven; native convenience
+  loading remains uncapped unless the caller supplies `ResourceLimits`.
+- Repository-only fixture and Blender tests use the `test` feature and are
+  physically excluded from the published crate, while self-contained tests
+  remain in the package.
+
+### Fixed
+
+- Reject malformed GLB chunks, invalid base64/percent escapes, opaque unknown
+  extension binary references, out-of-range views/accessors, invalid fallback
+  accessors, and accessor-contract mismatches with controlled errors.
+- Harden buffer/accessor/GLB sizing and allocation paths with checked arithmetic
+  and fallible reservations; declared lengths and GLB 32-bit limits are now
+  enforced before materialization where possible.
+- Preserve custom semantics, `extras`, known extension JSON, side attributes,
+  images, animations, skins, and morph-target bytes when repacking understood
+  references. External images remain external unless explicitly embedded by
+  the caller.
+
 ## [0.1.0] - 2026-06-24
 
 ### Added

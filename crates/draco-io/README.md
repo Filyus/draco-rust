@@ -16,7 +16,10 @@ For the project overview, compatibility notes, and benchmarks, see the
 - **In-Memory I/O**: Common `ReadFromBytes` and `WriteToBytes` traits
 - **Draco Compression**: Full support for `KHR_draco_mesh_compression` in glTF/GLB
 - **Document-Preserving Compression**: Draco-compress an existing glTF/GLB in
-  place, keeping materials, textures, animations, and other content (`compress_gltf_bytes`)
+  place, keeping materials, textures, animations, `extras`, and other content
+  (`compress_gltf_bytes`). Unknown JSON is retained, but extension fields with
+  opaque buffer/view/offset references are rejected because they cannot be
+  remapped safely.
 - **Multiple Formats**: OBJ, PLY, FBX (ASCII/Binary), glTF (JSON/Binary/Embedded)
 - **Scene Graph Support**: Read and write scene hierarchies with transforms
 - **Point Cloud Support**: Read/write point clouds (OBJ, PLY)
@@ -44,7 +47,9 @@ general-purpose asset importer. The stable contract is:
   attributes.
 - Scene support is intentionally small: names, hierarchy, transforms, and mesh
   parts. Materials, textures, cameras, lights, animation, skinning, and
-  arbitrary format extras are out of scope for now.
+  arbitrary format extras are not exposed by the geometry model. The
+  document-preserving glTF compressor carries them through without interpreting
+  them when their binary references are understood.
 - Writers should not silently claim to preserve attributes that the target
   format cannot encode. FBX writing currently accepts position-only meshes.
 
@@ -73,6 +78,7 @@ draco-io = "0.1"
 | `gltf-writer` | ✓       | glTF/GLB writing support                 |
 | `scene`       | ✓       | Scene graph API for hierarchical formats |
 | `compression` | ✓       | zlib compression for FBX                 |
+| `test`        | -       | Repository-only fixtures and local tools |
 
 To use only one format direction (smaller binary):
 
@@ -278,25 +284,56 @@ fbx.write("output.fbx")?;
 ### glTF Writer
 
 ```rust
-use draco_io::gltf_writer::{GltfWriter, QuantizationBits};
+use draco_io::{GltfCompressionOptions, GltfWriter, QuantizationOptions};
 
 let mut gltf = GltfWriter::new();
 
 // Custom quantization settings
-let quant = QuantizationBits {
-    position: 14,
-    normal: 10,
-    color: 8,
-    texcoord: 12,
-    generic: 8,
+let options = GltfCompressionOptions {
+    quantization: QuantizationOptions {
+        position: Some(16),
+        normal: Some(10),
+        color: Some(8),
+        texcoord: Some(12),
+        generic: None, // Disable quantization for generic attributes.
+    },
+    ..GltfCompressionOptions::default()
 };
-gltf.add_draco_mesh(&mesh, Some("HighQuality"), Some(quant))?;
+gltf.add_draco_mesh(&mesh, Some("HighQuality"), Some(options))?;
 
 // Multiple output formats:
 gltf.write_glb("output.glb")?;                     // Binary GLB (single file)
 gltf.write_gltf("out.gltf", "out.bin")?;           // JSON + separate binary
 gltf.write_gltf_embedded("embedded.gltf")?;        // Pure text with base64
 ```
+
+Default glTF compression is lossy (`14/10/8/12/8` quantization bits). A
+`None` quantization value preserves that attribute class without quantization;
+invalid bit/speed ranges are rejected rather than clamped.
+
+### Document-Preserving glTF Compression
+
+```rust
+use draco_io::{compress_gltf_bytes_with_options, GltfCompressionOptions, OutputFormat};
+
+let input = std::fs::read("scene.glb")?;
+let options = GltfCompressionOptions {
+    output_format: OutputFormat::SameAsInput,
+    ..Default::default()
+};
+let output = compress_gltf_bytes_with_options(&input, &options)?;
+
+std::fs::write("scene.draco.glb", output.data)?;
+println!("compressed: {:?}", output.report.compressed_primitives);
+println!("preserved: {:?}", output.report.preserved_primitives);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Valid but unsupported primitives are copied and listed with a typed
+`PreserveReason`; malformed input is an error. `GltfEmbeddedBuffers` embeds the
+consolidated glTF buffer, not external images. For companion files, use
+`compress_gltf_bytes_with_resolver` with a `ResourceResolver` and optional
+`ResourceLimits`, or the native base-path convenience function.
 
 ### glTF Reader with Scene Graph
 
