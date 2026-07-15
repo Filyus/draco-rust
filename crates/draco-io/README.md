@@ -59,7 +59,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-draco-io = "0.1"
+draco-io = "0.2"
 ```
 
 ### Feature Flags
@@ -84,7 +84,7 @@ To use only one format direction (smaller binary):
 
 ```toml
 [dependencies]
-draco-io = { version = "0.1", default-features = false, features = ["gltf-reader"] }
+draco-io = { version = "0.2", default-features = false, features = ["gltf-reader"] }
 ```
 
 ## Quick Start

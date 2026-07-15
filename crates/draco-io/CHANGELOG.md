@@ -9,6 +9,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.1.0...draco-io-v0.2.0) - 2026-07-16
+
 ### Added
 
 - Shared strict glTF/GLB container, data-URI, companion-resource, and embedded

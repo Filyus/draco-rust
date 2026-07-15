@@ -66,7 +66,7 @@ For detailed compatibility and scope notes, see the crate docs and
 ```toml
 [dependencies]
 draco-core = "1.0"
-draco-io = "0.1"
+draco-io = "0.2"
 draco-gltf = "0.1"
 ```
 
@@ -86,7 +86,7 @@ Format-specific `draco-io` builds can enable only the readers or writers needed:
 
 ```toml
 [dependencies]
-draco-io = { version = "0.1", default-features = false, features = ["gltf-reader", "gltf-writer"] }
+draco-io = { version = "0.2", default-features = false, features = ["gltf-reader", "gltf-writer"] }
 ```
 
 ## Quick Start
