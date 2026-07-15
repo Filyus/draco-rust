@@ -24,6 +24,9 @@ function Invoke-Cargo([string[]]$Arguments) {
     }
 }
 
+$corePath = (Join-Path $repoRoot 'crates/draco-core').Replace('\', '/')
+$ioSourcePath = (Join-Path $repoRoot 'crates/draco-io').Replace('\', '/')
+
 # Build both archives without Cargo's per-crate verification, then test their
 # exact unpacked contents together through a temporary crates.io patch.
 $ioPackageArgs = @(
@@ -37,7 +40,9 @@ Invoke-Cargo $ioPackageArgs
 $gltfPackageArgs = @(
     'package',
     '--manifest-path', (Join-Path $repoRoot 'crates/draco-gltf/Cargo.toml'),
-    '--no-verify'
+    '--no-verify',
+    '--config', "patch.crates-io.draco-core.path='$corePath'",
+    '--config', "patch.crates-io.draco-io.path='$ioSourcePath'"
 )
 if ($AllowDirty) { $gltfPackageArgs += '--allow-dirty' }
 Invoke-Cargo $gltfPackageArgs
@@ -65,7 +70,6 @@ if (-not $ioDir -or -not $gltfDir) {
 
 $cargoDir = Join-Path $workDir '.cargo'
 New-Item -ItemType Directory -Path $cargoDir | Out-Null
-$corePath = (Join-Path $repoRoot 'crates/draco-core').Replace('\', '/')
 $ioPath = $ioDir.FullName.Replace('\', '/')
 @"
 [patch.crates-io]
