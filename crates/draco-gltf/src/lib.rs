@@ -25,9 +25,10 @@
 //!     println!("mesh {:?}: {} faces", mesh.name(), geometry.num_faces());
 //! }
 //!
-//! // Compress a full scene back to a self-contained Draco glTF.
-//! let bytes = draco_gltf::compress(&scene.document, &scene.buffers)?;
-//! std::fs::write("model.draco.gltf", bytes)?;
+//! // Compress a full scene and inspect what was compressed or preserved.
+//! let compressed = scene.compress()?;
+//! std::fs::write("model.draco.gltf", compressed.data)?;
+//! println!("{:?}", compressed.report);
 //! # Ok::<(), draco_gltf::Error>(())
 //! ```
 //!
@@ -39,17 +40,25 @@
 //! that one expected error filtered out, so structurally invalid assets are
 //! still rejected. Use [`validate`] to check a document you built yourself.
 
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use draco_core::{DecoderBuffer, FaceIndex, Mesh, MeshDecoder, PointIndex};
-use draco_io::{decode_geometry, AccessorSource, DecodedAccessor, GltfError};
-#[cfg(not(feature = "image"))]
-use gltf::buffer;
+use draco_core::{DecoderBuffer, DracoError, Mesh, MeshDecoder};
+use serde::Deserialize;
 use serde_json::Value;
 
 /// Re-export so callers can use the scene model without depending on `gltf`
 /// directly.
 pub use gltf;
+
+/// The compression configuration and report types are owned by `draco-io` so
+/// byte-oriented, full-scene, native, and WASM entry points share one contract.
+pub use draco_io::{
+    CompressionOutput, CompressionReport, EncodingMethod, ExternalFilePolicy, FileResourceResolver,
+    GltfCompressionOptions, GltfContainerFormat, GltfError, OutputFormat, PreserveReason,
+    QuantizationOptions, ResourceLimits, ResourceResolver,
+};
 
 const KHR_DRACO: &str = "KHR_draco_mesh_compression";
 
@@ -67,20 +76,51 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     /// A Draco bitstream failed to decode.
     #[error("Draco decode error: {0}")]
-    Decode(String),
-    /// Compression (via `draco-io`) failed.
-    #[error("compression error: {0}")]
-    Compress(String),
+    Decode(#[from] DracoError),
+    /// Container, resource, geometry, or compression work in `draco-io` failed.
+    #[error("draco-io error: {0}")]
+    DracoIo(#[from] GltfError),
     /// The `KHR_draco_mesh_compression` extension was malformed or absent.
     #[error("Draco extension error: {0}")]
     Extension(String),
     /// The document failed glTF validation (ignoring Draco-specific errors).
     #[error("glTF validation failed: {0:?}")]
     Validation(Vec<String>),
+    /// An import quota was exceeded.
+    #[error("resource quota exceeded: {0}")]
+    ResourceLimit(String),
+    /// Image bytes could not be decoded.
+    #[cfg(feature = "image")]
+    #[error("image decode error: {0}")]
+    Image(#[from] image::ImageError),
 }
 
 /// Result alias for this crate.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Import configuration for external resources and optional quotas.
+pub struct ImportOptions<'a> {
+    /// Base directory used by the built-in filesystem resolver.
+    pub base_path: Option<&'a Path>,
+    /// Policy applied by the built-in filesystem resolver.
+    pub external_file_policy: ExternalFilePolicy,
+    /// Optional application-provided synchronous resolver. When present it is
+    /// used instead of the built-in filesystem resolver.
+    pub resolver: Option<&'a dyn ResourceResolver>,
+    /// Optional resource and image quotas. `None` means unlimited.
+    pub limits: ResourceLimits,
+}
+
+impl Default for ImportOptions<'_> {
+    fn default() -> Self {
+        Self {
+            base_path: None,
+            external_file_policy: ExternalFilePolicy::Deny,
+            resolver: None,
+            limits: ResourceLimits::default(),
+        }
+    }
+}
 
 /// A loaded glTF document with its decoded buffers and images.
 ///
@@ -98,6 +138,12 @@ pub struct Import {
     /// Only present with the `image` feature (enabled by default).
     #[cfg(feature = "image")]
     pub images: Vec<gltf::image::Data>,
+    input_format: GltfContainerFormat,
+    // gltf-json intentionally ignores arbitrary object properties outside
+    // `extensions`/`extras`. Keep the exact parsed JSON as the canonical scene
+    // and apply typed Document changes to it before every transformation.
+    raw_document: Value,
+    document_snapshot: Value,
 }
 
 impl Import {
@@ -117,6 +163,42 @@ impl Import {
         decode_primitive(&self.document, &self.buffers, primitive)
     }
 
+    /// Compresses eligible primitives with the canonical glTF defaults while
+    /// preserving the input container kind.
+    pub fn compress(&self) -> Result<CompressionOutput<Vec<u8>>> {
+        self.compress_with_options(&GltfCompressionOptions::default())
+    }
+
+    /// Compresses eligible primitives and returns both bytes and a typed
+    /// primitive-by-primitive report. Valid unsupported primitives are
+    /// preserved; malformed input is returned as an error.
+    pub fn compress_with_options(
+        &self,
+        options: &GltfCompressionOptions,
+    ) -> Result<CompressionOutput<Vec<u8>>> {
+        compress_document(self, options)
+    }
+
+    fn canonical_document(&self) -> Result<Value> {
+        let current = serde_json::to_value(self.document.clone().into_json())?;
+        let mut canonical = self.raw_document.clone();
+        apply_typed_document_diff(&self.document_snapshot, &current, &mut canonical);
+        Ok(canonical)
+    }
+
+    /// Serializes the current document without recompressing it. This is the
+    /// normal save path after [`Self::decompress_in_place`].
+    pub fn to_bytes(&self, output_format: OutputFormat) -> Result<Vec<u8>> {
+        let document = self.canonical_document()?;
+        let (document, bin) = draco_io::consolidate_gltf_buffers(document, &self.buffers)?;
+        Ok(draco_io::serialize_gltf_document(
+            &document,
+            &bin,
+            self.input_format,
+            output_format,
+        )?)
+    }
+
     /// Replaces every Draco primitive with plain, uncompressed geometry, so the
     /// rest of the document can be read through the normal `gltf-rs` API
     /// (`primitive.reader(...)`) without any Draco awareness.
@@ -131,33 +213,51 @@ impl Import {
     /// they are small and harmless. This is a no-op if there are no Draco
     /// primitives.
     pub fn decompress_in_place(&mut self) -> Result<()> {
-        // Pass 1: decode geometry and record where each primitive's accessors
-        // live, without mutating anything yet.
-        let mut doc_json = serde_json::to_value(self.document.clone().into_json())?;
+        // Build and validate the complete replacement before changing `self`.
+        // This makes a failure in any primitive, allocation, or final glTF
+        // validation leave the import byte-for-byte untouched.
+        let mut doc_json = self.canonical_document()?;
+        let usage = accessor_usage_counts(&doc_json)?;
+        let mut plan_capacity = 0usize;
+        for mesh in self.document.meshes() {
+            plan_capacity = plan_capacity
+                .checked_add(mesh.primitives().count())
+                .ok_or_else(|| Error::ResourceLimit("primitive count overflow".into()))?;
+        }
         let mut plans = Vec::new();
+        plans
+            .try_reserve_exact(plan_capacity)
+            .map_err(|_| Error::ResourceLimit("failed to allocate decompression plan".into()))?;
         for (mesh_idx, mesh) in self.document.meshes().enumerate() {
             for (prim_idx, primitive) in mesh.primitives().enumerate() {
                 if !is_draco(&primitive) {
                     continue;
                 }
                 let decoded = decode_primitive(&self.document, &self.buffers, &primitive)?;
-                let semantics = draco_attribute_map(&primitive)
-                    .ok_or_else(|| Error::Extension("missing attribute map".into()))?;
-                let attrs = semantics
-                    .into_iter()
-                    .map(|(sem, draco_id)| {
-                        let acc = doc_json["meshes"][mesh_idx]["primitives"][prim_idx]
-                            ["attributes"][&sem]
-                            .as_u64()
-                            .ok_or_else(|| {
-                                Error::Extension(format!("attribute {sem} has no accessor"))
-                            })?;
-                        Ok((acc as usize, draco_id))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                let semantics = draco_attribute_map(&primitive).and_then(|map| {
+                    map.ok_or_else(|| Error::Extension("missing attribute map".into()))
+                })?;
+                let mut attrs = Vec::new();
+                attrs.try_reserve_exact(semantics.len()).map_err(|_| {
+                    Error::ResourceLimit("failed to allocate decompression attribute plan".into())
+                })?;
+                for (sem, draco_id) in semantics {
+                    let acc = doc_json["meshes"][mesh_idx]["primitives"][prim_idx]["attributes"]
+                        [&sem]
+                        .as_u64()
+                        .ok_or_else(|| {
+                            Error::Extension(format!("attribute {sem} has no accessor"))
+                        })?;
+                    let acc = usize::try_from(acc).map_err(|_| {
+                        Error::Extension(format!("attribute {sem} accessor is too large"))
+                    })?;
+                    attrs.push((sem, acc, draco_id));
+                }
                 let indices_acc = doc_json["meshes"][mesh_idx]["primitives"][prim_idx]["indices"]
                     .as_u64()
-                    .map(|i| i as usize);
+                    .map(usize::try_from)
+                    .transpose()
+                    .map_err(|_| Error::Extension("indices accessor is too large".into()))?;
                 plans.push((mesh_idx, prim_idx, decoded, attrs, indices_acc));
             }
         }
@@ -165,24 +265,53 @@ impl Import {
             return Ok(());
         }
 
-        // Pass 2: write decoded geometry into a fresh buffer and repoint the
-        // accessors at it.
+        // Materialize tightly packed attributes and triangle-list indices in a
+        // fresh buffer. Only mapped accessors are replaced; ordinary side
+        // attributes retain their original bytes and accessors.
         let new_buffer_index = doc_json["buffers"].as_array().map_or(0, |b| b.len());
         let mut bin: Vec<u8> = Vec::new();
 
         for (mesh_idx, prim_idx, mesh, attrs, indices_acc) in &plans {
-            for (acc_idx, draco_id) in attrs {
-                let bytes = attribute_bytes(mesh, *draco_id);
-                let view = push_view(&mut doc_json, new_buffer_index, &mut bin, &bytes);
-                set_accessor_view(&mut doc_json, *acc_idx, view, mesh.num_points());
+            for (semantic, original_acc, draco_id) in attrs {
+                let acc_idx = writable_accessor(
+                    &mut doc_json,
+                    &usage,
+                    *mesh_idx,
+                    *prim_idx,
+                    Some(semantic),
+                    *original_acc,
+                )?;
+                let bytes = attribute_bytes(mesh, *draco_id)?;
+                let view = push_view(&mut doc_json, new_buffer_index, &mut bin, &bytes)?;
+                set_accessor_view(&mut doc_json, acc_idx, view, mesh.num_points())?;
+                if semantic == "POSITION" {
+                    set_position_bounds(&mut doc_json, acc_idx, &bytes)?;
+                }
             }
-            if let Some(acc_idx) = indices_acc {
-                let bytes = index_bytes(mesh);
-                let view = push_view(&mut doc_json, new_buffer_index, &mut bin, &bytes);
-                set_accessor_view(&mut doc_json, *acc_idx, view, mesh.num_faces() * 3);
-                // Indices were written as UNSIGNED_INT.
-                doc_json["accessors"][*acc_idx]["componentType"] = Value::from(5125u64);
-            }
+            let bytes = index_bytes(mesh)?;
+            let view = push_view(&mut doc_json, new_buffer_index, &mut bin, &bytes)?;
+            let count = mesh
+                .num_faces()
+                .checked_mul(3)
+                .ok_or_else(|| Error::Extension("decoded index count overflow".into()))?;
+            let acc_idx = match indices_acc {
+                Some(original) => {
+                    writable_accessor(&mut doc_json, &usage, *mesh_idx, *prim_idx, None, *original)?
+                }
+                None => append_index_accessor(&mut doc_json, *mesh_idx, *prim_idx)?,
+            };
+            set_accessor_view(&mut doc_json, acc_idx, view, count)?;
+            doc_json["accessors"][acc_idx]["componentType"] = Value::from(5125u64);
+            doc_json["accessors"][acc_idx]["type"] = Value::from("SCALAR");
+            doc_json["accessors"][acc_idx]
+                .as_object_mut()
+                .ok_or_else(|| Error::Extension("indices accessor is not an object".into()))?
+                .remove("normalized");
+
+            // Draco always decodes to oriented triangle faces. Materialize the
+            // result as indexed TRIANGLES regardless of whether the compressed
+            // primitive used TRIANGLES, TRIANGLE_STRIP, or omitted `indices`.
+            doc_json["meshes"][*mesh_idx]["primitives"][*prim_idx]["mode"] = Value::from(4u64);
             // Drop the Draco extension from the primitive.
             if let Some(ext) = doc_json["meshes"][*mesh_idx]["primitives"][*prim_idx]
                 .get_mut("extensions")
@@ -194,196 +323,96 @@ impl Import {
 
         // Append the new buffer (its data is provided via `self.buffers`, so no
         // URI is needed) and drop Draco from the extension lists.
-        if let Some(buffers) = doc_json["buffers"].as_array_mut() {
-            buffers.push(serde_json::json!({ "byteLength": bin.len() as u64 }));
-        }
+        let buffers = doc_json["buffers"]
+            .as_array_mut()
+            .ok_or_else(|| Error::Extension("buffers is not an array".into()))?;
+        buffers
+            .try_reserve_exact(1)
+            .map_err(|_| Error::ResourceLimit("failed to allocate output buffer entry".into()))?;
+        buffers.push(serde_json::json!({ "byteLength": bin.len() as u64 }));
         for key in ["extensionsUsed", "extensionsRequired"] {
             if let Some(arr) = doc_json.get_mut(key).and_then(Value::as_array_mut) {
                 arr.retain(|v| v.as_str() != Some(KHR_DRACO));
             }
         }
 
-        // Rebuild the document and attach the new buffer's data.
-        let root: gltf::json::Root = serde_json::from_value(doc_json)?;
-        self.document = gltf::Document::from_json_without_validation(root);
+        // A plain document no longer needs the Draco-aware validation escape
+        // hatch. Let gltf-rs validate the fully materialized replacement, then
+        // verify its buffer declarations against the candidate buffer set.
+        let root = gltf::json::Root::deserialize(&doc_json)?;
+        let document = gltf::Document::from_json(root)?;
+        let document_snapshot = serde_json::to_value(document.clone().into_json())?;
+        let candidate_len = self
+            .buffers
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| Error::ResourceLimit("output buffer count overflow".into()))?;
+        let mut candidate: Vec<&[u8]> = Vec::new();
+        candidate.try_reserve_exact(candidate_len).map_err(|_| {
+            Error::ResourceLimit("failed to allocate buffer validation table".into())
+        })?;
+        candidate.extend(self.buffers.iter().map(Vec::as_slice));
+        candidate.push(&bin);
+        validate_resolved_buffers(&document, &candidate)?;
+        drop(candidate);
+
+        self.buffers
+            .try_reserve_exact(1)
+            .map_err(|_| Error::ResourceLimit("failed to allocate output buffer slot".into()))?;
         self.buffers.push(bin);
+        self.document = document;
+        self.raw_document = doc_json;
+        self.document_snapshot = document_snapshot;
         Ok(())
     }
 }
 
-/// Extracts an attribute's values as a tightly packed per-point byte array.
-fn attribute_bytes(mesh: &Mesh, draco_id: u32) -> Vec<u8> {
-    let att = mesh.attribute(draco_id as i32);
-    let stride = att.byte_stride() as usize;
-    let num_points = mesh.num_points();
-    let mut out = Vec::with_capacity(num_points * stride);
-    let mut tmp = vec![0u8; stride];
-    for p in 0..num_points {
-        let value_index = att.mapped_index(PointIndex(p as u32));
-        att.buffer().read(value_index.0 as usize * stride, &mut tmp);
-        out.extend_from_slice(&tmp);
+/// Applies changes made through the typed gltf-rs document to its canonical raw
+/// JSON representation. Keys absent from both typed snapshots are arbitrary
+/// JSON and remain untouched. Equal-length arrays are merged element-wise so
+/// unknown fields on scene objects survive ordinary typed edits.
+fn apply_typed_document_diff(previous: &Value, current: &Value, canonical: &mut Value) {
+    if previous == current {
+        return;
     }
-    out
-}
-
-/// Flattens the mesh faces into a tightly packed `UNSIGNED_INT` index array.
-fn index_bytes(mesh: &Mesh) -> Vec<u8> {
-    let mut out = Vec::with_capacity(mesh.num_faces() * 3 * 4);
-    for f in 0..mesh.num_faces() {
-        for point in mesh.face(FaceIndex(f as u32)) {
-            out.extend_from_slice(&point.0.to_le_bytes());
+    match (previous, current, canonical) {
+        (Value::Object(previous), Value::Object(current), Value::Object(canonical)) => {
+            for key in previous.keys() {
+                if !current.contains_key(key) {
+                    canonical.remove(key);
+                }
+            }
+            for (key, current_value) in current {
+                match (previous.get(key), canonical.get_mut(key)) {
+                    (Some(previous_value), Some(canonical_value)) => {
+                        apply_typed_document_diff(previous_value, current_value, canonical_value);
+                    }
+                    _ => {
+                        canonical.insert(key.clone(), current_value.clone());
+                    }
+                }
+            }
         }
+        (Value::Array(previous), Value::Array(current), Value::Array(canonical))
+            if previous.len() == current.len() && current.len() == canonical.len() =>
+        {
+            for ((previous, current), canonical) in
+                previous.iter().zip(current).zip(canonical.iter_mut())
+            {
+                apply_typed_document_diff(previous, current, canonical);
+            }
+        }
+        (_, current, canonical) => canonical.clone_from(current),
     }
-    out
 }
 
-/// Appends `bytes` (4-byte aligned) to `bin` and pushes a buffer view for it,
-/// returning the new buffer-view index.
-fn push_view(doc: &mut Value, buffer_index: usize, bin: &mut Vec<u8>, bytes: &[u8]) -> usize {
-    while !bin.len().is_multiple_of(4) {
-        bin.push(0);
-    }
-    let offset = bin.len();
-    bin.extend_from_slice(bytes);
-    let views = doc["bufferViews"]
-        .as_array_mut()
-        .expect("bufferViews array");
-    let index = views.len();
-    views.push(serde_json::json!({
-        "buffer": buffer_index as u64,
-        "byteOffset": offset as u64,
-        "byteLength": bytes.len() as u64,
-    }));
-    index
-}
+mod decompression;
+use decompression::*;
 
-/// Points an accessor at `view` with `count` elements and no byte offset.
-fn set_accessor_view(doc: &mut Value, accessor: usize, view: usize, count: usize) {
-    let acc = &mut doc["accessors"][accessor];
-    acc["bufferView"] = Value::from(view as u64);
-    acc["byteOffset"] = Value::from(0u64);
-    acc["count"] = Value::from(count as u64);
-}
-
-/// Loads a glTF/GLB file that may use Draco (and any other extensions).
-///
-/// Filesystem-only (not available on `wasm32`); on the web use [`import_slice`]
-/// with bytes you have already fetched.
+mod resources;
 #[cfg(not(target_arch = "wasm32"))]
-pub fn import<P: AsRef<Path>>(path: P) -> Result<Import> {
-    let path = path.as_ref();
-    let bytes = std::fs::read(path)?;
-    import_slice(&bytes, path.parent())
-}
-
-/// Loads glTF JSON or GLB bytes, resolving external resources relative to
-/// `base` when present.
-///
-/// The document is validated with [`validate`] (gltf-rs validation minus the
-/// expected Draco "unsupported extension" error), so a structurally invalid
-/// asset is rejected even though gltf-rs's own validator cannot be used on a
-/// Draco file directly.
-pub fn import_slice(bytes: &[u8], base: Option<&Path>) -> Result<Import> {
-    let gltf::Gltf { document, blob } = gltf::Gltf::from_slice_without_validation(bytes)?;
-    validate(&document)?;
-
-    #[cfg(feature = "image")]
-    {
-        let resolved = gltf::import_buffers(&document, base, blob)?;
-        let images = gltf::import_images(&document, base, &resolved)?;
-        let buffers = resolved.into_iter().map(|d| d.0).collect();
-        Ok(Import {
-            document,
-            buffers,
-            images,
-        })
-    }
-    #[cfg(not(feature = "image"))]
-    {
-        let buffers = load_buffers(&document, blob, base)?;
-        Ok(Import { document, buffers })
-    }
-}
-
-/// Built-in buffer loader used when the `image` feature is off (so gltf-rs's
-/// `import_buffers` is unavailable). Resolves data URIs and the GLB BIN chunk;
-/// external file URIs are read only when a base path is given (never on wasm).
-#[cfg(not(feature = "image"))]
-fn load_buffers(
-    document: &gltf::Document,
-    blob: Option<Vec<u8>>,
-    base: Option<&Path>,
-) -> Result<Vec<Vec<u8>>> {
-    let mut blob = blob;
-    let mut out = Vec::new();
-    for buffer in document.buffers() {
-        let data = match buffer.source() {
-            buffer::Source::Bin => blob
-                .take()
-                .ok_or_else(|| Error::Extension("GLB buffer has no BIN chunk".into()))?,
-            buffer::Source::Uri(uri) => load_uri(uri, base)?,
-        };
-        out.push(data);
-    }
-    Ok(out)
-}
-
-#[cfg(not(feature = "image"))]
-fn load_uri(uri: &str, base: Option<&Path>) -> Result<Vec<u8>> {
-    if let Some(rest) = uri.strip_prefix("data:") {
-        let comma = rest
-            .find(',')
-            .ok_or_else(|| Error::Extension("malformed data URI".into()))?;
-        if rest[..comma].contains(";base64") {
-            return base64_decode(&rest[comma + 1..])
-                .ok_or_else(|| Error::Extension("invalid base64 in data URI".into()));
-        }
-        return Err(Error::Extension(
-            "only base64 data URIs are supported without the `image` feature".into(),
-        ));
-    }
-    match base {
-        #[cfg(not(target_arch = "wasm32"))]
-        Some(base) => Ok(std::fs::read(base.join(uri))?),
-        #[cfg(target_arch = "wasm32")]
-        Some(_) => Err(Error::Extension(
-            "external file URIs are not available on wasm".into(),
-        )),
-        None => Err(Error::Extension(
-            "external resource URI requires a base path".into(),
-        )),
-    }
-}
-
-#[cfg(not(feature = "image"))]
-fn base64_decode(input: &str) -> Option<Vec<u8>> {
-    fn val(b: u8) -> Option<u8> {
-        match b {
-            b'A'..=b'Z' => Some(b - b'A'),
-            b'a'..=b'z' => Some(b - b'a' + 26),
-            b'0'..=b'9' => Some(b - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    }
-    let mut out = Vec::with_capacity(input.len() / 4 * 3);
-    let mut acc = 0u32;
-    let mut bits = 0u32;
-    for &b in input.as_bytes() {
-        if b == b'=' || b.is_ascii_whitespace() {
-            continue;
-        }
-        let v = val(b)? as u32;
-        acc = (acc << 6) | v;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
-    }
-    Some(out)
-}
+pub use resources::import;
+pub use resources::{import_slice, import_slice_with_options};
 
 /// Runs gltf-rs validation on a document, ignoring the expected
 /// `KHR_draco_mesh_compression` "unsupported extension" error (which gltf-rs
@@ -426,18 +455,22 @@ pub fn validate(document: &gltf::Document) -> Result<()> {
         return Err(Error::Validation(errors));
     }
 
+    // Parse the extension before gltf-rs validation so malformed KHR JSON is a
+    // controlled error and so only accessors whose fallback is legitimately
+    // omitted are exempted from gltf-rs's generic `bufferView` requirement.
+    let draco_accessors = validate_draco_schema(&root)?;
+
     // Every primitive accessor reference is in range, so the validator will not
     // panic. Run it and filter the errors that are expected for a valid Draco
     // asset: the unsupported-extension error, and "missing bufferView" on the
     // geometry accessors whose data lives in the Draco stream.
-    let draco_accessors = draco_accessor_indices(document);
     let mut errors = Vec::new();
     root.validate(&root, gltf::json::Path::new, &mut |path, error| {
         let location = path().to_string();
         if location.contains(KHR_DRACO) {
             return;
         }
-        if format!("{error:?}") == "Missing" {
+        if error == gltf::json::validation::Error::Missing {
             if let Some(idx) = accessor_buffer_view_index(&location) {
                 if draco_accessors.contains(&idx) {
                     return;
@@ -453,23 +486,64 @@ pub fn validate(document: &gltf::Document) -> Result<()> {
     }
 }
 
-/// Accessor indices used by Draco-compressed primitives (attributes + indices).
-fn draco_accessor_indices(document: &gltf::Document) -> std::collections::HashSet<usize> {
-    let mut set = std::collections::HashSet::new();
-    for mesh in document.meshes() {
-        for prim in mesh.primitives() {
-            if !is_draco(&prim) {
+fn parse_draco_extension(value: &Value) -> Result<draco_io::KhrDracoExtension> {
+    Ok(draco_io::parse_khr_draco_extension_value(value)?)
+}
+
+/// Runs the common strict KHR parser and returns only the accessors for which a
+/// missing fallback `bufferView` is permitted. Schema, mode, declarations, and
+/// fallback semantics remain owned by `draco-io`.
+fn validate_draco_schema(root: &gltf::json::Root) -> Result<HashSet<usize>> {
+    let document = serde_json::to_value(root)?;
+    draco_io::validate_khr_draco_document(&document)?;
+    let mut allowed = HashSet::new();
+    let Some(meshes) = document.get("meshes").and_then(Value::as_array) else {
+        return Ok(allowed);
+    };
+    for mesh in meshes {
+        let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) else {
+            continue;
+        };
+        for primitive in primitives {
+            let Some(parsed) = draco_io::parse_khr_draco_mesh_compression(&document, primitive)?
+            else {
+                continue;
+            };
+            if !parsed.required {
                 continue;
             }
-            for (_, accessor) in prim.attributes() {
-                set.insert(accessor.index());
+            let attributes = primitive["attributes"]
+                .as_object()
+                .ok_or_else(|| Error::Extension("primitive attributes are not an object".into()))?;
+            for semantic in parsed.attributes.keys() {
+                let accessor = attributes[semantic]
+                    .as_u64()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or_else(|| Error::Extension("attribute accessor is invalid".into()))?;
+                let definition = &document["accessors"][accessor];
+                if definition.get("bufferView").is_none() && definition.get("sparse").is_none() {
+                    allowed.try_reserve(1).map_err(|_| {
+                        Error::ResourceLimit("failed to allocate Draco accessor set".into())
+                    })?;
+                    allowed.insert(accessor);
+                }
             }
-            if let Some(indices) = prim.indices() {
-                set.insert(indices.index());
+            if let Some(accessor) = primitive
+                .get("indices")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+            {
+                let definition = &document["accessors"][accessor];
+                if definition.get("bufferView").is_none() && definition.get("sparse").is_none() {
+                    allowed.try_reserve(1).map_err(|_| {
+                        Error::ResourceLimit("failed to allocate Draco accessor set".into())
+                    })?;
+                    allowed.insert(accessor);
+                }
             }
         }
     }
-    set
+    Ok(allowed)
 }
 
 /// Parses `N` from a validation path of the form `accessors[N].bufferView`.
@@ -492,13 +566,13 @@ pub fn decode_primitive(
     buffers: &[Vec<u8>],
     primitive: &gltf::Primitive<'_>,
 ) -> Result<Mesh> {
+    validate(document)?;
+    validate_resolved_buffers(document, buffers)?;
     let ext = primitive
         .extension_value(KHR_DRACO)
         .ok_or_else(|| Error::Extension("primitive is not Draco-compressed".into()))?;
-    let view_index =
-        ext.get("bufferView")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| Error::Extension("missing bufferView".into()))? as usize;
+    let parsed = parse_draco_extension(ext)?;
+    let view_index = parsed.buffer_view;
 
     let view = document
         .views()
@@ -516,7 +590,8 @@ pub fn decode_primitive(
     let mut mesh = Mesh::new();
     MeshDecoder::new()
         .decode(&mut DecoderBuffer::new(&buffer[start..end]), &mut mesh)
-        .map_err(|e| Error::Decode(format!("{e:?}")))?;
+        .map_err(Error::Decode)?;
+    validate_decoded_contract(primitive, &parsed.attributes, &mesh)?;
     Ok(mesh)
 }
 
@@ -526,284 +601,214 @@ pub fn decode_primitive(
 /// The ids match the unique ids of the attributes in the decoded
 /// [`draco_core::Mesh`], so callers can line up decoded data with glTF
 /// semantics (`POSITION`, `JOINTS_0`, `TANGENT`, …).
-pub fn draco_attribute_map(primitive: &gltf::Primitive<'_>) -> Option<Vec<(String, u32)>> {
-    let ext = primitive.extension_value(KHR_DRACO)?;
-    let map = ext.get("attributes")?.as_object()?;
-    Some(
-        map.iter()
-            .filter_map(|(k, v)| Some((k.clone(), v.as_u64()? as u32)))
-            .collect(),
-    )
-}
-
-/// Compresses a full glTF scene to a self-contained Draco glTF (embedded
-/// buffer), preserving materials, textures, nodes, animations, skins, and any
-/// other content.
-///
-/// The document transform runs in [`draco_io::compress_gltf_value`] — the same
-/// core `draco-io` uses for its byte API — but geometry is decoded through the
-/// shared [`draco_io::decode_geometry`] fed by [`GltfRsSource`], which reads
-/// attribute bytes straight from the parsed `gltf-rs` accessors. So compression
-/// reuses one decode implementation without linking `draco-io`'s own glTF reader
-/// (no `GltfRoot` parse, no buffer re-resolution).
-pub fn compress(document: &gltf::Document, buffers: &[Vec<u8>]) -> Result<Vec<u8>> {
-    let doc_value = serde_json::to_value(document.clone().into_json())?;
-
-    // Pre-extract each primitive's (mode, semantic -> accessor index, indices)
-    // from the JSON before `doc_value` is moved into the compressor. The JSON
-    // carries the complete attribute set, including custom `_*` semantics that
-    // the gltf-rs typed model would hide without the `extras` feature.
-    let descriptors = primitive_descriptors(&doc_value);
-
-    let source = GltfRsSource { document, buffers };
-    let (mut out_doc, bin) =
-        draco_io::compress_gltf_value(doc_value, buffers, None, |mesh_idx, prim_idx| {
-            let (mode, attributes, indices) = descriptors
-                .get(&(mesh_idx, prim_idx))
-                .ok_or_else(|| GltfError::InvalidGltf("primitive descriptor missing".into()))?;
-            decode_geometry(&source, *mode, attributes, *indices)
-        })
-        .map_err(|e| Error::Compress(e.to_string()))?;
-
-    // The core collapses everything to one buffer carrying `byteLength` only;
-    // embed the bytes as a data URI to make the glTF self-contained.
-    embed_single_buffer(&mut out_doc, &bin);
-    Ok(serde_json::to_vec(&out_doc)?)
-}
-
-/// One primitive's geometry: `(mode, [(semantic, accessor index)], indices accessor)`.
-type PrimitiveDescriptor = (u32, Vec<(String, usize)>, Option<usize>);
-
-/// Collects each primitive's [`PrimitiveDescriptor`] from the glTF JSON, keyed by
-/// `(mesh index, primitive index)`.
-fn primitive_descriptors(
-    doc: &Value,
-) -> std::collections::HashMap<(usize, usize), PrimitiveDescriptor> {
-    let mut out = std::collections::HashMap::new();
-    let Some(meshes) = doc.get("meshes").and_then(Value::as_array) else {
-        return out;
+pub fn draco_attribute_map(
+    primitive: &gltf::Primitive<'_>,
+) -> Result<Option<BTreeMap<String, u32>>> {
+    let Some(ext) = primitive.extension_value(KHR_DRACO) else {
+        return Ok(None);
     };
-    for (mesh_idx, mesh) in meshes.iter().enumerate() {
-        let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) else {
+    Ok(Some(parse_draco_extension(ext)?.attributes))
+}
+
+fn validate_decoded_contract(
+    primitive: &gltf::Primitive<'_>,
+    map: &BTreeMap<String, u32>,
+    mesh: &Mesh,
+) -> Result<()> {
+    use draco_core::draco_types::DataType as D;
+    use gltf::accessor::{DataType as G, Dimensions};
+
+    let mut matched = 0usize;
+    for (gltf_semantic, accessor) in primitive.attributes() {
+        let semantic_name = gltf_semantic_name(&gltf_semantic)?;
+        let semantic = semantic_name.as_ref();
+        let Some(unique_id) = map.get(semantic) else {
             continue;
         };
-        for (prim_idx, prim) in primitives.iter().enumerate() {
-            let mode = prim.get("mode").and_then(Value::as_u64).unwrap_or(4) as u32;
-            let attributes = prim
-                .get("attributes")
-                .and_then(Value::as_object)
-                .map(|map| {
-                    map.iter()
-                        .filter_map(|(k, v)| Some((k.clone(), v.as_u64()? as usize)))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let indices = prim
-                .get("indices")
-                .and_then(Value::as_u64)
-                .map(|i| i as usize);
-            out.insert((mesh_idx, prim_idx), (mode, attributes, indices));
-        }
-    }
-    out
-}
-
-/// [`AccessorSource`] over a parsed gltf-rs document: it copies attribute and
-/// index bytes straight out of the accessors' buffer views, reusing gltf-rs's
-/// already-parsed accessor metadata instead of `draco-io`'s glTF reader.
-struct GltfRsSource<'a> {
-    document: &'a gltf::Document,
-    buffers: &'a [Vec<u8>],
-}
-
-impl GltfRsSource<'_> {
-    fn accessor(&self, index: usize) -> std::result::Result<gltf::Accessor<'_>, GltfError> {
-        self.document
-            .accessors()
-            .nth(index)
-            .ok_or_else(|| GltfError::InvalidGltf(format!("accessor {index} out of range")))
-    }
-
-    /// Copies `row`-sized elements (stride removed) out of the accessor's buffer
-    /// view into a tightly packed block, `accessor.count()` rows total.
-    fn extract(
-        &self,
-        accessor: &gltf::Accessor<'_>,
-        row: usize,
-    ) -> std::result::Result<Vec<u8>, GltfError> {
-        let overflow = || GltfError::InvalidGltf("accessor range overflow".into());
-        let view = accessor
-            .view()
-            .ok_or_else(|| GltfError::Unsupported("sparse accessors are not supported".into()))?;
-        let buffer = self
-            .buffers
-            .get(view.buffer().index())
-            .ok_or_else(|| GltfError::InvalidGltf("buffer not resolved".into()))?;
-        let view_end = view
-            .offset()
-            .checked_add(view.length())
-            .ok_or_else(overflow)?;
-        let stride = view.stride().unwrap_or(row);
-        let base = view
-            .offset()
-            .checked_add(accessor.offset())
-            .ok_or_else(overflow)?;
-
-        let mut out = Vec::with_capacity(accessor.count().saturating_mul(row));
-        for i in 0..accessor.count() {
-            let start = base
-                .checked_add(i.checked_mul(stride).ok_or_else(overflow)?)
-                .ok_or_else(overflow)?;
-            let end = start.checked_add(row).ok_or_else(overflow)?;
-            if end > view_end || end > buffer.len() {
-                return Err(GltfError::InvalidGltf("accessor out of bounds".into()));
-            }
-            out.extend_from_slice(&buffer[start..end]);
-        }
-        Ok(out)
-    }
-}
-
-impl AccessorSource for GltfRsSource<'_> {
-    fn read_attribute(
-        &self,
-        accessor_idx: usize,
-        expected_types: &[&str],
-        allowed_component_types: &[u32],
-    ) -> std::result::Result<DecodedAccessor, GltfError> {
-        let accessor = self.accessor(accessor_idx)?;
-
-        let type_str = dimensions_str(accessor.dimensions())?;
-        if !expected_types.contains(&type_str) {
-            return Err(GltfError::InvalidGltf(format!(
-                "expected one of {expected_types:?} accessor, got {type_str}"
+        matched = matched
+            .checked_add(1)
+            .ok_or_else(|| Error::Extension("mapped attribute count overflow".into()))?;
+        let attribute = mesh.attribute_by_unique_id(*unique_id).ok_or_else(|| {
+            Error::Extension(format!("Draco attribute unique id {unique_id} is missing"))
+        })?;
+        if accessor.count() != mesh.num_points() {
+            return Err(Error::Extension(format!(
+                "{semantic} accessor count {} does not match decoded point count {}",
+                accessor.count(),
+                mesh.num_points()
             )));
         }
-        let gl_enum = accessor.data_type().as_gl_enum();
-        if !allowed_component_types.contains(&gl_enum) {
-            return Err(GltfError::Unsupported(format!(
-                "unsupported {type_str} component type {gl_enum}"
+        if accessor.dimensions().multiplicity() != attribute.num_components() as usize {
+            return Err(Error::Extension(format!(
+                "{semantic} accessor component count does not match decoded attribute"
             )));
         }
-
-        let num_components = accessor.dimensions().multiplicity() as u8;
-        let row = num_components as usize * accessor.data_type().size();
-        let bytes = self.extract(&accessor, row)?;
-
-        Ok(DecodedAccessor::new(
-            accessor.count(),
-            num_components,
-            draco_data_type(accessor.data_type()),
-            accessor.normalized(),
-            bytes,
-        ))
-    }
-
-    fn read_indices(&self, accessor_idx: usize) -> std::result::Result<Vec<u32>, GltfError> {
-        use gltf::accessor::DataType as G;
-        let accessor = self.accessor(accessor_idx)?;
-        if !matches!(accessor.dimensions(), gltf::accessor::Dimensions::Scalar) {
-            return Err(GltfError::InvalidGltf(
-                "indices accessor must be SCALAR".into(),
-            ));
-        }
-        let bytes = self.extract(&accessor, accessor.data_type().size())?;
-        let indices = match accessor.data_type() {
-            G::U8 => bytes.iter().map(|&b| b as u32).collect(),
-            G::U16 => bytes
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]) as u32)
-                .collect(),
-            G::U32 => bytes
-                .chunks_exact(4)
-                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect(),
+        let expected_type = match attribute.data_type() {
+            D::Int8 => G::I8,
+            D::Uint8 => G::U8,
+            D::Int16 => G::I16,
+            D::Uint16 => G::U16,
+            D::Uint32 => G::U32,
+            D::Float32 => G::F32,
             other => {
-                return Err(GltfError::Unsupported(format!(
-                    "unsupported index component type {other:?}"
+                return Err(Error::Extension(format!(
+                    "{semantic} decoded data type {other:?} is not representable in glTF 2.0"
                 )))
             }
         };
-        Ok(indices)
-    }
-}
-
-/// Maps a gltf-rs accessor dimension to its glTF type string, rejecting the
-/// matrix types Draco geometry attributes never use.
-fn dimensions_str(d: gltf::accessor::Dimensions) -> std::result::Result<&'static str, GltfError> {
-    use gltf::accessor::Dimensions::*;
-    Ok(match d {
-        Scalar => "SCALAR",
-        Vec2 => "VEC2",
-        Vec3 => "VEC3",
-        Vec4 => "VEC4",
-        _ => {
-            return Err(GltfError::Unsupported(
-                "matrix accessor not supported".into(),
-            ))
+        if accessor.data_type() != expected_type {
+            return Err(Error::Extension(format!(
+                "{semantic} accessor component type does not match decoded attribute"
+            )));
         }
-    })
+        if accessor.normalized() != attribute.normalized() {
+            return Err(Error::Extension(format!(
+                "{semantic} accessor normalized={} does not match decoded normalized={}",
+                accessor.normalized(),
+                attribute.normalized()
+            )));
+        }
+
+        let dimensions = accessor.dimensions();
+        let data_type = accessor.data_type();
+        let normalized = accessor.normalized();
+        let semantic_ok = match semantic {
+            "POSITION" | "NORMAL" => {
+                dimensions == Dimensions::Vec3 && data_type == G::F32 && !normalized
+            }
+            "TANGENT" => dimensions == Dimensions::Vec4 && data_type == G::F32 && !normalized,
+            value if value.starts_with("TEXCOORD_") => {
+                dimensions == Dimensions::Vec2
+                    && (data_type == G::F32 || (matches!(data_type, G::U8 | G::U16) && normalized))
+            }
+            value if value.starts_with("COLOR_") => {
+                matches!(dimensions, Dimensions::Vec3 | Dimensions::Vec4)
+                    && (data_type == G::F32 || (matches!(data_type, G::U8 | G::U16) && normalized))
+            }
+            value if value.starts_with("JOINTS_") => {
+                dimensions == Dimensions::Vec4 && matches!(data_type, G::U8 | G::U16) && !normalized
+            }
+            value if value.starts_with("WEIGHTS_") => {
+                dimensions == Dimensions::Vec4
+                    && (data_type == G::F32 || (matches!(data_type, G::U8 | G::U16) && normalized))
+            }
+            value if value.starts_with('_') => true,
+            _ => false,
+        };
+        if !semantic_ok {
+            return Err(Error::Extension(format!(
+                "{semantic} accessor layout is invalid for its semantic"
+            )));
+        }
+    }
+    if matched != map.len() {
+        return Err(Error::Extension(
+            "Draco extension semantic has no primitive accessor".into(),
+        ));
+    }
+
+    if let Some(indices) = primitive.indices() {
+        if indices.dimensions() != Dimensions::Scalar
+            || !matches!(indices.data_type(), G::U8 | G::U16 | G::U32)
+            || indices.normalized()
+        {
+            return Err(Error::Extension(
+                "indices accessor must be non-normalized unsigned SCALAR".into(),
+            ));
+        }
+        let expected = match primitive.mode() {
+            gltf::mesh::Mode::Triangles => mesh
+                .num_faces()
+                .checked_mul(3)
+                .ok_or_else(|| Error::Extension("decoded index count overflow".into()))?,
+            gltf::mesh::Mode::TriangleStrip => mesh
+                .num_faces()
+                .checked_add(2)
+                .ok_or_else(|| Error::Extension("decoded strip count overflow".into()))?,
+            _ => {
+                return Err(Error::Extension(
+                    "Draco primitive mode must be TRIANGLES or TRIANGLE_STRIP".into(),
+                ))
+            }
+        };
+        if indices.count() != expected {
+            return Err(Error::Extension(format!(
+                "indices accessor count {} does not match decoded index count {expected}",
+                indices.count()
+            )));
+        }
+    } else {
+        let expected_faces = match primitive.mode() {
+            gltf::mesh::Mode::Triangles => {
+                if !mesh.num_points().is_multiple_of(3) {
+                    return Err(Error::Extension(
+                        "non-indexed TRIANGLES point count is not divisible by 3".into(),
+                    ));
+                }
+                mesh.num_points() / 3
+            }
+            gltf::mesh::Mode::TriangleStrip => mesh.num_points().saturating_sub(2),
+            _ => {
+                return Err(Error::Extension(
+                    "Draco primitive mode must be TRIANGLES or TRIANGLE_STRIP".into(),
+                ))
+            }
+        };
+        if mesh.num_faces() != expected_faces {
+            return Err(Error::Extension(format!(
+                "non-indexed primitive implies {expected_faces} faces but Draco decoded {}",
+                mesh.num_faces()
+            )));
+        }
+    }
+    Ok(())
 }
 
-/// Maps a gltf-rs component type to the matching `draco-core` data type.
-fn draco_data_type(d: gltf::accessor::DataType) -> draco_core::draco_types::DataType {
-    use draco_core::draco_types::DataType as D;
-    use gltf::accessor::DataType as G;
-    match d {
-        G::I8 => D::Int8,
-        G::U8 => D::Uint8,
-        G::I16 => D::Int16,
-        G::U16 => D::Uint16,
-        G::U32 => D::Uint32,
-        G::F32 => D::Float32,
+fn gltf_semantic_name(semantic: &gltf::Semantic) -> Result<Cow<'_, str>> {
+    use gltf::Semantic;
+    match semantic {
+        Semantic::Positions => Ok(Cow::Borrowed("POSITION")),
+        Semantic::Normals => Ok(Cow::Borrowed("NORMAL")),
+        Semantic::Tangents => Ok(Cow::Borrowed("TANGENT")),
+        Semantic::Colors(set) => indexed_semantic("COLOR_", *set).map(Cow::Owned),
+        Semantic::TexCoords(set) => indexed_semantic("TEXCOORD_", *set).map(Cow::Owned),
+        Semantic::Joints(set) => indexed_semantic("JOINTS_", *set).map(Cow::Owned),
+        Semantic::Weights(set) => indexed_semantic("WEIGHTS_", *set).map(Cow::Owned),
+        Semantic::Extras(name) => {
+            let capacity = name
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| Error::ResourceLimit("attribute semantic length overflow".into()))?;
+            let mut output = String::new();
+            output.try_reserve_exact(capacity).map_err(|_| {
+                Error::ResourceLimit("failed to allocate attribute semantic".into())
+            })?;
+            output.push('_');
+            output.push_str(name);
+            Ok(Cow::Owned(output))
+        }
     }
 }
 
-/// Fills the single output buffer's `uri` with `bin` as a base64 data URI.
-///
-/// [`draco_io::compress_gltf_value`] leaves `buffers[0]` with a `byteLength`
-/// but no URI (so the caller can choose GLB or embedded glTF); we always emit
-/// embedded glTF. A no-op when `bin` is empty (the core then emits no buffer).
-fn embed_single_buffer(doc: &mut Value, bin: &[u8]) {
-    if bin.is_empty() {
-        return;
-    }
-    if let Some(buffer) = doc
-        .get_mut("buffers")
-        .and_then(Value::as_array_mut)
-        .and_then(|b| b.get_mut(0))
-        .and_then(Value::as_object_mut)
-    {
-        buffer.insert(
-            "uri".into(),
-            Value::from(format!(
-                "data:application/octet-stream;base64,{}",
-                base64_encode(bin)
-            )),
-        );
-    }
+fn indexed_semantic(prefix: &str, set: u32) -> Result<String> {
+    use std::fmt::Write as _;
+
+    let capacity = prefix
+        .len()
+        .checked_add(10)
+        .ok_or_else(|| Error::ResourceLimit("attribute semantic length overflow".into()))?;
+    let mut output = String::new();
+    output
+        .try_reserve_exact(capacity)
+        .map_err(|_| Error::ResourceLimit("failed to allocate attribute semantic".into()))?;
+    output.push_str(prefix);
+    write!(&mut output, "{set}")
+        .map_err(|_| Error::Extension("failed to format attribute semantic".into()))?;
+    Ok(output)
 }
 
-fn base64_encode(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(T[(n >> 18 & 63) as usize] as char);
-        out.push(T[(n >> 12 & 63) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            T[(n >> 6 & 63) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            T[(n & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
+mod compression;
+use compression::compress_document;
+
+#[cfg(test)]
+mod tests;

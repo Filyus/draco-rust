@@ -3,6 +3,8 @@
 //!
 //! Uses the CC0 Khronos sample models bundled under `testdata/`.
 
+#![cfg(feature = "test")]
+
 use std::path::{Path, PathBuf};
 
 fn testdata() -> PathBuf {
@@ -17,9 +19,63 @@ fn testdata() -> PathBuf {
 fn semantics(prim: &draco_gltf::gltf::Primitive<'_>) -> Vec<String> {
     draco_gltf::draco_attribute_map(prim)
         .unwrap()
-        .into_iter()
-        .map(|(s, _)| s)
+        .unwrap()
+        .into_keys()
         .collect()
+}
+
+fn accessor_bytes(scene: &draco_gltf::Import, accessor: draco_gltf::gltf::Accessor<'_>) -> Vec<u8> {
+    let view = accessor.view().expect("fixture accessor is not sparse");
+    let buffer = &scene.buffers[view.buffer().index()];
+    let row = accessor.dimensions().multiplicity() * accessor.data_type().size();
+    let stride = view.stride().unwrap_or(row);
+    let base = view
+        .offset()
+        .checked_add(accessor.offset())
+        .expect("accessor base overflow");
+    let mut output = Vec::with_capacity(accessor.count() * row);
+    for index in 0..accessor.count() {
+        let start = base + index * stride;
+        output.extend_from_slice(&buffer[start..start + row]);
+    }
+    output
+}
+
+fn animation_and_skin_bytes(scene: &draco_gltf::Import) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let mut animation = Vec::new();
+    for animation_clip in scene.document.animations() {
+        for sampler in animation_clip.samplers() {
+            animation.push(accessor_bytes(scene, sampler.input()));
+            animation.push(accessor_bytes(scene, sampler.output()));
+        }
+    }
+    let skin = scene
+        .document
+        .skins()
+        .filter_map(|skin| skin.inverse_bind_matrices())
+        .map(|accessor| accessor_bytes(scene, accessor))
+        .collect();
+    (animation, skin)
+}
+
+fn custom_attribute_elements(scene: &draco_gltf::Import, semantic: &str) -> Vec<Vec<u8>> {
+    let accessor = scene
+        .document
+        .meshes()
+        .next()
+        .unwrap()
+        .primitives()
+        .next()
+        .unwrap()
+        .attributes()
+        .find(|(candidate, _)| candidate.to_string() == semantic)
+        .unwrap()
+        .1;
+    let row = accessor.dimensions().multiplicity() * accessor.data_type().size();
+    let bytes = accessor_bytes(scene, accessor);
+    let mut elements: Vec<_> = bytes.chunks_exact(row).map(<[u8]>::to_vec).collect();
+    elements.sort_unstable();
+    elements
 }
 
 #[test]
@@ -36,7 +92,7 @@ fn lantern_compress_reload_decode() {
     );
 
     // Compress the whole scene (delegates to draco-io).
-    let compressed = draco_gltf::compress(&scene.document, &scene.buffers).expect("compress");
+    let compressed = scene.compress().expect("compress").data;
 
     // Reload the Draco result (base dir resolves the still-external textures).
     let reloaded = draco_gltf::import_slice(&compressed, Some(&dir)).expect("reload");
@@ -97,7 +153,7 @@ fn validation_does_not_panic_on_a_hostile_document() {
 fn decompress_in_place_makes_geometry_readable_by_gltf_rs() {
     let dir = testdata().join("Lantern").join("glTF");
     let scene = draco_gltf::import(dir.join("Lantern.gltf")).expect("load");
-    let compressed = draco_gltf::compress(&scene.document, &scene.buffers).expect("compress");
+    let compressed = scene.compress().expect("compress").data;
     let mut reloaded = draco_gltf::import_slice(&compressed, Some(&dir)).expect("reload");
 
     assert!(
@@ -142,7 +198,7 @@ fn fox_skinned_animated_roundtrip() {
     assert_eq!(scene.document.skins().count(), 1);
     assert_eq!(scene.document.animations().count(), 3);
 
-    let compressed = draco_gltf::compress(&scene.document, &scene.buffers).expect("compress");
+    let compressed = scene.compress().expect("compress").data;
     let reloaded = draco_gltf::import_slice(&compressed, Some(&dir)).expect("reload");
 
     // Scene content carried through.
@@ -199,7 +255,7 @@ fn compress_preserves_position_values() {
     let scene = draco_gltf::import(dir.join("Lantern.gltf")).expect("load");
     let (src_min, src_max) = position_bbox(&scene.document, &scene.buffers);
 
-    let compressed = draco_gltf::compress(&scene.document, &scene.buffers).expect("compress");
+    let compressed = scene.compress().expect("compress").data;
     let mut reloaded = draco_gltf::import_slice(&compressed, Some(&dir)).expect("reload");
     reloaded.decompress_in_place().expect("decompress");
     let (dec_min, dec_max) = position_bbox(&reloaded.document, &reloaded.buffers);
@@ -218,4 +274,163 @@ fn compress_preserves_position_values() {
             dec_max[i]
         );
     }
+}
+
+#[test]
+fn official_draco_fixtures_import_and_decode_real_geometry() {
+    let box_draco = draco_gltf::import(testdata().join("Box/glTF_Binary/Box_Draco.glb"))
+        .expect("load official Box_Draco");
+    let box_primitives: Vec<_> = box_draco.draco_primitives().collect();
+    assert_eq!(box_primitives.len(), 1);
+    let box_mesh = box_draco
+        .decode_primitive(&box_primitives[0].1)
+        .expect("decode official Box_Draco");
+    assert!(box_mesh.num_points() > 0);
+    assert!(box_mesh.num_faces() > 0);
+
+    let meta_path = testdata().join("BoxMetaDraco/glTF/BoxMetaDraco.gltf");
+    let meta = draco_gltf::import(&meta_path).expect("load BoxMetaDraco");
+    let meta_primitives: Vec<_> = meta.draco_primitives().collect();
+    assert_eq!(meta_primitives.len(), 1);
+    let map = draco_gltf::draco_attribute_map(&meta_primitives[0].1)
+        .unwrap()
+        .unwrap();
+    assert!(map.contains_key("_FEATURE_ID_0"));
+    let mesh = meta
+        .decode_primitive(&meta_primitives[0].1)
+        .expect("decode BoxMetaDraco");
+    assert!(mesh.num_points() > 0);
+    assert!(mesh.num_faces() > 0);
+}
+
+#[test]
+fn box_meta_compresses_reloads_and_preserves_custom_attribute_bytes() {
+    let dir = testdata().join("BoxMeta/glTF");
+    let source = draco_gltf::import(dir.join("BoxMeta.gltf")).expect("load BoxMeta");
+    let feature_ids = custom_attribute_elements(&source, "_FEATURE_ID_0");
+
+    let compressed = source.compress().expect("compress BoxMeta");
+    assert_eq!(compressed.report.compressed_primitives.len(), 1);
+    assert!(compressed.report.preserved_primitives.is_empty());
+    let mut reloaded =
+        draco_gltf::import_slice(&compressed.data, Some(&dir)).expect("reload BoxMeta");
+    assert_eq!(reloaded.draco_primitives().count(), 1);
+    reloaded
+        .decompress_in_place()
+        .expect("decompress BoxMeta geometry");
+    assert_eq!(
+        custom_attribute_elements(&reloaded, "_FEATURE_ID_0"),
+        feature_ids
+    );
+}
+
+#[test]
+fn simple_skin_preserves_animation_and_inverse_bind_accessor_bytes() {
+    let source =
+        draco_gltf::import(testdata().join("simple_skin.gltf")).expect("load simple_skin fixture");
+    let before = animation_and_skin_bytes(&source);
+    assert!(
+        !before.0.is_empty(),
+        "fixture must contain animation accessors"
+    );
+    assert!(
+        !before.1.is_empty(),
+        "fixture must contain inverse bind matrices"
+    );
+
+    let compressed = source.compress().expect("compress simple_skin");
+    assert_eq!(compressed.report.compressed_primitives.len(), 1);
+    let reloaded = draco_gltf::import_slice(&compressed.data, None).expect("reload simple_skin");
+    assert_eq!(animation_and_skin_bytes(&reloaded), before);
+}
+
+#[test]
+fn sparse_fixture_is_preserved_with_typed_reason() {
+    let dir = testdata().join("KhronosSampleModels/SimpleSparseAccessor/glTF");
+    let source =
+        draco_gltf::import(dir.join("SimpleSparseAccessor.gltf")).expect("load sparse fixture");
+    let compressed = source.compress().expect("report sparse accessor");
+    assert!(compressed.report.compressed_primitives.is_empty());
+    assert!(compressed.report.preserved_primitives.iter().any(|entry| {
+        matches!(
+            entry.reason,
+            draco_gltf::PreserveReason::SparseAccessor { .. }
+        )
+    }));
+}
+
+#[test]
+fn mixed_plain_draco_document_has_stable_repeat_compression_report() {
+    let dir = testdata().join("BoxesMeta/glTF");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("BoxesMeta.gltf")).unwrap()).unwrap();
+
+    // BoxesMeta deliberately shares its accessors between the two primitives.
+    // Give the second primitive distinct accessor records so the first remains
+    // independently compressible while the second exercises morph preservation.
+    let second_attributes = document["meshes"][0]["primitives"][1]["attributes"]
+        .as_object()
+        .unwrap()
+        .clone();
+    for (semantic, accessor) in second_attributes {
+        let source_index = accessor.as_u64().unwrap() as usize;
+        let cloned = document["accessors"][source_index].clone();
+        let cloned_index = document["accessors"].as_array().unwrap().len();
+        document["accessors"].as_array_mut().unwrap().push(cloned);
+        document["meshes"][0]["primitives"][1]["attributes"][semantic] =
+            serde_json::json!(cloned_index);
+    }
+    let source_indices = document["meshes"][0]["primitives"][1]["indices"]
+        .as_u64()
+        .unwrap() as usize;
+    let cloned_indices = document["accessors"][source_indices].clone();
+    let cloned_indices_index = document["accessors"].as_array().unwrap().len();
+    document["accessors"]
+        .as_array_mut()
+        .unwrap()
+        .push(cloned_indices);
+    document["meshes"][0]["primitives"][1]["indices"] = serde_json::json!(cloned_indices_index);
+
+    let second_position = document["meshes"][0]["primitives"][1]["attributes"]["POSITION"]
+        .as_u64()
+        .unwrap() as usize;
+    let target_accessor = document["accessors"].as_array().unwrap().len();
+    let target = document["accessors"][second_position].clone();
+    document["accessors"].as_array_mut().unwrap().push(target);
+    document["meshes"][0]["primitives"][1]["targets"] =
+        serde_json::json!([{ "POSITION": target_accessor }]);
+
+    let source = draco_gltf::import_slice(&serde_json::to_vec(&document).unwrap(), Some(&dir))
+        .expect("load mixed-source fixture");
+    let first = source.compress().expect("first compression");
+    assert_eq!(first.report.compressed_primitives.len(), 1);
+    assert!(first
+        .report
+        .preserved_primitives
+        .iter()
+        .any(|entry| { matches!(entry.reason, draco_gltf::PreserveReason::MorphTargets) }));
+
+    let mixed = draco_gltf::import_slice(&first.data, Some(&dir)).expect("reload mixed document");
+    assert_eq!(mixed.draco_primitives().count(), 1);
+    assert_eq!(
+        mixed
+            .document
+            .meshes()
+            .map(|mesh| mesh.primitives().count())
+            .sum::<usize>(),
+        2
+    );
+
+    let second = mixed.compress().expect("repeat compression");
+    assert!(second.report.compressed_primitives.is_empty());
+    assert!(second
+        .report
+        .preserved_primitives
+        .iter()
+        .any(|entry| { matches!(entry.reason, draco_gltf::PreserveReason::AlreadyDraco) }));
+    assert!(second
+        .report
+        .preserved_primitives
+        .iter()
+        .any(|entry| { matches!(entry.reason, draco_gltf::PreserveReason::MorphTargets) }));
 }

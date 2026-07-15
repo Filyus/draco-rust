@@ -8,6 +8,7 @@ repository = "https://github.com/Filyus/draco-rust"
 readme = "README.md"
 keywords = ["draco", "gltf", "glb", "compression", "scene"]
 categories = ["compression", "graphics", "rendering::data-formats"]
+exclude = ["tests/roundtrip_test.rs"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -17,19 +18,24 @@ rustdoc-args = ["--cfg", "docsrs"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 
 [dependencies]
-gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extensions"] }
+gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extensions", "extras"] }
 draco-core = { version = "1.0.0", path = "../draco-core", default-features = false, features = ["decoder", "point_cloud_decode", "edgebreaker_valence_decode"] }
-# Only the writer + the reader-agnostic geometry decoder are needed; draco-gltf
-# reads geometry through gltf-rs, not draco-io's glTF reader.
-draco-io = { version = "0.1.0", path = "../draco-io", default-features = false, features = ["gltf-writer"] }
+# The shared container/resource layer and the document-preserving compressor
+# live in draco-io; gltf-rs remains the full-scene model exposed by this crate.
+draco-io = { version = "0.1.0", path = "../draco-io", default-features = false, features = ["gltf-reader", "gltf-writer"] }
 serde_json = "1.0"
+serde = "1.0"
 thiserror = "2.0"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"], optional = true }
 
 [features]
 default = ["image"]
-# Decode embedded/external images via gltf-rs's `import` (pulls the `image`
-# crate with PNG/JPEG codecs — the largest part of the build). Without it,
-# images are not decoded, external resources are resolved by a small built-in
-# loader, and `Import.images` is absent. Useful for wasm and conversion
-# pipelines where the geometry, not the texture pixels, is what matters.
-image = ["gltf/import"]
+# Decode embedded/external images through the shared resource resolver and the
+# `image` crate (PNG/JPEG codecs — the largest part of the build). Without it,
+# images are not decoded and `Import.images` is absent; glTF buffers still use
+# the same strict resolver. Useful for wasm and conversion pipelines where the
+# geometry, not the texture pixels, is what matters.
+image = ["gltf/import", "dep:image"]
+# Repository-fixture tests are intentionally opt-in and are not run from the
+# published crate tarball, which has no access to the workspace testdata tree.
+test = []
