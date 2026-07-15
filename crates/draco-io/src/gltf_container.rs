@@ -291,6 +291,90 @@ pub fn parse_gltf_container(data: &[u8]) -> Result<GltfContainer<'_>> {
 /// Returned buffers have exactly their declared `byteLength`; legal GLB BIN
 /// padding is validated and removed. Resource and aggregate quotas are checked
 /// before buffers are exposed to accessor readers.
+/// Parse only the JSON and optional BIN slices for the compact WASM reader.
+///
+/// This keeps the strict GLB container checks shared without pulling the
+/// serde-backed document model into the reader's binary.
+pub fn parse_glb_json_and_bin(data: &[u8]) -> Result<(&[u8], Option<&[u8]>)> {
+    if data.len() < 4
+        || u32::from_le_bytes(
+            data[0..4]
+                .try_into()
+                .map_err(|_| GltfError::InvalidGlb("short GLB magic".into()))?,
+        ) != GLB_MAGIC
+    {
+        return Err(GltfError::InvalidGlb("input is not a GLB container".into()));
+    }
+    if data.len() < 12 {
+        return Err(GltfError::InvalidGlb("GLB header is truncated".into()));
+    }
+    let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if version != GLB_VERSION {
+        return Err(GltfError::InvalidGlb("unsupported GLB version".into()));
+    }
+    let declared = usize::try_from(u32::from_le_bytes(data[8..12].try_into().unwrap()))
+        .map_err(|_| GltfError::InvalidGlb("GLB length is too large".into()))?;
+    if declared != data.len() {
+        return Err(GltfError::InvalidGlb(
+            "GLB length does not match input".into(),
+        ));
+    }
+    let mut offset = 12usize;
+    let mut chunks = 0usize;
+    let mut json = None;
+    let mut bin = None;
+    while offset < declared {
+        let header_end = offset
+            .checked_add(8)
+            .filter(|end| *end <= declared)
+            .ok_or_else(|| GltfError::InvalidGlb("GLB chunk header is truncated".into()))?;
+        let length = usize::try_from(u32::from_le_bytes(
+            data[offset..offset + 4].try_into().unwrap(),
+        ))
+        .map_err(|_| GltfError::InvalidGlb("GLB chunk is too large".into()))?;
+        if !length.is_multiple_of(4) {
+            return Err(GltfError::InvalidGlb(
+                "GLB chunk is not 4-byte aligned".into(),
+            ));
+        }
+        let kind = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap());
+        let end = header_end
+            .checked_add(length)
+            .filter(|end| *end <= declared)
+            .ok_or_else(|| GltfError::InvalidGlb("GLB chunk exceeds input".into()))?;
+        match kind {
+            GLB_CHUNK_JSON if chunks == 0 && json.is_none() => {
+                let bytes = &data[header_end..end];
+                if bytes
+                    .iter()
+                    .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+                {
+                    return Err(GltfError::InvalidGlb("GLB JSON chunk is empty".into()));
+                }
+                json = Some(bytes);
+            }
+            GLB_CHUNK_JSON => {
+                return Err(GltfError::InvalidGlb(
+                    "GLB JSON must be first and unique".into(),
+                ))
+            }
+            GLB_CHUNK_BIN if bin.is_none() => bin = Some(&data[header_end..end]),
+            GLB_CHUNK_BIN => {
+                return Err(GltfError::InvalidGlb(
+                    "GLB contains duplicate BIN chunks".into(),
+                ))
+            }
+            _ => {}
+        }
+        offset = end;
+        chunks = chunks
+            .checked_add(1)
+            .ok_or_else(|| GltfError::InvalidGlb("too many GLB chunks".into()))?;
+    }
+    json.map(|json| (json, bin))
+        .ok_or_else(|| GltfError::InvalidGlb("GLB JSON chunk is missing".into()))
+}
+
 pub fn resolve_gltf_buffers(
     references: &[GltfBufferReference<'_>],
     format: GltfContainerFormat,
@@ -893,6 +977,20 @@ mod tests {
         assert!(decode_data_uri("data:,a%2", None).is_err());
         assert!(decode_data_uri("data:;base64,YQ==", Some(0)).is_err());
         assert!(decode_data_uri("data:,abcd", Some(2)).is_err());
+    }
+
+    #[test]
+    fn compact_glb_slice_parser_keeps_strict_container_checks() {
+        let json = b"{}  ";
+        let bin = [1u8, 2, 3, 4];
+        let bytes = raw_glb(&[(GLB_CHUNK_JSON, json), (GLB_CHUNK_BIN, &bin)]);
+        let (parsed_json, parsed_bin) = parse_glb_json_and_bin(&bytes).unwrap();
+        assert_eq!(parsed_json, json);
+        assert_eq!(parsed_bin, Some(bin.as_slice()));
+
+        let mut malformed = bytes.clone();
+        malformed[8..12].copy_from_slice(&(bytes.len() as u32 - 4).to_le_bytes());
+        assert!(parse_glb_json_and_bin(&malformed).is_err());
     }
 
     #[test]

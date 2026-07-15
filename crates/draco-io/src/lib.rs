@@ -255,9 +255,9 @@ pub use gltf_container::{
 };
 #[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
 pub use gltf_container::{
-    decode_data_uri, parse_gltf_container, resolve_gltf_buffers, resolve_resource_uri,
-    ExternalFilePolicy, FileResourceResolver, GltfBufferReference, GltfContainer,
-    GltfContainerFormat, ResourceLimits, ResourceResolver,
+    decode_data_uri, parse_glb_json_and_bin, parse_gltf_container, resolve_gltf_buffers,
+    resolve_resource_uri, ExternalFilePolicy, FileResourceResolver, GltfBufferReference,
+    GltfContainer, GltfContainerFormat, ResourceLimits, ResourceResolver,
 };
 #[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
 #[cfg_attr(
