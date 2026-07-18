@@ -7,7 +7,10 @@ use draco_gltf::{
     ResourceResolver, ValidationProfile,
 };
 #[cfg(feature = "read")]
-use draco_gltf::{ComponentType, PackedAttribute, PackedIndices, PrimitiveIndex, PrimitiveMode};
+use draco_gltf::{
+    AccessorData, ComponentType, DocumentAccessorSource, PackedAttribute, PackedIndices,
+    PrimitiveIndex, PrimitiveMode,
+};
 #[cfg(feature = "draco-encode")]
 use draco_gltf::{CompressionOptions, GeometryEncoding, MeshIndex};
 use js_sys::{Object, Reflect, Uint8Array};
@@ -27,6 +30,13 @@ pub struct PackedGeometry {
     mode: PrimitiveMode,
     attributes: Vec<PackedAttribute>,
     indices: Option<PackedIndices>,
+}
+
+/// One materialized glTF accessor with tightly packed owned bytes.
+#[cfg(feature = "read")]
+#[wasm_bindgen]
+pub struct PackedAccessor {
+    inner: AccessorData,
 }
 
 /// Options for writing packed geometry.
@@ -258,6 +268,55 @@ impl GltfAsset {
             .map_err(wasm_error)
     }
 
+    /// Materializes any accessor into tightly packed little-endian bytes.
+    ///
+    /// Sparse values are applied and interleaved input is deinterleaved. The
+    /// returned [`PackedAccessor`] owns its payload, so later document changes
+    /// cannot invalidate JavaScript views created from it.
+    #[cfg(feature = "read")]
+    #[wasm_bindgen(js_name = readAccessor)]
+    pub fn read_accessor(&self, index: usize) -> Result<PackedAccessor, JsValue> {
+        DocumentAccessorSource::new(&self.import.document, &self.import.resources)
+            .read_accessor(index)
+            .map(|inner| PackedAccessor { inner })
+            .map_err(wasm_error)
+    }
+
+    /// Copies one resolved buffer view while retaining its original layout.
+    ///
+    /// This is intended for embedded images and extension payloads. Accessor
+    /// consumers should prefer [`GltfAsset::read_accessor`].
+    #[cfg(feature = "read")]
+    #[wasm_bindgen(js_name = bufferViewBytes)]
+    pub fn buffer_view_bytes(&self, index: usize) -> Result<Vec<u8>, JsValue> {
+        DocumentAccessorSource::new(&self.import.document, &self.import.resources)
+            .read_buffer_view(index)
+            .map_err(wasm_error)
+    }
+
+    /// Returns the number of resolved glTF buffers.
+    #[cfg(feature = "raw-resources")]
+    #[wasm_bindgen(js_name = bufferCount)]
+    pub fn buffer_count(&self) -> usize {
+        self.import.resources.buffers.len()
+    }
+
+    /// Copies one complete resolved glTF buffer into JavaScript.
+    ///
+    /// This operation can duplicate a large allocation. Prefer
+    /// [`GltfAsset::read_accessor`] or [`GltfAsset::buffer_view_bytes`] when a
+    /// narrower range is sufficient.
+    #[cfg(feature = "raw-resources")]
+    #[wasm_bindgen(js_name = bufferBytes)]
+    pub fn buffer_bytes(&self, index: usize) -> Result<Vec<u8>, JsValue> {
+        self.import
+            .resources
+            .buffers
+            .get(index)
+            .cloned()
+            .ok_or_else(|| JsValue::from_str("buffer index is out of range"))
+    }
+
     /// Returns the number of meshes in the document.
     #[cfg(feature = "read")]
     #[wasm_bindgen(js_name = meshCount)]
@@ -465,6 +524,43 @@ impl GltfAsset {
             )
             .map(|report| report.encoded_bytes)
             .map_err(wasm_error)
+    }
+}
+
+#[cfg(feature = "read")]
+#[wasm_bindgen]
+impl PackedAccessor {
+    /// Returns the number of accessor elements.
+    pub fn count(&self) -> usize {
+        self.inner.count
+    }
+
+    /// Returns the original glTF shape (`SCALAR`, `VEC*`, or `MAT*`).
+    #[wasm_bindgen(js_name = accessorType)]
+    pub fn accessor_type(&self) -> String {
+        self.inner.accessor_type.clone()
+    }
+
+    /// Returns the number of scalar components in one element.
+    pub fn components(&self) -> u8 {
+        self.inner.components
+    }
+
+    /// Returns the original glTF component type code.
+    #[wasm_bindgen(js_name = componentType)]
+    pub fn component_type(&self) -> u32 {
+        self.inner.component_type
+    }
+
+    /// Returns whether integer components use normalized interpretation.
+    pub fn normalized(&self) -> bool {
+        self.inner.normalized
+    }
+
+    /// Copies the tightly packed little-endian payload into JavaScript.
+    /// Matrix values retain glTF's column-major component order.
+    pub fn bytes(&self) -> Vec<u8> {
+        self.inner.bytes.clone()
     }
 }
 

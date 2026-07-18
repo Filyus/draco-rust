@@ -8,7 +8,9 @@ FBX and glTF assets.
 `gltf-wasm` is the single browser entry point for glTF. Its default artifact
 exports `GltfAsset`: it opens JSON glTF and GLB, resolves an explicit resource
 map, validates 2.0/2.1 profiles, preserves or minifies JSON, writes GLB v2/v3,
-and reads ordinary or Draco-compressed primitives as `PackedGeometry`.
+reads ordinary or Draco-compressed primitives as `PackedGeometry`, materializes
+arbitrary accessors as `PackedAccessor`, and copies embedded payloads with
+`bufferViewBytes`.
 `PackedGeometry` is constructible from JavaScript for applications that need to
 prepare geometry before an optional write build.
 
@@ -17,6 +19,11 @@ Draco primitives. `write` adds raw `writePrimitive`, `pushPrimitive`,
 `fromGeometry`, and JSON bundle output. Add `draco-decode` to a custom write
 build for atomic Draco decompression; `draco-encode` includes both and adds
 explicit Draco storage.
+
+Feature `raw-resources` adds `bufferCount` and `bufferBytes` for callers that
+need complete resolved buffers. These methods return owned copies and are kept
+out of the lightweight release artifact; the converter app profile includes
+them.
 
 ```sh
 cargo run --manifest-path web/build-tool/Cargo.toml -- \
@@ -36,11 +43,11 @@ Reference optimized sizes from the 2026-07-18 Windows stable toolchain build:
 
 | glTF build | raw WASM | gzip |
 | --- | ---: | ---: |
-| reader + Draco decode | 267,030 B | 109,818 B |
-| reader + raw write | 288,199 B | 118,367 B |
-| reader + raw/Draco write | 426,358 B | 170,191 B |
+| reader + Draco decode | 271,295 B | 111,081 B |
+| reader + raw write | 292,465 B | 119,746 B |
+| converter app (`draco-encode`, `raw-resources`) | 430,964 B | 171,736 B |
 
-The released reader is 107.2 KiB gzip, within the 112 KiB budget. Writer sizes
+The released reader is 108.5 KiB gzip, within the 112 KiB budget. Writer sizes
 are informational because those features are not included in the release asset.
 
 ## Build and test

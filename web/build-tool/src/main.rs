@@ -464,6 +464,7 @@ fn effective_features(config: &Config, module: &str) -> Vec<String> {
     let mut features = config.features.iter().cloned().collect::<BTreeSet<_>>();
     if config.app_profile && module == "gltf-wasm" {
         features.insert("draco-encode".to_string());
+        features.insert("raw-resources".to_string());
     }
     if config.debug {
         features.insert("console_error_panic_hook".to_string());

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  animatedTranslation,
   embeddedTriangle,
   externalTriangle,
   triangleBytes,
@@ -10,15 +11,17 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-test('glTF asset API reads document, geometry, GLB, and explicit resources', async ({ page }) => {
+test('glTF asset API reads document, geometry, accessors, GLB, and resources', async ({ page }) => {
   await page.goto('/index.html');
-  const result = await page.evaluate(async ({ embedded, external, resource }) => {
+  const result = await page.evaluate(async ({ animated, embedded, external, resource }) => {
     const api = await import('/pkg/gltf.js');
     await api.default();
 
     const data = new TextEncoder().encode(embedded);
     const asset = new api.GltfAsset(data, '2.0');
     const packed = asset.readPrimitive(0, 0);
+    const accessor = asset.readAccessor(0);
+    const bufferView = asset.bufferViewBytes(0);
     const glb = asset.glb(2);
     const roundtrip = new api.GltfAsset(glb, '2.0');
     let missing = false;
@@ -32,14 +35,33 @@ test('glTF asset API reads document, geometry, GLB, and explicit resources', asy
       { 'missing.bin': new Uint8Array(resource) },
       '2.0',
     );
+    const animatedAsset = new api.GltfAsset(new TextEncoder().encode(animated), '2.0');
+    const times = animatedAsset.readAccessor(0);
+    const translations = animatedAsset.readAccessor(1);
     return {
       document: asset.summary(),
       geometry: { meshes: asset.meshCount(), bytes: packed.attributeBytes(0).length },
+      accessor: {
+        count: accessor.count(),
+        type: accessor.accessorType(),
+        components: accessor.components(),
+        componentType: accessor.componentType(),
+        normalized: accessor.normalized(),
+        bytes: accessor.bytes().length,
+      },
+      bufferViewBytes: bufferView.length,
+      animation: {
+        times: Array.from(new Float32Array(times.bytes().buffer)),
+        translations: Array.from(new Float32Array(translations.bytes().buffer)),
+        outputType: translations.accessorType(),
+        outputBufferViewBytes: animatedAsset.bufferViewBytes(1).length,
+      },
       roundtrip: roundtrip.summary(),
       missing,
       resolved: resolved.summary(),
     };
   }, {
+    animated: animatedTranslation(),
     embedded: embeddedTriangle(),
     external: externalTriangle(),
     resource: Array.from(triangleBytes()),
@@ -48,6 +70,21 @@ test('glTF asset API reads document, geometry, GLB, and explicit resources', asy
   expect(result.document.success).toBe(true);
   expect(result.document.meshCount).toBe(1);
   expect(result.geometry).toEqual({ meshes: 1, bytes: 36 });
+  expect(result.accessor).toEqual({
+    count: 3,
+    type: 'VEC3',
+    components: 3,
+    componentType: 5126,
+    normalized: false,
+    bytes: 36,
+  });
+  expect(result.bufferViewBytes).toBe(36);
+  expect(result.animation).toEqual({
+    times: [0, 1],
+    translations: [0, 0, 0, 1, 2, 3],
+    outputType: 'VEC3',
+    outputBufferViewBytes: 24,
+  });
   expect(result.roundtrip.success).toBe(true);
   expect(result.missing).toBe(true);
   expect(result.resolved.success).toBe(true);

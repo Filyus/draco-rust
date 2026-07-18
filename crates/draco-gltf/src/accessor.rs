@@ -13,6 +13,8 @@ pub struct DocumentAccessorSource<'a> {
 pub struct AccessorData {
     /// Number of elements in the accessor.
     pub count: usize,
+    /// Original glTF accessor shape (`SCALAR`, `VEC*`, or `MAT*`).
+    pub accessor_type: String,
     /// Number of scalar components per element.
     pub components: u8,
     /// Original glTF component type code.
@@ -21,9 +23,22 @@ pub struct AccessorData {
     pub data_type: DataType,
     /// Whether integer values use normalized interpretation.
     pub normalized: bool,
-    /// Tightly packed, row-major accessor bytes.
+    /// Tightly packed accessor bytes in glTF component order.
+    ///
+    /// Matrix columns retain glTF's column-major order, with on-disk alignment
+    /// padding removed.
     pub bytes: Vec<u8>,
 }
+
+#[derive(Clone, Copy)]
+struct AccessorLayout {
+    tight_width: usize,
+    source_width: usize,
+    columns: usize,
+    column_width: usize,
+    column_stride: usize,
+}
+
 impl<'a> DocumentAccessorSource<'a> {
     /// Creates an accessor source over a document and resolved buffers.
     pub fn new(document: &'a Document, resources: &'a ResourceStore) -> Self {
@@ -32,6 +47,53 @@ impl<'a> DocumentAccessorSource<'a> {
             resources,
         }
     }
+
+    /// Copies one complete buffer view from the resolved resource store.
+    ///
+    /// The returned bytes retain the buffer view's original layout, including
+    /// accessor stride or padding. Use [`Self::read_accessor`] when a tightly
+    /// packed, sparse-materialized accessor payload is needed.
+    pub fn read_buffer_view(&self, index: usize) -> Result<Vec<u8>> {
+        let view = self
+            .document
+            .as_value()
+            .get("bufferViews")
+            .and_then(|value| value.as_array())
+            .and_then(|values| values.get(index))
+            .ok_or_else(|| Error::Extension("bufferView out of range".into()))?;
+        let buffer = view
+            .get("buffer")
+            .and_then(|value| value.as_u64())
+            .and_then(|value| usize::try_from(value).ok())
+            .and_then(|index| self.resources.buffers.get(index))
+            .ok_or_else(|| Error::Extension("buffer is not resolved".into()))?;
+        let start = view
+            .get("byteOffset")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let length = view
+            .get("byteLength")
+            .and_then(|value| value.as_u64())
+            .ok_or_else(|| Error::Extension("bufferView byteLength is invalid".into()))?;
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| Error::ResourceLimit("bufferView range overflow".into()))?;
+        let start = usize::try_from(start).map_err(|_| {
+            Error::ResourceLimit("bufferView offset exceeds platform limits".into())
+        })?;
+        let end = usize::try_from(end)
+            .map_err(|_| Error::ResourceLimit("bufferView end exceeds platform limits".into()))?;
+        let bytes = buffer
+            .get(start..end)
+            .ok_or_else(|| Error::Extension("bufferView range is out of bounds".into()))?;
+        let mut output = Vec::new();
+        output.try_reserve_exact(bytes.len()).map_err(|_| {
+            Error::ResourceLimit("bufferView materialization allocation failed".into())
+        })?;
+        output.extend_from_slice(bytes);
+        Ok(output)
+    }
+
     fn read(&self, index: usize) -> Result<(usize, u8, u32, DataType, bool, Vec<u8>)> {
         let accessor = self
             .document
@@ -45,14 +107,18 @@ impl<'a> DocumentAccessorSource<'a> {
             .and_then(|v| v.as_u64())
             .and_then(|v| usize::try_from(v).ok())
             .ok_or_else(|| Error::Extension("accessor count is invalid".into()))?;
-        let components = match accessor.get("type").and_then(|v| v.as_str()) {
-            Some("SCALAR") => 1,
-            Some("VEC2") => 2,
-            Some("VEC3") => 3,
-            Some("VEC4") => 4,
-            Some("MAT2") => 4,
-            Some("MAT3") => 9,
-            Some("MAT4") => 16,
+        let accessor_type = accessor
+            .get("type")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| Error::Extension("accessor type is invalid".into()))?;
+        let components = match accessor_type {
+            "SCALAR" => 1,
+            "VEC2" => 2,
+            "VEC3" => 3,
+            "VEC4" => 4,
+            "MAT2" => 4,
+            "MAT3" => 9,
+            "MAT4" => 16,
             _ => return Err(Error::Extension("accessor type is invalid".into())),
         };
         let component = accessor
@@ -79,7 +145,8 @@ impl<'a> DocumentAccessorSource<'a> {
                 ))
             }
         };
-        let width = components as usize * data_type.byte_length();
+        let layout = accessor_layout(accessor_type, data_type.byte_length())?;
+        let width = layout.tight_width;
         let byte_len = count
             .checked_mul(width)
             .ok_or_else(|| Error::ResourceLimit("accessor byte size overflow".into()))?;
@@ -92,7 +159,8 @@ impl<'a> DocumentAccessorSource<'a> {
                 .get("byteOffset")
                 .and_then(|value| value.as_u64())
                 .unwrap_or(0);
-            let (buffer, offset, stride) = self.buffer_view_layout(view, accessor_offset, width)?;
+            let (buffer, offset, stride) =
+                self.buffer_view_layout(view, accessor_offset, layout.source_width)?;
             let mut dense = Vec::new();
             dense.try_reserve_exact(byte_len).map_err(|_| {
                 Error::ResourceLimit("accessor materialization allocation failed".into())
@@ -104,11 +172,7 @@ impl<'a> DocumentAccessorSource<'a> {
                             Error::ResourceLimit("accessor stride overflow".into())
                         })?)
                         .ok_or_else(|| Error::ResourceLimit("accessor offset overflow".into()))?;
-                let end = start
-                    .checked_add(width)
-                    .filter(|end| *end <= buffer.len())
-                    .ok_or_else(|| Error::Extension("accessor range is out of bounds".into()))?;
-                dense.extend_from_slice(&buffer[start..end]);
+                copy_accessor_element(buffer, start, layout, &mut dense)?;
             }
             dense
         } else if accessor.get("sparse").is_some() {
@@ -119,7 +183,7 @@ impl<'a> DocumentAccessorSource<'a> {
             ));
         };
         if let Some(sparse) = accessor.get("sparse") {
-            self.apply_sparse(sparse, count, width, &mut bytes)?;
+            self.apply_sparse(sparse, count, layout, &mut bytes)?;
         }
         Ok((
             count,
@@ -183,7 +247,7 @@ impl<'a> DocumentAccessorSource<'a> {
         &self,
         sparse: &crate::JsonValue,
         count: usize,
-        width: usize,
+        layout: AccessorLayout,
         bytes: &mut [u8],
     ) -> Result<()> {
         let sparse_count = sparse
@@ -232,8 +296,8 @@ impl<'a> DocumentAccessorSource<'a> {
             .get("byteOffset")
             .and_then(|value| value.as_u64())
             .unwrap_or(0);
-        let (value_buffer, value_start, _) =
-            self.buffer_view_layout(value_view, value_offset, width)?;
+        let (value_buffer, value_start, value_stride) =
+            self.buffer_view_layout(value_view, value_offset, layout.source_width)?;
         let mut previous = None;
         for entry in 0..sparse_count {
             let index_start =
@@ -266,16 +330,22 @@ impl<'a> DocumentAccessorSource<'a> {
             previous = Some(index);
             let value_start =
                 value_start
-                    .checked_add(entry.checked_mul(width).ok_or_else(|| {
+                    .checked_add(entry.checked_mul(value_stride).ok_or_else(|| {
                         Error::ResourceLimit("sparse value offset overflow".into())
                     })?)
                     .ok_or_else(|| Error::ResourceLimit("sparse value offset overflow".into()))?;
-            let value_end = value_start
-                .checked_add(width)
-                .filter(|end| *end <= value_buffer.len())
-                .ok_or_else(|| Error::Extension("sparse values are out of bounds".into()))?;
-            bytes[index * width..(index + 1) * width]
-                .copy_from_slice(&value_buffer[value_start..value_end]);
+            let destination_start = index
+                .checked_mul(layout.tight_width)
+                .ok_or_else(|| Error::ResourceLimit("sparse value offset overflow".into()))?;
+            let destination_end = destination_start
+                .checked_add(layout.tight_width)
+                .ok_or_else(|| Error::ResourceLimit("sparse value offset overflow".into()))?;
+            copy_accessor_element_into(
+                value_buffer,
+                value_start,
+                layout,
+                &mut bytes[destination_start..destination_end],
+            )?;
         }
         Ok(())
     }
@@ -283,8 +353,19 @@ impl<'a> DocumentAccessorSource<'a> {
     /// Reads and materializes one accessor by zero-based index.
     pub fn read_accessor(&self, index: usize) -> Result<AccessorData> {
         let (count, components, component_type, data_type, normalized, bytes) = self.read(index)?;
+        let accessor_type = self
+            .document
+            .as_value()
+            .get("accessors")
+            .and_then(|value| value.as_array())
+            .and_then(|values| values.get(index))
+            .and_then(|value| value.get("type"))
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| Error::Extension("accessor type is invalid".into()))?
+            .to_owned();
         Ok(AccessorData {
             count,
+            accessor_type,
             components,
             component_type,
             data_type,
@@ -292,6 +373,82 @@ impl<'a> DocumentAccessorSource<'a> {
             bytes,
         })
     }
+}
+
+fn accessor_layout(accessor_type: &str, component_width: usize) -> Result<AccessorLayout> {
+    let (columns, rows) = match accessor_type {
+        "SCALAR" => (1, 1),
+        "VEC2" => (1, 2),
+        "VEC3" => (1, 3),
+        "VEC4" => (1, 4),
+        "MAT2" => (2, 2),
+        "MAT3" => (3, 3),
+        "MAT4" => (4, 4),
+        _ => return Err(Error::Extension("accessor type is invalid".into())),
+    };
+    let column_width = rows * component_width;
+    let column_stride = if columns > 1 && component_width < 4 {
+        column_width
+            .checked_add(3)
+            .map(|width| width & !3)
+            .ok_or_else(|| Error::ResourceLimit("accessor column size overflow".into()))?
+    } else {
+        column_width
+    };
+    Ok(AccessorLayout {
+        tight_width: columns * column_width,
+        source_width: columns * column_stride,
+        columns,
+        column_width,
+        column_stride,
+    })
+}
+
+fn copy_accessor_element(
+    source: &[u8],
+    start: usize,
+    layout: AccessorLayout,
+    destination: &mut Vec<u8>,
+) -> Result<()> {
+    let destination_start = destination.len();
+    destination
+        .try_reserve_exact(layout.tight_width)
+        .map_err(|_| Error::ResourceLimit("accessor materialization allocation failed".into()))?;
+    let destination_end = destination_start
+        .checked_add(layout.tight_width)
+        .ok_or_else(|| Error::ResourceLimit("accessor materialization size overflow".into()))?;
+    destination.resize(destination_end, 0);
+    copy_accessor_element_into(source, start, layout, &mut destination[destination_start..])
+}
+
+fn copy_accessor_element_into(
+    source: &[u8],
+    start: usize,
+    layout: AccessorLayout,
+    destination: &mut [u8],
+) -> Result<()> {
+    if destination.len() != layout.tight_width {
+        return Err(Error::ResourceLimit(
+            "accessor materialization size mismatch".into(),
+        ));
+    }
+    for column in 0..layout.columns {
+        let column_start =
+            start
+                .checked_add(column.checked_mul(layout.column_stride).ok_or_else(|| {
+                    Error::ResourceLimit("accessor column offset overflow".into())
+                })?)
+                .ok_or_else(|| Error::ResourceLimit("accessor column offset overflow".into()))?;
+        let column_end = column_start
+            .checked_add(layout.column_width)
+            .filter(|end| *end <= source.len())
+            .ok_or_else(|| Error::Extension("accessor range is out of bounds".into()))?;
+        let destination_start = column * layout.column_width;
+        let destination_end = destination_start + layout.column_width;
+        destination[destination_start..destination_end]
+            .copy_from_slice(&source[column_start..column_end]);
+    }
+    Ok(())
 }
 impl AccessorSource for DocumentAccessorSource<'_> {
     fn read_attribute(

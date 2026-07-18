@@ -43,3 +43,28 @@ export function externalTriangle() {
     meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
   });
 }
+
+export function animatedTranslation() {
+  return JSON.stringify({
+    asset: { version: '2.0' },
+    buffers: [{
+      byteLength: 32,
+      uri: 'data:application/octet-stream;base64,AAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAQAAAQEA=',
+    }],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 8 },
+      { buffer: 0, byteOffset: 8, byteLength: 24 },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 2, type: 'SCALAR' },
+      { bufferView: 1, componentType: 5126, count: 2, type: 'VEC3' },
+    ],
+    nodes: [{}],
+    scenes: [{ nodes: [0] }],
+    scene: 0,
+    animations: [{
+      samplers: [{ input: 0, output: 1, interpolation: 'LINEAR' }],
+      channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+    }],
+  });
+}

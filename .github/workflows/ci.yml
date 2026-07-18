@@ -81,6 +81,7 @@ jobs:
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features read
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features read,draco-decode
+          cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features raw-resources
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features write
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features write,draco-decode
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features draco-encode

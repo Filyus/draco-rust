@@ -8,6 +8,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');
 const wantsWrite = process.argv.includes('--write');
 const wantsEncoder = process.argv.includes('--draco-encode');
+const wantsRawResources = process.argv.includes('--raw-resources');
 const api = await import(pathToFileURL(resolve(pkg, 'gltf.js')));
 const wasm = await readFile(resolve(pkg, 'gltf_bg.wasm'));
 await api.default({ module_or_path: wasm });
@@ -19,6 +20,14 @@ if ((typeof asset.decompress === 'function') !== wantsWrite) {
 if ((typeof asset.compressPrimitive === 'function') !== wantsEncoder) {
   throw new Error('glTF Draco encoder feature gate is incorrect');
 }
+if ((typeof asset.bufferBytes === 'function') !== wantsRawResources) {
+  throw new Error('glTF raw resource API feature gate is incorrect');
+}
+if (wantsRawResources) {
+  if (asset.bufferCount() !== 1 || asset.bufferBytes(0).length !== 36) {
+    throw new Error('glTF raw resource API returned an invalid buffer');
+  }
+}
 if (wantsEncoder) {
   const bytes = asset.compressPrimitive(0, 0, 5, 5);
   if (bytes === 0) {
@@ -29,4 +38,10 @@ if (wantsEncoder) {
     throw new Error(`glTF Draco output failed to reload: ${JSON.stringify(reloaded)}`);
   }
 }
-console.log(`glTF features smoke passed (${wantsEncoder ? 'encode' : 'write'})`);
+console.log(
+  `glTF features smoke passed (${[
+    wantsWrite && 'write',
+    wantsEncoder && 'encode',
+    wantsRawResources && 'raw-resources',
+  ].filter(Boolean).join(',') || 'read'})`,
+);

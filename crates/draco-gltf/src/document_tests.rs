@@ -799,6 +799,33 @@ fn import_packs_accessor_geometry() {
     );
     assert_eq!(primitive.attributes()[0].components(), 3);
     assert_eq!(primitive.attributes()[0].bytes().len(), 36);
+
+    let source = crate::DocumentAccessorSource::new(&import.document, &import.resources);
+    let accessor = source.read_accessor(0).unwrap();
+    assert_eq!(accessor.count, 3);
+    assert_eq!(accessor.accessor_type, "VEC3");
+    assert_eq!(accessor.components, 3);
+    assert_eq!(accessor.component_type, 5126);
+    assert!(!accessor.normalized);
+    assert_eq!(accessor.bytes.len(), 36);
+    assert_eq!(source.read_buffer_view(0).unwrap(), accessor.bytes);
+}
+
+#[cfg(feature = "geometry")]
+#[test]
+fn accessor_materialization_removes_matrix_column_padding() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":12,"uri":"data:application/octet-stream;base64,AQIDAAQFBgAHCAkA"}],"bufferViews":[{"buffer":0,"byteLength":12}],"accessors":[{"bufferView":0,"componentType":5121,"count":1,"type":"MAT3"}]}"#;
+    let import = parse(input, ValidationProfile::Gltf20).unwrap();
+    let source = crate::DocumentAccessorSource::new(&import.document, &import.resources);
+
+    let accessor = source.read_accessor(0).unwrap();
+    assert_eq!(accessor.accessor_type, "MAT3");
+    assert_eq!(accessor.components, 9);
+    assert_eq!(accessor.bytes, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert_eq!(
+        source.read_buffer_view(0).unwrap(),
+        [1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 0]
+    );
 }
 
 #[cfg(feature = "geometry")]

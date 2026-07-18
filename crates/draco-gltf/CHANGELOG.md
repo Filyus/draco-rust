@@ -9,6 +9,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `AccessorData::accessor_type` and
+  `DocumentAccessorSource::read_buffer_view` for generic accessor and embedded
+  payload consumers, including WebAssembly bindings.
+
 ## [0.2.0] - 2026-07-18
 
 ### Added
