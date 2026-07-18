@@ -80,7 +80,6 @@ jobs:
             "ply_writer"
             "gltf_document"
             "gltf_compact"
-            "gltf_canonicalize"
             "fbx_reader"
             "fbx_writer"
           )

@@ -50,7 +50,10 @@ fn khronos_box_glb_compresses_and_reloads() {
     assert_eq!(reloaded.document.as_value()["nodes"], original_nodes);
     let primitive = reloaded.draco_primitives().next().unwrap();
     assert_eq!(
-        reloaded.decode_primitive(primitive).unwrap().num_faces(),
+        reloaded
+            .decode_draco_primitive(primitive)
+            .unwrap()
+            .num_faces(),
         12
     );
 }

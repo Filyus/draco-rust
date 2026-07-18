@@ -15,7 +15,7 @@ fuzz_target!(|data: &[u8]| {
     };
 
     for primitive in import.draco_primitives() {
-        let _ = import.decode_primitive(primitive);
+        let _ = import.decode_draco_primitive(primitive);
     }
 
     let _ = import.decompress_in_place();

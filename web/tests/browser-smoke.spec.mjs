@@ -15,8 +15,8 @@ test('document and compact APIs read data URI, GLB, and explicit resources', asy
 
     const data = new TextEncoder().encode(embedded);
     const document = new documentApi.GltfDocument(data, '2.0');
-    const compact = new compactApi.CompactGeometry(data, '2.0');
-    const packed = compact.decodePrimitive(0, 0);
+    const compact = new compactApi.CompactDocument(data, '2.0');
+    const packed = compact.readPrimitive(0, 0);
     const glb = document.glb(2);
     const roundtrip = new documentApi.GltfDocument(glb, '2.0');
     let missing = false;
@@ -32,7 +32,7 @@ test('document and compact APIs read data URI, GLB, and explicit resources', asy
     );
     return {
       document: document.summary(),
-      compact: { meshes: compact.mesh_count(), bytes: packed.attributeBytes(0).length },
+      compact: { meshes: compact.meshCount(), bytes: packed.attributeBytes(0).length },
       roundtrip: roundtrip.summary(),
       missing,
       resolved: resolved.summary(),

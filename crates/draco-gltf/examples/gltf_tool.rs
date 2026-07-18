@@ -9,7 +9,7 @@ fn decoded_draco_stats(import: &Import) -> Result<(usize, usize), Box<dyn std::e
     let mut primitives = 0usize;
     let mut faces = 0usize;
     for primitive in import.draco_primitives() {
-        let mesh = import.decode_primitive(primitive)?;
+        let mesh = import.decode_draco_primitive(primitive)?;
         if mesh.num_faces() == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

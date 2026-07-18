@@ -446,7 +446,13 @@ fn compression_appends_a_decodable_draco_payload() {
         36usize.saturating_sub(report.output_bytes)
     );
     let primitive = import.draco_primitives().next().unwrap();
-    assert_eq!(import.decode_primitive(primitive).unwrap().num_faces(), 1);
+    assert_eq!(
+        import
+            .decode_draco_primitive(primitive)
+            .unwrap()
+            .num_faces(),
+        1
+    );
     import.document.validate(ValidationProfile::Gltf20).unwrap();
     assert!(import.document.as_value()["extensionsRequired"]
         .as_array()
@@ -680,7 +686,7 @@ fn glb_serialization_consolidates_append_only_draco_buffers() {
     assert_eq!(reloaded.draco_primitives().count(), 1);
     assert_eq!(
         reloaded
-            .decode_primitive(reloaded.draco_primitives().next().unwrap())
+            .decode_draco_primitive(reloaded.draco_primitives().next().unwrap())
             .unwrap()
             .num_faces(),
         1
@@ -795,23 +801,26 @@ fn compact_runtime_packs_accessor_geometry() {
     let import = parse(input, ValidationProfile::Gltf20).unwrap();
 
     let primitive = import
-        .decode_packed_primitive(crate::MeshIndex(0), 0)
+        .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
         .unwrap();
-    assert_eq!(primitive.mode, 4);
-    assert!(primitive.indices.is_none());
-    assert_eq!(primitive.attributes.len(), 1);
-    assert_eq!(primitive.attributes[0].semantic, "POSITION");
-    assert_eq!(primitive.attributes[0].component_type, 5126);
-    assert_eq!(primitive.attributes[0].components, 3);
-    assert_eq!(primitive.attributes[0].bytes.len(), 36);
+    assert_eq!(primitive.mode(), crate::PrimitiveMode::Triangles);
+    assert!(primitive.indices().is_none());
+    assert_eq!(primitive.attributes().len(), 1);
+    assert_eq!(primitive.attributes()[0].semantic(), "POSITION");
+    assert_eq!(
+        primitive.attributes()[0].component_type(),
+        crate::ComponentType::F32
+    );
+    assert_eq!(primitive.attributes()[0].components(), 3);
+    assert_eq!(primitive.attributes()[0].bytes().len(), 36);
 }
 
 #[cfg(feature = "compact")]
 #[test]
 fn compact_runtime_preserves_draft_half_float_accessors() {
-    let input = br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":4,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteLength":4}],"accessors":[{"bufferView":0,"componentType":5131,"count":2,"type":"SCALAR"}],"meshes":[{"primitives":[{"attributes":{"_HALF":0}}]}]}"#;
+    let input = br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":12,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteLength":12}],"accessors":[{"bufferView":0,"componentType":5131,"count":2,"type":"VEC3"}],"meshes":[{"primitives":[{"mode":0,"attributes":{"POSITION":0}}]}]}"#;
     let resolver = |uri: &str| match uri {
-        "mesh.bin" => Ok(vec![0, 60, 0, 64]),
+        "mesh.bin" => Ok(vec![0, 60, 0, 64, 0, 66, 0, 68, 0, 69, 0, 70]),
         _ => Err(draco_io::GltfError::ExternalResourceDenied(uri.into())),
     };
     let import = crate::parse_with_options(
@@ -825,11 +834,11 @@ fn compact_runtime_preserves_draft_half_float_accessors() {
     .unwrap();
 
     let primitive = import
-        .decode_packed_primitive(crate::MeshIndex(0), 0)
+        .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
         .unwrap();
-    let half = &primitive.attributes[0];
-    assert_eq!(half.component_type, 5131);
-    assert_eq!(half.bytes, [0, 60, 0, 64]);
+    let half = &primitive.attributes()[0];
+    assert_eq!(half.component_type(), crate::ComponentType::F16);
+    assert_eq!(half.bytes(), [0, 60, 0, 64, 0, 66, 0, 68, 0, 69, 0, 70]);
 }
 
 #[cfg(feature = "compact")]
@@ -858,17 +867,17 @@ fn compact_runtime_materializes_sparse_accessors() {
     .unwrap();
 
     let primitive = import
-        .decode_packed_primitive(crate::MeshIndex(0), 0)
+        .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
         .unwrap();
-    let position = &primitive.attributes[0];
-    assert_eq!(position.bytes.len(), 36);
+    let position = &primitive.attributes()[0];
+    assert_eq!(position.bytes().len(), 36);
     assert_eq!(
-        &position.bytes[..12],
+        &position.bytes()[..12],
         &[0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 64, 64]
     );
-    assert_eq!(&position.bytes[12..24], &[0; 12]);
+    assert_eq!(&position.bytes()[12..24], &[0; 12]);
     assert_eq!(
-        &position.bytes[24..],
+        &position.bytes()[24..],
         &[0, 0, 128, 64, 0, 0, 160, 64, 0, 0, 192, 64]
     );
     import
@@ -895,12 +904,378 @@ fn compact_runtime_packs_draco_geometry() {
         .unwrap();
 
     let primitive = import
-        .decode_packed_primitive(crate::MeshIndex(0), 0)
+        .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
         .unwrap();
-    assert_eq!(primitive.mode, 4);
-    assert_eq!(primitive.indices.unwrap().bytes.len(), 12);
-    assert_eq!(primitive.attributes.len(), 1);
-    assert_eq!(primitive.attributes[0].semantic, "POSITION");
-    assert_eq!(primitive.attributes[0].components, 3);
-    assert_eq!(primitive.attributes[0].bytes.len(), 36);
+    assert_eq!(primitive.mode(), crate::PrimitiveMode::Triangles);
+    assert_eq!(primitive.indices().unwrap().bytes().len(), 12);
+    assert_eq!(primitive.attributes().len(), 1);
+    assert_eq!(primitive.attributes()[0].semantic(), "POSITION");
+    assert_eq!(primitive.attributes()[0].components(), 3);
+    assert_eq!(primitive.attributes()[0].bytes().len(), 36);
+}
+
+#[cfg(feature = "write")]
+fn packed_triangle(component_type: crate::ComponentType) -> crate::PackedGeometry {
+    let bytes = match component_type {
+        crate::ComponentType::F32 => [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect(),
+        crate::ComponentType::F64 => [0.0f64, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .into_iter()
+            .flat_map(f64::to_le_bytes)
+            .collect(),
+        _ => unreachable!(),
+    };
+    crate::PackedGeometry::new(
+        crate::PrimitiveMode::Triangles,
+        vec![crate::PackedAttribute::new("POSITION", 3, 3, component_type, false, bytes).unwrap()],
+        Some(
+            crate::PackedIndices::new(
+                3,
+                crate::ComponentType::U16,
+                [0u16, 1, 2]
+                    .into_iter()
+                    .flat_map(u16::to_le_bytes)
+                    .collect(),
+            )
+            .unwrap(),
+        ),
+    )
+    .unwrap()
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn packed_geometry_rejects_duplicate_semantics_and_bad_indices() {
+    let position = crate::PackedAttribute::new(
+        "POSITION",
+        1,
+        3,
+        crate::ComponentType::F32,
+        false,
+        vec![0; 12],
+    )
+    .unwrap();
+    let duplicate = crate::PackedGeometry::new(
+        crate::PrimitiveMode::Points,
+        vec![position.clone(), position],
+        None,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        duplicate,
+        crate::GeometryError::DuplicateSemantic(_)
+    ));
+
+    let indices =
+        crate::PackedIndices::new(1, crate::ComponentType::U16, 4u16.to_le_bytes().to_vec())
+            .unwrap();
+    let error = crate::PackedGeometry::new(
+        crate::PrimitiveMode::Points,
+        vec![crate::PackedAttribute::new(
+            "POSITION",
+            1,
+            3,
+            crate::ComponentType::F32,
+            false,
+            vec![0; 12],
+        )
+        .unwrap()],
+        Some(indices),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::GeometryError::IndexOutOfRange { .. }
+    ));
+
+    let empty = crate::PackedGeometry::new(
+        crate::PrimitiveMode::Points,
+        vec![crate::PackedAttribute::new(
+            "POSITION",
+            0,
+            3,
+            crate::ComponentType::F32,
+            false,
+            Vec::new(),
+        )
+        .unwrap()],
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(empty, crate::GeometryError::EmptyGeometry);
+
+    let integer_position = crate::PackedGeometry::new(
+        crate::PrimitiveMode::Points,
+        vec![crate::PackedAttribute::new(
+            "POSITION",
+            1,
+            3,
+            crate::ComponentType::U16,
+            false,
+            vec![0; 6],
+        )
+        .unwrap()],
+        None,
+    )
+    .unwrap();
+    assert!(matches!(
+        integer_position.validate(ValidationProfile::Gltf20),
+        Err(crate::GeometryError::AttributeComponentType { .. })
+    ));
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn raw_writer_roundtrips_every_primitive_mode_and_append() {
+    let modes = [
+        (crate::PrimitiveMode::Points, vec![0u16, 1, 2]),
+        (crate::PrimitiveMode::Lines, vec![0, 1]),
+        (crate::PrimitiveMode::LineLoop, vec![0, 1, 2]),
+        (crate::PrimitiveMode::LineStrip, vec![0, 1, 2]),
+        (crate::PrimitiveMode::Triangles, vec![0, 1, 2]),
+        (crate::PrimitiveMode::TriangleStrip, vec![0, 1, 2]),
+        (crate::PrimitiveMode::TriangleFan, vec![0, 1, 2]),
+    ];
+    let positions = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        .into_iter()
+        .flat_map(f32::to_le_bytes)
+        .collect::<Vec<_>>();
+    let mut import: Option<crate::Import> = None;
+    for (mode, values) in modes {
+        let indices = crate::PackedIndices::new(
+            values.len(),
+            crate::ComponentType::U16,
+            values.into_iter().flat_map(u16::to_le_bytes).collect(),
+        )
+        .unwrap();
+        let geometry = crate::PackedGeometry::new(
+            mode,
+            vec![crate::PackedAttribute::new(
+                "POSITION",
+                3,
+                3,
+                crate::ComponentType::F32,
+                false,
+                positions.clone(),
+            )
+            .unwrap()],
+            Some(indices),
+        )
+        .unwrap();
+        if let Some(scene) = import.as_mut() {
+            let primitive = scene
+                .push_primitive(
+                    crate::MeshIndex(0),
+                    &geometry,
+                    crate::GeometryWriteOptions::default(),
+                )
+                .unwrap();
+            assert_eq!(scene.read_primitive(primitive).unwrap(), geometry);
+        } else {
+            import = Some(
+                crate::Import::from_geometry(
+                    &geometry,
+                    ValidationProfile::Gltf20,
+                    crate::GeometryWriteOptions::default(),
+                )
+                .unwrap(),
+            );
+        }
+    }
+    assert_eq!(
+        import
+            .unwrap()
+            .document
+            .mesh(crate::MeshIndex(0))
+            .unwrap()
+            .primitive_count(),
+        7
+    );
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn write_rejects_incompatible_morph_targets_atomically() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":24,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}],"bufferViews":[{"buffer":0,"byteLength":12},{"buffer":0,"byteOffset":12,"byteLength":12}],"accessors":[{"bufferView":0,"componentType":5126,"count":1,"type":"VEC3"},{"bufferView":1,"componentType":5126,"count":1,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"targets":[{"POSITION":1}],"extras":{"keep":true}}]}]}"#;
+    let mut import = crate::parse(input, ValidationProfile::Gltf20).unwrap();
+    let before = import.document.to_json_bytes().unwrap();
+    let error = import
+        .write_primitive(
+            crate::PrimitiveIndex::new(crate::MeshIndex(0), 0),
+            &packed_triangle(crate::ComponentType::F32),
+            crate::GeometryWriteOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::Geometry(crate::GeometryError::MorphTargetCount { .. })
+    ));
+    assert_eq!(import.document.to_json_bytes().unwrap(), before);
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn standalone_raw_geometry_roundtrips_json_and_glb() {
+    let geometry = packed_triangle(crate::ComponentType::F32);
+    let import = crate::Import::from_geometry(
+        &geometry,
+        ValidationProfile::Gltf20,
+        crate::GeometryWriteOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(import.document.nodes().len(), 1);
+    assert_eq!(import.document.scenes().len(), 1);
+    assert_eq!(
+        import.document.as_value()["accessors"][0]["min"],
+        crate::JsonValue::Array(vec![0u64.into(), 0u64.into(), 0u64.into()])
+    );
+    assert_eq!(
+        import.document.as_value()["accessors"][0]["max"],
+        crate::JsonValue::Array(vec![1u64.into(), 1u64.into(), 0u64.into()])
+    );
+    assert_eq!(
+        import
+            .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
+            .unwrap(),
+        geometry
+    );
+    let output = import.to_gltf_output().unwrap();
+    assert_eq!(output.resources.len(), 1);
+    let resolver = |uri: &str| {
+        output
+            .resources
+            .iter()
+            .find(|resource| resource.uri == uri)
+            .map(|resource| resource.bytes.clone())
+            .ok_or_else(|| draco_io::GltfError::ExternalResourceDenied(uri.into()))
+    };
+    let reloaded = crate::parse_with_options(
+        &output.json,
+        None,
+        Some(&resolver),
+        &draco_io::ResourceLimits::default(),
+        ValidationProfile::Gltf20,
+        &crate::ExtensionRegistry::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        reloaded
+            .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
+            .unwrap(),
+        geometry
+    );
+    for format in [crate::OutputFormat::GlbV2, crate::OutputFormat::GlbV3] {
+        let bytes = import.to_bytes(format).unwrap();
+        let reloaded = crate::parse(&bytes, ValidationProfile::Gltf20).unwrap();
+        assert_eq!(
+            reloaded
+                .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
+                .unwrap(),
+            geometry
+        );
+    }
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn write_primitive_preserves_non_geometry_fields_and_is_atomic() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":12,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAA"}],"bufferViews":[{"buffer":0,"byteLength":12}],"accessors":[{"bufferView":0,"componentType":5126,"count":1,"type":"VEC3"}],"materials":[{}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0,"extras":{"tag":7},"extensions":{"VENDOR_keep":{"value":9}}}]}]}"#;
+    let mut import = crate::parse(input, ValidationProfile::Gltf20).unwrap();
+    let before = import.document.to_json_bytes().unwrap();
+    let invalid = crate::PackedAttribute::new(
+        "POSITION",
+        3,
+        3,
+        crate::ComponentType::F32,
+        false,
+        vec![0; 8],
+    );
+    assert!(invalid.is_err());
+    assert_eq!(import.document.to_json_bytes().unwrap(), before);
+
+    let geometry = packed_triangle(crate::ComponentType::F32);
+    let report = import
+        .write_primitive(
+            crate::PrimitiveIndex::new(crate::MeshIndex(0), 0),
+            &geometry,
+            crate::GeometryWriteOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        report.preserve_reasons,
+        vec![crate::PreserveReason::ExistingReferences]
+    );
+    let primitive = import.document.primitive(crate::MeshIndex(0), 0).unwrap();
+    assert_eq!(primitive.value()["material"].as_u64(), Some(0));
+    assert_eq!(primitive.value()["extras"]["tag"].as_u64(), Some(7));
+    assert_eq!(
+        primitive.value()["extensions"]["VENDOR_keep"]["value"].as_u64(),
+        Some(9)
+    );
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn raw_writer_preserves_draft_64_bit_components() {
+    let geometry = packed_triangle(crate::ComponentType::F64);
+    let import = crate::Import::from_geometry(
+        &geometry,
+        ValidationProfile::Gltf21Draft,
+        crate::GeometryWriteOptions::default(),
+    )
+    .unwrap();
+    let read = import
+        .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
+        .unwrap();
+    assert_eq!(read, geometry);
+    assert_eq!(
+        import.document.as_value()["accessors"][0]["componentType"].as_u64(),
+        Some(5130)
+    );
+}
+
+#[cfg(feature = "draco-encode")]
+#[test]
+fn draco_write_roundtrips_and_rejects_f64_without_conversion() {
+    let geometry = packed_triangle(crate::ComponentType::F32);
+    let options = crate::GeometryWriteOptions {
+        encoding: crate::GeometryEncoding::Draco(crate::CompressionOptions::default()),
+    };
+    let import =
+        crate::Import::from_geometry(&geometry, ValidationProfile::Gltf20, options).unwrap();
+    assert_eq!(import.draco_primitives().count(), 1);
+    let decoded = import
+        .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
+        .unwrap();
+    assert_eq!(decoded.mode(), geometry.mode());
+    assert_eq!(decoded.attributes(), geometry.attributes());
+    assert_eq!(decoded.indices().unwrap().count(), 3);
+    assert_eq!(
+        decoded.indices().unwrap().bytes(),
+        [0u32, 1, 2]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>()
+    );
+
+    let f64_geometry = packed_triangle(crate::ComponentType::F64);
+    let error =
+        crate::Import::from_geometry(&f64_geometry, ValidationProfile::Gltf21Draft, options)
+            .err()
+            .expect("f64 Draco geometry must be rejected");
+    assert!(error.to_string().contains("not permitted") || error.to_string().contains("support"));
+}
+
+#[test]
+fn minified_json_forces_serialization_and_preserves_order() {
+    let document = crate::Document::from_json_bytes(
+        br#"{ "asset": { "version": "2.0" }, "extras": { "number": 1.00 } }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        document.to_minified_json_bytes(),
+        br#"{"asset":{"version":"2.0"},"extras":{"number":1.00}}"#
+    );
 }

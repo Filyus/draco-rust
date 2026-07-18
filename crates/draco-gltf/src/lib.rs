@@ -11,24 +11,32 @@ use thiserror::Error;
 
 #[cfg(feature = "geometry")]
 mod accessor;
-#[cfg(feature = "transform")]
+#[cfg(feature = "draco-encode")]
 mod compression;
 /// Lossless document model and typed views for glTF scenes.
 pub mod document;
 #[cfg(feature = "geometry")]
 pub use accessor::{AccessorData, DocumentAccessorSource};
-#[cfg(feature = "transform")]
+#[cfg(feature = "draco-encode")]
 pub use compression::{CompressionMode, CompressionOptions, CompressionReport};
 mod json;
 pub use document::{
     Accessor, AccessorIndex, Animation, AnimationIndex, BoundingVolume, Buffer, BufferIndex,
     BufferView, BufferViewIndex, Camera, CameraIndex, ComponentType, Document, ExternalAsset,
     ExternalAssetIndex, File, FileIndex, Image, ImageIndex, Material, MaterialIndex, Mesh,
-    MeshIndex, Node, NodeIndex, PrimitiveRef, Sampler, SamplerIndex, Scene, SceneIndex, Shape,
-    ShapeIndex, Skin, SkinIndex, Texture, TextureIndex, ValidationProfile,
+    MeshIndex, Node, NodeIndex, PrimitiveIndex, PrimitiveRef, Sampler, SamplerIndex, Scene,
+    SceneIndex, Shape, ShapeIndex, Skin, SkinIndex, Texture, TextureIndex, ValidationProfile,
 };
+#[cfg(feature = "geometry")]
+mod packed;
+#[cfg(feature = "geometry")]
+pub use packed::{GeometryError, PackedAttribute, PackedGeometry, PackedIndices, PrimitiveMode};
+#[cfg(feature = "write")]
+mod writer;
 /// Lossless JSON value used by the document model.
 pub use json::Value as JsonValue;
+#[cfg(feature = "write")]
+pub use writer::{GeometryEncoding, GeometryWriteOptions, GeometryWriteReport, PreserveReason};
 /// Extension contracts and resource storage used by document transforms.
 pub mod extensions;
 pub use extensions::{
@@ -40,8 +48,6 @@ pub use extensions::{
 pub mod compact;
 #[cfg(feature = "compact")]
 pub use compact::{CompactDocument, CompactMeshRange};
-#[cfg(feature = "compact")]
-pub use draco_io::{PackedAttribute, PackedPrimitive};
 mod import;
 #[cfg(not(target_arch = "wasm32"))]
 pub use import::open;
@@ -82,6 +88,10 @@ pub enum Error {
     /// A low-level container or resource operation failed.
     #[error("draco-io error: {0}")]
     DracoIo(#[from] GltfError),
+    /// Materialized primitive geometry is invalid or unsupported.
+    #[cfg(feature = "geometry")]
+    #[error("geometry error: {0}")]
+    Geometry(#[from] GeometryError),
     /// An extension contract rejected the document or transform.
     #[error("extension error: {0}")]
     Extension(String),

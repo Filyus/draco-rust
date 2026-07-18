@@ -2,7 +2,7 @@
 name = "gltf-compact-wasm"
 version = "0.1.0"
 edition = "2021"
-description = "Compact glTF geometry decoding for WebAssembly"
+description = "Compact glTF primitive reading and optional writing for WebAssembly"
 repository = "https://github.com/Filyus/draco-rust"
 license = "Apache-2.0"
 
@@ -21,3 +21,5 @@ draco-gltf = { path = "../../crates/draco-gltf", default-features = false, featu
 [features]
 default = []
 console_error_panic_hook = ["dep:console_error_panic_hook"]
+write = ["draco-gltf/write"]
+draco-encode = ["write", "draco-gltf/draco-encode"]

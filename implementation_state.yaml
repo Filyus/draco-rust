@@ -1926,17 +1926,17 @@ files:
 
   - path: "crates/draco-io/src/gltf_geometry.rs"
     structures:
-      - name: "AccessorSource / PackedPrimitive"
-        type: "trait / struct"
+      - name: "AccessorSource / decode_geometry"
+        type: "trait / function"
         progress: "fully implemented"
-        note: "Document-agnostic accessor decoding and packed geometry contracts shared by scene imports and compact consumers."
+        note: "Document-agnostic accessor-to-Mesh decoding shared by glTF scene imports."
 
   - path: "crates/draco-gltf/src"
     structures:
       - name: "Document / Import"
         type: "struct"
         progress: "fully implemented"
-        note: "Lossless full-scene model with typed root views, pinned draft validation, explicit files loading, and document-preserving Draco transforms."
+        note: "Lossless full-scene model with typed root views, pinned draft validation, explicit files loading, bidirectional PackedGeometry, and document-preserving Draco operations."
 
   - path: "crates/draco-io/src/ply_reader.rs"
     structures:
@@ -2012,7 +2012,7 @@ files:
         note: "PLY writer WASM module backed by draco-io PlyWriter. Exports meshes as ASCII, binary_little_endian, or binary_big_endian PLY and returns binary_data for binary formats."
       - name: "gltf-document-wasm / gltf-compact-wasm"
         progress: "fully implemented"
-        note: "Stateful full-scene and compact geometry WASM modules over the same lossless Document and PackedPrimitive contracts."
+        note: "Stateful full-scene and compact geometry WASM modules over the same lossless Document and bidirectional PackedGeometry contract."
       - name: "fbx-reader-wasm"
         progress: "fully implemented"
         note: "FBX binary parser WASM module. Reads uncompressed and zlib-compressed FBX 7.x binary arrays, validates decompressed payload sizes, and has parse-level coverage for compressed Geometry arrays."

@@ -1,6 +1,6 @@
 //! Lossless glTF document model and typed object views.
 //!
-//! The JSON DOM is canonical: typed views deliberately never own a second
+//! The JSON DOM is authoritative: typed views deliberately never own a second
 //! schema copy, so draft fields and unknown extensions survive edits.
 
 use std::marker::PhantomData;
@@ -94,6 +94,37 @@ impl ComponentType {
             _ => return None,
         })
     }
+
+    /// Returns the on-disk width of one scalar component in bytes.
+    pub const fn byte_width(self) -> usize {
+        match self {
+            Self::I8 | Self::U8 => 1,
+            Self::I16 | Self::U16 | Self::F16 => 2,
+            Self::I32 | Self::U32 | Self::F32 => 4,
+            Self::F64 | Self::I64 | Self::U64 => 8,
+        }
+    }
+
+    /// Returns the numeric glTF component type code.
+    pub const fn to_gltf(self) -> u32 {
+        self as u32
+    }
+}
+
+/// Typed location of a primitive nested in one mesh.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PrimitiveIndex {
+    /// Mesh containing the primitive.
+    pub mesh: MeshIndex,
+    /// Zero-based primitive position inside the mesh.
+    pub primitive: usize,
+}
+
+impl PrimitiveIndex {
+    /// Creates a typed nested primitive location.
+    pub const fn new(mesh: MeshIndex, primitive: usize) -> Self {
+        Self { mesh, primitive }
+    }
 }
 
 /// Semantically lossless glTF JSON document.
@@ -135,7 +166,7 @@ impl Document {
         })
     }
 
-    /// Returns the complete canonical JSON value.
+    /// Returns the complete lossless JSON value.
     pub fn as_value(&self) -> &Value {
         &self.root
     }
@@ -160,6 +191,27 @@ impl Document {
             Some(bytes) => Ok(bytes.clone()),
             None => Ok(self.root.to_vec()),
         }
+    }
+
+    /// Serializes the current DOM without insignificant JSON whitespace.
+    ///
+    /// Unlike [`Document::to_json_bytes`], this always serializes the parsed
+    /// value, even when the document has not been changed. Object order and
+    /// number lexemes are retained; keys and numbers are not normalized.
+    ///
+    /// ```
+    /// # use draco_gltf::Document;
+    /// let document = Document::from_json_bytes(
+    ///     br#"{ "asset": { "version": "2.0" } }"#,
+    /// )?;
+    /// assert_eq!(
+    ///     document.to_minified_json_bytes(),
+    ///     br#"{"asset":{"version":"2.0"}}"#,
+    /// );
+    /// # Ok::<(), draco_gltf::Error>(())
+    /// ```
+    pub fn to_minified_json_bytes(&self) -> Vec<u8> {
+        self.root.to_vec()
     }
 
     /// Performs the core structural checks required before transforming a document.

@@ -25,11 +25,14 @@ if (!summary.success || summary.meshCount !== 1 || summary.primitiveCount !== 1)
   throw new Error(`document smoke failed: ${JSON.stringify(summary)}`);
 }
 
-const compact = new compactApi.CompactGeometry(input, '2.0');
-const primitive = compact.decodePrimitive(0, 0);
+const compact = new compactApi.CompactDocument(input, '2.0');
+const primitive = compact.readPrimitive(0, 0);
+if ('GeometryWriteOptions' in compactApi || typeof compactApi.CompactDocument.fromGeometry === 'function') {
+  throw new Error('default compact artifact unexpectedly includes writer API');
+}
 if (
-  compact.mesh_count() !== 1
-  || compact.primitive_count(0) !== 1
+  compact.meshCount() !== 1
+  || compact.primitiveCount(0) !== 1
   || primitive.attributeCount() !== 1
   || primitive.attributeSemantic(0) !== 'POSITION'
   || primitive.attributeBytes(0).length !== 36

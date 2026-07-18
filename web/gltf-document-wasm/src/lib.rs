@@ -217,6 +217,13 @@ impl GltfDocument {
         self.import.document.to_json_bytes().map_err(wasm_error)
     }
 
+    /// Returns minified JSON regardless of the original source formatting.
+    /// Object order and JSON number lexemes are preserved.
+    #[wasm_bindgen(js_name = minifiedJson)]
+    pub fn minified_json(&self) -> Vec<u8> {
+        self.import.document.to_minified_json_bytes()
+    }
+
     /// Returns the selected GLB container version, consolidating all buffers.
     pub fn glb(&self, version: u32) -> Result<Vec<u8>, JsValue> {
         let output = match version {

@@ -54,10 +54,7 @@ pub use gltf_container::{
 #[cfg(feature = "gltf")]
 pub use gltf_error::GltfError;
 #[cfg(feature = "gltf-geometry")]
-pub use gltf_geometry::{
-    decode_geometry, pack_draco_primitive, AccessorSource, DecodedAccessor, PackedAttribute,
-    PackedPrimitive,
-};
+pub use gltf_geometry::{decode_geometry, AccessorSource, DecodedAccessor};
 #[cfg(feature = "obj-reader")]
 pub use obj_reader::ObjReader;
 #[cfg(feature = "obj-writer")]

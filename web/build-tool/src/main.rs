@@ -18,7 +18,6 @@ const MODULES: &[&str] = &[
     "ply-writer-wasm",
     "gltf-document-wasm",
     "gltf-compact-wasm",
-    "gltf-canonicalize-wasm",
     "fbx-reader-wasm",
     "fbx-writer-wasm",
 ];
@@ -32,7 +31,7 @@ const WASM_OPT_ARGS: &[&str] = &[
     "--enable-sign-ext",
     "--enable-mutable-globals",
 ];
-const GLTF_DOCUMENT_GZIP_BUDGET: usize = 160 * 1024;
+const GLTF_DOCUMENT_GZIP_BUDGET: usize = 164 * 1024;
 const GLTF_COMPACT_GZIP_BUDGET: usize = 112 * 1024;
 
 #[derive(Clone, Debug)]
@@ -40,6 +39,7 @@ struct Config {
     debug: bool,
     no_optimize: bool,
     features: Vec<String>,
+    modules: Vec<String>,
     serve: bool,
     port: u16,
     jobs: usize,
@@ -74,6 +74,7 @@ fn run() -> Result<(), String> {
         .map_err(|error| format!("failed to create {}: {error}", config.output_dir.display()))?;
     remove_orphaned_module_files(&config.output_dir)
         .map_err(|error| format!("failed to clean {}: {error}", config.output_dir.display()))?;
+    let modules = selected_modules(&config.modules)?;
 
     println!("Building Draco Web WASM Modules");
     println!("================================");
@@ -83,17 +84,17 @@ fn run() -> Result<(), String> {
     let default_jobs = thread::available_parallelism()
         .map(|count| count.get())
         .unwrap_or(1)
-        .min(MODULES.len());
+        .min(modules.len());
     let jobs = if config.jobs == 0 {
         default_jobs
     } else {
-        config.jobs.clamp(1, MODULES.len())
+        config.jobs.clamp(1, modules.len())
     };
     config.jobs = jobs;
     println!("Parallel jobs: {jobs}");
 
     let config = Arc::new(config);
-    let queue = Arc::new(Mutex::new(MODULES.to_vec()));
+    let queue = Arc::new(Mutex::new(modules.clone()));
     let (sender, receiver) = mpsc::channel();
 
     for _ in 0..jobs {
@@ -128,28 +129,46 @@ fn run() -> Result<(), String> {
     }
 
     if failed.is_empty() && !config.debug && !config.no_optimize {
-        let document_wasm = config.output_dir.join("gltf_document_bg.wasm");
-        match check_wasm_size(&document_wasm, GLTF_DOCUMENT_GZIP_BUDGET, "glTF document") {
-            Ok((raw_size, gzip_size)) => println!(
-                "glTF document size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB / {:.0} KiB budget)",
-                gzip_size as f64 / 1024.0,
-                GLTF_DOCUMENT_GZIP_BUDGET as f64 / 1024.0
-            ),
-            Err(error) => {
-                eprintln!("Error: {error}");
-                failed.push("gltf-document-size".to_string());
+        if modules.contains(&"gltf-document-wasm") {
+            let document_wasm = config.output_dir.join("gltf_document_bg.wasm");
+            match check_wasm_size(&document_wasm, GLTF_DOCUMENT_GZIP_BUDGET, "glTF document") {
+                Ok((raw_size, gzip_size)) => println!(
+                    "glTF document size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB / {:.0} KiB budget)",
+                    gzip_size as f64 / 1024.0,
+                    GLTF_DOCUMENT_GZIP_BUDGET as f64 / 1024.0
+                ),
+                Err(error) => {
+                    eprintln!("Error: {error}");
+                    failed.push("gltf-document-size".to_string());
+                }
             }
         }
-        let compact_wasm = config.output_dir.join("gltf_compact_bg.wasm");
-        match check_wasm_size(&compact_wasm, GLTF_COMPACT_GZIP_BUDGET, "glTF compact") {
-            Ok((raw_size, gzip_size)) => println!(
-                "glTF compact size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB / {:.0} KiB budget)",
-                gzip_size as f64 / 1024.0,
-                GLTF_COMPACT_GZIP_BUDGET as f64 / 1024.0
-            ),
-            Err(error) => {
-                eprintln!("Error: {error}");
-                failed.push("gltf-compact-size".to_string());
+        if modules.contains(&"gltf-compact-wasm") {
+            let compact_wasm = config.output_dir.join("gltf_compact_bg.wasm");
+            if config.features.is_empty() {
+                match check_wasm_size(&compact_wasm, GLTF_COMPACT_GZIP_BUDGET, "glTF compact") {
+                    Ok((raw_size, gzip_size)) => println!(
+                        "glTF compact size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB / {:.0} KiB budget)",
+                        gzip_size as f64 / 1024.0,
+                        GLTF_COMPACT_GZIP_BUDGET as f64 / 1024.0
+                    ),
+                    Err(error) => {
+                        eprintln!("Error: {error}");
+                        failed.push("gltf-compact-size".to_string());
+                    }
+                }
+            } else {
+                match measure_wasm_size(&compact_wasm) {
+                    Ok((raw_size, gzip_size)) => println!(
+                        "glTF compact ({}) size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB)",
+                        config.features.join(","),
+                        gzip_size as f64 / 1024.0
+                    ),
+                    Err(error) => {
+                        eprintln!("Error: {error}");
+                        failed.push("gltf-compact-size".to_string());
+                    }
+                }
             }
         }
     }
@@ -194,14 +213,7 @@ fn run() -> Result<(), String> {
 }
 
 fn check_wasm_size(path: &Path, budget: usize, label: &str) -> Result<(usize, usize), String> {
-    let wasm = fs::read(path)
-        .map_err(|error| format!("failed to read {} for size check: {error}", path.display()))?;
-    // RFC 1952 framing is 10 bytes of header and 8 bytes of trailer around the
-    // raw DEFLATE stream. Only the exact byte length matters for this budget.
-    let gzip_size = 10usize
-        .checked_add(compress_to_vec(&wasm, 9).len())
-        .and_then(|size| size.checked_add(8))
-        .ok_or("gzip size overflow")?;
+    let (raw_size, gzip_size) = measure_wasm_size(path)?;
     if gzip_size > budget {
         return Err(format!(
             "{} is {gzip_size} bytes ({:.1} KiB) gzip, exceeding the {:.0} KiB {label} budget",
@@ -210,6 +222,18 @@ fn check_wasm_size(path: &Path, budget: usize, label: &str) -> Result<(usize, us
             budget as f64 / 1024.0
         ));
     }
+    Ok((raw_size, gzip_size))
+}
+
+fn measure_wasm_size(path: &Path) -> Result<(usize, usize), String> {
+    let wasm = fs::read(path)
+        .map_err(|error| format!("failed to read {} for size check: {error}", path.display()))?;
+    // RFC 1952 framing is 10 bytes of header and 8 bytes of trailer around the
+    // raw DEFLATE stream. Only the exact byte length matters for this budget.
+    let gzip_size = 10usize
+        .checked_add(compress_to_vec(&wasm, 9).len())
+        .and_then(|size| size.checked_add(8))
+        .ok_or("gzip size overflow")?;
     Ok((wasm.len(), gzip_size))
 }
 
@@ -218,6 +242,7 @@ fn parse_args() -> Result<Config, String> {
         debug: false,
         no_optimize: false,
         features: Vec::new(),
+        modules: Vec::new(),
         serve: false,
         port: 8080,
         jobs: 0,
@@ -257,6 +282,10 @@ fn parse_args() -> Result<Config, String> {
                     config.features.push(feature.to_string());
                 }
             }
+            "--module" => {
+                let value = args.next().ok_or("--module requires a value")?;
+                config.modules.push(value);
+            }
             unknown => return Err(format!("unknown argument: {unknown}")),
         }
     }
@@ -271,6 +300,7 @@ fn print_help() {
     println!("  --debug                  Build with wasm-pack --dev");
     println!("  --no-optimize            Skip manual wasm-opt");
     println!("  --features <list>        Comma-separated cargo features");
+    println!("  --module <crate>         Build one module; may be repeated");
     println!("  --serve                  Start the local web server after building");
     println!("  --port <port>            Server port (default: 8080)");
     println!("  --jobs <n>               Parallel module builds");
@@ -683,6 +713,24 @@ fn remove_stale_files(output_dir: &Path, output_name: &str) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn selected_modules(requested: &[String]) -> Result<Vec<&'static str>, String> {
+    if requested.is_empty() {
+        return Ok(MODULES.to_vec());
+    }
+    let mut selected = Vec::new();
+    for requested in requested {
+        let module = MODULES
+            .iter()
+            .copied()
+            .find(|module| *module == requested)
+            .ok_or_else(|| format!("unknown module: {requested}"))?;
+        if !selected.contains(&module) {
+            selected.push(module);
+        }
+    }
+    Ok(selected)
 }
 
 /// Removes generated modules that are no longer members of this workspace.

@@ -671,7 +671,7 @@ pub struct CompressionReport {
 
 impl Import {
     /// Encodes an already decoded mesh to a raw Draco payload.
-    pub fn encode_draco_mesh(
+    pub(crate) fn encode_draco_geometry(
         &self,
         mesh: draco_core::Mesh,
         options: CompressionOptions,
@@ -737,7 +737,7 @@ impl Import {
         }
         let (geometry, mapping) = self.decode_geometry_primitive(reference)?;
         let layout = DracoGeometryLayout::from_mesh(&geometry, &mapping)?;
-        let bytes = self.encode_draco_mesh(geometry, options)?;
+        let bytes = self.encode_draco_geometry(geometry, options)?;
         let buffer = self.resources.buffers.len();
         let view;
         {

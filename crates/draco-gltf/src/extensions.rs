@@ -136,7 +136,7 @@ impl ExtensionRegistry {
         }
         Ok(context)
     }
-    #[cfg(feature = "transform")]
+    #[cfg(feature = "draco-encode")]
     pub(crate) fn collect_binary_references(
         &self,
         document: &Document,
@@ -150,7 +150,7 @@ impl ExtensionRegistry {
         }
         Ok(())
     }
-    #[cfg(feature = "transform")]
+    #[cfg(feature = "draco-encode")]
     pub(crate) fn remap_binary_references(
         &self,
         document: &mut Document,

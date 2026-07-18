@@ -1,21 +1,21 @@
-//! Allocation-conscious geometry-oriented facade over the lossless document.
+//! Allocation-conscious geometry facade over one lossless glTF import.
 //!
-//! This module does not parse a second schema. It exposes compact index/range
-//! views over [`Document`].
+//! The compact profile uses the same [`crate::Document`] and resource store as
+//! the full scene API. It narrows the public workflow to primitive geometry.
 
 use crate::{
-    Document, DocumentAccessorSource, Error, Import, MeshIndex, Result, ValidationProfile,
+    Document, Import, ImportOptions, MeshIndex, OutputFormat, PackedGeometry, PrimitiveIndex,
+    Result, ValidationProfile,
 };
-use draco_io::{pack_draco_primitive, PackedAttribute, PackedPrimitive};
 
-#[derive(Clone, Debug)]
-/// Compact geometry facade backed by one lossless [`Document`].
+/// Compact geometry facade backed by one lossless document and its resources.
+#[derive(Clone)]
 pub struct CompactDocument {
-    document: Document,
+    import: Import,
 }
 
 impl CompactDocument {
-    /// Parses and validates a compact document with the selected profile.
+    /// Parses JSON glTF or GLB and validates the selected profile.
     ///
     /// ```
     /// # use draco_gltf::{CompactDocument, ValidationProfile};
@@ -25,19 +25,37 @@ impl CompactDocument {
     /// # Ok::<(), draco_gltf::Error>(())
     /// ```
     pub fn parse(bytes: &[u8], profile: ValidationProfile) -> Result<Self> {
-        let document = Document::from_json_bytes(bytes)?;
-        document.validate(profile)?;
-        Ok(Self { document })
+        crate::parse(bytes, profile).map(Self::from_import)
     }
 
-    /// Borrows the underlying lossless document.
+    /// Parses a document with explicit resource and validation options.
+    pub fn parse_with_options(bytes: &[u8], options: &ImportOptions<'_>) -> Result<Self> {
+        crate::import_slice_with_options(bytes, options).map(Self::from_import)
+    }
+
+    /// Wraps an existing fully resolved import with the compact facade.
+    pub fn from_import(import: Import) -> Self {
+        Self { import }
+    }
+
+    /// Returns the underlying lossless document.
     pub fn document(&self) -> &Document {
-        &self.document
+        &self.import.document
+    }
+
+    /// Returns the underlying resolved import.
+    pub fn as_import(&self) -> &Import {
+        &self.import
+    }
+
+    /// Consumes the facade and returns the underlying import.
+    pub fn into_import(self) -> Import {
+        self.import
     }
 
     /// Lists each mesh and its primitive count without materializing geometry.
     pub fn mesh_primitive_ranges(&self) -> impl Iterator<Item = CompactMeshRange> + '_ {
-        self.document
+        self.document()
             .meshes()
             .into_iter()
             .map(|mesh| CompactMeshRange {
@@ -49,87 +67,67 @@ impl CompactDocument {
                     .map_or(0, |values| values.len()),
             })
     }
+
+    /// Reads one ordinary or Draco-compressed primitive into packed buffers.
+    ///
+    /// This delegates to [`Import::read_primitive`] and returns the same
+    /// bidirectional [`PackedGeometry`] representation as the full API.
+    pub fn read_primitive(&self, primitive: PrimitiveIndex) -> Result<PackedGeometry> {
+        self.import.read_primitive(primitive)
+    }
+
+    /// Serializes this document to JSON glTF, GLB v2 or GLB v3.
+    pub fn to_bytes(&self, output: OutputFormat) -> Result<Vec<u8>> {
+        self.import.to_bytes(output)
+    }
+
+    /// Serializes this document and its companion `.gltf` resources.
+    pub fn to_gltf_output(&self) -> Result<crate::GltfOutput> {
+        self.import.to_gltf_output()
+    }
+
+    /// Replaces one primitive with packed geometry atomically.
+    ///
+    /// This delegates to [`Import::write_primitive`].
+    #[cfg(feature = "write")]
+    pub fn write_primitive(
+        &mut self,
+        primitive: PrimitiveIndex,
+        geometry: &PackedGeometry,
+        options: crate::GeometryWriteOptions,
+    ) -> Result<crate::GeometryWriteReport> {
+        self.import.write_primitive(primitive, geometry, options)
+    }
+
+    /// Appends packed geometry to an existing mesh atomically.
+    ///
+    /// This delegates to [`Import::push_primitive`].
+    #[cfg(feature = "write")]
+    pub fn push_primitive(
+        &mut self,
+        mesh: MeshIndex,
+        geometry: &PackedGeometry,
+        options: crate::GeometryWriteOptions,
+    ) -> Result<PrimitiveIndex> {
+        self.import.push_primitive(mesh, geometry, options)
+    }
+
+    /// Creates a minimal scene containing one packed primitive.
+    #[cfg(feature = "write")]
+    pub fn from_geometry(
+        geometry: &PackedGeometry,
+        profile: ValidationProfile,
+        options: crate::GeometryWriteOptions,
+    ) -> Result<Self> {
+        Import::from_geometry(geometry, profile, options).map(Self::from_import)
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Mesh index and primitive count exposed by the compact facade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompactMeshRange {
     /// Typed mesh index.
     pub mesh: MeshIndex,
     /// Number of primitives in the mesh.
     pub primitives: usize,
-}
-
-impl Import {
-    /// Decodes ordinary accessors or `KHR_draco_mesh_compression` into packed buffers.
-    /// Decodes one primitive into tightly packed geometry buffers.
-    ///
-    /// ```no_run
-    /// # use draco_gltf::{import_slice, MeshIndex};
-    /// # let input = br#"{"asset":{"version":"2.0"},"meshes":[]}"#;
-    /// # let scene = import_slice(input, None)?;
-    /// let packed = scene.decode_packed_primitive(MeshIndex(0), 0)?;
-    /// println!("{} attributes", packed.attributes.len());
-    /// # Ok::<(), draco_gltf::Error>(())
-    /// ```
-    pub fn decode_packed_primitive(
-        &self,
-        mesh: MeshIndex,
-        primitive: usize,
-    ) -> Result<PackedPrimitive> {
-        let primitive_ref = self
-            .document
-            .primitive(mesh, primitive)
-            .ok_or_else(|| Error::Extension("primitive out of range".into()))?;
-        if primitive_ref
-            .extension(crate::KHR_DRACO_MESH_COMPRESSION)
-            .is_some()
-        {
-            let contract = crate::extensions::parse_draco_extension(
-                primitive_ref.extension(crate::KHR_DRACO_MESH_COMPRESSION),
-            )?
-            .ok_or_else(|| Error::Extension("missing Draco extension".into()))?;
-            let decoded = self.decode_primitive(primitive_ref)?;
-            return pack_draco_primitive(primitive_ref.mode(), &decoded, &contract.attributes)
-                .map_err(Error::from);
-        }
-        let source = DocumentAccessorSource::new(&self.document, &self.resources);
-        let attributes = primitive_ref
-            .attribute_indices()
-            .map(|(semantic, index)| {
-                let data = source.read_accessor(index.0)?;
-                PackedAttribute::from_gltf_accessor(
-                    semantic,
-                    data.count,
-                    data.components,
-                    data.component_type,
-                    data.data_type,
-                    data.normalized,
-                    data.bytes,
-                )
-                .map_err(Error::from)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let indices = primitive_ref
-            .indices()
-            .map(|index| {
-                let data = source.read_accessor(index.0)?;
-                PackedAttribute::from_gltf_accessor(
-                    "INDICES",
-                    data.count,
-                    data.components,
-                    data.component_type,
-                    data.data_type,
-                    data.normalized,
-                    data.bytes,
-                )
-                .map_err(Error::from)
-            })
-            .transpose()?;
-        Ok(PackedPrimitive {
-            mode: primitive_ref.mode(),
-            indices,
-            attributes,
-        })
-    }
 }

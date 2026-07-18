@@ -12,7 +12,6 @@ const modules = {
     plyReader: { loaded: false, module: null },
     plyWriter: { loaded: false, module: null },
     gltfDocument: { loaded: false, module: null },
-    gltfCanonicalize: { loaded: false, module: null },
     fbxReader: { loaded: false, module: null },
     fbxWriter: { loaded: false, module: null },
 };
@@ -67,7 +66,6 @@ async function loadAllModules() {
         { key: 'plyReader', path: `./pkg/ply_reader.js${CACHE_BUST}`, statusId: 'ply-reader-status' },
         { key: 'plyWriter', path: `./pkg/ply_writer.js${CACHE_BUST}`, statusId: 'ply-writer-status' },
         { key: 'gltfDocument', path: `./pkg/gltf_document.js${CACHE_BUST}`, statusId: 'gltf-document-status' },
-        { key: 'gltfCanonicalize', path: `./pkg/gltf_canonicalize.js${CACHE_BUST}`, statusId: 'gltf-canonicalize-status' },
         { key: 'fbxReader', path: `./pkg/fbx_reader.js${CACHE_BUST}`, statusId: 'fbx-reader-status' },
         { key: 'fbxWriter', path: `./pkg/fbx_writer.js${CACHE_BUST}`, statusId: 'fbx-writer-status' },
     ];
@@ -390,14 +388,19 @@ async function exportFile() {
         let result;
         if (currentMeshData.document) {
             if (format !== 'gltf' || currentFileType !== 'gltf') {
-                throw new Error('Document export currently canonicalizes JSON glTF only');
+                throw new Error('Document export currently emits minified JSON glTF only');
             }
-            if (!modules.gltfCanonicalize.loaded) {
-                throw new Error('glTF canonicalizer module not loaded');
+            if (!modules.gltfDocument.loaded) {
+                throw new Error('glTF document module not loaded');
             }
-            const data = modules.gltfCanonicalize.module.canonicalize_gltf(currentSourceData);
+            const document = modules.gltfDocument.module.GltfDocument.withResources(
+                currentSourceData,
+                currentSourceResources,
+                '2.1',
+            );
+            const data = document.minifiedJson();
             downloadResult({ success: true, json_data: new TextDecoder().decode(data) }, format);
-            log('Document canonicalized', 'success');
+            log('Document exported as minified JSON', 'success');
             return;
         }
         const meshes = prepareMeshesForExport(currentMeshData.meshes);

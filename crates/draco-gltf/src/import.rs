@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::json::Value;
 
-#[cfg(any(feature = "draco-decode", feature = "geometry"))]
+#[cfg(feature = "draco-decode")]
 use crate::PrimitiveRef;
 use crate::{Document, Error, ExtensionRegistry, ResourceStore, Result, ValidationProfile};
 #[cfg(feature = "resources")]
@@ -24,7 +24,7 @@ pub struct Import {
     /// Container format from which this import was read.
     pub input_format: GltfContainerFormat,
     profile: ValidationProfile,
-    #[cfg(any(feature = "draco-decode", feature = "transform"))]
+    #[cfg(any(feature = "draco-decode", feature = "draco-encode"))]
     pub(crate) extensions: ExtensionRegistry,
     #[cfg(feature = "resources")]
     provenance: Vec<String>,
@@ -91,6 +91,19 @@ impl ResourceResolver for PackagedResolver<'_> {
 }
 
 impl Import {
+    #[cfg(feature = "write")]
+    pub(crate) const fn validation_profile(&self) -> ValidationProfile {
+        self.profile
+    }
+
+    #[cfg(feature = "write")]
+    pub(crate) fn validate_after_write(&self) -> Result<()> {
+        self.document.validate(self.profile)?;
+        #[cfg(feature = "draco-decode")]
+        self.extensions.validate(&self.document)?;
+        Ok(())
+    }
+
     /// Validates the document and all registered extension handlers.
     pub fn validate(&self, extensions: &ExtensionRegistry) -> Result<()> {
         self.document.validate(self.profile)?;
@@ -98,7 +111,7 @@ impl Import {
         Ok(())
     }
 
-    #[cfg(feature = "transform")]
+    #[cfg(all(feature = "write", feature = "draco-decode"))]
     pub(crate) fn ensure_transform_safe(&self, primitive: PrimitiveRef<'_>) -> Result<()> {
         let Some(extensions) = primitive
             .value()
@@ -117,7 +130,7 @@ impl Import {
         Ok(())
     }
 
-    #[cfg(feature = "transform")]
+    #[cfg(feature = "draco-encode")]
     pub(crate) fn ensure_document_binary_transform_safe(&self) -> Result<()> {
         fn visit(value: &Value, registry: &ExtensionRegistry) -> Result<()> {
             match value {
@@ -174,16 +187,98 @@ impl Import {
 
     /// Decodes a primitive through the supplied extension registry.
     #[cfg(feature = "draco-decode")]
-    pub fn decode_primitive(&self, primitive: PrimitiveRef<'_>) -> Result<draco_core::Mesh> {
+    pub fn decode_draco_primitive(&self, primitive: PrimitiveRef<'_>) -> Result<draco_core::Mesh> {
         self.validate(&self.extensions)?;
         self.extensions
             .decode_primitive(&self.document, &self.resources, primitive)
     }
 
+    /// Reads one ordinary or Draco-compressed primitive into packed buffers.
+    ///
+    /// Sparse overlays and byte strides are materialized without changing
+    /// component types or normalization flags. Draco is decoded only when the
+    /// `draco-decode` feature is enabled.
+    #[cfg(feature = "geometry")]
+    pub fn read_primitive(
+        &self,
+        primitive: crate::PrimitiveIndex,
+    ) -> Result<crate::PackedGeometry> {
+        let reference = self
+            .document
+            .primitive(primitive.mesh, primitive.primitive)
+            .ok_or_else(|| Error::Extension("primitive out of range".into()))?;
+        let mode = crate::PrimitiveMode::from_gltf(reference.mode()).ok_or_else(|| {
+            Error::Geometry(crate::GeometryError::InvalidPrimitiveMode(reference.mode()))
+        })?;
+        if reference
+            .extension(crate::KHR_DRACO_MESH_COMPRESSION)
+            .is_some()
+        {
+            #[cfg(feature = "draco-decode")]
+            {
+                let contract = crate::extensions::parse_draco_extension(
+                    reference.extension(crate::KHR_DRACO_MESH_COMPRESSION),
+                )?
+                .ok_or_else(|| Error::Extension("missing Draco extension".into()))?;
+                let decoded = self.decode_draco_primitive(reference)?;
+                let geometry =
+                    crate::PackedGeometry::from_draco_mesh(mode, &decoded, &contract.attributes)?;
+                geometry.validate(self.profile)?;
+                return Ok(geometry);
+            }
+            #[cfg(not(feature = "draco-decode"))]
+            return Err(Error::Extension(
+                "Draco primitive reading requires feature draco-decode".into(),
+            ));
+        }
+
+        let source = crate::DocumentAccessorSource::new(&self.document, &self.resources);
+        let attributes = reference
+            .attribute_indices()
+            .map(|(semantic, index)| {
+                let data = source.read_accessor(index.0)?;
+                let component_type = crate::ComponentType::from_gltf(data.component_type as u64)
+                    .ok_or_else(|| {
+                        Error::Extension(format!(
+                            "unsupported accessor componentType {}",
+                            data.component_type
+                        ))
+                    })?;
+                crate::PackedAttribute::new(
+                    semantic,
+                    data.count,
+                    data.components,
+                    component_type,
+                    data.normalized,
+                    data.bytes,
+                )
+                .map_err(Error::Geometry)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let indices = reference
+            .indices()
+            .map(|index| {
+                let data = source.read_accessor(index.0)?;
+                let component_type = crate::ComponentType::from_gltf(data.component_type as u64)
+                    .ok_or_else(|| {
+                        Error::Extension(format!(
+                            "unsupported index componentType {}",
+                            data.component_type
+                        ))
+                    })?;
+                crate::PackedIndices::new(data.count, component_type, data.bytes)
+                    .map_err(Error::Geometry)
+            })
+            .transpose()?;
+        let geometry = crate::PackedGeometry::new(mode, attributes, indices)?;
+        geometry.validate(self.profile)?;
+        Ok(geometry)
+    }
+
     /// Decodes an ordinary (non-Draco) triangle or point primitive through the
     /// same geometry contract used by compact consumers.
-    #[cfg(feature = "geometry")]
-    pub fn decode_geometry_primitive(
+    #[cfg(feature = "draco-encode")]
+    pub(crate) fn decode_geometry_primitive(
         &self,
         primitive: PrimitiveRef<'_>,
     ) -> Result<(draco_core::Mesh, Vec<(String, u32)>)> {
@@ -378,7 +473,7 @@ impl Import {
     }
 
     /// Materializes all Draco primitives as ordinary indexed triangle geometry.
-    #[cfg(feature = "transform")]
+    #[cfg(all(feature = "write", feature = "draco-decode"))]
     pub fn decompress_in_place(&mut self) -> Result<()> {
         let mut candidate = self.clone();
         candidate.decompress_in_place_inner()?;
@@ -386,9 +481,9 @@ impl Import {
         Ok(())
     }
 
-    #[cfg(feature = "transform")]
+    #[cfg(all(feature = "write", feature = "draco-decode"))]
     fn decompress_in_place_inner(&mut self) -> Result<()> {
-        let mut plans = Vec::new();
+        let mut primitives = Vec::new();
         for mesh in self.document.meshes() {
             let count = mesh
                 .value()
@@ -400,132 +495,22 @@ impl Import {
                     .document
                     .primitive(mesh.index(), primitive_index)
                     .unwrap();
-                let Some(extension) = primitive.extension(crate::KHR_DRACO_MESH_COMPRESSION) else {
-                    continue;
-                };
-                self.ensure_transform_safe(primitive)?;
-                let mapping = crate::extensions::parse_draco_extension(Some(extension))?
-                    .ok_or_else(|| Error::Extension("missing Draco extension".into()))?
-                    .attributes;
-                let decoded = self.decode_primitive(primitive)?;
-                plans.push((mesh.index().0, primitive_index, mapping, decoded));
-            }
-        }
-        if plans.is_empty() {
-            return Ok(());
-        }
-        let buffer_index = self.resources.buffers.len();
-        let mut bytes = Vec::new();
-        {
-            let root = self.document.as_value_mut();
-            for (mesh_index, primitive_index, mapping, mesh) in &plans {
-                for (semantic, unique_id) in mapping {
-                    let source_accessor = root["meshes"][*mesh_index]["primitives"]
-                        [*primitive_index]["attributes"][semantic]
-                        .as_u64()
-                        .and_then(|value| usize::try_from(value).ok())
-                        .ok_or_else(|| {
-                            Error::Extension(format!("Draco attribute {semantic} has no accessor"))
-                        })?;
-                    // A glTF accessor can be shared by another primitive,
-                    // animation, skin, or morph target. Decompression only
-                    // owns this primitive reference, so always detach it
-                    // before replacing its binary layout.
-                    let accessor = clone_accessor(root, source_accessor)?;
-                    root["meshes"][*mesh_index]["primitives"][*primitive_index]["attributes"]
-                        [semantic.as_str()] = Value::from(accessor as u64);
-                    let data = decoded_attribute_bytes(mesh, *unique_id)?;
-                    let view = append_view(root, buffer_index, &mut bytes, &data)?;
-                    let target = root["accessors"]
-                        .as_array_mut()
-                        .and_then(|accessors| accessors.get_mut(accessor))
-                        .ok_or_else(|| Error::Extension("Draco accessor out of range".into()))?;
-                    target["bufferView"] = Value::from(view as u64);
-                    target["byteOffset"] = Value::from(0u64);
-                    target["count"] = Value::from(mesh.num_points() as u64);
-                    if let Some(object) = target.as_object_mut() {
-                        if let Some(index) = object.iter().position(|(name, _)| name == "sparse") {
-                            object.remove(index);
-                        }
-                    }
-                }
-                let indices = decoded_index_bytes(mesh)?;
-                let view = append_view(root, buffer_index, &mut bytes, &indices)?;
-                let source_accessor = root["meshes"][*mesh_index]["primitives"][*primitive_index]
-                    .get("indices")
-                    .and_then(Value::as_u64)
-                    .and_then(|value| usize::try_from(value).ok());
-                let accessor = match source_accessor {
-                    Some(index) => {
-                        let index = clone_accessor(root, index)?;
-                        root["meshes"][*mesh_index]["primitives"][*primitive_index]["indices"] =
-                            Value::from(index as u64);
-                        index
-                    }
-                    None => {
-                        let accessors = root["accessors"]
-                            .as_array_mut()
-                            .ok_or_else(|| Error::Extension("accessors is not an array".into()))?;
-                        let index = accessors.len();
-                        accessors.push(Value::Object(Vec::new()));
-                        root["meshes"][*mesh_index]["primitives"][*primitive_index]["indices"] =
-                            Value::from(index as u64);
-                        index
-                    }
-                };
-                let target = root["accessors"]
-                    .as_array_mut()
-                    .and_then(|accessors| accessors.get_mut(accessor))
-                    .unwrap();
-                target["bufferView"] = Value::from(view as u64);
-                target["byteOffset"] = Value::from(0u64);
-                target["count"] = Value::from((mesh.num_faces() * 3) as u64);
-                target["componentType"] = Value::from(5125u64);
-                target["type"] = Value::from("SCALAR");
-                let primitive = &mut root["meshes"][*mesh_index]["primitives"][*primitive_index];
-                primitive["mode"] = Value::from(4u64);
-                if let Some(extensions) = primitive
-                    .get_mut("extensions")
-                    .and_then(Value::as_object_mut)
+                if primitive
+                    .extension(crate::KHR_DRACO_MESH_COMPRESSION)
+                    .is_none()
                 {
-                    if let Some(index) = extensions
-                        .iter()
-                        .position(|(name, _)| name == crate::KHR_DRACO_MESH_COMPRESSION)
-                    {
-                        extensions.remove(index);
-                    }
+                    continue;
                 }
-            }
-            root["buffers"]
-                .as_array_mut()
-                .ok_or_else(|| Error::Extension("buffers is not an array".into()))?
-                .push(Value::object([("byteLength", Value::from(bytes.len()))]));
-            let has_draco = root["meshes"]
-                .as_array()
-                .unwrap_or(&[])
-                .iter()
-                .flat_map(|mesh| {
-                    mesh.get("primitives")
-                        .and_then(Value::as_array)
-                        .unwrap_or(&[])
-                })
-                .any(|primitive| {
-                    primitive
-                        .get("extensions")
-                        .and_then(|extensions| extensions.get(crate::KHR_DRACO_MESH_COMPRESSION))
-                        .is_some()
-                });
-            if !has_draco {
-                for name in ["extensionsUsed", "extensionsRequired"] {
-                    if let Some(values) = root.get_mut(name).and_then(Value::as_array_mut) {
-                        values.retain(|value| {
-                            value.as_str() != Some(crate::KHR_DRACO_MESH_COMPRESSION)
-                        });
-                    }
-                }
+                self.ensure_transform_safe(primitive)?;
+                primitives.push(crate::PrimitiveIndex::new(mesh.index(), primitive_index));
             }
         }
-        self.resources.buffers.push(bytes);
+        for primitive in primitives {
+            let geometry = self.read_primitive(primitive)?;
+            self.write_raw_primitive_inner(primitive, &geometry)?;
+        }
+        self.document.validate(self.profile)?;
+        self.extensions.validate(&self.document)?;
         Ok(())
     }
 
@@ -677,80 +662,6 @@ impl Import {
     }
 }
 
-#[cfg(feature = "transform")]
-pub(crate) fn decoded_attribute_bytes(mesh: &draco_core::Mesh, unique_id: u32) -> Result<Vec<u8>> {
-    let attribute = mesh.attribute_by_unique_id(unique_id).ok_or_else(|| {
-        Error::Extension(format!("decoded Draco attribute {unique_id} is missing"))
-    })?;
-    let stride = usize::try_from(attribute.byte_stride())
-        .map_err(|_| Error::Extension("decoded attribute stride is invalid".into()))?;
-    let mut out =
-        vec![
-            0;
-            mesh.num_points()
-                .checked_mul(stride)
-                .ok_or_else(|| Error::ResourceLimit("decoded attribute size overflow".into()))?
-        ];
-    let mut row = vec![0; stride];
-    for point in 0..mesh.num_points() {
-        let index = attribute.mapped_index(draco_core::PointIndex(point as u32));
-        if !attribute
-            .buffer()
-            .try_read(index.0 as usize * stride, &mut row)
-        {
-            return Err(Error::Extension(
-                "decoded attribute is out of bounds".into(),
-            ));
-        }
-        out[point * stride..(point + 1) * stride].copy_from_slice(&row);
-    }
-    Ok(out)
-}
-
-#[cfg(feature = "transform")]
-pub(crate) fn decoded_index_bytes(mesh: &draco_core::Mesh) -> Result<Vec<u8>> {
-    let mut out = Vec::with_capacity(mesh.num_faces() * 12);
-    for face in 0..mesh.num_faces() {
-        for point in mesh.face(draco_core::FaceIndex(face as u32)) {
-            out.extend_from_slice(&point.0.to_le_bytes());
-        }
-    }
-    Ok(out)
-}
-
-#[cfg(feature = "transform")]
-fn append_view(root: &mut Value, buffer: usize, bytes: &mut Vec<u8>, data: &[u8]) -> Result<usize> {
-    while !bytes.len().is_multiple_of(4) {
-        bytes.push(0);
-    }
-    let offset = bytes.len();
-    bytes.extend_from_slice(data);
-    let views = root["bufferViews"]
-        .as_array_mut()
-        .ok_or_else(|| Error::Extension("bufferViews is not an array".into()))?;
-    let index = views.len();
-    views.push(Value::object([
-        ("buffer", Value::from(buffer)),
-        ("byteOffset", Value::from(offset)),
-        ("byteLength", Value::from(data.len())),
-    ]));
-    Ok(index)
-}
-
-#[cfg(feature = "transform")]
-fn clone_accessor(root: &mut Value, index: usize) -> Result<usize> {
-    let accessors = root["accessors"]
-        .as_array_mut()
-        .ok_or_else(|| Error::Extension("accessors is not an array".into()))?;
-    let source = accessors
-        .get(index)
-        .cloned()
-        .ok_or_else(|| Error::Extension("Draco accessor out of range".into()))?;
-    let clone = accessors.len();
-    accessors.push(source);
-    Ok(clone)
-}
-
 /// Parses glTF or GLB bytes and validates them with `profile`.
 pub fn parse(bytes: &[u8], profile: ValidationProfile) -> Result<Import> {
     parse_with_options(
@@ -823,7 +734,7 @@ pub fn parse_with_options(
         resources: ResourceStore { buffers },
         input_format: container.format,
         profile,
-        #[cfg(any(feature = "draco-decode", feature = "transform"))]
+        #[cfg(any(feature = "draco-decode", feature = "draco-encode"))]
         extensions: extensions.clone(),
         #[cfg(feature = "resources")]
         provenance: Vec::new(),

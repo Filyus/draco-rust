@@ -1,73 +1,75 @@
 # draco-gltf
 
-Lossless glTF 2.0 and pinned 2.1-draft scene handling with
-`KHR_draco_mesh_compression`.
+Lossless glTF 2.0 and pinned 2.1-draft scene handling with optional
+`KHR_draco_mesh_compression` geometry.
 
 ```rust,no_run
-let mut scene = draco_gltf::import("model.glb")?;
-for primitive in scene.draco_primitives() {
-    let mesh = scene.decode_primitive(primitive)?;
-    println!("{} faces", mesh.num_faces());
-}
-scene.decompress_in_place()?;
+use draco_gltf::{MeshIndex, PrimitiveIndex};
+
+let scene = draco_gltf::import("model.glb")?;
+let geometry = scene.read_primitive(PrimitiveIndex::new(MeshIndex(0), 0))?;
+println!("{} vertices", geometry.vertex_count());
 # Ok::<(), draco_gltf::Error>(())
 ```
 
-`Import::document` is a lossless `Document`: use typed views such as
-`document.meshes()`, `document.nodes()`, `document.files()`, and
-`document.primitive(MeshIndex(0), 0)`. Unknown properties, `extras`, and
-unregistered extension JSON survive parse and serialization.
+`Import` owns a lossless `Document`, resolved resources and container
+provenance. Typed views cover complete scenes, while unknown properties,
+`extras`, extension JSON and draft fields survive edits and serialization.
+`Document::to_json_bytes` retains untouched source bytes;
+`to_minified_json_bytes` explicitly emits whitespace-free JSON while retaining
+object order and number lexemes.
 
-The default profile targets the pinned glTF 2.1 draft. It supports GLB v2 and
-v3, explicit external assets through `files`, shapes, UIDs, and non-sequential
-attribute sets. See `GLTF_2_1_SNAPSHOT.md`, `GLTF_2_1.md`, and
-`MIGRATING_0_2.md`.
+`PackedGeometry` is the shared primitive boundary for full and compact APIs.
+`Import::read_primitive` reads ordinary accessors or decodes Draco. With
+feature `write`, `write_primitive`, `push_primitive`, and `from_geometry` write
+the same value back as ordinary accessors. Feature `draco-encode` additionally
+allows `GeometryEncoding::Draco`; Draco-only is explicit and fallback storage
+must also be selected explicitly.
 
-`ExtensionRegistry` owns extension validation and geometry decoding. Its default
-registry contains Draco and maps compressed primitives to `draco_core::Mesh`.
-Call `Import::compress_primitive` with `CompressionMode::DracoOnly` (the
-default) for a compact Draco-required primitive, or
-`CompressionMode::Fallback` to retain ordinary geometry for non-Draco readers.
-The two modes map directly to `extensionsRequired` and `extensionsUsed`:
-fallback never requires Draco. `DracoOnly` detaches the primitive's accessors
-from raw views, preserves shared accessors for other scene consumers, and
-compacts retained binary resources. `Import::decompress_in_place` materializes
-plain geometry; `to_bytes` selects JSON, GLB v2, or GLB v3 output. Enable the
-`compact` feature for geometry-oriented views and `PackedPrimitive` buffers
-over the same lossless `Document`. `compact` names the smaller API surface;
-`PackedPrimitive` names the materialized contiguous geometry representation.
+```rust,no_run
+use draco_gltf::{
+    GeometryWriteOptions, Import, OutputFormat, ValidationProfile,
+};
+# let geometry = todo!();
+let scene = Import::from_geometry(
+    &geometry,
+    ValidationProfile::Gltf20,
+    GeometryWriteOptions::default(),
+)?;
+let glb = scene.to_bytes(OutputFormat::GlbV2)?;
+# Ok::<(), draco_gltf::Error>(())
+```
 
-For a portable `.gltf` write, use `Import::to_gltf_output()`: it returns the
-JSON bytes plus every non-data-URI buffer as a named companion resource. This
-is required after transforms that append binary data; `to_bytes(GltfJson)` is
-only the JSON representation. Draco transforms clone changed accessors before
-materializing them, so accessors shared with animations, skins, morph targets,
-or other primitives remain intact. A transform also rejects an extension on
-the changed primitive unless its registered handler explicitly declares its
-binary-reference semantics transform-safe and provides its accessor/buffer-view
-reference collect/remap contract. `CompressionOptions::max_output_bytes` caps
-resolved binary output atomically; `CompressionReport` records the mode,
-encoded bytes, final bytes, and reclaimed bytes.
+Raw writing preserves profile-valid glTF 2.1 scalar storage such as `f16`,
+`f64`, `i64`, and `u64`. Draco encoding never normalizes or casts unsupported
+types: it returns a typed error instead. Primitive writes are atomic, do not
+mutate shared accessors in place, and preserve material, extras, morph targets
+with compatible counts, and unrelated extensions. Generated `POSITION`
+accessors include exact `min`/`max` bounds for every supported scalar type.
+
+For portable `.gltf` output, `Import::to_gltf_output` returns JSON plus named
+companion resources. `Import::to_bytes` emits JSON without new companions or a
+self-contained GLB v2/v3. Explicit glTF 2.1 `files` loading remains controlled
+by the caller and resource limits.
 
 ## Features
 
-The feature graph separates document completeness from executable geometry
-operations:
+- `document`: lossless DOM, typed views, containers and serialization.
+- `geometry`: accessor materialization and `PackedGeometry`.
+- `draco-decode`: `KHR_draco_mesh_compression` decoding.
+- `resources`: explicit URI and `files` resolution.
+- `scene-validation`: strict scene-reference validation.
+- `compact`: the small read profile, including Draco decoding.
+- `write`: raw geometry construction and document mutation.
+- `draco-encode`: Draco writing; depends on `write` and `draco-decode`.
+- `full`: the default complete profile.
 
-- `document-core` provides the lossless DOM, typed views, GLB and resource
-  contracts without a Draco decoder.
-- `geometry` adds accessor materialization and the `draco_io::PackedPrimitive`
-  contract.
-- `draco-decode` adds `KHR_draco_mesh_compression` decoding.
-- `resources` and `scene-validation` add explicit `files` loading and strict
-  scene validation; `transform` adds the Draco encoder and document mutations.
-- `full` is the default release scene API. `compact` is the compact runtime
-  path (`document-core + geometry + draco-decode`) and intentionally excludes
-  `transform`.
+Use `default-features = false, features = ["compact"]` for a small reader. Add
+`write` for raw output or `write, draco-encode` for compressed output. Full and
+compact use the same document and packed-geometry types; no second parser or
+scene model exists.
 
-For a decoder-only consumer, depend with `default-features = false, features =
-["compact"]`. The resulting document can still preserve every scene field; the
-excluded code is mutation and encoding behaviour, not a second document model.
+See `GLTF_2_1_SNAPSHOT.md` and `GLTF_2_1.md` for the pinned draft surface.
 
 ## License
 

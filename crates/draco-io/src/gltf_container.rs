@@ -384,7 +384,7 @@ pub enum ExternalFilePolicy {
     ConfineToBase,
 }
 
-/// Native filesystem resolver used by convenience file-loading APIs.
+/// Filesystem resolver used by convenience file-loading APIs.
 #[derive(Clone, Debug)]
 pub struct FileResourceResolver {
     base: PathBuf,

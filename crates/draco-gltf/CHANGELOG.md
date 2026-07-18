@@ -9,6 +9,25 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Bidirectional `PackedGeometry` primitive reads and writes, including minimal
+  standalone scenes, raw accessors, explicit Draco storage, and GLB v2/v3.
+- `Document::to_minified_json_bytes` for forced whitespace-free output.
+
+### Changed
+
+- Compact reading now uses `CompactDocument`; raw writing is feature `write`
+  and the optional codec is feature `draco-encode`.
+- Packed geometry belongs to `draco-gltf`; `draco-io` remains the low-level
+  container, resource, accessor and Draco contract layer.
+
+### Fixed
+
+- Raw primitive writes emit exact `POSITION` bounds, validate topology and
+  well-known attribute layouts, and reject incompatible morph targets before
+  mutating the document.
+
 ## [0.2.0] - 2026-07-18
 
 ### Added
@@ -17,8 +36,7 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fields, `extras`, and unregistered extension JSON survive edits and writes.
 - Pinned glTF 2.1-draft validation surface, GLB v3 containers, explicit
   `files` asset loading, extension contracts, and compact geometry views.
-- `Import::compress_primitive`, `CompressionOptions`, and
-  `CompressionReport` for document-preserving Draco transforms.
+- Document-preserving Draco compression with measured output reporting.
 - `Import::to_gltf_output` for portable JSON plus companion buffers, alongside
   GLB v2/v3 serialization through `Import::to_bytes`.
 
@@ -47,8 +65,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Load and save full glTF scenes with Draco-compressed geometry.
-- `import` / `import_slice` for reading Draco glTF/GLB, `decode_primitive` to
-  decompress geometry, and `decompress_in_place` for transparent reading.
+- glTF/GLB import, explicit Draco decoding, and materialization into ordinary
+  geometry.
 - `compress` to Draco-compress a full scene while preserving materials,
   textures, nodes, animations, skins, and unknown extensions.
 - Draco-aware, panic-safe validation on import.

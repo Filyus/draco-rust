@@ -30,7 +30,7 @@ impl Value {
         }
         Ok(value)
     }
-    /// Serializes this value as compact canonical JSON.
+    /// Serializes this value as whitespace-free JSON.
     pub fn to_vec(&self) -> Vec<u8> {
         let mut out = Vec::new();
         self.write(&mut out);
