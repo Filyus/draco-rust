@@ -34,6 +34,7 @@ const GLTF_GZIP_BUDGET: usize = 112 * 1024;
 
 #[derive(Clone, Debug)]
 struct Config {
+    app_profile: bool,
     debug: bool,
     no_optimize: bool,
     features: Vec<String>,
@@ -128,7 +129,8 @@ fn run() -> Result<(), String> {
 
     if failed.is_empty() && !config.debug && !config.no_optimize && modules.contains(&"gltf-wasm") {
         let gltf_wasm = config.output_dir.join("gltf_bg.wasm");
-        if config.features.is_empty() {
+        let gltf_features = effective_features(&config, "gltf-wasm");
+        if gltf_features.is_empty() {
             match check_wasm_size(&gltf_wasm, GLTF_GZIP_BUDGET, "glTF") {
                 Ok((raw_size, gzip_size)) => println!(
                     "glTF size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB / {:.0} KiB budget)",
@@ -144,7 +146,7 @@ fn run() -> Result<(), String> {
             match measure_wasm_size(&gltf_wasm) {
                 Ok((raw_size, gzip_size)) => println!(
                     "glTF ({}) size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB)",
-                    config.features.join(","),
+                    gltf_features.join(","),
                     gzip_size as f64 / 1024.0
                 ),
                 Err(error) => {
@@ -221,6 +223,7 @@ fn measure_wasm_size(path: &Path) -> Result<(usize, usize), String> {
 
 fn parse_args() -> Result<Config, String> {
     let mut config = Config {
+        app_profile: false,
         debug: false,
         no_optimize: false,
         features: Vec::new(),
@@ -242,6 +245,7 @@ fn parse_args() -> Result<Config, String> {
                 std::process::exit(0);
             }
             "--debug" => config.debug = true,
+            "--app" => config.app_profile = true,
             "--no-optimize" => config.no_optimize = true,
             "--serve" => config.serve = true,
             "--verbose-build" => config.verbose = true,
@@ -279,6 +283,7 @@ fn print_help() {
     println!("Usage: draco-web-build [options]");
     println!();
     println!("Options:");
+    println!("  --app                    Build the converter app with glTF Draco encoding");
     println!("  --debug                  Build with wasm-pack --dev");
     println!("  --no-optimize            Skip manual wasm-opt");
     println!("  --features <list>        Comma-separated cargo features");
@@ -350,7 +355,7 @@ fn build_module(config: &Config, module: &str) -> BuildResult {
     }
 
     log.push(format!("Building {module}..."));
-    let wasm_pack_args = wasm_pack_args(config, &output_name, &module_output_dir, &mut log);
+    let wasm_pack_args = wasm_pack_args(config, module, &output_name, &module_output_dir, &mut log);
     log.push(format!(
         "Running: wasm-pack {}",
         wasm_pack_args
@@ -417,6 +422,7 @@ fn build_module(config: &Config, module: &str) -> BuildResult {
 
 fn wasm_pack_args(
     config: &Config,
+    module: &str,
     output_name: &str,
     output_dir: &Path,
     log: &mut Vec<String>,
@@ -436,7 +442,7 @@ fn wasm_pack_args(
     args.push("--out-name".into());
     args.push(output_name.into());
 
-    let features = effective_features(config);
+    let features = effective_features(config, module);
     if config.debug
         && features
             .iter()
@@ -454,8 +460,11 @@ fn wasm_pack_args(
     args
 }
 
-fn effective_features(config: &Config) -> Vec<String> {
+fn effective_features(config: &Config, module: &str) -> Vec<String> {
     let mut features = config.features.iter().cloned().collect::<BTreeSet<_>>();
+    if config.app_profile && module == "gltf-wasm" {
+        features.insert("draco-encode".to_string());
+    }
     if config.debug {
         features.insert("console_error_panic_hook".to_string());
     }
@@ -645,7 +654,10 @@ fn module_up_to_date(config: &Config, module: &str, output_name: &str, input_lat
     };
 
     stamp.contains(&format!("\"module\":\"{module}\""))
-        && stamp.contains(&format!("\"config_key\":\"{}\"", config_key(config)))
+        && stamp.contains(&format!(
+            "\"config_key\":\"{}\"",
+            config_key(config, module)
+        ))
         && stamp.contains(&format!("\"input_latest_millis\":{input_latest}"))
 }
 
@@ -658,7 +670,7 @@ fn write_build_stamp(
     let stamp = format!(
         "{{\"module\":\"{}\",\"config_key\":\"{}\",\"input_latest_millis\":{},\"built_at_unix_millis\":{}}}",
         module,
-        config_key(config),
+        config_key(config, module),
         input_latest,
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -668,12 +680,12 @@ fn write_build_stamp(
     fs::write(stamp_path(&config.output_dir, output_name), stamp)
 }
 
-fn config_key(config: &Config) -> String {
+fn config_key(config: &Config, module: &str) -> String {
     format!(
         "debug={};no_optimize={};features={};wasm_opt_args={}",
         config.debug,
         config.no_optimize,
-        effective_features(config).join(","),
+        effective_features(config, module).join(","),
         WASM_OPT_ARGS.join(",")
     )
 }

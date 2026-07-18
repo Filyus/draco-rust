@@ -1,6 +1,8 @@
 param(
     [switch]$Debug,
     [switch]$NoOptimize,
+    [switch]$ReleaseProfile,
+    [string[]]$Modules,
     [string[]]$Features,
     [switch]$Serve,
     [int]$Port = 8080,
@@ -19,13 +21,26 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $toolManifest = Join-Path $scriptDir "build-tool\Cargo.toml"
 $toolArgs = @()
 
+if (-not $ReleaseProfile) {
+    $toolArgs += "--app"
+}
+
 if ($Debug) {
     $toolArgs += "--debug"
 }
 if ($NoOptimize) {
     $toolArgs += "--no-optimize"
 }
+if ($Modules -and $Modules.Count -gt 0) {
+    foreach ($selectedModule in $Modules) {
+        $toolArgs += "--module"
+        $toolArgs += $selectedModule
+    }
+}
 if ($Features -and $Features.Count -gt 0) {
+    if (-not $Modules -or $Modules.Count -eq 0) {
+        throw "-Features requires -Modules so crate features are not applied to unrelated WASM modules"
+    }
     $toolArgs += "--features"
     $toolArgs += ($Features -join ",")
 }

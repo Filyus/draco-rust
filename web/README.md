@@ -45,8 +45,23 @@ are informational because those features are not included in the release asset.
 
 ## Build and test
 
+`build.ps1` defaults to the interactive converter profile: the format modules
+use their normal features and `gltf-wasm` additionally enables
+`draco-encode`. Use `-ReleaseProfile` when reproducing the lightweight glTF
+release artifact and its size budget.
+
+```powershell
+./build.ps1 -Serve
+./build.ps1 -ReleaseProfile
+./build.ps1 -ReleaseProfile -Modules gltf-wasm -Features write,draco-encode
+```
+
+The build tool itself defaults to the lightweight release profile. Pass
+`--app` to select the converter profile directly.
+
 ```sh
 cargo run --manifest-path web/build-tool/Cargo.toml --
+cargo run --manifest-path web/build-tool/Cargo.toml -- --app
 cargo test --manifest-path web/Cargo.toml --workspace
 npm install --prefix web
 npm run --prefix web test:node
