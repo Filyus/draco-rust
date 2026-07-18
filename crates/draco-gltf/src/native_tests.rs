@@ -43,6 +43,29 @@ fn validation_rejects_dangling_core_references_and_draft_types_in_20() {
 }
 
 #[test]
+fn draft_validation_enforces_file_wide_uids() {
+    let valid = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.1"},"nodes":[{"name":"visible","uid":"node-a"},{"uid":"node-b"}]}"#,
+    )
+    .unwrap();
+    valid.validate(ValidationProfile::Gltf21Draft).unwrap();
+
+    let duplicate = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.1"},"nodes":[{"uid":"node-a"}],"meshes":[{"uid":"node-a"}]}"#,
+    )
+    .unwrap();
+    assert!(duplicate.validate(ValidationProfile::Gltf21Draft).is_err());
+
+    let name_conflict = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.1"},"nodes":[{"name":"part-a"}],"meshes":[{"uid":"part-a"}]}"#,
+    )
+    .unwrap();
+    assert!(name_conflict
+        .validate(ValidationProfile::Gltf21Draft)
+        .is_err());
+}
+
+#[test]
 fn typed_views_reference_the_lossless_document() {
     let document = Document::from_json_bytes(
         br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":12,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteOffset":4,"byteLength":8}],"accessors":[{"bufferView":0,"componentType":5126,"count":2,"type":"VEC3"}],"images":[{"uri":"albedo.png"}],"textures":[{"source":0}],"materials":[{}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":0,"material":0,"targets":[{"POSITION":0}]}]}],"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0,"files":[{"uri":"child.gltf"}]}"#,

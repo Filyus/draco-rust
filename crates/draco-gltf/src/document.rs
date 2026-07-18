@@ -540,6 +540,67 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
             }
         }
     }
+    if profile == ValidationProfile::Gltf21Draft {
+        validate_uids(root)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "scene-validation")]
+fn validate_uids(root: &Value) -> Result<()> {
+    use std::collections::BTreeMap;
+
+    let mut names = BTreeMap::new();
+    let mut uids = BTreeMap::new();
+    for kind in [
+        "accessors",
+        "animations",
+        "buffers",
+        "bufferViews",
+        "cameras",
+        "files",
+        "images",
+        "materials",
+        "meshes",
+        "nodes",
+        "samplers",
+        "scenes",
+        "shapes",
+        "skins",
+        "textures",
+    ] {
+        for (index, value) in root
+            .get(kind)
+            .and_then(Value::as_array)
+            .unwrap_or(&[])
+            .iter()
+            .enumerate()
+        {
+            let location = format!("{kind}[{index}]");
+            if let Some(name) = value.get("name").and_then(Value::as_str) {
+                names.insert(name, location.clone());
+            }
+            if let Some(uid) = value.get("uid") {
+                let uid = uid.as_str().ok_or_else(|| {
+                    Error::Validation(vec![format!("{location}.uid is not a string")])
+                })?;
+                if let Some(previous) = uids.insert(uid, location.clone()) {
+                    return Err(Error::Validation(vec![format!(
+                        "{location}.uid duplicates {previous}.uid"
+                    )]));
+                }
+            }
+        }
+    }
+    for (uid, location) in &uids {
+        if let Some(named) = names.get(uid) {
+            if named != location {
+                return Err(Error::Validation(vec![format!(
+                    "{location}.uid conflicts with {named}.name"
+                )]));
+            }
+        }
+    }
     Ok(())
 }
 
