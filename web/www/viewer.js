@@ -1311,6 +1311,12 @@ function applyAnimation(scene, clipIndex, t) {
 }
 
 function applyChannel(node, path, interpolation, output, i0, frac) {
+    const out = node.trs[path];
+    // `buildAnimations` currently filters non-TRS paths. Keep this guard at
+    // the render boundary as well so an unsupported future channel cannot
+    // break the animation loop and leave the preview canvas stale.
+    if (!out) return;
+
     // A node animated through TRS must no longer use a static matrix. Such an
     // asset is invalid in strict glTF, but this gives the preview a sensible
     // result for permissively-authored files.
@@ -1319,8 +1325,6 @@ function applyChannel(node, path, interpolation, output, i0, frac) {
     const stride = interpolation === 'CUBICSPLINE' ? components * 3 : components;
     const base0 = i0 * stride;
     const base1 = Math.min(i0 + 1, output.length / stride - 1) * stride;
-    const out = node.trs[path];
-
     if (interpolation === 'STEP') {
         for (let k = 0; k < components; k++) out[k] = output[base0 + k];
         return;

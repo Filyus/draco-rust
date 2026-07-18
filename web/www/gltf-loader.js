@@ -347,6 +347,7 @@ function basename(path) {
 
 function buildAnimations(asset, defs, nodes, warnings) {
     return defs.map((def, animIndex) => {
+        const name = def.name || `animation_${animIndex}`;
         const samplers = (def.samplers || []).map((s) => {
             const input = readAccessorAsTyped(asset, s.input);
             const output = readAccessorAsTyped(asset, s.output);
@@ -359,25 +360,34 @@ function buildAnimations(asset, defs, nodes, warnings) {
 
         const channels = (def.channels || []).map((ch) => {
             const node = nodes[ch.node];
-            if (!node) return null;
+            const sampler = samplers[ch.sampler];
+            if (!node || !sampler) return null;
+            if (!['translation', 'rotation', 'scale'].includes(ch.path)) {
+                warnings.push(
+                    `Animation ${name}: ${ch.path} channels are not supported by the preview and were ignored`,
+                );
+                return null;
+            }
             return {
                 node,
                 path: ch.path,
-                sampler: samplers[ch.sampler],
+                sampler,
             };
         }).filter(Boolean);
 
         let duration = 0;
-        for (const s of samplers) {
+        for (const { sampler: s } of channels) {
             if (s.input.length > 0) duration = Math.max(duration, s.input[s.input.length - 1]);
         }
 
+        if (channels.length === 0) return null;
+
         return {
-            name: def.name || `animation_${animIndex}`,
+            name,
             duration,
             channels,
         };
-    });
+    }).filter(Boolean);
 }
 
 function computeRenderables(nodes, meshes, skins, rootIndices) {

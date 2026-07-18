@@ -245,6 +245,32 @@ test('3D preview renders a GLB into the WebGL2 canvas', async ({ page }) => {
   await expect(page.locator('#console')).not.toContainText('undefined');
 });
 
+test('preview keeps rendering when a glTF animation has morph weights', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const fixture = path.join(repoRoot, 'testdata', 'KhronosSampleModels', 'AnimatedMorphCube', 'glTF');
+  await page.locator('#file-input').setInputFiles([
+    path.join(fixture, 'AnimatedMorphCube.gltf'),
+    path.join(fixture, 'AnimatedMorphCube.bin'),
+  ]);
+
+  await expect(page.locator('#viewer-section')).toBeVisible();
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).toContainText('weights channels are not supported');
+  await expect(page.locator('#console')).not.toContainText('Preview failed');
+  await page.waitForTimeout(100);
+  expect(pageErrors).toEqual([]);
+
+  const webglError = await page.evaluate(() => {
+    const gl = document.getElementById('viewer-canvas')?.getContext('webgl2');
+    return gl?.getError();
+  });
+  expect(webglError).toBe(0);
+});
+
 test('3D preview opens a transformed skinned glTF scene', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);
