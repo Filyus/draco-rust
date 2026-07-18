@@ -642,15 +642,10 @@ fn parse_glb_v3(data: &[u8]) -> Result<GltfContainer<'_>> {
     })
 }
 
-/// Resolve every declared glTF buffer through the shared resource policy.
+/// Parses only the JSON and optional BIN slices from a GLB container.
 ///
-/// Returned buffers have exactly their declared `byteLength`; legal GLB BIN
-/// padding is validated and removed. Resource and aggregate quotas are checked
-/// before buffers are exposed to accessor readers.
-/// Parse only the JSON and optional BIN slices for the compact WASM reader.
-///
-/// This keeps the strict GLB container checks shared without pulling the
-/// serde-backed document model into the reader's binary.
+/// This keeps strict GLB container checks available to callers that do not need
+/// to construct a document model.
 pub fn parse_glb_json_and_bin(data: &[u8]) -> Result<(&[u8], Option<&[u8]>)> {
     if data.len() < 4
         || u32::from_le_bytes(

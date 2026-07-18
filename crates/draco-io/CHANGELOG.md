@@ -1,5 +1,8 @@
 # Changelog — draco-io
 
+This crate is versioned and released independently. Its release tags are
+`draco-io-vX.Y.Z`.
+
 ## [Unreleased]
 
 ## [0.3.0] - 2026-07-18
@@ -11,6 +14,3 @@
   `FbxReader::read_scene` now also works with in-memory readers.
 - Removed `serde`, `serde_json`, and `nanoserde` from runtime dependencies.
 - Added strict GLB v2/v3 inspection and byte-level container serialization.
-
-This crate is versioned and released independently. Its release tags are
-`draco-io-vX.Y.Z`.
