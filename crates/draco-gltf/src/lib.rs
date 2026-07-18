@@ -8,8 +8,10 @@ use std::path::Path;
 use thiserror::Error;
 
 mod accessor;
+mod compression;
 pub mod document;
 pub use accessor::NativeAccessorSource;
+pub use compression::{CompressionOptions, CompressionReport};
 mod json;
 pub use document::{
     AccessorIndex, AnimationIndex, BufferIndex, BufferViewIndex, CameraIndex, ComponentType,
