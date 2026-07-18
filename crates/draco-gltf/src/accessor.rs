@@ -58,13 +58,13 @@ impl<'a> DocumentAccessorSource<'a> {
             5123 => DataType::Uint16,
             5125 => DataType::Uint32,
             5126 => DataType::Float32,
-            5127 => DataType::Int32,
+            5124 => DataType::Int32,
             // `DataType` has no f16 variant. Its on-disk layout is identical
             // to u16; `component` is preserved separately for packed output.
             5131 => DataType::Uint16,
-            5132 => DataType::Float64,
-            5133 => DataType::Int64,
-            5134 => DataType::Uint64,
+            5130 => DataType::Float64,
+            5134 => DataType::Int64,
+            5135 => DataType::Uint64,
             _ => {
                 return Err(Error::Extension(
                     "unsupported accessor component type".into(),

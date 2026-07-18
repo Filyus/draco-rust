@@ -2,11 +2,11 @@ use std::path::Path;
 
 use crate::json::Value;
 
-#[cfg(feature = "resources")]
-use crate::FileIndex;
 #[cfg(any(feature = "draco-decode", feature = "geometry"))]
 use crate::PrimitiveRef;
 use crate::{Document, Error, ExtensionRegistry, ResourceStore, Result, ValidationProfile};
+#[cfg(feature = "resources")]
+use crate::{ExternalAssetIndex, FileIndex};
 use draco_io::{
     parse_gltf_container, resolve_gltf_buffers, GltfBufferReference, GltfContainerFormat,
     ResourceLimits, ResourceResolver,
@@ -319,8 +319,28 @@ impl Import {
 
     /// Lists declared glTF 2.1 `files` entries without resolving them.
     #[cfg(feature = "resources")]
-    pub fn external_assets(&self) -> impl Iterator<Item = FileIndex> + '_ {
+    pub fn external_files(&self) -> impl Iterator<Item = FileIndex> + '_ {
         self.document.files().into_iter().map(|file| file.index())
+    }
+
+    /// Explicitly resolves and parses an external-asset model declaration.
+    #[cfg(feature = "resources")]
+    pub fn load_external_asset(
+        &self,
+        asset: ExternalAssetIndex,
+        resolver: &dyn ResourceResolver,
+        limits: &ResourceLimits,
+        profile: ValidationProfile,
+        extensions: &ExtensionRegistry,
+    ) -> Result<Self> {
+        let file = self
+            .document
+            .external_asset(asset)
+            .and_then(|asset| asset.file())
+            .ok_or_else(|| {
+                Error::Extension(format!("external asset {} is out of range", asset.0))
+            })?;
+        self.load_asset(file, resolver, limits, profile, extensions)
     }
 
     /// URI chain leading to this import. It is intended for diagnostics and

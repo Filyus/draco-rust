@@ -130,8 +130,8 @@ fn gltf_component_width(component_type: u32) -> Result<usize> {
     match component_type {
         5120 | 5121 => Ok(1),
         5122 | 5123 | 5131 => Ok(2),
-        5125 | 5126 | 5127 => Ok(4),
-        5132 | 5133 | 5134 => Ok(8),
+        5124 | 5125 | 5126 => Ok(4),
+        5130 | 5134 | 5135 => Ok(8),
         _ => Err(GltfError::InvalidGltf(format!(
             "unsupported glTF componentType {component_type}"
         ))),

@@ -18,11 +18,11 @@ pub use accessor::{AccessorData, DocumentAccessorSource};
 pub use compression::{CompressionOptions, CompressionReport};
 mod json;
 pub use document::{
-    Accessor, AccessorIndex, Animation, AnimationIndex, Buffer, BufferIndex, BufferView,
-    BufferViewIndex, Camera, CameraIndex, ComponentType, Document, File, FileIndex, Image,
-    ImageIndex, Material, MaterialIndex, Mesh, MeshIndex, Node, NodeIndex, PrimitiveRef, Sampler,
-    SamplerIndex, Scene, SceneIndex, Shape, ShapeIndex, Skin, SkinIndex, Texture, TextureIndex,
-    ValidationProfile,
+    Accessor, AccessorIndex, Animation, AnimationIndex, BoundingVolume, Buffer, BufferIndex,
+    BufferView, BufferViewIndex, Camera, CameraIndex, ComponentType, Document, ExternalAsset,
+    ExternalAssetIndex, File, FileIndex, Image, ImageIndex, Material, MaterialIndex, Mesh,
+    MeshIndex, Node, NodeIndex, PrimitiveRef, Sampler, SamplerIndex, Scene, SceneIndex, Shape,
+    ShapeIndex, Skin, SkinIndex, Texture, TextureIndex, ValidationProfile,
 };
 pub use json::Value as JsonValue;
 pub mod extensions;

@@ -26,6 +26,7 @@ index!(AnimationIndex);
 index!(BufferIndex);
 index!(BufferViewIndex);
 index!(CameraIndex);
+index!(ExternalAssetIndex);
 index!(FileIndex);
 index!(ImageIndex);
 index!(MaterialIndex);
@@ -55,11 +56,11 @@ pub enum ComponentType {
     U16 = 5123,
     U32 = 5125,
     F32 = 5126,
-    I32 = 5127,
+    I32 = 5124,
     F16 = 5131,
-    F64 = 5132,
-    I64 = 5133,
-    U64 = 5134,
+    F64 = 5130,
+    I64 = 5134,
+    U64 = 5135,
 }
 
 impl ComponentType {
@@ -71,11 +72,11 @@ impl ComponentType {
             5123 => Self::U16,
             5125 => Self::U32,
             5126 => Self::F32,
-            5127 => Self::I32,
+            5124 => Self::I32,
             5131 => Self::F16,
-            5132 => Self::F64,
-            5133 => Self::I64,
-            5134 => Self::U64,
+            5130 => Self::F64,
+            5134 => Self::I64,
+            5135 => Self::U64,
             _ => return None,
         })
     }
@@ -162,6 +163,7 @@ impl Document {
             "buffers",
             "bufferViews",
             "cameras",
+            "externalAssets",
             "files",
             "images",
             "materials",
@@ -185,7 +187,9 @@ impl Document {
             }
         }
         if profile == ValidationProfile::Gltf20
-            && (self.root.get("files").is_some() || self.root.get("shapes").is_some())
+            && (self.root.get("externalAssets").is_some()
+                || self.root.get("files").is_some()
+                || self.root.get("shapes").is_some())
         {
             return Err(Error::Validation(vec![
                 "glTF 2.1 fields require the draft profile".into(),
@@ -222,6 +226,12 @@ impl Document {
     }
     pub fn cameras(&self) -> Objects<'_, CameraIndex> {
         self.objects("cameras")
+    }
+    pub fn external_assets(&self) -> Objects<'_, ExternalAssetIndex> {
+        self.objects("externalAssets")
+    }
+    pub fn external_asset(&self, index: ExternalAssetIndex) -> Option<ExternalAsset<'_>> {
+        self.external_assets().get(index).map(ExternalAsset)
     }
     pub fn camera(&self, index: CameraIndex) -> Option<Camera<'_>> {
         self.cameras().get(index).map(Camera)
@@ -270,6 +280,13 @@ impl Document {
     }
     pub fn default_scene(&self) -> Option<SceneIndex> {
         index_value(&self.root, "scene").map(SceneIndex)
+    }
+    /// Returns the optional draft thumbnail image declared by `asset.thumbnail`.
+    pub fn thumbnail(&self) -> Option<ImageIndex> {
+        self.root
+            .get("asset")
+            .and_then(|asset| index_value(asset, "thumbnail"))
+            .map(ImageIndex)
     }
     pub fn shapes(&self) -> Objects<'_, ShapeIndex> {
         self.objects("shapes")
@@ -389,6 +406,9 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
     for image in root.get("images").and_then(Value::as_array).unwrap_or(&[]) {
         check(image, "bufferView", "bufferViews")?;
     }
+    if let Some(asset) = root.get("asset") {
+        check(asset, "thumbnail", "images")?;
+    }
     for file in root.get("files").and_then(Value::as_array).unwrap_or(&[]) {
         if file.get("mimeType").and_then(Value::as_str).is_none() {
             return Err(Error::Validation(vec![
@@ -419,6 +439,18 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
                 "file must contain exactly one of uri or bufferView".into(),
             ]));
         }
+    }
+    for asset in root
+        .get("externalAssets")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+    {
+        if asset.get("file").and_then(Value::as_u64).is_none() {
+            return Err(Error::Validation(vec![
+                "external asset file is missing or not an index".into(),
+            ]));
+        }
+        check(asset, "file", "files")?;
     }
     for texture in root
         .get("textures")
@@ -463,6 +495,20 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
                 _ => "skins",
             };
             check(node, field, target)?;
+        }
+        check(node, "externalAsset", "externalAssets")?;
+        if let Some(volume) = node.get("boundingVolume") {
+            if !volume.is_object() {
+                return Err(Error::Validation(vec![
+                    "node boundingVolume is not an object".into(),
+                ]));
+            }
+            if volume.get("shape").and_then(Value::as_u64).is_none() {
+                return Err(Error::Validation(vec![
+                    "node boundingVolume shape is missing or not an index".into(),
+                ]));
+            }
+            check(volume, "shape", "shapes")?;
         }
         if let Some(children) = node.get("children").and_then(Value::as_array) {
             for child in children {
@@ -572,7 +618,24 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
         }
     }
     if profile == ValidationProfile::Gltf21Draft {
+        validate_shapes(root)?;
         validate_uids(root)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "scene-validation")]
+fn validate_shapes(root: &Value) -> Result<()> {
+    const CORE_TYPES: [&str; 5] = ["box", "capsule", "cylinder", "plane", "sphere"];
+    for shape in root.get("shapes").and_then(Value::as_array).unwrap_or(&[]) {
+        let kind = shape.get("type").and_then(Value::as_str).ok_or_else(|| {
+            Error::Validation(vec!["shape type is missing or not a string".into()])
+        })?;
+        if CORE_TYPES.contains(&kind) && !shape.get(kind).is_some_and(Value::is_object) {
+            return Err(Error::Validation(vec![format!(
+                "shape {kind:?} is missing its {kind:?} definition object"
+            )]));
+        }
     }
     Ok(())
 }
@@ -589,6 +652,7 @@ fn validate_uids(root: &Value) -> Result<()> {
         "buffers",
         "bufferViews",
         "cameras",
+        "externalAssets",
         "files",
         "images",
         "materials",
@@ -694,6 +758,7 @@ typed_object!(Animation, AnimationIndex);
 typed_object!(Buffer, BufferIndex);
 typed_object!(BufferView, BufferViewIndex);
 typed_object!(Camera, CameraIndex);
+typed_object!(ExternalAsset, ExternalAssetIndex);
 typed_object!(File, FileIndex);
 typed_object!(Image, ImageIndex);
 typed_object!(Material, MaterialIndex);
@@ -781,6 +846,15 @@ impl<'a> Node<'a> {
     pub fn skin(self) -> Option<SkinIndex> {
         index_value(self.value(), "skin").map(SkinIndex)
     }
+    pub fn external_asset(self) -> Option<ExternalAssetIndex> {
+        index_value(self.value(), "externalAsset").map(ExternalAssetIndex)
+    }
+    pub fn bounding_volume(self) -> Option<BoundingVolume<'a>> {
+        self.value()
+            .get("boundingVolume")
+            .filter(|value| value.is_object())
+            .map(BoundingVolume)
+    }
     pub fn children(self) -> impl Iterator<Item = NodeIndex> + 'a {
         self.value()
             .get("children")
@@ -815,6 +889,33 @@ impl<'a> File<'a> {
     }
     pub fn buffer_view(self) -> Option<BufferViewIndex> {
         index_value(self.value(), "bufferView").map(BufferViewIndex)
+    }
+}
+
+impl<'a> ExternalAsset<'a> {
+    pub fn file(self) -> Option<FileIndex> {
+        index_value(self.value(), "file").map(FileIndex)
+    }
+}
+
+/// Typed view of a node's draft bounding-volume object.
+#[derive(Clone, Copy)]
+pub struct BoundingVolume<'a>(&'a Value);
+impl<'a> BoundingVolume<'a> {
+    pub fn value(self) -> &'a Value {
+        self.0
+    }
+    pub fn shape(self) -> Option<ShapeIndex> {
+        index_value(self.0, "shape").map(ShapeIndex)
+    }
+}
+
+impl<'a> Shape<'a> {
+    pub fn shape_type(self) -> Option<&'a str> {
+        self.value().get("type").and_then(Value::as_str)
+    }
+    pub fn definition(self) -> Option<&'a Value> {
+        self.shape_type().and_then(|kind| self.value().get(kind))
     }
 }
 
@@ -880,6 +981,7 @@ index_conversions!(
     BufferIndex,
     BufferViewIndex,
     CameraIndex,
+    ExternalAssetIndex,
     FileIndex,
     ImageIndex,
     MaterialIndex,

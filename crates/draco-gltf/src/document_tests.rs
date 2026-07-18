@@ -20,8 +20,72 @@ fn document_serializes_after_mutation() {
 
 #[test]
 fn draft_profile_accepts_files_shapes_and_nonsequential_semantics() {
-    let document = Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","mimeType":"model/gltf+json"}],"shapes":[{}],"accessors":[{"componentType":5126,"type":"VEC3"},{"componentType":5126,"type":"VEC2"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_4":1}}]}]}"#).unwrap();
+    let document = Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","mimeType":"model/gltf+json"}],"shapes":[{"type":"box","box":{"size":[2,3,4]}}],"accessors":[{"componentType":5126,"type":"VEC3"},{"componentType":5126,"type":"VEC2"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_4":1}}]}]}"#).unwrap();
     document.validate(ValidationProfile::Gltf21Draft).unwrap();
+}
+
+#[test]
+fn draft_validation_covers_published_scene_links() {
+    let document = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.1","thumbnail":0},"images":[{"uri":"thumbnail.png","mimeType":"image/png"}],"files":[{"uri":"part.glb","mimeType":"model/gltf-binary"}],"externalAssets":[{"name":"part","file":0}],"shapes":[{"type":"box","box":{"size":[2,3,4]}}],"nodes":[{"externalAsset":0,"boundingVolume":{"shape":0}}]}"#,
+    )
+    .unwrap();
+    document.validate(ValidationProfile::Gltf21Draft).unwrap();
+    assert_eq!(document.thumbnail(), Some(crate::ImageIndex(0)));
+    assert_eq!(
+        document
+            .external_asset(crate::ExternalAssetIndex(0))
+            .unwrap()
+            .file(),
+        Some(crate::FileIndex(0))
+    );
+    assert_eq!(
+        document.node(crate::NodeIndex(0)).unwrap().external_asset(),
+        Some(crate::ExternalAssetIndex(0))
+    );
+    assert_eq!(
+        document
+            .node(crate::NodeIndex(0))
+            .unwrap()
+            .bounding_volume()
+            .unwrap()
+            .shape(),
+        Some(crate::ShapeIndex(0))
+    );
+    assert_eq!(
+        document.shape(crate::ShapeIndex(0)).unwrap().shape_type(),
+        Some("box")
+    );
+
+    let invalid = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.1"},"shapes":[{"type":"box"}],"nodes":[{"boundingVolume":{"shape":0}}]}"#,
+    )
+    .unwrap();
+    assert!(invalid.validate(ValidationProfile::Gltf21Draft).is_err());
+}
+
+#[cfg(feature = "resources")]
+#[test]
+fn external_asset_models_load_explicitly() {
+    let root = parse(
+        br#"{"asset":{"version":"2.1"},"files":[{"uri":"part.gltf","mimeType":"model/gltf+json"}],"externalAssets":[{"file":0}]}"#,
+        ValidationProfile::Gltf21Draft,
+    )
+    .unwrap();
+    let resolver = |uri: &str| match uri {
+        "part.gltf" => Ok(br#"{"asset":{"version":"2.1"}}"#.to_vec()),
+        _ => Err(draco_io::GltfError::ExternalResourceDenied(uri.into())),
+    };
+    let loaded = root
+        .load_external_asset(
+            crate::ExternalAssetIndex(0),
+            &resolver,
+            &draco_io::ResourceLimits::default(),
+            ValidationProfile::Gltf21Draft,
+            &crate::ExtensionRegistry::default(),
+        )
+        .unwrap();
+    assert_eq!(loaded.provenance(), ["part.gltf"]);
 }
 
 #[test]
@@ -33,11 +97,19 @@ fn validation_rejects_dangling_core_references_and_draft_types_in_20() {
     assert!(dangling.validate(ValidationProfile::Gltf20).is_err());
 
     let draft_component = Document::from_json_bytes(
-        br#"{"asset":{"version":"2.0"},"accessors":[{"componentType":5132,"type":"SCALAR"}]}"#,
+        br#"{"asset":{"version":"2.0"},"accessors":[{"componentType":5130,"type":"SCALAR"}]}"#,
     )
     .unwrap();
     assert!(draft_component.validate(ValidationProfile::Gltf20).is_err());
     assert!(draft_component
+        .validate(ValidationProfile::Gltf21Draft)
+        .is_ok());
+
+    let draft_components = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.1"},"accessors":[{"componentType":5124,"type":"SCALAR"},{"componentType":5130,"type":"SCALAR"},{"componentType":5131,"type":"SCALAR"},{"componentType":5134,"type":"SCALAR"},{"componentType":5135,"type":"SCALAR"}]}"#,
+    )
+    .unwrap();
+    assert!(draft_components
         .validate(ValidationProfile::Gltf21Draft)
         .is_ok());
 }

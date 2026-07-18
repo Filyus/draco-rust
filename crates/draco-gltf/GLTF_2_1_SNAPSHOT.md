@@ -11,16 +11,19 @@ validation tests, and document every public API or serialization change.
 At this SHA Khronos has published the 2.1 design announcement but not a 2.1
 JSON schema. The crate therefore applies strict checks only to published,
 syntax-stable invariants and preserves the remaining draft fields losslessly.
-Shapes, bounding volumes, thumbnails, and UID character rules gain additional
-semantic checks only with a pinned upstream schema or explainer that defines
-their exact JSON shape; no speculative schema is accepted as strict validation.
+Published explainers currently define `files`, `externalAssets`, core shape
+type/subobject links, `node.boundingVolume.shape`, and `asset.thumbnail`.
+Numeric shape parameters, bounding-volume transforms, and UID character rules
+gain additional semantic checks only with a pinned upstream schema or explainer
+that defines their exact JSON shape; no speculative schema is accepted as
+strict validation.
 
 ## Targeted draft surface
 
 - GLB version 3: 64-bit file and chunk lengths plus zero-valued reserved chunk
   encodings, while retaining GLB version 2 support.
-- `files` references (`mimeType` plus exactly one of URI or buffer view) and
-  explicit loading of nested external assets.
+- `files` references (`mimeType` plus exactly one of URI or buffer view),
+  `externalAssets` model indirection, and explicit loading of nested assets.
 - One preferred scene with read compatibility for legacy multiple scenes.
 - Shapes, node bounding volumes, thumbnails, and object UIDs.
 - Core accessor component-type definitions for signed 32-bit, half/double
