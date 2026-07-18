@@ -93,6 +93,19 @@ fn typed_views_reference_the_lossless_document() {
 }
 
 #[test]
+fn validation_covers_scene_skin_and_animation_links() {
+    let document = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.0"},"accessors":[{"componentType":5126,"type":"SCALAR"}],"nodes":[{}],"scenes":[{"nodes":[0]}],"scene":0,"skins":[{"joints":[0],"inverseBindMatrices":0}],"animations":[{"samplers":[{"input":0,"output":0}],"channels":[{"sampler":0,"target":{"node":0,"path":"translation"}}]}]}"#,
+    )
+    .unwrap();
+    document.validate(ValidationProfile::Gltf20).unwrap();
+
+    let mut invalid = document.clone();
+    invalid.as_value_mut()["animations"][0]["channels"][0]["sampler"] = 1u64.into();
+    assert!(invalid.validate(ValidationProfile::Gltf20).is_err());
+}
+
+#[test]
 fn native_import_reads_json() {
     let import = parse_native(
         br#"{"asset":{"version":"2.1"},"buffers":[]}"#,

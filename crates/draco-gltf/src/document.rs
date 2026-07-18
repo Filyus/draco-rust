@@ -457,6 +457,84 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
             }
         }
     }
+    check(root, "scene", "scenes")?;
+    for skin in root.get("skins").and_then(Value::as_array).unwrap_or(&[]) {
+        check(skin, "inverseBindMatrices", "accessors")?;
+        check(skin, "skeleton", "nodes")?;
+        if let Some(joints) = skin.get("joints").and_then(Value::as_array) {
+            for joint in joints {
+                if joint.as_u64().is_none_or(|index| {
+                    usize::try_from(index)
+                        .ok()
+                        .is_none_or(|index| index >= len("nodes"))
+                }) {
+                    return Err(Error::Validation(vec![
+                        "skin references a missing joint node".into(),
+                    ]));
+                }
+            }
+        }
+    }
+    for mesh in root.get("meshes").and_then(Value::as_array).unwrap_or(&[]) {
+        for primitive in mesh
+            .get("primitives")
+            .and_then(Value::as_array)
+            .unwrap_or(&[])
+        {
+            for target in primitive
+                .get("targets")
+                .and_then(Value::as_array)
+                .unwrap_or(&[])
+            {
+                if let Some(attributes) = target.as_object() {
+                    for (semantic, index) in attributes {
+                        if index.as_u64().is_none_or(|index| {
+                            usize::try_from(index)
+                                .ok()
+                                .is_none_or(|index| index >= len("accessors"))
+                        }) {
+                            return Err(Error::Validation(vec![format!(
+                                "morph target attribute {semantic} references a missing accessor"
+                            )]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for animation in root
+        .get("animations")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+    {
+        let samplers = animation
+            .get("samplers")
+            .and_then(Value::as_array)
+            .unwrap_or(&[]);
+        for sampler in samplers {
+            check(sampler, "input", "accessors")?;
+            check(sampler, "output", "accessors")?;
+        }
+        for channel in animation
+            .get("channels")
+            .and_then(Value::as_array)
+            .unwrap_or(&[])
+        {
+            let sampler = channel.get("sampler").and_then(Value::as_u64);
+            if sampler.is_none_or(|index| {
+                usize::try_from(index)
+                    .ok()
+                    .is_none_or(|index| index >= samplers.len())
+            }) {
+                return Err(Error::Validation(vec![
+                    "animation channel references a missing sampler".into(),
+                ]));
+            }
+            if let Some(target) = channel.get("target") {
+                check(target, "node", "nodes")?;
+            }
+        }
+    }
     Ok(())
 }
 
