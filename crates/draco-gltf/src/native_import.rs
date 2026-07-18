@@ -98,24 +98,74 @@ impl NativeImport {
     }
 
     pub fn to_bytes(&self, output: crate::OutputFormat) -> Result<Vec<u8>> {
-        let json = self.document.to_json_bytes()?;
         let format = match output {
-            crate::OutputFormat::GltfJson => return Ok(json),
+            crate::OutputFormat::GltfJson => return self.document.to_json_bytes(),
             crate::OutputFormat::SameAsInput => self.input_format,
             crate::OutputFormat::GlbV2 => draco_io::GltfContainerFormat::GlbV2,
             crate::OutputFormat::GlbV3 => draco_io::GltfContainerFormat::GlbV3,
         };
         if format.is_glb() {
-            let bin = self
-                .resources
-                .buffers
-                .first()
-                .map_or(&[][..], Vec::as_slice);
+            let (json, bin) = self.consolidated_glb_payload()?;
             return Ok(draco_io::gltf_container::build_glb_from_json(
-                &json, bin, format,
+                &json, &bin, format,
             )?);
         }
-        Ok(json)
+        self.document.to_json_bytes()
+    }
+
+    /// Creates a GLB payload by consolidating resolved buffers while retaining
+    /// every bufferView index and all non-resource JSON verbatim.
+    fn consolidated_glb_payload(&self) -> Result<(Vec<u8>, Vec<u8>)> {
+        let declared = self.document.buffers().len();
+        if declared != self.resources.buffers.len() {
+            return Err(Error::ResourceLimit(format!(
+                "document declares {declared} buffers but resource store has {}",
+                self.resources.buffers.len()
+            )));
+        }
+        let mut offsets = Vec::with_capacity(declared);
+        let mut bin = Vec::new();
+        for resource in &self.resources.buffers {
+            while !bin.len().is_multiple_of(4) {
+                bin.push(0);
+            }
+            offsets.push(bin.len());
+            bin.try_reserve(resource.len())
+                .map_err(|_| Error::ResourceLimit("GLB consolidation allocation failed".into()))?;
+            bin.extend_from_slice(resource);
+        }
+        let mut document = self.document.clone();
+        let root = document.as_value_mut();
+        if let Some(views) = root.get_mut("bufferViews").and_then(Value::as_array_mut) {
+            for (index, view) in views.iter_mut().enumerate() {
+                let buffer = view
+                    .get("buffer")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or_else(|| {
+                        Error::Validation(vec![format!(
+                            "bufferViews[{index}].buffer is not a valid index"
+                        )])
+                    })?;
+                let prefix = *offsets.get(buffer).ok_or_else(|| {
+                    Error::Validation(vec![format!(
+                        "bufferViews[{index}].buffer references missing buffer {buffer}"
+                    )])
+                })?;
+                let offset = view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0);
+                let offset = usize::try_from(offset)
+                    .ok()
+                    .and_then(|offset| prefix.checked_add(offset))
+                    .ok_or_else(|| Error::ResourceLimit("GLB bufferView offset overflow".into()))?;
+                view["buffer"] = Value::from(0usize);
+                view["byteOffset"] = Value::from(offset);
+            }
+        }
+        root["buffers"] = Value::Array(vec![Value::object([(
+            "byteLength",
+            Value::from(bin.len()),
+        )])]);
+        Ok((document.to_json_bytes()?, bin))
     }
 
     /// Materializes all Draco primitives as ordinary indexed triangle geometry.
@@ -219,10 +269,28 @@ impl NativeImport {
                 .as_array_mut()
                 .ok_or_else(|| Error::Extension("buffers is not an array".into()))?
                 .push(Value::object([("byteLength", Value::from(bytes.len()))]));
-            for name in ["extensionsUsed", "extensionsRequired"] {
-                if let Some(values) = root.get_mut(name).and_then(Value::as_array_mut) {
-                    values
-                        .retain(|value| value.as_str() != Some(crate::KHR_DRACO_MESH_COMPRESSION));
+            let has_draco = root["meshes"]
+                .as_array()
+                .unwrap_or(&[])
+                .iter()
+                .flat_map(|mesh| {
+                    mesh.get("primitives")
+                        .and_then(Value::as_array)
+                        .unwrap_or(&[])
+                })
+                .any(|primitive| {
+                    primitive
+                        .get("extensions")
+                        .and_then(|extensions| extensions.get(crate::KHR_DRACO_MESH_COMPRESSION))
+                        .is_some()
+                });
+            if !has_draco {
+                for name in ["extensionsUsed", "extensionsRequired"] {
+                    if let Some(values) = root.get_mut(name).and_then(Value::as_array_mut) {
+                        values.retain(|value| {
+                            value.as_str() != Some(crate::KHR_DRACO_MESH_COMPRESSION)
+                        });
+                    }
                 }
             }
         }

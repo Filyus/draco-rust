@@ -138,6 +138,26 @@ fn native_compression_roundtrips_through_decompression() {
     );
 }
 
+#[test]
+fn glb_serialization_consolidates_append_only_draco_buffers() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut import = parse_native(input, ValidationProfile::Gltf20).unwrap();
+    import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap();
+    let bytes = import.to_bytes(crate::OutputFormat::GlbV2).unwrap();
+    let reloaded = parse_native(&bytes, ValidationProfile::Gltf20).unwrap();
+    assert_eq!(reloaded.resources.buffers.len(), 1);
+    assert_eq!(reloaded.draco_primitives().count(), 1);
+    assert_eq!(
+        reloaded
+            .decode_primitive(reloaded.draco_primitives().next().unwrap())
+            .unwrap()
+            .num_faces(),
+        1
+    );
+}
+
 #[cfg(feature = "compact")]
 #[test]
 fn compact_facade_uses_native_document() {
