@@ -108,6 +108,39 @@ impl Import {
         Ok(())
     }
 
+    #[cfg(feature = "transform")]
+    pub(crate) fn ensure_document_binary_transform_safe(&self) -> Result<()> {
+        fn visit(value: &Value, registry: &ExtensionRegistry) -> Result<()> {
+            match value {
+                Value::Array(values) => {
+                    for value in values {
+                        visit(value, registry)?;
+                    }
+                }
+                Value::Object(values) => {
+                    for (name, value) in values {
+                        if name == "extensions" {
+                            let extensions = value.as_object().ok_or_else(|| {
+                                Error::Extension("extensions is not an object".into())
+                            })?;
+                            for (extension, _) in extensions {
+                                if !registry.allows_binary_transform(extension) {
+                                    return Err(Error::Extension(format!(
+                                        "cannot produce Draco-only output with extension {extension:?}: its binary-reference semantics are not registered as transform-safe"
+                                    )));
+                                }
+                            }
+                        }
+                        visit(value, registry)?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        visit(self.document.as_value(), &self.extensions)
+    }
+
     /// Iterates primitives carrying the built-in Draco extension.
     #[cfg(feature = "draco-decode")]
     pub fn draco_primitives(&self) -> impl Iterator<Item = PrimitiveRef<'_>> + '_ {

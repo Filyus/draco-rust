@@ -15,7 +15,7 @@ pub mod document;
 #[cfg(feature = "geometry")]
 pub use accessor::{AccessorData, DocumentAccessorSource};
 #[cfg(feature = "transform")]
-pub use compression::{CompressionOptions, CompressionReport};
+pub use compression::{CompressionMode, CompressionOptions, CompressionReport};
 mod json;
 pub use document::{
     Accessor, AccessorIndex, Animation, AnimationIndex, BoundingVolume, Buffer, BufferIndex,

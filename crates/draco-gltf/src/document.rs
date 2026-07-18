@@ -652,9 +652,109 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
             }
         }
     }
+    validate_draco_extension(root, &check)?;
     if profile == ValidationProfile::Gltf21Draft {
         validate_shapes(root)?;
         validate_uids(root)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "scene-validation")]
+fn validate_draco_extension(
+    root: &Value,
+    check: &impl Fn(&Value, &str, &str) -> Result<()>,
+) -> Result<()> {
+    const NAME: &str = crate::KHR_DRACO_MESH_COMPRESSION;
+    let listed = |field: &str| {
+        root.get(field)
+            .and_then(Value::as_array)
+            .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(NAME)))
+    };
+    let required = listed("extensionsRequired");
+    for mesh in root.get("meshes").and_then(Value::as_array).unwrap_or(&[]) {
+        for primitive in mesh
+            .get("primitives")
+            .and_then(Value::as_array)
+            .unwrap_or(&[])
+        {
+            let Some(extension) = primitive
+                .get("extensions")
+                .and_then(|value| value.get(NAME))
+            else {
+                continue;
+            };
+            if !listed("extensionsUsed") {
+                return Err(Error::Validation(vec![
+                    "KHR_draco_mesh_compression is missing from extensionsUsed".into(),
+                ]));
+            }
+            let mode = primitive.get("mode").and_then(Value::as_u64).unwrap_or(4);
+            if !matches!(mode, 4 | 5) {
+                return Err(Error::Validation(vec![
+                    "KHR_draco_mesh_compression requires TRIANGLES or TRIANGLE_STRIP".into(),
+                ]));
+            }
+            check(extension, "bufferView", "bufferViews")?;
+            let attributes = extension
+                .get("attributes")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    Error::Validation(vec!["Draco extension attributes is not an object".into()])
+                })?;
+            let primitive_attributes = primitive
+                .get("attributes")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    Error::Validation(vec!["Draco primitive attributes is not an object".into()])
+                })?;
+            for (semantic, _) in attributes {
+                if primitive_attributes
+                    .iter()
+                    .all(|(name, _)| name != semantic)
+                {
+                    return Err(Error::Validation(vec![format!(
+                        "Draco attribute {semantic:?} is absent from primitive attributes"
+                    )]));
+                }
+            }
+            if required {
+                for (semantic, _) in attributes {
+                    let accessor = primitive_attributes
+                        .iter()
+                        .find(|(name, _)| name == semantic)
+                        .and_then(|(_, value)| value.as_u64())
+                        .and_then(|value| usize::try_from(value).ok())
+                        .and_then(|index| {
+                            root.get("accessors").and_then(Value::as_array)?.get(index)
+                        })
+                        .ok_or_else(|| {
+                            Error::Validation(vec!["Draco accessor is invalid".into()])
+                        })?;
+                    if accessor.get("bufferView").is_some() || accessor.get("sparse").is_some() {
+                        return Err(Error::Validation(vec![
+                            "Draco-only accessor must not retain raw buffer data".into(),
+                        ]));
+                    }
+                }
+                if let Some(index) = primitive.get("indices") {
+                    let accessor = index
+                        .as_u64()
+                        .and_then(|value| usize::try_from(value).ok())
+                        .and_then(|index| {
+                            root.get("accessors").and_then(Value::as_array)?.get(index)
+                        })
+                        .ok_or_else(|| {
+                            Error::Validation(vec!["Draco index accessor is invalid".into()])
+                        })?;
+                    if accessor.get("bufferView").is_some() || accessor.get("sparse").is_some() {
+                        return Err(Error::Validation(vec![
+                            "Draco-only index accessor must not retain raw buffer data".into(),
+                        ]));
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }

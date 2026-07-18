@@ -402,6 +402,95 @@ fn compression_appends_a_decodable_draco_payload() {
         .unwrap();
     let primitive = import.draco_primitives().next().unwrap();
     assert_eq!(import.decode_primitive(primitive).unwrap().num_faces(), 1);
+    import.document.validate(ValidationProfile::Gltf20).unwrap();
+    assert!(import.document.as_value()["extensionsRequired"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value.as_str() == Some(crate::KHR_DRACO_MESH_COMPRESSION)));
+    let accessor = import
+        .document
+        .primitive(crate::MeshIndex(0), 0)
+        .unwrap()
+        .attributes()
+        .unwrap()[0]
+        .1
+        .as_u64()
+        .unwrap() as usize;
+    assert!(import
+        .document
+        .accessor(crate::AccessorIndex(accessor))
+        .unwrap()
+        .buffer_view()
+        .is_none());
+}
+
+#[test]
+fn fallback_compression_keeps_raw_geometry_without_requiring_draco() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
+    import
+        .compress_primitive(
+            crate::MeshIndex(0),
+            0,
+            crate::CompressionOptions {
+                mode: crate::CompressionMode::Fallback,
+                ..crate::CompressionOptions::default()
+            },
+        )
+        .unwrap();
+    import.document.validate(ValidationProfile::Gltf20).unwrap();
+    assert!(import
+        .document
+        .as_value()
+        .get("extensionsRequired")
+        .is_none());
+    assert_eq!(
+        import
+            .document
+            .accessor(crate::AccessorIndex(0))
+            .unwrap()
+            .buffer_view(),
+        Some(crate::BufferViewIndex(0))
+    );
+}
+
+#[test]
+fn draco_only_preserves_shared_raw_accessor_for_another_primitive() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]},{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
+    import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap();
+    import.document.validate(ValidationProfile::Gltf20).unwrap();
+    assert_eq!(
+        import
+            .document
+            .primitive(crate::MeshIndex(1), 0)
+            .unwrap()
+            .attributes()
+            .unwrap()[0]
+            .1
+            .as_u64(),
+        Some(0)
+    );
+    assert!(import
+        .document
+        .accessor(crate::AccessorIndex(0))
+        .unwrap()
+        .buffer_view()
+        .is_some());
+    assert_eq!(import.resources.buffers.len(), 1);
+    assert_eq!(import.document.buffer_views().len(), 2);
+}
+
+#[test]
+fn compression_rejects_non_triangle_khr_mode() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"mode":0,"attributes":{"POSITION":0}}]}]}"#;
+    let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
+    assert!(import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .is_err());
 }
 
 #[test]
@@ -509,7 +598,7 @@ fn gltf_output_includes_appended_draco_buffer() {
 
     let output = import.to_gltf_output().unwrap();
     assert_eq!(output.resources.len(), 1);
-    assert_eq!(output.resources[0].uri, "buffer-1.bin");
+    assert_eq!(output.resources[0].uri, "buffer-0.bin");
     assert!(!output.resources[0].bytes.is_empty());
     let reloaded = crate::parse_with_options(
         &output.json,
@@ -538,7 +627,7 @@ fn decompression_failure_is_atomic() {
         .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
         .unwrap();
     let before = import.document.to_json_bytes().unwrap();
-    import.resources.buffers[1][0] ^= 0xff;
+    import.resources.buffers[0][0] ^= 0xff;
     assert!(import.decompress_in_place().is_err());
     assert_eq!(import.document.to_json_bytes().unwrap(), before);
     assert_eq!(import.draco_primitives().count(), 1);

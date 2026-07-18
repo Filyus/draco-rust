@@ -25,12 +25,17 @@ attribute sets. See `GLTF_2_1_SNAPSHOT.md`, `GLTF_2_1.md`, and
 
 `ExtensionRegistry` owns extension validation and geometry decoding. Its default
 registry contains Draco and maps compressed primitives to `draco_core::Mesh`.
-Call `Import::compress_primitive` for append-only document-preserving Draco
-compression, `Import::decompress_in_place` to materialize plain geometry, and
-`to_bytes` to select JSON, GLB v2, or GLB v3 output. Enable the `compact`
-feature for geometry-oriented views and `PackedPrimitive` buffers over the same
-lossless `Document`. `compact` names the smaller API surface; `PackedPrimitive`
-names the materialized contiguous geometry representation.
+Call `Import::compress_primitive` with `CompressionMode::DracoOnly` (the
+default) for a compact Draco-required primitive, or
+`CompressionMode::Fallback` to retain ordinary geometry for non-Draco readers.
+The two modes map directly to `extensionsRequired` and `extensionsUsed`:
+fallback never requires Draco. `DracoOnly` detaches the primitive's accessors
+from raw views, preserves shared accessors for other scene consumers, and
+compacts retained binary resources. `Import::decompress_in_place` materializes
+plain geometry; `to_bytes` selects JSON, GLB v2, or GLB v3 output. Enable the
+`compact` feature for geometry-oriented views and `PackedPrimitive` buffers
+over the same lossless `Document`. `compact` names the smaller API surface;
+`PackedPrimitive` names the materialized contiguous geometry representation.
 
 For a portable `.gltf` write, use `Import::to_gltf_output()`: it returns the
 JSON bytes plus every non-data-URI buffer as a named companion resource. This
