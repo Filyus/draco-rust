@@ -26,6 +26,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   source glTF mesh index to its flattened primitive range for scene consumers.
 - Column-major `node.matrix` transforms in the compact reader and its WASM
   result, with glTF-required exclusion of translation/rotation/scale fields.
+- `GltfNodeMetadata::matrix`, so lightweight native-reader consumers retain
+  the same node transform representation as compact-reader consumers.
 
 ### Changed
 

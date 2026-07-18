@@ -351,6 +351,8 @@ pub struct GltfDocumentMetadata {
 pub struct GltfNodeMetadata {
     pub name: Option<String>,
     pub mesh: Option<usize>,
+    /// Column-major 4x4 local transform from `node.matrix`.
+    pub matrix: Option<[f32; 16]>,
     pub translation: Option<[f32; 3]>,
     pub rotation: Option<[f32; 4]>,
     pub scale: Option<[f32; 3]>,
@@ -922,6 +924,7 @@ impl GltfReader {
                 .map(|node| GltfNodeMetadata {
                     name: node.name.clone(),
                     mesh: node.mesh,
+                    matrix: node.matrix,
                     translation: node.translation,
                     rotation: node.rotation,
                     scale: node.scale,

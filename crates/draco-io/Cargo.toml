@@ -134,3 +134,7 @@ required-features = ["gltf-writer", "gltf-reader"]
 [[test]]
 name = "gltf_compress_test"
 required-features = ["gltf-writer", "gltf-reader"]
+
+[[test]]
+name = "gltf_reader_compact_parity"
+required-features = ["gltf-reader", "gltf-compact"]
