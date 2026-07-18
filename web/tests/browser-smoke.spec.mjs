@@ -27,6 +27,7 @@ test('glTF asset API reads document, geometry, accessors, GLB, and resources', a
     const packed = asset.readPrimitive(0, 0);
     const accessor = asset.readAccessor(0);
     const bufferView = asset.bufferViewBytes(0);
+    const previewManifest = JSON.parse(new TextDecoder().decode(asset.previewManifest()));
     const glb = asset.glb(2);
     const roundtrip = new api.GltfAsset(glb, '2.0');
     let missing = false;
@@ -55,6 +56,11 @@ test('glTF asset API reads document, geometry, accessors, GLB, and resources', a
         bytes: accessor.bytes().length,
       },
       bufferViewBytes: bufferView.length,
+      previewManifest: {
+        roots: previewManifest.rootIndices,
+        meshes: previewManifest.meshes.length,
+        materials: previewManifest.materials.length,
+      },
       animation: {
         times: Array.from(new Float32Array(times.bytes().buffer)),
         translations: Array.from(new Float32Array(translations.bytes().buffer)),
@@ -84,6 +90,7 @@ test('glTF asset API reads document, geometry, accessors, GLB, and resources', a
     bytes: 36,
   });
   expect(result.bufferViewBytes).toBe(36);
+  expect(result.previewManifest).toEqual({ roots: [0], meshes: 1, materials: 0 });
   expect(result.animation).toEqual({
     times: [0, 1],
     translations: [0, 0, 0, 1, 2, 3],

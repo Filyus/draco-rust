@@ -8,18 +8,12 @@
  *   - asset.bufferViewBytes(index)         -> Uint8Array (raw layout, for embedded images)
  *   - asset.json()                          -> lossless JSON document bytes
  *
- * Scene-structure data (nodes, scenes, skins, animations, materials, accessors,
- * images, textures, samplers) is parsed from the lossless JSON client-side.
- * Companion files (.bin / images) and data-URIs come from the supplied
- * `resources` map / inline URIs.
+ * Rust exposes a normalized preview manifest for scene structure, materials,
+ * animation, samplers, and supported extensions. JavaScript only decodes
+ * browser images and turns already-materialized buffers into WebGL resources.
  */
 
 const GL = WebGL2RenderingContext;
-
-const SUPPORTED_PBR_EXTENSIONS = new Set([
-    'KHR_materials_unlit',
-    'KHR_texture_transform',
-]);
 
 /**
  * Build a Scene from a parsed glTF document.
@@ -34,39 +28,15 @@ export async function buildSceneFromGltf(sourceData, resources, gltfModule, hook
 
     const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
     try {
-        const json = JSON.parse(new TextDecoder().decode(asset.json()));
-        const warnings = [];
-
-        const extensionsUsed = json.extensionsUsed || [];
-        const unsupported = extensionsUsed.filter((ext) => !SUPPORTED_PBR_EXTENSIONS.has(ext));
-        if (unsupported.length) {
-            warnings.push(`Unsupported glTF extensions ignored: ${unsupported.join(', ')}`);
-            log(`Unsupported glTF extensions ignored: ${unsupported.join(', ')}`, 'warning');
-        }
-        if (json.extensionsRequired?.some((ext) => !SUPPORTED_PBR_EXTENSIONS.has(ext))) {
-            warnings.push('Model requires extensions that this viewer ignores; rendering may be incomplete');
-        }
-
-        const nodes = buildNodes(json, warnings);
-        const meshes = buildMeshes(asset, json, warnings);
-        const skins = buildSkins(asset, json, nodes, warnings);
-        const materials = buildMaterials(json, warnings);
-        const textures = await buildTextures(asset, json, resources, hooks);
-        const animations = buildAnimations(asset, json, nodes, warnings);
-
-        // Resolve meshes with morph targets — we surface them as a warning.
-        for (const meshDef of json.meshes || []) {
-            for (const prim of meshDef.primitives || []) {
-                if (prim.targets) {
-                    warnings.push('Morph target animation is not supported by the preview; targets are ignored');
-                    break;
-                }
-            }
-        }
-
-        const scenes = json.scenes || [];
-        const sceneIndex = typeof json.scene === 'number' ? json.scene : 0;
-        const rootIndices = scenes[sceneIndex]?.nodes || (scenes[0]?.nodes) || [];
+        const manifest = JSON.parse(new TextDecoder().decode(asset.previewManifest()));
+        const warnings = manifest.warnings || [];
+        const nodes = buildNodes(manifest.nodes || []);
+        const meshes = buildMeshes(asset, manifest.meshes || []);
+        const skins = buildSkins(asset, manifest.skins || [], nodes, warnings);
+        const materials = buildMaterials(manifest.materials || []);
+        const textures = await buildTextures(asset, manifest, resources, hooks);
+        const animations = buildAnimations(asset, manifest.animations || [], nodes, warnings);
+        const rootIndices = manifest.rootIndices || [];
 
         const { renderables, aabb } = computeRenderables(
             nodes,
@@ -96,8 +66,7 @@ export async function buildSceneFromGltf(sourceData, resources, gltfModule, hook
     }
 }
 
-function buildNodes(json, warnings) {
-    const defs = json.nodes || [];
+function buildNodes(defs) {
     return defs.map((def, index) => {
         const trs = {
             translation: def.translation ? Array.from(def.translation) : [0, 0, 0],
@@ -121,8 +90,7 @@ function buildNodes(json, warnings) {
     });
 }
 
-function buildMeshes(asset, json, warnings) {
-    const defs = json.meshes || [];
+function buildMeshes(asset, defs) {
     return defs.map((def, meshIndex) => {
         const primitives = [];
         for (let p = 0; p < def.primitives.length; p++) {
@@ -198,8 +166,7 @@ function bytesAsTyped(componentType, bytes) {
     }
 }
 
-function buildSkins(asset, json, nodes, warnings) {
-    const defs = json.skins || [];
+function buildSkins(asset, defs, nodes, warnings) {
     return defs.map((def, skinIndex) => {
         const joints = (def.joints || []).map((jointNodeIndex) => ({
             node: nodes[jointNodeIndex],
@@ -231,46 +198,35 @@ function identityMat4() {
     return m;
 }
 
-function buildMaterials(json, warnings) {
-    const defs = json.materials || [];
+function buildMaterials(defs) {
     const fallback = {
         baseColorFactor: [0.8, 0.82, 0.86, 1],
         doubleSided: false,
         alphaMode: 'OPAQUE',
         unlit: false,
     };
-    const list = defs.map((def, idx) => {
-        const pbr = def.pbrMetallicRoughness || {};
-        const unlit = !!(def.extensions && def.extensions.KHR_materials_unlit);
-        const texInfo = pbr.baseColorTexture;
-        const transform = texInfo?.extensions?.KHR_texture_transform || {};
-        return {
+    const list = defs.map((def, idx) => ({
             name: def.name || `material_${idx}`,
-            baseColorFactor: pbr.baseColorFactor ? Array.from(pbr.baseColorFactor) : [1, 1, 1, 1],
-            baseColorTexture: typeof texInfo?.index === 'number' ? texInfo.index : null,
-            // KHR_texture_transform may override the texture-info texCoord.
-            // It applies scale, rotation around the origin, then translation.
-            baseColorTexCoord: transform.texCoord ?? texInfo?.texCoord ?? 0,
+            baseColorFactor: def.baseColorFactor || [1, 1, 1, 1],
+            baseColorTexture: typeof def.baseColorTexture === 'number' ? def.baseColorTexture : null,
+            baseColorTexCoord: def.baseColorTexCoord ?? 0,
             baseColorTextureTransform: {
-                offset: Array.isArray(transform.offset) ? transform.offset : [0, 0],
-                scale: Array.isArray(transform.scale) ? transform.scale : [1, 1],
-                rotation: transform.rotation ?? 0,
+                offset: def.baseColorTextureTransform?.offset || [0, 0],
+                scale: def.baseColorTextureTransform?.scale || [1, 1],
+                rotation: def.baseColorTextureTransform?.rotation ?? 0,
             },
-            metallic: pbr.metallicFactor ?? 1,
-            roughness: pbr.roughnessFactor ?? 1,
             doubleSided: !!def.doubleSided,
             alphaMode: def.alphaMode || 'OPAQUE',
             alphaCutoff: def.alphaCutoff ?? 0.5,
-            unlit,
-        };
-    });
+            unlit: !!def.unlit,
+        }));
     list.push(fallback);
     return list;
 }
 
-async function buildTextures(asset, json, resources, hooks) {
-    const images = await decodeImages(asset, json, resources, hooks);
-    const samplers = (json.samplers || []).map((s) => ({
+async function buildTextures(asset, manifest, resources, hooks) {
+    const images = await decodeImages(asset, manifest.images || [], resources, hooks);
+    const samplers = (manifest.samplers || []).map((s) => ({
         wrapS: s.wrapS ?? GL.REPEAT,
         wrapT: s.wrapT ?? GL.REPEAT,
         minFilter: s.minFilter ?? GL.LINEAR_MIPMAP_LINEAR,
@@ -283,7 +239,7 @@ async function buildTextures(asset, json, resources, hooks) {
         magFilter: GL.LINEAR,
     };
 
-    return (json.textures || []).map((tex, idx) => {
+    return (manifest.textures || []).map((tex, idx) => {
         const samplerIndex = typeof tex.sampler === 'number' ? tex.sampler : -1;
         const sampler = samplerIndex >= 0 ? samplers[samplerIndex] : defaultSampler;
         const sourceIndex = tex.source;
@@ -300,8 +256,7 @@ async function buildTextures(asset, json, resources, hooks) {
     });
 }
 
-async function decodeImages(asset, json, resources, hooks) {
-    const defs = json.images || [];
+async function decodeImages(asset, defs, resources, hooks) {
     return Promise.all(
         defs.map(async (def) => {
             try {
@@ -383,8 +338,7 @@ function basename(path) {
     return slash >= 0 ? path.substring(slash + 1) : path;
 }
 
-function buildAnimations(asset, json, nodes, warnings) {
-    const defs = json.animations || [];
+function buildAnimations(asset, defs, nodes, warnings) {
     return defs.map((def, animIndex) => {
         const samplers = (def.samplers || []).map((s) => {
             const input = readAccessorAsTyped(asset, s.input);
@@ -397,11 +351,11 @@ function buildAnimations(asset, json, nodes, warnings) {
         });
 
         const channels = (def.channels || []).map((ch) => {
-            const node = nodes[ch.target.node];
+            const node = nodes[ch.node];
             if (!node) return null;
             return {
                 node,
-                path: ch.target.path,
+                path: ch.path,
                 sampler: samplers[ch.sampler],
             };
         }).filter(Boolean);

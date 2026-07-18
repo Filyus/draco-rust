@@ -117,6 +117,13 @@ impl Value {
             _ => None,
         }
     }
+    /// Parses a JSON number as `f64` without changing its stored lexeme.
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::Number(v) => v.parse().ok(),
+            _ => None,
+        }
+    }
     /// Looks up an object member by key.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.as_object()?
