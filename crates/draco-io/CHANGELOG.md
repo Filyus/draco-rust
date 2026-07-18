@@ -1,5 +1,13 @@
 # Changelog — draco-io
 
+## 0.3.0
+
+- Breaking: removed the legacy glTF reader, writer, compact parser and
+  document-preserving compression API; use `draco-gltf` for scene workflows.
+- Removed `serde`, `serde_json` and `nanoserde` from runtime dependencies.
+- Retained GLB v2/v3 container inspection, resource resolution and accessor
+  geometry contracts behind the `gltf` feature.
+
 Notable changes to the `draco-io` crate. This crate is versioned and released
 independently; its release tags are `draco-io-vX.Y.Z`. It depends on a published
 `draco-core`.
