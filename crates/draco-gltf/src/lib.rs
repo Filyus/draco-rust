@@ -29,7 +29,7 @@ pub use extensions::{
 #[cfg(feature = "compact")]
 pub mod compact;
 #[cfg(feature = "compact")]
-pub use compact::{CompactDocument, CompactMeshRange};
+pub use compact::{CompactDocument, CompactMeshRange, PackedAttribute, PackedPrimitive};
 mod native_import;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_import::open_native;

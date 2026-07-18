@@ -278,3 +278,41 @@ fn compact_facade_uses_native_document() {
         2
     );
 }
+
+#[cfg(feature = "compact")]
+#[test]
+fn compact_runtime_packs_accessor_geometry() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let import = parse_native(input, ValidationProfile::Gltf20).unwrap();
+
+    let primitive = import
+        .decode_packed_primitive(crate::MeshIndex(0), 0)
+        .unwrap();
+    assert_eq!(primitive.mode, 4);
+    assert!(primitive.indices.is_none());
+    assert_eq!(primitive.attributes.len(), 1);
+    assert_eq!(primitive.attributes[0].semantic, "POSITION");
+    assert_eq!(primitive.attributes[0].component_type, 5126);
+    assert_eq!(primitive.attributes[0].components, 3);
+    assert_eq!(primitive.attributes[0].bytes.len(), 36);
+}
+
+#[cfg(feature = "compact")]
+#[test]
+fn compact_runtime_packs_draco_geometry() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut import = parse_native(input, ValidationProfile::Gltf20).unwrap();
+    import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap();
+
+    let primitive = import
+        .decode_packed_primitive(crate::MeshIndex(0), 0)
+        .unwrap();
+    assert_eq!(primitive.mode, 4);
+    assert_eq!(primitive.indices.unwrap().bytes.len(), 12);
+    assert_eq!(primitive.attributes.len(), 1);
+    assert_eq!(primitive.attributes[0].semantic, "POSITION");
+    assert_eq!(primitive.attributes[0].components, 3);
+    assert_eq!(primitive.attributes[0].bytes.len(), 36);
+}

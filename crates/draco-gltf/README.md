@@ -28,7 +28,9 @@ registry contains Draco and maps compressed primitives to `draco_core::Mesh`.
 Call `Import::compress_primitive` for append-only document-preserving Draco
 compression, `Import::decompress_in_place` to materialize plain geometry, and
 `to_bytes` to select JSON, GLB v2, or GLB v3 output. Enable the `compact`
-feature for geometry-oriented views over the same native `Document`.
+feature for geometry-oriented views and `PackedPrimitive` buffers over the same
+native `Document`. `compact` names the smaller API surface; `PackedPrimitive`
+names the materialized contiguous geometry representation.
 
 ## License
 

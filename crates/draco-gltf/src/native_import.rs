@@ -414,7 +414,7 @@ impl NativeImport {
     }
 }
 
-fn decoded_attribute_bytes(mesh: &draco_core::Mesh, unique_id: u32) -> Result<Vec<u8>> {
+pub(crate) fn decoded_attribute_bytes(mesh: &draco_core::Mesh, unique_id: u32) -> Result<Vec<u8>> {
     let attribute = mesh.attribute_by_unique_id(unique_id).ok_or_else(|| {
         Error::Extension(format!("decoded Draco attribute {unique_id} is missing"))
     })?;
@@ -443,7 +443,7 @@ fn decoded_attribute_bytes(mesh: &draco_core::Mesh, unique_id: u32) -> Result<Ve
     Ok(out)
 }
 
-fn decoded_index_bytes(mesh: &draco_core::Mesh) -> Result<Vec<u8>> {
+pub(crate) fn decoded_index_bytes(mesh: &draco_core::Mesh) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(mesh.num_faces() * 12);
     for face in 0..mesh.num_faces() {
         for point in mesh.face(draco_core::FaceIndex(face as u32)) {

@@ -19,10 +19,14 @@ Both functions use the same native lossless document model as the Rust API.
 They do not resolve companion files or turn scene documents into a flattened
 mesh representation.
 
-`gltf-compact-wasm` is the small JSON-only geometry inspection entry point.
-`inspect_compact_gltf(bytes, profile)` returns per-mesh primitive counts through
-the same `CompactDocument` facade; it does not include GLB/resources or Draco
-transforms.
+`gltf-compact-wasm` is the small geometry runtime. `CompactGeometry` opens JSON
+glTF or GLB v2/v3, accepts an explicit URI-to-`Uint8Array` resource map, and
+decodes ordinary or `KHR_draco_mesh_compression` primitives. Decoding returns a
+`PackedGeometry` handle: metadata is queried per attribute and payloads cross
+the boundary as `Uint8Array`, never as expanded JavaScript number arrays.
+
+The compact name describes the constrained runtime surface and build footprint;
+`PackedGeometry` describes the materialized contiguous geometry buffers.
 
 ## Build and test
 
