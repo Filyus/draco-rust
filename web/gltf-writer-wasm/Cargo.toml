@@ -19,7 +19,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
 console_error_panic_hook = { workspace = true, optional = true }
-draco-io = { path = "../../crates/draco-io", default-features = false, features = ["gltf-reader", "gltf-writer"] }
+draco-gltf = { path = "../../crates/draco-gltf", default-features = false }
 
 [features]
 default = []

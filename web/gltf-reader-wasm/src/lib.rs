@@ -1,348 +1,101 @@
-//! Compact glTF/GLB reader for the browser.
-//!
-//! This crate is a thin `wasm-bindgen` adapter over the serde-free compact
-//! reader in [`draco_io::gltf_compact`], which shares strict GLB container
-//! validation with the rest of `draco-io` and parses the JSON document with
-//! `nanoserde`. Keeping the serde-backed document model out of the binary is
-//! what holds the WASM module under its size budget.
+//! Native glTF document inspection for browser consumers.
 
-#![allow(clippy::question_mark)]
-
-use draco_io::{gltf_compact, parse_glb_json_and_bin};
+use draco_gltf::{Document, ValidationProfile};
 use nanoserde::SerJson;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
 
-const COMPACT_LIMITS: gltf_compact::CompactLimits = gltf_compact::CompactLimits::WASM_DEFAULT;
-
-/// Mesh data structure for JavaScript interop.
-#[derive(SerJson, Clone, Default)]
-pub struct MeshData {
-    /// Mesh name.
-    pub name: Option<String>,
-    /// Vertex positions as `[x0, y0, z0, ...]`.
-    pub positions: Vec<f32>,
-    /// Triangle indices as `[i0, i1, i2, ...]`.
-    pub indices: Vec<u32>,
-    /// Vertex normals, when present.
-    pub normals: Vec<f32>,
-    /// First texture-coordinate set, when present.
-    pub uvs: Vec<f32>,
-    /// First color set, when present.
-    pub colors: Vec<f32>,
-}
-
-/// Range of flattened primitives belonging to one source glTF mesh.
-#[derive(SerJson, Clone, Copy, Default)]
-pub struct MeshPrimitiveRange {
-    #[nserde(rename = "firstPrimitive")]
-    pub first_primitive: usize,
-    #[nserde(rename = "primitiveCount")]
-    pub primitive_count: usize,
-}
-
-/// Node in the scene graph.
-#[derive(SerJson, Clone, Default)]
-pub struct SceneNode {
-    pub name: Option<String>,
-    #[nserde(rename = "meshIndex")]
-    /// Source glTF mesh index; use `meshPrimitiveRanges[meshIndex]` to obtain
-    /// its flattened primitive range.
-    pub mesh_index: Option<usize>,
-    /// Column-major 4x4 local transform, when the node uses `matrix` instead
-    /// of translation/rotation/scale.
-    pub matrix: Option<Vec<f32>>,
-    pub translation: Option<Vec<f32>>,
-    pub rotation: Option<Vec<f32>>,
-    pub scale: Option<Vec<f32>>,
-    pub children: Vec<usize>,
-}
-
-/// Scene data.
-#[derive(SerJson, Clone, Default)]
-pub struct SceneData {
-    pub name: Option<String>,
-    pub nodes: Vec<usize>,
-}
-
-/// Parse result containing decoded geometry and scene metadata.
 #[derive(SerJson, Default)]
 pub struct ParseResult {
     pub success: bool,
-    pub meshes: Vec<MeshData>,
-    #[nserde(rename = "meshPrimitiveRanges")]
-    pub mesh_primitive_ranges: Vec<MeshPrimitiveRange>,
-    pub scenes: Vec<SceneData>,
-    pub nodes: Vec<SceneNode>,
-    #[nserde(rename = "defaultScene")]
-    pub default_scene: Option<usize>,
-    pub error: Option<String>,
-    pub warnings: Vec<String>,
+    #[nserde(rename = "meshCount")]
+    pub mesh_count: usize,
+    #[nserde(rename = "primitiveCount")]
+    pub primitive_count: usize,
+    #[nserde(rename = "sceneCount")]
+    pub scene_count: usize,
     #[nserde(rename = "usesDraco")]
     pub uses_draco: bool,
+    pub error: Option<String>,
 }
 
-impl ParseResult {
-    fn error(message: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            error: Some(message.into()),
-            ..Self::default()
-        }
+fn result(document: Document) -> ParseResult {
+    let primitive_count = document
+        .meshes()
+        .into_iter()
+        .map(|mesh| {
+            mesh.value()
+                .get("primitives")
+                .and_then(|v| v.as_array())
+                .map_or(0, |v| v.len())
+        })
+        .sum();
+    let uses_draco = document.meshes().into_iter().any(|mesh| {
+        mesh.value()
+            .get("primitives")
+            .and_then(|v| v.as_array())
+            .is_some_and(|primitives| {
+                primitives.iter().any(|primitive| {
+                    primitive
+                        .get("extensions")
+                        .and_then(|v| v.get("KHR_draco_mesh_compression"))
+                        .is_some()
+                })
+            })
+    });
+    ParseResult {
+        success: true,
+        mesh_count: document.meshes().len(),
+        primitive_count,
+        scene_count: document.scenes().len(),
+        uses_draco,
+        error: None,
     }
 }
 
-fn copy_uint8_array(array: &js_sys::Uint8Array) -> Result<Vec<u8>, String> {
-    let len = usize::try_from(array.length())
-        .map_err(|_| "Companion resource is too large".to_string())?;
-    if COMPACT_LIMITS
-        .max_resource_bytes
-        .is_some_and(|limit| len > limit)
-    {
-        return Err("Companion resource exceeds the configured size limit".to_string());
-    }
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(len)
-        .map_err(|_| "Companion resource is too large".to_string())?;
-    bytes.resize(len, 0);
-    array.copy_to(&mut bytes);
-    Ok(bytes)
+fn to_js(result: ParseResult) -> JsValue {
+    js_sys::JSON::parse(&SerJson::serialize_json(&result)).unwrap_or(JsValue::NULL)
 }
 
-/// Initialize the WASM module.
 #[wasm_bindgen(start)]
 pub fn init() {
     #[cfg(feature = "console_error_panic_hook")]
     console_error_panic_hook::set_once();
 }
 
-/// Get the crate version used to build this module.
 #[wasm_bindgen]
 pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Get the module name.
-#[wasm_bindgen]
-pub fn module_name() -> String {
-    "glTF Reader".to_string()
-}
-
-/// Get supported file extensions.
 #[wasm_bindgen]
 pub fn supported_extensions() -> Vec<String> {
-    vec!["gltf".to_string(), "glb".to_string()]
+    vec!["gltf".into(), "glb".into()]
 }
 
-fn to_js_value(result: &ParseResult) -> JsValue {
-    let json = SerJson::serialize_json(result);
-    js_sys::JSON::parse(&json).unwrap_or(JsValue::NULL)
-}
-
-/// Parse an embedded/self-contained glTF JSON document.
+/// Parses a JSON glTF or GLB document with the native document model.
 #[wasm_bindgen]
-pub fn parse_gltf(json_content: &str) -> JsValue {
-    to_js_value(&parse_document_to_result(json_content, None, &[]))
-}
-
-/// Parse a GLB document.
-#[wasm_bindgen]
-pub fn parse_glb(data: &[u8]) -> JsValue {
-    let result = match parse_glb_json_and_bin(data) {
-        Ok((json, bin)) => match std::str::from_utf8(json) {
-            Ok(json) => parse_document_to_result(json, bin, &[]),
-            Err(_) => ParseResult::error("Invalid GLB JSON"),
-        },
-        Err(_) => ParseResult::error("Invalid GLB"),
+pub fn inspect_gltf(data: &[u8]) -> JsValue {
+    let json = if data.len() >= 4 && &data[..4] == b"glTF" {
+        match draco_io::parse_gltf_container(data) {
+            Ok(container) => container.json,
+            Err(error) => {
+                return to_js(ParseResult {
+                    error: Some(error.to_string()),
+                    ..ParseResult::default()
+                })
+            }
+        }
+    } else {
+        data
     };
-    to_js_value(&result)
-}
-
-/// Parse glTF/GLB bytes with a map of companion URI to exact resource bytes.
-///
-/// JavaScript should pass an object such as
-/// `{ "model.bin": Uint8Array, "albedo.png": Uint8Array }`. Missing external
-/// buffers are reported as controlled errors; the resolver never reads files.
-#[wasm_bindgen]
-pub fn parse_gltf_with_resources(data: &[u8], resources_js: JsValue) -> JsValue {
-    let resources = match parse_companion_resources(resources_js) {
-        Ok(resources) => resources,
-        Err(error) => {
-            return to_js_value(&ParseResult::error(error));
-        }
-    };
-    let result = match parse_glb_json_and_bin(data) {
-        Ok((json, bin)) => match std::str::from_utf8(json) {
-            Ok(json) => parse_document_to_result(json, bin, &resources),
-            Err(_) => ParseResult::error("Invalid glTF JSON"),
-        },
-        Err(_) => match std::str::from_utf8(data) {
-            Ok(json) => parse_document_to_result(json, None, &resources),
-            Err(_) => ParseResult::error("Invalid glTF JSON"),
-        },
-    };
-    to_js_value(&result)
-}
-
-/// Run the compact reader and adapt its output into the JS-facing result.
-fn parse_document_to_result(
-    json: &str,
-    bin: Option<&[u8]>,
-    resources: &[(String, Vec<u8>)],
-) -> ParseResult {
-    match gltf_compact::parse_compact_document_with_limits(json, bin, resources, &COMPACT_LIMITS) {
-        Ok(document) => ParseResult {
-            success: true,
-            meshes: document
-                .meshes
-                .into_iter()
-                .map(|mesh| MeshData {
-                    name: mesh.name,
-                    positions: mesh.positions,
-                    indices: mesh.indices,
-                    normals: mesh.normals,
-                    uvs: mesh.uvs,
-                    colors: mesh.colors,
-                })
-                .collect(),
-            mesh_primitive_ranges: document
-                .mesh_primitive_ranges
-                .into_iter()
-                .map(|range| MeshPrimitiveRange {
-                    first_primitive: range.first_primitive,
-                    primitive_count: range.primitive_count,
-                })
-                .collect(),
-            scenes: document
-                .scenes
-                .into_iter()
-                .map(|scene| SceneData {
-                    name: scene.name,
-                    nodes: scene.nodes,
-                })
-                .collect(),
-            nodes: document
-                .nodes
-                .into_iter()
-                .map(|node| SceneNode {
-                    name: node.name,
-                    mesh_index: node.mesh,
-                    matrix: node.matrix.map(|matrix| matrix.to_vec()),
-                    translation: node.translation,
-                    rotation: node.rotation,
-                    scale: node.scale,
-                    children: node.children,
-                })
-                .collect(),
-            default_scene: document.default_scene,
-            error: None,
-            warnings: Vec::new(),
-            uses_draco: document.uses_draco,
-        },
-        Err(error) => ParseResult::error(error.to_string()),
-    }
-}
-
-fn parse_companion_resources(resources_js: JsValue) -> Result<Vec<(String, Vec<u8>)>, String> {
-    if !resources_js.is_object() || resources_js.is_null() {
-        return Err("expected an object whose values are Uint8Array instances".to_string());
-    }
-    let object: js_sys::Object = resources_js.unchecked_into();
-    let entries = js_sys::Object::entries(&object);
-    let mut resources = Vec::new();
-    resources
-        .try_reserve(entries.length() as usize)
-        .map_err(|_| "Companion resource map is too large".to_string())?;
-    for index in 0..entries.length() {
-        let pair = js_sys::Array::from(&entries.get(index));
-        if pair.length() != 2 {
-            return Err("Invalid companion resource map".to_string());
-        }
-        let uri = pair
-            .get(0)
-            .as_string()
-            .ok_or("Companion resource URI is not a string")?;
-        let value = pair.get(1);
-        if !value.is_instance_of::<js_sys::Uint8Array>() {
-            return Err("Invalid companion resource map".to_string());
-        }
-        let bytes = copy_uint8_array(&js_sys::Uint8Array::new(&value))?;
-        if resources.iter().any(|(candidate, _)| candidate == &uri) {
-            return Err("Duplicate companion resource URI".to_string());
-        }
-        resources.push((uri, bytes));
-    }
-    Ok(resources)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn triangle_resource() -> Vec<u8> {
-        [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
-            .into_iter()
-            .flat_map(f32::to_le_bytes)
-            .collect()
-    }
-
-    fn external_triangle_json() -> Vec<u8> {
-        br#"{
-          "asset":{"version":"2.0"},
-          "buffers":[{"uri":"triangle.bin","byteLength":36}],
-          "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],
-          "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
-          "meshes":[{"name":"Triangle","primitives":[{"attributes":{"POSITION":0}}]}],
-          "nodes":[{"mesh":0}],
-          "scenes":[{"nodes":[0]}],
-          "scene":0
-        }"#
-        .to_vec()
-    }
-
-    #[test]
-    fn zero_geometry_is_not_reported_as_success() {
-        let input = br#"{"asset":{"version":"2.0"},"meshes":[]}"#;
-        let result = parse_document_to_result(std::str::from_utf8(input).unwrap(), None, &[]);
-        assert!(!result.success);
-        assert!(result.meshes.is_empty());
-    }
-
-    #[test]
-    fn compact_reader_decodes_external_resource() {
-        let resources = vec![("triangle.bin".to_string(), triangle_resource())];
-        let json = String::from_utf8(external_triangle_json())
-            .unwrap()
-            .replace(
-                r#"{"mesh":0}"#,
-                r#"{"mesh":0,"matrix":[1,0,0,0,0,1,0,0,0,0,1,0,3,4,5,1]}"#,
-            );
-        let result = parse_document_to_result(&json, None, &resources);
-        assert!(result.success);
-        assert_eq!(result.meshes.len(), 1);
-        assert_eq!(result.meshes[0].positions.len(), 9);
-        assert_eq!(result.meshes[0].indices, vec![0, 1, 2]);
-        assert_eq!(result.mesh_primitive_ranges.len(), 1);
-        assert_eq!(result.mesh_primitive_ranges[0].first_primitive, 0);
-        assert_eq!(result.mesh_primitive_ranges[0].primitive_count, 1);
-        assert_eq!(
-            result.nodes[0].matrix,
-            Some(vec![
-                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 3.0, 4.0, 5.0, 1.0,
-            ])
-        );
-    }
-
-    #[test]
-    fn compact_reader_rejects_malformed_accessor() {
-        let json = r#"{
-            "asset":{"version":"2.0"},
-            "buffers":[{"byteLength":4}],
-            "bufferViews":[{"buffer":0,"byteLength":4}],
-            "accessors":[{"bufferView":0,"componentType":5126,"count":1,"type":"VEC3"}],
-            "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]
-        }"#;
-        assert!(!parse_document_to_result(json, Some(&[0; 4]), &[]).success);
+    match Document::from_json_bytes(json).and_then(|document| {
+        document.validate(ValidationProfile::Gltf21Draft)?;
+        Ok(document)
+    }) {
+        Ok(document) => to_js(result(document)),
+        Err(error) => to_js(ParseResult {
+            error: Some(error.to_string()),
+            ..ParseResult::default()
+        }),
     }
 }
