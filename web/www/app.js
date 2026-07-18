@@ -390,7 +390,7 @@ function parseObjMaterials(objText, resources, warnings) {
         if (match) libraries.push(match[1].trim());
     }
     for (const library of libraries) {
-        const bytes = resources[library] || resources[basename(library)];
+        const bytes = resources[library] || resources[resourceBasename(library)];
         if (!bytes) {
             warnings.push(`OBJ material library not selected: ${library}`);
             continue;
@@ -414,6 +414,11 @@ function parseObjMaterials(objText, resources, warnings) {
         }
     }
     return materials;
+}
+
+function resourceBasename(path) {
+    const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+    return slash >= 0 ? path.substring(slash + 1) : path;
 }
 
 // Parse PLY file
