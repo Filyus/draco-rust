@@ -92,11 +92,11 @@ pub fn build_glb_from_json(
 }
 
 #[cfg(test)]
-mod native_glb_tests {
+mod glb_tests {
     use super::*;
 
     #[test]
-    fn native_glb_v3_builder_roundtrips_container_layout() {
+    fn glb_v3_builder_roundtrips_container_layout() {
         let bytes = build_glb_from_json(
             br#"{"asset":{"version":"2.1"}}"#,
             &[1, 2, 3],

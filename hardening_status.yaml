@@ -14,12 +14,12 @@ last_reviewed: "2026-07-16"
 scope:
   crate: "draco-core"
   surface: "Rust DRC decode of mesh and point-cloud streams"
-  secondary_surface: "draco-io glTF/GLB document-preserving compression (compress_gltf_bytes) and the lenient glTF reader it builds on, which parse untrusted glTF/GLB bytes."
+  secondary_surface: "draco-gltf lossless document parsing and document-preserving Draco transforms for untrusted glTF/GLB bytes."
   compatibility_floor: "Draco 1.0.0+ for supported compatibility claims"
   threat_model:
     controlled_assets: "Known-good generated/fixture streams from trusted pipelines."
     untrusted_assets: "Externally supplied .drc bytes that may be truncated, corrupted, inconsistent, oversized, or adversarial."
-    untrusted_gltf: "Externally supplied glTF/GLB bytes passed to compress_gltf_bytes; may reference out-of-range/oversized accessors, malformed GLB chunks, or hostile external resource URIs."
+    untrusted_gltf: "Externally supplied glTF/GLB bytes passed to draco-gltf; may reference out-of-range/oversized accessors, malformed GLB chunks, or hostile external resource URIs."
 
 readiness:
   controlled_assets: "good"
@@ -31,15 +31,9 @@ completed:
   - id: gltf-compress-untrusted-input
     status: covered
     evidence:
-      - path: "crates/draco-io/tests/gltf_compress_fuzz_test.rs"
-        tests:
-          - "malformed_raw_inputs_do_not_panic"
-          - "malformed_documents_do_not_panic"
-          - "byte_mutations_of_a_valid_glb_do_not_panic"
-          - "external_buffer_uri_is_refused_without_base_path"
       - path: "fuzz/fuzz_targets/compress_gltf.rs"
-      - path: "crates/draco-io/src/gltf_reader.rs"
-    note: "The shared glTF container/KHR layer now performs checked GLB parsing/building, strict data-URI decoding, fallible bounded buffer reads, accessor-contract validation, and explicit resource resolution through ImportOptions. ExternalFilePolicy can deny access, allow it, or confine it to the base directory; optional per-resource and aggregate quotas bound resource use. Unknown extension binary references fail as OpaqueBinaryReference. Deterministic malformed-input regressions cover hostile counts, offsets, sparse indices, KHR unique IDs, scene/animation/skin references, and repeat compression. Both compress_gltf and draco_gltf_import libFuzzer targets are seeded and run in CI/ClusterFuzzLite."
+      - path: "crates/draco-gltf/src/document_tests.rs"
+    note: "The shared container and geometry layers perform checked GLB parsing/building, strict data-URI decoding, fallible bounded buffer reads, accessor-contract validation, and explicit resource resolution through ImportOptions. ExternalFilePolicy can deny access, allow it, or confine it to the base directory; optional per-resource, aggregate-buffer, and asset-chain quotas bound resource use. Deterministic regressions cover sparse accessors, KHR unique IDs, scene/animation/skin references, explicit files cycles, and atomic decompression. Both glTF libFuzzer targets are seeded and run in CI/ClusterFuzzLite."
 
   - id: malformed-basic-drc-streams
     status: covered

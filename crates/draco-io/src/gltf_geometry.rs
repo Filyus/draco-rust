@@ -1,15 +1,13 @@
 //! Reader-agnostic glTF geometry decoding.
 //!
 //! This module holds the parts of glTF geometry handling that do **not** depend
-//! on `draco-io`'s own glTF reader: the shared error type, the
+//! on a document parser: the shared error type, the
 //! [`AccessorSource`] seam, and [`decode_geometry`], which builds a
 //! [`draco_core::Mesh`] (faces, deduplication, attribute typing, multi-set
 //! semantics) from whatever accessor data a source yields.
 //!
-//! It is compiled whenever the glTF reader **or** writer is enabled, so the
-//! document-preserving compressor ([`crate::compress_gltf_value`]) and external
-//! front ends (e.g. a `gltf-rs` document) can reuse the same decode logic with
-//! only the encoder, never linking the reader.
+//! Scene-facing crates can reuse the same decode logic with only their chosen
+//! document model and resource loader.
 
 use crate::gltf_error::{GltfError, Result};
 use draco_core::draco_types::DataType;
@@ -302,8 +300,8 @@ impl DecodedAccessor {
 /// This is the seam that lets the geometry decoder run against different glTF
 /// front ends: `draco-io`'s own accessor reader implements it over the parsed
 /// glTF document, but a caller that already holds a parsed scene (e.g. a
-/// `gltf-rs` document) can implement it over that instead and reuse the exact
-/// same decode logic, without linking `draco-io`'s glTF reader.
+/// document model) can implement it over that instead and reuse the exact same
+/// decode logic.
 ///
 /// Implementors only have to locate and copy out bytes; all of the geometry
 /// model building (faces, deduplication, attribute typing, multi-set semantics)

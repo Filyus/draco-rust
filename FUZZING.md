@@ -17,9 +17,9 @@ status, threat model, and known residual risk live in
 | `draco_gltf_import` | [`fuzz/fuzz_targets/draco_gltf_import.rs`](fuzz/fuzz_targets/draco_gltf_import.rs) | Imports a full scene through `draco-gltf`, decodes every Draco primitive, then exercises atomic in-place decompression. |
 
 `decode_drc` builds `draco-core` with `default-features = false` and enables the
-legacy decode features needed for old streams. The two glTF targets also reach
-the encoder through `draco-io/gltf-writer`, so malformed document parsing,
-decode, compression, and atomic decompression all receive coverage.
+legacy decode features needed for old streams. The two glTF targets use
+`draco-gltf`'s lossless document API, so malformed document parsing, decode,
+compression, and atomic decompression all receive coverage.
 
 ### `-O`: fuzz with production (release) semantics
 

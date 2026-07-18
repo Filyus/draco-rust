@@ -14,9 +14,9 @@ use draco_io::{
 #[cfg(not(target_arch = "wasm32"))]
 use draco_io::{ExternalFilePolicy, FileResourceResolver};
 
-/// Native, lossless glTF import.
+/// Lossless glTF document plus its resolved resources.
 #[derive(Clone)]
-pub struct NativeImport {
+pub struct Import {
     pub document: Document,
     pub resources: ResourceStore,
     pub input_format: GltfContainerFormat,
@@ -26,10 +26,10 @@ pub struct NativeImport {
     provenance: Vec<String>,
 }
 
-/// Default maximum explicit nested-asset depth for [`NativeImport::load_asset`].
+/// Default maximum explicit nested-asset depth for [`Import::load_asset`].
 pub const DEFAULT_EXTERNAL_ASSET_DEPTH: usize = 32;
 
-impl NativeImport {
+impl Import {
     pub fn validate(&self, extensions: &ExtensionRegistry) -> Result<()> {
         self.document.validate(self.profile)?;
         extensions.validate(&self.document)?;
@@ -58,7 +58,7 @@ impl NativeImport {
             })
     }
 
-    /// Decodes a primitive through the supplied native extension registry.
+    /// Decodes a primitive through the supplied extension registry.
     #[cfg(feature = "draco-decode")]
     pub fn decode_primitive(&self, primitive: PrimitiveRef<'_>) -> Result<draco_core::Mesh> {
         self.validate(&self.extensions)?;
@@ -98,7 +98,7 @@ impl NativeImport {
             .and_then(Value::as_u64)
             .and_then(|value| usize::try_from(value).ok());
         let mode = value.get("mode").and_then(Value::as_u64).unwrap_or(4) as u32;
-        let source = crate::NativeAccessorSource::new(&self.document, &self.resources);
+        let source = crate::DocumentAccessorSource::new(&self.document, &self.resources);
         Ok(draco_io::decode_geometry(
             &source,
             mode,
@@ -390,7 +390,7 @@ impl NativeImport {
             self.embedded_file_bytes(entry.value())?
         };
         let mut loaded =
-            parse_native_with_options(&bytes, None, Some(resolver), limits, profile, extensions)?;
+            parse_with_options(&bytes, None, Some(resolver), limits, profile, extensions)?;
         loaded.provenance = self.provenance.clone();
         loaded.provenance.push(source);
         Ok(loaded)
@@ -489,8 +489,8 @@ fn append_view(root: &mut Value, buffer: usize, bytes: &mut Vec<u8>, data: &[u8]
     Ok(index)
 }
 
-pub fn parse_native(bytes: &[u8], profile: ValidationProfile) -> Result<NativeImport> {
-    parse_native_with_options(
+pub fn parse(bytes: &[u8], profile: ValidationProfile) -> Result<Import> {
+    parse_with_options(
         bytes,
         None,
         None,
@@ -501,14 +501,14 @@ pub fn parse_native(bytes: &[u8], profile: ValidationProfile) -> Result<NativeIm
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn open_native(path: impl AsRef<Path>, profile: ValidationProfile) -> Result<NativeImport> {
+pub fn open(path: impl AsRef<Path>, profile: ValidationProfile) -> Result<Import> {
     let path = path.as_ref();
     let bytes = std::fs::read(path)?;
     let resolver = FileResourceResolver::new(
         path.parent().unwrap_or_else(|| Path::new(".")),
         ExternalFilePolicy::ConfineToBase,
     );
-    parse_native_with_options(
+    parse_with_options(
         &bytes,
         path.parent(),
         Some(&resolver),
@@ -518,14 +518,14 @@ pub fn open_native(path: impl AsRef<Path>, profile: ValidationProfile) -> Result
     )
 }
 
-pub fn parse_native_with_options(
+pub fn parse_with_options(
     bytes: &[u8],
     _base: Option<&Path>,
     resolver: Option<&dyn ResourceResolver>,
     limits: &ResourceLimits,
     profile: ValidationProfile,
     extensions: &ExtensionRegistry,
-) -> Result<NativeImport> {
+) -> Result<Import> {
     let container = parse_gltf_container(bytes)?;
     let document = Document::from_json_bytes(container.json)?;
     document.validate(profile)?;
@@ -553,7 +553,7 @@ pub fn parse_native_with_options(
         resolver,
         limits,
     )?;
-    Ok(NativeImport {
+    Ok(Import {
         document,
         resources: ResourceStore { buffers },
         input_format: container.format,

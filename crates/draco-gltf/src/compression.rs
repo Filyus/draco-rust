@@ -1,4 +1,4 @@
-use crate::{Error, NativeImport, Result};
+use crate::{Error, Import, Result};
 use draco_core::{
     encoder_buffer::EncoderBuffer, encoder_options::EncoderOptions, mesh_encoder::MeshEncoder,
 };
@@ -22,8 +22,8 @@ pub struct CompressionReport {
     pub encoded_bytes: usize,
 }
 
-impl NativeImport {
-    /// Encodes an already decoded mesh to a raw Draco payload using native options.
+impl Import {
+    /// Encodes an already decoded mesh to a raw Draco payload.
     pub fn encode_draco_mesh(
         &self,
         mesh: draco_core::Mesh,

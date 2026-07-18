@@ -2,7 +2,7 @@ use crate::{Document, Error, ResourceStore, Result};
 use draco_core::draco_types::DataType;
 use draco_io::{AccessorSource, DecodedAccessor, GltfError};
 
-pub struct NativeAccessorSource<'a> {
+pub struct DocumentAccessorSource<'a> {
     document: &'a Document,
     resources: &'a ResourceStore,
 }
@@ -17,7 +17,7 @@ pub struct AccessorData {
     pub normalized: bool,
     pub bytes: Vec<u8>,
 }
-impl<'a> NativeAccessorSource<'a> {
+impl<'a> DocumentAccessorSource<'a> {
     pub fn new(document: &'a Document, resources: &'a ResourceStore) -> Self {
         Self {
             document,
@@ -284,7 +284,7 @@ impl<'a> NativeAccessorSource<'a> {
         })
     }
 }
-impl AccessorSource for NativeAccessorSource<'_> {
+impl AccessorSource for DocumentAccessorSource<'_> {
     fn read_attribute(
         &self,
         index: usize,

@@ -1,6 +1,6 @@
 # draco-gltf
 
-Lossless native glTF 2.0 and pinned 2.1-draft scene handling with
+Lossless glTF 2.0 and pinned 2.1-draft scene handling with
 `KHR_draco_mesh_compression`.
 
 ```rust,no_run
@@ -13,7 +13,7 @@ scene.decompress_in_place()?;
 # Ok::<(), draco_gltf::Error>(())
 ```
 
-`Import::document` is a native lossless `Document`: use typed views such as
+`Import::document` is a lossless `Document`: use typed views such as
 `document.meshes()`, `document.nodes()`, `document.files()`, and
 `document.primitive(MeshIndex(0), 0)`. Unknown properties, `extras`, and
 unregistered extension JSON survive parse and serialization.
@@ -29,7 +29,7 @@ Call `Import::compress_primitive` for append-only document-preserving Draco
 compression, `Import::decompress_in_place` to materialize plain geometry, and
 `to_bytes` to select JSON, GLB v2, or GLB v3 output. Enable the `compact`
 feature for geometry-oriented views and `PackedPrimitive` buffers over the same
-native `Document`. `compact` names the smaller API surface; `PackedPrimitive`
+lossless `Document`. `compact` names the smaller API surface; `PackedPrimitive`
 names the materialized contiguous geometry representation.
 
 ## Features

@@ -23,9 +23,8 @@ To format the workspaces, run the same commands without `-- --check`.
 - `crates/draco-core` is the publishable core Draco bitstream crate.
 - `crates/draco-io` is the publishable file-format crate and depends on
   `draco-core`.
-- `crates/draco-gltf` is the publishable full-scene glTF bridge; it bridges
-  `gltf-rs` and the Draco crates and depends on both `draco-core` and
-  `draco-io`.
+- `crates/draco-gltf` is the publishable full-scene glTF crate; it owns the
+  lossless document model and depends on both `draco-core` and `draco-io`.
 - `crates/draco-cpp-test-bridge` is internal C++ parity infrastructure and has
   `publish = false`.
 - `web/` contains WASM wrapper crates and demo tooling; it is released as GitHub

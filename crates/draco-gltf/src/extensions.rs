@@ -1,4 +1,4 @@
-//! Native extension contracts for the lossless document model.
+//! Extension contracts for the lossless document model.
 
 use std::sync::Arc;
 

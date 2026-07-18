@@ -1,10 +1,10 @@
-//! Allocation-conscious geometry-oriented facade over the native document.
+//! Allocation-conscious geometry-oriented facade over the lossless document.
 //!
 //! This module does not parse a second schema. It exposes compact index/range
 //! views over [`Document`].
 
 use crate::{
-    Document, Error, MeshIndex, NativeAccessorSource, NativeImport, Result, ValidationProfile,
+    Document, DocumentAccessorSource, Error, Import, MeshIndex, Result, ValidationProfile,
 };
 use draco_io::{pack_draco_primitive, PackedAttribute, PackedPrimitive};
 
@@ -45,7 +45,7 @@ pub struct CompactMeshRange {
     pub primitives: usize,
 }
 
-impl NativeImport {
+impl Import {
     /// Decodes ordinary accessors or `KHR_draco_mesh_compression` into packed buffers.
     pub fn decode_packed_primitive(
         &self,
@@ -68,7 +68,7 @@ impl NativeImport {
             return pack_draco_primitive(primitive_ref.mode(), &decoded, &contract.attributes)
                 .map_err(Error::from);
         }
-        let source = NativeAccessorSource::new(&self.document, &self.resources);
+        let source = DocumentAccessorSource::new(&self.document, &self.resources);
         let attributes = primitive_ref
             .attribute_indices()
             .map(|(semantic, index)| {

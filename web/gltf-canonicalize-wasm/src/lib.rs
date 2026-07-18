@@ -14,7 +14,7 @@ pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Validates and canonicalizes a JSON glTF document with the native model.
+/// Validates and canonicalizes a JSON glTF document with the lossless model.
 #[wasm_bindgen]
 pub fn canonicalize_gltf(data: &[u8]) -> Result<Vec<u8>, JsValue> {
     let document = Document::from_json_bytes(data)

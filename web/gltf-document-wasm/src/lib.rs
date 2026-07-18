@@ -1,10 +1,10 @@
-//! Native full glTF document API for browser consumers.
+//! Full glTF document API for browser consumers.
 
 use std::collections::BTreeMap;
 
 use draco_gltf::{
-    parse_native, parse_native_with_options, CompressionOptions, Document, ExtensionRegistry,
-    MeshIndex, NativeImport, OutputFormat, ResourceLimits, ResourceResolver, ValidationProfile,
+    parse, parse_with_options, CompressionOptions, Document, ExtensionRegistry, Import, MeshIndex,
+    OutputFormat, ResourceLimits, ResourceResolver, ValidationProfile,
 };
 use js_sys::{Object, Reflect, Uint8Array};
 use nanoserde::SerJson;
@@ -24,10 +24,10 @@ pub struct ParseResult {
     pub error: Option<String>,
 }
 
-/// Stateful document API backed directly by `draco_gltf::NativeImport`.
+/// Stateful document API backed directly by `draco_gltf::Import`.
 #[wasm_bindgen]
 pub struct GltfDocument {
-    import: NativeImport,
+    import: Import,
     resolver: BrowserResourceResolver,
 }
 
@@ -132,7 +132,7 @@ pub fn supported_extensions() -> Vec<String> {
     vec!["gltf".into(), "glb".into()]
 }
 
-/// Parses a JSON glTF or GLB document with the native document model.
+/// Parses a JSON glTF or GLB document with the lossless document model.
 #[wasm_bindgen]
 pub fn inspect_gltf(data: &[u8]) -> JsValue {
     let json = if data.len() >= 4 && &data[..4] == b"glTF" {
@@ -162,11 +162,11 @@ pub fn inspect_gltf(data: &[u8]) -> JsValue {
 
 #[wasm_bindgen]
 impl GltfDocument {
-    /// Parses a JSON glTF or GLB document with the native full-scene model.
+    /// Parses a JSON glTF or GLB document with the full-scene model.
     #[wasm_bindgen(constructor)]
     pub fn new(data: &[u8], validation_profile: &str) -> Result<GltfDocument, JsValue> {
         let profile = profile(validation_profile)?;
-        parse_native(data, profile)
+        parse(data, profile)
             .map(|import| Self {
                 import,
                 resolver: BrowserResourceResolver::default(),
@@ -184,7 +184,7 @@ impl GltfDocument {
     ) -> Result<GltfDocument, JsValue> {
         let profile = profile(validation_profile)?;
         let resolver = browser_resources(resources)?;
-        parse_native_with_options(
+        parse_with_options(
             data,
             None,
             Some(&resolver),
@@ -211,7 +211,7 @@ impl GltfDocument {
         self.import.to_bytes(output).map_err(wasm_error)
     }
 
-    /// Strictly validates the native document with the selected glTF profile.
+    /// Strictly validates the document with the selected glTF profile.
     pub fn validate(&self, validation_profile: &str) -> Result<(), JsValue> {
         self.import
             .document
@@ -251,7 +251,7 @@ impl GltfDocument {
             .ok_or_else(|| JsValue::from_str("glTF object index is out of range"))
     }
 
-    /// Compresses one ordinary primitive with the native document-preserving transform.
+    /// Compresses one ordinary primitive with the document-preserving transform.
     pub fn compress_primitive(
         &mut self,
         mesh: usize,

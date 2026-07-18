@@ -13,7 +13,7 @@ mod accessor;
 mod compression;
 pub mod document;
 #[cfg(feature = "geometry")]
-pub use accessor::{AccessorData, NativeAccessorSource};
+pub use accessor::{AccessorData, DocumentAccessorSource};
 #[cfg(feature = "transform")]
 pub use compression::{CompressionOptions, CompressionReport};
 mod json;
@@ -36,12 +36,10 @@ pub mod compact;
 pub use compact::{CompactDocument, CompactMeshRange};
 #[cfg(feature = "compact")]
 pub use draco_io::{PackedAttribute, PackedPrimitive};
-mod native_import;
+mod import;
 #[cfg(not(target_arch = "wasm32"))]
-pub use native_import::open_native;
-pub use native_import::{
-    parse_native, parse_native_with_options, NativeImport, DEFAULT_EXTERNAL_ASSET_DEPTH,
-};
+pub use import::open;
+pub use import::{parse, parse_with_options, Import, DEFAULT_EXTERNAL_ASSET_DEPTH};
 
 pub use draco_io::{
     ExternalFilePolicy, FileResourceResolver, GltfContainerFormat, GltfError, ResourceLimits,
@@ -57,7 +55,7 @@ pub enum OutputFormat {
     GlbV3,
 }
 
-/// Errors returned by native glTF parsing and Draco operations.
+/// Errors returned by glTF parsing and Draco operations.
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("IO error: {0}")]
@@ -77,7 +75,7 @@ pub enum Error {
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Native import options.
+/// Import options.
 pub struct ImportOptions<'a> {
     pub base_path: Option<&'a Path>,
     pub external_file_policy: ExternalFilePolicy,
@@ -99,12 +97,9 @@ impl Default for ImportOptions<'_> {
     }
 }
 
-/// The full native import type.
-pub type Import = NativeImport;
-
 #[cfg(not(target_arch = "wasm32"))]
 pub fn import(path: impl AsRef<Path>) -> Result<Import> {
-    open_native(path, ValidationProfile::Gltf21Draft)
+    open(path, ValidationProfile::Gltf21Draft)
 }
 
 pub fn import_slice(bytes: &[u8], base: Option<&Path>) -> Result<Import> {
@@ -129,7 +124,7 @@ pub fn import_slice_with_options(bytes: &[u8], options: &ImportOptions<'_>) -> R
             .as_ref()
             .map(|value| value as &dyn ResourceResolver)
     });
-    parse_native_with_options(
+    parse_with_options(
         bytes,
         options.base_path,
         resolver,
@@ -139,10 +134,10 @@ pub fn import_slice_with_options(bytes: &[u8], options: &ImportOptions<'_>) -> R
     )
 }
 
-/// Validates the native document against the pinned draft profile.
+/// Validates a document against the pinned draft profile.
 pub fn validate(document: &Document) -> Result<()> {
     document.validate(ValidationProfile::Gltf21Draft)
 }
 
 #[cfg(test)]
-mod native_tests;
+mod document_tests;

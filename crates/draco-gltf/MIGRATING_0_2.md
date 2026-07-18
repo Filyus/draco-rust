@@ -1,6 +1,6 @@
 # Migrating to draco-gltf 0.2
 
-0.2 exposes `Import::document` as the native lossless `Document`.
+0.2 exposes `Import::document` as the lossless `Document`.
 
 - Replace `gltf` iterators with `Document` typed views, for example
   `document.meshes()` and `document.primitive(MeshIndex(0), 0)`.

@@ -7,8 +7,8 @@
 use std::collections::BTreeMap;
 
 use draco_gltf::{
-    parse_native, parse_native_with_options, ExtensionRegistry, MeshIndex, NativeImport,
-    PackedPrimitive, ResourceLimits, ResourceResolver, ValidationProfile,
+    parse, parse_with_options, ExtensionRegistry, Import, MeshIndex, PackedPrimitive,
+    ResourceLimits, ResourceResolver, ValidationProfile,
 };
 use js_sys::{Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
@@ -16,7 +16,7 @@ use wasm_bindgen::prelude::*;
 /// Stateful compact geometry reader backed by the shared glTF document model.
 #[wasm_bindgen]
 pub struct CompactGeometry {
-    import: NativeImport,
+    import: Import,
 }
 
 /// One decoded primitive whose attribute data remains in packed byte buffers.
@@ -87,7 +87,7 @@ impl CompactGeometry {
     /// Opens a JSON glTF or GLB v2/v3 document with embedded or data-URI resources.
     #[wasm_bindgen(constructor)]
     pub fn new(data: &[u8], validation_profile: &str) -> Result<CompactGeometry, JsValue> {
-        parse_native(data, profile(validation_profile)?)
+        parse(data, profile(validation_profile)?)
             .map(|import| Self { import })
             .map_err(wasm_error)
     }
@@ -101,7 +101,7 @@ impl CompactGeometry {
         validation_profile: &str,
     ) -> Result<CompactGeometry, JsValue> {
         let resolver = browser_resources(resources)?;
-        parse_native_with_options(
+        parse_with_options(
             data,
             None,
             Some(&resolver),

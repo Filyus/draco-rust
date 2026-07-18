@@ -13,10 +13,10 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Breaking: introduced native lossless `Document` typed views and indices.
+- Breaking: introduced lossless `Document` typed views and indices.
   See `MIGRATING_0_2.md`.
-- Added the pinned glTF 2.1 draft profile, GLB v3 support, native extension
-  contracts, explicit `files` asset loading, and native Draco decode/compress/
+- Added the pinned glTF 2.1 draft profile, GLB v3 support, extension
+  contracts, explicit `files` asset loading, and Draco decode/compress/
   decompress operations.
 
 ### Added
