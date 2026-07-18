@@ -44,6 +44,12 @@ pub trait ExtensionHandler: Send + Sync {
     ) -> Result<()> {
         Ok(())
     }
+    /// Whether a transform may replace accessor and buffer-view binary data
+    /// while preserving this extension. Handlers must opt in explicitly after
+    /// validating their binary-reference semantics.
+    fn allows_binary_transform(&self) -> bool {
+        false
+    }
     fn decode_primitive(
         &self,
         _document: &Document,
@@ -79,6 +85,11 @@ impl ExtensionRegistry {
     pub fn contains(&self, name: &str) -> bool {
         self.handlers.iter().any(|handler| handler.name() == name)
     }
+    pub fn allows_binary_transform(&self, name: &str) -> bool {
+        self.handlers
+            .iter()
+            .any(|handler| handler.name() == name && handler.allows_binary_transform())
+    }
     pub fn validate(&self, document: &Document) -> Result<ExtensionValidationContext> {
         let mut context = ExtensionValidationContext::default();
         for handler in &self.handlers {
@@ -109,6 +120,9 @@ pub struct DracoExtension;
 impl ExtensionHandler for DracoExtension {
     fn name(&self) -> &'static str {
         KHR_DRACO_MESH_COMPRESSION
+    }
+    fn allows_binary_transform(&self) -> bool {
+        true
     }
     fn validate(
         &self,

@@ -39,11 +39,13 @@ pub use draco_io::{PackedAttribute, PackedPrimitive};
 mod import;
 #[cfg(not(target_arch = "wasm32"))]
 pub use import::open;
-pub use import::{parse, parse_with_options, Import, DEFAULT_EXTERNAL_ASSET_DEPTH};
+pub use import::{
+    parse, parse_with_options, GltfOutput, GltfResource, Import, DEFAULT_EXTERNAL_ASSET_DEPTH,
+};
 
 pub use draco_io::{
-    ExternalFilePolicy, FileResourceResolver, GltfContainerFormat, GltfError, ResourceLimits,
-    ResourceResolver,
+    ExternalFilePolicy, FileResourceResolver, GlbRangeReader, GltfContainerFormat, GltfError,
+    ResourceLimits, ResourceResolver,
 };
 
 /// Container representation selected when serializing an import.

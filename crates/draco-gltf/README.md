@@ -32,6 +32,15 @@ feature for geometry-oriented views and `PackedPrimitive` buffers over the same
 lossless `Document`. `compact` names the smaller API surface; `PackedPrimitive`
 names the materialized contiguous geometry representation.
 
+For a portable `.gltf` write, use `Import::to_gltf_output()`: it returns the
+JSON bytes plus every non-data-URI buffer as a named companion resource. This
+is required after transforms that append binary data; `to_bytes(GltfJson)` is
+only the JSON representation. Draco transforms clone changed accessors before
+materializing them, so accessors shared with animations, skins, morph targets,
+or other primitives remain intact. A transform also rejects an extension on
+the changed primitive unless its registered handler explicitly declares its
+binary-reference semantics transform-safe.
+
 ## Features
 
 The feature graph separates document completeness from executable geometry

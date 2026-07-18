@@ -8,3 +8,8 @@ glTF/GLB 2.0 and 2.1-draft documents, compact views and Draco transforms.
 
 Enable the small `gltf` feature only for GLB/container parsing, resource
 resolution and the `AccessorSource` geometry contract.
+
+For large GLB v3 inputs, `GlbRangeReader<R: Read + Seek>` opens only the
+header and chunk descriptors. It materializes individual chunks on demand with
+a caller-provided byte limit, without requiring the complete container in
+memory.

@@ -343,8 +343,10 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
             .map_or(0, <[Value]>::len)
     };
     let check = |value: &Value, field: &str, target: &str| -> Result<()> {
-        let index = value.get(field).and_then(Value::as_u64);
-        if let Some(index) = index {
+        if let Some(raw) = value.get(field) {
+            let index = raw
+                .as_u64()
+                .ok_or_else(|| Error::Validation(vec![format!("{field} is not an index")]))?;
             let index = usize::try_from(index).map_err(|_| {
                 Error::Validation(vec![format!("{field} does not fit the platform index")])
             })?;
@@ -355,6 +357,12 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
             }
         }
         Ok(())
+    };
+    let required_index = |value: &Value, field: &str, target: &str| -> Result<()> {
+        if value.get(field).is_none() {
+            return Err(Error::Validation(vec![format!("{field} is missing")]));
+        }
+        check(value, field, target)
     };
     for view in root
         .get("bufferViews")
@@ -369,38 +377,46 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
         .unwrap_or(&[])
     {
         check(accessor, "bufferView", "bufferViews")?;
-        let component = accessor.get("componentType").and_then(Value::as_u64);
-        if let Some(component) = component {
-            let component = ComponentType::from_gltf(component).ok_or_else(|| {
-                Error::Validation(vec![format!(
-                    "unsupported accessor componentType {component}"
-                )])
-            })?;
-            if profile == ValidationProfile::Gltf20
-                && !matches!(
-                    component,
-                    ComponentType::I8
-                        | ComponentType::U8
-                        | ComponentType::I16
-                        | ComponentType::U16
-                        | ComponentType::U32
-                        | ComponentType::F32
-                )
-            {
-                return Err(Error::Validation(vec![format!(
-                    "accessor componentType {component:?} requires the glTF 2.1 draft profile"
-                )]));
-            }
+        let component = accessor
+            .get("componentType")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| Error::Validation(vec!["accessor componentType is missing".into()]))?;
+        let component = ComponentType::from_gltf(component).ok_or_else(|| {
+            Error::Validation(vec![format!(
+                "unsupported accessor componentType {component}"
+            )])
+        })?;
+        if profile == ValidationProfile::Gltf20
+            && !matches!(
+                component,
+                ComponentType::I8
+                    | ComponentType::U8
+                    | ComponentType::I16
+                    | ComponentType::U16
+                    | ComponentType::U32
+                    | ComponentType::F32
+            )
+        {
+            return Err(Error::Validation(vec![format!(
+                "accessor componentType {component:?} requires the glTF 2.1 draft profile"
+            )]));
         }
-        if let Some(kind) = accessor.get("type").and_then(Value::as_str) {
-            if !matches!(
-                kind,
-                "SCALAR" | "VEC2" | "VEC3" | "VEC4" | "MAT2" | "MAT3" | "MAT4"
-            ) {
-                return Err(Error::Validation(vec![format!(
-                    "unsupported accessor type {kind:?}"
-                )]));
-            }
+        let kind = accessor
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Validation(vec!["accessor type is missing".into()]))?;
+        if !matches!(
+            kind,
+            "SCALAR" | "VEC2" | "VEC3" | "VEC4" | "MAT2" | "MAT3" | "MAT4"
+        ) {
+            return Err(Error::Validation(vec![format!(
+                "unsupported accessor type {kind:?}"
+            )]));
+        }
+        if accessor.get("count").and_then(Value::as_u64).is_none() {
+            return Err(Error::Validation(vec![
+                "accessor count is missing or invalid".into(),
+            ]));
         }
     }
     for image in root.get("images").and_then(Value::as_array).unwrap_or(&[]) {
@@ -594,8 +610,15 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
             .and_then(Value::as_array)
             .unwrap_or(&[]);
         for sampler in samplers {
-            check(sampler, "input", "accessors")?;
-            check(sampler, "output", "accessors")?;
+            required_index(sampler, "input", "accessors")?;
+            required_index(sampler, "output", "accessors")?;
+            if let Some(interpolation) = sampler.get("interpolation").and_then(Value::as_str) {
+                if !matches!(interpolation, "LINEAR" | "STEP" | "CUBICSPLINE") {
+                    return Err(Error::Validation(vec![format!(
+                        "animation sampler interpolation {interpolation:?} is invalid"
+                    )]));
+                }
+            }
         }
         for channel in animation
             .get("channels")
@@ -614,6 +637,18 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
             }
             if let Some(target) = channel.get("target") {
                 check(target, "node", "nodes")?;
+                let path = target.get("path").and_then(Value::as_str).ok_or_else(|| {
+                    Error::Validation(vec!["animation channel target path is missing".into()])
+                })?;
+                if !matches!(path, "translation" | "rotation" | "scale" | "weights") {
+                    return Err(Error::Validation(vec![format!(
+                        "animation channel target path {path:?} is invalid"
+                    )]));
+                }
+            } else {
+                return Err(Error::Validation(vec![
+                    "animation channel target is missing".into(),
+                ]));
             }
         }
     }

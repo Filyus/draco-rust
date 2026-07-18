@@ -20,7 +20,7 @@ fn document_serializes_after_mutation() {
 
 #[test]
 fn draft_profile_accepts_files_shapes_and_nonsequential_semantics() {
-    let document = Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","mimeType":"model/gltf+json"}],"shapes":[{"type":"box","box":{"size":[2,3,4]}}],"accessors":[{"componentType":5126,"type":"VEC3"},{"componentType":5126,"type":"VEC2"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_4":1}}]}]}"#).unwrap();
+    let document = Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","mimeType":"model/gltf+json"}],"shapes":[{"type":"box","box":{"size":[2,3,4]}}],"accessors":[{"componentType":5126,"count":0,"type":"VEC3"},{"componentType":5126,"count":0,"type":"VEC2"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_4":1}}]}]}"#).unwrap();
     document.validate(ValidationProfile::Gltf21Draft).unwrap();
 }
 
@@ -134,7 +134,7 @@ fn validation_rejects_dangling_core_references_and_draft_types_in_20() {
     assert!(dangling.validate(ValidationProfile::Gltf20).is_err());
 
     let draft_component = Document::from_json_bytes(
-        br#"{"asset":{"version":"2.0"},"accessors":[{"componentType":5130,"type":"SCALAR"}]}"#,
+        br#"{"asset":{"version":"2.0"},"accessors":[{"componentType":5130,"count":0,"type":"SCALAR"}]}"#,
     )
     .unwrap();
     assert!(draft_component.validate(ValidationProfile::Gltf20).is_err());
@@ -143,7 +143,7 @@ fn validation_rejects_dangling_core_references_and_draft_types_in_20() {
         .is_ok());
 
     let draft_components = Document::from_json_bytes(
-        br#"{"asset":{"version":"2.1"},"accessors":[{"componentType":5124,"type":"SCALAR"},{"componentType":5130,"type":"SCALAR"},{"componentType":5131,"type":"SCALAR"},{"componentType":5134,"type":"SCALAR"},{"componentType":5135,"type":"SCALAR"}]}"#,
+        br#"{"asset":{"version":"2.1"},"accessors":[{"componentType":5124,"count":0,"type":"SCALAR"},{"componentType":5130,"count":0,"type":"SCALAR"},{"componentType":5131,"count":0,"type":"SCALAR"},{"componentType":5134,"count":0,"type":"SCALAR"},{"componentType":5135,"count":0,"type":"SCALAR"}]}"#,
     )
     .unwrap();
     assert!(draft_components
@@ -236,7 +236,7 @@ fn typed_views_reference_the_lossless_document() {
 #[test]
 fn validation_covers_scene_skin_and_animation_links() {
     let document = Document::from_json_bytes(
-        br#"{"asset":{"version":"2.0"},"accessors":[{"componentType":5126,"type":"SCALAR"}],"nodes":[{}],"scenes":[{"nodes":[0]}],"scene":0,"skins":[{"joints":[0],"inverseBindMatrices":0}],"animations":[{"samplers":[{"input":0,"output":0}],"channels":[{"sampler":0,"target":{"node":0,"path":"translation"}}]}]}"#,
+        br#"{"asset":{"version":"2.0"},"accessors":[{"componentType":5126,"count":0,"type":"SCALAR"}],"nodes":[{}],"scenes":[{"nodes":[0]}],"scene":0,"skins":[{"joints":[0],"inverseBindMatrices":0}],"animations":[{"samplers":[{"input":0,"output":0}],"channels":[{"sampler":0,"target":{"node":0,"path":"translation"}}]}]}"#,
     )
     .unwrap();
     document.validate(ValidationProfile::Gltf20).unwrap();
@@ -405,6 +405,16 @@ fn compression_appends_a_decodable_draco_payload() {
 }
 
 #[test]
+fn transform_rejects_unregistered_primitive_extensions() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"extensions":{"VENDOR_binary_layout":{}}}]}]}"#;
+    let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
+    let error = import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap_err();
+    assert!(error.to_string().contains("transform-safe"));
+}
+
+#[test]
 fn compression_roundtrips_through_decompression() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
     let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
@@ -427,6 +437,49 @@ fn compression_roundtrips_through_decompression() {
 }
 
 #[test]
+fn decompression_detaches_shared_accessors() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]},{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
+    import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap();
+    import.decompress_in_place().unwrap();
+
+    let decoded_accessor = import
+        .document
+        .primitive(crate::MeshIndex(0), 0)
+        .unwrap()
+        .attributes()
+        .unwrap()
+        .iter()
+        .find(|(name, _)| name == "POSITION")
+        .unwrap()
+        .1
+        .as_u64()
+        .unwrap();
+    assert_ne!(decoded_accessor, 0);
+    assert_eq!(
+        import
+            .document
+            .primitive(crate::MeshIndex(1), 0)
+            .unwrap()
+            .attributes()
+            .unwrap()[0]
+            .1
+            .as_u64(),
+        Some(0)
+    );
+    assert_eq!(
+        import
+            .document
+            .accessor(crate::AccessorIndex(0))
+            .unwrap()
+            .buffer_view(),
+        Some(crate::BufferViewIndex(0))
+    );
+}
+
+#[test]
 fn glb_serialization_consolidates_append_only_draco_buffers() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
     let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
@@ -444,6 +497,37 @@ fn glb_serialization_consolidates_append_only_draco_buffers() {
             .num_faces(),
         1
     );
+}
+
+#[test]
+fn gltf_output_includes_appended_draco_buffer() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
+    import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap();
+
+    let output = import.to_gltf_output().unwrap();
+    assert_eq!(output.resources.len(), 1);
+    assert_eq!(output.resources[0].uri, "buffer-1.bin");
+    assert!(!output.resources[0].bytes.is_empty());
+    let reloaded = crate::parse_with_options(
+        &output.json,
+        None,
+        Some(&|uri: &str| {
+            output
+                .resources
+                .iter()
+                .find(|resource| resource.uri == uri)
+                .map(|resource| resource.bytes.clone())
+                .ok_or_else(|| draco_io::GltfError::ExternalResourceDenied(uri.into()))
+        }),
+        &draco_io::ResourceLimits::default(),
+        ValidationProfile::Gltf20,
+        &crate::ExtensionRegistry::default(),
+    )
+    .unwrap();
+    assert_eq!(reloaded.draco_primitives().count(), 1);
 }
 
 #[test]

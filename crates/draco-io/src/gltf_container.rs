@@ -107,6 +107,21 @@ mod glb_tests {
         assert_eq!(parsed.format, GltfContainerFormat::GlbV3);
         assert_eq!(parsed.bin.unwrap()[..3], [1, 2, 3]);
     }
+
+    #[test]
+    fn range_reader_materializes_only_selected_v3_chunk() {
+        let bytes = build_glb_from_json(
+            br#"{"asset":{"version":"2.1"}}"#,
+            &[1, 2, 3, 4],
+            GltfContainerFormat::GlbV3,
+        )
+        .unwrap();
+        let mut reader = GlbRangeReader::open(std::io::Cursor::new(bytes)).unwrap();
+        assert_eq!(reader.layout().chunks.len(), 2);
+        let bin = reader.layout().chunks[1];
+        assert_eq!(reader.read_chunk(bin, Some(4)).unwrap(), [1, 2, 3, 4]);
+        assert!(reader.read_chunk(bin, Some(3)).is_err());
+    }
 }
 
 impl GltfContainerFormat {
@@ -142,6 +157,57 @@ pub struct GlbLayout {
     pub format: GltfContainerFormat,
     pub length: u64,
     pub chunks: Vec<GlbChunkDescriptor>,
+}
+
+/// Seekable, range-backed GLB source.
+///
+/// Opening the source reads only headers and chunk descriptors. Callers choose
+/// which chunk to materialize and can enforce an independent quota for each
+/// range; this is the non-slice path for GLB v3 files larger than addressable
+/// memory.
+pub struct GlbRangeReader<R> {
+    input: R,
+    layout: GlbLayout,
+}
+
+impl<R: Read + Seek> GlbRangeReader<R> {
+    pub fn open(mut input: R) -> Result<Self> {
+        let layout = inspect_glb(&mut input)?;
+        Ok(Self { input, layout })
+    }
+
+    pub fn layout(&self) -> &GlbLayout {
+        &self.layout
+    }
+
+    /// Materializes one described chunk after checking the caller's limit.
+    pub fn read_chunk(
+        &mut self,
+        descriptor: GlbChunkDescriptor,
+        max_bytes: Option<usize>,
+    ) -> Result<Vec<u8>> {
+        if !self.layout.chunks.contains(&descriptor) {
+            return Err(GltfError::InvalidGlb(
+                "GLB chunk does not belong to this source".into(),
+            ));
+        }
+        let length = usize::try_from(descriptor.length).map_err(|_| {
+            GltfError::ResourceLimitExceeded("GLB chunk exceeds this platform".into())
+        })?;
+        check_limit(length, max_bytes, "GLB chunk")?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|_| GltfError::ResourceLimitExceeded("GLB chunk allocation failed".into()))?;
+        bytes.resize(length, 0);
+        self.input.seek(SeekFrom::Start(descriptor.offset))?;
+        self.input.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    pub fn into_inner(self) -> R {
+        self.input
+    }
 }
 
 /// Inspects GLB v2/v3 headers from a seekable source without allocating chunks.

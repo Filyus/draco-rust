@@ -310,16 +310,25 @@ impl<'a> Parser<'a> {
                         b'r' => out.push('\r'),
                         b't' => out.push('\t'),
                         b'u' => {
-                            let hex = self
-                                .input
-                                .get(self.pos..self.pos + 4)
-                                .ok_or("short unicode escape")?;
-                            self.pos += 4;
-                            let text =
-                                std::str::from_utf8(hex).map_err(|_| "invalid unicode escape")?;
-                            let unit = u16::from_str_radix(text, 16)
-                                .map_err(|_| "invalid unicode escape")?;
-                            out.push(char::from_u32(unit as u32).ok_or("invalid unicode scalar")?);
+                            let first = self.unicode_escape()?;
+                            let scalar = match first {
+                                0xd800..=0xdbff => {
+                                    if self.input.get(self.pos..self.pos + 2) != Some(b"\\u") {
+                                        return Err("unpaired high surrogate".into());
+                                    }
+                                    self.pos += 2;
+                                    let second = self.unicode_escape()?;
+                                    if !(0xdc00..=0xdfff).contains(&second) {
+                                        return Err("invalid low surrogate".into());
+                                    }
+                                    0x1_0000
+                                        + (u32::from(first - 0xd800) << 10)
+                                        + u32::from(second - 0xdc00)
+                                }
+                                0xdc00..=0xdfff => return Err("unpaired low surrogate".into()),
+                                value => u32::from(value),
+                            };
+                            out.push(char::from_u32(scalar).ok_or("invalid unicode scalar")?);
                         }
                         _ => return Err("invalid escape".into()),
                     }
@@ -340,18 +349,111 @@ impl<'a> Parser<'a> {
     }
     fn number(&mut self) -> Result<Value, String> {
         let start = self.pos;
-        while self
+        if self.input.get(self.pos) == Some(&b'-') {
+            self.pos += 1;
+        }
+        match self.input.get(self.pos) {
+            Some(b'0') => self.pos += 1,
+            Some(b'1'..=b'9') => {
+                self.pos += 1;
+                while self
+                    .input
+                    .get(self.pos)
+                    .is_some_and(|byte| byte.is_ascii_digit())
+                {
+                    self.pos += 1;
+                }
+            }
+            _ => return Err("invalid number".into()),
+        }
+        if self.input.get(self.pos) == Some(&b'.') {
+            self.pos += 1;
+            if !self
+                .input
+                .get(self.pos)
+                .is_some_and(|byte| byte.is_ascii_digit())
+            {
+                return Err("invalid number fraction".into());
+            }
+            while self
+                .input
+                .get(self.pos)
+                .is_some_and(|byte| byte.is_ascii_digit())
+            {
+                self.pos += 1;
+            }
+        }
+        if self
             .input
             .get(self.pos)
-            .is_some_and(|c| matches!(c, b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E'))
+            .is_some_and(|byte| matches!(byte, b'e' | b'E'))
         {
             self.pos += 1;
+            if self
+                .input
+                .get(self.pos)
+                .is_some_and(|byte| matches!(byte, b'+' | b'-'))
+            {
+                self.pos += 1;
+            }
+            if !self
+                .input
+                .get(self.pos)
+                .is_some_and(|byte| byte.is_ascii_digit())
+            {
+                return Err("invalid number exponent".into());
+            }
+            while self
+                .input
+                .get(self.pos)
+                .is_some_and(|byte| byte.is_ascii_digit())
+            {
+                self.pos += 1;
+            }
         }
         let text =
             std::str::from_utf8(&self.input[start..self.pos]).map_err(|_| "invalid number")?;
-        if text.parse::<f64>().is_err() {
-            return Err("invalid number".into());
-        }
         Ok(Value::Number(text.into()))
+    }
+
+    fn unicode_escape(&mut self) -> Result<u16, String> {
+        let hex = self
+            .input
+            .get(self.pos..self.pos + 4)
+            .ok_or("short unicode escape")?;
+        self.pos += 4;
+        let text = std::str::from_utf8(hex).map_err(|_| "invalid unicode escape")?;
+        u16::from_str_radix(text, 16).map_err(|_| "invalid unicode escape".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Value;
+
+    #[test]
+    fn parses_unicode_surrogate_pairs() {
+        assert_eq!(
+            Value::parse(br#""\ud83d\ude80""#).unwrap(),
+            Value::String("🚀".into())
+        );
+        assert!(Value::parse(br#""\ud83d""#).is_err());
+        assert!(Value::parse(br#""\ude80""#).is_err());
+    }
+
+    #[test]
+    fn enforces_json_number_grammar_without_float_range_limits() {
+        assert!(Value::parse(b"123456789012345678901234567890e999999").is_ok());
+        for invalid in [
+            b"01".as_slice(),
+            b"1.".as_slice(),
+            b"1e".as_slice(),
+            b"-".as_slice(),
+        ] {
+            assert!(
+                Value::parse(invalid).is_err(),
+                "{invalid:?} should be invalid"
+            );
+        }
     }
 }

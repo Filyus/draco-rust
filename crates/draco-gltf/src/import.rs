@@ -26,6 +26,24 @@ pub struct Import {
     provenance: Vec<String>,
 }
 
+/// A portable JSON glTF document and the companion resources it references.
+///
+/// Write `json` to the `.gltf` file and each [`GltfResource`] relative to it.
+/// Data URIs remain embedded in `json`; every materialized buffer with a
+/// non-data URI is returned exactly once in `resources`.
+#[derive(Clone, Debug)]
+pub struct GltfOutput {
+    pub json: Vec<u8>,
+    pub resources: Vec<GltfResource>,
+}
+
+/// One companion resource produced by [`Import::to_gltf_output`].
+#[derive(Clone, Debug)]
+pub struct GltfResource {
+    pub uri: String,
+    pub bytes: Vec<u8>,
+}
+
 /// Default maximum explicit nested-asset depth for [`Import::load_asset`].
 pub const DEFAULT_EXTERNAL_ASSET_DEPTH: usize = 32;
 
@@ -68,6 +86,25 @@ impl Import {
     pub fn validate(&self, extensions: &ExtensionRegistry) -> Result<()> {
         self.document.validate(self.profile)?;
         extensions.validate(&self.document)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "transform")]
+    pub(crate) fn ensure_transform_safe(&self, primitive: PrimitiveRef<'_>) -> Result<()> {
+        let Some(extensions) = primitive
+            .value()
+            .get("extensions")
+            .and_then(Value::as_object)
+        else {
+            return Ok(());
+        };
+        for (name, _) in extensions {
+            if !self.extensions.allows_binary_transform(name) {
+                return Err(Error::Extension(format!(
+                    "cannot transform primitive with extension {name:?}: its binary-reference semantics are not registered as transform-safe"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -158,6 +195,50 @@ impl Import {
         self.document.to_json_bytes()
     }
 
+    /// Serializes a self-contained `.gltf` output bundle.
+    ///
+    /// Unlike [`Import::to_bytes`] with [`crate::OutputFormat::GltfJson`],
+    /// this method returns companion buffer payloads as well. Buffers without
+    /// a URI (for example a Draco payload appended during compression) receive
+    /// a deterministic `buffer-{index}.bin` URI in the returned JSON.
+    pub fn to_gltf_output(&self) -> Result<GltfOutput> {
+        let declared = self.document.buffers().len();
+        if declared != self.resources.buffers.len() {
+            return Err(Error::ResourceLimit(format!(
+                "document declares {declared} buffers but resource store has {}",
+                self.resources.buffers.len()
+            )));
+        }
+        let mut document = self.document.clone();
+        let mut resources = Vec::new();
+        let buffers = document
+            .as_value_mut()
+            .get_mut("buffers")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| Error::Validation(vec!["buffers is not an array".into()]))?;
+        for (index, (buffer, bytes)) in buffers.iter_mut().zip(&self.resources.buffers).enumerate()
+        {
+            let uri = buffer.get("uri").and_then(Value::as_str).map(str::to_owned);
+            let uri = match uri {
+                Some(uri) if uri.starts_with("data:") => continue,
+                Some(uri) => uri,
+                None => {
+                    let uri = format!("buffer-{index}.bin");
+                    buffer["uri"] = Value::from(uri.as_str());
+                    uri
+                }
+            };
+            resources.push(GltfResource {
+                uri,
+                bytes: bytes.clone(),
+            });
+        }
+        Ok(GltfOutput {
+            json: document.to_json_bytes()?,
+            resources,
+        })
+    }
+
     /// Creates a GLB payload by consolidating resolved buffers while retaining
     /// every bufferView index and all non-resource JSON verbatim.
     fn consolidated_glb_payload(&self) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -239,6 +320,7 @@ impl Import {
                 let Some(extension) = primitive.extension(crate::KHR_DRACO_MESH_COMPRESSION) else {
                     continue;
                 };
+                self.ensure_transform_safe(primitive)?;
                 let mapping = crate::extensions::parse_draco_extension(Some(extension))?
                     .ok_or_else(|| Error::Extension("missing Draco extension".into()))?
                     .attributes;
@@ -255,13 +337,20 @@ impl Import {
             let root = self.document.as_value_mut();
             for (mesh_index, primitive_index, mapping, mesh) in &plans {
                 for (semantic, unique_id) in mapping {
-                    let accessor = root["meshes"][*mesh_index]["primitives"][*primitive_index]
-                        ["attributes"][semantic]
+                    let source_accessor = root["meshes"][*mesh_index]["primitives"]
+                        [*primitive_index]["attributes"][semantic]
                         .as_u64()
                         .and_then(|value| usize::try_from(value).ok())
                         .ok_or_else(|| {
                             Error::Extension(format!("Draco attribute {semantic} has no accessor"))
                         })?;
+                    // A glTF accessor can be shared by another primitive,
+                    // animation, skin, or morph target. Decompression only
+                    // owns this primitive reference, so always detach it
+                    // before replacing its binary layout.
+                    let accessor = clone_accessor(root, source_accessor)?;
+                    root["meshes"][*mesh_index]["primitives"][*primitive_index]["attributes"]
+                        [semantic.as_str()] = Value::from(accessor as u64);
                     let data = decoded_attribute_bytes(mesh, *unique_id)?;
                     let view = append_view(root, buffer_index, &mut bytes, &data)?;
                     let target = root["accessors"]
@@ -279,12 +368,17 @@ impl Import {
                 }
                 let indices = decoded_index_bytes(mesh)?;
                 let view = append_view(root, buffer_index, &mut bytes, &indices)?;
-                let accessor = root["meshes"][*mesh_index]["primitives"][*primitive_index]
+                let source_accessor = root["meshes"][*mesh_index]["primitives"][*primitive_index]
                     .get("indices")
                     .and_then(Value::as_u64)
                     .and_then(|value| usize::try_from(value).ok());
-                let accessor = match accessor {
-                    Some(index) => index,
+                let accessor = match source_accessor {
+                    Some(index) => {
+                        let index = clone_accessor(root, index)?;
+                        root["meshes"][*mesh_index]["primitives"][*primitive_index]["indices"] =
+                            Value::from(index as u64);
+                        index
+                    }
                     None => {
                         let accessors = root["accessors"]
                             .as_array_mut()
@@ -558,6 +652,20 @@ fn append_view(root: &mut Value, buffer: usize, bytes: &mut Vec<u8>, data: &[u8]
         ("byteLength", Value::from(data.len())),
     ]));
     Ok(index)
+}
+
+#[cfg(feature = "transform")]
+fn clone_accessor(root: &mut Value, index: usize) -> Result<usize> {
+    let accessors = root["accessors"]
+        .as_array_mut()
+        .ok_or_else(|| Error::Extension("accessors is not an array".into()))?;
+    let source = accessors
+        .get(index)
+        .cloned()
+        .ok_or_else(|| Error::Extension("Draco accessor out of range".into()))?;
+    let clone = accessors.len();
+    accessors.push(source);
+    Ok(clone)
 }
 
 pub fn parse(bytes: &[u8], profile: ValidationProfile) -> Result<Import> {

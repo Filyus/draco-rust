@@ -37,8 +37,8 @@ pub use fbx_writer::FbxWriter;
 pub use gltf_container::{
     decode_data_uri, inspect_glb, parse_glb_json_and_bin, parse_gltf_container,
     resolve_gltf_buffers, resolve_resource_uri, ExternalFilePolicy, FileResourceResolver,
-    GlbChunkDescriptor, GlbLayout, GltfBufferReference, GltfContainer, GltfContainerFormat,
-    ResourceLimits, ResourceResolver,
+    GlbChunkDescriptor, GlbLayout, GlbRangeReader, GltfBufferReference, GltfContainer,
+    GltfContainerFormat, ResourceLimits, ResourceResolver,
 };
 #[cfg(feature = "gltf")]
 pub use gltf_error::GltfError;

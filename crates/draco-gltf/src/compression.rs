@@ -63,6 +63,7 @@ impl Import {
             .document
             .primitive(mesh, primitive)
             .ok_or_else(|| Error::Extension("primitive out of range".into()))?;
+        self.ensure_transform_safe(reference)?;
         let (geometry, mapping) = self.decode_geometry_primitive(reference)?;
         let bytes = self.encode_draco_mesh(geometry, options)?;
         let buffer = self.resources.buffers.len();
