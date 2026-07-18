@@ -216,7 +216,7 @@ impl Import {
         let format = match output {
             crate::OutputFormat::GltfJson => {
                 if self.document.buffers().into_iter().any(|buffer| {
-                    buffer.uri().is_none()
+                    buffer.value().get("uri").and_then(Value::as_str).is_none()
                         && self
                             .resources
                             .buffers
