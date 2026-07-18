@@ -298,11 +298,71 @@ async function parseGltfFile(data, extension, resources = Object.create(null)) {
     if (!modules.gltf.loaded) {
         return { success: false, error: 'glTF module not loaded' };
     }
-    if (Object.keys(resources).length > 0) {
-        log('Companion resources are not loaded by the document inspector', 'warning');
+
+    const summary = modules.gltf.module.inspect_gltf(data);
+    if (!summary.success) {
+        return { ...summary, document: true, format: extension };
     }
-    const result = modules.gltf.module.inspect_gltf(data);
-    return { ...result, document: true, format: extension };
+
+    const asset = modules.gltf.module.GltfAsset.withResources(data, resources, '2.1');
+    let vertexCount = 0;
+    let triangleCount = 0;
+    let hasNormals = false;
+    let hasUvs = false;
+
+    try {
+        for (let mesh = 0; mesh < asset.meshCount(); mesh += 1) {
+            const primitiveCount = asset.primitiveCount(mesh);
+            for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
+                const geometry = asset.readPrimitive(mesh, primitive);
+                try {
+                    let primitiveVertexCount = 0;
+                    for (let attribute = 0; attribute < geometry.attributeCount(); attribute += 1) {
+                        const semantic = geometry.attributeSemantic(attribute);
+                        if (semantic === 'POSITION') {
+                            primitiveVertexCount = geometry.attributeElementCount(attribute);
+                        } else if (semantic === 'NORMAL') {
+                            hasNormals = true;
+                        } else if (semantic.startsWith('TEXCOORD_')) {
+                            hasUvs = true;
+                        }
+                    }
+
+                    vertexCount += primitiveVertexCount;
+                    const elementCount = geometry.hasIndices()
+                        ? geometry.indexCount()
+                        : primitiveVertexCount;
+                    triangleCount += triangleCountForMode(geometry.mode(), elementCount);
+                } finally {
+                    geometry.free();
+                }
+            }
+        }
+    } finally {
+        asset.free();
+    }
+
+    return {
+        ...summary,
+        document: true,
+        format: extension,
+        vertexCount,
+        triangleCount,
+        hasNormals,
+        hasUvs,
+    };
+}
+
+function triangleCountForMode(mode, elementCount) {
+    switch (mode) {
+        case 4: // TRIANGLES
+            return Math.floor(elementCount / 3);
+        case 5: // TRIANGLE_STRIP
+        case 6: // TRIANGLE_FAN
+            return Math.max(0, elementCount - 2);
+        default:
+            return 0;
+    }
 }
 
 // Parse FBX file
@@ -318,10 +378,10 @@ async function parseFbxFile(data) {
 function displayMeshInfo(result) {
     if (result.document) {
         document.getElementById('mesh-count').textContent = result.meshCount.toLocaleString();
-        document.getElementById('vertex-count').textContent = '—';
-        document.getElementById('triangle-count').textContent = result.primitiveCount.toLocaleString();
-        document.getElementById('has-normals').textContent = 'Not decoded';
-        document.getElementById('has-uvs').textContent = result.usesDraco ? 'Draco present' : 'Not decoded';
+        document.getElementById('vertex-count').textContent = result.vertexCount.toLocaleString();
+        document.getElementById('triangle-count').textContent = result.triangleCount.toLocaleString();
+        document.getElementById('has-normals').textContent = result.hasNormals ? 'Yes' : 'No';
+        document.getElementById('has-uvs').textContent = result.hasUvs ? 'Yes' : 'No';
         document.getElementById('warnings-container').style.display = 'none';
         return;
     }

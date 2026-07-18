@@ -1,10 +1,14 @@
 import { expect, test } from '@playwright/test';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   embeddedTriangle,
   externalTriangle,
   triangleBytes,
 } from './smoke-fixtures.mjs';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 test('glTF asset API reads document, geometry, GLB, and explicit resources', async ({ page }) => {
   await page.goto('/index.html');
@@ -47,4 +51,21 @@ test('glTF asset API reads document, geometry, GLB, and explicit resources', asy
   expect(result.roundtrip.success).toBe(true);
   expect(result.missing).toBe(true);
   expect(result.resolved.success).toBe(true);
+});
+
+test('converter resolves glTF companions and reports decoded geometry', async ({ page }) => {
+  await page.goto('/index.html');
+  await expect(page.locator('#gltf-status .status-text')).toHaveText('Ready');
+  await page.locator('#file-input').setInputFiles([
+    path.join(repoRoot, 'testdata', 'Fox', 'glTF', 'Fox.gltf'),
+    path.join(repoRoot, 'testdata', 'Fox', 'glTF', 'Fox.bin'),
+    path.join(repoRoot, 'testdata', 'Fox', 'glTF', 'Texture.png'),
+  ]);
+
+  await expect(page.locator('#file-name')).toHaveText('Fox.gltf (+2 resources)');
+  await expect(page.locator('#mesh-count')).toHaveText('1');
+  await expect(page.locator('#vertex-count')).toHaveText(/1(?:,|\s)?728/);
+  await expect(page.locator('#triangle-count')).toHaveText('576');
+  await expect(page.locator('#has-normals')).toHaveText('No');
+  await expect(page.locator('#has-uvs')).toHaveText('Yes');
 });
