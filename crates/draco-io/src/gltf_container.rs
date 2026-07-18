@@ -31,6 +31,75 @@ pub enum GltfContainerFormat {
     GlbV3,
 }
 
+/// Builds a GLB v2 or draft v3 container from serialized JSON and binary data.
+pub fn build_glb_from_json(
+    json: &[u8],
+    bin: &[u8],
+    format: GltfContainerFormat,
+) -> Result<Vec<u8>> {
+    let format = format.canonical();
+    if !matches!(
+        format,
+        GltfContainerFormat::GlbV2 | GltfContainerFormat::GlbV3
+    ) {
+        return Err(GltfError::InvalidGlb(
+            "GLB output requires a GLB format".into(),
+        ));
+    }
+    let mut json = json.to_vec();
+    while !json.len().is_multiple_of(4) {
+        json.push(b' ');
+    }
+    let mut bin = bin.to_vec();
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    let v3 = format == GltfContainerFormat::GlbV3;
+    let header = if v3 { 16 } else { 12 };
+    let chunk_header = if v3 { 16 } else { 8 };
+    let total = header
+        + chunk_header
+        + json.len()
+        + if bin.is_empty() {
+            0
+        } else {
+            chunk_header + bin.len()
+        };
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(&GLB_MAGIC.to_le_bytes());
+    out.extend_from_slice(&(if v3 { 3u32 } else { 2u32 }).to_le_bytes());
+    if v3 {
+        out.extend_from_slice(&(total as u64).to_le_bytes());
+    } else {
+        out.extend_from_slice(
+            &u32::try_from(total)
+                .map_err(|_| GltfError::ResourceLimitExceeded("GLB v2 exceeds u32".into()))?
+                .to_le_bytes(),
+        );
+    }
+    for (kind, bytes) in [(GLB_CHUNK_JSON, &json), (GLB_CHUNK_BIN, &bin)] {
+        if kind == GLB_CHUNK_BIN && bytes.is_empty() {
+            continue;
+        }
+        if v3 {
+            out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            out.extend_from_slice(&kind.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+        } else {
+            out.extend_from_slice(
+                &u32::try_from(bytes.len())
+                    .map_err(|_| {
+                        GltfError::ResourceLimitExceeded("GLB v2 chunk exceeds u32".into())
+                    })?
+                    .to_le_bytes(),
+            );
+            out.extend_from_slice(&kind.to_le_bytes());
+        }
+        out.extend_from_slice(bytes);
+    }
+    Ok(out)
+}
+
 impl GltfContainerFormat {
     /// Whether this is either binary GLB container version.
     pub const fn is_glb(self) -> bool {

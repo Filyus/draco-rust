@@ -35,6 +35,8 @@ pub use draco_io::{
 pub enum OutputFormat {
     SameAsInput,
     GltfJson,
+    GlbV2,
+    GlbV3,
 }
 
 /// Errors returned by native glTF parsing and Draco operations.

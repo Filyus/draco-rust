@@ -56,8 +56,24 @@ impl NativeImport {
     }
 
     pub fn to_bytes(&self, output: crate::OutputFormat) -> Result<Vec<u8>> {
-        let _ = output;
-        Ok(self.document.to_json_bytes()?)
+        let json = self.document.to_json_bytes()?;
+        let format = match output {
+            crate::OutputFormat::GltfJson => return Ok(json),
+            crate::OutputFormat::SameAsInput => self.input_format,
+            crate::OutputFormat::GlbV2 => draco_io::GltfContainerFormat::GlbV2,
+            crate::OutputFormat::GlbV3 => draco_io::GltfContainerFormat::GlbV3,
+        };
+        if format.is_glb() {
+            let bin = self
+                .resources
+                .buffers
+                .first()
+                .map_or(&[][..], Vec::as_slice);
+            return Ok(draco_io::gltf_container::build_glb_from_json(
+                &json, bin, format,
+            )?);
+        }
+        Ok(json)
     }
 
     /// Materializes all Draco primitives as ordinary indexed triangle geometry.
