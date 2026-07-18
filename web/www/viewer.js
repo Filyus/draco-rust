@@ -166,25 +166,32 @@ vec3 fresnelSchlickRoughness(float cosTheta, vec3 f0, float roughness) {
     return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - cosTheta, 5.0);
 }
 
-// A small analytic studio environment with a neutral matte floor and broad
-// softboxes. It keeps reflections readable without an HDR decoder or a
-// prefiltered cube map, while avoiding a colored floor cast on the asset.
+// Analytic radiance shared with the visible background below. Keeping the
+// functions byte-for-byte equivalent at roughness 0 means the asset reflects
+// the same floor, horizon, and softboxes that the user sees.
 vec3 studioRadiance(vec3 direction, float roughness) {
-    float up = clamp(direction.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 sharp = mix(vec3(0.045, 0.055, 0.075), vec3(0.30, 0.39, 0.57), up);
-    sharp = mix(sharp, vec3(0.22, 0.27, 0.37), exp(-abs(direction.y) * 13.0) * 0.14);
+    float sky = smoothstep(-0.035, 0.055, direction.y);
+    vec3 floor = vec3(0.025, 0.032, 0.047);
+    vec3 skyColor = mix(vec3(0.105, 0.145, 0.225), vec3(0.40, 0.51, 0.70), max(direction.y, 0.0));
+    vec3 sharp = mix(floor, skyColor, sky);
+    sharp = mix(sharp, vec3(0.23, 0.29, 0.39), exp(-abs(direction.y) * 20.0) * 0.12);
     vec3 keyDirection = normalize(vec3(-0.45, 0.78, 0.42));
     vec3 rimDirection = normalize(vec3(0.52, 0.42, -0.72));
-    float key = pow(max(dot(direction, keyDirection), 0.0), 72.0);
-    float rim = pow(max(dot(direction, rimDirection), 0.0), 36.0);
-    sharp += vec3(2.7, 2.75, 2.85) * key + vec3(0.62, 0.78, 1.05) * rim;
+    float key = pow(max(dot(direction, keyDirection), 0.0), 56.0);
+    float rim = pow(max(dot(direction, rimDirection), 0.0), 30.0);
+    sharp += vec3(3.75, 3.85, 4.0) * key + vec3(0.95, 1.18, 1.65) * rim;
     vec3 blurred = vec3(0.18, 0.22, 0.29);
     return mix(sharp, blurred, roughness * roughness);
 }
 
 vec3 studioIrradiance(vec3 normal) {
     float up = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
-    return mix(vec3(0.10, 0.115, 0.14), vec3(0.40, 0.47, 0.60), up);
+    vec3 diffuse = mix(vec3(0.075, 0.09, 0.12), vec3(0.36, 0.44, 0.58), up);
+    vec3 keyDirection = normalize(vec3(-0.45, 0.78, 0.42));
+    vec3 rimDirection = normalize(vec3(0.52, 0.42, -0.72));
+    return diffuse
+        + vec3(0.15, 0.155, 0.16) * max(dot(normal, keyDirection), 0.0)
+        + vec3(0.035, 0.05, 0.08) * max(dot(normal, rimDirection), 0.0);
 }
 
 vec3 directPbrLight(vec3 N, vec3 V, vec3 L, vec3 radiance, vec3 baseColor, float metallic, float roughness) {
@@ -328,8 +335,7 @@ uniform mat4 uInverseView;
 out vec4 outColor;
 
 vec3 studioRadiance(vec3 direction) {
-    // A neutral floor / sky split gives the world-space horizon a clear edge
-    // without tinting the lower part of the model.
+    // Keep in sync with the material shader's studioRadiance(..., 0.0).
     float sky = smoothstep(-0.035, 0.055, direction.y);
     vec3 floor = vec3(0.025, 0.032, 0.047);
     vec3 skyColor = mix(vec3(0.105, 0.145, 0.225), vec3(0.40, 0.51, 0.70), max(direction.y, 0.0));
@@ -1072,10 +1078,10 @@ export class Viewer {
         gl.useProgram(this.program);
         gl.uniformMatrix4fv(this.uniforms.uProjection, false, this._projection);
         gl.uniformMatrix4fv(this.uniforms.uView, false, this._view);
-        gl.uniform3fv(this.uniforms.uLightDir, this._lightDir || (this._lightDir = new Float32Array([0.5, 0.8, 0.6])));
-        gl.uniform3fv(this.uniforms.uLightColor, this._lightColor || (this._lightColor = new Float32Array([1.0, 0.97, 0.9])));
-        gl.uniform3fv(this.uniforms.uFillDir, this._fillDir || (this._fillDir = new Float32Array([-0.6, 0.3, -0.4])));
-        gl.uniform3fv(this.uniforms.uFillColor, this._fillColor || (this._fillColor = new Float32Array([0.4, 0.45, 0.6])));
+        gl.uniform3fv(this.uniforms.uLightDir, this._lightDir || (this._lightDir = new Float32Array([-0.45, 0.78, 0.42])));
+        gl.uniform3fv(this.uniforms.uLightColor, this._lightColor || (this._lightColor = new Float32Array([1.0, 1.03, 1.07])));
+        gl.uniform3fv(this.uniforms.uFillDir, this._fillDir || (this._fillDir = new Float32Array([0.52, 0.42, -0.72])));
+        gl.uniform3fv(this.uniforms.uFillColor, this._fillColor || (this._fillColor = new Float32Array([0.25, 0.32, 0.45])));
         gl.uniform3fv(this.uniforms.uCameraPos, eye);
 
         for (const renderable of this.scene.renderables) {
