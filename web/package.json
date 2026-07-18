@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "test:node": "node tests/node-smoke.mjs",
+    "test:document-features": "node tests/document-features-smoke.mjs",
     "test:gltf-write": "node tests/gltf-write-smoke.mjs",
     "test:gltf-draco-write": "node tests/gltf-write-smoke.mjs --draco",
     "test:browser": "playwright test --config tests/playwright.config.mjs"

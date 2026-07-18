@@ -20,6 +20,18 @@ const [documentApi, compactApi] = await Promise.all([
 ]);
 const input = new TextEncoder().encode(embeddedTriangle());
 const document = new documentApi.GltfDocument(input, '2.0');
+if (
+  typeof document.decompress === 'function'
+  || typeof document.compressPrimitive === 'function'
+  || documentApi.GltfDocument.prototype.decompress
+  || documentApi.GltfDocument.prototype.compressPrimitive
+) {
+  throw new Error('default document artifact unexpectedly includes write or encoder API');
+}
+const documentTypes = await readFile(resolve(pkg, 'gltf_document.d.ts'), 'utf8');
+if (documentTypes.includes('decompress') || documentTypes.includes('compressPrimitive')) {
+  throw new Error('default document declarations unexpectedly include write or encoder API');
+}
 const summary = document.summary();
 if (!summary.success || summary.meshCount !== 1 || summary.primitiveCount !== 1) {
   throw new Error(`document smoke failed: ${JSON.stringify(summary)}`);

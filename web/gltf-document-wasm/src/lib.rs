@@ -3,9 +3,11 @@
 use std::collections::BTreeMap;
 
 use draco_gltf::{
-    parse, parse_with_options, CompressionOptions, Document, ExtensionRegistry, Import, MeshIndex,
-    OutputFormat, ResourceLimits, ResourceResolver, ValidationProfile,
+    parse, parse_with_options, Document, ExtensionRegistry, Import, OutputFormat, ResourceLimits,
+    ResourceResolver, ValidationProfile,
 };
+#[cfg(feature = "draco-encode")]
+use draco_gltf::{CompressionOptions, MeshIndex};
 use js_sys::{Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 
@@ -274,7 +276,9 @@ impl GltfDocument {
             .ok_or_else(|| JsValue::from_str("glTF object index is out of range"))
     }
 
-    /// Compresses one ordinary primitive with the document-preserving transform.
+    /// Compresses one ordinary primitive with document-preserving Draco storage.
+    #[cfg(feature = "draco-encode")]
+    #[wasm_bindgen(js_name = compressPrimitive)]
     pub fn compress_primitive(
         &mut self,
         mesh: usize,
@@ -297,6 +301,7 @@ impl GltfDocument {
     }
 
     /// Materializes every Draco primitive atomically into ordinary geometry.
+    #[cfg(feature = "write")]
     pub fn decompress(&mut self) -> Result<(), JsValue> {
         self.import.decompress_in_place().map_err(wasm_error)
     }

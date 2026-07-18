@@ -31,7 +31,7 @@ const WASM_OPT_ARGS: &[&str] = &[
     "--enable-sign-ext",
     "--enable-mutable-globals",
 ];
-const GLTF_DOCUMENT_GZIP_BUDGET: usize = 164 * 1024;
+const GLTF_DOCUMENT_GZIP_BUDGET: usize = 56 * 1024;
 const GLTF_COMPACT_GZIP_BUDGET: usize = 112 * 1024;
 
 #[derive(Clone, Debug)]
@@ -131,15 +131,29 @@ fn run() -> Result<(), String> {
     if failed.is_empty() && !config.debug && !config.no_optimize {
         if modules.contains(&"gltf-document-wasm") {
             let document_wasm = config.output_dir.join("gltf_document_bg.wasm");
-            match check_wasm_size(&document_wasm, GLTF_DOCUMENT_GZIP_BUDGET, "glTF document") {
-                Ok((raw_size, gzip_size)) => println!(
-                    "glTF document size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB / {:.0} KiB budget)",
-                    gzip_size as f64 / 1024.0,
-                    GLTF_DOCUMENT_GZIP_BUDGET as f64 / 1024.0
-                ),
-                Err(error) => {
-                    eprintln!("Error: {error}");
-                    failed.push("gltf-document-size".to_string());
+            if config.features.is_empty() {
+                match check_wasm_size(&document_wasm, GLTF_DOCUMENT_GZIP_BUDGET, "glTF document") {
+                    Ok((raw_size, gzip_size)) => println!(
+                        "glTF document size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB / {:.0} KiB budget)",
+                        gzip_size as f64 / 1024.0,
+                        GLTF_DOCUMENT_GZIP_BUDGET as f64 / 1024.0
+                    ),
+                    Err(error) => {
+                        eprintln!("Error: {error}");
+                        failed.push("gltf-document-size".to_string());
+                    }
+                }
+            } else {
+                match measure_wasm_size(&document_wasm) {
+                    Ok((raw_size, gzip_size)) => println!(
+                        "glTF document ({}) size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB)",
+                        config.features.join(","),
+                        gzip_size as f64 / 1024.0
+                    ),
+                    Err(error) => {
+                        eprintln!("Error: {error}");
+                        failed.push("gltf-document-size".to_string());
+                    }
                 }
             }
         }

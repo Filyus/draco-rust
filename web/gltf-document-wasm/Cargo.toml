@@ -16,9 +16,15 @@ crate-type = ["cdylib", "rlib"]
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 console_error_panic_hook = { workspace = true, optional = true }
-draco-gltf = { path = "../../crates/draco-gltf", default-features = false, features = ["full"] }
+draco-gltf = { path = "../../crates/draco-gltf", default-features = false, features = ["document", "resources", "scene-validation"] }
 draco-io = { path = "../../crates/draco-io", default-features = false, features = ["gltf"] }
 
 [features]
 default = []
 console_error_panic_hook = ["dep:console_error_panic_hook"]
+# Materialize Draco primitives as ordinary accessors. Parsing and lossless
+# serialization remain available without geometry or codec features.
+write = ["draco-gltf/write", "draco-gltf/draco-decode"]
+# Add document-preserving Draco compression. This intentionally remains
+# separate from raw write/decompression because it pulls in the encoder.
+draco-encode = ["write", "draco-gltf/draco-encode"]
