@@ -20,7 +20,11 @@ pub struct NativeImport {
     pub input_format: GltfContainerFormat,
     profile: ValidationProfile,
     extensions: ExtensionRegistry,
+    provenance: Vec<String>,
 }
+
+/// Default maximum explicit nested-asset depth for [`NativeImport::load_asset`].
+pub const DEFAULT_EXTERNAL_ASSET_DEPTH: usize = 32;
 
 impl NativeImport {
     pub fn validate(&self, extensions: &ExtensionRegistry) -> Result<()> {
@@ -303,6 +307,12 @@ impl NativeImport {
         self.document.files().into_iter().map(|file| file.index())
     }
 
+    /// URI chain leading to this import. It is intended for diagnostics and
+    /// explicit cycle detection; it never triggers recursive loading itself.
+    pub fn provenance(&self) -> &[String] {
+        &self.provenance
+    }
+
     /// Explicitly resolves and parses one nested glTF file.
     pub fn load_asset(
         &self,
@@ -312,15 +322,87 @@ impl NativeImport {
         profile: ValidationProfile,
         extensions: &ExtensionRegistry,
     ) -> Result<Self> {
-        let uri = self
+        self.load_asset_with_depth(
+            file,
+            resolver,
+            limits,
+            profile,
+            extensions,
+            DEFAULT_EXTERNAL_ASSET_DEPTH,
+        )
+    }
+
+    /// Explicitly loads one nested asset with a caller-selected graph depth limit.
+    pub fn load_asset_with_depth(
+        &self,
+        file: FileIndex,
+        resolver: &dyn ResourceResolver,
+        limits: &ResourceLimits,
+        profile: ValidationProfile,
+        extensions: &ExtensionRegistry,
+        max_depth: usize,
+    ) -> Result<Self> {
+        if self.provenance.len() >= max_depth {
+            return Err(Error::ResourceLimit(format!(
+                "nested glTF asset depth exceeds {max_depth}"
+            )));
+        }
+        let entry = self
             .document
-            .files()
-            .get(file)
-            .and_then(|file| file.value().get("uri"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::Extension(format!("file {} has no external URI", file.0)))?;
-        let bytes = draco_io::resolve_resource_uri(uri, Some(resolver), limits.max_resource_bytes)?;
-        parse_native_with_options(&bytes, None, Some(resolver), limits, profile, extensions)
+            .file(file)
+            .ok_or_else(|| Error::Extension(format!("file {} is out of range", file.0)))?;
+        let source = entry.uri().map(str::to_owned).unwrap_or_else(|| {
+            format!(
+                "bufferView:{}",
+                entry.value()["bufferView"].as_u64().unwrap_or(u64::MAX)
+            )
+        });
+        if self.provenance.iter().any(|ancestor| ancestor == &source) {
+            return Err(Error::Extension(format!(
+                "cyclic external glTF asset reference: {source}"
+            )));
+        }
+        let bytes = if let Some(uri) = entry.uri() {
+            draco_io::resolve_resource_uri(uri, Some(resolver), limits.max_resource_bytes)?
+        } else {
+            self.embedded_file_bytes(entry.value())?
+        };
+        let mut loaded =
+            parse_native_with_options(&bytes, None, Some(resolver), limits, profile, extensions)?;
+        loaded.provenance = self.provenance.clone();
+        loaded.provenance.push(source);
+        Ok(loaded)
+    }
+
+    fn embedded_file_bytes(&self, file: &Value) -> Result<Vec<u8>> {
+        let view = file
+            .get("bufferView")
+            .and_then(Value::as_u64)
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or_else(|| Error::Extension("file has neither uri nor bufferView".into()))?;
+        let view = self
+            .document
+            .buffer_view(crate::BufferViewIndex(view))
+            .ok_or_else(|| Error::Extension("file bufferView is out of range".into()))?;
+        let buffer = view
+            .buffer()
+            .ok_or_else(|| Error::Extension("file bufferView has no buffer".into()))?;
+        let bytes = self
+            .resources
+            .buffers
+            .get(buffer.0)
+            .ok_or_else(|| Error::ResourceLimit("file buffer is not materialized".into()))?;
+        let start = usize::try_from(view.byte_offset())
+            .map_err(|_| Error::ResourceLimit("file byteOffset exceeds this platform".into()))?;
+        let length = view
+            .byte_length()
+            .and_then(|length| usize::try_from(length).ok())
+            .ok_or_else(|| Error::Extension("file bufferView has no byteLength".into()))?;
+        let end = start
+            .checked_add(length)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(|| Error::Extension("file bufferView is outside its buffer".into()))?;
+        Ok(bytes[start..end].to_vec())
     }
 }
 
@@ -451,5 +533,6 @@ pub fn parse_native_with_options(
         input_format: container.format,
         profile,
         extensions: extensions.clone(),
+        provenance: Vec::new(),
     })
 }

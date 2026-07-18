@@ -106,6 +106,52 @@ fn validation_covers_scene_skin_and_animation_links() {
 }
 
 #[test]
+fn explicit_asset_loading_tracks_provenance_and_rejects_cycles() {
+    let root = parse_native(
+        br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf"}]}"#,
+        ValidationProfile::Gltf21Draft,
+    )
+    .unwrap();
+    let resolver = |uri: &str| match uri {
+        "child.gltf" => {
+            Ok(br#"{"asset":{"version":"2.1"},"files":[{"uri":"root.gltf"}]}"#.to_vec())
+        }
+        "root.gltf" => {
+            Ok(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf"}]}"#.to_vec())
+        }
+        _ => Err(draco_io::GltfError::ExternalResourceDenied(uri.into())),
+    };
+    let child = root
+        .load_asset(
+            crate::FileIndex(0),
+            &resolver,
+            &draco_io::ResourceLimits::default(),
+            ValidationProfile::Gltf21Draft,
+            &crate::ExtensionRegistry::default(),
+        )
+        .unwrap();
+    assert_eq!(child.provenance(), ["child.gltf"]);
+    let root_again = child
+        .load_asset(
+            crate::FileIndex(0),
+            &resolver,
+            &draco_io::ResourceLimits::default(),
+            ValidationProfile::Gltf21Draft,
+            &crate::ExtensionRegistry::default(),
+        )
+        .unwrap();
+    assert!(root_again
+        .load_asset(
+            crate::FileIndex(0),
+            &resolver,
+            &draco_io::ResourceLimits::default(),
+            ValidationProfile::Gltf21Draft,
+            &crate::ExtensionRegistry::default(),
+        )
+        .is_err());
+}
+
+#[test]
 fn native_import_reads_json() {
     let import = parse_native(
         br#"{"asset":{"version":"2.1"},"buffers":[]}"#,

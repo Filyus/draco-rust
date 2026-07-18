@@ -33,7 +33,9 @@ pub use compact::{CompactDocument, CompactMeshRange};
 mod native_import;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_import::open_native;
-pub use native_import::{parse_native, parse_native_with_options, NativeImport};
+pub use native_import::{
+    parse_native, parse_native_with_options, NativeImport, DEFAULT_EXTERNAL_ASSET_DEPTH,
+};
 
 pub use draco_io::{
     ExternalFilePolicy, FileResourceResolver, GltfContainerFormat, GltfError, ResourceLimits,
