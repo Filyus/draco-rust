@@ -59,6 +59,10 @@ pub use extensions::{
     DracoExtension, ExtensionHandler, ExtensionRegistry, ExtensionValidationContext, ResourceStore,
     KHR_DRACO_MESH_COMPRESSION,
 };
+mod native_import;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native_import::open_native;
+pub use native_import::{parse_native, parse_native_with_options, NativeImport};
 
 /// Re-export so callers can use the scene model without depending on `gltf`
 /// directly.
