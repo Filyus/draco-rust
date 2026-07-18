@@ -106,7 +106,12 @@ mod native_glb_tests {
 
     #[test]
     fn native_glb_v3_builder_roundtrips_container_layout() {
-        let bytes = build_glb_from_json(br#"{"asset":{"version":"2.1"}}"#, &[1, 2, 3], GltfContainerFormat::GlbV3).unwrap();
+        let bytes = build_glb_from_json(
+            br#"{"asset":{"version":"2.1"}}"#,
+            &[1, 2, 3],
+            GltfContainerFormat::GlbV3,
+        )
+        .unwrap();
         let parsed = parse_gltf_container(&bytes).unwrap();
         assert_eq!(parsed.format, GltfContainerFormat::GlbV3);
         assert_eq!(parsed.bin.unwrap()[..3], [1, 2, 3]);
