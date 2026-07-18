@@ -1,4 +1,44 @@
-use crate::{parse, Document, ValidationProfile};
+use crate::{parse, Document, ExtensionHandler, ExtensionRegistry, ValidationProfile};
+
+struct VendorBinaryLayout;
+
+impl ExtensionHandler for VendorBinaryLayout {
+    fn name(&self) -> &'static str {
+        "VENDOR_binary_layout"
+    }
+    fn allows_binary_transform(&self) -> bool {
+        true
+    }
+    fn collect_binary_references(
+        &self,
+        document: &Document,
+        _accessors: &mut [bool],
+        buffer_views: &mut [bool],
+    ) -> crate::Result<()> {
+        let index = document.as_value()["extensions"][self.name()]["bufferView"]
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|index| *index < buffer_views.len())
+            .ok_or_else(|| crate::Error::Extension("vendor bufferView is invalid".into()))?;
+        buffer_views[index] = true;
+        Ok(())
+    }
+    fn remap_binary_references(
+        &self,
+        document: &mut Document,
+        _accessors: &[Option<usize>],
+        buffer_views: &[Option<usize>],
+    ) -> crate::Result<()> {
+        let value = &mut document.as_value_mut()["extensions"][self.name()]["bufferView"];
+        let index = value
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .and_then(|index| buffer_views.get(index).and_then(|value| *value))
+            .ok_or_else(|| crate::Error::Extension("vendor bufferView was removed".into()))?;
+        *value = crate::JsonValue::from(index);
+        Ok(())
+    }
+}
 
 #[test]
 fn document_preserves_untouched_json() {
@@ -397,9 +437,17 @@ fn import_reads_json() {
 fn compression_appends_a_decodable_draco_payload() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
     let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
-    import
+    let report = import
         .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
         .unwrap();
+    assert_eq!(report.mode, crate::CompressionMode::DracoOnly);
+    assert_eq!(report.compressed_primitives, 1);
+    assert!(report.encoded_bytes > 0);
+    assert!(report.output_bytes >= report.encoded_bytes);
+    assert_eq!(
+        report.reclaimed_bytes,
+        36usize.saturating_sub(report.output_bytes)
+    );
     let primitive = import.draco_primitives().next().unwrap();
     assert_eq!(import.decode_primitive(primitive).unwrap().num_faces(), 1);
     import.document.validate(ValidationProfile::Gltf20).unwrap();
@@ -527,6 +575,37 @@ fn transform_rejects_unregistered_primitive_extensions() {
 }
 
 #[test]
+fn registered_extension_remaps_declared_binary_references() {
+    let input = br#"{"asset":{"version":"2.0"},"extensions":{"VENDOR_binary_layout":{"bufferView":0}},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut registry = ExtensionRegistry::default();
+    registry.register(VendorBinaryLayout).unwrap();
+    let mut import = crate::parse_with_options(
+        input,
+        None,
+        None,
+        &draco_io::ResourceLimits::default(),
+        ValidationProfile::Gltf20,
+        &registry,
+    )
+    .unwrap();
+    import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap();
+    let view = import.document.as_value()["extensions"]["VENDOR_binary_layout"]["bufferView"]
+        .as_u64()
+        .unwrap() as usize;
+    assert!(view < import.document.buffer_views().len());
+    assert_eq!(
+        import
+            .document
+            .buffer_view(crate::BufferViewIndex(view))
+            .unwrap()
+            .buffer(),
+        Some(crate::BufferIndex(0))
+    );
+}
+
+#[test]
 fn compression_roundtrips_through_decompression() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
     let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
@@ -640,6 +719,48 @@ fn gltf_output_includes_appended_draco_buffer() {
     )
     .unwrap();
     assert_eq!(reloaded.draco_primitives().count(), 1);
+}
+
+#[test]
+fn json_only_output_rejects_materialized_companion_buffers() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
+    import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap();
+    let error = import.to_bytes(crate::OutputFormat::GltfJson).unwrap_err();
+    assert!(error.to_string().contains("to_gltf_output"));
+}
+
+#[test]
+fn compression_output_limit_is_atomic() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
+    let before = import.document.to_json_bytes().unwrap();
+    let error = import
+        .compress_primitive(
+            crate::MeshIndex(0),
+            0,
+            crate::CompressionOptions {
+                max_output_bytes: Some(0),
+                ..crate::CompressionOptions::default()
+            },
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("limit"));
+    assert_eq!(import.document.to_json_bytes().unwrap(), before);
+}
+
+#[test]
+fn draco_only_deduplicates_overlapping_retained_ranges() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36},{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"images":[{"bufferView":1,"mimeType":"application/octet-stream"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]},{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
+    let report = import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap();
+    assert!(report.output_bytes <= report.encoded_bytes + 39);
+    assert_eq!(import.resources.buffers.len(), 1);
+    assert_eq!(import.document.buffer_views().len(), 3);
 }
 
 #[test]

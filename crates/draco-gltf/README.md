@@ -44,7 +44,10 @@ only the JSON representation. Draco transforms clone changed accessors before
 materializing them, so accessors shared with animations, skins, morph targets,
 or other primitives remain intact. A transform also rejects an extension on
 the changed primitive unless its registered handler explicitly declares its
-binary-reference semantics transform-safe.
+binary-reference semantics transform-safe and provides its accessor/buffer-view
+reference collect/remap contract. `CompressionOptions::max_output_bytes` caps
+resolved binary output atomically; `CompressionReport` records the mode,
+encoded bytes, final bytes, and reclaimed bytes.
 
 ## Features
 

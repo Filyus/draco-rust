@@ -36,7 +36,7 @@ fn detach_draco_only_accessors(
     mesh_index: usize,
     primitive_index: usize,
     mapping: &[(String, u32)],
-    geometry: &draco_core::Mesh,
+    layout: &DracoGeometryLayout,
 ) -> Result<()> {
     for (semantic, unique_id) in mapping {
         let source = root["meshes"][mesh_index]["primitives"][primitive_index]["attributes"]
@@ -47,15 +47,19 @@ fn detach_draco_only_accessors(
         let accessor = clone_accessor(root, source)?;
         root["meshes"][mesh_index]["primitives"][primitive_index]["attributes"]
             [semantic.as_str()] = crate::JsonValue::from(accessor as u64);
-        let attribute = geometry.attribute_by_unique_id(*unique_id).ok_or_else(|| {
-            Error::Extension(format!("encoded Draco attribute {unique_id} is missing"))
-        })?;
+        let attribute = layout
+            .attributes
+            .iter()
+            .find(|attribute| attribute.unique_id == *unique_id)
+            .ok_or_else(|| {
+                Error::Extension(format!("encoded Draco attribute {unique_id} is missing"))
+            })?;
         set_draco_accessor_layout(
             root,
             accessor,
-            geometry.num_points(),
-            attribute.num_components(),
-            attribute.data_type(),
+            layout.points,
+            attribute.components,
+            attribute.data_type,
         )?;
     }
 
@@ -76,14 +80,44 @@ fn detach_draco_only_accessors(
     };
     root["meshes"][mesh_index]["primitives"][primitive_index]["indices"] =
         crate::JsonValue::from(accessor as u64);
-    set_draco_accessor_layout(
-        root,
-        accessor,
-        geometry.num_faces() * 3,
-        1,
-        DataType::Uint32,
-    )?;
+    set_draco_accessor_layout(root, accessor, layout.faces * 3, 1, DataType::Uint32)?;
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct DracoAttributeLayout {
+    unique_id: u32,
+    components: u8,
+    data_type: DataType,
+}
+
+struct DracoGeometryLayout {
+    points: usize,
+    faces: usize,
+    attributes: Vec<DracoAttributeLayout>,
+}
+
+impl DracoGeometryLayout {
+    fn from_mesh(mesh: &draco_core::Mesh, mapping: &[(String, u32)]) -> Result<Self> {
+        let attributes = mapping
+            .iter()
+            .map(|(_, unique_id)| {
+                let attribute = mesh.attribute_by_unique_id(*unique_id).ok_or_else(|| {
+                    Error::Extension(format!("encoded Draco attribute {unique_id} is missing"))
+                })?;
+                Ok(DracoAttributeLayout {
+                    unique_id: *unique_id,
+                    components: attribute.num_components(),
+                    data_type: attribute.data_type(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            points: mesh.num_points(),
+            faces: mesh.num_faces(),
+            attributes,
+        })
+    }
 }
 
 fn clone_accessor(root: &mut crate::JsonValue, source: usize) -> Result<usize> {
@@ -146,34 +180,51 @@ fn set_draco_accessor_layout(
 fn compact_draco_only_resources(
     document: &mut crate::Document,
     buffers: &mut Vec<Vec<u8>>,
+    extensions: &crate::ExtensionRegistry,
+    max_output_bytes: Option<usize>,
 ) -> Result<()> {
-    let root = document.as_value_mut();
-    let used_accessors = collect_used_accessors(root)?;
-    let accessor_map = prune_accessors(root, &used_accessors)?;
-    remap_accessor_references(root, &accessor_map)?;
+    let used_accessors = collect_used_accessors(document.as_value(), extensions, document)?;
+    let accessor_map = {
+        let root = document.as_value_mut();
+        let accessor_map = prune_accessors(root, &used_accessors)?;
+        remap_accessor_references(root, &accessor_map)?;
+        accessor_map
+    };
+    let view_identity = (0..document.buffer_views().len())
+        .map(Some)
+        .collect::<Vec<_>>();
+    extensions.remap_binary_references(document, &accessor_map, &view_identity)?;
 
-    let used_views = collect_used_views(root)?;
-    let old_views = root["bufferViews"]
+    let used_views = collect_used_views(document.as_value(), extensions, document)?;
+    let old_views = document.as_value_mut()["bufferViews"]
         .as_array_mut()
-        .ok_or_else(|| Error::Validation(vec!["bufferViews is not an array".into()]))?;
-    let old_views = std::mem::take(old_views);
+        .ok_or_else(|| Error::Validation(vec!["bufferViews is not an array".into()]))
+        .map(std::mem::take)?;
     if old_views.len() != used_views.len() {
         return Err(Error::Validation(vec![
             "bufferViews changed while compacting Draco resources".into(),
         ]));
     }
-    let mut view_map = vec![None; old_views.len()];
-    let mut compacted = Vec::new();
-    let mut new_views = Vec::new();
-    for (index, mut view) in old_views.into_iter().enumerate() {
+    #[derive(Clone, Copy)]
+    struct Range {
+        buffer: usize,
+        start: usize,
+        end: usize,
+        output_offset: usize,
+    }
+
+    let mut ranges = Vec::new();
+    for (index, view) in old_views.iter().enumerate() {
         if !used_views[index] {
             continue;
         }
-        let buffer = view
+        let buffer_index = view
             .get("buffer")
             .and_then(crate::JsonValue::as_u64)
             .and_then(|value| usize::try_from(value).ok())
-            .and_then(|index| buffers.get(index))
+            .ok_or_else(|| Error::Validation(vec!["bufferView buffer is invalid".into()]))?;
+        let buffer = buffers
+            .get(buffer_index)
             .ok_or_else(|| Error::Validation(vec!["bufferView buffer is invalid".into()]))?;
         let start = view
             .get("byteOffset")
@@ -190,27 +241,108 @@ fn compact_draco_only_resources(
             .checked_add(length)
             .filter(|end| *end <= buffer.len())
             .ok_or_else(|| Error::Validation(vec!["bufferView range is invalid".into()]))?;
-        while !compacted.len().is_multiple_of(4) {
-            compacted.push(0);
+        ranges.push((
+            index,
+            Range {
+                buffer: buffer_index,
+                start,
+                end,
+                output_offset: 0,
+            },
+        ));
+    }
+    ranges.sort_unstable_by_key(|(_, range)| (range.buffer, range.start, range.end));
+    let mut blocks = Vec::<Range>::new();
+    let mut block_for_view = vec![usize::MAX; old_views.len()];
+    for (view, range) in ranges {
+        let last_index = blocks.len().checked_sub(1);
+        let coalesces = last_index.is_some_and(|index| {
+            let last = blocks[index];
+            last.buffer == range.buffer && range.start <= last.end
+        });
+        if coalesces {
+            let index = last_index.expect("coalescing has a preceding range");
+            blocks[index].end = blocks[index].end.max(range.end);
+            block_for_view[view] = index;
+        } else {
+            block_for_view[view] = blocks.len();
+            blocks.push(range);
         }
-        let offset = compacted.len();
-        compacted.extend_from_slice(&buffer[start..end]);
+    }
+    let mut compacted = Vec::new();
+    for block in &mut blocks {
+        let padding = (4 - compacted.len() % 4) % 4;
+        reserve_output(&mut compacted, padding, max_output_bytes)?;
+        compacted.resize(compacted.len() + padding, 0);
+        block.output_offset = compacted.len();
+        let length = block.end - block.start;
+        reserve_output(&mut compacted, length, max_output_bytes)?;
+        compacted.extend_from_slice(&buffers[block.buffer][block.start..block.end]);
+    }
+    let mut view_map = vec![None; old_views.len()];
+    let mut new_views = Vec::new();
+    for (index, mut view) in old_views.into_iter().enumerate() {
+        if !used_views[index] {
+            continue;
+        }
+        let start = view
+            .get("byteOffset")
+            .and_then(crate::JsonValue::as_u64)
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| Error::ResourceLimit("bufferView offset exceeds this platform".into()))?
+            .unwrap_or(0);
+        let block = blocks
+            .get(block_for_view[index])
+            .ok_or_else(|| Error::Validation(vec!["bufferView range was not planned".into()]))?;
         view["buffer"] = crate::JsonValue::from(0usize);
-        view["byteOffset"] = crate::JsonValue::from(offset);
+        view["byteOffset"] = crate::JsonValue::from(block.output_offset + start - block.start);
         view_map[index] = Some(new_views.len());
         new_views.push(view);
     }
-    root["bufferViews"] = crate::JsonValue::Array(new_views);
-    remap_buffer_view_references(root, &view_map)?;
-    root["buffers"] = crate::JsonValue::Array(vec![crate::JsonValue::object([(
-        "byteLength",
-        crate::JsonValue::from(compacted.len()),
-    )])]);
+    {
+        let root = document.as_value_mut();
+        root["bufferViews"] = crate::JsonValue::Array(new_views);
+        remap_buffer_view_references(root, &view_map)?;
+    }
+    let accessor_identity = (0..document.accessors().len())
+        .map(Some)
+        .collect::<Vec<_>>();
+    extensions.remap_binary_references(document, &accessor_identity, &view_map)?;
+    document.as_value_mut()["buffers"] =
+        crate::JsonValue::Array(vec![crate::JsonValue::object([(
+            "byteLength",
+            crate::JsonValue::from(compacted.len()),
+        )])]);
     *buffers = vec![compacted];
     Ok(())
 }
 
-fn collect_used_accessors(root: &crate::JsonValue) -> Result<Vec<bool>> {
+fn reserve_output(
+    output: &mut Vec<u8>,
+    additional: usize,
+    max_output_bytes: Option<usize>,
+) -> Result<()> {
+    let total = output
+        .len()
+        .checked_add(additional)
+        .ok_or_else(|| Error::ResourceLimit("compressed output size overflow".into()))?;
+    if max_output_bytes.is_some_and(|limit| total > limit) {
+        return Err(Error::ResourceLimit(format!(
+            "compressed output size {total} exceeds configured limit"
+        )));
+    }
+    output
+        .try_reserve(additional)
+        .map_err(|_| Error::ResourceLimit("unable to reserve compressed output".into()))?;
+    Ok(())
+}
+
+fn collect_used_accessors(
+    root: &crate::JsonValue,
+    extensions: &crate::ExtensionRegistry,
+    document: &crate::Document,
+) -> Result<Vec<bool>> {
     let mut used = vec![
         false;
         root["accessors"]
@@ -218,6 +350,13 @@ fn collect_used_accessors(root: &crate::JsonValue) -> Result<Vec<bool>> {
             .map_or(0, <[crate::JsonValue]>::len)
     ];
     visit_core_accessor_refs(root, &mut used)?;
+    let mut buffer_views = vec![
+        false;
+        root["bufferViews"]
+            .as_array()
+            .map_or(0, <[crate::JsonValue]>::len)
+    ];
+    extensions.collect_binary_references(document, &mut used, &mut buffer_views)?;
     Ok(used)
 }
 
@@ -245,7 +384,11 @@ fn remap_accessor_references(root: &mut crate::JsonValue, map: &[Option<usize>])
     remap_core_accessor_refs(root, map)
 }
 
-fn collect_used_views(root: &crate::JsonValue) -> Result<Vec<bool>> {
+fn collect_used_views(
+    root: &crate::JsonValue,
+    extensions: &crate::ExtensionRegistry,
+    document: &crate::Document,
+) -> Result<Vec<bool>> {
     let mut used = vec![
         false;
         root["bufferViews"]
@@ -253,6 +396,13 @@ fn collect_used_views(root: &crate::JsonValue) -> Result<Vec<bool>> {
             .map_or(0, <[crate::JsonValue]>::len)
     ];
     visit_core_buffer_view_refs(root, &mut used)?;
+    let mut accessors = vec![
+        false;
+        root["accessors"]
+            .as_array()
+            .map_or(0, <[crate::JsonValue]>::len)
+    ];
+    extensions.collect_binary_references(document, &mut accessors, &mut used)?;
     Ok(used)
 }
 
@@ -339,25 +489,6 @@ fn visit_core_buffer_view_refs(root: &crate::JsonValue, used: &mut [bool]) -> Re
             .unwrap_or(&[])
         {
             if let Some(value) = object.get("bufferView") {
-                mark_used(value, used, "bufferView")?;
-            }
-        }
-    }
-    for mesh in root
-        .get("meshes")
-        .and_then(crate::JsonValue::as_array)
-        .unwrap_or(&[])
-    {
-        for primitive in mesh
-            .get("primitives")
-            .and_then(crate::JsonValue::as_array)
-            .unwrap_or(&[])
-        {
-            if let Some(value) = primitive
-                .get("extensions")
-                .and_then(|v| v.get(crate::KHR_DRACO_MESH_COMPRESSION))
-                .and_then(|v| v.get("bufferView"))
-            {
                 mark_used(value, used, "bufferView")?;
             }
         }
@@ -456,26 +587,6 @@ fn remap_core_buffer_view_refs(root: &mut crate::JsonValue, map: &[Option<usize>
             }
         }
     }
-    if let Some(meshes) = root
-        .get_mut("meshes")
-        .and_then(crate::JsonValue::as_array_mut)
-    {
-        for mesh in meshes {
-            if let Some(primitives) = mesh
-                .get_mut("primitives")
-                .and_then(crate::JsonValue::as_array_mut)
-            {
-                for primitive in primitives {
-                    if let Some(extension) = primitive
-                        .get_mut("extensions")
-                        .and_then(|v| v.get_mut(crate::KHR_DRACO_MESH_COMPRESSION))
-                    {
-                        remap_index(&mut extension["bufferView"], map, "bufferView")?;
-                    }
-                }
-            }
-        }
-    }
     Ok(())
 }
 
@@ -507,6 +618,9 @@ pub struct CompressionOptions {
     pub encoding_speed: u8,
     pub decoding_speed: u8,
     pub mode: CompressionMode,
+    /// Maximum number of resolved binary bytes permitted after compression.
+    /// The limit includes retained fallback data and four-byte padding.
+    pub max_output_bytes: Option<usize>,
 }
 impl Default for CompressionOptions {
     fn default() -> Self {
@@ -514,6 +628,7 @@ impl Default for CompressionOptions {
             encoding_speed: 5,
             decoding_speed: 5,
             mode: CompressionMode::DracoOnly,
+            max_output_bytes: None,
         }
     }
 }
@@ -600,7 +715,8 @@ impl Import {
             ));
         }
         let (geometry, mapping) = self.decode_geometry_primitive(reference)?;
-        let bytes = self.encode_draco_mesh(geometry.clone(), options)?;
+        let layout = DracoGeometryLayout::from_mesh(&geometry, &mapping)?;
+        let bytes = self.encode_draco_mesh(geometry, options)?;
         let buffer = self.resources.buffers.len();
         let view;
         {
@@ -636,12 +752,17 @@ impl Import {
                 add_extension_name(root, "extensionsRequired")?;
             }
             if options.mode == CompressionMode::DracoOnly {
-                detach_draco_only_accessors(root, mesh.0, primitive, &mapping, &geometry)?;
+                detach_draco_only_accessors(root, mesh.0, primitive, &mapping, &layout)?;
             }
         }
         self.resources.buffers.push(bytes.clone());
         if options.mode == CompressionMode::DracoOnly {
-            compact_draco_only_resources(&mut self.document, &mut self.resources.buffers)?;
+            compact_draco_only_resources(
+                &mut self.document,
+                &mut self.resources.buffers,
+                &self.extensions,
+                options.max_output_bytes,
+            )?;
         }
         let output_bytes = self
             .resources
@@ -652,6 +773,13 @@ impl Import {
                     .checked_add(buffer.len())
                     .ok_or_else(|| Error::ResourceLimit("total output buffer size overflow".into()))
             })?;
+        if let Some(limit) = options.max_output_bytes {
+            if output_bytes > limit {
+                return Err(Error::ResourceLimit(format!(
+                    "compressed output size {output_bytes} exceeds limit {limit}"
+                )));
+            }
+        }
         Ok(CompressionReport {
             mode: options.mode,
             compressed_primitives: 1,

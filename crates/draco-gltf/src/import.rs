@@ -21,7 +21,7 @@ pub struct Import {
     pub resources: ResourceStore,
     pub input_format: GltfContainerFormat,
     profile: ValidationProfile,
-    extensions: ExtensionRegistry,
+    pub(crate) extensions: ExtensionRegistry,
     #[cfg(feature = "resources")]
     provenance: Vec<String>,
 }

@@ -50,6 +50,30 @@ pub trait ExtensionHandler: Send + Sync {
     fn allows_binary_transform(&self) -> bool {
         false
     }
+    /// Marks every accessor and buffer-view reference owned by this extension.
+    ///
+    /// A handler that opts into binary transforms must implement this together
+    /// with [`Self::remap_binary_references`]. Unknown extension JSON is never
+    /// inspected or rewritten by the core document transformer.
+    fn collect_binary_references(
+        &self,
+        _document: &Document,
+        _accessors: &mut [bool],
+        _buffer_views: &mut [bool],
+    ) -> Result<()> {
+        Ok(())
+    }
+    /// Applies the maps produced by binary compaction to references owned by
+    /// this extension. This is called only for handlers that explicitly allow
+    /// binary transforms.
+    fn remap_binary_references(
+        &self,
+        _document: &mut Document,
+        _accessors: &[Option<usize>],
+        _buffer_views: &[Option<usize>],
+    ) -> Result<()> {
+        Ok(())
+    }
     fn decode_primitive(
         &self,
         _document: &Document,
@@ -97,6 +121,32 @@ impl ExtensionRegistry {
         }
         Ok(context)
     }
+    pub(crate) fn collect_binary_references(
+        &self,
+        document: &Document,
+        accessors: &mut [bool],
+        buffer_views: &mut [bool],
+    ) -> Result<()> {
+        for handler in &self.handlers {
+            if handler.allows_binary_transform() {
+                handler.collect_binary_references(document, accessors, buffer_views)?;
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn remap_binary_references(
+        &self,
+        document: &mut Document,
+        accessors: &[Option<usize>],
+        buffer_views: &[Option<usize>],
+    ) -> Result<()> {
+        for handler in &self.handlers {
+            if handler.allows_binary_transform() {
+                handler.remap_binary_references(document, accessors, buffer_views)?;
+            }
+        }
+        Ok(())
+    }
     pub fn decode_primitive(
         &self,
         document: &Document,
@@ -123,6 +173,72 @@ impl ExtensionHandler for DracoExtension {
     }
     fn allows_binary_transform(&self) -> bool {
         true
+    }
+    fn collect_binary_references(
+        &self,
+        document: &Document,
+        _accessors: &mut [bool],
+        buffer_views: &mut [bool],
+    ) -> Result<()> {
+        if buffer_views.is_empty() {
+            return Ok(());
+        }
+        for mesh in document.meshes() {
+            for primitive in mesh
+                .value()
+                .get("primitives")
+                .and_then(Value::as_array)
+                .unwrap_or(&[])
+            {
+                let Some(extension) = primitive
+                    .get("extensions")
+                    .and_then(|value| value.get(KHR_DRACO_MESH_COMPRESSION))
+                else {
+                    continue;
+                };
+                let index = extension
+                    .get("bufferView")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| usize::try_from(value).ok())
+                    .filter(|index| *index < buffer_views.len())
+                    .ok_or_else(|| Error::Extension("Draco bufferView is invalid".into()))?;
+                buffer_views[index] = true;
+            }
+        }
+        Ok(())
+    }
+    fn remap_binary_references(
+        &self,
+        document: &mut Document,
+        _accessors: &[Option<usize>],
+        buffer_views: &[Option<usize>],
+    ) -> Result<()> {
+        if buffer_views.is_empty() {
+            return Ok(());
+        }
+        let Some(meshes) = document
+            .as_value_mut()
+            .get_mut("meshes")
+            .and_then(Value::as_array_mut)
+        else {
+            return Ok(());
+        };
+        for mesh in meshes {
+            let Some(primitives) = mesh.get_mut("primitives").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for primitive in primitives {
+                let Some(value) = primitive
+                    .get_mut("extensions")
+                    .and_then(|value| value.get_mut(KHR_DRACO_MESH_COMPRESSION))
+                    .and_then(|value| value.get_mut("bufferView"))
+                else {
+                    continue;
+                };
+                remap_reference(value, buffer_views, "Draco bufferView")?;
+            }
+        }
+        Ok(())
     }
     fn validate(
         &self,
@@ -213,6 +329,19 @@ impl ExtensionHandler for DracoExtension {
             Ok(mesh)
         })())
     }
+}
+
+fn remap_reference(value: &mut Value, map: &[Option<usize>], kind: &str) -> Result<()> {
+    let old = value
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| Error::Extension(format!("{kind} is invalid")))?;
+    let new = map
+        .get(old)
+        .and_then(|value| *value)
+        .ok_or_else(|| Error::Extension(format!("{kind} was removed")))?;
+    *value = Value::from(new);
+    Ok(())
 }
 
 #[cfg_attr(
