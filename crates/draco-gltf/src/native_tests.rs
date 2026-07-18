@@ -20,8 +20,26 @@ fn native_document_serializes_after_mutation() {
 
 #[test]
 fn draft_profile_accepts_files_shapes_and_nonsequential_semantics() {
-    let document = Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf"}],"shapes":[{}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_4":1}}]}]}"#).unwrap();
+    let document = Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf"}],"shapes":[{}],"accessors":[{"componentType":5126,"type":"VEC3"},{"componentType":5126,"type":"VEC2"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_4":1}}]}]}"#).unwrap();
     document.validate(ValidationProfile::Gltf21Draft).unwrap();
+}
+
+#[test]
+fn validation_rejects_dangling_core_references_and_draft_types_in_20() {
+    let dangling = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":1}}]}]}"#,
+    )
+    .unwrap();
+    assert!(dangling.validate(ValidationProfile::Gltf20).is_err());
+
+    let draft_component = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.0"},"accessors":[{"componentType":5132,"type":"SCALAR"}]}"#,
+    )
+    .unwrap();
+    assert!(draft_component.validate(ValidationProfile::Gltf20).is_err());
+    assert!(draft_component
+        .validate(ValidationProfile::Gltf21Draft)
+        .is_ok());
 }
 
 #[test]

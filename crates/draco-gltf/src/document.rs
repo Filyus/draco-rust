@@ -191,6 +191,7 @@ impl Document {
                 "glTF 2.1 fields require the draft profile".into(),
             ]));
         }
+        validate_references(&self.root, profile)?;
         Ok(())
     }
 
@@ -266,6 +267,152 @@ impl Document {
             marker: PhantomData,
         }
     }
+}
+
+fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
+    let len = |name: &str| -> usize {
+        root.get(name)
+            .and_then(Value::as_array)
+            .map_or(0, <[Value]>::len)
+    };
+    let check = |value: &Value, field: &str, target: &str| -> Result<()> {
+        let index = value.get(field).and_then(Value::as_u64);
+        if let Some(index) = index {
+            let index = usize::try_from(index).map_err(|_| {
+                Error::Validation(vec![format!("{field} does not fit the platform index")])
+            })?;
+            if index >= len(target) {
+                return Err(Error::Validation(vec![format!(
+                    "{field} references missing {target}[{index}]"
+                )]));
+            }
+        }
+        Ok(())
+    };
+    for view in root
+        .get("bufferViews")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+    {
+        check(view, "buffer", "buffers")?;
+    }
+    for accessor in root
+        .get("accessors")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+    {
+        check(accessor, "bufferView", "bufferViews")?;
+        let component = accessor.get("componentType").and_then(Value::as_u64);
+        if let Some(component) = component {
+            let component = ComponentType::from_gltf(component).ok_or_else(|| {
+                Error::Validation(vec![format!(
+                    "unsupported accessor componentType {component}"
+                )])
+            })?;
+            if profile == ValidationProfile::Gltf20
+                && !matches!(
+                    component,
+                    ComponentType::I8
+                        | ComponentType::U8
+                        | ComponentType::I16
+                        | ComponentType::U16
+                        | ComponentType::U32
+                        | ComponentType::F32
+                )
+            {
+                return Err(Error::Validation(vec![format!(
+                    "accessor componentType {component:?} requires the glTF 2.1 draft profile"
+                )]));
+            }
+        }
+        if let Some(kind) = accessor.get("type").and_then(Value::as_str) {
+            if !matches!(
+                kind,
+                "SCALAR" | "VEC2" | "VEC3" | "VEC4" | "MAT2" | "MAT3" | "MAT4"
+            ) {
+                return Err(Error::Validation(vec![format!(
+                    "unsupported accessor type {kind:?}"
+                )]));
+            }
+        }
+    }
+    for image in root.get("images").and_then(Value::as_array).unwrap_or(&[]) {
+        check(image, "bufferView", "bufferViews")?;
+    }
+    for texture in root
+        .get("textures")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+    {
+        check(texture, "sampler", "samplers")?;
+        check(texture, "source", "images")?;
+    }
+    for mesh in root.get("meshes").and_then(Value::as_array).unwrap_or(&[]) {
+        for primitive in mesh
+            .get("primitives")
+            .and_then(Value::as_array)
+            .unwrap_or(&[])
+        {
+            check(primitive, "indices", "accessors")?;
+            check(primitive, "material", "materials")?;
+            if let Some(attributes) = primitive.get("attributes").and_then(Value::as_object) {
+                for (semantic, index) in attributes {
+                    let index = index.as_u64().ok_or_else(|| {
+                        Error::Validation(vec![format!(
+                            "attribute {semantic} is not an accessor index"
+                        )])
+                    })?;
+                    if usize::try_from(index)
+                        .ok()
+                        .is_none_or(|index| index >= len("accessors"))
+                    {
+                        return Err(Error::Validation(vec![format!(
+                            "attribute {semantic} references missing accessors[{index}]"
+                        )]));
+                    }
+                }
+            }
+        }
+    }
+    for node in root.get("nodes").and_then(Value::as_array).unwrap_or(&[]) {
+        for field in ["camera", "mesh", "skin"] {
+            let target = match field {
+                "camera" => "cameras",
+                "mesh" => "meshes",
+                _ => "skins",
+            };
+            check(node, field, target)?;
+        }
+        if let Some(children) = node.get("children").and_then(Value::as_array) {
+            for child in children {
+                if child.as_u64().is_none_or(|index| {
+                    usize::try_from(index)
+                        .ok()
+                        .is_none_or(|index| index >= len("nodes"))
+                }) {
+                    return Err(Error::Validation(vec![
+                        "node child references a missing node".into(),
+                    ]));
+                }
+            }
+        }
+    }
+    for scene in root.get("scenes").and_then(Value::as_array).unwrap_or(&[]) {
+        if let Some(nodes) = scene.get("nodes").and_then(Value::as_array) {
+            for node in nodes {
+                if node.as_u64().is_none_or(|index| {
+                    usize::try_from(index)
+                        .ok()
+                        .is_none_or(|index| index >= len("nodes"))
+                }) {
+                    return Err(Error::Validation(vec![
+                        "scene references a missing node".into()
+                    ]));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Typed view of a root-level glTF object.

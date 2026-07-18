@@ -7,9 +7,11 @@ use crate::{
     ValidationProfile,
 };
 use draco_io::{
-    parse_gltf_container, resolve_gltf_buffers, ExternalFilePolicy, FileResourceResolver,
-    GltfBufferReference, GltfContainerFormat, ResourceLimits, ResourceResolver,
+    parse_gltf_container, resolve_gltf_buffers, GltfBufferReference, GltfContainerFormat,
+    ResourceLimits, ResourceResolver,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use draco_io::{ExternalFilePolicy, FileResourceResolver};
 
 /// Native, lossless glTF import independent of `gltf-rs`.
 pub struct NativeImport {
