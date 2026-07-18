@@ -19,8 +19,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 
 [dependencies]
 draco-core = { version = "1.0.0", path = "../draco-core", default-features = false }
-# The shared container/resource layer and document-preserving compressor live
-# in draco-io; this crate owns the full scene model.
+# The shared container/resource layer lives in draco-io; this crate owns the
+# full scene model and document-preserving transforms.
 draco-io = { version = "0.3.0", path = "../draco-io", default-features = false }
 thiserror = "2.0"
 
@@ -43,11 +43,6 @@ transform = ["draco-decode", "geometry", "draco-core/encoder"]
 full = ["document-core", "geometry", "draco-decode", "resources", "scene-validation", "transform"]
 # Small geometry-facing API. It deliberately excludes transform/encoder code.
 compact = ["document-core", "geometry", "draco-decode", "resources", "scene-validation"]
-# Decode embedded/external images through the shared resource resolver and the
-# `image` crate (PNG/JPEG codecs — the largest part of the build). Without it,
-# images are not decoded and `Import.images` is absent; glTF buffers still use
-# the same strict resolver. Useful for wasm and conversion pipelines where the
-# geometry, not the texture pixels, is what matters.
 # Repository-fixture tests are intentionally opt-in and are not run from the
 # published crate tarball, which has no access to the workspace testdata tree.
 test = []

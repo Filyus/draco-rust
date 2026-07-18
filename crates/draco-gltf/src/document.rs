@@ -324,12 +324,7 @@ impl Document {
 
     fn objects<I>(&self, key: &'static str) -> Objects<'_, I> {
         Objects {
-            values: self
-                .root
-                .get(key)
-                .and_then(Value::as_array)
-                .map(|value| &value[..])
-                .unwrap_or(&[]),
+            values: self.root.get(key).and_then(Value::as_array).unwrap_or(&[]),
             marker: PhantomData,
         }
     }

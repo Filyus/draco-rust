@@ -72,6 +72,8 @@ fn run() -> Result<(), String> {
     config.output_dir = config.web_dir.join("www").join("pkg");
     fs::create_dir_all(&config.output_dir)
         .map_err(|error| format!("failed to create {}: {error}", config.output_dir.display()))?;
+    remove_orphaned_module_files(&config.output_dir)
+        .map_err(|error| format!("failed to clean {}: {error}", config.output_dir.display()))?;
 
     println!("Building Draco Web WASM Modules");
     println!("================================");
@@ -514,10 +516,7 @@ fn finalize_module_output(
             continue;
         };
         let file_name_text = file_name.to_string_lossy();
-        if file_name_text.starts_with(output_name)
-            || file_name_text == "package.json"
-            || file_name_text == "LICENSE"
-        {
+        if file_name_text.starts_with(output_name) || file_name_text == "LICENSE" {
             fs::copy(&path, output_dir.join(file_name)).map_err(|error| {
                 format!(
                     "failed to copy {} to {}: {error}",
@@ -680,6 +679,45 @@ fn remove_stale_files(output_dir: &Path, output_name: &str) -> io::Result<()> {
             continue;
         };
         if file_name.to_string_lossy().starts_with(output_name) {
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Removes generated modules that are no longer members of this workspace.
+///
+/// The package directory is shared by all modules, so per-module cleanup does
+/// not remove files left behind after a module rename or removal. Keep the
+/// non-generated `LICENSE`, `.gitignore`, and static files untouched.
+fn remove_orphaned_module_files(output_dir: &Path) -> io::Result<()> {
+    let expected = MODULES
+        .iter()
+        .map(|module| output_name(module))
+        .collect::<BTreeSet<_>>();
+    for entry in fs::read_dir(output_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let generated = file_name.ends_with(".wasm")
+            || file_name.ends_with(".js")
+            || file_name.ends_with(".d.ts")
+            || file_name.ends_with(".build-stamp.json")
+            || file_name == "package.json";
+        if generated
+            && !expected.iter().any(|output| {
+                file_name == format!("{output}.js")
+                    || file_name == format!("{output}.d.ts")
+                    || file_name == format!("{output}_bg.wasm")
+                    || file_name == format!("{output}_bg.wasm.d.ts")
+                    || file_name == format!("{output}.build-stamp.json")
+            })
+        {
             fs::remove_file(path)?;
         }
     }

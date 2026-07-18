@@ -596,12 +596,11 @@ fn parse_glb_v3(data: &[u8]) -> Result<GltfContainer<'_>> {
                     return Err(GltfError::InvalidGlb("GLB v3 JSON chunk is empty".into()));
                 }
             }
+            GLB_CHUNK_BIN if chunk_index == 1 && bin.is_none() => bin = Some(bytes),
             GLB_CHUNK_BIN => {
-                if chunk_index != 1 || bin.replace(bytes).is_some() {
-                    return Err(GltfError::InvalidGlb(
-                        "BIN must be the second and only GLB v3 BIN chunk".into(),
-                    ));
-                }
+                return Err(GltfError::InvalidGlb(
+                    "BIN must be the second and only GLB v3 BIN chunk".into(),
+                ));
             }
             _ if chunk_index == 0 => {
                 return Err(GltfError::InvalidGlb(

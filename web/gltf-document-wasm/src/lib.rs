@@ -266,6 +266,7 @@ impl GltfDocument {
                 CompressionOptions {
                     encoding_speed,
                     decoding_speed,
+                    ..CompressionOptions::default()
                 },
             )
             .map(|report| report.encoded_bytes)

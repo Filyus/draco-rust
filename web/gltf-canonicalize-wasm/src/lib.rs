@@ -1,4 +1,4 @@
-//! Native glTF document transformation entry points for browser consumers.
+//! Lossless glTF document transformation entry points for browser consumers.
 
 use draco_gltf::{Document, ValidationProfile};
 use wasm_bindgen::prelude::*;

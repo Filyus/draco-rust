@@ -1,15 +1,16 @@
-name: "Release: WASM assets (draco-io)"
+name: "Release: WASM assets"
 
-# The web/ WASM modules wrap draco-io's format readers/writers, so they ride with
-# draco-io releases and attach to that crate's GitHub Release.
+# The web modules expose both low-level draco-io formats and full draco-gltf
+# documents, so publish matching browser assets for either crate's release.
 on:
   push:
     tags:
       - "draco-io-v*"
+      - "draco-gltf-v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "draco-io release tag to build, for example draco-io-v0.1.0"
+        description: "draco-io or draco-gltf release tag to build"
         required: true
         type: string
 
@@ -77,8 +78,9 @@ jobs:
             "obj_writer"
             "ply_reader"
             "ply_writer"
-            "gltf_reader"
-            "gltf_writer"
+            "gltf_document"
+            "gltf_compact"
+            "gltf_canonicalize"
             "fbx_reader"
             "fbx_writer"
           )

@@ -267,10 +267,7 @@ fn typed_views_reference_the_lossless_document() {
         document.file(crate::FileIndex(0)).unwrap().uri(),
         Some("child.gltf")
     );
-    assert_eq!(
-        document.to_json_bytes().unwrap().starts_with(b"{\"asset\""),
-        true
-    );
+    assert!(document.to_json_bytes().unwrap().starts_with(b"{\"asset\""));
 }
 
 #[test]

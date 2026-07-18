@@ -1,6 +1,8 @@
 # Changelog — draco-io
 
-## 0.3.0
+## [Unreleased]
+
+## [0.3.0] - 2026-07-18
 
 - Breaking: `draco-io` now provides OBJ, PLY, FBX, and low-level glTF
   container/resource/accessor contracts only. Full glTF scene operations live

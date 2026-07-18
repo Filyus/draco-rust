@@ -11,43 +11,36 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.2.0] - 2026-07-18
 
-### Changed
-
-- Breaking: introduced lossless `Document` typed views and indices.
-  See `MIGRATING_0_2.md`.
-- Added the pinned glTF 2.1 draft profile, GLB v3 support, extension
-  contracts, explicit `files` asset loading, and Draco decode/compress/
-  decompress operations.
-
 ### Added
 
-- Clean compression API on `Import`: shared `GltfCompressionOptions`,
-  `CompressionOutput`, typed preserve reports, `SameAsInput`/embedded/GLB
-  output, and `to_bytes` after decompression.
-- `ImportOptions` with synchronous resource resolvers, external-file policy,
-  and optional per-resource, total-buffer, and image-pixel quotas.
-- Custom `_*` semantics, `extras`, unknown extension JSON, and arbitrary object
-  field preservation, plus a deterministic `gltf_tool` interoperability
-  example.
+- Lossless `Document` typed views and index types for full glTF scenes; unknown
+  fields, `extras`, and unregistered extension JSON survive edits and writes.
+- Pinned glTF 2.1-draft validation surface, GLB v3 containers, explicit
+  `files` asset loading, extension contracts, and compact geometry views.
+- `Import::compress_primitive`, `CompressionOptions`, and
+  `CompressionReport` for document-preserving Draco transforms.
+- `Import::to_gltf_output` for portable JSON plus companion buffers, alongside
+  GLB v2/v3 serialization through `Import::to_bytes`.
 
 ### Changed
 
-- `draco_attribute_map` is strict and returns
-  `Result<Option<BTreeMap<String, u32>>>`; IDs are Draco unique IDs, not
-  positional attribute indices.
-- Compression uses the common `draco-io` container, resource, KHR schema, and
-  options/report types. The former free `compress(document, buffers)` API is
-  replaced by `Import::compress[_with_options]`.
+- Breaking: removed the `gltf-rs` document API. Use `Document`, typed views,
+  and index types described in `MIGRATING_0_2.md`.
+- Full-scene operations now live in `draco-gltf`; `draco-io` provides only
+  container, resource, accessor, and bitstream contracts.
+- `CompressionMode::DracoOnly` is the default and requires Draco; use
+  `CompressionMode::Fallback` to retain ordinary geometry for non-Draco
+  readers.
 
 ### Fixed
 
-- `decompress_in_place` is atomic, validates its replacement document, clones
-  shared accessors, preserves unmapped attributes, and always materializes
-  indexed `TRIANGLES` for strips and non-indexed primitives.
-- Decoded attributes and indices are checked against accessor semantic, layout,
-  component type, normalization, and count contracts.
-- Checked range arithmetic, preflight bounds checks, fallible allocations, and
-  fallible Draco buffer reads replace panic/OOM-prone paths.
+- Draco compression and decompression are atomic; shared accessors, unknown
+  JSON, registered extension references, and retained scene resources are
+  preserved safely.
+- Strict KHR Draco validation checks extension lists, primitive modes,
+  attribute mappings, unique IDs, and Draco-only accessor layouts.
+- Binary range arithmetic, resource quotas, output limits, and compaction use
+  checked operations; overlapping retained ranges are coalesced.
 
 ## [0.1.0] - 2026-06-24
 

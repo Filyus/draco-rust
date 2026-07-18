@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut import = draco_gltf::import(&input)?;
     if let Some(output) = output {
         let report = import.compress_primitive(MeshIndex(0), 0, CompressionOptions::default())?;
-        let bytes = import.to_bytes(OutputFormat::GltfJson)?;
+        let bytes = import.to_bytes(OutputFormat::GlbV2)?;
         std::fs::write(output, bytes)?;
         println!("compression_report={report:?}");
     } else {

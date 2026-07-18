@@ -5,13 +5,14 @@ use draco_core::{
 };
 
 /// How the exported primitive exposes its Draco payload.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CompressionMode {
     /// Preserve ordinary accessors as a non-Draco fallback. The extension is
     /// listed in `extensionsUsed`, never `extensionsRequired`.
     Fallback,
     /// Require Draco and remove ordinary geometry payloads owned solely by
     /// the transformed primitive.
+    #[default]
     DracoOnly,
 }
 
@@ -614,9 +615,18 @@ fn remap_index(value: &mut crate::JsonValue, map: &[Option<usize>], kind: &str) 
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Controls document-preserving Draco compression.
+///
+/// [`CompressionMode::DracoOnly`] is the default: it requires the Draco
+/// extension and removes raw geometry owned only by the compressed primitive.
+/// Use [`CompressionMode::Fallback`] when non-Draco readers must retain the
+/// original accessors.
 pub struct CompressionOptions {
+    /// Draco encoder speed in the range accepted by `draco-core`.
     pub encoding_speed: u8,
+    /// Draco decoder speed hint in the range accepted by `draco-core`.
     pub decoding_speed: u8,
+    /// Whether output requires Draco or retains ordinary geometry as fallback.
     pub mode: CompressionMode,
     /// Maximum number of resolved binary bytes permitted after compression.
     /// The limit includes retained fallback data and four-byte padding.
@@ -633,6 +643,7 @@ impl Default for CompressionOptions {
     }
 }
 #[derive(Clone, Debug, Default)]
+/// Measured result of one [`Import::compress_primitive`] operation.
 pub struct CompressionReport {
     /// Export policy used for the transformed primitive.
     pub mode: CompressionMode,
@@ -646,12 +657,6 @@ pub struct CompressionReport {
     /// Bytes removed from the resolved binary store; zero for a fallback that
     /// retains all ordinary geometry.
     pub reclaimed_bytes: usize,
-}
-
-impl Default for CompressionMode {
-    fn default() -> Self {
-        Self::DracoOnly
-    }
 }
 
 impl Import {
@@ -673,6 +678,12 @@ impl Import {
         Ok(output.data().to_vec())
     }
 
+    /// Compresses one ordinary triangle primitive atomically.
+    ///
+    /// The document and resolved resources are updated only after encoding,
+    /// validation, reference remapping, and output-limit checks all succeed.
+    /// In [`CompressionMode::DracoOnly`] the operation rejects unregistered
+    /// extensions whose binary references cannot be remapped safely.
     pub fn compress_primitive(
         &mut self,
         mesh: crate::MeshIndex,

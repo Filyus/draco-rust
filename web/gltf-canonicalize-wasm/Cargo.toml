@@ -2,7 +2,7 @@
 name = "gltf-canonicalize-wasm"
 version = "0.1.0"
 edition = "2021"
-description = "Native glTF document canonicalization for WebAssembly"
+description = "Lossless glTF document canonicalization for WebAssembly"
 repository = "https://github.com/Filyus/draco-rust"
 license = "Apache-2.0"
 

@@ -36,7 +36,10 @@ impl ExtensionValidationContext {
 
 /// A registered glTF extension with optional geometry decoding.
 pub trait ExtensionHandler: Send + Sync {
+    /// Returns the exact glTF extension name handled by this implementation.
     fn name(&self) -> &'static str;
+    /// Performs extension-specific strict validation and records narrowly
+    /// scoped core-validation exemptions in `context`.
     fn validate(
         &self,
         _document: &Document,
@@ -74,6 +77,8 @@ pub trait ExtensionHandler: Send + Sync {
     ) -> Result<()> {
         Ok(())
     }
+    /// Decodes geometry for `primitive`, or returns `None` when this handler
+    /// does not own that primitive.
     fn decode_primitive(
         &self,
         _document: &Document,
@@ -89,9 +94,11 @@ pub struct ExtensionRegistry {
     handlers: Vec<Arc<dyn ExtensionHandler>>,
 }
 impl ExtensionRegistry {
+    /// Creates the registry containing the built-in Draco handler.
     pub fn new() -> Self {
         Self::default()
     }
+    /// Registers one extension handler. Extension names must be unique.
     pub fn register<H: ExtensionHandler + 'static>(&mut self, handler: H) -> Result<()> {
         if self
             .handlers
@@ -106,14 +113,17 @@ impl ExtensionRegistry {
         self.handlers.push(Arc::new(handler));
         Ok(())
     }
+    /// Returns whether a handler is registered for `name`.
     pub fn contains(&self, name: &str) -> bool {
         self.handlers.iter().any(|handler| handler.name() == name)
     }
+    /// Returns whether `name` explicitly supports binary-reference transforms.
     pub fn allows_binary_transform(&self, name: &str) -> bool {
         self.handlers
             .iter()
             .any(|handler| handler.name() == name && handler.allows_binary_transform())
     }
+    /// Validates every registered extension against `document`.
     pub fn validate(&self, document: &Document) -> Result<ExtensionValidationContext> {
         let mut context = ExtensionValidationContext::default();
         for handler in &self.handlers {
@@ -147,6 +157,7 @@ impl ExtensionRegistry {
         }
         Ok(())
     }
+    /// Dispatches geometry decoding to the handler that owns `primitive`.
     pub fn decode_primitive(
         &self,
         document: &Document,
@@ -249,7 +260,6 @@ impl ExtensionHandler for DracoExtension {
             .as_value()
             .get("accessors")
             .and_then(Value::as_array)
-            .map(|values| values)
             .unwrap_or(&[]);
         for mesh in document.meshes() {
             for primitive_index in mesh

@@ -51,27 +51,26 @@ jobs:
       - name: Test draco-io
         run: cargo test --manifest-path crates/Cargo.toml -p draco-io --features test
 
-      # Lock in the meaningful draco-io reader/writer feature combinations used
-      # by the standalone crate, draco-gltf, and the WASM wrappers.
+      # Lock in the low-level glTF contracts consumed by draco-gltf and the
+      # WASM wrappers.
       - name: Check draco-io feature combinations
         run: |
           cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --doc
-          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-writer
-          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-reader
-          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-reader,gltf-writer
+          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf
+          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-geometry
+          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features draco-decode
 
       - name: Test draco-gltf
         run: cargo test --manifest-path crates/Cargo.toml -p draco-gltf --features test
 
-      # draco-gltf adds wasm support and an optional `image` feature (off = the
-      # smaller wasm build). Neither is exercised by the web workspace (which
-      # wraps draco-io), so guard the no-image build and the wasm32 target here.
+      # Check the two supported minimal public surfaces and their wasm32 builds.
       - name: Check draco-gltf feature/target combinations
         run: |
-          cargo test --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --no-default-features
-          cargo check --manifest-path crates/Cargo.toml -p draco-io --target wasm32-unknown-unknown --no-default-features --features gltf-reader,gltf-writer
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features document-core
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features compact
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --features full
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --no-default-features --features compact
+          cargo check --manifest-path crates/Cargo.toml -p draco-io --target wasm32-unknown-unknown --no-default-features --features draco-decode
 
       - name: Check fuzz targets compile
         run: cargo check --manifest-path fuzz/Cargo.toml --bins
@@ -165,14 +164,14 @@ jobs:
       - name: Decode official Box_Draco with Rust
         run: >-
           cargo run --manifest-path crates/Cargo.toml -p draco-gltf
-          --no-default-features --example gltf_tool --
+          --example gltf_tool --
           testdata/Box/glTF_Binary/Box_Draco.glb
 
       - name: Produce a Draco GLB with Rust
         run: |
           mkdir -p target/gltf-interop
           cargo run --manifest-path crates/Cargo.toml -p draco-gltf \
-            --no-default-features --example gltf_tool -- \
+            --example gltf_tool -- \
             testdata/Box/glTF/Box.gltf target/gltf-interop/rust-box.glb
 
       - name: Validate and decode Rust output independently

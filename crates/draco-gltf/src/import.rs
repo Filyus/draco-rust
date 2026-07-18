@@ -212,6 +212,13 @@ impl Import {
         )?)
     }
 
+    /// Serializes this import into the requested container format.
+    ///
+    /// [`crate::OutputFormat::GltfJson`] is valid only when every materialized
+    /// buffer already has an embedded or external URI. For transformed scenes
+    /// that need newly generated companion buffers, use
+    /// [`Import::to_gltf_output`] instead. GLB output embeds all resolved
+    /// buffers in one binary chunk.
     pub fn to_bytes(&self, output: crate::OutputFormat) -> Result<Vec<u8>> {
         let format = match output {
             crate::OutputFormat::GltfJson => {
