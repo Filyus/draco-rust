@@ -153,6 +153,7 @@ test('3D preview renders a GLB into the WebGL2 canvas', async ({ page }) => {
 
   await expect(page.locator('#viewer-section')).toBeVisible();
   await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).not.toContainText('Skipped primitive');
   await expect(page.locator('#console')).not.toContainText('Preview failed');
 
   const hasContext = await page.evaluate(() => {
@@ -191,6 +192,7 @@ test('converter reads a CR-delimited binary PLY header', async ({ page }) => {
   await expect(page.locator('#console')).not.toContainText('PLY header must be valid UTF-8/ASCII');
   await expect(page.locator('#viewer-section')).toBeVisible();
   await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).not.toContainText('Skipped primitive');
 });
 
 test('converter previews OBJ meshes with reverse winding', async ({ page }) => {
@@ -204,4 +206,5 @@ test('converter previews OBJ meshes with reverse winding', async ({ page }) => {
   await expect(page.locator('#viewer-section')).toBeVisible();
   await expect(page.locator('#console')).toContainText('Preview ready');
   await expect(page.locator('#console')).not.toContainText('Preview failed');
+  await expect(page.locator('#console')).not.toContainText('Skipped primitive');
 });

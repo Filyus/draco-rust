@@ -175,19 +175,14 @@ function linkProgram(gl, vert, frag) {
     return program;
 }
 
-/** glTF component-type code → typed-array constructor. */
-const TYPE_ARRAYS = {
-    5120: Int8Array,
-    5121: Uint8Array,
-    5122: Int16Array,
-    5123: Uint16Array,
-    5125: Uint32Array,
-    5126: Float32Array,
-};
-
-function typedView(componentType, bytes) {
-    const Ctor = TYPE_ARRAYS[componentType] || Float32Array;
-    return new Ctor(bytes.buffer, bytes.byteOffset, bytes.byteLength / Ctor.BYTES_PER_ELEMENT);
+/** Return the original byte layout of an ArrayBuffer or typed-array view. */
+function byteView(data) {
+    if (data instanceof Uint8Array) return data;
+    if (ArrayBuffer.isView(data)) {
+        return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    throw new Error('attribute payload is not binary data');
 }
 
 /**
@@ -207,7 +202,7 @@ function uploadPrimitive(gl, primitive, locationMap) {
         if (!attr || location < 0) return false;
         const buf = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-        gl.bufferData(gl.ARRAY_BUFFER, new Uint8Array(attr.bytes), gl.STATIC_DRAW);
+        gl.bufferData(gl.ARRAY_BUFFER, byteView(attr.bytes), gl.STATIC_DRAW);
 
         const normalized = attr.normalized || semantic.startsWith('COLOR_') || semantic.startsWith('WEIGHTS_');
         const components = attr.components;
@@ -250,12 +245,12 @@ function uploadPrimitive(gl, primitive, locationMap) {
     let indexBuffer = null;
     if (primitive.indices) {
         const idx = primitive.indices;
-        const arr = typedView(idx.componentType, new Uint8Array(idx.bytes));
+        const bytes = byteView(idx.bytes);
         indexBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
-        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, arr, gl.STATIC_DRAW);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, bytes, gl.STATIC_DRAW);
         info.indexed = true;
-        info.elementCount = arr.length;
+        info.elementCount = idx.count;
         info.indexType = idx.componentType;
         buffers.push(indexBuffer);
     } else {
