@@ -20,6 +20,10 @@ pub use extensions::{
     DracoExtension, ExtensionHandler, ExtensionRegistry, ExtensionValidationContext, ResourceStore,
     KHR_DRACO_MESH_COMPRESSION,
 };
+#[cfg(feature = "compact")]
+pub mod compact;
+#[cfg(feature = "compact")]
+pub use compact::{CompactDocument, CompactMeshRange};
 mod native_import;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_import::open_native;

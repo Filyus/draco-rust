@@ -36,3 +36,17 @@ fn native_import_reads_json() {
         br#"{"asset":{"version":"2.1"},"buffers":[]}"#
     );
 }
+
+#[cfg(feature = "compact")]
+#[test]
+fn compact_facade_uses_native_document() {
+    let compact = crate::CompactDocument::parse(
+        br#"{"asset":{"version":"2.1"},"meshes":[{"primitives":[{},{}]}]}"#,
+        ValidationProfile::Gltf21Draft,
+    )
+    .unwrap();
+    assert_eq!(
+        compact.mesh_primitive_ranges().next().unwrap().primitives,
+        2
+    );
+}

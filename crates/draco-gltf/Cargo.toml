@@ -26,6 +26,7 @@ thiserror = "2.0"
 
 [features]
 default = []
+compact = []
 # Decode embedded/external images through the shared resource resolver and the
 # `image` crate (PNG/JPEG codecs — the largest part of the build). Without it,
 # images are not decoded and `Import.images` is absent; glTF buffers still use
