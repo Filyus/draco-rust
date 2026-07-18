@@ -161,6 +161,31 @@ fn explicit_asset_loading_tracks_provenance_and_rejects_cycles() {
 }
 
 #[test]
+fn explicit_asset_loading_accepts_embedded_file_buffer_view() {
+    let root = parse_native(
+        br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":27,"uri":"data:application/octet-stream;base64,eyJhc3NldCI6eyJ2ZXJzaW9uIjoiMi4xIn19"}],"bufferViews":[{"buffer":0,"byteLength":27}],"files":[{"bufferView":0}]}"#,
+        ValidationProfile::Gltf21Draft,
+    )
+    .unwrap();
+    let resolver = |_uri: &str| -> Result<Vec<u8>, draco_io::GltfError> {
+        Err(draco_io::GltfError::ExternalResourceDenied("unused".into()))
+    };
+    let child = root
+        .load_asset(
+            crate::FileIndex(0),
+            &resolver,
+            &draco_io::ResourceLimits::default(),
+            ValidationProfile::Gltf21Draft,
+            &crate::ExtensionRegistry::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        child.document.as_value()["asset"]["version"].as_str(),
+        Some("2.1")
+    );
+}
+
+#[test]
 fn native_import_reads_json() {
     let import = parse_native(
         br#"{"asset":{"version":"2.1"},"buffers":[]}"#,
