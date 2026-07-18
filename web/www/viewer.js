@@ -24,6 +24,10 @@ layout(location=7) in vec3 aMorphPosition0;
 layout(location=8) in vec3 aMorphPosition1;
 layout(location=9) in vec3 aMorphPosition2;
 layout(location=10) in vec3 aMorphPosition3;
+layout(location=11) in vec3 aMorphNormal0;
+layout(location=12) in vec3 aMorphNormal1;
+layout(location=13) in vec3 aMorphNormal2;
+layout(location=14) in vec3 aMorphNormal3;
 
 uniform mat4 uProjection;
 uniform mat4 uView;
@@ -47,6 +51,11 @@ void main() {
     if (uMorphTargetCount > 1) morphedPosition += aMorphPosition1 * uMorphWeights[1];
     if (uMorphTargetCount > 2) morphedPosition += aMorphPosition2 * uMorphWeights[2];
     if (uMorphTargetCount > 3) morphedPosition += aMorphPosition3 * uMorphWeights[3];
+    vec3 morphedNormal = aNormal;
+    if (uMorphTargetCount > 0) morphedNormal += aMorphNormal0 * uMorphWeights[0];
+    if (uMorphTargetCount > 1) morphedNormal += aMorphNormal1 * uMorphWeights[1];
+    if (uMorphTargetCount > 2) morphedNormal += aMorphNormal2 * uMorphWeights[2];
+    if (uMorphTargetCount > 3) morphedNormal += aMorphNormal3 * uMorphWeights[3];
     vec4 skinned = vec4(0.0);
     if (uUseSkin == 1 && uJointCount > 0) {
         vec4 pos = vec4(morphedPosition, 1.0);
@@ -56,7 +65,7 @@ void main() {
             (uJointMatrix[int(aJoints.z)] * pos) * aWeights.z +
             (uJointMatrix[int(aJoints.w)] * pos) * aWeights.w;
 
-        vec4 nrm = vec4(aNormal, 0.0);
+        vec4 nrm = vec4(morphedNormal, 0.0);
         vec3 skinnedNormal =
             (uJointMatrix[int(aJoints.x)] * nrm).xyz * aWeights.x +
             (uJointMatrix[int(aJoints.y)] * nrm).xyz * aWeights.y +
@@ -65,7 +74,7 @@ void main() {
         vNormal = normalize((uNormalMatrix * vec4(skinnedNormal, 0.0)).xyz);
     } else {
         skinned = vec4(morphedPosition, 1.0);
-        vNormal = normalize((uNormalMatrix * vec4(aNormal, 0.0)).xyz);
+        vNormal = normalize((uNormalMatrix * vec4(morphedNormal, 0.0)).xyz);
     }
 
     vec4 worldPos = uModel * skinned;
@@ -424,6 +433,7 @@ function uploadPrimitive(gl, primitive, locationMap) {
         joints: locationMap.joints,
         weights: locationMap.weights,
         morphPositions: locationMap.morphPositions,
+        morphNormals: locationMap.morphNormals,
     };
 
     const info = {
@@ -444,6 +454,7 @@ function uploadPrimitive(gl, primitive, locationMap) {
     bindAttribute('POSITION', layout.position);
     for (let i = 0; i < info.morphTargetCount; i++) {
         bindAccessor(primitive.morphPositions[i], `MORPH_POSITION_${i}`, layout.morphPositions[i], 3);
+        bindAccessor((primitive.morphNormals || [])[i], `MORPH_NORMAL_${i}`, layout.morphNormals[i], 3);
     }
 
     let indexBuffer = null;
@@ -602,6 +613,7 @@ export class Viewer {
             joints: 4,
             weights: 5,
             morphPositions: [7, 8, 9, 10],
+            morphNormals: [11, 12, 13, 14],
         };
         this.lineUniforms = {
             uProjectionView: gl.getUniformLocation(this.lineProgram, 'uProjectionView'),

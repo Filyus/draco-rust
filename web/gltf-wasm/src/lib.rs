@@ -331,7 +331,11 @@ fn preview_manifest(document: &Document) -> JsonValue {
                     let targets = value_array(primitive.get("targets"))
                         .iter()
                         .map(|target| {
-                            JsonValue::object([("POSITION", index(target.get("POSITION")))])
+                            JsonValue::object([
+                                ("POSITION", index(target.get("POSITION"))),
+                                ("NORMAL", index(target.get("NORMAL"))),
+                                ("TANGENT", index(target.get("TANGENT"))),
+                            ])
                         })
                         .collect();
                     JsonValue::object([
@@ -1260,7 +1264,7 @@ mod tests {
             br#"{
                 "asset":{"version":"2.0"},
                 "meshes":[{"weights":[0.25],"primitives":[{
-                    "targets":[{"POSITION":3}]
+                    "targets":[{"POSITION":3,"NORMAL":4,"TANGENT":5}]
                 }]}],
                 "nodes":[{"mesh":0,"weights":[0.75]}],
                 "scenes":[{"nodes":[0]}],"scene":0
@@ -1274,6 +1278,14 @@ mod tests {
         assert_eq!(
             manifest["meshes"][0]["primitives"][0]["targets"][0]["POSITION"].as_u64(),
             Some(3)
+        );
+        assert_eq!(
+            manifest["meshes"][0]["primitives"][0]["targets"][0]["NORMAL"].as_u64(),
+            Some(4)
+        );
+        assert_eq!(
+            manifest["meshes"][0]["primitives"][0]["targets"][0]["TANGENT"].as_u64(),
+            Some(5)
         );
     }
 }

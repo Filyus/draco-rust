@@ -116,6 +116,7 @@ function buildMeshes(asset, defs, warnings) {
                         ? def.primitives[p].material
                         : -1,
                     morphPositions: [],
+                    morphNormals: [],
                 };
                 const targets = def.primitives[p].targets || [];
                 for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
@@ -133,7 +134,29 @@ function buildMeshes(asset, defs, warnings) {
                         primitive.morphPositions.push(null);
                         continue;
                     }
-                    primitive.morphPositions.push(target);
+                        primitive.morphPositions.push(target);
+                }
+                for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
+                    const accessorIndex = targets[targetIndex].NORMAL;
+                    if (typeof accessorIndex !== 'number') {
+                        primitive.morphNormals.push(null);
+                        continue;
+                    }
+                    const target = readAccessorAsTyped(asset, accessorIndex);
+                    if (target.componentType !== 5126 || target.components !== 3
+                        || target.count !== attributes.POSITION.count) {
+                        warnings.push(
+                            `Morph normal ${targetIndex} on mesh ${meshIndex} primitive ${p} has an unsupported accessor and was ignored`,
+                        );
+                        primitive.morphNormals.push(null);
+                        continue;
+                    }
+                    primitive.morphNormals.push(target);
+                }
+                if (targets.some((target) => typeof target.TANGENT === 'number')) {
+                    warnings.push(
+                        `Morph tangents on mesh ${meshIndex} primitive ${p} are ignored because the preview derives its tangent frame from deformed geometry and UVs`,
+                    );
                 }
                 if (packed.hasIndices()) {
                     primitive.indices = {
