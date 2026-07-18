@@ -29,6 +29,41 @@ pub struct Import {
 /// Default maximum explicit nested-asset depth for [`Import::load_asset`].
 pub const DEFAULT_EXTERNAL_ASSET_DEPTH: usize = 32;
 
+/// Resolves URIs in an embedded child against the parent's virtual `files`
+/// directory before falling back to the caller's resolver.
+#[cfg(feature = "resources")]
+struct PackagedResolver<'a> {
+    import: &'a Import,
+    fallback: &'a dyn ResourceResolver,
+}
+
+#[cfg(feature = "resources")]
+impl ResourceResolver for PackagedResolver<'_> {
+    fn resolve(&self, uri: &str) -> std::result::Result<Vec<u8>, draco_io::GltfError> {
+        let Some(file) = self
+            .import
+            .document
+            .files()
+            .into_iter()
+            .find(|file| file.name() == Some(uri))
+        else {
+            return self.fallback.resolve(uri);
+        };
+        if file.value().get("bufferView").is_some() {
+            return self
+                .import
+                .embedded_file_bytes(file.value())
+                .map_err(|error| draco_io::GltfError::InvalidGltf(error.to_string()));
+        }
+        if let Some(source) = file.value().get("uri").and_then(Value::as_str) {
+            return draco_io::resolve_resource_uri(source, Some(self.fallback), None);
+        }
+        Err(draco_io::GltfError::InvalidGltf(format!(
+            "packaged file {uri:?} has no source"
+        )))
+    }
+}
+
 impl Import {
     pub fn validate(&self, extensions: &ExtensionRegistry) -> Result<()> {
         self.document.validate(self.profile)?;
@@ -393,6 +428,8 @@ impl Import {
             .document
             .file(file)
             .ok_or_else(|| Error::Extension(format!("file {} is out of range", file.0)))?;
+        let packaged = entry.buffer_view().is_some()
+            || entry.uri().is_some_and(|uri| uri.starts_with("data:"));
         let source = entry.uri().map(str::to_owned).unwrap_or_else(|| {
             format!(
                 "bufferView:{}",
@@ -409,8 +446,22 @@ impl Import {
         } else {
             self.embedded_file_bytes(entry.value())?
         };
-        let mut loaded =
-            parse_with_options(&bytes, None, Some(resolver), limits, profile, extensions)?;
+        let mut loaded = if packaged {
+            let packaged_resolver = PackagedResolver {
+                import: self,
+                fallback: resolver,
+            };
+            parse_with_options(
+                &bytes,
+                None,
+                Some(&packaged_resolver),
+                limits,
+                profile,
+                extensions,
+            )?
+        } else {
+            parse_with_options(&bytes, None, Some(resolver), limits, profile, extensions)?
+        };
         loaded.provenance = self.provenance.clone();
         loaded.provenance.push(source);
         Ok(loaded)

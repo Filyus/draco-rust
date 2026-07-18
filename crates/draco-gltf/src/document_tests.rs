@@ -88,6 +88,43 @@ fn external_asset_models_load_explicitly() {
     assert_eq!(loaded.provenance(), ["part.gltf"]);
 }
 
+#[cfg(feature = "resources")]
+#[test]
+fn embedded_external_assets_resolve_packaged_file_names() {
+    let child = br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":36,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut package = child.to_vec();
+    package.extend_from_slice(&[0; 36]);
+    let root = format!(
+        r#"{{"asset":{{"version":"2.1"}},"buffers":[{{"byteLength":{},"uri":"package.bin"}}],"bufferViews":[{{"buffer":0,"byteLength":{}}},{{"buffer":0,"byteOffset":{},"byteLength":36}}],"files":[{{"name":"part.gltf","bufferView":0,"mimeType":"model/gltf+json"}},{{"name":"mesh.bin","bufferView":1,"mimeType":"application/octet-stream"}}],"externalAssets":[{{"file":0}}]}}"#,
+        package.len(),
+        child.len(),
+        child.len(),
+    );
+    let resolver = |uri: &str| match uri {
+        "package.bin" => Ok(package.clone()),
+        _ => Err(draco_io::GltfError::ExternalResourceDenied(uri.into())),
+    };
+    let root = crate::parse_with_options(
+        root.as_bytes(),
+        None,
+        Some(&resolver),
+        &draco_io::ResourceLimits::default(),
+        ValidationProfile::Gltf21Draft,
+        &crate::ExtensionRegistry::default(),
+    )
+    .unwrap();
+    let child = root
+        .load_external_asset(
+            crate::ExternalAssetIndex(0),
+            &resolver,
+            &draco_io::ResourceLimits::default(),
+            ValidationProfile::Gltf21Draft,
+            &crate::ExtensionRegistry::default(),
+        )
+        .unwrap();
+    assert_eq!(child.resources.buffers, vec![vec![0; 36]]);
+}
+
 #[test]
 fn validation_rejects_dangling_core_references_and_draft_types_in_20() {
     let dangling = Document::from_json_bytes(
