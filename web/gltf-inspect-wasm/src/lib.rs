@@ -1,9 +1,12 @@
 //! Native glTF document inspection for browser consumers.
 
+use std::collections::BTreeMap;
+
 use draco_gltf::{
-    parse_native, CompressionOptions, Document, MeshIndex, NativeImport, OutputFormat,
-    ValidationProfile,
+    parse_native, parse_native_with_options, CompressionOptions, Document, ExtensionRegistry,
+    MeshIndex, NativeImport, OutputFormat, ResourceLimits, ResourceResolver, ValidationProfile,
 };
+use js_sys::{Object, Reflect, Uint8Array};
 use nanoserde::SerJson;
 use wasm_bindgen::prelude::*;
 
@@ -25,6 +28,19 @@ pub struct ParseResult {
 #[wasm_bindgen]
 pub struct GltfDocument {
     import: NativeImport,
+    resolver: BrowserResourceResolver,
+}
+
+#[derive(Clone, Default)]
+struct BrowserResourceResolver(BTreeMap<String, Vec<u8>>);
+
+impl ResourceResolver for BrowserResourceResolver {
+    fn resolve(&self, uri: &str) -> Result<Vec<u8>, draco_gltf::GltfError> {
+        self.0
+            .get(uri)
+            .cloned()
+            .ok_or_else(|| draco_gltf::GltfError::ExternalResourceDenied(uri.into()))
+    }
 }
 
 fn wasm_error(error: impl std::fmt::Display) -> JsValue {
@@ -37,6 +53,29 @@ fn profile(name: &str) -> Result<ValidationProfile, JsValue> {
         "2.1" => Ok(ValidationProfile::Gltf21Draft),
         _ => Err(JsValue::from_str("profile must be \"2.0\" or \"2.1\"")),
     }
+}
+
+fn browser_resources(value: JsValue) -> Result<BrowserResourceResolver, JsValue> {
+    if value.is_null() || value.is_undefined() {
+        return Ok(BrowserResourceResolver::default());
+    }
+    let object = Object::from(value);
+    let mut resources = BTreeMap::new();
+    for key in Object::keys(&object).iter() {
+        let name = key
+            .as_string()
+            .ok_or_else(|| JsValue::from_str("resource key is not a string"))?;
+        let value = Reflect::get(&object, &key)
+            .map_err(|_| JsValue::from_str("could not read resource value"))?;
+        if !value.is_instance_of::<Uint8Array>() {
+            return Err(JsValue::from_str(
+                "resource values must be Uint8Array instances",
+            ));
+        }
+        let bytes = Uint8Array::new(&value).to_vec();
+        resources.insert(name, bytes);
+    }
+    Ok(BrowserResourceResolver(resources))
 }
 
 fn result(document: Document) -> ParseResult {
@@ -128,8 +167,33 @@ impl GltfDocument {
     pub fn new(data: &[u8], validation_profile: &str) -> Result<GltfDocument, JsValue> {
         let profile = profile(validation_profile)?;
         parse_native(data, profile)
-            .map(|import| Self { import })
+            .map(|import| Self {
+                import,
+                resolver: BrowserResourceResolver::default(),
+            })
             .map_err(wasm_error)
+    }
+
+    /// Parses a document with an explicit URI-to-byte resource map. Values in
+    /// `resources` must be `Uint8Array`; no browser fetches are performed.
+    #[wasm_bindgen(js_name = withResources)]
+    pub fn with_resources(
+        data: &[u8],
+        resources: JsValue,
+        validation_profile: &str,
+    ) -> Result<GltfDocument, JsValue> {
+        let profile = profile(validation_profile)?;
+        let resolver = browser_resources(resources)?;
+        parse_native_with_options(
+            data,
+            None,
+            Some(&resolver),
+            &ResourceLimits::default(),
+            profile,
+            &ExtensionRegistry::default(),
+        )
+        .map(|import| Self { import, resolver })
+        .map_err(wasm_error)
     }
 
     /// Returns the lossless JSON document. Untouched JSON retains its source bytes.
@@ -211,6 +275,30 @@ impl GltfDocument {
     /// Materializes every Draco primitive atomically into ordinary geometry.
     pub fn decompress(&mut self) -> Result<(), JsValue> {
         self.import.decompress_in_place().map_err(wasm_error)
+    }
+
+    /// Explicitly loads one entry from the glTF 2.1 `files` array. The returned
+    /// document shares the supplied immutable resource map and never fetches.
+    pub fn load_asset(
+        &self,
+        file: usize,
+        validation_profile: &str,
+        max_depth: usize,
+    ) -> Result<GltfDocument, JsValue> {
+        self.import
+            .load_asset_with_depth(
+                draco_gltf::FileIndex(file),
+                &self.resolver,
+                &ResourceLimits::default(),
+                profile(validation_profile)?,
+                &ExtensionRegistry::default(),
+                max_depth,
+            )
+            .map(|import| Self {
+                import,
+                resolver: self.resolver.clone(),
+            })
+            .map_err(wasm_error)
     }
 
     /// Returns a JSON summary of the current full document state.
