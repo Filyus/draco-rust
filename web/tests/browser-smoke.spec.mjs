@@ -245,7 +245,7 @@ test('3D preview renders a GLB into the WebGL2 canvas', async ({ page }) => {
   await expect(page.locator('#console')).not.toContainText('undefined');
 });
 
-test('preview keeps rendering when a glTF animation has morph weights', async ({ page }) => {
+test('preview renders a glTF morph target animation', async ({ page }) => {
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
@@ -258,8 +258,9 @@ test('preview keeps rendering when a glTF animation has morph weights', async ({
   ]);
 
   await expect(page.locator('#viewer-section')).toBeVisible();
+  await expect(page.locator('#viewer-animation')).toBeVisible();
   await expect(page.locator('#console')).toContainText('Preview ready');
-  await expect(page.locator('#console')).toContainText('weights channels are not supported');
+  await expect(page.locator('#console')).not.toContainText('weights channels are not supported');
   await expect(page.locator('#console')).not.toContainText('Preview failed');
   await page.waitForTimeout(100);
   expect(pageErrors).toEqual([]);

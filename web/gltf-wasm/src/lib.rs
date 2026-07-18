@@ -311,6 +311,12 @@ fn preview_manifest(document: &Document) -> JsonValue {
                 ),
                 ("mesh", index(node.get("mesh"))),
                 ("skin", index(node.get("skin"))),
+                (
+                    "weights",
+                    node.get("weights")
+                        .cloned()
+                        .unwrap_or(JsonValue::Array(Vec::new())),
+                ),
             ])
         })
         .collect();
@@ -322,17 +328,27 @@ fn preview_manifest(document: &Document) -> JsonValue {
             let primitives = value_array(mesh.get("primitives"))
                 .iter()
                 .map(|primitive| {
-                    if primitive.get("targets").is_some() {
-                        warnings.push(JsonValue::from(
-                            "Morph target animation is not supported by the preview; targets are ignored",
-                        ));
-                    }
-                    JsonValue::object([("material", index(primitive.get("material")))])
+                    let targets = value_array(primitive.get("targets"))
+                        .iter()
+                        .map(|target| {
+                            JsonValue::object([("POSITION", index(target.get("POSITION")))])
+                        })
+                        .collect();
+                    JsonValue::object([
+                        ("material", index(primitive.get("material"))),
+                        ("targets", JsonValue::Array(targets)),
+                    ])
                 })
                 .collect();
             JsonValue::object([
                 ("name", name(mesh, "mesh", mesh_index)),
                 ("primitives", JsonValue::Array(primitives)),
+                (
+                    "weights",
+                    mesh.get("weights")
+                        .cloned()
+                        .unwrap_or(JsonValue::Array(Vec::new())),
+                ),
             ])
         })
         .collect();
@@ -1236,6 +1252,29 @@ mod tests {
         );
         assert_eq!(manifest["images"][0]["uri"].as_str(), Some("base.png"));
         assert!(manifest["warnings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn preview_manifest_preserves_morph_target_links_and_weights() {
+        let document = Document::from_json_bytes(
+            br#"{
+                "asset":{"version":"2.0"},
+                "meshes":[{"weights":[0.25],"primitives":[{
+                    "targets":[{"POSITION":3}]
+                }]}],
+                "nodes":[{"mesh":0,"weights":[0.75]}],
+                "scenes":[{"nodes":[0]}],"scene":0
+            }"#,
+        )
+        .unwrap();
+
+        let manifest = preview_manifest(&document);
+        assert_eq!(manifest["meshes"][0]["weights"][0].as_f64(), Some(0.25));
+        assert_eq!(manifest["nodes"][0]["weights"][0].as_f64(), Some(0.75));
+        assert_eq!(
+            manifest["meshes"][0]["primitives"][0]["targets"][0]["POSITION"].as_u64(),
+            Some(3)
+        );
     }
 }
 

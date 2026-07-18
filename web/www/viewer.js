@@ -20,6 +20,10 @@ layout(location=6) in vec2 aTexCoord1;
 layout(location=3) in vec4 aColor;
 layout(location=4) in vec4 aJoints;
 layout(location=5) in vec4 aWeights;
+layout(location=7) in vec3 aMorphPosition0;
+layout(location=8) in vec3 aMorphPosition1;
+layout(location=9) in vec3 aMorphPosition2;
+layout(location=10) in vec3 aMorphPosition3;
 
 uniform mat4 uProjection;
 uniform mat4 uView;
@@ -28,6 +32,8 @@ uniform mat4 uNormalMatrix;
 uniform int uUseSkin;
 uniform int uJointCount;
 uniform mat4 uJointMatrix[${MAX_JOINTS}];
+uniform int uMorphTargetCount;
+uniform float uMorphWeights[4];
 
 out vec3 vNormal;
 out vec2 vTexCoord;
@@ -36,9 +42,14 @@ out vec4 vColor;
 out vec3 vWorldPos;
 
 void main() {
+    vec3 morphedPosition = aPosition;
+    if (uMorphTargetCount > 0) morphedPosition += aMorphPosition0 * uMorphWeights[0];
+    if (uMorphTargetCount > 1) morphedPosition += aMorphPosition1 * uMorphWeights[1];
+    if (uMorphTargetCount > 2) morphedPosition += aMorphPosition2 * uMorphWeights[2];
+    if (uMorphTargetCount > 3) morphedPosition += aMorphPosition3 * uMorphWeights[3];
     vec4 skinned = vec4(0.0);
     if (uUseSkin == 1 && uJointCount > 0) {
-        vec4 pos = vec4(aPosition, 1.0);
+        vec4 pos = vec4(morphedPosition, 1.0);
         skinned +=
             (uJointMatrix[int(aJoints.x)] * pos) * aWeights.x +
             (uJointMatrix[int(aJoints.y)] * pos) * aWeights.y +
@@ -53,7 +64,7 @@ void main() {
             (uJointMatrix[int(aJoints.w)] * nrm).xyz * aWeights.w;
         vNormal = normalize((uNormalMatrix * vec4(skinnedNormal, 0.0)).xyz);
     } else {
-        skinned = vec4(aPosition, 1.0);
+        skinned = vec4(morphedPosition, 1.0);
         vNormal = normalize((uNormalMatrix * vec4(aNormal, 0.0)).xyz);
     }
 
@@ -380,8 +391,7 @@ function uploadPrimitive(gl, primitive, locationMap) {
     const positions = primitive.attributes.POSITION;
     if (!positions) throw new Error('primitive is missing POSITION attribute');
 
-    function bindAttribute(semantic, location, desiredComponents) {
-        const attr = primitive.attributes[semantic];
+    function bindAccessor(attr, semantic, location, desiredComponents) {
         if (!attr || location < 0) return false;
         const buf = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -401,6 +411,10 @@ function uploadPrimitive(gl, primitive, locationMap) {
         return true;
     }
 
+    function bindAttribute(semantic, location, desiredComponents) {
+        return bindAccessor(primitive.attributes[semantic], semantic, location, desiredComponents);
+    }
+
     const layout = {
         position: locationMap.position,
         normal: locationMap.normal,
@@ -409,6 +423,7 @@ function uploadPrimitive(gl, primitive, locationMap) {
         color: locationMap.color,
         joints: locationMap.joints,
         weights: locationMap.weights,
+        morphPositions: locationMap.morphPositions,
     };
 
     const info = {
@@ -420,12 +435,16 @@ function uploadPrimitive(gl, primitive, locationMap) {
         hasColors: !!bindAttribute('COLOR_0', layout.color),
         hasJoints: !!bindAttribute('JOINTS_0', layout.joints),
         hasWeights: !!bindAttribute('WEIGHTS_0', layout.weights),
+        morphTargetCount: Math.min(4, (primitive.morphPositions || []).length),
         mode: primitive.mode,
         elementCount: 0,
         indexed: false,
     };
 
     bindAttribute('POSITION', layout.position);
+    for (let i = 0; i < info.morphTargetCount; i++) {
+        bindAccessor(primitive.morphPositions[i], `MORPH_POSITION_${i}`, layout.morphPositions[i], 3);
+    }
 
     let indexBuffer = null;
     if (primitive.indices) {
@@ -538,6 +557,8 @@ export class Viewer {
             uUseSkin: gl.getUniformLocation(p, 'uUseSkin'),
             uJointCount: gl.getUniformLocation(p, 'uJointCount'),
             uJointMatrix: gl.getUniformLocation(p, `uJointMatrix[0]`),
+            uMorphTargetCount: gl.getUniformLocation(p, 'uMorphTargetCount'),
+            uMorphWeights: gl.getUniformLocation(p, 'uMorphWeights[0]'),
             uHasTexture: gl.getUniformLocation(p, 'uHasTexture'),
             uHasNormals: gl.getUniformLocation(p, 'uHasNormals'),
             uHasVertexColors: gl.getUniformLocation(p, 'uHasVertexColors'),
@@ -580,6 +601,7 @@ export class Viewer {
             color: 3,
             joints: 4,
             weights: 5,
+            morphPositions: [7, 8, 9, 10],
         };
         this.lineUniforms = {
             uProjectionView: gl.getUniformLocation(this.lineProgram, 'uProjectionView'),
@@ -1067,6 +1089,13 @@ export class Viewer {
                 gl.uniform1i(this.uniforms.uUseSkin, usesSkin ? 1 : 0);
                 gl.uniform1i(this.uniforms.uJointCount, usesSkin ? jointMatrices.length / 16 : 0);
                 if (usesSkin) gl.uniformMatrix4fv(this.uniforms.uJointMatrix, false, jointMatrices);
+                const morphWeights = this._morphWeights || (this._morphWeights = new Float32Array(4));
+                morphWeights.fill(0);
+                if (node.weights) {
+                    morphWeights.set(node.weights.subarray ? node.weights.subarray(0, 4) : node.weights.slice(0, 4));
+                }
+                gl.uniform1i(this.uniforms.uMorphTargetCount, uploaded.morphTargetCount);
+                gl.uniform1fv(this.uniforms.uMorphWeights, morphWeights);
                 const material = this.scene.materials[materialIndex];
                 this._applyMaterial(material, uploaded);
                 gl.bindVertexArray(uploaded.vao);
@@ -1306,22 +1335,24 @@ function applyAnimation(scene, clipIndex, t) {
 
         const interpolation = sampler.interpolation || 'LINEAR';
         const path = channel.path;
-        applyChannel(channel.node, path, interpolation, output, i0, frac);
+        applyChannel(channel.node, path, channel.targetCount, interpolation, output, i0, frac);
     }
 }
 
-function applyChannel(node, path, interpolation, output, i0, frac) {
-    const out = node.trs[path];
-    // `buildAnimations` currently filters non-TRS paths. Keep this guard at
-    // the render boundary as well so an unsupported future channel cannot
-    // break the animation loop and leave the preview canvas stale.
+function applyChannel(node, path, targetCount, interpolation, output, i0, frac) {
+    const out = path === 'weights' ? node.weights : node.trs[path];
+    // Keep this guard at the render boundary so an unsupported future channel
+    // cannot break the animation loop and leave the preview canvas stale.
     if (!out) return;
 
-    // A node animated through TRS must no longer use a static matrix. Such an
-    // asset is invalid in strict glTF, but this gives the preview a sensible
-    // result for permissively-authored files.
-    node.localMatrix = null;
-    const components = path === 'rotation' ? 4 : 3;
+    if (path !== 'weights') {
+        // A node animated through TRS must no longer use a static matrix. Such
+        // an asset is invalid in strict glTF, but this gives the preview a
+        // sensible result for permissively-authored files.
+        node.localMatrix = null;
+    }
+    const components = path === 'weights' ? targetCount : path === 'rotation' ? 4 : 3;
+    if (components <= 0) return;
     const stride = interpolation === 'CUBICSPLINE' ? components * 3 : components;
     const base0 = i0 * stride;
     const base1 = Math.min(i0 + 1, output.length / stride - 1) * stride;

@@ -31,7 +31,8 @@ export async function buildSceneFromGltf(sourceData, resources, gltfModule, hook
         const manifest = JSON.parse(new TextDecoder().decode(asset.previewManifest()));
         const warnings = manifest.warnings || [];
         const nodes = buildNodes(manifest.nodes || []);
-        const meshes = buildMeshes(asset, manifest.meshes || []);
+        const meshes = buildMeshes(asset, manifest.meshes || [], warnings);
+        initializeMorphWeights(nodes, meshes, warnings);
         const skins = buildSkins(asset, manifest.skins || [], nodes, warnings);
         const materials = buildMaterials(manifest.materials || []);
         const textures = await buildTextures(asset, manifest, resources, hooks);
@@ -84,13 +85,14 @@ function buildNodes(defs) {
             children: (def.children || []).slice(),
             meshIndex: typeof def.mesh === 'number' ? def.mesh : -1,
             skinIndex: typeof def.skin === 'number' ? def.skin : -1,
+            weights: Array.isArray(def.weights) ? def.weights.slice() : [],
             world: new Float32Array(16),
             index,
         };
     });
 }
 
-function buildMeshes(asset, defs) {
+function buildMeshes(asset, defs, warnings) {
     return defs.map((def, meshIndex) => {
         const primitives = [];
         for (let p = 0; p < def.primitives.length; p++) {
@@ -113,7 +115,26 @@ function buildMeshes(asset, defs) {
                     materialIndex: typeof def.primitives[p].material === 'number'
                         ? def.primitives[p].material
                         : -1,
+                    morphPositions: [],
                 };
+                const targets = def.primitives[p].targets || [];
+                for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
+                    const accessorIndex = targets[targetIndex].POSITION;
+                    if (typeof accessorIndex !== 'number') {
+                        primitive.morphPositions.push(null);
+                        continue;
+                    }
+                    const target = readAccessorAsTyped(asset, accessorIndex);
+                    if (target.componentType !== 5126 || target.components !== 3
+                        || target.count !== attributes.POSITION.count) {
+                        warnings.push(
+                            `Morph target ${targetIndex} on mesh ${meshIndex} primitive ${p} has an unsupported POSITION accessor and was ignored`,
+                        );
+                        primitive.morphPositions.push(null);
+                        continue;
+                    }
+                    primitive.morphPositions.push(target);
+                }
                 if (packed.hasIndices()) {
                     primitive.indices = {
                         bytes: new Uint8Array(packed.indexBytes()),
@@ -129,9 +150,28 @@ function buildMeshes(asset, defs) {
         return {
             name: def.name || `mesh_${meshIndex}`,
             primitives,
+            weights: Array.isArray(def.weights) ? def.weights.slice() : [],
             aabb: meshAabb(primitives),
         };
     });
+}
+
+function initializeMorphWeights(nodes, meshes, warnings) {
+    for (const node of nodes) {
+        const mesh = meshes[node.meshIndex];
+        if (!mesh) continue;
+        const targetCount = Math.max(0, ...mesh.primitives.map((primitive) => primitive.morphPositions.length));
+        if (targetCount === 0) continue;
+        const source = node.weights.length > 0 ? node.weights : mesh.weights;
+        node.weights = Float32Array.from(
+            Array.from({ length: targetCount }, (_, index) => Number(source[index]) || 0),
+        );
+        if (targetCount > 4) {
+            warnings.push(
+                `Morph mesh ${mesh.name} has ${targetCount} targets; the preview renders the first 4`,
+            );
+        }
+    }
 }
 
 function readAccessorAsTyped(asset, index) {
@@ -147,6 +187,7 @@ function readAccessorAsTyped(asset, index) {
             components,
             count,
             normalized: packed.normalized(),
+            bytes,
             data: typedView,
         };
     } finally {
@@ -362,7 +403,8 @@ function buildAnimations(asset, defs, nodes, warnings) {
             const node = nodes[ch.node];
             const sampler = samplers[ch.sampler];
             if (!node || !sampler) return null;
-            if (!['translation', 'rotation', 'scale'].includes(ch.path)) {
+            const targetCount = ch.path === 'weights' ? node.weights.length : 0;
+            if (!['translation', 'rotation', 'scale', 'weights'].includes(ch.path) || (ch.path === 'weights' && targetCount === 0)) {
                 warnings.push(
                     `Animation ${name}: ${ch.path} channels are not supported by the preview and were ignored`,
                 );
@@ -372,6 +414,7 @@ function buildAnimations(asset, defs, nodes, warnings) {
                 node,
                 path: ch.path,
                 sampler,
+                targetCount,
             };
         }).filter(Boolean);
 
