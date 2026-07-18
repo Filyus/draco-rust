@@ -260,12 +260,13 @@ void main() {
     vec3 diffuseIbl = (1.0 - iblFresnel) * (1.0 - metallic) * baseColor * studioIrradiance(N);
     vec3 reflected = reflect(-V, N);
     vec3 specularIbl = iblFresnel * studioRadiance(reflected, roughness);
-    color += (diffuseIbl * 0.65 + specularIbl) * occlusion;
+    color += (diffuseIbl * 1.05 + specularIbl) * occlusion;
     vec3 emissive = uEmissiveFactor;
     if (uHasEmissiveTexture == 1) {
         emissive *= pow(texture(uEmissive, selectUv(uEmissiveTexCoord)).rgb, vec3(2.2));
     }
     color += emissive;
+    color *= 1.15;
     color = color / (color + vec3(1.0));
     outColor = vec4(pow(color, vec3(1.0 / 2.2)), base.a);
 }
@@ -307,13 +308,16 @@ uniform mat4 uInverseView;
 out vec4 outColor;
 
 vec3 studioRadiance(vec3 direction) {
-    float up = clamp(direction.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 color = mix(vec3(0.035, 0.045, 0.07), vec3(0.34, 0.43, 0.66), up);
-    color = mix(color, vec3(0.55, 0.34, 0.20), exp(-abs(direction.y) * 12.0) * 0.18);
+    // A distinct floor / sky split makes the world-space horizon readable.
+    float sky = smoothstep(-0.025, 0.075, direction.y);
+    vec3 floor = vec3(0.025, 0.030, 0.045);
+    vec3 skyColor = mix(vec3(0.12, 0.17, 0.28), vec3(0.46, 0.57, 0.78), max(direction.y, 0.0));
+    vec3 color = mix(floor, skyColor, sky);
+    color = mix(color, vec3(0.62, 0.38, 0.20), exp(-abs(direction.y) * 16.0) * 0.22);
     vec3 keyDirection = normalize(vec3(-0.45, 0.78, 0.42));
     vec3 rimDirection = normalize(vec3(0.52, 0.42, -0.72));
-    color += vec3(2.8, 2.55, 2.15) * pow(max(dot(direction, keyDirection), 0.0), 72.0);
-    color += vec3(0.75, 0.9, 1.25) * pow(max(dot(direction, rimDirection), 0.0), 36.0);
+    color += vec3(4.0, 3.65, 3.05) * pow(max(dot(direction, keyDirection), 0.0), 56.0);
+    color += vec3(1.15, 1.35, 1.85) * pow(max(dot(direction, rimDirection), 0.0), 30.0);
     return color;
 }
 
