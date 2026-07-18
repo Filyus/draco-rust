@@ -7,7 +7,7 @@ members = [
     "obj-writer-wasm",
     "ply-reader-wasm",
     "ply-writer-wasm",
-    "gltf-inspect-wasm",
+    "gltf-document-wasm",
     "gltf-canonicalize-wasm",
     "fbx-reader-wasm",
     "fbx-writer-wasm",

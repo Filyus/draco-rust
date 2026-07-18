@@ -1,4 +1,4 @@
-//! Native glTF document inspection for browser consumers.
+//! Native full glTF document API for browser consumers.
 
 use std::collections::BTreeMap;
 

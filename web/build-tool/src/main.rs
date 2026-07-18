@@ -16,7 +16,7 @@ const MODULES: &[&str] = &[
     "obj-writer-wasm",
     "ply-reader-wasm",
     "ply-writer-wasm",
-    "gltf-inspect-wasm",
+    "gltf-document-wasm",
     "gltf-canonicalize-wasm",
     "fbx-reader-wasm",
     "fbx-writer-wasm",
@@ -31,7 +31,7 @@ const WASM_OPT_ARGS: &[&str] = &[
     "--enable-sign-ext",
     "--enable-mutable-globals",
 ];
-const GLTF_INSPECT_GZIP_BUDGET: usize = 110 * 1024;
+const GLTF_DOCUMENT_GZIP_BUDGET: usize = 160 * 1024;
 
 #[derive(Clone, Debug)]
 struct Config {
@@ -124,16 +124,16 @@ fn run() -> Result<(), String> {
     }
 
     if failed.is_empty() && !config.debug && !config.no_optimize {
-        let inspect_wasm = config.output_dir.join("gltf_inspect_bg.wasm");
-        match check_gltf_inspect_size(&inspect_wasm) {
+        let document_wasm = config.output_dir.join("gltf_document_bg.wasm");
+        match check_gltf_document_size(&document_wasm) {
             Ok((raw_size, gzip_size)) => println!(
-                "glTF inspector size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB / {:.0} KiB budget)",
+                "glTF document size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB / {:.0} KiB budget)",
                 gzip_size as f64 / 1024.0,
-                GLTF_INSPECT_GZIP_BUDGET as f64 / 1024.0
+                GLTF_DOCUMENT_GZIP_BUDGET as f64 / 1024.0
             ),
             Err(error) => {
                 eprintln!("Error: {error}");
-                failed.push("gltf-inspect-size".to_string());
+                failed.push("gltf-document-size".to_string());
             }
         }
     }
@@ -177,7 +177,7 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn check_gltf_inspect_size(path: &Path) -> Result<(usize, usize), String> {
+fn check_gltf_document_size(path: &Path) -> Result<(usize, usize), String> {
     let wasm = fs::read(path)
         .map_err(|error| format!("failed to read {} for size check: {error}", path.display()))?;
     // RFC 1952 framing is 10 bytes of header and 8 bytes of trailer around the
@@ -186,12 +186,12 @@ fn check_gltf_inspect_size(path: &Path) -> Result<(usize, usize), String> {
         .checked_add(compress_to_vec(&wasm, 9).len())
         .and_then(|size| size.checked_add(8))
         .ok_or("gzip size overflow")?;
-    if gzip_size > GLTF_INSPECT_GZIP_BUDGET {
+    if gzip_size > GLTF_DOCUMENT_GZIP_BUDGET {
         return Err(format!(
-            "{} is {gzip_size} bytes ({:.1} KiB) gzip, exceeding the {:.0} KiB glTF inspector budget",
+            "{} is {gzip_size} bytes ({:.1} KiB) gzip, exceeding the {:.0} KiB glTF document budget",
             path.display(),
             gzip_size as f64 / 1024.0,
-            GLTF_INSPECT_GZIP_BUDGET as f64 / 1024.0
+            GLTF_DOCUMENT_GZIP_BUDGET as f64 / 1024.0
         ));
     }
     Ok((wasm.len(), gzip_size))

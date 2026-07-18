@@ -66,7 +66,7 @@ async function loadAllModules() {
         { key: 'objWriter', path: `./pkg/obj_writer.js${CACHE_BUST}`, statusId: 'obj-writer-status' },
         { key: 'plyReader', path: `./pkg/ply_reader.js${CACHE_BUST}`, statusId: 'ply-reader-status' },
         { key: 'plyWriter', path: `./pkg/ply_writer.js${CACHE_BUST}`, statusId: 'ply-writer-status' },
-        { key: 'gltfDocument', path: `./pkg/gltf_inspect.js${CACHE_BUST}`, statusId: 'gltf-document-status' },
+        { key: 'gltfDocument', path: `./pkg/gltf_document.js${CACHE_BUST}`, statusId: 'gltf-document-status' },
         { key: 'gltfCanonicalize', path: `./pkg/gltf_canonicalize.js${CACHE_BUST}`, statusId: 'gltf-canonicalize-status' },
         { key: 'fbxReader', path: `./pkg/fbx_reader.js${CACHE_BUST}`, statusId: 'fbx-reader-status' },
         { key: 'fbxWriter', path: `./pkg/fbx_writer.js${CACHE_BUST}`, statusId: 'fbx-writer-status' },
