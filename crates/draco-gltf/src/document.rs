@@ -105,6 +105,14 @@ pub struct Document {
 
 impl Document {
     /// Parses a JSON document, retaining the exact source bytes until mutation.
+    ///
+    /// ```
+    /// # use draco_gltf::Document;
+    /// let bytes = br#"{"asset":{"version":"2.0"},"meshes":[]}"#;
+    /// let document = Document::from_json_bytes(bytes)?;
+    /// assert_eq!(document.meshes().len(), 0);
+    /// # Ok::<(), draco_gltf::Error>(())
+    /// ```
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self> {
         let root = Value::parse(bytes).map_err(Error::Json)?;
         if !root.is_object() {
@@ -139,6 +147,14 @@ impl Document {
     }
 
     /// Serializes JSON, preserving original bytes when the document is untouched.
+    ///
+    /// ```
+    /// # use draco_gltf::Document;
+    /// let source = br#"{ "asset": { "version": "2.0" } }"#;
+    /// let document = Document::from_json_bytes(source)?;
+    /// assert_eq!(document.to_json_bytes()?, source);
+    /// # Ok::<(), draco_gltf::Error>(())
+    /// ```
     pub fn to_json_bytes(&self) -> Result<Vec<u8>> {
         match &self.original_json {
             Some(bytes) => Ok(bytes.clone()),

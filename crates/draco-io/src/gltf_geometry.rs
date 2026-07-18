@@ -42,6 +42,17 @@ pub struct DecodedAccessor {
 ///
 /// This is deliberately independent of any document representation. It is the
 /// common boundary for scene importers, compact runtimes, and Draco decoding.
+///
+/// ```
+/// # use draco_io::PackedAttribute;
+/// # use draco_core::draco_types::DataType;
+/// let attribute = PackedAttribute::from_accessor(
+///     "POSITION", 1, 3, DataType::Float32, false,
+///     vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+/// )?;
+/// assert_eq!(attribute.semantic, "POSITION");
+/// # Ok::<(), draco_io::GltfError>(())
+/// ```
 #[derive(Clone, Debug)]
 pub struct PackedAttribute {
     /// glTF semantic such as `POSITION` or `TEXCOORD_0`.

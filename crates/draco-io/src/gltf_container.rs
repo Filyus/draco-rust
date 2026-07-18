@@ -24,6 +24,17 @@ pub enum GltfContainerFormat {
 }
 
 /// Builds a GLB v2 or draft v3 container from serialized JSON and binary data.
+///
+/// ```
+/// # use draco_io::{parse_gltf_container, GltfContainerFormat};
+/// # use draco_io::gltf_container::build_glb_from_json;
+/// let json = br#"{"asset":{"version":"2.0"}}"#;
+/// let glb = build_glb_from_json(json, &[1, 2, 3], GltfContainerFormat::GlbV2)?;
+/// let container = parse_gltf_container(&glb)?;
+/// assert_eq!(container.format, GltfContainerFormat::GlbV2);
+/// assert_eq!(&container.bin.unwrap()[..3], &[1, 2, 3]);
+/// # Ok::<(), draco_io::GltfError>(())
+/// ```
 pub fn build_glb_from_json(
     json: &[u8],
     bin: &[u8],
@@ -875,6 +886,12 @@ fn copy_prefix(data: &[u8], length: usize, label: &str) -> Result<Vec<u8>> {
 }
 
 /// Decode a `data:` URI with an optional decoded-byte quota.
+///
+/// ```
+/// # use draco_io::decode_data_uri;
+/// assert_eq!(decode_data_uri("data:text/plain;base64,aGk=", None)?, b"hi");
+/// # Ok::<(), draco_io::GltfError>(())
+/// ```
 pub fn decode_data_uri(uri: &str, max_bytes: Option<usize>) -> Result<Vec<u8>> {
     let body = uri
         .strip_prefix("data:")

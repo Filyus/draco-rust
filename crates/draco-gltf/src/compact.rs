@@ -16,6 +16,14 @@ pub struct CompactDocument {
 
 impl CompactDocument {
     /// Parses and validates a compact document with the selected profile.
+    ///
+    /// ```
+    /// # use draco_gltf::{CompactDocument, ValidationProfile};
+    /// let input = br#"{"asset":{"version":"2.0"},"meshes":[]}"#;
+    /// let document = CompactDocument::parse(input, ValidationProfile::Gltf20)?;
+    /// assert_eq!(document.mesh_primitive_ranges().count(), 0);
+    /// # Ok::<(), draco_gltf::Error>(())
+    /// ```
     pub fn parse(bytes: &[u8], profile: ValidationProfile) -> Result<Self> {
         let document = Document::from_json_bytes(bytes)?;
         document.validate(profile)?;
@@ -55,6 +63,15 @@ pub struct CompactMeshRange {
 impl Import {
     /// Decodes ordinary accessors or `KHR_draco_mesh_compression` into packed buffers.
     /// Decodes one primitive into tightly packed geometry buffers.
+    ///
+    /// ```no_run
+    /// # use draco_gltf::{import_slice, MeshIndex};
+    /// # let input = br#"{"asset":{"version":"2.0"},"meshes":[]}"#;
+    /// # let scene = import_slice(input, None)?;
+    /// let packed = scene.decode_packed_primitive(MeshIndex(0), 0)?;
+    /// println!("{} attributes", packed.attributes.len());
+    /// # Ok::<(), draco_gltf::Error>(())
+    /// ```
     pub fn decode_packed_primitive(
         &self,
         mesh: MeshIndex,

@@ -621,6 +621,15 @@ fn remap_index(value: &mut crate::JsonValue, map: &[Option<usize>], kind: &str) 
 /// extension and removes raw geometry owned only by the compressed primitive.
 /// Use [`CompressionMode::Fallback`] when non-Draco readers must retain the
 /// original accessors.
+///
+/// ```
+/// # use draco_gltf::{CompressionMode, CompressionOptions};
+/// let options = CompressionOptions {
+///     mode: CompressionMode::Fallback,
+///     ..CompressionOptions::default()
+/// };
+/// assert_eq!(options.mode, CompressionMode::Fallback);
+/// ```
 pub struct CompressionOptions {
     /// Draco encoder speed in the range accepted by `draco-core`.
     pub encoding_speed: u8,

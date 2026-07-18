@@ -228,6 +228,15 @@ impl Import {
     /// that need newly generated companion buffers, use
     /// [`Import::to_gltf_output`] instead. GLB output embeds all resolved
     /// buffers in one binary chunk.
+    ///
+    /// ```
+    /// # use draco_gltf::{import_slice, OutputFormat};
+    /// # let input = br#"{"asset":{"version":"2.0"},"buffers":[],"meshes":[]}"#;
+    /// let scene = import_slice(input, None)?;
+    /// let glb = scene.to_bytes(OutputFormat::GlbV2)?;
+    /// assert_eq!(&glb[0..4], b"glTF");
+    /// # Ok::<(), draco_gltf::Error>(())
+    /// ```
     pub fn to_bytes(&self, output: crate::OutputFormat) -> Result<Vec<u8>> {
         let format = match output {
             crate::OutputFormat::GltfJson => {
@@ -265,6 +274,16 @@ impl Import {
     /// this method returns companion buffer payloads as well. Buffers without
     /// a URI (for example a Draco payload appended during compression) receive
     /// a deterministic `buffer-{index}.bin` URI in the returned JSON.
+    ///
+    /// ```
+    /// # use draco_gltf::import_slice;
+    /// # let input = br#"{"asset":{"version":"2.0"},"buffers":[],"meshes":[]}"#;
+    /// let scene = import_slice(input, None)?;
+    /// let output = scene.to_gltf_output()?;
+    /// assert!(!output.json.is_empty());
+    /// assert!(output.resources.is_empty());
+    /// # Ok::<(), draco_gltf::Error>(())
+    /// ```
     pub fn to_gltf_output(&self) -> Result<GltfOutput> {
         let declared = self.document.buffers().len();
         if declared != self.resources.buffers.len() {

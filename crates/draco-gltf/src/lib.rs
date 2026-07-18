@@ -130,6 +130,14 @@ pub fn import(path: impl AsRef<Path>) -> Result<Import> {
 }
 
 /// Parses glTF or GLB bytes using the draft validation profile.
+///
+/// ```
+/// # use draco_gltf::import_slice;
+/// let input = br#"{"asset":{"version":"2.0"},"meshes":[]}"#;
+/// let scene = import_slice(input, None)?;
+/// assert_eq!(scene.document.meshes().len(), 0);
+/// # Ok::<(), draco_gltf::Error>(())
+/// ```
 pub fn import_slice(bytes: &[u8], base: Option<&Path>) -> Result<Import> {
     let options = ImportOptions {
         base_path: base,
