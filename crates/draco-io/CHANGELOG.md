@@ -22,6 +22,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `CompactLimits` and `parse_compact_document_with_limits` for bounded compact
   parsing. The WASM reader applies conservative JSON, resource, buffer, and
   decoded-geometry quotas by default.
+- `CompactDocument::mesh_primitive_ranges`, preserving the mapping from each
+  source glTF mesh index to its flattened primitive range for scene consumers.
 
 ### Changed
 
@@ -32,6 +34,11 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   native `GltfReader` already supports: integer `TEXCOORD_0`/`COLOR_0` accessors
   (UNSIGNED_BYTE/UNSIGNED_SHORT with normalization), multi-primitive meshes
   (flattened into `CompactDocument::meshes`), and multi-buffer documents.
+
+### Fixed
+
+- Enforce compact-reader aggregate buffer quotas before copying GLB or external
+  resources, including checked accounting across multiple buffers.
 
 ## [0.2.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.1.0...draco-io-v0.2.0) - 2026-07-16
 

@@ -32,11 +32,22 @@ pub struct MeshData {
     pub colors: Vec<f32>,
 }
 
+/// Range of flattened primitives belonging to one source glTF mesh.
+#[derive(SerJson, Clone, Copy, Default)]
+pub struct MeshPrimitiveRange {
+    #[nserde(rename = "firstPrimitive")]
+    pub first_primitive: usize,
+    #[nserde(rename = "primitiveCount")]
+    pub primitive_count: usize,
+}
+
 /// Node in the scene graph.
 #[derive(SerJson, Clone, Default)]
 pub struct SceneNode {
     pub name: Option<String>,
     #[nserde(rename = "meshIndex")]
+    /// Source glTF mesh index; use `meshPrimitiveRanges[meshIndex]` to obtain
+    /// its flattened primitive range.
     pub mesh_index: Option<usize>,
     pub translation: Option<Vec<f32>>,
     pub rotation: Option<Vec<f32>>,
@@ -56,6 +67,8 @@ pub struct SceneData {
 pub struct ParseResult {
     pub success: bool,
     pub meshes: Vec<MeshData>,
+    #[nserde(rename = "meshPrimitiveRanges")]
+    pub mesh_primitive_ranges: Vec<MeshPrimitiveRange>,
     pub scenes: Vec<SceneData>,
     pub nodes: Vec<SceneNode>,
     #[nserde(rename = "defaultScene")]
@@ -190,6 +203,14 @@ fn parse_document_to_result(
                     colors: mesh.colors,
                 })
                 .collect(),
+            mesh_primitive_ranges: document
+                .mesh_primitive_ranges
+                .into_iter()
+                .map(|range| MeshPrimitiveRange {
+                    first_primitive: range.first_primitive,
+                    primitive_count: range.primitive_count,
+                })
+                .collect(),
             scenes: document
                 .scenes
                 .into_iter()
@@ -294,6 +315,9 @@ mod tests {
         assert_eq!(result.meshes.len(), 1);
         assert_eq!(result.meshes[0].positions.len(), 9);
         assert_eq!(result.meshes[0].indices, vec![0, 1, 2]);
+        assert_eq!(result.mesh_primitive_ranges.len(), 1);
+        assert_eq!(result.mesh_primitive_ranges[0].first_primitive, 0);
+        assert_eq!(result.mesh_primitive_ranges[0].primitive_count, 1);
     }
 
     #[test]

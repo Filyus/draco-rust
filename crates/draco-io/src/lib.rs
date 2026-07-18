@@ -275,7 +275,7 @@ pub use fbx_writer::FbxWriter;
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-compact")))]
 pub use gltf_compact::{
     parse_compact_document, parse_compact_document_with_limits, CompactDocument, CompactLimits,
-    CompactMeshData, CompactNode, CompactScene,
+    CompactMeshData, CompactMeshRange, CompactNode, CompactScene,
 };
 #[cfg(feature = "gltf-writer")]
 pub use gltf_container::{

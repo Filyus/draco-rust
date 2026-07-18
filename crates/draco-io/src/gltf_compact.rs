@@ -31,8 +31,8 @@
 //!   for the rest).
 //! - **Multiple primitives per mesh** are supported: a mesh with `N` primitives
 //!   flattens into `N` entries of [`CompactMeshData`]. A node's `mesh` index
-//!   points at the first primitive of that mesh; callers that need the full
-//!   extent can derive it from the document's primitive counts.
+//!   remains the glTF mesh index; use [`CompactDocument::mesh_primitive_ranges`]
+//!   to resolve it to the matching primitive range.
 //! - **No sparse accessors.**
 //! - **`extensionsRequired`** may contain only `KHR_draco_mesh_compression`.
 //!   `KHR_draco_mesh_compression` primitives are decoded through `draco-core`
@@ -133,10 +133,21 @@ pub struct CompactMeshData {
     pub colors: Vec<f32>,
 }
 
+/// Range of flattened primitives belonging to one glTF `meshes[]` entry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CompactMeshRange {
+    /// First index in [`CompactDocument::meshes`].
+    pub first_primitive: usize,
+    /// Number of flattened primitives belonging to this glTF mesh.
+    pub primitive_count: usize,
+}
+
 /// Minimal scene-graph node (TRS + hierarchy), as carried by the document.
 #[derive(Debug, Clone, Default)]
 pub struct CompactNode {
     pub name: Option<String>,
+    /// Index into [`CompactDocument::mesh_primitive_ranges`], matching the
+    /// source glTF `meshes[]` index rather than the flattened primitive list.
     pub mesh: Option<usize>,
     pub translation: Option<Vec<f32>>,
     pub rotation: Option<Vec<f32>>,
@@ -155,6 +166,8 @@ pub struct CompactScene {
 #[derive(Debug, Clone, Default)]
 pub struct CompactDocument {
     pub meshes: Vec<CompactMeshData>,
+    /// One flattened-primitive range per source glTF mesh.
+    pub mesh_primitive_ranges: Vec<CompactMeshRange>,
     pub nodes: Vec<CompactNode>,
     pub scenes: Vec<CompactScene>,
     pub default_scene: Option<usize>,
@@ -348,12 +361,21 @@ pub fn parse_compact_document_with_limits(
 
     let uses_draco = document_uses_draco(&root);
     let mut meshes = Vec::new();
-    let total_primitives: usize = root.meshes.iter().map(|mesh| mesh.primitives.len()).sum();
+    let total_primitives = root.meshes.iter().try_fold(0usize, |total, mesh| {
+        total
+            .checked_add(mesh.primitives.len())
+            .ok_or_else(|| GltfError::ResourceLimitExceeded("primitive table size overflow".into()))
+    })?;
     meshes
         .try_reserve_exact(total_primitives)
         .map_err(|_| GltfError::ResourceLimitExceeded("mesh result is too large".into()))?;
+    let mut mesh_primitive_ranges = Vec::new();
+    mesh_primitive_ranges
+        .try_reserve_exact(root.meshes.len())
+        .map_err(|_| GltfError::ResourceLimitExceeded("mesh range table is too large".into()))?;
     let mut budget = ResultBudget::new(limits.max_result_bytes);
     for gltf_mesh in &root.meshes {
+        let first_primitive = meshes.len();
         for primitive in &gltf_mesh.primitives {
             meshes.push(decode_primitive(
                 &root,
@@ -363,6 +385,10 @@ pub fn parse_compact_document_with_limits(
                 &mut budget,
             )?);
         }
+        mesh_primitive_ranges.push(CompactMeshRange {
+            first_primitive,
+            primitive_count: meshes.len() - first_primitive,
+        });
     }
     if meshes.is_empty() {
         return Err(GltfError::InvalidGltf(
@@ -391,6 +417,7 @@ pub fn parse_compact_document_with_limits(
         .collect();
     Ok(CompactDocument {
         meshes,
+        mesh_primitive_ranges,
         nodes,
         scenes,
         default_scene: root.scene,
@@ -417,24 +444,41 @@ fn resolve_document_buffers(
     buffers
         .try_reserve_exact(root.buffers.len())
         .map_err(|_| GltfError::ResourceLimitExceeded("buffer table allocation failed".into()))?;
+    let mut total = 0usize;
     for (index, buffer) in root.buffers.iter().enumerate() {
+        let remaining_total = remaining_total_limit(limits.max_total_buffer_bytes, total)?;
+        if remaining_total.is_some_and(|remaining| buffer.byte_length > remaining) {
+            return Err(GltfError::ResourceLimitExceeded(format!(
+                "declared buffer {index} length {} exceeds the remaining total quota",
+                buffer.byte_length
+            )));
+        }
+        let effective_limit = match (limits.max_resource_bytes, remaining_total) {
+            (Some(resource), Some(remaining)) => Some(resource.min(remaining)),
+            (Some(resource), None) => Some(resource),
+            (None, Some(remaining)) => Some(remaining),
+            (None, None) => None,
+        };
         let bytes = if let Some(uri) = buffer.uri.as_deref() {
-            resolve_buffer_uri(uri, resources, limits)?
+            resolve_buffer_uri(uri, resources, effective_limit)?
         } else if index == 0 {
             // Buffer 0 without a URI is the GLB BIN chunk.
-            bin_buffer
-                .ok_or_else(|| {
-                    GltfError::InvalidGltf(
-                        "buffer 0 has no URI and no GLB BIN chunk was supplied".into(),
-                    )
-                })?
-                .to_vec()
+            let bin = bin_buffer.ok_or_else(|| {
+                GltfError::InvalidGltf(
+                    "buffer 0 has no URI and no GLB BIN chunk was supplied".into(),
+                )
+            })?;
+            check_limit(bin.len(), effective_limit, "GLB BIN chunk")?;
+            bin.to_vec()
         } else {
             return Err(GltfError::InvalidGltf(format!(
                 "buffer {index} has no URI; only buffer 0 may be the GLB BIN chunk"
             )));
         };
-        check_limit(bytes.len(), limits.max_resource_bytes, "glTF buffer")?;
+        check_limit(bytes.len(), effective_limit, "glTF buffer")?;
+        total = total.checked_add(bytes.len()).ok_or_else(|| {
+            GltfError::ResourceLimitExceeded("glTF buffers total size overflow".into())
+        })?;
         buffers.push(bytes);
     }
     // The GLB BIN chunk must be the only buffer 0 source.
@@ -448,9 +492,18 @@ fn resolve_document_buffers(
             "GLB BIN chunk requires buffer 0 without a URI".into(),
         ));
     }
-    let total: usize = buffers.iter().map(Vec::len).sum();
     check_limit(total, limits.max_total_buffer_bytes, "glTF buffers total")?;
     Ok(buffers)
+}
+
+fn remaining_total_limit(limit: Option<usize>, total: usize) -> Result<Option<usize>> {
+    limit
+        .map(|limit| {
+            limit.checked_sub(total).ok_or_else(|| {
+                GltfError::ResourceLimitExceeded("glTF buffers exceed the configured total".into())
+            })
+        })
+        .transpose()
 }
 
 fn validate_images(
@@ -573,33 +626,20 @@ fn generate_sequential_indices(count: usize, budget: &mut ResultBudget) -> Resul
 fn resolve_buffer_uri(
     uri: &str,
     resources: &[(String, Vec<u8>)],
-    limits: &CompactLimits,
+    max_bytes: Option<usize>,
 ) -> Result<Vec<u8>> {
     if uri.starts_with("data:") {
-        let data = decode_data_uri(uri, limits.max_resource_bytes).map_err(|error| match error {
+        return decode_data_uri(uri, max_bytes).map_err(|error| match error {
             GltfError::ResourceLimitExceeded(_) => error,
             _ => GltfError::InvalidGltf("invalid buffer data URI".into()),
         });
-        if let Ok(data) = &data {
-            check_limit(
-                data.len(),
-                limits.max_total_buffer_bytes,
-                "glTF buffers total",
-            )?;
-        }
-        return data;
     }
     let resource = resources
         .iter()
         .find(|(candidate, _)| candidate == uri)
         .ok_or_else(|| GltfError::InvalidGltf(uri.to_string()))?;
     let bytes = &resource.1;
-    check_limit(bytes.len(), limits.max_resource_bytes, uri)?;
-    check_limit(
-        bytes.len(),
-        limits.max_total_buffer_bytes,
-        "glTF buffers total",
-    )?;
+    check_limit(bytes.len(), max_bytes, uri)?;
     Ok(bytes.clone())
 }
 
@@ -1635,20 +1675,38 @@ mod tests {
     }
 
     #[test]
-    fn decodes_multi_primitive_mesh() {
-        // A mesh with two primitives (e.g. LOD/material split) flattens into
-        // two `CompactMeshData` entries; `node.mesh` indexes the first.
+    fn preserves_mesh_to_primitive_ranges() {
+        // Mesh 0 owns two flattened primitives while node 0 references mesh 1.
+        // The explicit range table keeps that node from pointing at mesh 0's
+        // second primitive.
         let resources = vec![("triangle.bin".to_string(), triangle_resource())];
-        let json = String::from_utf8(external_triangle_json())
-            .unwrap()
-            .replace(
-                "[{\"attributes\":{\"POSITION\":0}}]",
-                "[{\"attributes\":{\"POSITION\":0}},{\"attributes\":{\"POSITION\":0}}]",
-            );
+        let json = r#"{
+          "asset":{"version":"2.0"},
+          "buffers":[{"uri":"triangle.bin","byteLength":36}],
+          "bufferViews":[{"buffer":0,"byteLength":36}],
+          "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+          "meshes":[
+            {"primitives":[{"attributes":{"POSITION":0}},{"attributes":{"POSITION":0}}]},
+            {"primitives":[{"attributes":{"POSITION":0}}]}
+          ],
+          "nodes":[{"mesh":1}]
+        }"#;
         let document = parse_compact_document(&json, None, &resources).unwrap();
-        assert_eq!(document.meshes.len(), 2);
-        assert_eq!(document.meshes[0].positions.len(), 9);
-        assert_eq!(document.meshes[1].positions.len(), 9);
+        assert_eq!(document.meshes.len(), 3);
+        assert_eq!(
+            document.mesh_primitive_ranges,
+            vec![
+                CompactMeshRange {
+                    first_primitive: 0,
+                    primitive_count: 2,
+                },
+                CompactMeshRange {
+                    first_primitive: 2,
+                    primitive_count: 1,
+                },
+            ]
+        );
+        assert_eq!(document.nodes[0].mesh, Some(1));
     }
 
     #[test]
@@ -1699,6 +1757,58 @@ mod tests {
     }
 
     #[test]
+    fn rejects_multi_buffer_input_exceeding_total_quota() {
+        let resources = vec![
+            ("positions.bin".to_string(), triangle_resource()),
+            ("normals.bin".to_string(), triangle_resource()),
+        ];
+        let json = r#"{
+          "asset":{"version":"2.0"},
+          "buffers":[{"uri":"positions.bin","byteLength":36},{"uri":"normals.bin","byteLength":36}],
+          "bufferViews":[
+            {"buffer":0,"byteLength":36},
+            {"buffer":1,"byteLength":36}
+          ],
+          "accessors":[
+            {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},
+            {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"}
+          ],
+          "meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1}}]}]
+        }"#;
+        let result = parse_compact_document_with_limits(
+            json,
+            None,
+            &resources,
+            &CompactLimits {
+                max_total_buffer_bytes: Some(64),
+                ..CompactLimits::default()
+            },
+        );
+        assert!(matches!(result, Err(GltfError::ResourceLimitExceeded(_))));
+    }
+
+    #[test]
+    fn rejects_oversized_glb_bin_before_decoding() {
+        let json = r#"{
+          "asset":{"version":"2.0"},
+          "buffers":[{"byteLength":36}],
+          "bufferViews":[{"buffer":0,"byteLength":36}],
+          "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+          "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]
+        }"#;
+        let result = parse_compact_document_with_limits(
+            json,
+            Some(&triangle_resource()),
+            &[],
+            &CompactLimits {
+                max_resource_bytes: Some(35),
+                ..CompactLimits::default()
+            },
+        );
+        assert!(matches!(result, Err(GltfError::ResourceLimitExceeded(_))));
+    }
+
+    #[test]
     fn decodes_normalized_ushort_texcoord() {
         // TEXCOORD_0 as UNSIGNED_SHORT (5123), normalized. Values [0, 65535]
         // map to [0.0, 1.0]; 0 -> 0.0, 65535 -> 1.0.
@@ -1738,7 +1848,6 @@ mod tests {
     #[test]
     fn rejects_float_texcoord_with_normalized() {
         // RequiredForInteger: a FLOAT accessor must NOT be normalized.
-        let resources = vec![("triangle.bin".to_string(), triangle_resource())];
         let mut bytes = triangle_resource();
         bytes.extend(
             [0.0f32, 0.0, 1.0, 1.0]
@@ -1766,7 +1875,6 @@ mod tests {
     #[test]
     fn rejects_ubyte_texcoord_without_normalized() {
         // RequiredForInteger: an integer accessor MUST be normalized.
-        let resources = vec![("triangle.bin".to_string(), triangle_resource())];
         let mut bytes = triangle_resource();
         bytes.extend([0u8, 0, 255, 255, 128, 128]);
         let resources = vec![("triangle.bin".to_string(), bytes)];
