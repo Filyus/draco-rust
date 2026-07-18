@@ -214,7 +214,22 @@ impl Import {
 
     pub fn to_bytes(&self, output: crate::OutputFormat) -> Result<Vec<u8>> {
         let format = match output {
-            crate::OutputFormat::GltfJson => return self.document.to_json_bytes(),
+            crate::OutputFormat::GltfJson => {
+                if self.document.buffers().into_iter().any(|buffer| {
+                    buffer.uri().is_none()
+                        && self
+                            .resources
+                            .buffers
+                            .get(buffer.index().0)
+                            .is_some_and(|bytes| !bytes.is_empty())
+                }) {
+                    return Err(Error::Extension(
+                        "GltfJson cannot carry materialized companion buffers; use to_gltf_output()"
+                            .into(),
+                    ));
+                }
+                return self.document.to_json_bytes();
+            }
             crate::OutputFormat::SameAsInput => self.input_format,
             crate::OutputFormat::GlbV2 => draco_io::GltfContainerFormat::GlbV2,
             crate::OutputFormat::GlbV3 => draco_io::GltfContainerFormat::GlbV3,
