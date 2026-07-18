@@ -95,6 +95,14 @@ uniform int uHasEmissiveTexture;
 uniform sampler2D uEmissive;
 uniform int uEmissiveTexCoord;
 uniform vec3 uEmissiveFactor;
+uniform int uHasNormalTexture;
+uniform sampler2D uNormalTexture;
+uniform int uNormalTexCoord;
+uniform float uNormalScale;
+uniform int uHasOcclusionTexture;
+uniform sampler2D uOcclusionTexture;
+uniform int uOcclusionTexCoord;
+uniform float uOcclusionStrength;
 
 uniform vec3 uLightDir;        // direction TO light (key)
 uniform vec3 uLightColor;
@@ -185,6 +193,23 @@ void main() {
     // material rule so the visible side receives the same lighting either way.
     if (!gl_FrontFacing) N = -N;
 
+    if (uHasNormalTexture == 1) {
+        vec2 uv = selectUv(uNormalTexCoord);
+        vec3 tangentNormal = texture(uNormalTexture, uv).xyz * 2.0 - 1.0;
+        tangentNormal.xy *= uNormalScale;
+        vec3 dpdx = dFdx(vWorldPos);
+        vec3 dpdy = dFdy(vWorldPos);
+        vec2 duvdx = dFdx(uv);
+        vec2 duvdy = dFdy(uv);
+        vec3 T = dpdx * duvdy.y - dpdy * duvdx.y;
+        vec3 B = -dpdx * duvdy.x + dpdy * duvdx.x;
+        if (dot(T, T) > 0.000001 && dot(B, B) > 0.000001) {
+            T = normalize(T);
+            B = normalize(B);
+            N = normalize(mat3(T, B, N) * tangentNormal);
+        }
+    }
+
     vec3 V = normalize(uCameraPos - vWorldPos);
     vec3 baseColor = uBaseColorFactor.rgb;
     if (uHasVertexColors == 1) baseColor *= vColor.rgb;
@@ -203,7 +228,11 @@ void main() {
     vec3 color = directPbrLight(N, V, L, uLightColor, baseColor, metallic, roughness);
     color += directPbrLight(N, V, F, uFillColor * 0.5, baseColor, metallic, roughness);
     // A small neutral ambient term keeps non-metallic assets legible until IBL is added.
-    color += baseColor * uAmbient * (1.0 - metallic) * 0.35;
+    float occlusion = 1.0;
+    if (uHasOcclusionTexture == 1) {
+        occlusion = mix(1.0, texture(uOcclusionTexture, selectUv(uOcclusionTexCoord)).r, uOcclusionStrength);
+    }
+    color += baseColor * uAmbient * (1.0 - metallic) * 0.35 * occlusion;
     vec3 emissive = uEmissiveFactor;
     if (uHasEmissiveTexture == 1) {
         emissive *= pow(texture(uEmissive, selectUv(uEmissiveTexCoord)).rgb, vec3(2.2));
@@ -454,6 +483,14 @@ export class Viewer {
             uEmissive: gl.getUniformLocation(p, 'uEmissive'),
             uEmissiveTexCoord: gl.getUniformLocation(p, 'uEmissiveTexCoord'),
             uEmissiveFactor: gl.getUniformLocation(p, 'uEmissiveFactor'),
+            uHasNormalTexture: gl.getUniformLocation(p, 'uHasNormalTexture'),
+            uNormalTexture: gl.getUniformLocation(p, 'uNormalTexture'),
+            uNormalTexCoord: gl.getUniformLocation(p, 'uNormalTexCoord'),
+            uNormalScale: gl.getUniformLocation(p, 'uNormalScale'),
+            uHasOcclusionTexture: gl.getUniformLocation(p, 'uHasOcclusionTexture'),
+            uOcclusionTexture: gl.getUniformLocation(p, 'uOcclusionTexture'),
+            uOcclusionTexCoord: gl.getUniformLocation(p, 'uOcclusionTexCoord'),
+            uOcclusionStrength: gl.getUniformLocation(p, 'uOcclusionStrength'),
             uLightDir: gl.getUniformLocation(p, 'uLightDir'),
             uLightColor: gl.getUniformLocation(p, 'uLightColor'),
             uFillDir: gl.getUniformLocation(p, 'uFillDir'),
@@ -1052,6 +1089,22 @@ export class Viewer {
         );
         const emissive = material?.emissiveFactor || [0, 0, 0];
         gl.uniform3f(this.uniforms.uEmissiveFactor, emissive[0], emissive[1], emissive[2]);
+        bindTexture(
+            material?.normalTexture,
+            3,
+            this.uniforms.uNormalTexture,
+            this.uniforms.uHasNormalTexture,
+            this.uniforms.uNormalTexCoord,
+        );
+        gl.uniform1f(this.uniforms.uNormalScale, material?.normalTexture?.scale ?? 1);
+        bindTexture(
+            material?.occlusionTexture,
+            4,
+            this.uniforms.uOcclusionTexture,
+            this.uniforms.uHasOcclusionTexture,
+            this.uniforms.uOcclusionTexCoord,
+        );
+        gl.uniform1f(this.uniforms.uOcclusionStrength, material?.occlusionTexture?.strength ?? 1);
     }
 
     _computeJointMatrices(skin, meshWorld, jointOut) {

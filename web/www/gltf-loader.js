@@ -220,6 +220,8 @@ function buildMaterials(defs) {
             metallicRoughnessTexture: def.metallicRoughnessTexture || null,
             emissiveFactor: def.emissiveFactor || [0, 0, 0],
             emissiveTexture: def.emissiveTexture || null,
+            normalTexture: def.normalTexture || null,
+            occlusionTexture: def.occlusionTexture || null,
             doubleSided: !!def.doubleSided,
             alphaMode: def.alphaMode || 'OPAQUE',
             alphaCutoff: def.alphaCutoff ?? 0.5,

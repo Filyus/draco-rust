@@ -178,6 +178,25 @@ test('preview loads metallic-roughness and emissive PBR textures', async ({ page
   await expect(page.locator('#console')).not.toContainText('Skipped primitive');
 });
 
+test('preview loads normal and occlusion PBR textures', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const fixture = path.join(repoRoot, 'testdata', 'SphereAllSame');
+  await page.locator('#file-input').setInputFiles([
+    path.join(fixture, 'sphere_texture_all.gltf'),
+    path.join(fixture, 'buffer0.bin'),
+    path.join(fixture, '256x256_all_orange.png'),
+    path.join(fixture, '256x256_all_blue.png'),
+    path.join(fixture, '256x256_all_red.png'),
+    path.join(fixture, '256x256_all_green.png'),
+  ]);
+
+  await expect(page.locator('#viewer-section')).toBeVisible();
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).not.toContainText('Preview failed');
+  await expect(page.locator('#console')).not.toContainText('Skipped primitive');
+});
+
 test('converter explains a missing external glTF buffer', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);
