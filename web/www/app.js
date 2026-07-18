@@ -410,10 +410,27 @@ function parseObjMaterials(objText, resources, warnings) {
             } else if ((directive === 'd' || directive === 'Tr') && current && values.length >= 1) {
                 const value = Number(values[0]);
                 if (Number.isFinite(value)) materials[current].alpha = directive === 'Tr' ? 1 - value : value;
+            } else if (directive.toLowerCase() === 'map_kd' && current) {
+                const texture = mtlMapPath(values);
+                if (texture) materials[current].baseColorTextureUri = texture;
             }
         }
     }
     return materials;
+}
+
+// `map_Kd` accepts optional flags before its filename. Keep the filename (which
+// may itself contain spaces) while skipping the standardized flag arguments.
+function mtlMapPath(values) {
+    const optionValues = {
+        '-blendu': 1, '-blendv': 1, '-cc': 1, '-clamp': 1, '-texres': 1,
+        '-bm': 1, '-imfchan': 1, '-type': 1, '-mm': 2, '-o': 3, '-s': 3, '-t': 3,
+    };
+    let index = 0;
+    while (index < values.length && values[index].startsWith('-')) {
+        index += 1 + (optionValues[values[index].toLowerCase()] ?? 0);
+    }
+    return values.slice(index).join(' ').trim();
 }
 
 function resourceBasename(path) {
@@ -889,7 +906,11 @@ async function loadPreview(extension) {
                 { onLog: (msg, type) => log(msg, type) },
             );
         } else if (currentMeshData?.meshes) {
-            scene = buildSceneFromMeshes(currentMeshData);
+            scene = await buildSceneFromMeshes(
+                currentMeshData,
+                currentSourceResources,
+                { onLog: (msg, type) => log(msg, type) },
+            );
         } else {
             throw new Error('No geometry available to preview');
         }

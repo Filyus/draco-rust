@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -222,4 +223,24 @@ test('converter preserves OBJ material groups for preview', async ({ page }) => 
   await expect(page.locator('#console')).toContainText('Preview ready');
   await expect(page.locator('#console')).not.toContainText('Skipped primitive');
   await expect(page.locator('#console')).not.toContainText('Preview failed');
+});
+
+test('converter applies a selected OBJ map_Kd texture', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const [obj, mtl, texture] = await Promise.all([
+    readFile(path.join(repoRoot, 'testdata', 'mat_test.obj')),
+    readFile(path.join(repoRoot, 'testdata', 'mat_test.mtl')),
+    readFile(path.join(repoRoot, 'testdata', 'Fox', 'glTF', 'Texture.png')),
+  ]);
+  await page.locator('#file-input').setInputFiles([
+    { name: 'mat_test.obj', mimeType: 'text/plain', buffer: obj },
+    { name: 'mat_test.mtl', mimeType: 'text/plain', buffer: mtl },
+    { name: 'black.png', mimeType: 'image/png', buffer: texture },
+  ]);
+
+  await expect(page.locator('#viewer-section')).toBeVisible();
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).not.toContainText('OBJ texture not selected: black.png');
+  await expect(page.locator('#console')).not.toContainText('Failed to decode OBJ texture black.png');
 });

@@ -17,7 +17,7 @@ function pushAabb(box, x, y, z) {
     if (z > box.max[2]) box.max[2] = z;
 }
 
-export function buildSceneFromMeshes(parsed) {
+export async function buildSceneFromMeshes(parsed, resources = Object.create(null), hooks = {}) {
     const meshes = parsed?.meshes || [];
     if (meshes.length === 0) {
         throw new Error('No meshes were decoded from this file');
@@ -117,6 +117,17 @@ export function buildSceneFromMeshes(parsed) {
             unlit: false,
         };
 
+        if (sourceMaterial?.baseColorTextureUri) {
+            if (uvs) {
+                material.baseColorTextureUri = sourceMaterial.baseColorTextureUri;
+            } else {
+                parsed.warnings ||= [];
+                parsed.warnings.push(
+                    `OBJ texture ignored for ${mesh.material}: mesh has no texture coordinates`,
+                );
+            }
+        }
+
         sceneMeshes.push({
             name: mesh.name || `mesh_${sceneMeshes.length}`,
             primitives: [primitive],
@@ -155,18 +166,75 @@ export function buildSceneFromMeshes(parsed) {
         skinIndex: -1,
     }));
 
+    const textures = await buildObjTextures(materials, resources, parsed.warnings || (parsed.warnings = []), hooks);
     return {
         nodes,
         rootIndices: nodes.map((_, i) => i),
         meshes: sceneMeshes,
         skins: [],
         materials,
-        textures: [],
+        textures,
         animations: [],
         renderables,
         aabb: box,
         warnings: parsed?.warnings || [],
     };
+}
+
+async function buildObjTextures(materials, resources, warnings, hooks) {
+    const textures = [];
+    const byUri = new Map();
+    for (const material of materials) {
+        const uri = material.baseColorTextureUri;
+        if (!uri) continue;
+        let index = byUri.get(uri);
+        if (index === undefined) {
+            const bytes = resolveResource(uri, resources);
+            if (!bytes) {
+                warnings.push(`OBJ texture not selected: ${uri}`);
+                continue;
+            }
+            try {
+                const bitmap = await decodeImage(bytes, mimeFromUri(uri));
+                if (!bitmap) throw new Error('browser could not decode the image');
+                index = textures.length;
+                textures.push({
+                    name: resourceBasename(uri), image: bitmap, flipY: true,
+                    wrapS: WebGL2RenderingContext.REPEAT,
+                    wrapT: WebGL2RenderingContext.REPEAT,
+                    minFilter: WebGL2RenderingContext.LINEAR_MIPMAP_LINEAR,
+                    magFilter: WebGL2RenderingContext.LINEAR,
+                });
+                byUri.set(uri, index);
+            } catch (error) {
+                warnings.push(`Failed to decode OBJ texture ${uri}: ${error.message}`);
+                hooks.onLog?.(`Failed to decode OBJ texture ${uri}: ${error.message}`, 'warning');
+                continue;
+            }
+        }
+        material.baseColorTexture = index;
+        delete material.baseColorTextureUri;
+    }
+    return textures;
+}
+
+function resolveResource(uri, resources) {
+    return resources?.[uri] || resources?.[resourceBasename(uri)] || null;
+}
+
+function resourceBasename(path) {
+    const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+    return slash >= 0 ? path.substring(slash + 1) : path;
+}
+
+function mimeFromUri(uri) {
+    const extension = resourceBasename(uri).split('.').pop()?.toLowerCase();
+    return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }[extension]
+        || 'application/octet-stream';
+}
+
+async function decodeImage(bytes, mime) {
+    return createImageBitmap(new Blob([bytes], { type: mime }));
 }
 
 function restTrs() {
