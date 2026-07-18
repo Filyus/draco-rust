@@ -38,7 +38,7 @@ all-writers = ["fbx-writer", "obj-writer", "ply-writer"]
 # Plain mesh formats (OBJ/PLY/FBX) only touch the geometry data model in
 # draco-core, never the Draco codec, so they do not enable encoder/decoder.
 # Only glTF uses KHR_draco_mesh_compression and thus pulls the codec.
-fbx-reader = ["scene"]
+fbx-reader = []
 fbx-writer = []
 gltf = []
 gltf-geometry = ["gltf"]
@@ -52,8 +52,6 @@ obj-reader = []
 obj-writer = []
 ply-reader = ["dep:byteorder"]
 ply-writer = []
-# Scene-graph layer, only pulled in by formats that natively carry a hierarchy.
-scene = []
 point_cloud_decode = ["draco-core/point_cloud_decode"]
 compression = ["miniz_oxide"]
 # Repository-only fixtures and local external-tool tests.

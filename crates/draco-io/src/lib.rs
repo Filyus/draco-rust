@@ -35,14 +35,13 @@ pub mod ply_reader;
 #[cfg(feature = "ply-writer")]
 /// PLY writer.
 pub mod ply_writer;
-#[cfg(feature = "scene")]
-/// Generic scene graph adapters for format readers and writers.
-pub mod scene;
 /// Shared reader and writer traits.
 pub mod traits;
 
 #[cfg(feature = "fbx-reader")]
-pub use fbx_reader::{FbxMemoryReader, FbxReader};
+pub use fbx_reader::{
+    FbxMemoryReader, FbxMeshInstance, FbxReader, FbxScene, FbxSceneNode, FbxTransform,
+};
 #[cfg(feature = "fbx-writer")]
 pub use fbx_writer::FbxWriter;
 #[cfg(feature = "gltf")]
@@ -68,8 +67,4 @@ pub use ply_format::PlyFormat;
 pub use ply_reader::PlyReader;
 #[cfg(feature = "ply-writer")]
 pub use ply_writer::PlyWriter;
-#[cfg(feature = "scene")]
-pub use scene::{
-    flatten_to_scene, MeshInstance, Scene, SceneNode, SceneReader, SceneWriter, Transform,
-};
 pub use traits::{PointCloudReader, PointCloudWriter, ReadFromBytes, Reader, WriteToBytes, Writer};

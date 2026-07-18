@@ -1,6 +1,9 @@
-//! Common traits for readers and writers.
+//! Common traits for geometry readers and writers.
 //!
-//! These traits define consistent interfaces for all format implementations.
+//! These traits define the shared mesh and point-cloud API for the OBJ, PLY,
+//! and FBX adapters in this crate. They intentionally do not model a lossless
+//! scene document; full glTF scene workflows use `draco-gltf::Document` and
+//! `draco-gltf::Import` instead.
 //!
 //! # Usage
 //!
@@ -39,9 +42,9 @@ use std::path::Path;
 
 use draco_core::mesh::Mesh;
 
-/// Common interface for mesh writers.
+/// Common interface for geometry writers.
 ///
-/// All format writers implement this trait, providing a consistent API:
+/// The mesh-format writers in this crate implement this trait:
 ///
 /// ```no_run
 /// use std::io;
@@ -83,9 +86,9 @@ pub trait Writer: Sized {
     }
 }
 
-/// Common interface for mesh readers.
+/// Common interface for geometry readers.
 ///
-/// All format readers implement this trait, providing a consistent API:
+/// The mesh-format readers in this crate implement this trait:
 ///
 /// ```no_run
 /// use std::io;

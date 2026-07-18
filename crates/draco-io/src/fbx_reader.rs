@@ -1,9 +1,10 @@
-//! FBX binary format reader for meshes.
+//! FBX binary format reader for meshes and supported model hierarchies.
 //!
 //! Supports reading:
 //! - Binary FBX format (versions 7.x)
 //! - Vertex positions
 //! - Polygon/face indices
+//! - Model hierarchy and local transforms through [`FbxReader::read_scene`]
 //!
 //! FBX layer elements such as normals, colors, UVs, materials, animation, and
 //! skinning are not mapped yet. They require explicit per-layer mapping support
@@ -45,6 +46,64 @@ pub struct FbxReader<R: Read + Seek = BufReader<File>> {
 
 /// FBX reader backed by in-memory bytes.
 pub type FbxMemoryReader = FbxReader<Cursor<Vec<u8>>>;
+
+/// Local transform extracted from an FBX model node.
+///
+/// This matrix is synthesized from the supported local translation, rotation,
+/// and scaling properties. It does not preserve FBX pivot or inheritance rules.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FbxTransform {
+    /// Row-major 4x4 transform matrix.
+    pub matrix: [[f32; 4]; 4],
+}
+
+/// Geometry attached to one [`FbxSceneNode`].
+///
+/// This is a materialized Draco mesh, not a lossless FBX geometry object.
+#[derive(Debug, Clone)]
+pub struct FbxMeshInstance {
+    /// Name supplied by the FBX geometry node, when available.
+    pub name: Option<String>,
+    /// Decoded mesh geometry.
+    pub mesh: Mesh,
+}
+
+/// A node in the hierarchy extracted from FBX `Model` connections.
+///
+/// Materials, skins, animation, pivot transforms, and unsupported layer data
+/// are intentionally not represented here.
+#[derive(Debug, Clone)]
+pub struct FbxSceneNode {
+    /// Name supplied by the FBX model node, when available.
+    pub name: Option<String>,
+    /// Supported local transform properties synthesized into a matrix.
+    pub transform: Option<FbxTransform>,
+    /// Geometry attached directly to this model node.
+    pub mesh_instances: Vec<FbxMeshInstance>,
+    /// Child model nodes.
+    pub children: Vec<FbxSceneNode>,
+}
+
+impl FbxSceneNode {
+    fn new(name: Option<String>) -> Self {
+        Self {
+            name,
+            transform: None,
+            mesh_instances: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+}
+
+/// Hierarchy and geometry extracted from an FBX file.
+///
+/// Unlike `draco_gltf::Document`, this is a deliberately lossy format-specific
+/// view. Use [`FbxReader::read_nodes`] when callers need the parsed FBX nodes.
+#[derive(Debug, Clone, Default)]
+pub struct FbxScene {
+    /// Top-level FBX model nodes.
+    pub root_nodes: Vec<FbxSceneNode>,
+}
 
 /// An FBX node with properties and children.
 #[derive(Debug, Clone)]
@@ -133,8 +192,23 @@ impl crate::traits::Reader for FbxReader<Cursor<Vec<u8>>> {
     }
 }
 
-impl crate::scene::SceneReader for FbxReader<BufReader<File>> {
-    fn read_scene(&mut self) -> io::Result<crate::scene::Scene> {
+impl<R: Read + Seek> FbxReader<R> {
+    /// Reads the supported hierarchy from FBX model and geometry connections.
+    ///
+    /// The result retains model names, local transforms, and materialized mesh
+    /// geometry. It intentionally omits FBX layers, materials, skins,
+    /// animation, pivots, and inheritance rules.
+    ///
+    /// ```no_run
+    /// use draco_io::FbxMemoryReader;
+    ///
+    /// let bytes = std::fs::read("model.fbx")?;
+    /// let mut reader = FbxMemoryReader::from_bytes(bytes)?;
+    /// let scene = reader.read_scene()?;
+    /// assert!(!scene.root_nodes.is_empty());
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
+    pub fn read_scene(&mut self) -> io::Result<FbxScene> {
         let nodes = self.read_nodes()?;
 
         // Build maps: id -> Model/Geometry nodes
@@ -187,7 +261,7 @@ impl crate::scene::SceneReader for FbxReader<BufReader<File>> {
         }
 
         // Helper to parse transform from Model node's Properties70
-        fn parse_transform(node: &FbxNode) -> Option<crate::scene::Transform> {
+        fn parse_transform(node: &FbxNode) -> Option<FbxTransform> {
             let mut translation = None;
             let mut rotation = None;
             let mut scaling = None;
@@ -272,7 +346,7 @@ impl crate::scene::SceneReader for FbxReader<BufReader<File>> {
                 [t[0], t[1], t[2], 1.0],
             ];
 
-            Some(crate::scene::Transform { matrix: mat })
+            Some(FbxTransform { matrix: mat })
         }
 
         // Build nodes recursively
@@ -280,10 +354,10 @@ impl crate::scene::SceneReader for FbxReader<BufReader<File>> {
             id: i64,
             model_map: &std::collections::HashMap<i64, &FbxNode>,
             model_children: &std::collections::HashMap<i64, Vec<i64>>,
-            model_mesh_instances: &std::collections::HashMap<i64, Vec<crate::scene::MeshInstance>>,
-        ) -> crate::scene::SceneNode {
+            model_mesh_instances: &std::collections::HashMap<i64, Vec<FbxMeshInstance>>,
+        ) -> FbxSceneNode {
             let node_src = model_map.get(&id).unwrap();
-            let mut node = crate::scene::SceneNode::new(Some(node_src.name.clone()));
+            let mut node = FbxSceneNode::new(Some(node_src.name.clone()));
             node.transform = parse_transform(node_src);
             if let Some(mesh_instances) = model_mesh_instances.get(&id) {
                 node.mesh_instances.extend(mesh_instances.clone());
@@ -305,19 +379,16 @@ impl crate::scene::SceneReader for FbxReader<BufReader<File>> {
         }
 
         // Map geometries to models and create mesh instances.
-        let mut model_mesh_instances: std::collections::HashMap<
-            i64,
-            Vec<crate::scene::MeshInstance>,
-        > = std::collections::HashMap::new();
+        let mut model_mesh_instances: std::collections::HashMap<i64, Vec<FbxMeshInstance>> =
+            std::collections::HashMap::new();
         for (geom_id, geom_node) in geometry_map.iter() {
             if let Some(mesh) = self.geometry_to_mesh(geom_node)? {
                 // find connection mapping geometry -> model
                 for (child, parent) in connections.iter() {
                     if *child == *geom_id && model_map.contains_key(parent) {
-                        let mesh_instance = crate::scene::MeshInstance {
+                        let mesh_instance = FbxMeshInstance {
                             name: Some(geom_node.name.clone()),
                             mesh: mesh.clone(),
-                            transform: None,
                         };
                         model_mesh_instances
                             .entry(*parent)
@@ -350,10 +421,7 @@ impl crate::scene::SceneReader for FbxReader<BufReader<File>> {
             ));
         }
 
-        Ok(crate::scene::Scene {
-            name: None,
-            root_nodes,
-        })
+        Ok(FbxScene { root_nodes })
     }
 }
 
@@ -775,5 +843,18 @@ mod tests {
         let data = b"Not an FBX file at all";
         let cursor = Cursor::new(data.to_vec());
         assert!(FbxReader::new(cursor).is_err());
+    }
+
+    #[test]
+    fn memory_reader_reads_an_empty_scene() {
+        let mut data = Vec::new();
+        data.extend_from_slice(FBX_MAGIC);
+        data.extend_from_slice(&[0x1A, 0x00]);
+        data.extend_from_slice(&7300u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 13]);
+
+        let mut reader = FbxReader::new(Cursor::new(data)).unwrap();
+        let scene = reader.read_scene().unwrap();
+        assert!(scene.root_nodes.is_empty());
     }
 }
