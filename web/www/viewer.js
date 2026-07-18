@@ -166,25 +166,25 @@ vec3 fresnelSchlickRoughness(float cosTheta, vec3 f0, float roughness) {
     return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - cosTheta, 5.0);
 }
 
-// A small analytic studio environment. It deliberately has a cool skylight,
-// warm horizon, darker floor, and broad softboxes so metallic materials retain
-// readable reflections without requiring an HDR decoder or prefiltered cube map.
+// A small analytic studio environment with a neutral matte floor and broad
+// softboxes. It keeps reflections readable without an HDR decoder or a
+// prefiltered cube map, while avoiding a colored floor cast on the asset.
 vec3 studioRadiance(vec3 direction, float roughness) {
     float up = clamp(direction.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 sharp = mix(vec3(0.035, 0.045, 0.07), vec3(0.34, 0.43, 0.66), up);
-    sharp = mix(sharp, vec3(0.55, 0.34, 0.20), exp(-abs(direction.y) * 12.0) * 0.18);
+    vec3 sharp = mix(vec3(0.045, 0.055, 0.075), vec3(0.30, 0.39, 0.57), up);
+    sharp = mix(sharp, vec3(0.22, 0.27, 0.37), exp(-abs(direction.y) * 13.0) * 0.14);
     vec3 keyDirection = normalize(vec3(-0.45, 0.78, 0.42));
     vec3 rimDirection = normalize(vec3(0.52, 0.42, -0.72));
     float key = pow(max(dot(direction, keyDirection), 0.0), 72.0);
     float rim = pow(max(dot(direction, rimDirection), 0.0), 36.0);
-    sharp += vec3(2.8, 2.55, 2.15) * key + vec3(0.75, 0.9, 1.25) * rim;
-    vec3 blurred = vec3(0.20, 0.23, 0.30);
+    sharp += vec3(2.7, 2.75, 2.85) * key + vec3(0.62, 0.78, 1.05) * rim;
+    vec3 blurred = vec3(0.18, 0.22, 0.29);
     return mix(sharp, blurred, roughness * roughness);
 }
 
 vec3 studioIrradiance(vec3 normal) {
     float up = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
-    return mix(vec3(0.11, 0.10, 0.12), vec3(0.44, 0.50, 0.64), up);
+    return mix(vec3(0.10, 0.115, 0.14), vec3(0.40, 0.47, 0.60), up);
 }
 
 vec3 directPbrLight(vec3 N, vec3 V, vec3 L, vec3 radiance, vec3 baseColor, float metallic, float roughness) {
@@ -328,16 +328,17 @@ uniform mat4 uInverseView;
 out vec4 outColor;
 
 vec3 studioRadiance(vec3 direction) {
-    // A distinct floor / sky split makes the world-space horizon readable.
-    float sky = smoothstep(-0.025, 0.075, direction.y);
-    vec3 floor = vec3(0.025, 0.030, 0.045);
-    vec3 skyColor = mix(vec3(0.12, 0.17, 0.28), vec3(0.46, 0.57, 0.78), max(direction.y, 0.0));
+    // A neutral floor / sky split gives the world-space horizon a clear edge
+    // without tinting the lower part of the model.
+    float sky = smoothstep(-0.035, 0.055, direction.y);
+    vec3 floor = vec3(0.025, 0.032, 0.047);
+    vec3 skyColor = mix(vec3(0.105, 0.145, 0.225), vec3(0.40, 0.51, 0.70), max(direction.y, 0.0));
     vec3 color = mix(floor, skyColor, sky);
-    color = mix(color, vec3(0.62, 0.38, 0.20), exp(-abs(direction.y) * 16.0) * 0.22);
+    color = mix(color, vec3(0.23, 0.29, 0.39), exp(-abs(direction.y) * 20.0) * 0.12);
     vec3 keyDirection = normalize(vec3(-0.45, 0.78, 0.42));
     vec3 rimDirection = normalize(vec3(0.52, 0.42, -0.72));
-    color += vec3(4.0, 3.65, 3.05) * pow(max(dot(direction, keyDirection), 0.0), 56.0);
-    color += vec3(1.15, 1.35, 1.85) * pow(max(dot(direction, rimDirection), 0.0), 30.0);
+    color += vec3(3.75, 3.85, 4.0) * pow(max(dot(direction, keyDirection), 0.0), 56.0);
+    color += vec3(0.95, 1.18, 1.65) * pow(max(dot(direction, rimDirection), 0.0), 30.0);
     return color;
 }
 
@@ -1253,7 +1254,7 @@ export class Viewer {
         if (!this._grid) return;
         gl.useProgram(this.lineProgram);
         gl.uniformMatrix4fv(this.lineUniforms.uProjectionView, false, this._projectionView);
-        gl.uniform3f(this.lineUniforms.uColor, 0.25, 0.3, 0.4);
+        gl.uniform3f(this.lineUniforms.uColor, 0.14, 0.19, 0.29);
         gl.bindBuffer(gl.ARRAY_BUFFER, this._grid.buffer);
         gl.enableVertexAttribArray(0);
         gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
