@@ -39,8 +39,14 @@ export function buildSceneFromMeshes(parsed) {
         const vertexCount = positions.length / 3;
         if (vertexCount === 0) continue;
 
+        const localAabb = {
+            min: [Infinity, Infinity, Infinity],
+            max: [-Infinity, -Infinity, -Infinity],
+        };
+
         for (let i = 0; i < positions.length; i += 3) {
             pushAabb(box, positions[i], positions[i + 1], positions[i + 2]);
+            pushAabb(localAabb, positions[i], positions[i + 1], positions[i + 2]);
         }
 
         const attributes = {
@@ -105,6 +111,7 @@ export function buildSceneFromMeshes(parsed) {
         sceneMeshes.push({
             name: mesh.name || `mesh_${sceneMeshes.length}`,
             primitives: [primitive],
+            aabb: localAabb,
             _defaultMaterial: material,
         });
     }

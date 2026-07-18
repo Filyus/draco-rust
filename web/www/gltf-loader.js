@@ -157,7 +157,11 @@ function buildMeshes(asset, json, warnings) {
                 packed.free();
             }
         }
-        return { name: def.name || `mesh_${meshIndex}`, primitives };
+        return {
+            name: def.name || `mesh_${meshIndex}`,
+            primitives,
+            aabb: meshAabb(primitives),
+        };
     });
 }
 
@@ -454,4 +458,17 @@ function accumulateAabb(box, mesh) {
             if (z > box.max[2]) box.max[2] = z;
         }
     }
+}
+
+function meshAabb(primitives) {
+    const aabb = {
+        min: [Infinity, Infinity, Infinity],
+        max: [-Infinity, -Infinity, -Infinity],
+    };
+    accumulateAabb(aabb, { primitives });
+    if (!isFinite(aabb.min[0])) {
+        aabb.min = [-0.5, -0.5, -0.5];
+        aabb.max = [0.5, 0.5, 0.5];
+    }
+    return aabb;
 }

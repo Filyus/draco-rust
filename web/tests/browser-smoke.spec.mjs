@@ -160,3 +160,18 @@ test('3D preview renders a GLB into the WebGL2 canvas', async ({ page }) => {
 
   await expect(page.locator('#console')).not.toContainText('undefined');
 });
+
+test('3D preview opens a transformed skinned glTF scene', async ({ page }) => {
+  await page.goto('/index.html');
+  await expect(page.locator('#gltf-status .status-text')).toHaveText('Ready');
+  await page.locator('#file-input').setInputFiles([
+    path.join(repoRoot, 'testdata', 'CesiumMan', 'glTF', 'CesiumMan.gltf'),
+    path.join(repoRoot, 'testdata', 'CesiumMan', 'glTF', 'CesiumMan0.bin'),
+    path.join(repoRoot, 'testdata', 'CesiumMan', 'glTF', 'CesiumMan.jpg'),
+  ]);
+
+  await expect(page.locator('#viewer-section')).toBeVisible();
+  await expect(page.locator('#viewer-animation')).toBeVisible();
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).not.toContainText('Preview failed');
+});

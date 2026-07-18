@@ -550,6 +550,8 @@ export class Viewer {
         });
 
         this.glResources = resources;
+        this._updateWorldMatrices();
+        this._updateSceneBounds();
         this._fitCameraToScene();
 
         // Reset animation playback
@@ -645,7 +647,12 @@ export class Viewer {
     }
 
     resetView() {
-        if (this.scene) this._fitCameraToScene();
+        if (this.scene) {
+            this._updateWorldMatrices();
+            this._updateSceneBounds();
+            this._disposeGrid();
+            this._fitCameraToScene();
+        }
         else {
             this.camera.target[0] = this.camera.target[1] = this.camera.target[2] = 0;
             this.camera.distance = 3;
@@ -664,14 +671,19 @@ export class Viewer {
         const dx = box.max[0] - box.min[0];
         const dy = box.max[1] - box.min[1];
         const dz = box.max[2] - box.min[2];
-        const radius = Math.max(dx, dy, dz) * 0.5;
+        // A sphere enclosing the full world-space AABB fits from every orbit
+        // angle, unlike the previous largest-axis estimate.
+        const radius = Math.hypot(dx, dy, dz) * 0.5;
         const safeRadius = radius > 0 ? radius : 1;
 
         this.camera.target[0] = cx;
         this.camera.target[1] = cy;
         this.camera.target[2] = cz;
-        const fov = this.camera.fov;
-        this.camera.distance = Math.max(0.5, (safeRadius / Math.sin(fov * 0.5)) * 1.2);
+        const verticalFov = this.camera.fov;
+        const aspect = this.canvas.width / Math.max(1, this.canvas.height);
+        const horizontalFov = 2 * Math.atan(Math.tan(verticalFov * 0.5) * aspect);
+        const fitFov = Math.min(verticalFov, horizontalFov);
+        this.camera.distance = Math.max(0.5, (safeRadius / Math.sin(fitFov * 0.5)) * 1.12);
         const diameter = Math.max(0.001, safeRadius * 2);
         this.camera.near = Math.max(0.001, diameter * 0.001);
         this.camera.far = diameter * 1000 + this.camera.distance * 2;
@@ -731,6 +743,36 @@ export class Viewer {
             const node = nodes[rootIndex];
             if (node) this._updateNode(node, null);
         }
+    }
+
+    /** Recompute the framing bounds after node transforms have been applied. */
+    _updateSceneBounds() {
+        if (!this.scene) return;
+        const aabb = {
+            min: [Infinity, Infinity, Infinity],
+            max: [-Infinity, -Infinity, -Infinity],
+        };
+        const point = this._boundsPoint || (this._boundsPoint = vec3.create());
+        for (const renderable of this.scene.renderables || []) {
+            const meshBox = this.scene.meshes[renderable.meshIndex]?.aabb;
+            if (!meshBox) continue;
+            const { min, max } = meshBox;
+            for (const x of [min[0], max[0]]) {
+                for (const y of [min[1], max[1]]) {
+                    for (const z of [min[2], max[2]]) {
+                        vec3.set(point, x, y, z);
+                        vec3.transformMat4(point, point, renderable.node.world);
+                        aabb.min[0] = Math.min(aabb.min[0], point[0]);
+                        aabb.min[1] = Math.min(aabb.min[1], point[1]);
+                        aabb.min[2] = Math.min(aabb.min[2], point[2]);
+                        aabb.max[0] = Math.max(aabb.max[0], point[0]);
+                        aabb.max[1] = Math.max(aabb.max[1], point[1]);
+                        aabb.max[2] = Math.max(aabb.max[2], point[2]);
+                    }
+                }
+            }
+        }
+        if (isFinite(aabb.min[0])) this.scene.aabb = aabb;
     }
 
     _updateNode(node, parentWorld) {
@@ -925,13 +967,14 @@ export class Viewer {
         const maxI = Math.round((cx + half) / step);
         const minJ = Math.round((cz - half) / step);
         const maxJ = Math.round((cz + half) / step);
+        const gridY = box.min[1] - Math.max(step * 0.01, 0.0001);
         for (let i = minI; i <= maxI; i++) {
             const x = i * step;
-            positions.push(minJ * step, 0, x, maxJ * step, 0, x);
+            positions.push(x, gridY, minJ * step, x, gridY, maxJ * step);
         }
         for (let j = minJ; j <= maxJ; j++) {
             const z = j * step;
-            positions.push(z, 0, minI * step, z, 0, maxI * step);
+            positions.push(minI * step, gridY, z, maxI * step, gridY, z);
         }
 
         const buffer = this.gl.createBuffer();
