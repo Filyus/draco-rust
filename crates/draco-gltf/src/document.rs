@@ -12,8 +12,10 @@ use crate::{Error, Result};
 macro_rules! index {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[doc = concat!("Typed index into the glTF `", stringify!($name), "[]` array.")]
         pub struct $name(pub usize);
         impl $name {
+            /// Returns the zero-based array position represented by this index.
             pub const fn index(self) -> usize {
                 self.0
             }
@@ -50,20 +52,32 @@ pub enum ValidationProfile {
 /// Core accessor component type definitions, including the glTF 2.1 draft.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ComponentType {
+    /// Signed 8-bit integer.
     I8 = 5120,
+    /// Unsigned 8-bit integer.
     U8 = 5121,
+    /// Signed 16-bit integer.
     I16 = 5122,
+    /// Unsigned 16-bit integer.
     U16 = 5123,
+    /// Unsigned 32-bit integer.
     U32 = 5125,
+    /// 32-bit floating-point value.
     F32 = 5126,
+    /// Signed 32-bit integer.
     I32 = 5124,
+    /// 16-bit floating-point value from the draft profile.
     F16 = 5131,
+    /// 64-bit floating-point value from the draft profile.
     F64 = 5130,
+    /// Signed 64-bit integer from the draft profile.
     I64 = 5134,
+    /// Unsigned 64-bit integer from the draft profile.
     U64 = 5135,
 }
 
 impl ComponentType {
+    /// Converts a glTF numeric component type code to its typed representation.
     pub fn from_gltf(value: u64) -> Option<Self> {
         Some(match value {
             5120 => Self::I8,
@@ -200,84 +214,111 @@ impl Document {
         Ok(())
     }
 
+    /// Iterates over accessor objects in document order.
     pub fn accessors(&self) -> Objects<'_, AccessorIndex> {
         self.objects("accessors")
     }
+    /// Returns one accessor view by typed index.
     pub fn accessor(&self, index: AccessorIndex) -> Option<Accessor<'_>> {
         self.accessors().get(index).map(Accessor)
     }
+    /// Iterates over animation objects in document order.
     pub fn animations(&self) -> Objects<'_, AnimationIndex> {
         self.objects("animations")
     }
+    /// Returns one animation view by typed index.
     pub fn animation(&self, index: AnimationIndex) -> Option<Animation<'_>> {
         self.animations().get(index).map(Animation)
     }
+    /// Iterates over buffer objects in document order.
     pub fn buffers(&self) -> Objects<'_, BufferIndex> {
         self.objects("buffers")
     }
+    /// Returns one buffer view by typed index.
     pub fn buffer(&self, index: BufferIndex) -> Option<Buffer<'_>> {
         self.buffers().get(index).map(Buffer)
     }
+    /// Iterates over buffer-view objects in document order.
     pub fn buffer_views(&self) -> Objects<'_, BufferViewIndex> {
         self.objects("bufferViews")
     }
+    /// Returns one buffer-view by typed index.
     pub fn buffer_view(&self, index: BufferViewIndex) -> Option<BufferView<'_>> {
         self.buffer_views().get(index).map(BufferView)
     }
+    /// Iterates over camera objects in document order.
     pub fn cameras(&self) -> Objects<'_, CameraIndex> {
         self.objects("cameras")
     }
+    /// Iterates over draft external-asset declarations.
     pub fn external_assets(&self) -> Objects<'_, ExternalAssetIndex> {
         self.objects("externalAssets")
     }
+    /// Returns one external-asset declaration by typed index.
     pub fn external_asset(&self, index: ExternalAssetIndex) -> Option<ExternalAsset<'_>> {
         self.external_assets().get(index).map(ExternalAsset)
     }
+    /// Returns one camera view by typed index.
     pub fn camera(&self, index: CameraIndex) -> Option<Camera<'_>> {
         self.cameras().get(index).map(Camera)
     }
+    /// Iterates over draft packaged-file declarations.
     pub fn files(&self) -> Objects<'_, FileIndex> {
         self.objects("files")
     }
+    /// Returns one packaged-file view by typed index.
     pub fn file(&self, index: FileIndex) -> Option<File<'_>> {
         self.files().get(index).map(File)
     }
+    /// Iterates over image objects in document order.
     pub fn images(&self) -> Objects<'_, ImageIndex> {
         self.objects("images")
     }
+    /// Returns one image view by typed index.
     pub fn image(&self, index: ImageIndex) -> Option<Image<'_>> {
         self.images().get(index).map(Image)
     }
+    /// Iterates over material objects in document order.
     pub fn materials(&self) -> Objects<'_, MaterialIndex> {
         self.objects("materials")
     }
+    /// Returns one material view by typed index.
     pub fn material(&self, index: MaterialIndex) -> Option<Material<'_>> {
         self.materials().get(index).map(Material)
     }
+    /// Iterates over mesh objects in document order.
     pub fn meshes(&self) -> Objects<'_, MeshIndex> {
         self.objects("meshes")
     }
+    /// Returns one mesh view by typed index.
     pub fn mesh(&self, index: MeshIndex) -> Option<Mesh<'_>> {
         self.meshes().get(index).map(Mesh)
     }
+    /// Iterates over node objects in document order.
     pub fn nodes(&self) -> Objects<'_, NodeIndex> {
         self.objects("nodes")
     }
+    /// Returns one node view by typed index.
     pub fn node(&self, index: NodeIndex) -> Option<Node<'_>> {
         self.nodes().get(index).map(Node)
     }
+    /// Iterates over sampler objects in document order.
     pub fn samplers(&self) -> Objects<'_, SamplerIndex> {
         self.objects("samplers")
     }
+    /// Returns one sampler view by typed index.
     pub fn sampler(&self, index: SamplerIndex) -> Option<Sampler<'_>> {
         self.samplers().get(index).map(Sampler)
     }
+    /// Iterates over scene objects in document order.
     pub fn scenes(&self) -> Objects<'_, SceneIndex> {
         self.objects("scenes")
     }
+    /// Returns one scene view by typed index.
     pub fn scene(&self, index: SceneIndex) -> Option<Scene<'_>> {
         self.scenes().get(index).map(Scene)
     }
+    /// Returns the document's preferred scene index, if declared.
     pub fn default_scene(&self) -> Option<SceneIndex> {
         index_value(&self.root, "scene").map(SceneIndex)
     }
@@ -288,21 +329,27 @@ impl Document {
             .and_then(|asset| index_value(asset, "thumbnail"))
             .map(ImageIndex)
     }
+    /// Iterates over draft shape declarations.
     pub fn shapes(&self) -> Objects<'_, ShapeIndex> {
         self.objects("shapes")
     }
+    /// Returns one shape view by typed index.
     pub fn shape(&self, index: ShapeIndex) -> Option<Shape<'_>> {
         self.shapes().get(index).map(Shape)
     }
+    /// Iterates over skin objects in document order.
     pub fn skins(&self) -> Objects<'_, SkinIndex> {
         self.objects("skins")
     }
+    /// Returns one skin view by typed index.
     pub fn skin(&self, index: SkinIndex) -> Option<Skin<'_>> {
         self.skins().get(index).map(Skin)
     }
+    /// Iterates over texture objects in document order.
     pub fn textures(&self) -> Objects<'_, TextureIndex> {
         self.objects("textures")
     }
+    /// Returns one texture view by typed index.
     pub fn texture(&self, index: TextureIndex) -> Option<Texture<'_>> {
         self.textures().get(index).map(Texture)
     }
@@ -850,21 +897,27 @@ pub struct ObjectRef<'a, I> {
     value: &'a Value,
 }
 impl<'a, I: Copy> ObjectRef<'a, I> {
+    /// Returns the typed index of this object.
     pub fn index(self) -> I {
         self.index
     }
+    /// Returns the underlying lossless JSON object.
     pub fn value(self) -> &'a Value {
         self.value
     }
+    /// Returns the optional glTF object name.
     pub fn name(self) -> Option<&'a str> {
         self.value.get("name").and_then(Value::as_str)
     }
+    /// Returns the optional draft UID.
     pub fn uid(self) -> Option<&'a str> {
         self.value.get("uid").and_then(Value::as_str)
     }
+    /// Returns the object's unknown or extension fields.
     pub fn extensions(self) -> Option<&'a [(String, Value)]> {
         self.value.get("extensions").and_then(Value::as_object)
     }
+    /// Returns the object's application-defined extras value.
     pub fn extras(self) -> Option<&'a Value> {
         self.value.get("extras")
     }
@@ -873,23 +926,30 @@ impl<'a, I: Copy> ObjectRef<'a, I> {
 macro_rules! typed_object {
     ($name:ident, $index:ident) => {
         #[derive(Clone, Copy)]
+        #[doc = concat!("Typed view of a glTF `", stringify!($name), "` object.")]
         pub struct $name<'a>(ObjectRef<'a, $index>);
         impl<'a> $name<'a> {
+            /// Returns the typed index of this object.
             pub fn index(self) -> $index {
                 self.0.index()
             }
+            /// Returns the underlying lossless JSON object.
             pub fn value(self) -> &'a Value {
                 self.0.value()
             }
+            /// Returns the optional glTF object name.
             pub fn name(self) -> Option<&'a str> {
                 self.0.name()
             }
+            /// Returns the optional draft UID.
             pub fn uid(self) -> Option<&'a str> {
                 self.0.uid()
             }
+            /// Returns the object's application-defined extras value.
             pub fn extras(self) -> Option<&'a Value> {
                 self.0.extras()
             }
+            /// Returns the object's unknown or extension fields.
             pub fn extensions(self) -> Option<&'a [(String, Value)]> {
                 self.0.extensions()
             }
@@ -915,90 +975,111 @@ typed_object!(Skin, SkinIndex);
 typed_object!(Texture, TextureIndex);
 
 impl<'a> Buffer<'a> {
+    /// Returns the declared buffer length.
     pub fn byte_length(self) -> Option<u64> {
         self.value().get("byteLength").and_then(Value::as_u64)
     }
+    /// Returns the optional external buffer URI.
     pub fn uri(self) -> Option<&'a str> {
         self.value().get("uri").and_then(Value::as_str)
     }
 }
 
 impl<'a> BufferView<'a> {
+    /// Returns the referenced buffer index.
     pub fn buffer(self) -> Option<BufferIndex> {
         index_value(self.value(), "buffer").map(BufferIndex)
     }
+    /// Returns the byte offset, defaulting to zero when omitted.
     pub fn byte_offset(self) -> u64 {
         self.value()
             .get("byteOffset")
             .and_then(Value::as_u64)
             .unwrap_or(0)
     }
+    /// Returns the declared view length.
     pub fn byte_length(self) -> Option<u64> {
         self.value().get("byteLength").and_then(Value::as_u64)
     }
+    /// Returns the optional interleaved byte stride.
     pub fn byte_stride(self) -> Option<u64> {
         self.value().get("byteStride").and_then(Value::as_u64)
     }
 }
 
 impl<'a> Accessor<'a> {
+    /// Returns the optional source buffer-view index.
     pub fn buffer_view(self) -> Option<BufferViewIndex> {
         index_value(self.value(), "bufferView").map(BufferViewIndex)
     }
+    /// Returns the number of accessor elements.
     pub fn count(self) -> Option<u64> {
         self.value().get("count").and_then(Value::as_u64)
     }
+    /// Returns the typed component format.
     pub fn component_type(self) -> Option<ComponentType> {
         self.value()
             .get("componentType")
             .and_then(Value::as_u64)
             .and_then(ComponentType::from_gltf)
     }
+    /// Returns the accessor shape such as `SCALAR` or `VEC3`.
     pub fn accessor_type(self) -> Option<&'a str> {
         self.value().get("type").and_then(Value::as_str)
     }
+    /// Returns whether integer values are normalized on read.
     pub fn normalized(self) -> bool {
         matches!(self.value().get("normalized"), Some(Value::Bool(true)))
     }
 }
 
 impl<'a> Image<'a> {
+    /// Returns the optional image URI.
     pub fn uri(self) -> Option<&'a str> {
         self.value().get("uri").and_then(Value::as_str)
     }
+    /// Returns the optional image buffer-view index.
     pub fn buffer_view(self) -> Option<BufferViewIndex> {
         index_value(self.value(), "bufferView").map(BufferViewIndex)
     }
 }
 
 impl<'a> Texture<'a> {
+    /// Returns the optional source image index.
     pub fn source(self) -> Option<ImageIndex> {
         index_value(self.value(), "source").map(ImageIndex)
     }
+    /// Returns the optional sampler index.
     pub fn sampler(self) -> Option<SamplerIndex> {
         index_value(self.value(), "sampler").map(SamplerIndex)
     }
 }
 
 impl<'a> Node<'a> {
+    /// Returns the optional mesh index.
     pub fn mesh(self) -> Option<MeshIndex> {
         index_value(self.value(), "mesh").map(MeshIndex)
     }
+    /// Returns the optional camera index.
     pub fn camera(self) -> Option<CameraIndex> {
         index_value(self.value(), "camera").map(CameraIndex)
     }
+    /// Returns the optional skin index.
     pub fn skin(self) -> Option<SkinIndex> {
         index_value(self.value(), "skin").map(SkinIndex)
     }
+    /// Returns the optional external-asset index.
     pub fn external_asset(self) -> Option<ExternalAssetIndex> {
         index_value(self.value(), "externalAsset").map(ExternalAssetIndex)
     }
+    /// Returns the optional node bounding-volume view.
     pub fn bounding_volume(self) -> Option<BoundingVolume<'a>> {
         self.value()
             .get("boundingVolume")
             .filter(|value| value.is_object())
             .map(BoundingVolume)
     }
+    /// Iterates over child node indexes.
     pub fn children(self) -> impl Iterator<Item = NodeIndex> + 'a {
         self.value()
             .get("children")
@@ -1012,6 +1093,7 @@ impl<'a> Node<'a> {
 }
 
 impl<'a> Scene<'a> {
+    /// Iterates over the scene's root node indexes.
     pub fn nodes(self) -> impl Iterator<Item = NodeIndex> + 'a {
         self.value()
             .get("nodes")
@@ -1025,18 +1107,22 @@ impl<'a> Scene<'a> {
 }
 
 impl<'a> File<'a> {
+    /// Returns the declared file MIME type.
     pub fn mime_type(self) -> Option<&'a str> {
         self.value().get("mimeType").and_then(Value::as_str)
     }
+    /// Returns the optional external file URI.
     pub fn uri(self) -> Option<&'a str> {
         self.value().get("uri").and_then(Value::as_str)
     }
+    /// Returns the optional embedded buffer-view index.
     pub fn buffer_view(self) -> Option<BufferViewIndex> {
         index_value(self.value(), "bufferView").map(BufferViewIndex)
     }
 }
 
 impl<'a> ExternalAsset<'a> {
+    /// Returns the packaged file index backing this asset.
     pub fn file(self) -> Option<FileIndex> {
         index_value(self.value(), "file").map(FileIndex)
     }
@@ -1046,24 +1132,29 @@ impl<'a> ExternalAsset<'a> {
 #[derive(Clone, Copy)]
 pub struct BoundingVolume<'a>(&'a Value);
 impl<'a> BoundingVolume<'a> {
+    /// Returns the underlying bounding-volume JSON object.
     pub fn value(self) -> &'a Value {
         self.0
     }
+    /// Returns the referenced draft shape index.
     pub fn shape(self) -> Option<ShapeIndex> {
         index_value(self.0, "shape").map(ShapeIndex)
     }
 }
 
 impl<'a> Shape<'a> {
+    /// Returns the shape discriminator.
     pub fn shape_type(self) -> Option<&'a str> {
         self.value().get("type").and_then(Value::as_str)
     }
+    /// Returns the shape definition under its discriminator key.
     pub fn definition(self) -> Option<&'a Value> {
         self.shape_type().and_then(|kind| self.value().get(kind))
     }
 }
 
 impl<'a> Mesh<'a> {
+    /// Returns the number of primitives in the mesh.
     pub fn primitive_count(self) -> usize {
         self.value()
             .get("primitives")
@@ -1085,12 +1176,15 @@ pub struct Objects<'a, I> {
     marker: PhantomData<I>,
 }
 impl<'a, I: From<usize> + Into<usize> + Copy> Objects<'a, I> {
+    /// Returns the number of objects in the array.
     pub fn len(&self) -> usize {
         self.values.len()
     }
+    /// Returns whether the array contains no objects.
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
+    /// Returns an untyped object view for a typed array index.
     pub fn get(&self, index: I) -> Option<ObjectRef<'a, I>> {
         let index = index.into();
         self.values.get(index).map(|value| ObjectRef {
@@ -1146,18 +1240,23 @@ pub struct PrimitiveRef<'a> {
     primitive: usize,
 }
 impl<'a> PrimitiveRef<'a> {
+    /// Returns the mesh containing this primitive.
     pub fn mesh_index(self) -> MeshIndex {
         self.mesh
     }
+    /// Returns the primitive's zero-based position within its mesh.
     pub fn primitive_index(self) -> usize {
         self.primitive
     }
+    /// Returns the primitive's lossless JSON object.
     pub fn value(self) -> &'a Value {
         &self.document.as_value()["meshes"][self.mesh.0]["primitives"][self.primitive]
     }
+    /// Returns the primitive attribute map.
     pub fn attributes(self) -> Option<&'a [(String, Value)]> {
         self.value().get("attributes").and_then(Value::as_object)
     }
+    /// Iterates over named primitive attribute accessor indexes.
     pub fn attribute_indices(self) -> impl Iterator<Item = (&'a str, AccessorIndex)> + 'a {
         self.attributes()
             .unwrap_or(&[])
@@ -1169,12 +1268,15 @@ impl<'a> PrimitiveRef<'a> {
                     .map(|index| (semantic.as_str(), AccessorIndex(index)))
             })
     }
+    /// Returns the optional index accessor.
     pub fn indices(self) -> Option<AccessorIndex> {
         index_value(self.value(), "indices").map(AccessorIndex)
     }
+    /// Returns the optional material index.
     pub fn material(self) -> Option<MaterialIndex> {
         index_value(self.value(), "material").map(MaterialIndex)
     }
+    /// Returns the primitive mode, defaulting to TRIANGLES (4).
     pub fn mode(self) -> u32 {
         self.value()
             .get("mode")
@@ -1182,6 +1284,7 @@ impl<'a> PrimitiveRef<'a> {
             .and_then(|mode| u32::try_from(mode).ok())
             .unwrap_or(4)
     }
+    /// Iterates over morph-target attribute maps.
     pub fn morph_targets(self) -> impl Iterator<Item = &'a [(String, Value)]> + 'a {
         self.value()
             .get("targets")
@@ -1190,6 +1293,7 @@ impl<'a> PrimitiveRef<'a> {
             .iter()
             .filter_map(Value::as_object)
     }
+    /// Returns a named primitive extension payload.
     pub fn extension(self, name: &str) -> Option<&'a Value> {
         self.value().get("extensions")?.get(name)
     }

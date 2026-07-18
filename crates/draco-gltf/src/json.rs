@@ -2,17 +2,25 @@
 
 use std::ops::{Index, IndexMut};
 
+/// Dependency-free JSON value that preserves number lexemes and object order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
+    /// JSON null.
     Null,
+    /// JSON boolean.
     Bool(bool),
+    /// JSON number stored as its original lexical representation.
     Number(String),
+    /// JSON string.
     String(String),
+    /// JSON array.
     Array(Vec<Value>),
+    /// JSON object represented as ordered key/value pairs.
     Object(Vec<(String, Value)>),
 }
 
 impl Value {
+    /// Parses one complete JSON value.
     pub fn parse(input: &[u8]) -> Result<Self, String> {
         let mut parser = Parser { input, pos: 0 };
         let value = parser.value()?;
@@ -22,6 +30,7 @@ impl Value {
         }
         Ok(value)
     }
+    /// Serializes this value as compact canonical JSON.
     pub fn to_vec(&self) -> Vec<u8> {
         let mut out = Vec::new();
         self.write(&mut out);
@@ -57,6 +66,7 @@ impl Value {
             }
         }
     }
+    /// Borrows object entries when this value is an object.
     pub fn as_object(&self) -> Option<&[(String, Value)]> {
         if let Self::Object(v) = self {
             Some(v)
@@ -64,9 +74,11 @@ impl Value {
             None
         }
     }
+    /// Returns whether this value is an object.
     pub fn is_object(&self) -> bool {
         matches!(self, Self::Object(_))
     }
+    /// Mutably borrows object entries when this value is an object.
     pub fn as_object_mut(&mut self) -> Option<&mut Vec<(String, Value)>> {
         if let Self::Object(v) = self {
             Some(v)
@@ -74,6 +86,7 @@ impl Value {
             None
         }
     }
+    /// Borrows array entries when this value is an array.
     pub fn as_array(&self) -> Option<&[Value]> {
         if let Self::Array(v) = self {
             Some(v)
@@ -81,6 +94,7 @@ impl Value {
             None
         }
     }
+    /// Mutably borrows array entries when this value is an array.
     pub fn as_array_mut(&mut self) -> Option<&mut Vec<Value>> {
         if let Self::Array(v) = self {
             Some(v)
@@ -88,6 +102,7 @@ impl Value {
             None
         }
     }
+    /// Borrows the string when this value is a string.
     pub fn as_str(&self) -> Option<&str> {
         if let Self::String(v) = self {
             Some(v)
@@ -95,24 +110,28 @@ impl Value {
             None
         }
     }
+    /// Parses a non-negative integer without changing its stored lexeme.
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             Self::Number(v) => v.parse().ok(),
             _ => None,
         }
     }
+    /// Looks up an object member by key.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.as_object()?
             .iter()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v)
     }
+    /// Mutably looks up an object member by key.
     pub fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
         self.as_object_mut()?
             .iter_mut()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v)
     }
+    /// Constructs an ordered JSON object from key/value entries.
     pub fn object(entries: impl IntoIterator<Item = (impl Into<String>, Value)>) -> Self {
         Self::Object(entries.into_iter().map(|(k, v)| (k.into(), v)).collect())
     }

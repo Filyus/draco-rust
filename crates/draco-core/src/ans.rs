@@ -37,6 +37,7 @@ impl AnsCoder {
     }
 
     /// Initializes the encoder state and reserves space for the emitted byte stream.
+    #[cfg(feature = "encoder")]
     pub(crate) fn write_init_with_capacity(&mut self, l_base: u32, byte_capacity: usize) {
         self.write_init(l_base);
         self.buf.reserve(byte_capacity);

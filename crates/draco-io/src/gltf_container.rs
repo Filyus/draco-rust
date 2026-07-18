@@ -145,17 +145,24 @@ pub struct GltfContainer<'a> {
 /// A chunk address in a seekable GLB input. No chunk bytes are materialized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GlbChunkDescriptor {
+    /// Absolute byte offset of chunk payload.
     pub offset: u64,
+    /// Payload length in bytes.
     pub length: u64,
+    /// Four-byte chunk kind.
     pub kind: u32,
+    /// Reserved GLB v3 encoding field; currently zero.
     pub encoding: u32,
 }
 
 /// Metadata for a seekable GLB input, suitable for range-based resource loading.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlbLayout {
+    /// Container version represented by this layout.
     pub format: GltfContainerFormat,
+    /// Declared total container length.
     pub length: u64,
+    /// Ordered chunk descriptors.
     pub chunks: Vec<GlbChunkDescriptor>,
 }
 
@@ -171,11 +178,13 @@ pub struct GlbRangeReader<R> {
 }
 
 impl<R: Read + Seek> GlbRangeReader<R> {
+    /// Inspects a seekable source without materializing chunk payloads.
     pub fn open(mut input: R) -> Result<Self> {
         let layout = inspect_glb(&mut input)?;
         Ok(Self { input, layout })
     }
 
+    /// Returns the inspected container layout.
     pub fn layout(&self) -> &GlbLayout {
         &self.layout
     }
@@ -205,6 +214,7 @@ impl<R: Read + Seek> GlbRangeReader<R> {
         Ok(bytes)
     }
 
+    /// Returns the underlying seekable source.
     pub fn into_inner(self) -> R {
         self.input
     }
@@ -710,6 +720,7 @@ pub fn parse_glb_json_and_bin(data: &[u8]) -> Result<(&[u8], Option<&[u8]>)> {
         .ok_or_else(|| GltfError::InvalidGlb("GLB JSON chunk is missing".into()))
 }
 
+/// Resolves all declared buffer references under the configured quotas.
 pub fn resolve_gltf_buffers(
     references: &[GltfBufferReference<'_>],
     format: GltfContainerFormat,

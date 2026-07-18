@@ -24,8 +24,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Breaking: removed the `gltf-rs` document API. Use `Document`, typed views,
-  and index types described in `MIGRATING_0_2.md`.
+- Breaking: replaced the previous external document API. Use `Document`, typed
+  views, and index types described in `MIGRATING_0_2.md`.
 - Full-scene operations now live in `draco-gltf`; `draco-io` provides only
   container, resource, accessor, and bitstream contracts.
 - `CompressionMode::DracoOnly` is the default and requires Draco; use

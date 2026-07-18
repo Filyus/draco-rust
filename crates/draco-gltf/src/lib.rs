@@ -3,6 +3,8 @@
 //! [`Document`] is the public scene model, and all unknown JSON remains part
 //! of that model.
 
+#![deny(missing_docs)]
+
 use std::path::Path;
 
 use thiserror::Error;
@@ -11,6 +13,7 @@ use thiserror::Error;
 mod accessor;
 #[cfg(feature = "transform")]
 mod compression;
+/// Lossless document model and typed views for glTF scenes.
 pub mod document;
 #[cfg(feature = "geometry")]
 pub use accessor::{AccessorData, DocumentAccessorSource};
@@ -24,13 +27,16 @@ pub use document::{
     MeshIndex, Node, NodeIndex, PrimitiveRef, Sampler, SamplerIndex, Scene, SceneIndex, Shape,
     ShapeIndex, Skin, SkinIndex, Texture, TextureIndex, ValidationProfile,
 };
+/// Lossless JSON value used by the document model.
 pub use json::Value as JsonValue;
+/// Extension contracts and resource storage used by document transforms.
 pub mod extensions;
 pub use extensions::{
     DracoExtension, ExtensionHandler, ExtensionRegistry, ExtensionValidationContext, ResourceStore,
     KHR_DRACO_MESH_COMPRESSION,
 };
 #[cfg(feature = "compact")]
+/// Geometry-oriented facade over the same document model.
 pub mod compact;
 #[cfg(feature = "compact")]
 pub use compact::{CompactDocument, CompactMeshRange};
@@ -51,39 +57,57 @@ pub use draco_io::{
 /// Container representation selected when serializing an import.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputFormat {
+    /// Preserve the input container kind.
     SameAsInput,
+    /// Emit a JSON glTF document and no materialized companion buffers.
     GltfJson,
+    /// Emit a GLB version 2 container.
     GlbV2,
+    /// Emit a draft GLB version 3 container.
     GlbV3,
 }
 
 /// Errors returned by glTF parsing and Draco operations.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// An operating-system or stream error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// The JSON chunk could not be parsed.
     #[error("JSON error: {0}")]
     Json(String),
+    /// Draco bitstream decoding failed.
     #[error("Draco decode error: {0}")]
     Decode(#[from] draco_core::DracoError),
+    /// A low-level container or resource operation failed.
     #[error("draco-io error: {0}")]
     DracoIo(#[from] GltfError),
+    /// An extension contract rejected the document or transform.
     #[error("extension error: {0}")]
     Extension(String),
+    /// Strict document validation failed.
     #[error("glTF validation failed: {0:?}")]
     Validation(Vec<String>),
+    /// A configured resource or graph quota was exceeded.
     #[error("resource quota exceeded: {0}")]
     ResourceLimit(String),
 }
+/// Result type returned by this crate.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Import options.
+/// Options controlling document loading, resource resolution and validation.
 pub struct ImportOptions<'a> {
+    /// Base directory used for relative external resources.
     pub base_path: Option<&'a Path>,
+    /// Policy applied by the default filesystem resolver.
     pub external_file_policy: ExternalFilePolicy,
+    /// Optional caller-provided synchronous resource resolver.
     pub resolver: Option<&'a dyn ResourceResolver>,
+    /// Resource and graph quotas applied during loading.
     pub limits: ResourceLimits,
+    /// Profile used for strict validation after parsing.
     pub profile: ValidationProfile,
+    /// Extension handlers available to validation and transforms.
     pub extensions: ExtensionRegistry,
 }
 impl Default for ImportOptions<'_> {
@@ -100,10 +124,12 @@ impl Default for ImportOptions<'_> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// Opens a glTF or GLB file using the draft validation profile.
 pub fn import(path: impl AsRef<Path>) -> Result<Import> {
     open(path, ValidationProfile::Gltf21Draft)
 }
 
+/// Parses glTF or GLB bytes using the draft validation profile.
 pub fn import_slice(bytes: &[u8], base: Option<&Path>) -> Result<Import> {
     let options = ImportOptions {
         base_path: base,
@@ -117,6 +143,7 @@ pub fn import_slice(bytes: &[u8], base: Option<&Path>) -> Result<Import> {
     import_slice_with_options(bytes, &options)
 }
 
+/// Parses glTF or GLB bytes with explicit loading options.
 pub fn import_slice_with_options(bytes: &[u8], options: &ImportOptions<'_>) -> Result<Import> {
     let file_resolver = options
         .base_path

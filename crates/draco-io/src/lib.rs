@@ -5,28 +5,40 @@
 //! accessor-to-geometry primitives.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![deny(missing_docs)]
 
 #[cfg(feature = "fbx-reader")]
+/// FBX binary reader.
 pub mod fbx_reader;
 #[cfg(feature = "fbx-writer")]
+/// FBX binary writer.
 pub mod fbx_writer;
 #[cfg(feature = "gltf")]
+/// glTF/GLB containers and resource resolution.
 pub mod gltf_container;
 #[cfg(feature = "gltf")]
 mod gltf_error;
 #[cfg(feature = "gltf-geometry")]
+/// Reader-agnostic accessor and Draco geometry contracts.
 pub mod gltf_geometry;
 #[cfg(feature = "obj-reader")]
+/// Wavefront OBJ reader.
 pub mod obj_reader;
 #[cfg(feature = "obj-writer")]
+/// Wavefront OBJ writer.
 pub mod obj_writer;
+/// PLY format configuration.
 pub mod ply_format;
 #[cfg(feature = "ply-reader")]
+/// PLY reader.
 pub mod ply_reader;
 #[cfg(feature = "ply-writer")]
+/// PLY writer.
 pub mod ply_writer;
 #[cfg(feature = "scene")]
+/// Generic scene graph adapters for format readers and writers.
 pub mod scene;
+/// Shared reader and writer traits.
 pub mod traits;
 
 #[cfg(feature = "fbx-reader")]

@@ -17,10 +17,14 @@ use draco_io::{ExternalFilePolicy, FileResourceResolver};
 /// Lossless glTF document plus its resolved resources.
 #[derive(Clone)]
 pub struct Import {
+    /// Lossless parsed glTF document.
     pub document: Document,
+    /// Resolved buffer resources indexed by document buffer index.
     pub resources: ResourceStore,
+    /// Container format from which this import was read.
     pub input_format: GltfContainerFormat,
     profile: ValidationProfile,
+    #[cfg(any(feature = "draco-decode", feature = "transform"))]
     pub(crate) extensions: ExtensionRegistry,
     #[cfg(feature = "resources")]
     provenance: Vec<String>,
@@ -33,14 +37,18 @@ pub struct Import {
 /// non-data URI is returned exactly once in `resources`.
 #[derive(Clone, Debug)]
 pub struct GltfOutput {
+    /// Serialized JSON document bytes.
     pub json: Vec<u8>,
+    /// Companion resources to write relative to the JSON document.
     pub resources: Vec<GltfResource>,
 }
 
 /// One companion resource produced by [`Import::to_gltf_output`].
 #[derive(Clone, Debug)]
 pub struct GltfResource {
+    /// Relative URI assigned to the companion resource.
     pub uri: String,
+    /// Resource bytes.
     pub bytes: Vec<u8>,
 }
 
@@ -83,6 +91,7 @@ impl ResourceResolver for PackagedResolver<'_> {
 }
 
 impl Import {
+    /// Validates the document and all registered extension handlers.
     pub fn validate(&self, extensions: &ExtensionRegistry) -> Result<()> {
         self.document.validate(self.profile)?;
         extensions.validate(&self.document)?;
@@ -723,6 +732,7 @@ fn clone_accessor(root: &mut Value, index: usize) -> Result<usize> {
     Ok(clone)
 }
 
+/// Parses glTF or GLB bytes and validates them with `profile`.
 pub fn parse(bytes: &[u8], profile: ValidationProfile) -> Result<Import> {
     parse_with_options(
         bytes,
@@ -735,6 +745,7 @@ pub fn parse(bytes: &[u8], profile: ValidationProfile) -> Result<Import> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// Opens a glTF or GLB file and validates it with `profile`.
 pub fn open(path: impl AsRef<Path>, profile: ValidationProfile) -> Result<Import> {
     let path = path.as_ref();
     let bytes = std::fs::read(path)?;
@@ -752,6 +763,7 @@ pub fn open(path: impl AsRef<Path>, profile: ValidationProfile) -> Result<Import
     )
 }
 
+/// Parses a container with explicit resource, quota, profile and extension options.
 pub fn parse_with_options(
     bytes: &[u8],
     _base: Option<&Path>,
@@ -792,6 +804,7 @@ pub fn parse_with_options(
         resources: ResourceStore { buffers },
         input_format: container.format,
         profile,
+        #[cfg(any(feature = "draco-decode", feature = "transform"))]
         extensions: extensions.clone(),
         #[cfg(feature = "resources")]
         provenance: Vec::new(),

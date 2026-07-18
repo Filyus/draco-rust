@@ -106,6 +106,7 @@ pub mod attribute_quantization_transform;
 #[doc(hidden)]
 pub mod data_buffer;
 #[doc(hidden)]
+#[cfg(any(feature = "encoder", feature = "decoder"))]
 pub mod dynamic_integer_points_kd_tree;
 #[doc(hidden)]
 pub mod edgebreaker_connectivity_decoder;
@@ -124,10 +125,13 @@ pub mod point_cloud;
 #[doc(hidden)]
 pub mod prediction_scheme;
 #[doc(hidden)]
+#[cfg(any(feature = "encoder", feature = "decoder"))]
 pub mod prediction_scheme_constrained_multi_parallelogram;
 #[doc(hidden)]
+#[cfg(any(feature = "encoder", feature = "decoder"))]
 pub mod prediction_scheme_delta;
 #[doc(hidden)]
+#[cfg(any(feature = "encoder", feature = "decoder"))]
 pub mod prediction_scheme_geometric_normal;
 #[cfg(any(
     all(feature = "encoder", feature = "legacy_bitstream_encode"),
@@ -147,6 +151,7 @@ pub mod prediction_scheme_normal_octahedron_canonicalized_transform_base;
 #[doc(hidden)]
 pub mod prediction_scheme_normal_octahedron_transform_base;
 #[doc(hidden)]
+#[cfg(any(feature = "encoder", feature = "decoder"))]
 pub mod prediction_scheme_parallelogram;
 #[doc(hidden)]
 pub mod prediction_scheme_selection;
@@ -164,8 +169,10 @@ pub mod prediction_scheme_selection;
 #[doc(hidden)]
 pub mod prediction_scheme_tex_coords_deprecated;
 #[doc(hidden)]
+#[cfg(any(feature = "encoder", feature = "decoder"))]
 pub mod prediction_scheme_tex_coords_portable;
 #[doc(hidden)]
+#[cfg(any(feature = "encoder", feature = "decoder"))]
 pub mod prediction_scheme_wrap;
 #[doc(hidden)]
 pub mod quantization_utils;
@@ -174,6 +181,7 @@ pub mod rans_symbol_coding;
 /// Error and status types.
 pub mod status;
 #[doc(hidden)]
+#[cfg(any(feature = "encoder", feature = "decoder"))]
 pub mod symbol_encoding;
 #[doc(hidden)]
 pub mod test_event_log;

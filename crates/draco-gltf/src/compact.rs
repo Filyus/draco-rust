@@ -9,21 +9,25 @@ use crate::{
 use draco_io::{pack_draco_primitive, PackedAttribute, PackedPrimitive};
 
 #[derive(Clone, Debug)]
+/// Compact geometry facade backed by one lossless [`Document`].
 pub struct CompactDocument {
     document: Document,
 }
 
 impl CompactDocument {
+    /// Parses and validates a compact document with the selected profile.
     pub fn parse(bytes: &[u8], profile: ValidationProfile) -> Result<Self> {
         let document = Document::from_json_bytes(bytes)?;
         document.validate(profile)?;
         Ok(Self { document })
     }
 
+    /// Borrows the underlying lossless document.
     pub fn document(&self) -> &Document {
         &self.document
     }
 
+    /// Lists each mesh and its primitive count without materializing geometry.
     pub fn mesh_primitive_ranges(&self) -> impl Iterator<Item = CompactMeshRange> + '_ {
         self.document
             .meshes()
@@ -40,13 +44,17 @@ impl CompactDocument {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Mesh index and primitive count exposed by the compact facade.
 pub struct CompactMeshRange {
+    /// Typed mesh index.
     pub mesh: MeshIndex,
+    /// Number of primitives in the mesh.
     pub primitives: usize,
 }
 
 impl Import {
     /// Decodes ordinary accessors or `KHR_draco_mesh_compression` into packed buffers.
+    /// Decodes one primitive into tightly packed geometry buffers.
     pub fn decode_packed_primitive(
         &self,
         mesh: MeshIndex,

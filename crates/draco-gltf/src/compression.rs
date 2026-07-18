@@ -647,6 +647,7 @@ impl Default for CompressionOptions {
 pub struct CompressionReport {
     /// Export policy used for the transformed primitive.
     pub mode: CompressionMode,
+    /// Number of primitives encoded by the operation.
     pub compressed_primitives: usize,
     /// Bytes in the newly encoded Draco payload.
     pub encoded_bytes: usize,

@@ -41,6 +41,8 @@ jobs:
       # which hides feature-gating mistakes (e.g. a decoder module that secretly
       # needs point_cloud_decode). Check the meaningful single-direction combos.
       - name: Check draco-core feature combinations
+        env:
+          RUSTFLAGS: -D warnings
         run: |
           cargo check --manifest-path crates/Cargo.toml -p draco-core --no-default-features
           cargo check --manifest-path crates/Cargo.toml -p draco-core --no-default-features --features decoder
@@ -65,12 +67,21 @@ jobs:
 
       # Check the two supported minimal public surfaces and their wasm32 builds.
       - name: Check draco-gltf feature/target combinations
+        env:
+          RUSTFLAGS: -D warnings
         run: |
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features document-core
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features compact
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --features full
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --no-default-features --features compact
           cargo check --manifest-path crates/Cargo.toml -p draco-io --target wasm32-unknown-unknown --no-default-features --features draco-decode
+
+      - name: Check public Rust documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo doc --manifest-path crates/Cargo.toml -p draco-io --all-features --no-deps
+          cargo doc --manifest-path crates/Cargo.toml -p draco-gltf --all-features --no-deps
 
       - name: Check fuzz targets compile
         run: cargo check --manifest-path fuzz/Cargo.toml --bins

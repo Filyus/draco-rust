@@ -2,6 +2,7 @@ use crate::{Document, Error, ResourceStore, Result};
 use draco_core::draco_types::DataType;
 use draco_io::{AccessorSource, DecodedAccessor, GltfError};
 
+/// Accessor source backed by a [`Document`] and its resolved resources.
 pub struct DocumentAccessorSource<'a> {
     document: &'a Document,
     resources: &'a ResourceStore,
@@ -10,14 +11,21 @@ pub struct DocumentAccessorSource<'a> {
 /// Tightly packed accessor payload for compact consumers.
 #[derive(Clone, Debug)]
 pub struct AccessorData {
+    /// Number of elements in the accessor.
     pub count: usize,
+    /// Number of scalar components per element.
     pub components: u8,
+    /// Original glTF component type code.
     pub component_type: u32,
+    /// Draco storage type used for materialization.
     pub data_type: DataType,
+    /// Whether integer values use normalized interpretation.
     pub normalized: bool,
+    /// Tightly packed, row-major accessor bytes.
     pub bytes: Vec<u8>,
 }
 impl<'a> DocumentAccessorSource<'a> {
+    /// Creates an accessor source over a document and resolved buffers.
     pub fn new(document: &'a Document, resources: &'a ResourceStore) -> Self {
         Self {
             document,
@@ -272,6 +280,7 @@ impl<'a> DocumentAccessorSource<'a> {
         Ok(())
     }
 
+    /// Reads and materializes one accessor by zero-based index.
     pub fn read_accessor(&self, index: usize) -> Result<AccessorData> {
         let (count, components, component_type, data_type, normalized, bytes) = self.read(index)?;
         Ok(AccessorData {

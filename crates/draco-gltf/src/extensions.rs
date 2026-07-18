@@ -9,11 +9,13 @@ use draco_core::{DecoderBuffer, MeshDecoder};
 
 use crate::{Document, Error, PrimitiveRef, Result};
 
+/// Extension name for the Khronos Draco mesh compression contract.
 pub const KHR_DRACO_MESH_COMPRESSION: &str = "KHR_draco_mesh_compression";
 
 /// Resolved binary resources indexed by glTF buffer index.
 #[derive(Clone, Debug, Default)]
 pub struct ResourceStore {
+    /// Resolved bytes indexed by glTF `buffers[]` position.
     pub buffers: Vec<Vec<u8>>,
 }
 
@@ -24,11 +26,13 @@ pub struct ExtensionValidationContext {
 }
 
 impl ExtensionValidationContext {
+    /// Allows a registered extension to omit a buffer view for one accessor.
     pub fn allow_accessor_without_buffer_view(&mut self, index: usize) {
         if !self.accessors_without_buffer_view.contains(&index) {
             self.accessors_without_buffer_view.push(index);
         }
     }
+    /// Returns whether an accessor has received that narrow exemption.
     pub fn allows_accessor_without_buffer_view(&self, index: usize) -> bool {
         self.accessors_without_buffer_view.contains(&index)
     }
@@ -90,6 +94,7 @@ pub trait ExtensionHandler: Send + Sync {
 }
 
 #[derive(Clone)]
+/// Registry of unique extension handlers used by document validation/transforms.
 pub struct ExtensionRegistry {
     handlers: Vec<Arc<dyn ExtensionHandler>>,
 }
@@ -131,6 +136,7 @@ impl ExtensionRegistry {
         }
         Ok(context)
     }
+    #[cfg(feature = "transform")]
     pub(crate) fn collect_binary_references(
         &self,
         document: &Document,
@@ -144,6 +150,7 @@ impl ExtensionRegistry {
         }
         Ok(())
     }
+    #[cfg(feature = "transform")]
     pub(crate) fn remap_binary_references(
         &self,
         document: &mut Document,

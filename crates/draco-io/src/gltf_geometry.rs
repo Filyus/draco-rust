@@ -44,18 +44,26 @@ pub struct DecodedAccessor {
 /// common boundary for scene importers, compact runtimes, and Draco decoding.
 #[derive(Clone, Debug)]
 pub struct PackedAttribute {
+    /// glTF semantic such as `POSITION` or `TEXCOORD_0`.
     pub semantic: String,
+    /// Scalar component count per element.
     pub components: u8,
+    /// Original glTF component type code.
     pub component_type: u32,
+    /// Whether integer values use normalized interpretation.
     pub normalized: bool,
+    /// Tightly packed row-major bytes.
     pub bytes: Vec<u8>,
 }
 
 /// Materialized primitive geometry with contiguous attribute and index buffers.
 #[derive(Clone, Debug)]
 pub struct PackedPrimitive {
+    /// glTF primitive mode.
     pub mode: u32,
+    /// Optional packed index accessor.
     pub indices: Option<PackedAttribute>,
+    /// Packed vertex attributes.
     pub attributes: Vec<PackedAttribute>,
 }
 
