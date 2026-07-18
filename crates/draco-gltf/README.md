@@ -69,7 +69,9 @@ small Draco-capable reader. Add `write` for raw output or `draco-encode` for
 compressed output. Every profile uses the same document and packed-geometry
 types; no second parser or scene model exists.
 
-See `GLTF_2_1_SNAPSHOT.md` and `GLTF_2_1.md` for the pinned draft surface.
+See [`GLTF_2_1_SUPPORT.md`](GLTF_2_1_SUPPORT.md) for the support matrix and
+upstream links. `GLTF_2_1_SNAPSHOT.md` records the pinned draft and update
+policy.
 
 ## License
 
