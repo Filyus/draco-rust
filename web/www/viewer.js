@@ -289,6 +289,44 @@ void main() {
 }
 `;
 
+const BACKGROUND_VERT_SRC = `#version 300 es
+precision highp float;
+out vec2 vNdc;
+void main() {
+    vec2 positions[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    vNdc = positions[gl_VertexID];
+    gl_Position = vec4(vNdc, 0.0, 1.0);
+}
+`;
+
+const BACKGROUND_FRAG_SRC = `#version 300 es
+precision highp float;
+in vec2 vNdc;
+uniform mat4 uInverseProjection;
+uniform mat4 uInverseView;
+out vec4 outColor;
+
+vec3 studioRadiance(vec3 direction) {
+    float up = clamp(direction.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 color = mix(vec3(0.035, 0.045, 0.07), vec3(0.34, 0.43, 0.66), up);
+    color = mix(color, vec3(0.55, 0.34, 0.20), exp(-abs(direction.y) * 12.0) * 0.18);
+    vec3 keyDirection = normalize(vec3(-0.45, 0.78, 0.42));
+    vec3 rimDirection = normalize(vec3(0.52, 0.42, -0.72));
+    color += vec3(2.8, 2.55, 2.15) * pow(max(dot(direction, keyDirection), 0.0), 72.0);
+    color += vec3(0.75, 0.9, 1.25) * pow(max(dot(direction, rimDirection), 0.0), 36.0);
+    return color;
+}
+
+void main() {
+    vec4 view = uInverseProjection * vec4(vNdc, 1.0, 1.0);
+    view /= view.w;
+    vec3 direction = normalize((uInverseView * vec4(view.xyz, 0.0)).xyz);
+    vec3 color = studioRadiance(direction);
+    color = color / (color + vec3(1.0));
+    outColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
+}
+`;
+
 const GL = WebGL2RenderingContext;
 
 function compileShader(gl, type, source) {
@@ -454,6 +492,8 @@ export class Viewer {
         this._projection = mat4.create();
         this._view = mat4.create();
         this._projectionView = mat4.create();
+        this._inverseProjection = mat4.create();
+        this._inverseView = mat4.create();
         this._scratch = mat4.create();
         this._normalMatrix = mat4.create();
         this._model = mat4.create();
@@ -482,6 +522,7 @@ export class Viewer {
     _buildPrograms() {
         this.program = linkProgram(this.gl, VERT_SRC, FRAG_SRC);
         this.lineProgram = linkProgram(this.gl, LINE_VERT_SRC, LINE_FRAG_SRC);
+        this.backgroundProgram = linkProgram(this.gl, BACKGROUND_VERT_SRC, BACKGROUND_FRAG_SRC);
 
         const gl = this.gl;
         const p = this.program;
@@ -539,6 +580,10 @@ export class Viewer {
         this.lineUniforms = {
             uProjectionView: gl.getUniformLocation(this.lineProgram, 'uProjectionView'),
             uColor: gl.getUniformLocation(this.lineProgram, 'uColor'),
+        };
+        this.backgroundUniforms = {
+            uInverseProjection: gl.getUniformLocation(this.backgroundProgram, 'uInverseProjection'),
+            uInverseView: gl.getUniformLocation(this.backgroundProgram, 'uInverseView'),
         };
     }
 
@@ -976,6 +1021,8 @@ export class Viewer {
 
         this._updateWorldMatrices();
 
+        this._drawBackground();
+
         // Grid (drawn first, depth-disabled so it sits behind everything)
         if (this.showGrid) this._drawGrid();
 
@@ -1162,6 +1209,22 @@ export class Viewer {
         gl.enableVertexAttribArray(0);
         gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
         gl.drawArrays(gl.LINES, 0, this._grid.count);
+    }
+
+    /** Render the analytic studio environment in camera space before geometry. */
+    _drawBackground() {
+        const gl = this.gl;
+        if (!mat4.invert(this._inverseProjection, this._projection)
+            || !mat4.invert(this._inverseView, this._view)) return;
+        gl.disable(gl.DEPTH_TEST);
+        gl.depthMask(false);
+        gl.useProgram(this.backgroundProgram);
+        gl.uniformMatrix4fv(this.backgroundUniforms.uInverseProjection, false, this._inverseProjection);
+        gl.uniformMatrix4fv(this.backgroundUniforms.uInverseView, false, this._inverseView);
+        gl.bindVertexArray(null);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.depthMask(true);
+        gl.enable(gl.DEPTH_TEST);
     }
 
     /** Build a grid scaled to the loaded model's AABB. */
