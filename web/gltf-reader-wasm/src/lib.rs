@@ -49,6 +49,9 @@ pub struct SceneNode {
     /// Source glTF mesh index; use `meshPrimitiveRanges[meshIndex]` to obtain
     /// its flattened primitive range.
     pub mesh_index: Option<usize>,
+    /// Column-major 4x4 local transform, when the node uses `matrix` instead
+    /// of translation/rotation/scale.
+    pub matrix: Option<Vec<f32>>,
     pub translation: Option<Vec<f32>>,
     pub rotation: Option<Vec<f32>>,
     pub scale: Option<Vec<f32>>,
@@ -225,6 +228,7 @@ fn parse_document_to_result(
                 .map(|node| SceneNode {
                     name: node.name,
                     mesh_index: node.mesh,
+                    matrix: node.matrix.map(|matrix| matrix.to_vec()),
                     translation: node.translation,
                     rotation: node.rotation,
                     scale: node.scale,
@@ -308,9 +312,13 @@ mod tests {
     #[test]
     fn compact_reader_decodes_external_resource() {
         let resources = vec![("triangle.bin".to_string(), triangle_resource())];
-        let input = external_triangle_json();
-        let json = std::str::from_utf8(&input).unwrap();
-        let result = parse_document_to_result(json, None, &resources);
+        let json = String::from_utf8(external_triangle_json())
+            .unwrap()
+            .replace(
+                r#"{"mesh":0}"#,
+                r#"{"mesh":0,"matrix":[1,0,0,0,0,1,0,0,0,0,1,0,3,4,5,1]}"#,
+            );
+        let result = parse_document_to_result(&json, None, &resources);
         assert!(result.success);
         assert_eq!(result.meshes.len(), 1);
         assert_eq!(result.meshes[0].positions.len(), 9);
@@ -318,6 +326,12 @@ mod tests {
         assert_eq!(result.mesh_primitive_ranges.len(), 1);
         assert_eq!(result.mesh_primitive_ranges[0].first_primitive, 0);
         assert_eq!(result.mesh_primitive_ranges[0].primitive_count, 1);
+        assert_eq!(
+            result.nodes[0].matrix,
+            Some(vec![
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 3.0, 4.0, 5.0, 1.0,
+            ])
+        );
     }
 
     #[test]

@@ -24,6 +24,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   decoded-geometry quotas by default.
 - `CompactDocument::mesh_primitive_ranges`, preserving the mapping from each
   source glTF mesh index to its flattened primitive range for scene consumers.
+- Column-major `node.matrix` transforms in the compact reader and its WASM
+  result, with glTF-required exclusion of translation/rotation/scale fields.
 
 ### Changed
 

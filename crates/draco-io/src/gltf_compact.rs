@@ -41,7 +41,8 @@
 //! - Image URIs are **validated** (data-URIs decoded-and-discarded, external
 //!   URIs must be supplied via the resource map) but image bytes are never
 //!   materialized.
-//! - Node TRS and scene indices are bounds-checked; finite floats are enforced.
+//! - Node transforms (either a column-major `matrix` or TRS) and scene indices
+//!   are bounds-checked; finite floats are enforced.
 
 use std::collections::HashMap;
 
@@ -142,13 +143,15 @@ pub struct CompactMeshRange {
     pub primitive_count: usize,
 }
 
-/// Minimal scene-graph node (TRS + hierarchy), as carried by the document.
+/// Minimal scene-graph node (transform + hierarchy), as carried by the document.
 #[derive(Debug, Clone, Default)]
 pub struct CompactNode {
     pub name: Option<String>,
     /// Index into [`CompactDocument::mesh_primitive_ranges`], matching the
     /// source glTF `meshes[]` index rather than the flattened primitive list.
     pub mesh: Option<usize>,
+    /// Column-major 4x4 local transform, mutually exclusive with TRS fields.
+    pub matrix: Option<[f32; 16]>,
     pub translation: Option<Vec<f32>>,
     pub rotation: Option<Vec<f32>>,
     pub scale: Option<Vec<f32>>,
@@ -296,6 +299,8 @@ struct CompactNodeJson {
     #[nserde(default)]
     mesh: Option<usize>,
     #[nserde(default)]
+    matrix: Option<Vec<f32>>,
+    #[nserde(default)]
     translation: Option<Vec<f32>>,
     #[nserde(default)]
     rotation: Option<Vec<f32>>,
@@ -398,15 +403,8 @@ pub fn parse_compact_document_with_limits(
     let nodes = root
         .nodes
         .iter()
-        .map(|node| CompactNode {
-            name: node.name.clone(),
-            mesh: node.mesh,
-            translation: node.translation.clone(),
-            rotation: node.rotation.clone(),
-            scale: node.scale.clone(),
-            children: node.children.clone(),
-        })
-        .collect();
+        .map(compact_node)
+        .collect::<Result<Vec<_>>>()?;
     let scenes = root
         .scenes
         .iter()
@@ -422,6 +420,27 @@ pub fn parse_compact_document_with_limits(
         scenes,
         default_scene: root.scene,
         uses_draco,
+    })
+}
+
+fn compact_node(node: &CompactNodeJson) -> Result<CompactNode> {
+    let matrix = node
+        .matrix
+        .as_deref()
+        .map(|values| {
+            <&[f32; 16]>::try_from(values)
+                .map(|values| *values)
+                .map_err(|_| GltfError::InvalidGltf("node matrix must be a finite MAT4".into()))
+        })
+        .transpose()?;
+    Ok(CompactNode {
+        name: node.name.clone(),
+        mesh: node.mesh,
+        matrix,
+        translation: node.translation.clone(),
+        rotation: node.rotation.clone(),
+        scale: node.scale.clone(),
+        children: node.children.clone(),
     })
 }
 
@@ -777,6 +796,20 @@ fn validate_document(root: &CompactRoot, buffers: &[Vec<u8>], is_glb: bool) -> R
         }) {
             return Err(GltfError::InvalidGltf(
                 "node rotation must be a finite VEC4".into(),
+            ));
+        }
+        if node.matrix.as_ref().is_some_and(|values| {
+            values.len() != 16 || values.iter().any(|value| !value.is_finite())
+        }) {
+            return Err(GltfError::InvalidGltf(
+                "node matrix must be a finite MAT4".into(),
+            ));
+        }
+        if node.matrix.is_some()
+            && (node.translation.is_some() || node.rotation.is_some() || node.scale.is_some())
+        {
+            return Err(GltfError::InvalidGltf(
+                "node matrix must not be combined with translation, rotation, or scale".into(),
             ));
         }
     }
@@ -1672,6 +1705,46 @@ mod tests {
             .replace("\"scene\":0", "\"scene\":1");
         let result = parse_compact_document(&json, None, &resources);
         assert!(matches!(result, Err(GltfError::InvalidGltf(_))));
+    }
+
+    #[test]
+    fn preserves_node_matrix() {
+        let resources = vec![("triangle.bin".to_string(), triangle_resource())];
+        let json = String::from_utf8(external_triangle_json())
+            .unwrap()
+            .replace(
+                r#"{"mesh":0}"#,
+                r#"{"mesh":0,"matrix":[1,0,0,0,0,1,0,0,0,0,1,0,3,4,5,1]}"#,
+            );
+        let document = parse_compact_document(&json, None, &resources).unwrap();
+        assert_eq!(
+            document.nodes[0].matrix,
+            Some([1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 3.0, 4.0, 5.0, 1.0,])
+        );
+        assert!(document.nodes[0].translation.is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_node_matrix() {
+        let resources = vec![("triangle.bin".to_string(), triangle_resource())];
+        let malformed = String::from_utf8(external_triangle_json())
+            .unwrap()
+            .replace(r#"{"mesh":0}"#, r#"{"mesh":0,"matrix":[1,0,0]}"#);
+        assert!(matches!(
+            parse_compact_document(&malformed, None, &resources),
+            Err(GltfError::InvalidGltf(_))
+        ));
+
+        let mixed = String::from_utf8(external_triangle_json())
+            .unwrap()
+            .replace(
+                r#"{"mesh":0}"#,
+                r#"{"mesh":0,"matrix":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"translation":[1,2,3]}"#,
+            );
+        assert!(matches!(
+            parse_compact_document(&mixed, None, &resources),
+            Err(GltfError::InvalidGltf(_))
+        ));
     }
 
     #[test]
