@@ -40,4 +40,34 @@ impl NativeImport {
             .map_err(|error| Error::Extension(error.to_string()))?;
         Ok(output.data().to_vec())
     }
+
+    pub fn compress_primitive(
+        &mut self,
+        mesh: crate::MeshIndex,
+        primitive: usize,
+        options: CompressionOptions,
+    ) -> Result<CompressionReport> {
+        let reference = self.document.primitive(mesh, primitive).ok_or_else(|| Error::Extension("primitive out of range".into()))?;
+        let (geometry, mapping) = self.decode_geometry_primitive(reference)?;
+        let bytes = self.encode_draco_mesh(geometry, options)?;
+        let buffer = self.resources.buffers.len();
+        let view;
+        {
+            let root = self.document.as_value_mut();
+            let buffers = root["buffers"].as_array_mut().ok_or_else(|| Error::Extension("buffers is not an array".into()))?;
+            buffers.push(crate::JsonValue::object([("byteLength", crate::JsonValue::from(bytes.len()))]));
+            let views = root["bufferViews"].as_array_mut().ok_or_else(|| Error::Extension("bufferViews is not an array".into()))?;
+            view = views.len();
+            views.push(crate::JsonValue::object([("buffer", crate::JsonValue::from(buffer)), ("byteLength", crate::JsonValue::from(bytes.len()))]));
+            let attributes = crate::JsonValue::Object(mapping.into_iter().map(|(name, id)| (name, crate::JsonValue::from(id as u64))).collect());
+            root["meshes"][mesh.0]["primitives"][primitive]["extensions"][crate::KHR_DRACO_MESH_COMPRESSION] = crate::JsonValue::object([("bufferView", crate::JsonValue::from(view)), ("attributes", attributes)]);
+            for name in ["extensionsUsed", "extensionsRequired"] {
+                if root.get(name).is_none() { root[name] = crate::JsonValue::Array(Vec::new()); }
+                let list = root[name].as_array_mut().unwrap();
+                if !list.iter().any(|value| value.as_str() == Some(crate::KHR_DRACO_MESH_COMPRESSION)) { list.push(crate::JsonValue::from(crate::KHR_DRACO_MESH_COMPRESSION)); }
+            }
+        }
+        self.resources.buffers.push(bytes.clone());
+        Ok(CompressionReport { compressed_primitives: 1, encoded_bytes: bytes.len() })
+    }
 }
