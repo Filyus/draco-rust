@@ -40,6 +40,7 @@ const previewSection = document.getElementById('preview-section');
 const exportSection = document.getElementById('export-section');
 const exportFormat = document.getElementById('export-format');
 const useDraco = document.getElementById('use-draco');
+const useDracoLabel = document.getElementById('use-draco-label');
 const dracoOptions = document.getElementById('draco-options');
 const dracoSettings = document.getElementById('draco-settings');
 const encodingSpeed = document.getElementById('encoding-speed');
@@ -100,6 +101,9 @@ async function loadModule({ key, path, statusId }) {
         
         modules[key].module = module;
         modules[key].loaded = true;
+        if (key === 'gltf') {
+            updateDracoEncoderAvailability();
+        }
         
         // Update visual indicator (dot + aria label)
         const statusText = indicator.querySelector('.status-text');
@@ -205,6 +209,19 @@ async function handleFiles(fileList) {
         return;
     }
     await handleFile(file, files.filter((candidate) => candidate !== file));
+}
+
+function updateDracoEncoderAvailability() {
+    const prototype = modules.gltf.module?.GltfAsset?.prototype;
+    const available = typeof prototype?.compressPrimitive === 'function';
+    useDraco.disabled = !available;
+    useDracoLabel.textContent = available
+        ? 'Enable Draco Compression'
+        : 'Draco Compression (not included in this build)';
+    if (!available) {
+        useDraco.checked = false;
+    }
+    dracoSettings.style.display = available && useDraco.checked ? 'block' : 'none';
 }
 
 async function handleFile(file, companionFiles = []) {
@@ -458,20 +475,9 @@ async function exportFile() {
     try {
         let result;
         if (currentMeshData.document) {
-            if (format !== 'gltf' || currentFileType !== 'gltf') {
-                throw new Error('Document export currently emits minified JSON glTF only');
-            }
-            if (!modules.gltf.loaded) {
-                throw new Error('glTF module not loaded');
-            }
-            const document = modules.gltf.module.GltfAsset.withResources(
-                currentSourceData,
-                currentSourceResources,
-                '2.1',
-            );
-            const data = document.minifiedJson();
-            downloadResult({ success: true, json_data: new TextDecoder().decode(data) }, format);
-            log('Document exported as minified JSON', 'success');
+            result = exportGltfDocument(format);
+            downloadResult(result, format);
+            log(result.message, 'success');
             return;
         }
         const meshes = prepareMeshesForExport(currentMeshData.meshes);
@@ -514,6 +520,54 @@ async function exportFile() {
         }
     } catch (error) {
         log(`Export error: ${errorMessage(error)}`, 'error');
+    }
+}
+
+function exportGltfDocument(format) {
+    if (!modules.gltf.loaded) {
+        throw new Error('glTF module not loaded');
+    }
+
+    const asset = modules.gltf.module.GltfAsset.withResources(
+        currentSourceData,
+        currentSourceResources,
+        '2.1',
+    );
+    try {
+        if (useDraco.checked) {
+            if (typeof asset.compressPrimitive !== 'function') {
+                throw new Error('Draco encoding is not included in this WASM build');
+            }
+            for (let mesh = 0; mesh < asset.meshCount(); mesh += 1) {
+                const primitiveCount = asset.primitiveCount(mesh);
+                for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
+                    asset.compressPrimitive(mesh, primitive, Number(encodingSpeed.value), 5);
+                }
+            }
+        }
+
+        if (format === 'glb') {
+            return {
+                success: true,
+                binary_data: asset.glb(2),
+                message: useDraco.checked
+                    ? 'Document compressed with Draco and exported as GLB'
+                    : 'Document packaged and exported as GLB',
+            };
+        }
+        if (format === 'gltf' && currentFileType === 'gltf' && !useDraco.checked) {
+            return {
+                success: true,
+                json_data: new TextDecoder().decode(asset.minifiedJson()),
+                message: 'Document exported as minified JSON glTF',
+            };
+        }
+        if (format === 'gltf' && useDraco.checked) {
+            throw new Error('Compressed JSON glTF requires bundle download; select GLB instead');
+        }
+        throw new Error(`Document export to ${format.toUpperCase()} is not supported`);
+    } finally {
+        asset.free();
     }
 }
 

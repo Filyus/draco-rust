@@ -68,6 +68,13 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   await expect(page.locator('#triangle-count')).toHaveText('576');
   await expect(page.locator('#has-normals')).toHaveText('No');
   await expect(page.locator('#has-uvs')).toHaveText('Yes');
+
+  await expect(page.locator('#use-draco')).toBeDisabled();
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: '⬇ Convert & Download' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe('export.glb');
+  await expect(page.locator('#console')).toContainText('Document packaged and exported as GLB');
 });
 
 test('converter explains a missing external glTF buffer', async ({ page }) => {
