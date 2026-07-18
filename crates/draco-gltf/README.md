@@ -25,9 +25,10 @@ attribute sets. See `GLTF_2_1_SNAPSHOT.md`, `GLTF_2_1.md`, and
 
 `ExtensionRegistry` owns extension validation and geometry decoding. Its default
 registry contains Draco and maps compressed primitives to `draco_core::Mesh`.
-Call `Import::compress` for document-preserving Draco compression,
-`Import::decompress_in_place` to materialize plain geometry, and `to_bytes` to
-select JSON, GLB v2, or GLB v3 output.
+Call `Import::compress_primitive` for append-only document-preserving Draco
+compression, `Import::decompress_in_place` to materialize plain geometry, and
+`to_bytes` to select JSON, GLB v2, or GLB v3 output. Enable the `compact`
+feature for geometry-oriented views over the same native `Document`.
 
 ## License
 
