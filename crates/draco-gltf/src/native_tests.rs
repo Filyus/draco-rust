@@ -217,6 +217,20 @@ fn glb_serialization_consolidates_append_only_draco_buffers() {
     );
 }
 
+#[test]
+fn decompression_failure_is_atomic() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut import = parse_native(input, ValidationProfile::Gltf20).unwrap();
+    import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap();
+    let before = import.document.to_json_bytes().unwrap();
+    import.resources.buffers[1][0] ^= 0xff;
+    assert!(import.decompress_in_place().is_err());
+    assert_eq!(import.document.to_json_bytes().unwrap(), before);
+    assert_eq!(import.draco_primitives().count(), 1);
+}
+
 #[cfg(feature = "compact")]
 #[test]
 fn compact_facade_uses_native_document() {

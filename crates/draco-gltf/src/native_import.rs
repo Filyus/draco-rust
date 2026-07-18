@@ -14,6 +14,7 @@ use draco_io::{
 use draco_io::{ExternalFilePolicy, FileResourceResolver};
 
 /// Native, lossless glTF import independent of `gltf-rs`.
+#[derive(Clone)]
 pub struct NativeImport {
     pub document: Document,
     pub resources: ResourceStore,
@@ -174,6 +175,13 @@ impl NativeImport {
 
     /// Materializes all Draco primitives as ordinary indexed triangle geometry.
     pub fn decompress_in_place(&mut self) -> Result<()> {
+        let mut candidate = self.clone();
+        candidate.decompress_in_place_inner()?;
+        *self = candidate;
+        Ok(())
+    }
+
+    fn decompress_in_place_inner(&mut self) -> Result<()> {
         let mut plans = Vec::new();
         for mesh in self.document.meshes() {
             let count = mesh

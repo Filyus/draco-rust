@@ -47,6 +47,18 @@ impl NativeImport {
         primitive: usize,
         options: CompressionOptions,
     ) -> Result<CompressionReport> {
+        let mut candidate = self.clone();
+        let report = candidate.compress_primitive_inner(mesh, primitive, options)?;
+        *self = candidate;
+        Ok(report)
+    }
+
+    fn compress_primitive_inner(
+        &mut self,
+        mesh: crate::MeshIndex,
+        primitive: usize,
+        options: CompressionOptions,
+    ) -> Result<CompressionReport> {
         let reference = self
             .document
             .primitive(mesh, primitive)
