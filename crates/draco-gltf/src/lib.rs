@@ -115,3 +115,6 @@ pub fn import_slice_with_options(bytes: &[u8], options: &ImportOptions<'_>) -> R
 pub fn validate(document: &Document) -> Result<()> {
     document.validate(ValidationProfile::Gltf21Draft)
 }
+
+#[cfg(test)]
+mod native_tests;
