@@ -48,6 +48,13 @@ use draco_core::{DecoderBuffer, DracoError, Mesh, MeshDecoder};
 use serde::Deserialize;
 use serde_json::Value;
 
+pub mod document;
+pub use document::{
+    AccessorIndex, AnimationIndex, BufferIndex, BufferViewIndex, CameraIndex, ComponentType,
+    Document, FileIndex, ImageIndex, MaterialIndex, MeshIndex, NodeIndex, PrimitiveRef,
+    SamplerIndex, SceneIndex, ShapeIndex, SkinIndex, TextureIndex, ValidationProfile,
+};
+
 /// Re-export so callers can use the scene model without depending on `gltf`
 /// directly.
 pub use gltf;
