@@ -105,6 +105,9 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   await expect(page.locator('#triangle-count')).toHaveText('576');
   await expect(page.locator('#has-normals')).toHaveText('No');
   await expect(page.locator('#has-uvs')).toHaveText('Yes');
+  await expect(page.locator('#viewer-section')).toBeVisible();
+  await expect(page.locator('#viewer-animation')).toBeVisible();
+  await expect(page.locator('#anim-clip')).toHaveValue('0');
 
   const dracoToggle = page.locator('#use-draco');
   if (await dracoToggle.isEnabled()) {
@@ -134,5 +137,26 @@ test('converter explains a missing external glTF buffer', async ({ page }) => {
   await expect(page.locator('#console')).toContainText(
     'Select the .gltf together with all referenced .bin and image files.',
   );
+  await expect(page.locator('#console')).not.toContainText('undefined');
+});
+
+test('3D preview renders a GLB into the WebGL2 canvas', async ({ page }) => {
+  await page.goto('/index.html');
+  await expect(page.locator('#gltf-status .status-text')).toHaveText('Ready');
+  await page.locator('#file-input').setInputFiles(
+    path.join(repoRoot, 'testdata', 'Box', 'glTF_Binary', 'Box.glb'),
+  );
+
+  await expect(page.locator('#viewer-section')).toBeVisible();
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).not.toContainText('Preview failed');
+
+  const hasContext = await page.evaluate(() => {
+    const canvas = document.getElementById('viewer-canvas');
+    const gl = canvas && canvas.getContext('webgl2');
+    return Boolean(gl);
+  });
+  expect(hasContext).toBe(true);
+
   await expect(page.locator('#console')).not.toContainText('undefined');
 });

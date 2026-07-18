@@ -392,3 +392,123 @@ footer a {
     gap: 0.5rem;
     cursor: pointer;
 }
+
+/* === 3D Preview === */
+.viewer-section {
+    padding: 1.25rem 1.5rem;
+}
+
+.viewer-wrapper {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 10;
+    max-height: 480px;
+    background: #0b1424;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.viewer-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: grab;
+}
+.viewer-canvas:active {
+    cursor: grabbing;
+}
+
+.viewer-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    pointer-events: none;
+    text-align: center;
+    font-size: 0.9rem;
+}
+
+.viewer-toolbar,
+.viewer-animation {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+.viewer-toolbar {
+    align-items: center;
+}
+
+.viewer-btn {
+    background: var(--bg-dark);
+    border: 1px solid var(--border);
+    color: var(--text-main);
+    padding: 0.35rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+.viewer-btn:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--accent);
+}
+.viewer-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+.viewer-animation {
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 8px;
+}
+
+.anim-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.anim-clip {
+    flex: 1 1 180px;
+    min-width: 120px;
+}
+
+.anim-loop,
+.anim-speed-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.anim-time {
+    margin-left: auto;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.anim-scrub,
+.anim-speed {
+    flex: 1;
+    min-width: 120px;
+}
+
+@media (max-width: 540px) {
+    .viewer-wrapper {
+        aspect-ratio: 4 / 3;
+    }
+}

@@ -1,9 +1,13 @@
 /**
  * Draco 3D Format Converter - Main Application
- * 
+ *
  * This application loads separate WASM modules for each reader/writer format
  * and provides a unified interface for 3D file format conversion.
  */
+
+import { Viewer } from './viewer.js';
+import { buildSceneFromGltf } from './gltf-loader.js';
+import { buildSceneFromMeshes } from './mesh-loader.js';
 
 // Module state
 const modules = {
@@ -21,6 +25,9 @@ let currentMeshData = null;
 let currentFileType = null;
 let currentSourceData = null;
 let currentSourceResources = Object.create(null);
+
+// 3D preview viewer (lazily created on first use)
+let viewer = null;
 
 function errorMessage(error) {
     if (error && typeof error.message === 'string') {
@@ -50,6 +57,23 @@ const normalBits = document.getElementById('normal-bits');
 const texcoordBits = document.getElementById('texcoord-bits');
 const exportBtn = document.getElementById('export-btn');
 const consoleEl = document.getElementById('console');
+
+// 3D preview DOM references
+const viewerSection = document.getElementById('viewer-section');
+const viewerCanvas = document.getElementById('viewer-canvas');
+const viewerPlaceholder = document.getElementById('viewer-placeholder');
+const viewerResetBtn = document.getElementById('viewer-reset');
+const viewerAutoRotateBtn = document.getElementById('viewer-autorotate');
+const viewerWireframeBtn = document.getElementById('viewer-wireframe');
+const viewerGridBtn = document.getElementById('viewer-grid');
+const viewerAnimation = document.getElementById('viewer-animation');
+const animPlayBtn = document.getElementById('anim-play');
+const animClipSelect = document.getElementById('anim-clip');
+const animLoopCheckbox = document.getElementById('anim-loop');
+const animTimeLabel = document.getElementById('anim-time');
+const animScrub = document.getElementById('anim-scrub');
+const animSpeed = document.getElementById('anim-speed');
+const animSpeedValue = document.getElementById('anim-speed-value');
 
 // Initialize application
 async function init() {
@@ -190,6 +214,58 @@ function setupEventListeners() {
     
     // Export button
     exportBtn.addEventListener('click', exportFile);
+
+    // 3D preview toolbar
+    viewerResetBtn.addEventListener('click', () => viewer?.resetView());
+    viewerAutoRotateBtn.addEventListener('click', () => {
+        if (!viewer) return;
+        viewer.autoRotate = !viewer.autoRotate;
+        viewerAutoRotateBtn.classList.toggle('active', viewer.autoRotate);
+    });
+    viewerWireframeBtn.addEventListener('click', () => {
+        if (!viewer) return;
+        viewer.wireframe = !viewer.wireframe;
+        viewerWireframeBtn.classList.toggle('active', viewer.wireframe);
+    });
+    viewerGridBtn.addEventListener('click', () => {
+        if (!viewer) return;
+        viewer.showGrid = !viewer.showGrid;
+        viewerGridBtn.classList.toggle('active', viewer.showGrid);
+    });
+
+    // Animation controls
+    animPlayBtn.addEventListener('click', () => {
+        if (!viewer || !viewer.scene?.animations?.length) return;
+        viewer.animation.playing = !viewer.animation.playing;
+        if (viewer.animation.playing && viewer.animation.time >= viewer.scene.animations[viewer.animation.clipIndex].duration) {
+            viewer.animation.time = 0;
+        }
+        updateAnimationPlayButton();
+    });
+    animClipSelect.addEventListener('change', () => {
+        if (!viewer) return;
+        const idx = Number(animClipSelect.value);
+        viewer.animation.clipIndex = idx;
+        viewer.animation.time = 0;
+        updateAnimationScrub();
+    });
+    animLoopCheckbox.addEventListener('change', () => {
+        if (viewer) viewer.animation.loop = animLoopCheckbox.checked;
+    });
+    animScrub.addEventListener('input', () => {
+        if (!viewer || !viewer.scene?.animations?.length) return;
+        const clip = viewer.scene.animations[viewer.animation.clipIndex];
+        if (!clip) return;
+        viewer.animation.playing = false;
+        updateAnimationPlayButton();
+        const t = (Number(animScrub.value) / 1000) * clip.duration;
+        viewer.animation.time = t;
+    });
+    animSpeed.addEventListener('input', () => {
+        const v = Number(animSpeed.value) / 100;
+        if (viewer) viewer.animation.speed = v;
+        animSpeedValue.textContent = `${v.toFixed(2)}×`;
+    });
 }
 
 // Handle file selection
@@ -279,6 +355,7 @@ async function handleFile(file, companionFiles = []) {
             previewSection.style.display = 'block';
             exportSection.style.display = 'block';
             log(`Successfully parsed ${file.name}`, 'success');
+            await loadPreview(extension);
         } else {
             log(`Failed to parse file: ${result?.error || 'Unknown error'}`, 'error');
         }
@@ -725,6 +802,122 @@ function downloadResult(result, format) {
     URL.revokeObjectURL(url);
 }
 
+// === 3D preview integration ===
+
+function ensureViewer() {
+    if (viewer) return viewer;
+    try {
+        viewer = new Viewer(viewerCanvas, {
+            onLog: (msg, type) => log(msg, type),
+            onSceneLoaded: (scene) => {
+                if (scene) updateAnimationUi(scene);
+            },
+            onAnimationEnded: () => updateAnimationPlayButton(),
+        });
+        viewerGridBtn.classList.add('active');
+    } catch (error) {
+        log(`Preview unavailable: ${errorMessage(error)}`, 'error');
+        viewer = null;
+    }
+    return viewer;
+}
+
+async function loadPreview(extension) {
+    viewerSection.style.display = 'block';
+    viewerPlaceholder.style.display = 'flex';
+    viewerPlaceholder.querySelector('p').textContent = 'Building preview…';
+
+    // Yield to the browser so the section layout settles before measuring the canvas.
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    if (!ensureViewer()) {
+        viewerPlaceholder.querySelector('p').textContent = 'Preview unavailable';
+        return;
+    }
+
+    try {
+        let scene;
+        if (extension === 'gltf' || extension === 'glb') {
+            if (!modules.gltf.loaded) throw new Error('glTF module is not loaded');
+            scene = await buildSceneFromGltf(
+                currentSourceData,
+                currentSourceResources,
+                modules.gltf.module,
+                { onLog: (msg, type) => log(msg, type) },
+            );
+        } else if (currentMeshData?.meshes) {
+            scene = buildSceneFromMeshes(currentMeshData);
+        } else {
+            throw new Error('No geometry available to preview');
+        }
+
+        for (const warning of scene.warnings || []) {
+            log(warning, 'warning');
+        }
+
+        viewer.setScene(scene);
+        viewerPlaceholder.style.display = 'none';
+        log('Preview ready', 'success');
+    } catch (error) {
+        viewer.clear();
+        viewerPlaceholder.querySelector('p').textContent = `Preview failed: ${errorMessage(error)}`;
+        log(`Preview failed: ${errorMessage(error)}`, 'error');
+    }
+}
+
+function updateAnimationUi(scene) {
+    const clips = scene.animations || [];
+    resetAnimationUi();
+    if (clips.length === 0) return;
+    viewerAnimation.style.display = 'flex';
+    for (let i = 0; i < clips.length; i++) {
+        const option = document.createElement('option');
+        option.value = i;
+        option.textContent = clips[i].name || `Clip ${i + 1}`;
+        animClipSelect.appendChild(option);
+    }
+    animClipSelect.value = String(viewer.animation.clipIndex);
+    updateAnimationPlayButton();
+    updateAnimationScrub();
+}
+
+function resetAnimationUi() {
+    viewerAnimation.style.display = 'none';
+    animClipSelect.innerHTML = '';
+    animTimeLabel.textContent = '0.00s';
+    animScrub.value = 0;
+    animSpeedValue.textContent = '1.00×';
+    animSpeed.value = 100;
+    animPlayBtn.textContent = '▶';
+    animPlayBtn.classList.remove('active');
+}
+
+function updateAnimationPlayButton() {
+    if (!viewer || !viewer.scene?.animations?.length) return;
+    const playing = viewer.animation.playing;
+    animPlayBtn.textContent = playing ? '⏸' : '▶';
+    animPlayBtn.classList.toggle('active', playing);
+}
+
+// Animation scrub/timeline ticker — bound to the render loop via rAF.
+function animationTick() {
+    if (viewer && viewer.scene?.animations?.length && viewer.animation.clipIndex >= 0) {
+        const clip = viewer.scene.animations[viewer.animation.clipIndex];
+        if (clip) {
+            animTimeLabel.textContent = `${viewer.animation.time.toFixed(2)}s / ${clip.duration.toFixed(2)}s`;
+            animScrub.value = String(Math.round((viewer.animation.time / Math.max(clip.duration, 0.0001)) * 1000));
+        }
+    }
+    requestAnimationFrame(animationTick);
+}
+requestAnimationFrame(animationTick);
+
+function updateAnimationScrub() {
+    if (!viewer || !viewer.scene?.animations?.length) return;
+    const clip = viewer.scene.animations[viewer.animation.clipIndex];
+    if (clip) animScrub.value = String(Math.round((viewer.animation.time / Math.max(clip.duration, 0.0001)) * 1000));
+}
+
 // Clear loaded file
 function clearFile() {
     currentMeshData = null;
@@ -736,9 +929,12 @@ function clearFile() {
     dropZone.style.display = 'block';
     previewSection.style.display = 'none';
     exportSection.style.display = 'none';
-    
+    viewerSection.style.display = 'none';
+    viewer?.clear();
+    resetAnimationUi();
+
     fileInput.value = '';
-    
+
     log('File cleared', 'info');
 }
 

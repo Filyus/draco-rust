@@ -50,6 +50,16 @@ Reference optimized sizes from the 2026-07-18 Windows stable toolchain build:
 The released reader is 108.5 KiB gzip, within the 112 KiB budget. Writer sizes
 are informational because those features are not included in the release asset.
 
+## Converter preview
+
+The bundled converter includes a dependency-free WebGL2 preview. It loads raw
+and Draco primitives through `gltf-wasm`, renders base-color materials and
+textures, and plays glTF node and skin animations with timeline controls. It
+also previews the flat OBJ, PLY, and FBX meshes returned by their WASM modules.
+The preview is intentionally a diagnostic renderer, not a replacement for a
+full PBR glTF runtime: unsupported material and texture extensions are reported
+as warnings instead of changing exported assets.
+
 ## Build and test
 
 `build.ps1` defaults to the interactive converter profile: the format modules

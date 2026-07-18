@@ -104,9 +104,47 @@
             </div>
         </section>
 
+        <!-- 3D Preview (Hidden by default) -->
+        <section id="viewer-section" class="card viewer-section" style="display: none;">
+            <h2>2. 3D Preview</h2>
+            <div class="viewer-wrapper">
+                <canvas id="viewer-canvas" class="viewer-canvas" aria-label="3D model preview"></canvas>
+                <div id="viewer-placeholder" class="viewer-placeholder">
+                    <p>Loading preview…</p>
+                </div>
+            </div>
+
+            <div class="viewer-toolbar">
+                <button type="button" class="viewer-btn" id="viewer-reset" title="Reset camera">⟳ Reset</button>
+                <button type="button" class="viewer-btn" id="viewer-autorotate" title="Auto-rotate">↻ Auto-rotate</button>
+                <button type="button" class="viewer-btn" id="viewer-wireframe" title="Wireframe">▦ Wireframe</button>
+                <button type="button" class="viewer-btn" id="viewer-grid" title="Toggle grid"># Grid</button>
+            </div>
+
+            <div class="viewer-animation" id="viewer-animation" style="display: none;">
+                <div class="anim-row">
+                    <button type="button" class="viewer-btn" id="anim-play" title="Play / pause">▶</button>
+                    <select id="anim-clip" class="anim-clip" aria-label="Animation clip"></select>
+                    <label class="anim-loop">
+                        <input type="checkbox" id="anim-loop" checked> Loop
+                    </label>
+                    <span class="anim-time" id="anim-time">0.00s</span>
+                </div>
+                <div class="anim-row">
+                    <input type="range" id="anim-scrub" min="0" max="1000" value="0" step="1" class="anim-scrub">
+                </div>
+                <div class="anim-row">
+                    <label class="anim-speed-label">
+                        Speed <span id="anim-speed-value">1.00×</span>
+                        <input type="range" id="anim-speed" min="0" max="200" value="100" step="1" class="anim-speed">
+                    </label>
+                </div>
+            </div>
+        </section>
+
         <!-- Mesh Preview Stats (Hidden by default) -->
         <section id="preview-section" class="card" style="display: none;">
-            <h2>2. Mesh Details</h2>
+            <h2>3. Mesh Details</h2>
             <div class="stats-grid">
                 <div class="stat-box">
                     <span class="stat-label">Meshes</span>
@@ -138,7 +176,7 @@
 
         <!-- Export & Conversion (Hidden by default) -->
         <section id="export-section" class="card" style="display: none;">
-            <h2>3. Export Settings</h2>
+            <h2>4. Export Settings</h2>
             
             <div class="options-grid">
                 <!-- Format Selection -->
