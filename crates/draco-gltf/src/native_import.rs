@@ -55,6 +55,46 @@ impl NativeImport {
             .decode_primitive(&self.document, &self.resources, primitive)
     }
 
+    /// Decodes an ordinary (non-Draco) triangle or point primitive through the
+    /// same geometry contract used by compact consumers.
+    pub fn decode_geometry_primitive(
+        &self,
+        primitive: PrimitiveRef<'_>,
+    ) -> Result<(draco_core::Mesh, Vec<(String, u32)>)> {
+        if primitive
+            .extension(crate::KHR_DRACO_MESH_COMPRESSION)
+            .is_some()
+        {
+            return Err(Error::Extension("primitive uses Draco compression".into()));
+        }
+        let value = primitive.value();
+        let attributes = value
+            .get("attributes")
+            .and_then(Value::as_object)
+            .ok_or_else(|| Error::Extension("primitive attributes are invalid".into()))?
+            .iter()
+            .map(|(semantic, value)| {
+                value
+                    .as_u64()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .map(|index| (semantic.clone(), index))
+                    .ok_or_else(|| Error::Extension(format!("attribute {semantic} is invalid")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let indices = value
+            .get("indices")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok());
+        let mode = value.get("mode").and_then(Value::as_u64).unwrap_or(4) as u32;
+        let source = crate::NativeAccessorSource::new(&self.document, &self.resources);
+        Ok(draco_io::decode_geometry(
+            &source,
+            mode,
+            &attributes,
+            indices,
+        )?)
+    }
+
     pub fn to_bytes(&self, output: crate::OutputFormat) -> Result<Vec<u8>> {
         let json = self.document.to_json_bytes()?;
         let format = match output {
