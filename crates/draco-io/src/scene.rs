@@ -123,13 +123,13 @@ pub trait SceneReader: Reader {
 /// ```no_run
 /// # #[cfg(feature = "gltf-writer")]
 /// # fn main() -> Result<(), std::io::Error> {
-/// use draco_io::{GltfWriter, Scene, SceneWriter, Writer};
+/// use draco_io::{FbxWriter, Scene, SceneWriter, Writer};
 ///
 /// let scene = Scene::new(Some("MyScene".to_string()));
 ///
-/// let mut writer = GltfWriter::new();
+/// let mut writer = FbxWriter::new();
 /// SceneWriter::add_scene(&mut writer, &scene)?;
-/// writer.write("output.glb")?; // Writer::write defaults to GLB for GltfWriter
+/// writer.write("output.fbx")?;
 /// # Ok(())
 /// # }
 /// # #[cfg(not(feature = "gltf-writer"))]

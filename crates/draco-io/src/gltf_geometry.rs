@@ -27,13 +27,6 @@ pub enum GltfError {
 
     /// glTF JSON parsing failed.
     ///
-    /// Only available with the serde-backed reader or writer; the compact
-    /// reader parses JSON with `nanoserde` and reports its own errors via
-    /// [`GltfError::InvalidGltf`].
-    #[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
-    #[error("JSON parse error: {0}")]
-    Json(#[from] serde_json::Error),
-
     /// Binary GLB structure is invalid.
     #[error("Invalid GLB: {0}")]
     InvalidGlb(String),

@@ -81,22 +81,6 @@ name = "fbx_inspect"
 required-features = ["fbx-reader"]
 
 [[example]]
-name = "polymorphic"
-required-features = ["all-writers"]
-
-[[example]]
-name = "unified_api"
-required-features = ["all-writers"]
-
-[[example]]
 name = "unified_readers"
-required-features = ["all-writers", "all-readers"]
-
-[[test]]
-name = "api_alignment"
-required-features = ["all-writers", "all-readers"]
-
-[[test]]
-name = "geometry_contract"
 required-features = ["all-writers", "all-readers"]
 

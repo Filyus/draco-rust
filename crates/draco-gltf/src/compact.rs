@@ -1,7 +1,7 @@
 //! Allocation-conscious geometry-oriented facade over the native document.
 //!
-//! Unlike the removed `draco-io::gltf_compact`, this module does not parse a
-//! second schema. It exposes only compact index/range views over [`Document`].
+//! This module does not parse a second schema. It exposes compact index/range
+//! views over [`Document`].
 
 use crate::{Document, MeshIndex, Result, ValidationProfile};
 
