@@ -11,6 +11,10 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+async function waitForConverterReady(page) {
+  await expect(page.locator('#console')).toContainText('Ready to convert 3D files!');
+}
+
 test('glTF asset API reads document, geometry, accessors, GLB, and resources', async ({ page }) => {
   await page.goto('/index.html');
   const result = await page.evaluate(async ({ animated, embedded, external, resource }) => {
@@ -92,7 +96,7 @@ test('glTF asset API reads document, geometry, accessors, GLB, and resources', a
 
 test('converter resolves glTF companions and reports decoded geometry', async ({ page }) => {
   await page.goto('/index.html');
-  await expect(page.locator('#gltf-status .status-text')).toHaveText('Ready');
+  await waitForConverterReady(page);
   await page.locator('#file-input').setInputFiles([
     path.join(repoRoot, 'testdata', 'Fox', 'glTF', 'Fox.gltf'),
     path.join(repoRoot, 'testdata', 'Fox', 'glTF', 'Fox.bin'),
@@ -128,7 +132,7 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
 
 test('converter explains a missing external glTF buffer', async ({ page }) => {
   await page.goto('/index.html');
-  await expect(page.locator('#gltf-status .status-text')).toHaveText('Ready');
+  await waitForConverterReady(page);
   await page.locator('#file-input').setInputFiles(
     path.join(repoRoot, 'testdata', 'Fox', 'glTF', 'Fox.gltf'),
   );
@@ -142,7 +146,7 @@ test('converter explains a missing external glTF buffer', async ({ page }) => {
 
 test('3D preview renders a GLB into the WebGL2 canvas', async ({ page }) => {
   await page.goto('/index.html');
-  await expect(page.locator('#gltf-status .status-text')).toHaveText('Ready');
+  await waitForConverterReady(page);
   await page.locator('#file-input').setInputFiles(
     path.join(repoRoot, 'testdata', 'Box', 'glTF_Binary', 'Box.glb'),
   );
@@ -163,7 +167,7 @@ test('3D preview renders a GLB into the WebGL2 canvas', async ({ page }) => {
 
 test('3D preview opens a transformed skinned glTF scene', async ({ page }) => {
   await page.goto('/index.html');
-  await expect(page.locator('#gltf-status .status-text')).toHaveText('Ready');
+  await waitForConverterReady(page);
   await page.locator('#file-input').setInputFiles([
     path.join(repoRoot, 'testdata', 'CesiumMan', 'glTF', 'CesiumMan.gltf'),
     path.join(repoRoot, 'testdata', 'CesiumMan', 'glTF', 'CesiumMan0.bin'),
@@ -172,6 +176,32 @@ test('3D preview opens a transformed skinned glTF scene', async ({ page }) => {
 
   await expect(page.locator('#viewer-section')).toBeVisible();
   await expect(page.locator('#viewer-animation')).toBeVisible();
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).not.toContainText('Preview failed');
+});
+
+test('converter reads a CR-delimited binary PLY header', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles(
+    path.join(repoRoot, 'testdata', 'delim_test.ply'),
+  );
+
+  await expect(page.locator('#console')).toContainText('Successfully parsed delim_test.ply');
+  await expect(page.locator('#console')).not.toContainText('PLY header must be valid UTF-8/ASCII');
+  await expect(page.locator('#viewer-section')).toBeVisible();
+  await expect(page.locator('#console')).toContainText('Preview ready');
+});
+
+test('converter previews OBJ meshes with reverse winding', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles(
+    path.join(repoRoot, 'testdata', 'test_nm_seq_100.obj'),
+  );
+
+  await expect(page.locator('#console')).toContainText('Successfully parsed test_nm_seq_100.obj');
+  await expect(page.locator('#viewer-section')).toBeVisible();
   await expect(page.locator('#console')).toContainText('Preview ready');
   await expect(page.locator('#console')).not.toContainText('Preview failed');
 });

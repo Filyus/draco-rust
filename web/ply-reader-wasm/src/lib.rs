@@ -150,7 +150,7 @@ fn parse_header_info(data: &[u8]) -> Option<PlyHeader> {
     let mut vertex_count = 0usize;
     let mut face_count = 0usize;
     let mut properties = Vec::new();
-    for line in text.lines() {
+    for line in text.split(['\n', '\r']) {
         let parts: Vec<&str> = line.split_whitespace().collect();
         match parts.as_slice() {
             ["format", value, ..] => format = (*value).to_string(),

@@ -230,4 +230,18 @@ f 1 3 4
         assert_eq!(result.meshes[0].positions.len(), 18); // 6 vertices * 3 components
         assert_eq!(result.meshes[0].indices.len(), 6); // 2 triangles * 3 indices
     }
+
+    #[test]
+    fn test_parse_sequential_normal_fixture() {
+        let result = parse_obj_internal(include_str!("../../../testdata/test_nm_seq_100.obj"));
+
+        assert!(result.success);
+        assert_eq!(result.meshes.len(), 1);
+        assert!(!result.meshes[0].positions.is_empty());
+        assert_eq!(
+            result.meshes[0].positions.len(),
+            result.meshes[0].normals.len()
+        );
+        assert_eq!(result.meshes[0].indices.len(), 170 * 3);
+    }
 }

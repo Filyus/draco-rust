@@ -103,7 +103,10 @@ export function buildSceneFromMeshes(parsed) {
 
         const material = {
             baseColorFactor: colors ? [1, 1, 1, 1] : [0.7, 0.78, 0.88, 1],
-            doubleSided: false,
+            // OBJ/PLY/FBX readers do not carry a material contract. Rendering
+            // both sides keeps the diagnostic preview useful for exporters
+            // whose triangle winding is opposite to WebGL's default.
+            doubleSided: true,
             alphaMode: 'OPAQUE',
             unlit: !normals,
         };

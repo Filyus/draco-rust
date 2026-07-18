@@ -399,18 +399,17 @@ fn parse_ply_header(bytes: &[u8]) -> io::Result<(PlyHeader, usize)> {
     while offset < bytes.len() {
         let line_end = bytes[offset..]
             .iter()
-            .position(|byte| *byte == b'\n')
+            .position(|byte| matches!(*byte, b'\n' | b'\r'))
             .map(|idx| offset + idx);
         match line_end {
             Some(end) => {
-                let line_bytes = if end > offset && bytes[end - 1] == b'\r' {
-                    &bytes[offset..end - 1]
-                } else {
-                    &bytes[offset..end]
-                };
+                let line_bytes = &bytes[offset..end];
                 let line = std::str::from_utf8(line_bytes)
                     .map_err(|_| invalid_ply("PLY header must be valid UTF-8/ASCII"))?;
                 offset = end + 1;
+                if bytes[end] == b'\r' && bytes.get(offset) == Some(&b'\n') {
+                    offset += 1;
+                }
                 if line.trim() == "end_header" {
                     body_offset = Some(offset);
                     break;
@@ -432,7 +431,9 @@ fn parse_ply_header(bytes: &[u8]) -> io::Result<(PlyHeader, usize)> {
     let header_text = std::str::from_utf8(&bytes[..body_offset])
         .map_err(|_| invalid_ply("PLY header must be valid UTF-8/ASCII"))?;
 
-    let mut lines = header_text.lines();
+    // PLY writers in the wild use LF, CRLF, and (notably Rhino) CR-only
+    // header lines. `str::lines` does not split CR-only input.
+    let mut lines = header_text.split(['\n', '\r']);
     let first_line = lines.next().ok_or_else(|| invalid_ply("Empty PLY file"))?;
     if first_line.trim() != "ply" {
         return Err(invalid_ply("Missing PLY header"));
@@ -1596,6 +1597,15 @@ end_header
             mesh.face(draco_core::geometry_indices::FaceIndex(2)),
             [0u32.into(), 2u32.into(), 3u32.into()]
         );
+    }
+
+    #[test]
+    fn test_read_binary_little_endian_mesh_with_cr_only_header() {
+        let mesh = PlyReader::read_from_bytes(include_bytes!("../../../testdata/delim_test.ply"))
+            .expect("CR-only binary PLY header should parse");
+
+        assert_eq!(mesh.num_points(), 24);
+        assert!(mesh.num_faces() > 0);
     }
 
     #[test]
