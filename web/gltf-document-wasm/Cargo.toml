@@ -15,7 +15,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
-nanoserde = { workspace = true }
 console_error_panic_hook = { workspace = true, optional = true }
 draco-gltf = { path = "../../crates/draco-gltf", default-features = false, features = ["full"] }
 draco-io = { path = "../../crates/draco-io", default-features = false, features = ["gltf"] }

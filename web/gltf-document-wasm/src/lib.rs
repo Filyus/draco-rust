@@ -7,19 +7,14 @@ use draco_gltf::{
     OutputFormat, ResourceLimits, ResourceResolver, ValidationProfile,
 };
 use js_sys::{Object, Reflect, Uint8Array};
-use nanoserde::SerJson;
 use wasm_bindgen::prelude::*;
 
-#[derive(SerJson, Default)]
+#[derive(Default)]
 pub struct ParseResult {
     pub success: bool,
-    #[nserde(rename = "meshCount")]
     pub mesh_count: usize,
-    #[nserde(rename = "primitiveCount")]
     pub primitive_count: usize,
-    #[nserde(rename = "sceneCount")]
     pub scene_count: usize,
-    #[nserde(rename = "usesDraco")]
     pub uses_draco: bool,
     pub error: Option<String>,
 }
@@ -113,7 +108,28 @@ fn result(document: Document) -> ParseResult {
 }
 
 fn to_js(result: ParseResult) -> JsValue {
-    js_sys::JSON::parse(&SerJson::serialize_json(&result)).unwrap_or(JsValue::NULL)
+    let object = Object::new();
+    let fields = [
+        ("success", JsValue::from_bool(result.success)),
+        ("meshCount", JsValue::from_f64(result.mesh_count as f64)),
+        (
+            "primitiveCount",
+            JsValue::from_f64(result.primitive_count as f64),
+        ),
+        ("sceneCount", JsValue::from_f64(result.scene_count as f64)),
+        ("usesDraco", JsValue::from_bool(result.uses_draco)),
+        (
+            "error",
+            result
+                .error
+                .map_or(JsValue::NULL, |error| JsValue::from_str(&error)),
+        ),
+    ];
+    for (key, value) in fields {
+        Reflect::set(&object, &JsValue::from_str(key), &value)
+            .expect("writing a fresh JavaScript summary object cannot fail");
+    }
+    object.into()
 }
 
 #[wasm_bindgen(start)]
