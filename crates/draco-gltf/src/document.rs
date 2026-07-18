@@ -191,6 +191,7 @@ impl Document {
                 "glTF 2.1 fields require the draft profile".into(),
             ]));
         }
+        #[cfg(feature = "scene-validation")]
         validate_references(&self.root, profile)?;
         Ok(())
     }
@@ -317,6 +318,7 @@ impl Document {
     }
 }
 
+#[cfg(feature = "scene-validation")]
 fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
     let len = |name: &str| -> usize {
         root.get(name)
