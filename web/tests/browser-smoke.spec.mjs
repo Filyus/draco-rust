@@ -69,3 +69,17 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   await expect(page.locator('#has-normals')).toHaveText('No');
   await expect(page.locator('#has-uvs')).toHaveText('Yes');
 });
+
+test('converter explains a missing external glTF buffer', async ({ page }) => {
+  await page.goto('/index.html');
+  await expect(page.locator('#gltf-status .status-text')).toHaveText('Ready');
+  await page.locator('#file-input').setInputFiles(
+    path.join(repoRoot, 'testdata', 'Fox', 'glTF', 'Fox.gltf'),
+  );
+
+  await expect(page.locator('#console')).toContainText('External resource denied: Fox.bin');
+  await expect(page.locator('#console')).toContainText(
+    'Select the .gltf together with all referenced .bin and image files.',
+  );
+  await expect(page.locator('#console')).not.toContainText('undefined');
+});

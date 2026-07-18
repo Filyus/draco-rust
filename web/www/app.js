@@ -22,6 +22,13 @@ let currentFileType = null;
 let currentSourceData = null;
 let currentSourceResources = Object.create(null);
 
+function errorMessage(error) {
+    if (error && typeof error.message === 'string') {
+        return error.message;
+    }
+    return String(error);
+}
+
 // DOM Elements
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
@@ -119,7 +126,7 @@ async function loadModule({ key, path, statusId }) {
             statusDot.classList.remove('dot-loading','dot-ready','dot-error');
             // visual state is controlled by the parent .status-indicator class
         }
-        log(`Failed to load ${key}: ${error.message}`, 'error');
+        log(`Failed to load ${key}: ${errorMessage(error)}`, 'error');
     }
 }
 
@@ -261,7 +268,11 @@ async function handleFile(file, companionFiles = []) {
             log(`Failed to parse file: ${result?.error || 'Unknown error'}`, 'error');
         }
     } catch (error) {
-        log(`Error reading file: ${error.message}`, 'error');
+        const message = errorMessage(error);
+        const resourceHint = extension === 'gltf' && message.includes('External resource denied:')
+            ? ' Select the .gltf together with all referenced .bin and image files.'
+            : '';
+        log(`Error reading file: ${message}.${resourceHint}`, 'error');
     }
 }
 
@@ -502,7 +513,7 @@ async function exportFile() {
             log(`Export failed: ${result?.error || 'Unknown error'}`, 'error');
         }
     } catch (error) {
-        log(`Export error: ${error.message}`, 'error');
+        log(`Export error: ${errorMessage(error)}`, 'error');
     }
 }
 
