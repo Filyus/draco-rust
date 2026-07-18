@@ -511,6 +511,12 @@ fn compression_rejects_non_triangle_khr_mode() {
 }
 
 #[test]
+fn strict_validation_rejects_invalid_draco_attribute_ids() {
+    let document = Document::from_json_bytes(br#"{"asset":{"version":"2.0"},"extensionsUsed":["KHR_draco_mesh_compression"],"buffers":[{"byteLength":0}],"bufferViews":[{"buffer":0,"byteLength":0}],"accessors":[{"componentType":5126,"count":0,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"extensions":{"KHR_draco_mesh_compression":{"bufferView":0,"attributes":{"POSITION":"bad"}}}}]}]}"#).unwrap();
+    assert!(document.validate(ValidationProfile::Gltf20).is_err());
+}
+
+#[test]
 fn transform_rejects_unregistered_primitive_extensions() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"extensions":{"VENDOR_binary_layout":{}}}]}]}"#;
     let mut import = parse(input, ValidationProfile::Gltf20).unwrap();

@@ -708,7 +708,21 @@ fn validate_draco_extension(
                 .ok_or_else(|| {
                     Error::Validation(vec!["Draco primitive attributes is not an object".into()])
                 })?;
-            for (semantic, _) in attributes {
+            let mut unique_ids = std::collections::BTreeSet::new();
+            for (semantic, unique_id) in attributes {
+                let unique_id = unique_id
+                    .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        Error::Validation(vec![format!(
+                            "Draco attribute {semantic:?} unique id is not a u32"
+                        )])
+                    })?;
+                if !unique_ids.insert(unique_id) {
+                    return Err(Error::Validation(vec![format!(
+                        "Draco unique id {unique_id} is mapped more than once"
+                    )]));
+                }
                 if primitive_attributes
                     .iter()
                     .all(|(name, _)| name != semantic)
