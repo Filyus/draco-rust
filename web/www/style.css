@@ -403,7 +403,12 @@ footer a {
     width: 100%;
     aspect-ratio: 16 / 10;
     max-height: 480px;
-    background: #0b1424;
+    /* Matches the analytic studio light in viewer.js and remains visible
+       through the transparent WebGL canvas. */
+    background:
+        radial-gradient(ellipse 42% 30% at 25% 18%, rgba(255, 235, 196, 0.22), transparent 70%),
+        radial-gradient(ellipse 36% 28% at 76% 30%, rgba(158, 195, 255, 0.18), transparent 72%),
+        linear-gradient(180deg, #50678f 0%, #263753 46%, #141621 72%, #0a0c11 100%);
     border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
@@ -415,6 +420,7 @@ footer a {
     height: 100%;
     touch-action: none;
     cursor: grab;
+    background: transparent;
 }
 .viewer-canvas:active {
     cursor: grabbing;

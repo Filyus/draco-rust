@@ -411,7 +411,7 @@ export class Viewer {
         this.hooks = hooks; // { onSceneLoaded(scene), onError(msg), onLog(msg, type) }
         this.gl = canvas.getContext('webgl2', {
             antialias: true,
-            alpha: false,
+            alpha: true,
             premultipliedAlpha: false,
             preserveDrawingBuffer: false,
         });
@@ -474,7 +474,9 @@ export class Viewer {
         gl.depthFunc(gl.LEQUAL);
         gl.enable(gl.CULL_FACE);
         gl.cullFace(gl.BACK);
-        gl.clearColor(0.058, 0.09, 0.164, 1.0); // matches app --bg-dark
+        // Keep the canvas transparent so the visible studio backdrop in CSS
+        // matches the analytic environment used by the PBR shader.
+        gl.clearColor(0, 0, 0, 0);
     }
 
     _buildPrograms() {
