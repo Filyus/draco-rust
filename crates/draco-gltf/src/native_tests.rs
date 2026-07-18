@@ -45,7 +45,7 @@ fn validation_rejects_dangling_core_references_and_draft_types_in_20() {
 #[test]
 fn typed_views_reference_the_lossless_document() {
     let document = Document::from_json_bytes(
-        br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":12,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteOffset":4,"byteLength":8}],"accessors":[{"bufferView":0,"componentType":5126,"count":2,"type":"VEC3"}],"images":[{"uri":"albedo.png"}],"textures":[{"source":0}],"meshes":[{"primitives":[]}],"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"files":[{"uri":"child.gltf"}]}"#,
+        br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":12,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteOffset":4,"byteLength":8}],"accessors":[{"bufferView":0,"componentType":5126,"count":2,"type":"VEC3"}],"images":[{"uri":"albedo.png"}],"textures":[{"source":0}],"materials":[{}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":0,"material":0,"targets":[{"POSITION":0}]}]}],"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0,"files":[{"uri":"child.gltf"}]}"#,
     )
     .unwrap();
     assert_eq!(
@@ -82,6 +82,15 @@ fn typed_views_reference_the_lossless_document() {
             .collect::<Vec<_>>(),
         [crate::NodeIndex(0)]
     );
+    let primitive = document.primitive(crate::MeshIndex(0), 0).unwrap();
+    assert_eq!(primitive.indices(), Some(crate::AccessorIndex(0)));
+    assert_eq!(primitive.material(), Some(crate::MaterialIndex(0)));
+    assert_eq!(
+        primitive.attribute_indices().collect::<Vec<_>>(),
+        [("POSITION", crate::AccessorIndex(0))]
+    );
+    assert_eq!(primitive.morph_targets().count(), 1);
+    assert_eq!(document.default_scene(), Some(crate::SceneIndex(0)));
     assert_eq!(
         document.file(crate::FileIndex(0)).unwrap().uri(),
         Some("child.gltf")

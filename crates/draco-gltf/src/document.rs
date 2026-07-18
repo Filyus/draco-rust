@@ -267,6 +267,9 @@ impl Document {
     pub fn scene(&self, index: SceneIndex) -> Option<Scene<'_>> {
         self.scenes().get(index).map(Scene)
     }
+    pub fn default_scene(&self) -> Option<SceneIndex> {
+        index_value(&self.root, "scene").map(SceneIndex)
+    }
     pub fn shapes(&self) -> Objects<'_, ShapeIndex> {
         self.objects("shapes")
     }
@@ -808,6 +811,38 @@ impl<'a> PrimitiveRef<'a> {
     }
     pub fn attributes(self) -> Option<&'a [(String, Value)]> {
         self.value().get("attributes").and_then(Value::as_object)
+    }
+    pub fn attribute_indices(self) -> impl Iterator<Item = (&'a str, AccessorIndex)> + 'a {
+        self.attributes()
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|(semantic, value)| {
+                value
+                    .as_u64()
+                    .and_then(|index| usize::try_from(index).ok())
+                    .map(|index| (semantic.as_str(), AccessorIndex(index)))
+            })
+    }
+    pub fn indices(self) -> Option<AccessorIndex> {
+        index_value(self.value(), "indices").map(AccessorIndex)
+    }
+    pub fn material(self) -> Option<MaterialIndex> {
+        index_value(self.value(), "material").map(MaterialIndex)
+    }
+    pub fn mode(self) -> u32 {
+        self.value()
+            .get("mode")
+            .and_then(Value::as_u64)
+            .and_then(|mode| u32::try_from(mode).ok())
+            .unwrap_or(4)
+    }
+    pub fn morph_targets(self) -> impl Iterator<Item = &'a [(String, Value)]> + 'a {
+        self.value()
+            .get("targets")
+            .and_then(Value::as_array)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(Value::as_object)
     }
     pub fn extension(self, name: &str) -> Option<&'a Value> {
         self.value().get("extensions")?.get(name)
