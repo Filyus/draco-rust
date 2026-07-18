@@ -361,10 +361,7 @@ fn remap_reference(value: &mut Value, map: &[Option<usize>], kind: &str) -> Resu
     Ok(())
 }
 
-#[cfg_attr(
-    not(any(feature = "draco-decode", feature = "compact")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(feature = "draco-decode"), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub(crate) struct DracoContract {
     pub buffer_view: usize,

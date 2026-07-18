@@ -27,7 +27,7 @@ thiserror = "2.0"
 [features]
 default = ["full"]
 # Lossless JSON DOM, typed root views, GLB and resource contracts. This is the
-# common base for full scene and compact geometry consumers.
+# common base for scene and geometry consumers.
 document = ["draco-io/gltf"]
 # Accessor materialization and PackedGeometry contracts.
 geometry = ["document", "draco-io/gltf-geometry"]
@@ -37,16 +37,15 @@ draco-decode = ["geometry", "draco-io/draco-decode", "draco-core/decoder", "drac
 resources = ["document"]
 # Strict scene cross-reference validation; the DOM remains lossless without it.
 scene-validation = ["document"]
+# Ordinary accessor reading with resources and strict scene validation.
+read = ["geometry", "resources", "scene-validation"]
 # Raw accessor construction and document geometry mutation.
-write = ["geometry", "resources"]
+write = ["read"]
 # Document-preserving Draco encoding. Decoding is required for recompression and
 # atomic decompression transforms.
 draco-encode = ["write", "draco-decode", "draco-core/encoder"]
 # Release-grade scene API.
-full = ["compact", "write", "draco-encode"]
-# Small geometry-facing read API. Raw writing and Draco encoding remain
-# independent opt-ins through `write` and `draco-encode`.
-compact = ["document", "geometry", "draco-decode", "resources", "scene-validation"]
+full = ["read", "draco-decode", "write", "draco-encode"]
 # Repository-fixture tests are intentionally opt-in and are not run from the
 # published crate tarball, which has no access to the workspace testdata tree.
 test = []

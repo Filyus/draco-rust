@@ -8,7 +8,7 @@ pub struct DocumentAccessorSource<'a> {
     resources: &'a ResourceStore,
 }
 
-/// Tightly packed accessor payload for compact consumers.
+/// Tightly packed accessor payload for geometry consumers.
 #[derive(Clone, Debug)]
 pub struct AccessorData {
     /// Number of elements in the accessor.

@@ -1,4 +1,4 @@
-//! Materialized primitive geometry shared by full and compact glTF APIs.
+//! Materialized primitive geometry shared by glTF read and write operations.
 
 use std::collections::BTreeSet;
 

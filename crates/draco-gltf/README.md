@@ -19,7 +19,7 @@ provenance. Typed views cover complete scenes, while unknown properties,
 `to_minified_json_bytes` explicitly emits whitespace-free JSON while retaining
 object order and number lexemes.
 
-`PackedGeometry` is the shared primitive boundary for full and compact APIs.
+`PackedGeometry` is the shared primitive boundary for read and write APIs.
 `Import::read_primitive` reads ordinary accessors or decodes Draco. With
 feature `write`, `write_primitive`, `push_primitive`, and `from_geometry` write
 the same value back as ordinary accessors. Feature `draco-encode` additionally
@@ -59,15 +59,15 @@ by the caller and resource limits.
 - `draco-decode`: `KHR_draco_mesh_compression` decoding.
 - `resources`: explicit URI and `files` resolution.
 - `scene-validation`: strict scene-reference validation.
-- `compact`: the small read profile, including Draco decoding.
+- `read`: ordinary accessor reading with resources and validation.
 - `write`: raw geometry construction and document mutation.
 - `draco-encode`: Draco writing; depends on `write` and `draco-decode`.
 - `full`: the default complete profile.
 
-Use `default-features = false, features = ["compact"]` for a small reader. Add
-`write` for raw output or `write, draco-encode` for compressed output. Full and
-compact use the same document and packed-geometry types; no second parser or
-scene model exists.
+Use `default-features = false, features = ["read", "draco-decode"]` for a
+small Draco-capable reader. Add `write` for raw output or `draco-encode` for
+compressed output. Every profile uses the same document and packed-geometry
+types; no second parser or scene model exists.
 
 See `GLTF_2_1_SNAPSHOT.md` and `GLTF_2_1.md` for the pinned draft surface.
 

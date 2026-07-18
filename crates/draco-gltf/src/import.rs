@@ -276,7 +276,7 @@ impl Import {
     }
 
     /// Decodes an ordinary (non-Draco) triangle or point primitive through the
-    /// same geometry contract used by compact consumers.
+    /// same packed geometry contract used by readers and writers.
     #[cfg(feature = "draco-encode")]
     pub(crate) fn decode_geometry_primitive(
         &self,

@@ -780,23 +780,9 @@ fn decompression_failure_is_atomic() {
     assert_eq!(import.draco_primitives().count(), 1);
 }
 
-#[cfg(feature = "compact")]
+#[cfg(feature = "geometry")]
 #[test]
-fn compact_facade_uses_lossless_document() {
-    let compact = crate::CompactDocument::parse(
-        br#"{"asset":{"version":"2.1"},"meshes":[{"primitives":[{},{}]}]}"#,
-        ValidationProfile::Gltf21Draft,
-    )
-    .unwrap();
-    assert_eq!(
-        compact.mesh_primitive_ranges().next().unwrap().primitives,
-        2
-    );
-}
-
-#[cfg(feature = "compact")]
-#[test]
-fn compact_runtime_packs_accessor_geometry() {
+fn import_packs_accessor_geometry() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
     let import = parse(input, ValidationProfile::Gltf20).unwrap();
 
@@ -815,9 +801,9 @@ fn compact_runtime_packs_accessor_geometry() {
     assert_eq!(primitive.attributes()[0].bytes().len(), 36);
 }
 
-#[cfg(feature = "compact")]
+#[cfg(feature = "geometry")]
 #[test]
-fn compact_runtime_preserves_draft_half_float_accessors() {
+fn import_preserves_draft_half_float_accessors() {
     let input = br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":12,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteLength":12}],"accessors":[{"bufferView":0,"componentType":5131,"count":2,"type":"VEC3"}],"meshes":[{"primitives":[{"mode":0,"attributes":{"POSITION":0}}]}]}"#;
     let resolver = |uri: &str| match uri {
         "mesh.bin" => Ok(vec![0, 60, 0, 64, 0, 66, 0, 68, 0, 69, 0, 70]),
@@ -841,9 +827,9 @@ fn compact_runtime_preserves_draft_half_float_accessors() {
     assert_eq!(half.bytes(), [0, 60, 0, 64, 0, 66, 0, 68, 0, 69, 0, 70]);
 }
 
-#[cfg(feature = "compact")]
+#[cfg(feature = "draco-encode")]
 #[test]
-fn compact_runtime_materializes_sparse_accessors() {
+fn import_materializes_sparse_accessors() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":26,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":2},{"buffer":0,"byteOffset":2,"byteLength":24}],"accessors":[{"componentType":5126,"count":3,"type":"VEC3","sparse":{"count":2,"indices":{"bufferView":0,"componentType":5121},"values":{"bufferView":1}}}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
     let mut buffer = vec![0, 2];
     for value in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
@@ -894,9 +880,9 @@ fn compact_runtime_materializes_sparse_accessors() {
     );
 }
 
-#[cfg(feature = "compact")]
+#[cfg(feature = "draco-encode")]
 #[test]
-fn compact_runtime_packs_draco_geometry() {
+fn import_packs_draco_geometry() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
     let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
     import

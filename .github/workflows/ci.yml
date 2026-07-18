@@ -72,11 +72,12 @@ jobs:
         run: |
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features document
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features geometry
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features compact
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features compact,write
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features compact,write,draco-encode
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features read
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features read,draco-decode
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features write
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features draco-encode
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --features full
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --no-default-features --features compact
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --no-default-features --features read,draco-decode
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features read
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features read,draco-decode

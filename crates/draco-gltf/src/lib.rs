@@ -43,11 +43,6 @@ pub use extensions::{
     DracoExtension, ExtensionHandler, ExtensionRegistry, ExtensionValidationContext, ResourceStore,
     KHR_DRACO_MESH_COMPRESSION,
 };
-#[cfg(feature = "compact")]
-/// Geometry-oriented facade over the same document model.
-pub mod compact;
-#[cfg(feature = "compact")]
-pub use compact::{CompactDocument, CompactMeshRange};
 mod import;
 #[cfg(not(target_arch = "wasm32"))]
 pub use import::open;

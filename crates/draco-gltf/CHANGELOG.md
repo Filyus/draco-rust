@@ -9,25 +9,6 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-
-- Bidirectional `PackedGeometry` primitive reads and writes, including minimal
-  standalone scenes, raw accessors, explicit Draco storage, and GLB v2/v3.
-- `Document::to_minified_json_bytes` for forced whitespace-free output.
-
-### Changed
-
-- Compact reading now uses `CompactDocument`; raw writing is feature `write`
-  and the optional codec is feature `draco-encode`.
-- Packed geometry belongs to `draco-gltf`; `draco-io` remains the low-level
-  container, resource, accessor and Draco contract layer.
-
-### Fixed
-
-- Raw primitive writes emit exact `POSITION` bounds, validate topology and
-  well-known attribute layouts, and reject incompatible morph targets before
-  mutating the document.
-
 ## [0.2.0] - 2026-07-18
 
 ### Added
@@ -35,10 +16,13 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Lossless `Document` typed views and index types for full glTF scenes; unknown
   fields, `extras`, and unregistered extension JSON survive edits and writes.
 - Pinned glTF 2.1-draft validation surface, GLB v3 containers, explicit
-  `files` asset loading, extension contracts, and compact geometry views.
+  `files` asset loading, extension contracts, and packed geometry views.
 - Document-preserving Draco compression with measured output reporting.
 - `Import::to_gltf_output` for portable JSON plus companion buffers, alongside
   GLB v2/v3 serialization through `Import::to_bytes`.
+- Bidirectional `PackedGeometry` primitive reads and writes, including minimal
+  standalone scenes, raw accessors, explicit Draco storage, and GLB v2/v3.
+- `Document::to_minified_json_bytes` for forced whitespace-free output.
 
 ### Changed
 
@@ -49,6 +33,10 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `CompressionMode::DracoOnly` is the default and requires Draco; use
   `CompressionMode::Fallback` to retain ordinary geometry for non-Draco
   readers.
+- `Import` is the single geometry read/write entry point; feature `read`
+  enables ordinary accessors, while Draco decode and encode remain explicit.
+- Packed geometry belongs to `draco-gltf`; `draco-io` remains the low-level
+  container, resource, accessor and Draco contract layer.
 
 ### Fixed
 
@@ -59,6 +47,9 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   attribute mappings, unique IDs, and Draco-only accessor layouts.
 - Binary range arithmetic, resource quotas, output limits, and compaction use
   checked operations; overlapping retained ranges are coalesced.
+- Raw primitive writes emit exact `POSITION` bounds, validate topology and
+  well-known attribute layouts, and reject incompatible morph targets before
+  mutating the document.
 
 ## [0.1.0] - 2026-06-24
 

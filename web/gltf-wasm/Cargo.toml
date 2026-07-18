@@ -22,7 +22,7 @@ draco-io = { path = "../../crates/draco-io", default-features = false, features 
 [features]
 default = ["read", "draco-decode"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
-read = ["draco-gltf/geometry"]
+read = ["draco-gltf/read"]
 draco-decode = ["read", "draco-gltf/draco-decode"]
 write = ["read", "draco-gltf/write"]
 draco-encode = ["write", "draco-decode", "draco-gltf/draco-encode"]
