@@ -61,7 +61,6 @@ const consoleEl = document.getElementById('console');
 // 3D preview DOM references
 const viewerSection = document.getElementById('viewer-section');
 const viewerCanvas = document.getElementById('viewer-canvas');
-const viewerPlaceholder = document.getElementById('viewer-placeholder');
 const viewerResetBtn = document.getElementById('viewer-reset');
 const viewerAutoRotateBtn = document.getElementById('viewer-autorotate');
 const viewerWireframeBtn = document.getElementById('viewer-wireframe');
@@ -891,14 +890,12 @@ function ensureViewer() {
 
 async function loadPreview(extension) {
     viewerSection.style.display = 'block';
-    viewerPlaceholder.style.display = 'flex';
-    viewerPlaceholder.querySelector('p').textContent = 'Building preview…';
 
     // Yield to the browser so the section layout settles before measuring the canvas.
     await new Promise((resolve) => requestAnimationFrame(resolve));
 
     if (!ensureViewer()) {
-        viewerPlaceholder.querySelector('p').textContent = 'Preview unavailable';
+        log('Preview unavailable', 'error');
         return;
     }
 
@@ -927,11 +924,9 @@ async function loadPreview(extension) {
         }
 
         viewer.setScene(scene);
-        viewerPlaceholder.style.display = 'none';
         log('Preview ready', 'success');
     } catch (error) {
         viewer.clear();
-        viewerPlaceholder.querySelector('p').textContent = `Preview failed: ${errorMessage(error)}`;
         log(`Preview failed: ${errorMessage(error)}`, 'error');
     }
 }
