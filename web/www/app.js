@@ -215,12 +215,10 @@ function updateDracoEncoderAvailability() {
     const prototype = modules.gltf.module?.GltfAsset?.prototype;
     const available = typeof prototype?.compressPrimitive === 'function';
     useDraco.disabled = !available;
+    useDraco.checked = available;
     useDracoLabel.textContent = available
         ? 'Enable Draco Compression'
         : 'Draco Compression (not included in this build)';
-    if (!available) {
-        useDraco.checked = false;
-    }
     dracoSettings.style.display = available && useDraco.checked ? 'block' : 'none';
 }
 

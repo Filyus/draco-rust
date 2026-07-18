@@ -69,12 +69,21 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   await expect(page.locator('#has-normals')).toHaveText('No');
   await expect(page.locator('#has-uvs')).toHaveText('Yes');
 
-  await expect(page.locator('#use-draco')).toBeDisabled();
+  const dracoToggle = page.locator('#use-draco');
+  if (await dracoToggle.isEnabled()) {
+    await expect(dracoToggle).toBeChecked();
+  } else {
+    await expect(dracoToggle).not.toBeChecked();
+  }
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: '⬇ Convert & Download' }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe('export.glb');
-  await expect(page.locator('#console')).toContainText('Document packaged and exported as GLB');
+  await expect(page.locator('#console')).toContainText(
+    (await dracoToggle.isEnabled())
+      ? 'Document compressed with Draco and exported as GLB'
+      : 'Document packaged and exported as GLB',
+  );
 });
 
 test('converter explains a missing external glTF buffer', async ({ page }) => {
