@@ -7,7 +7,9 @@ use std::path::Path;
 
 use thiserror::Error;
 
+mod accessor;
 pub mod document;
+pub use accessor::NativeAccessorSource;
 mod json;
 pub use document::{
     AccessorIndex, AnimationIndex, BufferIndex, BufferViewIndex, CameraIndex, ComponentType,
