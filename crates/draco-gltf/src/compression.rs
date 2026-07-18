@@ -17,8 +17,9 @@ pub(super) fn compress_document(
     // the gltf-rs typed model would hide without the `extras` feature.
     let descriptors = primitive_descriptors(&doc_value)?;
 
-    let source = GltfRsSource {
-        document: &import.document,
+    let source_document = doc_value.clone();
+    let source = JsonAccessorSource {
+        document: &source_document,
         buffers: &import.buffers,
     };
     let output = draco_io::compress_gltf_value(
@@ -116,64 +117,83 @@ fn primitive_descriptors(
     Ok(out)
 }
 
-/// [`AccessorSource`] over a parsed gltf-rs document: it copies attribute and
-/// index bytes straight out of the accessors' buffer views, reusing gltf-rs's
-/// already-parsed accessor metadata instead of `draco-io`'s glTF reader.
-struct GltfRsSource<'a> {
-    document: &'a gltf::Document,
+/// [`AccessorSource`] over the lossless JSON document.
+struct JsonAccessorSource<'a> {
+    document: &'a Value,
     buffers: &'a [Vec<u8>],
 }
 
-impl GltfRsSource<'_> {
-    fn accessor(&self, index: usize) -> std::result::Result<gltf::Accessor<'_>, GltfError> {
-        self.document
-            .accessors()
-            .nth(index)
+impl JsonAccessorSource<'_> {
+    fn accessor(&self, index: usize) -> std::result::Result<&Value, GltfError> {
+        self.document["accessors"]
+            .as_array()
+            .and_then(|accessors| accessors.get(index))
             .ok_or_else(|| GltfError::InvalidGltf(format!("accessor {index} out of range")))
     }
 
     /// Copies `row`-sized elements (stride removed) out of the accessor's buffer
     /// view into a tightly packed block, `accessor.count()` rows total.
-    fn extract(
-        &self,
-        accessor: &gltf::Accessor<'_>,
-        row: usize,
-    ) -> std::result::Result<Vec<u8>, GltfError> {
+    fn extract(&self, accessor: &Value, row: usize) -> std::result::Result<Vec<u8>, GltfError> {
         let overflow = || GltfError::InvalidGltf("accessor range overflow".into());
-        let view = accessor
-            .view()
-            .ok_or_else(|| GltfError::Unsupported("sparse accessors are not supported".into()))?;
+        if accessor.get("sparse").is_some() {
+            return Err(GltfError::Unsupported(
+                "sparse accessors are not supported".into(),
+            ));
+        }
+        let view_index = accessor
+            .get("bufferView")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| GltfError::InvalidGltf("accessor has no bufferView".into()))?;
+        let view = self.document["bufferViews"]
+            .as_array()
+            .and_then(|views| views.get(view_index))
+            .ok_or_else(|| GltfError::InvalidGltf("accessor bufferView out of range".into()))?;
+        let buffer_index = view
+            .get("buffer")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| GltfError::InvalidGltf("bufferView buffer is invalid".into()))?;
         let buffer = self
             .buffers
-            .get(view.buffer().index())
+            .get(buffer_index)
             .ok_or_else(|| GltfError::InvalidGltf("buffer not resolved".into()))?;
-        let view_end = view
-            .offset()
-            .checked_add(view.length())
-            .ok_or_else(overflow)?;
-        if view_end > buffer.len() || view_end > view.buffer().length() {
+        let view_offset = view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let view_length = view
+            .get("byteLength")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| GltfError::InvalidGltf("bufferView byteLength is invalid".into()))?;
+        let view_end = view_offset.checked_add(view_length).ok_or_else(overflow)?;
+        if view_end > buffer.len() {
             return Err(GltfError::InvalidGltf(
                 "bufferView exceeds its declared or resolved buffer".into(),
             ));
         }
-        let stride = view.stride().unwrap_or(row);
+        let stride = view
+            .get("byteStride")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or(row);
         if stride < row {
             return Err(GltfError::InvalidGltf(format!(
                 "accessor stride {stride} is smaller than element size {row}"
             )));
         }
-        let base = view
-            .offset()
-            .checked_add(accessor.offset())
-            .ok_or_else(overflow)?;
-        let output_len = accessor.count().checked_mul(row).ok_or_else(overflow)?;
-        if accessor.count() > 0 {
+        let offset = accessor
+            .get("byteOffset")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let base = view_offset.checked_add(offset).ok_or_else(overflow)?;
+        let count = accessor
+            .get("count")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| GltfError::InvalidGltf("accessor count is invalid".into()))?;
+        let output_len = count.checked_mul(row).ok_or_else(overflow)?;
+        if count > 0 {
             let last = base
-                .checked_add(
-                    (accessor.count() - 1)
-                        .checked_mul(stride)
-                        .ok_or_else(overflow)?,
-                )
+                .checked_add((count - 1).checked_mul(stride).ok_or_else(overflow)?)
                 .and_then(|start| start.checked_add(row))
                 .ok_or_else(overflow)?;
             if last > view_end || last > buffer.len() {
@@ -186,7 +206,7 @@ impl GltfRsSource<'_> {
         let mut out = Vec::new();
         out.try_reserve_exact(output_len)
             .map_err(|_| GltfError::ResourceLimitExceeded("accessor allocation failed".into()))?;
-        for i in 0..accessor.count() {
+        for i in 0..count {
             let start = base
                 .checked_add(i.checked_mul(stride).ok_or_else(overflow)?)
                 .ok_or_else(overflow)?;
@@ -200,7 +220,7 @@ impl GltfRsSource<'_> {
     }
 }
 
-impl AccessorSource for GltfRsSource<'_> {
+impl AccessorSource for JsonAccessorSource<'_> {
     fn read_attribute(
         &self,
         accessor_idx: usize,
@@ -209,55 +229,89 @@ impl AccessorSource for GltfRsSource<'_> {
     ) -> std::result::Result<DecodedAccessor, GltfError> {
         let accessor = self.accessor(accessor_idx)?;
 
-        let type_str = dimensions_str(accessor.dimensions())?;
+        let type_str = accessor
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| GltfError::InvalidGltf("accessor type is invalid".into()))?;
         if !expected_types.contains(&type_str) {
             return Err(GltfError::InvalidGltf(format!(
                 "expected one of {expected_types:?} accessor, got {type_str}"
             )));
         }
-        let gl_enum = accessor.data_type().as_gl_enum();
+        let gl_enum = accessor
+            .get("componentType")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| GltfError::InvalidGltf("accessor componentType is invalid".into()))?;
         if !allowed_component_types.contains(&gl_enum) {
             return Err(GltfError::Unsupported(format!(
                 "unsupported {type_str} component type {gl_enum}"
             )));
         }
 
-        let num_components = accessor.dimensions().multiplicity() as u8;
+        let num_components = match type_str {
+            "SCALAR" => 1,
+            "VEC2" => 2,
+            "VEC3" => 3,
+            "VEC4" => 4,
+            _ => {
+                return Err(GltfError::Unsupported(
+                    "matrix accessor not supported".into(),
+                ))
+            }
+        };
+        let component_size = component_size(gl_enum)?;
         let row = (num_components as usize)
-            .checked_mul(accessor.data_type().size())
+            .checked_mul(component_size)
             .ok_or_else(|| GltfError::InvalidGltf("accessor row size overflow".into()))?;
         let bytes = self.extract(&accessor, row)?;
 
         DecodedAccessor::new(
-            accessor.count(),
+            accessor
+                .get("count")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| GltfError::InvalidGltf("accessor count is invalid".into()))?,
             num_components,
-            draco_data_type(accessor.data_type()),
-            accessor.normalized(),
+            draco_data_type(gl_enum)?,
+            accessor
+                .get("normalized")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             bytes,
         )
     }
 
     fn read_indices(&self, accessor_idx: usize) -> std::result::Result<Vec<u32>, GltfError> {
-        use gltf::accessor::DataType as G;
         let accessor = self.accessor(accessor_idx)?;
-        if !matches!(accessor.dimensions(), gltf::accessor::Dimensions::Scalar) {
+        if accessor.get("type").and_then(Value::as_str) != Some("SCALAR") {
             return Err(GltfError::InvalidGltf(
                 "indices accessor must be SCALAR".into(),
             ));
         }
-        let bytes = self.extract(&accessor, accessor.data_type().size())?;
+        let component = accessor
+            .get("componentType")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| GltfError::InvalidGltf("indices componentType is invalid".into()))?;
+        let bytes = self.extract(accessor, component_size(component)?)?;
         let mut indices = Vec::new();
-        indices.try_reserve_exact(accessor.count()).map_err(|_| {
+        let count = accessor
+            .get("count")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| GltfError::InvalidGltf("indices count is invalid".into()))?;
+        indices.try_reserve_exact(count).map_err(|_| {
             GltfError::ResourceLimitExceeded("index accessor allocation failed".into())
         })?;
-        match accessor.data_type() {
-            G::U8 => indices.extend(bytes.iter().map(|&byte| u32::from(byte))),
-            G::U16 => indices.extend(
+        match component {
+            5121 => indices.extend(bytes.iter().map(|&byte| u32::from(byte))),
+            5123 => indices.extend(
                 bytes
                     .chunks_exact(2)
                     .map(|chunk| u32::from(u16::from_le_bytes([chunk[0], chunk[1]]))),
             ),
-            G::U32 => indices.extend(
+            5125 => indices.extend(
                 bytes
                     .chunks_exact(4)
                     .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])),
@@ -274,31 +328,32 @@ impl AccessorSource for GltfRsSource<'_> {
 
 /// Maps a gltf-rs accessor dimension to its glTF type string, rejecting the
 /// matrix types Draco geometry attributes never use.
-fn dimensions_str(d: gltf::accessor::Dimensions) -> std::result::Result<&'static str, GltfError> {
-    use gltf::accessor::Dimensions::*;
-    Ok(match d {
-        Scalar => "SCALAR",
-        Vec2 => "VEC2",
-        Vec3 => "VEC3",
-        Vec4 => "VEC4",
-        _ => {
-            return Err(GltfError::Unsupported(
-                "matrix accessor not supported".into(),
-            ))
-        }
-    })
+fn component_size(component: u32) -> std::result::Result<usize, GltfError> {
+    match component {
+        5120 | 5121 => Ok(1),
+        5122 | 5123 => Ok(2),
+        5125 | 5126 => Ok(4),
+        _ => Err(GltfError::Unsupported(format!(
+            "unsupported Draco component type {component}"
+        ))),
+    }
 }
 
-/// Maps a gltf-rs component type to the matching `draco-core` data type.
-fn draco_data_type(d: gltf::accessor::DataType) -> draco_core::draco_types::DataType {
+fn draco_data_type(
+    component: u32,
+) -> std::result::Result<draco_core::draco_types::DataType, GltfError> {
     use draco_core::draco_types::DataType as D;
-    use gltf::accessor::DataType as G;
-    match d {
-        G::I8 => D::Int8,
-        G::U8 => D::Uint8,
-        G::I16 => D::Int16,
-        G::U16 => D::Uint16,
-        G::U32 => D::Uint32,
-        G::F32 => D::Float32,
-    }
+    Ok(match component {
+        5120 => D::Int8,
+        5121 => D::Uint8,
+        5122 => D::Int16,
+        5123 => D::Uint16,
+        5125 => D::Uint32,
+        5126 => D::Float32,
+        _ => {
+            return Err(GltfError::Unsupported(format!(
+                "unsupported Draco component type {component}"
+            )))
+        }
+    })
 }
