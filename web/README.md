@@ -6,9 +6,11 @@ and glTF assets. Every module is independently loaded by the static demo in
 
 ## glTF modules
 
-- `gltf-inspect-wasm` exports `inspect_gltf(bytes)`. It parses a JSON glTF or
-  GLB container with `draco-gltf` and returns document-level counts plus a
-  `usesDraco` flag.
+- `gltf-inspect-wasm` exports `GltfDocument`, a stateful native document
+  handle. It parses JSON glTF or GLB, exposes lossless JSON and root-object
+  access, validates 2.0/2.1 profiles, serializes GLB v2/v3, and runs native
+  Draco compression/decompression. `inspect_gltf(bytes)` remains a small
+  summary convenience function.
 - `gltf-canonicalize-wasm` exports `canonicalize_gltf(bytes)`. It validates a JSON
   glTF document and returns its native serialization. Unchanged documents keep
   their original JSON bytes.

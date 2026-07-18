@@ -11,7 +11,7 @@ const modules = {
     objWriter: { loaded: false, module: null },
     plyReader: { loaded: false, module: null },
     plyWriter: { loaded: false, module: null },
-    gltfInspect: { loaded: false, module: null },
+    gltfDocument: { loaded: false, module: null },
     gltfCanonicalize: { loaded: false, module: null },
     fbxReader: { loaded: false, module: null },
     fbxWriter: { loaded: false, module: null },
@@ -66,7 +66,7 @@ async function loadAllModules() {
         { key: 'objWriter', path: `./pkg/obj_writer.js${CACHE_BUST}`, statusId: 'obj-writer-status' },
         { key: 'plyReader', path: `./pkg/ply_reader.js${CACHE_BUST}`, statusId: 'ply-reader-status' },
         { key: 'plyWriter', path: `./pkg/ply_writer.js${CACHE_BUST}`, statusId: 'ply-writer-status' },
-        { key: 'gltfInspect', path: `./pkg/gltf_inspect.js${CACHE_BUST}`, statusId: 'gltf-inspect-status' },
+        { key: 'gltfDocument', path: `./pkg/gltf_inspect.js${CACHE_BUST}`, statusId: 'gltf-document-status' },
         { key: 'gltfCanonicalize', path: `./pkg/gltf_canonicalize.js${CACHE_BUST}`, statusId: 'gltf-canonicalize-status' },
         { key: 'fbxReader', path: `./pkg/fbx_reader.js${CACHE_BUST}`, statusId: 'fbx-reader-status' },
         { key: 'fbxWriter', path: `./pkg/fbx_writer.js${CACHE_BUST}`, statusId: 'fbx-writer-status' },
@@ -297,13 +297,13 @@ async function parsePlyFile(data) {
 
 // Parse glTF/GLB file
 async function parseGltfFile(data, extension, resources = Object.create(null)) {
-    if (!modules.gltfInspect.loaded) {
-        return { success: false, error: 'glTF inspector module not loaded' };
+    if (!modules.gltfDocument.loaded) {
+        return { success: false, error: 'glTF document module not loaded' };
     }
     if (Object.keys(resources).length > 0) {
         log('Companion resources are not loaded by the document inspector', 'warning');
     }
-    const result = modules.gltfInspect.module.inspect_gltf(data);
+    const result = modules.gltfDocument.module.inspect_gltf(data);
     return { ...result, document: true, format: extension };
 }
 
