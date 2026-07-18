@@ -14,60 +14,56 @@ async function load(name) {
   return module;
 }
 
-const [documentApi, compactApi] = await Promise.all([
-  load('gltf_document'),
-  load('gltf_compact'),
-]);
+const api = await load('gltf');
 const input = new TextEncoder().encode(embeddedTriangle());
-const document = new documentApi.GltfDocument(input, '2.0');
+const asset = new api.GltfAsset(input, '2.0');
 if (
-  typeof document.decompress === 'function'
-  || typeof document.compressPrimitive === 'function'
-  || documentApi.GltfDocument.prototype.decompress
-  || documentApi.GltfDocument.prototype.compressPrimitive
+  typeof asset.decompress === 'function'
+  || typeof asset.compressPrimitive === 'function'
+  || api.GltfAsset.prototype.decompress
+  || api.GltfAsset.prototype.compressPrimitive
 ) {
-  throw new Error('default document artifact unexpectedly includes write or encoder API');
+  throw new Error('default glTF artifact unexpectedly includes write or encoder API');
 }
-const documentTypes = await readFile(resolve(pkg, 'gltf_document.d.ts'), 'utf8');
-if (documentTypes.includes('decompress') || documentTypes.includes('compressPrimitive')) {
-  throw new Error('default document declarations unexpectedly include write or encoder API');
+const types = await readFile(resolve(pkg, 'gltf.d.ts'), 'utf8');
+if (types.includes('decompress') || types.includes('compressPrimitive')) {
+  throw new Error('default glTF declarations unexpectedly include write or encoder API');
 }
-const summary = document.summary();
+const summary = asset.summary();
 if (!summary.success || summary.meshCount !== 1 || summary.primitiveCount !== 1) {
-  throw new Error(`document smoke failed: ${JSON.stringify(summary)}`);
+  throw new Error(`glTF asset smoke failed: ${JSON.stringify(summary)}`);
 }
 
-const compact = new compactApi.CompactDocument(input, '2.0');
-const primitive = compact.readPrimitive(0, 0);
-if ('GeometryWriteOptions' in compactApi || typeof compactApi.CompactDocument.fromGeometry === 'function') {
-  throw new Error('default compact artifact unexpectedly includes writer API');
+const primitive = asset.readPrimitive(0, 0);
+if ('GeometryWriteOptions' in api || typeof api.GltfAsset.fromGeometry === 'function') {
+  throw new Error('default glTF artifact unexpectedly includes writer API');
 }
 if (
-  compact.meshCount() !== 1
-  || compact.primitiveCount(0) !== 1
+  asset.meshCount() !== 1
+  || asset.primitiveCount(0) !== 1
   || primitive.attributeCount() !== 1
   || primitive.attributeSemantic(0) !== 'POSITION'
   || primitive.attributeBytes(0).length !== 36
 ) {
-  throw new Error('compact geometry smoke failed');
+  throw new Error('glTF geometry smoke failed');
 }
 
-const glb = document.glb(2);
-const roundtrip = new documentApi.GltfDocument(glb, '2.0').summary();
+const glb = asset.glb(2);
+const roundtrip = new api.GltfAsset(glb, '2.0').summary();
 if (!roundtrip.success || roundtrip.meshCount !== 1) {
   throw new Error(`GLB roundtrip failed: ${JSON.stringify(roundtrip)}`);
 }
 
 let missingFailed = false;
 try {
-  new documentApi.GltfDocument(new TextEncoder().encode(externalTriangle()), '2.0');
+  new api.GltfAsset(new TextEncoder().encode(externalTriangle()), '2.0');
 } catch (error) {
   missingFailed = String(error).includes('missing.bin');
 }
 if (!missingFailed) {
   throw new Error('missing-resource smoke failed');
 }
-const resolved = documentApi.GltfDocument.withResources(
+const resolved = api.GltfAsset.withResources(
   new TextEncoder().encode(externalTriangle()),
   { 'missing.bin': triangleBytes() },
   '2.0',

@@ -77,11 +77,10 @@ jobs:
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features compact,write,draco-encode
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --features full
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --no-default-features --features compact
-          cargo check --manifest-path web/Cargo.toml -p gltf-compact-wasm --target wasm32-unknown-unknown --features write
-          cargo check --manifest-path web/Cargo.toml -p gltf-compact-wasm --target wasm32-unknown-unknown --features write,draco-encode
-          cargo check --manifest-path web/Cargo.toml -p gltf-document-wasm --target wasm32-unknown-unknown
-          cargo check --manifest-path web/Cargo.toml -p gltf-document-wasm --target wasm32-unknown-unknown --features write
-          cargo check --manifest-path web/Cargo.toml -p gltf-document-wasm --target wasm32-unknown-unknown --features write,draco-encode
+          cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features
+          cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown
+          cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --features write
+          cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --features write,draco-encode
           cargo check --manifest-path crates/Cargo.toml -p draco-io --target wasm32-unknown-unknown --no-default-features --features draco-decode
 
       - name: Check public Rust documentation
@@ -152,26 +151,26 @@ jobs:
 
       - name: Build and smoke raw glTF writer
         run: |
-          cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-compact-wasm --features write --force
+          cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-wasm --features write --force
           npm run test:gltf-write
         working-directory: web
 
       - name: Build and smoke Draco glTF writer
         run: |
-          cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-compact-wasm --features write,draco-encode --force
+          cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-wasm --features write,draco-encode --force
           npm run test:gltf-draco-write
         working-directory: web
 
-      - name: Build and smoke document raw write profile
+      - name: Build and smoke glTF raw write profile
         run: |
-          cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-document-wasm --features write --force
-          npm run test:document-features -- --write
+          cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-wasm --features write --force
+          npm run test:gltf-features -- --write
         working-directory: web
 
-      - name: Build and smoke document Draco encode profile
+      - name: Build and smoke glTF Draco encode profile
         run: |
-          cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-document-wasm --features write,draco-encode --force
-          npm run test:document-features -- --write --draco-encode
+          cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-wasm --features write,draco-encode --force
+          npm run test:gltf-features -- --write --draco-encode
         working-directory: web
 
       - name: Install Playwright Chromium

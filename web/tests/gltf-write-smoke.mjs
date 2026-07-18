@@ -6,8 +6,8 @@ import { validateBytes } from 'gltf-validator';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');
-const api = await import(pathToFileURL(resolve(pkg, 'gltf_compact.js')));
-const wasm = await readFile(resolve(pkg, 'gltf_compact_bg.wasm'));
+const api = await import(pathToFileURL(resolve(pkg, 'gltf.js')));
+const wasm = await readFile(resolve(pkg, 'gltf_bg.wasm'));
 await api.default({ module_or_path: wasm });
 
 const values = new Float32Array([
@@ -30,13 +30,13 @@ if (draco) {
   }
   options.useDraco(5, 5, false);
 }
-const document = api.CompactDocument.fromGeometry(geometry, '2.0', options);
+const document = api.GltfAsset.fromGeometry(geometry, '2.0', options);
 const glb = document.glb(2);
 const validation = await validateBytes(glb, { uri: 'packed-geometry.glb' });
 if (validation.issues.numErrors !== 0) {
   throw new Error(`generated GLB is invalid: ${JSON.stringify(validation.issues.messages)}`);
 }
-const reloaded = new api.CompactDocument(glb, '2.0');
+const reloaded = new api.GltfAsset(glb, '2.0');
 const packed = reloaded.readPrimitive(0, 0);
 if (
   packed.attributeSemantic(0) !== 'POSITION'

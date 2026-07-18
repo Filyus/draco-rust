@@ -11,7 +11,7 @@ const modules = {
     objWriter: { loaded: false, module: null },
     plyReader: { loaded: false, module: null },
     plyWriter: { loaded: false, module: null },
-    gltfDocument: { loaded: false, module: null },
+    gltf: { loaded: false, module: null },
     fbxReader: { loaded: false, module: null },
     fbxWriter: { loaded: false, module: null },
 };
@@ -65,7 +65,7 @@ async function loadAllModules() {
         { key: 'objWriter', path: `./pkg/obj_writer.js${CACHE_BUST}`, statusId: 'obj-writer-status' },
         { key: 'plyReader', path: `./pkg/ply_reader.js${CACHE_BUST}`, statusId: 'ply-reader-status' },
         { key: 'plyWriter', path: `./pkg/ply_writer.js${CACHE_BUST}`, statusId: 'ply-writer-status' },
-        { key: 'gltfDocument', path: `./pkg/gltf_document.js${CACHE_BUST}`, statusId: 'gltf-document-status' },
+        { key: 'gltf', path: `./pkg/gltf.js${CACHE_BUST}`, statusId: 'gltf-status' },
         { key: 'fbxReader', path: `./pkg/fbx_reader.js${CACHE_BUST}`, statusId: 'fbx-reader-status' },
         { key: 'fbxWriter', path: `./pkg/fbx_writer.js${CACHE_BUST}`, statusId: 'fbx-writer-status' },
     ];
@@ -295,13 +295,13 @@ async function parsePlyFile(data) {
 
 // Parse glTF/GLB file
 async function parseGltfFile(data, extension, resources = Object.create(null)) {
-    if (!modules.gltfDocument.loaded) {
-        return { success: false, error: 'glTF document module not loaded' };
+    if (!modules.gltf.loaded) {
+        return { success: false, error: 'glTF module not loaded' };
     }
     if (Object.keys(resources).length > 0) {
         log('Companion resources are not loaded by the document inspector', 'warning');
     }
-    const result = modules.gltfDocument.module.inspect_gltf(data);
+    const result = modules.gltf.module.inspect_gltf(data);
     return { ...result, document: true, format: extension };
 }
 
@@ -390,10 +390,10 @@ async function exportFile() {
             if (format !== 'gltf' || currentFileType !== 'gltf') {
                 throw new Error('Document export currently emits minified JSON glTF only');
             }
-            if (!modules.gltfDocument.loaded) {
-                throw new Error('glTF document module not loaded');
+            if (!modules.gltf.loaded) {
+                throw new Error('glTF module not loaded');
             }
-            const document = modules.gltfDocument.module.GltfDocument.withResources(
+            const document = modules.gltf.module.GltfAsset.withResources(
                 currentSourceData,
                 currentSourceResources,
                 '2.1',

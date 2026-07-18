@@ -1,26 +1,27 @@
-//! Compact WebAssembly profile for reading and optionally writing glTF geometry.
+//! WebAssembly glTF scene and geometry API with optional writing.
 
 use std::collections::BTreeMap;
 
-#[cfg(feature = "draco-encode")]
-use draco_gltf::GeometryEncoding;
-#[cfg(feature = "write")]
-use draco_gltf::OutputFormat;
 use draco_gltf::{
-    parse, parse_with_options, ComponentType, ExtensionRegistry, Import, PackedAttribute,
-    PackedIndices, PrimitiveIndex, PrimitiveMode, ResourceLimits, ResourceResolver,
-    ValidationProfile,
+    parse, parse_with_options, Document, ExtensionRegistry, Import, OutputFormat, ResourceLimits,
+    ResourceResolver, ValidationProfile,
 };
+#[cfg(feature = "read")]
+use draco_gltf::{ComponentType, PackedAttribute, PackedIndices, PrimitiveIndex, PrimitiveMode};
+#[cfg(feature = "draco-encode")]
+use draco_gltf::{CompressionOptions, GeometryEncoding, MeshIndex};
 use js_sys::{Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 
-/// Stateful compact handle backed by one lossless document and resource store.
+/// Stateful glTF asset backed by one lossless document and resource store.
 #[wasm_bindgen]
-pub struct CompactDocument {
+pub struct GltfAsset {
     import: Import,
+    resolver: BrowserResourceResolver,
 }
 
 /// Materialized primitive geometry with contiguous byte buffers.
+#[cfg(feature = "read")]
 #[wasm_bindgen]
 pub struct PackedGeometry {
     mode: PrimitiveMode,
@@ -28,7 +29,7 @@ pub struct PackedGeometry {
     indices: Option<PackedIndices>,
 }
 
-/// Options for a compact geometry write.
+/// Options for writing packed geometry.
 #[cfg(feature = "write")]
 #[wasm_bindgen]
 pub struct GeometryWriteOptions {
@@ -66,11 +67,13 @@ fn profile(name: &str) -> Result<ValidationProfile, JsValue> {
     }
 }
 
+#[cfg(feature = "read")]
 fn component_type(value: u32) -> Result<ComponentType, JsValue> {
     ComponentType::from_gltf(value as u64)
         .ok_or_else(|| JsValue::from_str("unsupported glTF component type"))
 }
 
+#[cfg(feature = "read")]
 fn primitive_mode(value: u32) -> Result<PrimitiveMode, JsValue> {
     PrimitiveMode::from_gltf(value)
         .ok_or_else(|| JsValue::from_str("primitive mode must be in 0..=6"))
@@ -98,6 +101,75 @@ fn browser_resources(value: JsValue) -> Result<BrowserResourceResolver, JsValue>
     Ok(BrowserResourceResolver(resources))
 }
 
+#[derive(Default)]
+struct AssetSummary {
+    success: bool,
+    mesh_count: usize,
+    primitive_count: usize,
+    scene_count: usize,
+    uses_draco: bool,
+    error: Option<String>,
+}
+
+fn asset_summary(document: Document) -> AssetSummary {
+    let primitive_count = document
+        .meshes()
+        .into_iter()
+        .map(|mesh| {
+            mesh.value()
+                .get("primitives")
+                .and_then(|value| value.as_array())
+                .map_or(0, |values| values.len())
+        })
+        .sum();
+    let uses_draco = document.meshes().into_iter().any(|mesh| {
+        mesh.value()
+            .get("primitives")
+            .and_then(|value| value.as_array())
+            .is_some_and(|primitives| {
+                primitives.iter().any(|primitive| {
+                    primitive
+                        .get("extensions")
+                        .and_then(|value| value.get("KHR_draco_mesh_compression"))
+                        .is_some()
+                })
+            })
+    });
+    AssetSummary {
+        success: true,
+        mesh_count: document.meshes().len(),
+        primitive_count,
+        scene_count: document.scenes().len(),
+        uses_draco,
+        error: None,
+    }
+}
+
+fn summary_to_js(summary: AssetSummary) -> JsValue {
+    let object = Object::new();
+    let fields = [
+        ("success", JsValue::from_bool(summary.success)),
+        ("meshCount", JsValue::from_f64(summary.mesh_count as f64)),
+        (
+            "primitiveCount",
+            JsValue::from_f64(summary.primitive_count as f64),
+        ),
+        ("sceneCount", JsValue::from_f64(summary.scene_count as f64)),
+        ("usesDraco", JsValue::from_bool(summary.uses_draco)),
+        (
+            "error",
+            summary
+                .error
+                .map_or(JsValue::NULL, |error| JsValue::from_str(&error)),
+        ),
+    ];
+    for (key, value) in fields {
+        Reflect::set(&object, &JsValue::from_str(key), &value)
+            .expect("writing a fresh JavaScript summary object cannot fail");
+    }
+    object.into()
+}
+
 #[wasm_bindgen(start)]
 pub fn init() {
     #[cfg(feature = "console_error_panic_hook")]
@@ -109,13 +181,50 @@ pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_owned()
 }
 
+/// Returns the file extensions accepted by this module.
 #[wasm_bindgen]
-impl CompactDocument {
+pub fn supported_extensions() -> Vec<String> {
+    vec!["gltf".into(), "glb".into()]
+}
+
+/// Inspects JSON glTF or GLB without resolving external resources.
+#[wasm_bindgen]
+pub fn inspect_gltf(data: &[u8]) -> JsValue {
+    let json = if data.len() >= 4 && &data[..4] == b"glTF" {
+        match draco_io::parse_gltf_container(data) {
+            Ok(container) => container.json,
+            Err(error) => {
+                return summary_to_js(AssetSummary {
+                    error: Some(error.to_string()),
+                    ..AssetSummary::default()
+                })
+            }
+        }
+    } else {
+        data
+    };
+    match Document::from_json_bytes(json).and_then(|document| {
+        document.validate(ValidationProfile::Gltf21Draft)?;
+        Ok(document)
+    }) {
+        Ok(document) => summary_to_js(asset_summary(document)),
+        Err(error) => summary_to_js(AssetSummary {
+            error: Some(error.to_string()),
+            ..AssetSummary::default()
+        }),
+    }
+}
+
+#[wasm_bindgen]
+impl GltfAsset {
     /// Opens JSON glTF or GLB v2/v3 with embedded or data-URI resources.
     #[wasm_bindgen(constructor)]
-    pub fn new(data: &[u8], validation_profile: &str) -> Result<CompactDocument, JsValue> {
+    pub fn new(data: &[u8], validation_profile: &str) -> Result<GltfAsset, JsValue> {
         parse(data, profile(validation_profile)?)
-            .map(|import| Self { import })
+            .map(|import| Self {
+                import,
+                resolver: BrowserResourceResolver::default(),
+            })
             .map_err(wasm_error)
     }
 
@@ -125,7 +234,7 @@ impl CompactDocument {
         data: &[u8],
         resources: JsValue,
         validation_profile: &str,
-    ) -> Result<CompactDocument, JsValue> {
+    ) -> Result<GltfAsset, JsValue> {
         let resolver = browser_resources(resources)?;
         parse_with_options(
             data,
@@ -135,11 +244,12 @@ impl CompactDocument {
             profile(validation_profile)?,
             &ExtensionRegistry::default(),
         )
-        .map(|import| Self { import })
+        .map(|import| Self { import, resolver })
         .map_err(wasm_error)
     }
 
     /// Reads an ordinary or Draco-compressed primitive into packed buffers.
+    #[cfg(feature = "read")]
     #[wasm_bindgen(js_name = readPrimitive)]
     pub fn read_primitive(&self, mesh: usize, primitive: usize) -> Result<PackedGeometry, JsValue> {
         self.import
@@ -149,12 +259,14 @@ impl CompactDocument {
     }
 
     /// Returns the number of meshes in the document.
+    #[cfg(feature = "read")]
     #[wasm_bindgen(js_name = meshCount)]
     pub fn mesh_count(&self) -> usize {
         self.import.document.meshes().len()
     }
 
     /// Returns the number of primitives in one mesh.
+    #[cfg(feature = "read")]
     #[wasm_bindgen(js_name = primitiveCount)]
     pub fn primitive_count(&self, mesh: usize) -> Result<usize, JsValue> {
         self.import
@@ -213,11 +325,14 @@ impl CompactDocument {
         geometry: &PackedGeometry,
         validation_profile: &str,
         options: &GeometryWriteOptions,
-    ) -> Result<CompactDocument, JsValue> {
+    ) -> Result<GltfAsset, JsValue> {
         let profile = profile(validation_profile)?;
         let geometry = geometry.to_inner(profile)?;
         Import::from_geometry(&geometry, profile, options.inner)
-            .map(|import| Self { import })
+            .map(|import| Self {
+                import,
+                resolver: BrowserResourceResolver::default(),
+            })
             .map_err(wasm_error)
     }
 
@@ -231,8 +346,18 @@ impl CompactDocument {
             .map_err(wasm_error)
     }
 
+    /// Returns the lossless JSON document. Untouched JSON keeps its source bytes.
+    pub fn json(&self) -> Result<Vec<u8>, JsValue> {
+        self.import.document.to_json_bytes().map_err(wasm_error)
+    }
+
+    /// Returns minified JSON while preserving object order and number lexemes.
+    #[wasm_bindgen(js_name = minifiedJson)]
+    pub fn minified_json(&self) -> Vec<u8> {
+        self.import.document.to_minified_json_bytes()
+    }
+
     /// Serializes a GLB version 2 or 3 container.
-    #[cfg(feature = "write")]
     pub fn glb(&self, version: u32) -> Result<Vec<u8>, JsValue> {
         let output = match version {
             2 => OutputFormat::GlbV2,
@@ -241,8 +366,109 @@ impl CompactDocument {
         };
         self.import.to_bytes(output).map_err(wasm_error)
     }
+
+    /// Strictly validates the asset with the selected glTF profile.
+    pub fn validate(&self, validation_profile: &str) -> Result<(), JsValue> {
+        self.import
+            .document
+            .validate(profile(validation_profile)?)
+            .map_err(wasm_error)
+    }
+
+    /// Returns one root-array object as JSON bytes.
+    #[wasm_bindgen(js_name = objectJson)]
+    pub fn object_json(&self, kind: &str, index: usize) -> Result<Vec<u8>, JsValue> {
+        const ROOT_ARRAYS: &[&str] = &[
+            "accessors",
+            "animations",
+            "buffers",
+            "bufferViews",
+            "cameras",
+            "files",
+            "images",
+            "materials",
+            "meshes",
+            "nodes",
+            "samplers",
+            "scenes",
+            "shapes",
+            "skins",
+            "textures",
+        ];
+        if !ROOT_ARRAYS.contains(&kind) {
+            return Err(JsValue::from_str("unsupported glTF root array"));
+        }
+        self.import
+            .document
+            .as_value()
+            .get(kind)
+            .and_then(|value| value.as_array())
+            .and_then(|values| values.get(index))
+            .map(|value| value.to_vec())
+            .ok_or_else(|| JsValue::from_str("glTF object index is out of range"))
+    }
+
+    /// Explicitly loads one glTF 2.1 `files` entry using the supplied resource map.
+    #[wasm_bindgen(js_name = loadAsset)]
+    pub fn load_asset(
+        &self,
+        file: usize,
+        validation_profile: &str,
+        max_depth: usize,
+    ) -> Result<GltfAsset, JsValue> {
+        self.import
+            .load_asset_with_depth(
+                draco_gltf::FileIndex(file),
+                &self.resolver,
+                &ResourceLimits::default(),
+                profile(validation_profile)?,
+                &ExtensionRegistry::default(),
+                max_depth,
+            )
+            .map(|import| Self {
+                import,
+                resolver: self.resolver.clone(),
+            })
+            .map_err(wasm_error)
+    }
+
+    /// Returns mesh, scene, primitive, and Draco usage counts.
+    pub fn summary(&self) -> JsValue {
+        summary_to_js(asset_summary(self.import.document.clone()))
+    }
+
+    /// Materializes every Draco primitive atomically into ordinary accessors.
+    #[cfg(feature = "write")]
+    pub fn decompress(&mut self) -> Result<(), JsValue> {
+        self.import.decompress_in_place().map_err(wasm_error)
+    }
+
+    /// Stores one primitive with document-preserving Draco compression.
+    #[cfg(feature = "draco-encode")]
+    #[wasm_bindgen(js_name = compressPrimitive)]
+    pub fn compress_primitive(
+        &mut self,
+        mesh: usize,
+        primitive: usize,
+        encoding_speed: u8,
+        decoding_speed: u8,
+    ) -> Result<usize, JsValue> {
+        self.import
+            .compress_primitive(
+                MeshIndex(mesh),
+                primitive,
+                CompressionOptions {
+                    encoding_speed,
+                    decoding_speed,
+                    ..CompressionOptions::default()
+                },
+            )
+            .map(|report| report.encoded_bytes)
+            .map_err(wasm_error)
+    }
 }
 
+#[cfg(feature = "read")]
 #[wasm_bindgen]
 impl PackedGeometry {
     /// Creates an initially empty packed primitive with the selected topology.
@@ -371,6 +597,7 @@ impl PackedGeometry {
     }
 }
 
+#[cfg(feature = "read")]
 impl PackedGeometry {
     fn from_inner(inner: draco_gltf::PackedGeometry) -> Self {
         Self {

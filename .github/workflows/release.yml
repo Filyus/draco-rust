@@ -78,8 +78,7 @@ jobs:
             "obj_writer"
             "ply_reader"
             "ply_writer"
-            "gltf_document"
-            "gltf_compact"
+            "gltf"
             "fbx_reader"
             "fbx_writer"
           )

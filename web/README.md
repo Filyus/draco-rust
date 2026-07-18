@@ -3,59 +3,40 @@
 The WebAssembly workspace exposes independently loaded helpers for OBJ, PLY,
 FBX and glTF assets.
 
-## glTF modules
+## glTF module
 
-`gltf-document-wasm` exports `GltfDocument`, the full lossless scene API. Its
-default artifact parses JSON glTF and GLB, validates 2.0/2.1 profiles, returns
-source-preserving or minified JSON, serializes GLB v2/v3, and loads explicit
-resources. Feature `write` adds atomic Draco decompression; `draco-encode`
-adds document-preserving Draco compression.
+`gltf-wasm` is the single browser entry point for glTF. Its default artifact
+exports `GltfAsset`: it opens JSON glTF and GLB, resolves an explicit resource
+map, validates 2.0/2.1 profiles, preserves or minifies JSON, writes GLB v2/v3,
+and reads ordinary or Draco-compressed primitives as `PackedGeometry`.
+`PackedGeometry` is constructible from JavaScript for applications that need to
+prepare geometry before an optional write build.
 
-`gltf-compact-wasm` exports `CompactDocument` and `PackedGeometry`. The default
-artifact reads ordinary or Draco-compressed primitives into contiguous
-`Uint8Array` payloads. `PackedGeometry` is also constructible from JavaScript.
-Optional feature `write` adds raw `writePrimitive`, `pushPrimitive`,
-`fromGeometry`, JSON bundle and GLB output; `draco-encode` adds explicit Draco
-storage.
-
-The released compact artifact remains reader-only. Build optional writers from
-the same crate and API:
+The release artifact is read-only. Feature `write` adds raw
+`writePrimitive`, `pushPrimitive`, `fromGeometry`, JSON bundle output, and
+atomic Draco decompression. `draco-encode` adds explicit Draco storage.
 
 ```sh
 cargo run --manifest-path web/build-tool/Cargo.toml -- \
-  --module gltf-compact-wasm --features write
+  --module gltf-wasm --features write
 cargo run --manifest-path web/build-tool/Cargo.toml -- \
-  --module gltf-compact-wasm --features write,draco-encode
+  --module gltf-wasm --features write,draco-encode
 ```
 
-The document artifact follows the same codec split:
-
-```sh
-cargo run --manifest-path web/build-tool/Cargo.toml -- \
-  --module gltf-document-wasm --features write
-cargo run --manifest-path web/build-tool/Cargo.toml -- \
-  --module gltf-document-wasm --features write,draco-encode
-```
+For an application that only needs document inspection and lossless
+serialization, build the same module with `--no-default-features`; this is a
+custom profile rather than a separate public package.
 
 Reference optimized sizes from the 2026-07-18 Windows stable toolchain build:
 
-| compact build | raw WASM | gzip |
+| glTF build | raw WASM | gzip |
 | --- | ---: | ---: |
-| reader + Draco decode | 250,419 B | 102,989 B |
-| reader + raw write | 275,854 B | 113,322 B |
-| reader + raw/Draco write | 414,613 B | 164,985 B |
+| reader + Draco decode | 267,030 B | 109,818 B |
+| reader + raw write | 288,199 B | 118,367 B |
+| reader + raw/Draco write | 426,358 B | 170,191 B |
 
-The released reader is 100.6 KiB gzip, within the 112 KiB budget and 5.0% above
-the previous 95.8 KiB reference. Writer sizes are informational because those
-features are not included in the release asset.
-
-| document build | raw WASM | gzip |
-| --- | ---: | ---: |
-| document read/save | 114,311 B | 48,946 B |
-| document + `write` | 275,495 B | 113,804 B |
-| document + `draco-encode` | 413,032 B | 165,133 B |
-
-The released document artifact is 47.8 KiB gzip, within its 56 KiB budget.
+The released reader is 107.2 KiB gzip, within the 112 KiB budget. Writer sizes
+are informational because those features are not included in the release asset.
 
 ## Build and test
 

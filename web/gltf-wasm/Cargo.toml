@@ -1,8 +1,8 @@
 [package]
-name = "gltf-document-wasm"
+name = "gltf-wasm"
 version = "0.1.0"
 edition = "2021"
-description = "Full lossless glTF document API for WebAssembly"
+description = "glTF scene and geometry reading with optional writing for WebAssembly"
 repository = "https://github.com/Filyus/draco-rust"
 license = "Apache-2.0"
 
@@ -20,11 +20,8 @@ draco-gltf = { path = "../../crates/draco-gltf", default-features = false, featu
 draco-io = { path = "../../crates/draco-io", default-features = false, features = ["gltf"] }
 
 [features]
-default = []
+default = ["read"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
-# Materialize Draco primitives as ordinary accessors. Parsing and lossless
-# serialization remain available without geometry or codec features.
-write = ["draco-gltf/write", "draco-gltf/draco-decode"]
-# Add document-preserving Draco compression. This intentionally remains
-# separate from raw write/decompression because it pulls in the encoder.
+read = ["draco-gltf/geometry", "draco-gltf/draco-decode"]
+write = ["read", "draco-gltf/write"]
 draco-encode = ["write", "draco-gltf/draco-encode"]
