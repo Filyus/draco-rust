@@ -312,7 +312,7 @@ fn compact_runtime_materializes_sparse_accessors() {
             Err(draco_io::GltfError::ExternalResourceDenied(uri.into()))
         }
     };
-    let import = crate::parse_native_with_options(
+    let mut import = crate::parse_native_with_options(
         input,
         None,
         Some(&resolver),
@@ -335,6 +335,18 @@ fn compact_runtime_materializes_sparse_accessors() {
     assert_eq!(
         &position.bytes[24..],
         &[0, 0, 128, 64, 0, 0, 160, 64, 0, 0, 192, 64]
+    );
+    import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap();
+    import.decompress_in_place().unwrap();
+    assert_eq!(
+        import
+            .decode_geometry_primitive(import.document.primitive(crate::MeshIndex(0), 0).unwrap())
+            .unwrap()
+            .0
+            .num_points(),
+        3
     );
 }
 
