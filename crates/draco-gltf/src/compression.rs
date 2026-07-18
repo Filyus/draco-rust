@@ -519,8 +519,24 @@ impl Default for CompressionOptions {
 }
 #[derive(Clone, Debug, Default)]
 pub struct CompressionReport {
+    /// Export policy used for the transformed primitive.
+    pub mode: CompressionMode,
     pub compressed_primitives: usize,
+    /// Bytes in the newly encoded Draco payload.
     pub encoded_bytes: usize,
+    /// Total resolved binary bytes before the transform.
+    pub source_bytes: usize,
+    /// Total resolved binary bytes after the transform.
+    pub output_bytes: usize,
+    /// Bytes removed from the resolved binary store; zero for a fallback that
+    /// retains all ordinary geometry.
+    pub reclaimed_bytes: usize,
+}
+
+impl Default for CompressionMode {
+    fn default() -> Self {
+        Self::DracoOnly
+    }
 }
 
 impl Import {
@@ -560,6 +576,15 @@ impl Import {
         primitive: usize,
         options: CompressionOptions,
     ) -> Result<CompressionReport> {
+        let source_bytes = self
+            .resources
+            .buffers
+            .iter()
+            .try_fold(0usize, |total, buffer| {
+                total
+                    .checked_add(buffer.len())
+                    .ok_or_else(|| Error::ResourceLimit("total source buffer size overflow".into()))
+            })?;
         let reference = self
             .document
             .primitive(mesh, primitive)
@@ -618,9 +643,22 @@ impl Import {
         if options.mode == CompressionMode::DracoOnly {
             compact_draco_only_resources(&mut self.document, &mut self.resources.buffers)?;
         }
+        let output_bytes = self
+            .resources
+            .buffers
+            .iter()
+            .try_fold(0usize, |total, buffer| {
+                total
+                    .checked_add(buffer.len())
+                    .ok_or_else(|| Error::ResourceLimit("total output buffer size overflow".into()))
+            })?;
         Ok(CompressionReport {
+            mode: options.mode,
             compressed_primitives: 1,
             encoded_bytes: bytes.len(),
+            source_bytes,
+            output_bytes,
+            reclaimed_bytes: source_bytes.saturating_sub(output_bytes),
         })
     }
 }
