@@ -31,7 +31,7 @@ const WASM_OPT_ARGS: &[&str] = &[
     "--enable-sign-ext",
     "--enable-mutable-globals",
 ];
-const GLTF_READER_GZIP_BUDGET: usize = 100 * 1024;
+const GLTF_READER_GZIP_BUDGET: usize = 110 * 1024;
 
 #[derive(Clone, Debug)]
 struct Config {

@@ -32,6 +32,7 @@ byteorder = { version = "1.5.0", optional = true }
 serde = { version = "1.0.228", default-features = false, features = ["alloc", "derive"], optional = true }
 serde_json = { version = "1.0.148", optional = true, default-features = false, features = ["alloc"] }
 miniz_oxide = { version = "0.6", optional = true }
+nanoserde = { version = "0.2", default-features = false, features = ["std", "json"], optional = true }
 
 [features]
 default = [
@@ -48,6 +49,10 @@ all-writers = ["fbx-writer", "gltf-writer", "obj-writer", "ply-writer"]
 fbx-reader = ["scene"]
 fbx-writer = []
 gltf-reader = ["draco-core/decoder", "scene", "dep:serde", "dep:serde_json"]
+# Serde-free compact glTF reader front end: reuses the strict GLB container
+# and shared error type via `nanoserde`, without pulling the serde document
+# model into the binary. Intended for size-constrained front ends (WASM).
+gltf-compact = ["draco-core/decoder", "dep:nanoserde"]
 gltf-writer = [
     "draco-core/decoder",
     "draco-core/encoder",

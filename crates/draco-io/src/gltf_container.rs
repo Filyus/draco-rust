@@ -6,7 +6,7 @@ use std::io::Read;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-#[cfg(any(feature = "gltf-writer", test))]
+#[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
 use serde_json::Value;
 
 use crate::gltf_geometry::{GltfError, Result};
@@ -655,7 +655,10 @@ pub fn encode_data_uri(media_type: &str, data: &[u8]) -> Result<String> {
 /// Most callers should use [`serialize_gltf_document`], which also normalizes
 /// the consolidated buffer declaration. This lower-level helper is useful for
 /// fixtures whose JSON intentionally references companion resources.
-#[cfg(any(feature = "gltf-writer", test))]
+#[cfg(any(
+    feature = "gltf-writer",
+    all(test, any(feature = "gltf-reader", feature = "gltf-writer"))
+))]
 pub fn build_glb_container(document: &Value, bin: &[u8]) -> Result<Vec<u8>> {
     // Reject an impossible BIN chunk before attempting to copy it. The padded
     // chunk length and the complete GLB both have to fit GLB's u32 fields.
@@ -712,7 +715,10 @@ pub fn build_glb_container(document: &Value, bin: &[u8]) -> Result<Vec<u8>> {
     Ok(output)
 }
 
-#[cfg(any(feature = "gltf-writer", test))]
+#[cfg(any(
+    feature = "gltf-writer",
+    all(test, any(feature = "gltf-reader", feature = "gltf-writer"))
+))]
 fn pad_to_four(bytes: &mut Vec<u8>, padding: u8) -> Result<()> {
     let padding_len = (4 - bytes.len() % 4) % 4;
     let padded_len = bytes
@@ -775,7 +781,7 @@ fn serialize_json(document: &Value) -> Result<Vec<u8>> {
     Ok(output.bytes)
 }
 
-#[cfg(all(test, not(feature = "gltf-writer")))]
+#[cfg(all(test, feature = "gltf-reader", not(feature = "gltf-writer")))]
 fn serialize_json(document: &Value) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec(document)?)
 }
@@ -1043,6 +1049,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
     fn glb_builder_and_parser_are_strict() {
         let document = serde_json::json!({
             "asset": {"version": "2.0"},

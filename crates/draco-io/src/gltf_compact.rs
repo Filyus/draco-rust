@@ -1,0 +1,1114 @@
+//! Serde-free compact glTF reader front end.
+//!
+//! A size-constrained glTF reader that shares the strict GLB container
+//! validation and the [`GltfError`] type with the rest of `draco-io` but parses
+//! the JSON document with [`nanoserde`] instead of `serde_json`. This keeps the
+//! serde-backed document model (and its dependency) out of the binary, which is
+//! what browser/WASM builds need to stay under a tight size budget.
+//!
+//! For the full document model (materials, textures, skins, animations, ...)
+//! use the serde-backed [`crate::gltf_reader::GltfReader`] behind the
+//! `gltf-reader` feature instead.
+//!
+//! # Contract & limitations
+//!
+//! The compact reader deliberately handles a subset of glTF 2.0. Anything
+//! outside this contract is reported via [`GltfError::Unsupported`] rather than
+//! silently dropped:
+//!
+//! - **Geometry primitives** with draw mode `4` (`TRIANGLES`) or `5`
+//!   (`TRIANGLE_STRIP`) only.
+//! - **Vertex attributes** (`POSITION`, `NORMAL`, `TEXCOORD_0`) must use
+//!   `componentType` `5126` (FLOAT) and must not be normalized. Quanted
+//!   integer attributes are not expanded.
+//! - **Index accessors** (`SCALAR`, componentType `5121`/`5123`/`5125`).
+//! - **Color attributes** (`VEC3`/`VEC4`, FLOAT) are read when present.
+//! - A **single binary buffer**: every `bufferView` must reference `buffer: 0`.
+//!   GLB BIN chunk and one external/data-URI buffer are both supported, but
+//!   multi-buffer documents are rejected.
+//! - **No sparse accessors.**
+//! - **`extensionsRequired`** may contain only `KHR_draco_mesh_compression`.
+//!   `KHR_draco_mesh_compression` primitives are decoded through `draco-core`
+//!   and require FLOAT attributes (POSITION/NORMAL VEC3, TEXCOORD VEC2,
+//!   COLOR VEC3/VEC4).
+//! - Image URIs are **validated** (data-URIs decoded-and-discarded, external
+//!   URIs must be supplied via the resource map) but image bytes are never
+//!   materialized.
+//! - Node TRS and scene indices are bounds-checked; finite floats are enforced.
+
+use std::collections::HashMap;
+
+use draco_core::decoder_buffer::DecoderBuffer;
+use draco_core::draco_types::DataType;
+use draco_core::geometry_attribute::GeometryAttributeType;
+use draco_core::geometry_indices::FaceIndex;
+use draco_core::geometry_indices::PointIndex;
+use draco_core::mesh::Mesh;
+use draco_core::mesh_decoder::MeshDecoder;
+use nanoserde::DeJson;
+
+use crate::gltf_container::decode_data_uri;
+use crate::gltf_geometry::{GltfError, Result};
+
+/// Decoded geometry for a single glTF primitive.
+///
+/// Geometry-neutral DTO: no `wasm_bindgen`, no `nanoserde` serialization. A
+/// front end (e.g. a WASM crate) maps this into whatever shape its platform
+/// expects.
+#[derive(Debug, Clone, Default)]
+pub struct CompactMeshData {
+    /// Mesh name from the glTF `meshes[].name`.
+    pub name: Option<String>,
+    /// Vertex positions as `[x0, y0, z0, ...]`.
+    pub positions: Vec<f32>,
+    /// Triangle indices as `[i0, i1, i2, ...]`.
+    pub indices: Vec<u32>,
+    /// Vertex normals, when present.
+    pub normals: Vec<f32>,
+    /// First texture-coordinate set, when present.
+    pub uvs: Vec<f32>,
+    /// First color set, when present.
+    pub colors: Vec<f32>,
+}
+
+/// Minimal scene-graph node (TRS + hierarchy), as carried by the document.
+#[derive(Debug, Clone, Default)]
+pub struct CompactNode {
+    pub name: Option<String>,
+    pub mesh: Option<usize>,
+    pub translation: Option<Vec<f32>>,
+    pub rotation: Option<Vec<f32>>,
+    pub scale: Option<Vec<f32>>,
+    pub children: Vec<usize>,
+}
+
+/// Minimal scene: a named set of root node indices.
+#[derive(Debug, Clone, Default)]
+pub struct CompactScene {
+    pub name: Option<String>,
+    pub nodes: Vec<usize>,
+}
+
+/// Fully decoded compact document: geometry + scene metadata.
+#[derive(Debug, Clone, Default)]
+pub struct CompactDocument {
+    pub meshes: Vec<CompactMeshData>,
+    pub nodes: Vec<CompactNode>,
+    pub scenes: Vec<CompactScene>,
+    pub default_scene: Option<usize>,
+    pub uses_draco: bool,
+}
+
+#[derive(DeJson, Default)]
+struct CompactRoot {
+    #[nserde(default)]
+    accessors: Vec<CompactAccessor>,
+    #[nserde(default, rename = "bufferViews")]
+    buffer_views: Vec<CompactBufferView>,
+    #[nserde(default)]
+    buffers: Vec<CompactBuffer>,
+    #[nserde(default)]
+    images: Vec<CompactImage>,
+    #[nserde(default)]
+    meshes: Vec<CompactMesh>,
+    #[nserde(default)]
+    nodes: Vec<CompactNodeJson>,
+    #[nserde(default)]
+    scenes: Vec<CompactSceneJson>,
+    #[nserde(default)]
+    scene: Option<usize>,
+    #[nserde(default, rename = "extensionsUsed")]
+    extensions_used: Vec<String>,
+    #[nserde(default, rename = "extensionsRequired")]
+    extensions_required: Vec<String>,
+}
+
+#[derive(DeJson, Default)]
+struct CompactAccessor {
+    #[nserde(default, rename = "bufferView")]
+    buffer_view: Option<usize>,
+    #[nserde(default, rename = "byteOffset")]
+    byte_offset: Option<usize>,
+    #[nserde(default, rename = "componentType")]
+    component_type: u32,
+    #[nserde(default)]
+    count: usize,
+    #[nserde(default, rename = "type")]
+    accessor_type: String,
+    #[nserde(default)]
+    normalized: bool,
+    #[nserde(default)]
+    sparse: Option<CompactSparse>,
+}
+
+#[derive(DeJson, Default)]
+struct CompactSparse {}
+
+#[derive(DeJson, Default)]
+struct CompactBufferView {
+    #[nserde(default)]
+    buffer: usize,
+    #[nserde(default, rename = "byteOffset")]
+    byte_offset: Option<usize>,
+    #[nserde(default, rename = "byteLength")]
+    byte_length: usize,
+    #[nserde(default, rename = "byteStride")]
+    byte_stride: Option<usize>,
+}
+
+#[derive(DeJson, Default)]
+struct CompactBuffer {
+    #[nserde(default, rename = "byteLength")]
+    byte_length: usize,
+    #[nserde(default)]
+    uri: Option<String>,
+}
+
+#[derive(DeJson, Default)]
+struct CompactImage {
+    #[nserde(default)]
+    uri: Option<String>,
+}
+
+#[derive(DeJson, Default)]
+struct CompactMesh {
+    #[nserde(default)]
+    name: Option<String>,
+    #[nserde(default)]
+    primitives: Vec<CompactPrimitive>,
+}
+
+#[derive(DeJson, Default)]
+struct CompactPrimitive {
+    #[nserde(default)]
+    attributes: HashMap<String, u32>,
+    #[nserde(default)]
+    indices: Option<u32>,
+    #[nserde(default)]
+    mode: Option<u32>,
+    #[nserde(default)]
+    extensions: Option<CompactPrimitiveExtensions>,
+}
+
+#[derive(DeJson, Default)]
+struct CompactPrimitiveExtensions {
+    #[nserde(default, rename = "KHR_draco_mesh_compression")]
+    khr_draco: Option<CompactDracoExtension>,
+}
+
+#[derive(DeJson, Default)]
+struct CompactDracoExtension {
+    #[nserde(default, rename = "bufferView")]
+    buffer_view: Option<usize>,
+    #[nserde(default)]
+    attributes: HashMap<String, u32>,
+}
+
+#[derive(DeJson, Default)]
+struct CompactNodeJson {
+    #[nserde(default)]
+    name: Option<String>,
+    #[nserde(default)]
+    mesh: Option<usize>,
+    #[nserde(default)]
+    translation: Option<Vec<f32>>,
+    #[nserde(default)]
+    rotation: Option<Vec<f32>>,
+    #[nserde(default)]
+    scale: Option<Vec<f32>>,
+    #[nserde(default)]
+    children: Vec<usize>,
+}
+
+#[derive(DeJson, Default)]
+struct CompactSceneJson {
+    #[nserde(default)]
+    name: Option<String>,
+    #[nserde(default)]
+    nodes: Vec<usize>,
+}
+
+/// Parse a checked glTF JSON document against the compact contract.
+///
+/// `bin_buffer` is the GLB BIN chunk (or `None` for `.gltf` + external/data-URI
+/// buffers). `resources` is a flat list of `(uri, bytes)` for external buffers
+/// and images; a missing external buffer URI is surfaced as a controlled
+/// [`GltfError::InvalidGltf`] carrying the URI.
+///
+/// GLB container splitting is owned by [`crate::parse_glb_json_and_bin`]; this
+/// function takes already-separated JSON.
+pub fn parse_compact_document(
+    json: &str,
+    bin_buffer: Option<&[u8]>,
+    resources: &[(String, Vec<u8>)],
+) -> Result<CompactDocument> {
+    let root: CompactRoot = DeJson::deserialize_json(json)
+        .map_err(|_| GltfError::InvalidGltf("failed to parse glTF JSON".into()))?;
+    let resolved = if bin_buffer.is_none() {
+        root.buffers
+            .iter()
+            .find_map(|buffer| buffer.uri.as_deref())
+            .map(|uri| resolve_buffer_uri(uri, resources))
+            .transpose()
+    } else {
+        Ok(None)
+    }?;
+    let buffer = bin_buffer.or(resolved.as_deref());
+    for image in &root.images {
+        if let Some(uri) = image.uri.as_deref() {
+            if uri.starts_with("data:") {
+                decode_data_uri(uri, None)
+                    .map_err(|_| GltfError::InvalidGltf("invalid image data URI".into()))?;
+            } else if !resources.iter().any(|(candidate, _)| candidate == uri) {
+                return Err(GltfError::InvalidGltf(uri.to_string()));
+            }
+        }
+    }
+    validate_document(&root, buffer)?;
+
+    let uses_draco = root
+        .extensions_used
+        .iter()
+        .any(|name| name == "KHR_draco_mesh_compression");
+    let mut meshes = Vec::new();
+    let total_primitives: usize = root.meshes.iter().map(|mesh| mesh.primitives.len()).sum();
+    meshes
+        .try_reserve_exact(total_primitives)
+        .map_err(|_| GltfError::ResourceLimitExceeded("mesh result is too large".into()))?;
+    for gltf_mesh in &root.meshes {
+        for primitive in &gltf_mesh.primitives {
+            meshes.push(decode_primitive(
+                &root,
+                primitive,
+                buffer,
+                gltf_mesh.name.clone(),
+            )?);
+        }
+    }
+    if meshes.is_empty() {
+        return Err(GltfError::InvalidGltf(
+            "document contains no mesh primitives".into(),
+        ));
+    }
+    let nodes = root
+        .nodes
+        .iter()
+        .map(|node| CompactNode {
+            name: node.name.clone(),
+            mesh: node.mesh,
+            translation: node.translation.clone(),
+            rotation: node.rotation.clone(),
+            scale: node.scale.clone(),
+            children: node.children.clone(),
+        })
+        .collect();
+    let scenes = root
+        .scenes
+        .iter()
+        .map(|scene| CompactScene {
+            name: scene.name.clone(),
+            nodes: scene.nodes.clone(),
+        })
+        .collect();
+    Ok(CompactDocument {
+        meshes,
+        nodes,
+        scenes,
+        default_scene: root.scene,
+        uses_draco,
+    })
+}
+
+fn decode_primitive(
+    root: &CompactRoot,
+    primitive: &CompactPrimitive,
+    buffer: Option<&[u8]>,
+    name: Option<String>,
+) -> Result<CompactMeshData> {
+    if let Some(draco) = primitive
+        .extensions
+        .as_ref()
+        .and_then(|extensions| extensions.khr_draco.as_ref())
+    {
+        let view = draco
+            .buffer_view
+            .ok_or_else(|| GltfError::InvalidGltf("KHR Draco bufferView is missing".into()))?;
+        let data = buffer
+            .and_then(|bytes| buffer_view_slice(&root.buffer_views, view, bytes))
+            .ok_or_else(|| GltfError::InvalidGltf("KHR Draco bufferView is out of range".into()))?;
+        let mut decoded = decode_draco_mesh(data, &draco.attributes)?;
+        decoded.name = name;
+        return Ok(decoded);
+    }
+
+    let data = buffer.ok_or_else(|| GltfError::InvalidGltf("missing buffer".into()))?;
+    let mut mesh = CompactMeshData {
+        name,
+        ..Default::default()
+    };
+    if let Some(&index) = primitive.attributes.get("POSITION") {
+        mesh.positions = read_vec3(&root.accessors, &root.buffer_views, data, index)?;
+    }
+    if let Some(&index) = primitive.attributes.get("NORMAL") {
+        mesh.normals = read_vec3(&root.accessors, &root.buffer_views, data, index)?;
+    }
+    if let Some(&index) = primitive.attributes.get("TEXCOORD_0") {
+        mesh.uvs = read_vec2(&root.accessors, &root.buffer_views, data, index)?;
+    }
+    if let Some(index) = primitive.indices {
+        mesh.indices = read_indices(&root.accessors, &root.buffer_views, data, index)?;
+    }
+    if primitive.mode.unwrap_or(4) == 5 {
+        if mesh.indices.is_empty() {
+            let count = mesh.positions.len() / 3;
+            mesh.indices = generate_sequential_indices(count)?;
+        }
+        mesh.indices = triangulate_strip(&mesh.indices);
+    } else if mesh.indices.is_empty() {
+        let count = mesh.positions.len() / 3;
+        if count % 3 != 0 {
+            return Err(GltfError::InvalidGltf(
+                "non-indexed TRIANGLES count is not divisible by three".into(),
+            ));
+        }
+        mesh.indices = generate_sequential_indices(count)?;
+    }
+    if mesh.indices.len() % 3 != 0
+        || mesh
+            .indices
+            .iter()
+            .any(|&index| index as usize >= mesh.positions.len() / 3)
+    {
+        return Err(GltfError::InvalidGltf("invalid triangle indices".into()));
+    }
+    Ok(mesh)
+}
+
+fn generate_sequential_indices(count: usize) -> Result<Vec<u32>> {
+    (0..count)
+        .map(u32::try_from)
+        .collect::<std::result::Result<Vec<u32>, _>>()
+        .map_err(|_| GltfError::ResourceLimitExceeded("vertex count exceeds u32".into()))
+}
+
+fn resolve_buffer_uri(uri: &str, resources: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
+    if uri.starts_with("data:") {
+        return decode_data_uri(uri, None)
+            .map_err(|_| GltfError::InvalidGltf("invalid buffer data URI".into()));
+    }
+    resources
+        .iter()
+        .find(|(candidate, _)| candidate == uri)
+        .map(|(_, bytes)| bytes.clone())
+        .ok_or_else(|| GltfError::InvalidGltf(uri.to_string()))
+}
+
+fn buffer_view_slice<'a>(
+    views: &[CompactBufferView],
+    index: usize,
+    data: &'a [u8],
+) -> Option<&'a [u8]> {
+    let view = views.get(index)?;
+    let start = view.byte_offset.unwrap_or(0);
+    let end = start.checked_add(view.byte_length)?;
+    data.get(start..end)
+}
+
+fn validate_document(root: &CompactRoot, data: Option<&[u8]>) -> Result<()> {
+    let draco_used = root
+        .extensions_used
+        .iter()
+        .any(|name| name == "KHR_draco_mesh_compression");
+    if root
+        .extensions_required
+        .iter()
+        .any(|name| name != "KHR_draco_mesh_compression")
+    {
+        return Err(GltfError::Unsupported(
+            "extensionsRequired declares an unsupported extension".into(),
+        ));
+    }
+    if root
+        .extensions_required
+        .iter()
+        .any(|name| name == "KHR_draco_mesh_compression")
+        && !draco_used
+    {
+        return Err(GltfError::InvalidGltf(
+            "KHR_draco_mesh_compression is required but not used".into(),
+        ));
+    }
+    let data = match data {
+        Some(data) => data,
+        None if root.buffer_views.is_empty()
+            && root.meshes.iter().all(|mesh| mesh.primitives.is_empty()) =>
+        {
+            return Ok(());
+        }
+        None => {
+            return Err(GltfError::InvalidGltf(
+                "document references a buffer but none was supplied".into(),
+            ));
+        }
+    };
+    if root
+        .buffers
+        .first()
+        .is_some_and(|buffer| buffer.byte_length > data.len())
+    {
+        return Err(GltfError::InvalidGltf(
+            "declared buffer length exceeds the supplied buffer".into(),
+        ));
+    }
+    for view in &root.buffer_views {
+        if view.buffer != 0
+            || view
+                .byte_offset
+                .unwrap_or(0)
+                .checked_add(view.byte_length)
+                .is_none_or(|end| end > data.len())
+        {
+            return Err(GltfError::InvalidGltf(
+                "bufferView is out of range or references a non-zero buffer".into(),
+            ));
+        }
+        if let Some(stride) = view.byte_stride {
+            if !(4..=252).contains(&stride) || stride % 4 != 0 {
+                return Err(GltfError::Unsupported(
+                    "bufferView byteStride is outside 4..=252 or not divisible by 4".into(),
+                ));
+            }
+        }
+    }
+    for (node_index, node) in root.nodes.iter().enumerate() {
+        if node.mesh.is_some_and(|mesh| mesh >= root.meshes.len())
+            || node
+                .children
+                .iter()
+                .any(|&child| child >= root.nodes.len() || child == node_index)
+        {
+            return Err(GltfError::InvalidGltf(
+                "node mesh or child reference is out of range".into(),
+            ));
+        }
+        for value in [&node.translation, &node.scale] {
+            if value.as_ref().is_some_and(|values| {
+                values.len() != 3 || values.iter().any(|value| !value.is_finite())
+            }) {
+                return Err(GltfError::InvalidGltf(
+                    "node translation/scale must be a finite VEC3".into(),
+                ));
+            }
+        }
+        if node.rotation.as_ref().is_some_and(|values| {
+            values.len() != 4 || values.iter().any(|value| !value.is_finite())
+        }) {
+            return Err(GltfError::InvalidGltf(
+                "node rotation must be a finite VEC4".into(),
+            ));
+        }
+    }
+    for scene in &root.scenes {
+        if scene.nodes.iter().any(|&node| node >= root.nodes.len()) {
+            return Err(GltfError::InvalidGltf(
+                "scene node reference is out of range".into(),
+            ));
+        }
+    }
+    for mesh in &root.meshes {
+        for primitive in &mesh.primitives {
+            if !primitive.attributes.contains_key("POSITION")
+                || !matches!(primitive.mode.unwrap_or(4), 4 | 5)
+            {
+                return Err(GltfError::Unsupported(
+                    "primitive lacks POSITION or uses an unsupported draw mode".into(),
+                ));
+            }
+            let has_draco = primitive
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.khr_draco.as_ref())
+                .is_some();
+            for &accessor in primitive.attributes.values() {
+                validate_accessor(root, data, accessor, has_draco)?;
+            }
+            if let Some(index) = primitive.indices {
+                validate_accessor(root, data, index, has_draco)?;
+            }
+            if let Some(draco) = primitive
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.khr_draco.as_ref())
+            {
+                let view = draco.buffer_view.ok_or_else(|| {
+                    GltfError::InvalidGltf("KHR Draco bufferView is missing".into())
+                })?;
+                if draco.attributes.is_empty()
+                    || buffer_view_slice(&root.buffer_views, view, data).is_none()
+                {
+                    return Err(GltfError::InvalidGltf(
+                        "KHR Draco extension is missing attributes or bufferView".into(),
+                    ));
+                }
+                if draco
+                    .attributes
+                    .keys()
+                    .any(|semantic| !primitive.attributes.contains_key(semantic))
+                {
+                    return Err(GltfError::InvalidGltf(
+                        "KHR Draco attributes must be a subset of primitive attributes".into(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_accessor(
+    root: &CompactRoot,
+    data: &[u8],
+    index: u32,
+    allow_missing_view: bool,
+) -> Result<()> {
+    let accessor = root
+        .accessors
+        .get(
+            usize::try_from(index)
+                .map_err(|_| GltfError::InvalidGltf("accessor index exceeds usize".into()))?,
+        )
+        .ok_or_else(|| GltfError::InvalidGltf("accessor index is out of range".into()))?;
+    if accessor.sparse.is_some() {
+        return Err(GltfError::Unsupported(
+            "sparse accessors are not supported".into(),
+        ));
+    }
+    let components: usize = match accessor.accessor_type.as_str() {
+        "SCALAR" => 1,
+        "VEC2" => 2,
+        "VEC3" => 3,
+        "VEC4" => 4,
+        other => {
+            return Err(GltfError::Unsupported(format!(
+                "accessor type {other} is not supported"
+            )));
+        }
+    };
+    let width = match accessor.component_type {
+        5121 => 1,
+        5123 => 2,
+        5125 | 5126 => 4,
+        other => {
+            return Err(GltfError::Unsupported(format!(
+                "componentType {other} is not supported"
+            )));
+        }
+    };
+    let view = match accessor.buffer_view {
+        Some(index) => root
+            .buffer_views
+            .get(index)
+            .ok_or_else(|| GltfError::InvalidGltf("bufferView index is out of range".into()))?,
+        None if allow_missing_view => return Ok(()),
+        None => {
+            return Err(GltfError::InvalidGltf(
+                "accessor is missing a bufferView".into(),
+            ));
+        }
+    };
+    let row = components
+        .checked_mul(width)
+        .ok_or_else(|| GltfError::InvalidGltf("accessor row size overflow".into()))?;
+    let stride = view.byte_stride.unwrap_or(row);
+    if stride < row {
+        return Err(GltfError::InvalidGltf(format!(
+            "accessor stride {stride} is smaller than row size {row}"
+        )));
+    }
+    let bytes = if accessor.count == 0 {
+        0
+    } else {
+        accessor
+            .count
+            .checked_sub(1)
+            .ok_or_else(|| GltfError::InvalidGltf("accessor count underflow".into()))?
+            .checked_mul(stride)
+            .ok_or_else(|| GltfError::InvalidGltf("accessor byte range overflow".into()))?
+            .checked_add(row)
+            .ok_or_else(|| GltfError::InvalidGltf("accessor byte range overflow".into()))?
+    };
+    let start = view
+        .byte_offset
+        .unwrap_or(0)
+        .checked_add(accessor.byte_offset.unwrap_or(0))
+        .ok_or_else(|| GltfError::InvalidGltf("accessor offset overflow".into()))?;
+    if start.checked_add(bytes).is_none_or(|end| end > data.len()) {
+        return Err(GltfError::InvalidGltf(
+            "accessor byte range is outside the buffer".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn accessor_bounds<'a>(
+    accessors: &'a [CompactAccessor],
+    views: &'a [CompactBufferView],
+    index: u32,
+) -> Result<(&'a CompactAccessor, &'a CompactBufferView, usize)> {
+    let accessor = accessors
+        .get(
+            usize::try_from(index)
+                .map_err(|_| GltfError::InvalidGltf("accessor index exceeds usize".into()))?,
+        )
+        .ok_or_else(|| GltfError::InvalidGltf("accessor index is out of range".into()))?;
+    let view = accessor
+        .buffer_view
+        .and_then(|index| views.get(index))
+        .ok_or_else(|| GltfError::InvalidGltf("accessor is missing a bufferView".into()))?;
+    let start = view
+        .byte_offset
+        .unwrap_or(0)
+        .checked_add(accessor.byte_offset.unwrap_or(0))
+        .ok_or_else(|| GltfError::InvalidGltf("accessor offset overflow".into()))?;
+    Ok((accessor, view, start))
+}
+
+fn read_vec3(
+    accessors: &[CompactAccessor],
+    views: &[CompactBufferView],
+    data: &[u8],
+    index: u32,
+) -> Result<Vec<f32>> {
+    let (accessor, view, start) = accessor_bounds(accessors, views, index)?;
+    if accessor.accessor_type != "VEC3" || accessor.component_type != 5126 || accessor.normalized {
+        return Err(GltfError::Unsupported(
+            "VEC3 attribute must be FLOAT (5126) and unnormalized".into(),
+        ));
+    }
+    let stride = view.byte_stride.unwrap_or(12);
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(
+            accessor.count.checked_mul(3).ok_or_else(|| {
+                GltfError::ResourceLimitExceeded("VEC3 result size overflow".into())
+            })?,
+        )
+        .map_err(|_| GltfError::ResourceLimitExceeded("failed to allocate VEC3 result".into()))?;
+    for row in 0..accessor.count {
+        let row_offset = row
+            .checked_mul(stride)
+            .ok_or_else(|| GltfError::InvalidGltf("VEC3 row offset overflow".into()))?;
+        let offset = start
+            .checked_add(row_offset)
+            .ok_or_else(|| GltfError::InvalidGltf("VEC3 row offset overflow".into()))?;
+        let end = offset
+            .checked_add(12)
+            .ok_or_else(|| GltfError::InvalidGltf("VEC3 row end overflow".into()))?;
+        let bytes = data
+            .get(offset..end)
+            .ok_or_else(|| GltfError::InvalidGltf("VEC3 value extends past its buffer".into()))?;
+        let x = f32::from_le_bytes(
+            bytes[0..4]
+                .try_into()
+                .map_err(|_| GltfError::InvalidGltf("VEC3 x component is malformed".into()))?,
+        );
+        let y = f32::from_le_bytes(
+            bytes[4..8]
+                .try_into()
+                .map_err(|_| GltfError::InvalidGltf("VEC3 y component is malformed".into()))?,
+        );
+        let z = f32::from_le_bytes(
+            bytes[8..12]
+                .try_into()
+                .map_err(|_| GltfError::InvalidGltf("VEC3 z component is malformed".into()))?,
+        );
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+            return Err(GltfError::InvalidGltf(
+                "VEC3 attribute contains a non-finite value".into(),
+            ));
+        }
+        output.extend_from_slice(&[x, y, z]);
+    }
+    Ok(output)
+}
+
+fn read_vec2(
+    accessors: &[CompactAccessor],
+    views: &[CompactBufferView],
+    data: &[u8],
+    index: u32,
+) -> Result<Vec<f32>> {
+    let (accessor, view, start) = accessor_bounds(accessors, views, index)?;
+    if accessor.accessor_type != "VEC2" || accessor.component_type != 5126 || accessor.normalized {
+        return Err(GltfError::Unsupported(
+            "VEC2 attribute must be FLOAT (5126) and unnormalized".into(),
+        ));
+    }
+    let stride = view.byte_stride.unwrap_or(8);
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(
+            accessor.count.checked_mul(2).ok_or_else(|| {
+                GltfError::ResourceLimitExceeded("VEC2 result size overflow".into())
+            })?,
+        )
+        .map_err(|_| GltfError::ResourceLimitExceeded("failed to allocate VEC2 result".into()))?;
+    for row in 0..accessor.count {
+        let row_offset = row
+            .checked_mul(stride)
+            .ok_or_else(|| GltfError::InvalidGltf("VEC2 row offset overflow".into()))?;
+        let offset = start
+            .checked_add(row_offset)
+            .ok_or_else(|| GltfError::InvalidGltf("VEC2 row offset overflow".into()))?;
+        let end = offset
+            .checked_add(8)
+            .ok_or_else(|| GltfError::InvalidGltf("VEC2 row end overflow".into()))?;
+        let bytes = data
+            .get(offset..end)
+            .ok_or_else(|| GltfError::InvalidGltf("VEC2 value extends past its buffer".into()))?;
+        let u = f32::from_le_bytes(
+            bytes[0..4]
+                .try_into()
+                .map_err(|_| GltfError::InvalidGltf("VEC2 u component is malformed".into()))?,
+        );
+        let v = f32::from_le_bytes(
+            bytes[4..8]
+                .try_into()
+                .map_err(|_| GltfError::InvalidGltf("VEC2 v component is malformed".into()))?,
+        );
+        if !u.is_finite() || !v.is_finite() {
+            return Err(GltfError::InvalidGltf(
+                "VEC2 attribute contains a non-finite value".into(),
+            ));
+        }
+        output.extend_from_slice(&[u, v]);
+    }
+    Ok(output)
+}
+
+fn read_indices(
+    accessors: &[CompactAccessor],
+    views: &[CompactBufferView],
+    data: &[u8],
+    index: u32,
+) -> Result<Vec<u32>> {
+    let (accessor, view, start) = accessor_bounds(accessors, views, index)?;
+    if accessor.accessor_type != "SCALAR" || accessor.normalized {
+        return Err(GltfError::Unsupported(
+            "index accessor must be an unnormalized SCALAR".into(),
+        ));
+    }
+    let size = match accessor.component_type {
+        5121 => 1,
+        5123 => 2,
+        5125 => 4,
+        other => {
+            return Err(GltfError::Unsupported(format!(
+                "index componentType {other} is not supported"
+            )));
+        }
+    };
+    let stride = view.byte_stride.unwrap_or(size);
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(accessor.count)
+        .map_err(|_| GltfError::ResourceLimitExceeded("failed to allocate indices".into()))?;
+    for row in 0..accessor.count {
+        let row_offset = row
+            .checked_mul(stride)
+            .ok_or_else(|| GltfError::InvalidGltf("index row offset overflow".into()))?;
+        let offset = start
+            .checked_add(row_offset)
+            .ok_or_else(|| GltfError::InvalidGltf("index row offset overflow".into()))?;
+        let end = offset
+            .checked_add(size)
+            .ok_or_else(|| GltfError::InvalidGltf("index row end overflow".into()))?;
+        let bytes = data
+            .get(offset..end)
+            .ok_or_else(|| GltfError::InvalidGltf("index value extends past its buffer".into()))?;
+        output.push(match size {
+            1 => bytes[0] as u32,
+            2 => u16::from_le_bytes(
+                bytes
+                    .try_into()
+                    .map_err(|_| GltfError::InvalidGltf("u16 index is malformed".into()))?,
+            ) as u32,
+            _ => u32::from_le_bytes(
+                bytes
+                    .try_into()
+                    .map_err(|_| GltfError::InvalidGltf("u32 index is malformed".into()))?,
+            ),
+        });
+    }
+    Ok(output)
+}
+
+fn triangulate_strip(indices: &[u32]) -> Vec<u32> {
+    if indices.len() < 3 {
+        return Vec::new();
+    }
+    let Some(capacity) = (indices.len() - 2).checked_mul(3) else {
+        return Vec::new();
+    };
+    let mut output = Vec::new();
+    if output.try_reserve_exact(capacity).is_err() {
+        return Vec::new();
+    }
+    for index in 2..indices.len() {
+        if index % 2 == 0 {
+            output.extend_from_slice(&[indices[index - 2], indices[index - 1], indices[index]]);
+        } else {
+            output.extend_from_slice(&[indices[index - 1], indices[index - 2], indices[index]]);
+        }
+    }
+    output
+}
+
+fn decode_draco_mesh(
+    data: &[u8],
+    extension_attributes: &HashMap<String, u32>,
+) -> Result<CompactMeshData> {
+    let mut buffer = DecoderBuffer::new(data);
+    let mut mesh = Mesh::new();
+    let mut decoder = MeshDecoder::new();
+    decoder
+        .decode(&mut buffer, &mut mesh)
+        .map_err(GltfError::DracoDecode)?;
+    if extension_attributes
+        .values()
+        .any(|&id| mesh.attribute_by_unique_id(id).is_none())
+    {
+        return Err(GltfError::InvalidGltf(
+            "KHR Draco attribute id is not present in the decoded mesh".into(),
+        ));
+    }
+    let positions = draco_attribute(&mesh, GeometryAttributeType::Position, 3)?
+        .ok_or_else(|| GltfError::InvalidGltf("decoded Draco mesh has no POSITION".into()))?;
+    let normals = draco_attribute(&mesh, GeometryAttributeType::Normal, 3)?.unwrap_or_default();
+    let uvs = draco_attribute(&mesh, GeometryAttributeType::TexCoord, 2)?.unwrap_or_default();
+    let colors =
+        draco_attribute_range(&mesh, GeometryAttributeType::Color, 3, 4)?.unwrap_or_default();
+    let count = mesh
+        .num_faces()
+        .checked_mul(3)
+        .ok_or_else(|| GltfError::ResourceLimitExceeded("triangle index count overflow".into()))?;
+    let mut indices = Vec::new();
+    indices
+        .try_reserve_exact(count)
+        .map_err(|_| GltfError::ResourceLimitExceeded("failed to allocate indices".into()))?;
+    for face_index in 0..mesh.num_faces() {
+        let face = mesh
+            .face(FaceIndex(u32::try_from(face_index).map_err(|_| {
+                GltfError::InvalidGltf("face index exceeds u32".into())
+            })?));
+        for point in face {
+            if point.0 as usize >= mesh.num_points() {
+                return Err(GltfError::InvalidGltf(
+                    "decoded face references an out-of-range point".into(),
+                ));
+            }
+            indices.push(point.0);
+        }
+    }
+    Ok(CompactMeshData {
+        name: None,
+        positions,
+        indices,
+        normals,
+        uvs,
+        colors,
+    })
+}
+
+fn draco_attribute(
+    mesh: &Mesh,
+    kind: GeometryAttributeType,
+    components: u8,
+) -> Result<Option<Vec<f32>>> {
+    draco_attribute_range(mesh, kind, components, components)
+}
+
+fn draco_attribute_range(
+    mesh: &Mesh,
+    kind: GeometryAttributeType,
+    min_components: u8,
+    max_components: u8,
+) -> Result<Option<Vec<f32>>> {
+    let id = mesh.named_attribute_id(kind);
+    if id < 0 {
+        return Ok(None);
+    }
+    let attribute = mesh
+        .try_attribute(id)
+        .map_err(|_| GltfError::InvalidGltf("invalid decoded Draco attribute".into()))?;
+    let components = attribute.num_components();
+    if components < min_components
+        || components > max_components
+        || attribute.data_type() != DataType::Float32
+    {
+        return Err(GltfError::Unsupported(
+            "decoded Draco attribute uses an unsupported component count or type".into(),
+        ));
+    }
+    let stride = usize::try_from(attribute.byte_stride())
+        .map_err(|_| GltfError::InvalidGltf("decoded attribute has a negative stride".into()))?;
+    let row_size = usize::from(components)
+        .checked_mul(4)
+        .ok_or_else(|| GltfError::InvalidGltf("decoded attribute row size overflow".into()))?;
+    if stride < row_size {
+        return Err(GltfError::InvalidGltf(format!(
+            "decoded attribute stride {stride} is smaller than row size {row_size}"
+        )));
+    }
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(
+            mesh.num_points()
+                .checked_mul(usize::from(components))
+                .ok_or_else(|| {
+                    GltfError::ResourceLimitExceeded("attribute result size overflow".into())
+                })?,
+        )
+        .map_err(|_| {
+            GltfError::ResourceLimitExceeded("failed to allocate attribute result".into())
+        })?;
+    for point in 0..mesh.num_points() {
+        let value = attribute
+            .mapped_index(PointIndex(u32::try_from(point).map_err(|_| {
+                GltfError::InvalidGltf("point index exceeds u32".into())
+            })?));
+        if value.0 == u32::MAX {
+            return Err(GltfError::InvalidGltf(format!(
+                "decoded attribute has no value for point {point}"
+            )));
+        }
+        let start = usize::try_from(value.0)
+            .map_err(|_| GltfError::InvalidGltf("mapped index exceeds usize".into()))?
+            .checked_mul(stride)
+            .ok_or_else(|| GltfError::InvalidGltf("attribute offset overflow".into()))?;
+        let end = start
+            .checked_add(row_size)
+            .ok_or_else(|| GltfError::InvalidGltf("attribute range overflow".into()))?;
+        let bytes = attribute.buffer().data().get(start..end).ok_or_else(|| {
+            GltfError::InvalidGltf("attribute value extends past its buffer".into())
+        })?;
+        for component in bytes.chunks_exact(4) {
+            let value = f32::from_le_bytes(
+                component
+                    .try_into()
+                    .map_err(|_| GltfError::InvalidGltf("decoded scalar is malformed".into()))?,
+            );
+            if !value.is_finite() {
+                return Err(GltfError::InvalidGltf(
+                    "decoded attribute contains a non-finite value".into(),
+                ));
+            }
+            output.push(value);
+        }
+    }
+    Ok(Some(output))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn triangle_resource() -> Vec<u8> {
+        [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect()
+    }
+
+    fn external_triangle_json() -> Vec<u8> {
+        br#"{
+          "asset":{"version":"2.0"},
+          "buffers":[{"uri":"triangle.bin","byteLength":36}],
+          "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],
+          "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+          "meshes":[{"name":"Triangle","primitives":[{"attributes":{"POSITION":0}}]}],
+          "nodes":[{"mesh":0}],
+          "scenes":[{"nodes":[0]}],
+          "scene":0
+        }"#
+        .to_vec()
+    }
+
+    #[test]
+    fn decodes_external_resource() {
+        let resources = vec![("triangle.bin".to_string(), triangle_resource())];
+        let input = external_triangle_json();
+        let json = std::str::from_utf8(&input).unwrap();
+        let document = parse_compact_document(json, None, &resources).unwrap();
+        assert_eq!(document.meshes.len(), 1);
+        assert_eq!(document.meshes[0].positions.len(), 9);
+        assert_eq!(document.meshes[0].indices, vec![0, 1, 2]);
+        assert_eq!(document.meshes[0].name.as_deref(), Some("Triangle"));
+        assert_eq!(document.default_scene, Some(0));
+    }
+
+    #[test]
+    fn missing_external_resource_reports_uri() {
+        let input = external_triangle_json();
+        let json = std::str::from_utf8(&input).unwrap();
+        let error = parse_compact_document(json, None, &[]).unwrap_err();
+        assert!(matches!(error, GltfError::InvalidGltf(ref message) if message == "triangle.bin"));
+    }
+
+    #[test]
+    fn rejects_malformed_accessor() {
+        let json = r#"{
+            "asset":{"version":"2.0"},
+            "buffers":[{"byteLength":4}],
+            "bufferViews":[{"buffer":0,"byteLength":4}],
+            "accessors":[{"bufferView":0,"componentType":5126,"count":1,"type":"VEC3"}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]
+        }"#;
+        let result = parse_compact_document(json, Some(&[0; 4]), &[]);
+        assert!(matches!(result, Err(GltfError::InvalidGltf(_))));
+    }
+
+    #[test]
+    fn empty_document_has_no_meshes() {
+        let json = r#"{"asset":{"version":"2.0"},"meshes":[]}"#;
+        let result = parse_compact_document(json, None, &[]);
+        assert!(matches!(result, Err(GltfError::InvalidGltf(_))));
+    }
+
+    #[test]
+    fn rejects_unsupported_required_extension() {
+        let json = r#"{
+            "asset":{"version":"2.0"},
+            "extensionsRequired":["KHR_materials_unlit"],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]
+        }"#;
+        let result = parse_compact_document(json, None, &[]);
+        assert!(matches!(result, Err(GltfError::Unsupported(_))));
+    }
+
+    #[test]
+    fn rejects_sparse_accessor() {
+        // The compact schema does not model sparse-accessor subfields, so any
+        // sparse accessor is rejected (at JSON deserialization time, since
+        // nanoserde rejects the unmodeled `count`/`indices`/`values` fields).
+        let json = r#"{
+            "asset":{"version":"2.0"},
+            "buffers":[{"byteLength":12}],
+            "bufferViews":[{"buffer":0,"byteLength":12}],
+            "accessors":[{"bufferView":0,"componentType":5126,"count":1,"type":"VEC3","sparse":{"count":0}}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]
+        }"#;
+        let result = parse_compact_document(json, Some(&[0; 12]), &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn data_uri_decoder_rejects_non_canonical_base64() {
+        // `decode_data_uri` is shared with the writer/reader path; sanity-check
+        // it stays strict on padding/canonical form.
+        assert_eq!(decode_data_uri("data:;base64,YQ==", None).unwrap(), b"a");
+        assert!(decode_data_uri("data:;base64,YQ", None).is_err());
+        assert!(decode_data_uri("data:;base64,YR==", None).is_err());
+        assert!(decode_data_uri("data:,a%2", None).is_err());
+    }
+}

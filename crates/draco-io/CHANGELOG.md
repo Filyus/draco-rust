@@ -9,6 +9,16 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Serde-free compact glTF reader front end (`gltf_compact`, `parse_compact_document`)
+  gated behind the new opt-in `gltf-compact` feature. It reuses the strict GLB
+  container validation and shared `GltfError` type but parses the JSON document
+  with `nanoserde`, keeping the `serde`/`serde_json` dependencies out of the
+  binary for size-constrained front ends (WASM). The contract (FLOAT-only
+  vertex attributes, single buffer, no sparse accessors, `KHR_draco_mesh_compression`
+  as the only allowed required extension) is documented on the module.
+
 ## [0.2.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.1.0...draco-io-v0.2.0) - 2026-07-16
 
 ### Added

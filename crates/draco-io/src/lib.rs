@@ -179,17 +179,34 @@
 #[cfg_attr(docsrs, doc(cfg(feature = "fbx-reader")))]
 pub mod fbx_reader;
 // Reader-agnostic glTF geometry decode + shared error type. Available with the
-// reader or the writer, so the compressor reuses it without the reader.
-#[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
+// reader, the writer, or the compact reader, so the compressor and the
+// serde-free front end reuse it without the serde-backed reader.
+#[cfg(any(
+    feature = "gltf-reader",
+    feature = "gltf-writer",
+    feature = "gltf-compact"
+))]
 #[cfg_attr(
     docsrs,
-    doc(cfg(any(feature = "gltf-reader", feature = "gltf-writer")))
+    doc(cfg(any(
+        feature = "gltf-reader",
+        feature = "gltf-writer",
+        feature = "gltf-compact"
+    )))
 )]
 pub mod gltf_container;
-#[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
+#[cfg(any(
+    feature = "gltf-reader",
+    feature = "gltf-writer",
+    feature = "gltf-compact"
+))]
 #[cfg_attr(
     docsrs,
-    doc(cfg(any(feature = "gltf-reader", feature = "gltf-writer")))
+    doc(cfg(any(
+        feature = "gltf-reader",
+        feature = "gltf-writer",
+        feature = "gltf-compact"
+    )))
 )]
 pub mod gltf_geometry;
 #[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
@@ -201,6 +218,11 @@ pub mod gltf_khr_draco;
 #[cfg(feature = "gltf-reader")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gltf-reader")))]
 pub mod gltf_reader;
+// serde-free compact glTF front end: reuses the strict container + shared
+// error type without pulling the serde document model into the binary.
+#[cfg(feature = "gltf-compact")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gltf-compact")))]
+pub mod gltf_compact;
 #[cfg(feature = "obj-reader")]
 #[cfg_attr(docsrs, doc(cfg(feature = "obj-reader")))]
 pub mod obj_reader;
@@ -253,16 +275,28 @@ pub use fbx_writer::FbxWriter;
 pub use gltf_container::{
     build_glb_container, encode_data_uri, serialize_gltf_document, OutputFormat,
 };
-#[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
+#[cfg(any(
+    feature = "gltf-reader",
+    feature = "gltf-writer",
+    feature = "gltf-compact"
+))]
 pub use gltf_container::{
     decode_data_uri, parse_glb_json_and_bin, parse_gltf_container, resolve_gltf_buffers,
     resolve_resource_uri, ExternalFilePolicy, FileResourceResolver, GltfBufferReference,
     GltfContainer, GltfContainerFormat, ResourceLimits, ResourceResolver,
 };
-#[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
+#[cfg(any(
+    feature = "gltf-reader",
+    feature = "gltf-writer",
+    feature = "gltf-compact"
+))]
 #[cfg_attr(
     docsrs,
-    doc(cfg(any(feature = "gltf-reader", feature = "gltf-writer")))
+    doc(cfg(any(
+        feature = "gltf-reader",
+        feature = "gltf-writer",
+        feature = "gltf-compact"
+    )))
 )]
 pub use gltf_geometry::{decode_geometry, AccessorSource, DecodedAccessor, GltfError};
 #[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
