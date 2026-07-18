@@ -1,10 +1,10 @@
 # draco-gltf
 
-Load and save **full glTF scenes with Draco-compressed geometry**.
+Load and save **full glTF 2.0 and pinned 2.1-draft scenes with Draco geometry**.
 
-`draco-gltf` is a thin bridge between [`gltf`](https://crates.io/crates/gltf)
-(gltf-rs), which models the whole glTF scene — materials, textures, nodes,
-animations, skins, lights, and arbitrary extensions — and the Draco crates:
+`draco-gltf` owns a lossless native `Document` model. It preserves materials,
+textures, nodes, animations, skins, draft fields, and arbitrary extensions
+without depending on `gltf-rs`.
 
 - **decode** uses [`draco-core`](https://crates.io/crates/draco-core) to
   decompress `KHR_draco_mesh_compression` geometry;
@@ -28,15 +28,14 @@ draco-gltf = "0.1"
 ```rust,no_run
 let scene = draco_gltf::import("model.glb")?;
 
-// The full scene is available through the gltf-rs API.
 println!("{} materials, {} animations, {} skins",
-    scene.document.materials().count(),
-    scene.document.animations().count(),
-    scene.document.skins().count());
+    scene.document.materials().len(),
+    scene.document.animations().len(),
+    scene.document.skins().len());
 
 // Decode the Draco-compressed geometry.
-for (mesh, prim) in scene.draco_primitives() {
-    let geometry = scene.decode_primitive(&prim)?; // draco_core::Mesh
+for prim in scene.draco_primitives() {
+    let geometry = scene.decode_primitive(prim)?; // draco_core::Mesh
     println!("mesh {:?}: {} faces, {} points",
         mesh.name(), geometry.num_faces(), geometry.num_points());
 }

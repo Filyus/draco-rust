@@ -9,6 +9,16 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-18
+
+### Changed
+
+- Breaking: replaced the `gltf-rs` public scene model with native lossless
+  `Document` typed views and indices. See `MIGRATING_0_2.md`.
+- Added the pinned glTF 2.1 draft profile, GLB v3 support, native extension
+  contracts, explicit `files` asset loading, and native Draco decode/compress/
+  decompress operations.
+
 ### Added
 
 - Clean compression API on `Import`: shared `GltfCompressionOptions`,
