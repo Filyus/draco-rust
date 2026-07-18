@@ -109,6 +109,10 @@ void main() {
         vec3 dy = dFdy(vWorldPos);
         N = normalize(cross(dx, dy));
     }
+    // OBJ/PLY/FBX preview meshes are deliberately two-sided because their
+    // source winding is not a rendering contract. Match glTF's double-sided
+    // material rule so the visible side receives the same lighting either way.
+    if (!gl_FrontFacing) N = -N;
 
     vec3 L = normalize(uLightDir);
     float diff = max(dot(N, L), 0.0);

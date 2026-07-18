@@ -221,4 +221,5 @@ test('converter preserves OBJ material groups for preview', async ({ page }) => 
   await expect(page.locator('#viewer-section')).toBeVisible();
   await expect(page.locator('#console')).toContainText('Preview ready');
   await expect(page.locator('#console')).not.toContainText('Skipped primitive');
+  await expect(page.locator('#console')).not.toContainText('Preview failed');
 });
