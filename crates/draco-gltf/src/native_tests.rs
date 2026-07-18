@@ -299,6 +299,47 @@ fn compact_runtime_packs_accessor_geometry() {
 
 #[cfg(feature = "compact")]
 #[test]
+fn compact_runtime_materializes_sparse_accessors() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":26,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":2},{"buffer":0,"byteOffset":2,"byteLength":24}],"accessors":[{"componentType":5126,"count":3,"type":"VEC3","sparse":{"count":2,"indices":{"bufferView":0,"componentType":5121},"values":{"bufferView":1}}}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut buffer = vec![0, 2];
+    for value in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
+        buffer.extend_from_slice(&value.to_le_bytes());
+    }
+    let resolver = move |uri: &str| {
+        if uri == "mesh.bin" {
+            Ok(buffer.clone())
+        } else {
+            Err(draco_io::GltfError::ExternalResourceDenied(uri.into()))
+        }
+    };
+    let import = crate::parse_native_with_options(
+        input,
+        None,
+        Some(&resolver),
+        &draco_io::ResourceLimits::default(),
+        ValidationProfile::Gltf20,
+        &crate::ExtensionRegistry::default(),
+    )
+    .unwrap();
+
+    let primitive = import
+        .decode_packed_primitive(crate::MeshIndex(0), 0)
+        .unwrap();
+    let position = &primitive.attributes[0];
+    assert_eq!(position.bytes.len(), 36);
+    assert_eq!(
+        &position.bytes[..12],
+        &[0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 64, 64]
+    );
+    assert_eq!(&position.bytes[12..24], &[0; 12]);
+    assert_eq!(
+        &position.bytes[24..],
+        &[0, 0, 128, 64, 0, 0, 160, 64, 0, 0, 192, 64]
+    );
+}
+
+#[cfg(feature = "compact")]
+#[test]
 fn compact_runtime_packs_draco_geometry() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
     let mut import = parse_native(input, ValidationProfile::Gltf20).unwrap();

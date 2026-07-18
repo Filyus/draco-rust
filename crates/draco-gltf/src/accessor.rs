@@ -67,46 +67,47 @@ impl<'a> NativeAccessorSource<'a> {
                 ))
             }
         };
-        let view = accessor
-            .get("bufferView")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| usize::try_from(v).ok())
-            .ok_or_else(|| {
-                Error::Extension("sparse and detached accessors are not supported".into())
-            })?;
-        let view = self
-            .document
-            .as_value()
-            .get("bufferViews")
-            .and_then(|v| v.as_array())
-            .and_then(|v| v.get(view))
-            .ok_or_else(|| Error::Extension("bufferView out of range".into()))?;
-        let buffer = view
-            .get("buffer")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| usize::try_from(v).ok())
-            .and_then(|v| self.resources.buffers.get(v))
-            .ok_or_else(|| Error::Extension("buffer is not resolved".into()))?;
-        let offset = view.get("byteOffset").and_then(|v| v.as_u64()).unwrap_or(0) as usize
-            + accessor
-                .get("byteOffset")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize;
         let width = components as usize * data_type.byte_length();
-        let stride = view
-            .get("byteStride")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| usize::try_from(v).ok())
-            .unwrap_or(width);
-        let mut bytes = Vec::with_capacity(count * width);
-        for row in 0..count {
-            let start = offset + row * stride;
-            let end = start + width;
-            bytes.extend_from_slice(
-                buffer
-                    .get(start..end)
-                    .ok_or_else(|| Error::Extension("accessor range is out of bounds".into()))?,
-            );
+        let byte_len = count
+            .checked_mul(width)
+            .ok_or_else(|| Error::ResourceLimit("accessor byte size overflow".into()))?;
+        let mut bytes = if let Some(view) = accessor
+            .get("bufferView")
+            .and_then(|value| value.as_u64())
+            .and_then(|value| usize::try_from(value).ok())
+        {
+            let accessor_offset = accessor
+                .get("byteOffset")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let (buffer, offset, stride) = self.buffer_view_layout(view, accessor_offset, width)?;
+            let mut dense = Vec::new();
+            dense.try_reserve_exact(byte_len).map_err(|_| {
+                Error::ResourceLimit("accessor materialization allocation failed".into())
+            })?;
+            for row in 0..count {
+                let start =
+                    offset
+                        .checked_add(row.checked_mul(stride).ok_or_else(|| {
+                            Error::ResourceLimit("accessor stride overflow".into())
+                        })?)
+                        .ok_or_else(|| Error::ResourceLimit("accessor offset overflow".into()))?;
+                let end = start
+                    .checked_add(width)
+                    .filter(|end| *end <= buffer.len())
+                    .ok_or_else(|| Error::Extension("accessor range is out of bounds".into()))?;
+                dense.extend_from_slice(&buffer[start..end]);
+            }
+            dense
+        } else if accessor.get("sparse").is_some() {
+            vec![0; byte_len]
+        } else {
+            return Err(Error::Extension(
+                "accessor has neither bufferView nor sparse values".into(),
+            ));
+        };
+        if let Some(sparse) = accessor.get("sparse") {
+            self.apply_sparse(sparse, count, width, &mut bytes)?;
         }
         Ok((
             count,
@@ -124,6 +125,146 @@ impl<'a> NativeAccessorSource<'a> {
                 .unwrap_or(false),
             bytes,
         ))
+    }
+
+    fn buffer_view_layout(
+        &self,
+        view_index: usize,
+        additional_offset: u64,
+        default_stride: usize,
+    ) -> Result<(&[u8], usize, usize)> {
+        let view = self
+            .document
+            .as_value()
+            .get("bufferViews")
+            .and_then(|value| value.as_array())
+            .and_then(|values| values.get(view_index))
+            .ok_or_else(|| Error::Extension("bufferView out of range".into()))?;
+        let buffer = view
+            .get("buffer")
+            .and_then(|value| value.as_u64())
+            .and_then(|value| usize::try_from(value).ok())
+            .and_then(|index| self.resources.buffers.get(index))
+            .ok_or_else(|| Error::Extension("buffer is not resolved".into()))?;
+        let offset = view
+            .get("byteOffset")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            .checked_add(additional_offset)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| Error::ResourceLimit("bufferView offset is invalid".into()))?;
+        let stride = view
+            .get("byteStride")
+            .and_then(|value| value.as_u64())
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(default_stride);
+        if stride < default_stride {
+            return Err(Error::Extension(
+                "bufferView byteStride is too small".into(),
+            ));
+        }
+        Ok((buffer, offset, stride))
+    }
+
+    fn apply_sparse(
+        &self,
+        sparse: &crate::JsonValue,
+        count: usize,
+        width: usize,
+        bytes: &mut [u8],
+    ) -> Result<()> {
+        let sparse_count = sparse
+            .get("count")
+            .and_then(|value| value.as_u64())
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value <= count)
+            .ok_or_else(|| Error::Extension("sparse accessor count is invalid".into()))?;
+        let indices = sparse
+            .get("indices")
+            .ok_or_else(|| Error::Extension("sparse accessor indices are missing".into()))?;
+        let index_view = indices
+            .get("bufferView")
+            .and_then(|value| value.as_u64())
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| Error::Extension("sparse indices bufferView is invalid".into()))?;
+        let index_type = indices
+            .get("componentType")
+            .and_then(|value| value.as_u64())
+            .ok_or_else(|| Error::Extension("sparse indices componentType is invalid".into()))?;
+        let index_width = match index_type {
+            5121 => 1,
+            5123 => 2,
+            5125 => 4,
+            _ => {
+                return Err(Error::Extension(
+                    "sparse indices componentType is invalid".into(),
+                ))
+            }
+        };
+        let index_offset = indices
+            .get("byteOffset")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let (index_buffer, index_start, _) =
+            self.buffer_view_layout(index_view, index_offset, index_width)?;
+        let values = sparse
+            .get("values")
+            .ok_or_else(|| Error::Extension("sparse accessor values are missing".into()))?;
+        let value_view = values
+            .get("bufferView")
+            .and_then(|value| value.as_u64())
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| Error::Extension("sparse values bufferView is invalid".into()))?;
+        let value_offset = values
+            .get("byteOffset")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let (value_buffer, value_start, _) =
+            self.buffer_view_layout(value_view, value_offset, width)?;
+        let mut previous = None;
+        for entry in 0..sparse_count {
+            let index_start =
+                index_start
+                    .checked_add(entry.checked_mul(index_width).ok_or_else(|| {
+                        Error::ResourceLimit("sparse index offset overflow".into())
+                    })?)
+                    .ok_or_else(|| Error::ResourceLimit("sparse index offset overflow".into()))?;
+            let index_end = index_start
+                .checked_add(index_width)
+                .filter(|end| *end <= index_buffer.len())
+                .ok_or_else(|| Error::Extension("sparse indices are out of bounds".into()))?;
+            let index = match index_type {
+                5121 => index_buffer[index_start] as usize,
+                5123 => {
+                    u16::from_le_bytes(index_buffer[index_start..index_end].try_into().unwrap())
+                        as usize
+                }
+                5125 => {
+                    u32::from_le_bytes(index_buffer[index_start..index_end].try_into().unwrap())
+                        as usize
+                }
+                _ => unreachable!(),
+            };
+            if index >= count || previous.is_some_and(|previous| index <= previous) {
+                return Err(Error::Extension(
+                    "sparse indices must be strictly increasing".into(),
+                ));
+            }
+            previous = Some(index);
+            let value_start =
+                value_start
+                    .checked_add(entry.checked_mul(width).ok_or_else(|| {
+                        Error::ResourceLimit("sparse value offset overflow".into())
+                    })?)
+                    .ok_or_else(|| Error::ResourceLimit("sparse value offset overflow".into()))?;
+            let value_end = value_start
+                .checked_add(width)
+                .filter(|end| *end <= value_buffer.len())
+                .ok_or_else(|| Error::Extension("sparse values are out of bounds".into()))?;
+            bytes[index * width..(index + 1) * width]
+                .copy_from_slice(&value_buffer[value_start..value_end]);
+        }
+        Ok(())
     }
 
     pub fn read_accessor(&self, index: usize) -> Result<AccessorData> {
