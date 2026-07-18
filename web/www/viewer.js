@@ -108,7 +108,6 @@ uniform vec3 uLightDir;        // direction TO light (key)
 uniform vec3 uLightColor;
 uniform vec3 uFillDir;         // direction TO light (fill, softer)
 uniform vec3 uFillColor;
-uniform vec3 uAmbient;
 uniform vec3 uCameraPos;
 
 out vec4 outColor;
@@ -141,6 +140,31 @@ float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
 
 vec3 fresnelSchlick(float cosTheta, vec3 f0) {
     return f0 + (1.0 - f0) * pow(1.0 - cosTheta, 5.0);
+}
+
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 f0, float roughness) {
+    return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - cosTheta, 5.0);
+}
+
+// A small analytic studio environment. It deliberately has a cool skylight,
+// warm horizon, darker floor, and broad softboxes so metallic materials retain
+// readable reflections without requiring an HDR decoder or prefiltered cube map.
+vec3 studioRadiance(vec3 direction, float roughness) {
+    float up = clamp(direction.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 sharp = mix(vec3(0.035, 0.045, 0.07), vec3(0.34, 0.43, 0.66), up);
+    sharp = mix(sharp, vec3(0.55, 0.34, 0.20), exp(-abs(direction.y) * 12.0) * 0.18);
+    vec3 keyDirection = normalize(vec3(-0.45, 0.78, 0.42));
+    vec3 rimDirection = normalize(vec3(0.52, 0.42, -0.72));
+    float key = pow(max(dot(direction, keyDirection), 0.0), 72.0);
+    float rim = pow(max(dot(direction, rimDirection), 0.0), 36.0);
+    sharp += vec3(2.8, 2.55, 2.15) * key + vec3(0.75, 0.9, 1.25) * rim;
+    vec3 blurred = vec3(0.20, 0.23, 0.30);
+    return mix(sharp, blurred, roughness * roughness);
+}
+
+vec3 studioIrradiance(vec3 normal) {
+    float up = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
+    return mix(vec3(0.11, 0.10, 0.12), vec3(0.44, 0.50, 0.64), up);
 }
 
 vec3 directPbrLight(vec3 N, vec3 V, vec3 L, vec3 radiance, vec3 baseColor, float metallic, float roughness) {
@@ -227,12 +251,16 @@ void main() {
     vec3 F = normalize(uFillDir);
     vec3 color = directPbrLight(N, V, L, uLightColor, baseColor, metallic, roughness);
     color += directPbrLight(N, V, F, uFillColor * 0.5, baseColor, metallic, roughness);
-    // A small neutral ambient term keeps non-metallic assets legible until IBL is added.
     float occlusion = 1.0;
     if (uHasOcclusionTexture == 1) {
         occlusion = mix(1.0, texture(uOcclusionTexture, selectUv(uOcclusionTexCoord)).r, uOcclusionStrength);
     }
-    color += baseColor * uAmbient * (1.0 - metallic) * 0.35 * occlusion;
+    vec3 f0 = mix(vec3(0.04), baseColor, metallic);
+    vec3 iblFresnel = fresnelSchlickRoughness(max(dot(N, V), 0.0), f0, roughness);
+    vec3 diffuseIbl = (1.0 - iblFresnel) * (1.0 - metallic) * baseColor * studioIrradiance(N);
+    vec3 reflected = reflect(-V, N);
+    vec3 specularIbl = iblFresnel * studioRadiance(reflected, roughness);
+    color += (diffuseIbl * 0.65 + specularIbl) * occlusion;
     vec3 emissive = uEmissiveFactor;
     if (uHasEmissiveTexture == 1) {
         emissive *= pow(texture(uEmissive, selectUv(uEmissiveTexCoord)).rgb, vec3(2.2));
@@ -495,7 +523,6 @@ export class Viewer {
             uLightColor: gl.getUniformLocation(p, 'uLightColor'),
             uFillDir: gl.getUniformLocation(p, 'uFillDir'),
             uFillColor: gl.getUniformLocation(p, 'uFillColor'),
-            uAmbient: gl.getUniformLocation(p, 'uAmbient'),
             uCameraPos: gl.getUniformLocation(p, 'uCameraPos'),
         };
         this.locations = {
@@ -957,7 +984,6 @@ export class Viewer {
         gl.uniform3fv(this.uniforms.uLightColor, this._lightColor || (this._lightColor = new Float32Array([1.0, 0.97, 0.9])));
         gl.uniform3fv(this.uniforms.uFillDir, this._fillDir || (this._fillDir = new Float32Array([-0.6, 0.3, -0.4])));
         gl.uniform3fv(this.uniforms.uFillColor, this._fillColor || (this._fillColor = new Float32Array([0.4, 0.45, 0.6])));
-        gl.uniform3fv(this.uniforms.uAmbient, this._ambient || (this._ambient = new Float32Array([0.45, 0.47, 0.55])));
         gl.uniform3fv(this.uniforms.uCameraPos, eye);
 
         for (const renderable of this.scene.renderables) {
