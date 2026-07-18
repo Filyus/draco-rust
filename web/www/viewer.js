@@ -16,6 +16,7 @@ precision highp float;
 layout(location=0) in vec3 aPosition;
 layout(location=1) in vec3 aNormal;
 layout(location=2) in vec2 aTexCoord;
+layout(location=6) in vec2 aTexCoord1;
 layout(location=3) in vec4 aColor;
 layout(location=4) in vec4 aJoints;
 layout(location=5) in vec4 aWeights;
@@ -30,6 +31,7 @@ uniform mat4 uJointMatrix[${MAX_JOINTS}];
 
 out vec3 vNormal;
 out vec2 vTexCoord;
+out vec2 vTexCoord1;
 out vec4 vColor;
 out vec3 vWorldPos;
 
@@ -58,6 +60,7 @@ void main() {
     vec4 worldPos = uModel * skinned;
     vWorldPos = worldPos.xyz;
     vTexCoord = aTexCoord;
+    vTexCoord1 = aTexCoord1;
     vColor = aColor;
     gl_Position = uProjection * uView * worldPos;
 }
@@ -68,6 +71,7 @@ precision highp float;
 
 in vec3 vNormal;
 in vec2 vTexCoord;
+in vec2 vTexCoord1;
 in vec4 vColor;
 in vec3 vWorldPos;
 
@@ -77,6 +81,10 @@ uniform int uHasVertexColors;
 uniform int uUnlit;
 uniform sampler2D uBaseColor;
 uniform vec4 uBaseColorFactor;
+uniform int uBaseColorTexCoord;
+uniform vec2 uBaseColorTexOffset;
+uniform vec2 uBaseColorTexScale;
+uniform float uBaseColorTexRotation;
 
 uniform vec3 uLightDir;        // direction TO light (key)
 uniform vec3 uLightColor;
@@ -90,7 +98,14 @@ out vec4 outColor;
 void main() {
     vec4 base = uBaseColorFactor;
     if (uHasVertexColors == 1) base *= vColor;
-    if (uHasTexture == 1) base *= texture(uBaseColor, vTexCoord);
+    if (uHasTexture == 1) {
+        vec2 uv = uBaseColorTexCoord == 1 ? vTexCoord1 : vTexCoord;
+        uv *= uBaseColorTexScale;
+        float c = cos(uBaseColorTexRotation);
+        float s = sin(uBaseColorTexRotation);
+        uv = vec2(c * uv.x - s * uv.y, s * uv.x + c * uv.y) + uBaseColorTexOffset;
+        base *= texture(uBaseColor, uv);
+    }
 
     // Hard unlit materials (KHR_materials_unlit) keep flat shading.
     if (uUnlit == 1) {
@@ -226,6 +241,7 @@ function uploadPrimitive(gl, primitive, locationMap) {
         position: locationMap.position,
         normal: locationMap.normal,
         texCoord: locationMap.texCoord,
+        texCoord1: locationMap.texCoord1,
         color: locationMap.color,
         joints: locationMap.joints,
         weights: locationMap.weights,
@@ -235,7 +251,8 @@ function uploadPrimitive(gl, primitive, locationMap) {
         vao,
         buffers,
         hasNormals: !!bindAttribute('NORMAL', layout.normal),
-        hasTexCoords: !!bindAttribute('TEXCOORD_0', layout.texCoord),
+        hasTexCoords0: !!bindAttribute('TEXCOORD_0', layout.texCoord),
+        hasTexCoords1: !!bindAttribute('TEXCOORD_1', layout.texCoord1),
         hasColors: !!bindAttribute('COLOR_0', layout.color),
         hasJoints: !!bindAttribute('JOINTS_0', layout.joints),
         hasWeights: !!bindAttribute('WEIGHTS_0', layout.weights),
@@ -356,6 +373,10 @@ export class Viewer {
             uUnlit: gl.getUniformLocation(p, 'uUnlit'),
             uBaseColor: gl.getUniformLocation(p, 'uBaseColor'),
             uBaseColorFactor: gl.getUniformLocation(p, 'uBaseColorFactor'),
+            uBaseColorTexCoord: gl.getUniformLocation(p, 'uBaseColorTexCoord'),
+            uBaseColorTexOffset: gl.getUniformLocation(p, 'uBaseColorTexOffset'),
+            uBaseColorTexScale: gl.getUniformLocation(p, 'uBaseColorTexScale'),
+            uBaseColorTexRotation: gl.getUniformLocation(p, 'uBaseColorTexRotation'),
             uLightDir: gl.getUniformLocation(p, 'uLightDir'),
             uLightColor: gl.getUniformLocation(p, 'uLightColor'),
             uFillDir: gl.getUniformLocation(p, 'uFillDir'),
@@ -367,6 +388,7 @@ export class Viewer {
             position: 0,
             normal: 1,
             texCoord: 2,
+            texCoord1: 6,
             color: 3,
             joints: 4,
             weights: 5,
@@ -894,7 +916,11 @@ export class Viewer {
 
     _applyMaterial(material, uploaded) {
         const gl = this.gl;
-        const hasTexture = !!material?.baseColorTexture;
+        const texCoord = material?.baseColorTexCoord ?? 0;
+        const hasTexCoords = texCoord === 0 ? uploaded.hasTexCoords0
+            : texCoord === 1 ? uploaded.hasTexCoords1 : false;
+        const hasTexture = material?.baseColorTexture !== null
+            && material?.baseColorTexture !== undefined && hasTexCoords;
         gl.uniform1i(this.uniforms.uHasTexture, hasTexture ? 1 : 0);
         gl.uniform1i(this.uniforms.uHasNormals, uploaded.hasNormals ? 1 : 0);
         gl.uniform1i(this.uniforms.uHasVertexColors, uploaded.hasColors ? 1 : 0);
@@ -908,6 +934,13 @@ export class Viewer {
         }
         const factor = material?.baseColorFactor || [1, 1, 1, 1];
         gl.uniform4f(this.uniforms.uBaseColorFactor, factor[0], factor[1], factor[2], factor[3]);
+        const transform = material?.baseColorTextureTransform || {};
+        const offset = transform.offset || [0, 0];
+        const scale = transform.scale || [1, 1];
+        gl.uniform1i(this.uniforms.uBaseColorTexCoord, texCoord);
+        gl.uniform2f(this.uniforms.uBaseColorTexOffset, offset[0], offset[1]);
+        gl.uniform2f(this.uniforms.uBaseColorTexScale, scale[0], scale[1]);
+        gl.uniform1f(this.uniforms.uBaseColorTexRotation, transform.rotation || 0);
     }
 
     _computeJointMatrices(skin, meshWorld, jointOut) {

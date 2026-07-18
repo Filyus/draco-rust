@@ -131,6 +131,27 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   );
 });
 
+test('preview applies KHR_texture_transform', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const fixture = path.join(repoRoot, 'testdata', 'glTF', 'TextureTransformTestWithRequired');
+  await page.locator('#file-input').setInputFiles([
+    path.join(fixture, 'TextureTransformTestWithRequired.gltf'),
+    path.join(fixture, 'TextureTransformTest.bin'),
+    path.join(fixture, 'UV.png'),
+    path.join(fixture, 'Arrow.png'),
+    path.join(fixture, 'Correct.png'),
+    path.join(fixture, 'NotSupported.png'),
+    path.join(fixture, 'Error.png'),
+  ]);
+
+  await expect(page.locator('#viewer-section')).toBeVisible();
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).not.toContainText('Unsupported glTF extensions ignored: KHR_texture_transform');
+  await expect(page.locator('#console')).not.toContainText('Model requires extensions that this viewer ignores');
+  await expect(page.locator('#console')).not.toContainText('Preview failed');
+});
+
 test('converter explains a missing external glTF buffer', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);

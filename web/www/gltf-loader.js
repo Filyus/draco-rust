@@ -18,6 +18,7 @@ const GL = WebGL2RenderingContext;
 
 const SUPPORTED_PBR_EXTENSIONS = new Set([
     'KHR_materials_unlit',
+    'KHR_texture_transform',
 ]);
 
 /**
@@ -242,11 +243,19 @@ function buildMaterials(json, warnings) {
         const pbr = def.pbrMetallicRoughness || {};
         const unlit = !!(def.extensions && def.extensions.KHR_materials_unlit);
         const texInfo = pbr.baseColorTexture;
+        const transform = texInfo?.extensions?.KHR_texture_transform || {};
         return {
             name: def.name || `material_${idx}`,
             baseColorFactor: pbr.baseColorFactor ? Array.from(pbr.baseColorFactor) : [1, 1, 1, 1],
             baseColorTexture: typeof texInfo?.index === 'number' ? texInfo.index : null,
-            baseColorTexCoord: texInfo?.texCoord || 0,
+            // KHR_texture_transform may override the texture-info texCoord.
+            // It applies scale, rotation around the origin, then translation.
+            baseColorTexCoord: transform.texCoord ?? texInfo?.texCoord ?? 0,
+            baseColorTextureTransform: {
+                offset: Array.isArray(transform.offset) ? transform.offset : [0, 0],
+                scale: Array.isArray(transform.scale) ? transform.scale : [1, 1],
+                rotation: transform.rotation ?? 0,
+            },
             metallic: pbr.metallicFactor ?? 1,
             roughness: pbr.roughnessFactor ?? 1,
             doubleSided: !!def.doubleSided,
