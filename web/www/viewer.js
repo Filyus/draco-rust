@@ -7,8 +7,11 @@
  */
 
 import { mat4, vec3, quat, composeMatrix } from './math.js';
+import { createEnvironmentIbl } from './environment-ibl.js';
 
 const MAX_JOINTS = 256;
+const DEFAULT_CAMERA_AZIMUTH = Math.PI * 0.25;
+const DEFAULT_CAMERA_ELEVATION = Math.PI * 0.09;
 
 const VERT_SRC = `#version 300 es
 precision highp float;
@@ -123,11 +126,10 @@ uniform int uHasOcclusionTexture;
 uniform sampler2D uOcclusionTexture;
 uniform int uOcclusionTexCoord;
 uniform float uOcclusionStrength;
-
-uniform vec3 uLightDir;        // direction TO light (key)
-uniform vec3 uLightColor;
-uniform vec3 uFillDir;         // direction TO light (fill, softer)
-uniform vec3 uFillColor;
+uniform samplerCube uIrradianceMap;
+uniform samplerCube uPrefilteredMap;
+uniform sampler2D uBrdfLut;
+uniform float uEnvironmentMaxLod;
 uniform vec3 uCameraPos;
 
 out vec4 outColor;
@@ -138,74 +140,17 @@ vec2 selectUv(int texCoord) {
     return texCoord == 1 ? vTexCoord1 : vTexCoord;
 }
 
-float distributionGgx(vec3 N, vec3 H, float roughness) {
-    float a = roughness * roughness;
-    float a2 = a * a;
-    float nDotH = max(dot(N, H), 0.0);
-    float nDotH2 = nDotH * nDotH;
-    float denominator = nDotH2 * (a2 - 1.0) + 1.0;
-    return a2 / max(PI * denominator * denominator, 0.0001);
-}
-
-float geometrySchlickGgx(float nDotV, float roughness) {
-    float r = roughness + 1.0;
-    float k = (r * r) / 8.0;
-    return nDotV / max(nDotV * (1.0 - k) + k, 0.0001);
-}
-
-float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
-    return geometrySchlickGgx(max(dot(N, V), 0.0), roughness)
-        * geometrySchlickGgx(max(dot(N, L), 0.0), roughness);
-}
-
-vec3 fresnelSchlick(float cosTheta, vec3 f0) {
-    return f0 + (1.0 - f0) * pow(1.0 - cosTheta, 5.0);
-}
-
 vec3 fresnelSchlickRoughness(float cosTheta, vec3 f0, float roughness) {
     return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - cosTheta, 5.0);
 }
 
-// Analytic radiance shared with the visible background below. Keeping the
-// functions byte-for-byte equivalent at roughness 0 means the asset reflects
-// the same floor, horizon, and softboxes that the user sees.
-vec3 studioRadiance(vec3 direction, float roughness) {
-    float sky = smoothstep(-0.035, 0.055, direction.y);
-    vec3 floor = vec3(0.025, 0.032, 0.047);
-    vec3 skyColor = mix(vec3(0.105, 0.145, 0.225), vec3(0.40, 0.51, 0.70), max(direction.y, 0.0));
-    vec3 sharp = mix(floor, skyColor, sky);
-    sharp = mix(sharp, vec3(0.23, 0.29, 0.39), exp(-abs(direction.y) * 20.0) * 0.12);
-    vec3 keyDirection = normalize(vec3(-0.45, 0.78, 0.42));
-    vec3 rimDirection = normalize(vec3(0.52, 0.42, -0.72));
-    float key = pow(max(dot(direction, keyDirection), 0.0), 56.0);
-    float rim = pow(max(dot(direction, rimDirection), 0.0), 30.0);
-    sharp += vec3(3.75, 3.85, 4.0) * key + vec3(0.95, 1.18, 1.65) * rim;
-    vec3 blurred = vec3(0.18, 0.22, 0.29);
-    return mix(sharp, blurred, roughness * roughness);
-}
-
-vec3 studioIrradiance(vec3 normal) {
-    float up = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 diffuse = mix(vec3(0.075, 0.09, 0.12), vec3(0.36, 0.44, 0.58), up);
-    vec3 keyDirection = normalize(vec3(-0.45, 0.78, 0.42));
-    vec3 rimDirection = normalize(vec3(0.52, 0.42, -0.72));
-    return diffuse
-        + vec3(0.15, 0.155, 0.16) * max(dot(normal, keyDirection), 0.0)
-        + vec3(0.035, 0.05, 0.08) * max(dot(normal, rimDirection), 0.0);
-}
-
-vec3 directPbrLight(vec3 N, vec3 V, vec3 L, vec3 radiance, vec3 baseColor, float metallic, float roughness) {
-    vec3 H = normalize(V + L);
-    float nDotL = max(dot(N, L), 0.0);
-    float nDotV = max(dot(N, V), 0.0);
-    if (nDotL == 0.0 || nDotV == 0.0) return vec3(0.0);
-    vec3 f0 = mix(vec3(0.04), baseColor, metallic);
-    vec3 F = fresnelSchlick(max(dot(H, V), 0.0), f0);
-    float D = distributionGgx(N, H, roughness);
-    float G = geometrySmith(N, V, L, roughness);
-    vec3 specular = (D * G * F) / max(4.0 * nDotV * nDotL, 0.0001);
-    vec3 diffuse = (1.0 - F) * (1.0 - metallic) * baseColor / PI;
-    return (diffuse + specular) * radiance * nDotL;
+vec3 acesToneMap(vec3 color) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
 }
 
 void main() {
@@ -274,27 +219,27 @@ void main() {
         metallic *= packed.b;
     }
 
-    vec3 L = normalize(uLightDir);
-    vec3 F = normalize(uFillDir);
-    vec3 color = directPbrLight(N, V, L, uLightColor, baseColor, metallic, roughness);
-    color += directPbrLight(N, V, F, uFillColor * 0.5, baseColor, metallic, roughness);
     float occlusion = 1.0;
     if (uHasOcclusionTexture == 1) {
         occlusion = mix(1.0, texture(uOcclusionTexture, selectUv(uOcclusionTexCoord)).r, uOcclusionStrength);
     }
     vec3 f0 = mix(vec3(0.04), baseColor, metallic);
-    vec3 iblFresnel = fresnelSchlickRoughness(max(dot(N, V), 0.0), f0, roughness);
-    vec3 diffuseIbl = (1.0 - iblFresnel) * (1.0 - metallic) * baseColor * studioIrradiance(N);
+    float nDotV = max(dot(N, V), 0.0);
+    vec3 iblFresnel = fresnelSchlickRoughness(nDotV, f0, roughness);
+    vec3 diffuseWeight = (1.0 - iblFresnel) * (1.0 - metallic);
+    vec3 irradiance = texture(uIrradianceMap, N).rgb;
+    vec3 diffuseIbl = irradiance * baseColor / PI;
     vec3 reflected = reflect(-V, N);
-    vec3 specularIbl = iblFresnel * studioRadiance(reflected, roughness);
-    color += (diffuseIbl * 1.05 + specularIbl) * occlusion;
+    vec3 prefiltered = textureLod(uPrefilteredMap, reflected, roughness * uEnvironmentMaxLod).rgb;
+    vec2 brdf = texture(uBrdfLut, vec2(nDotV, roughness)).rg;
+    vec3 specularIbl = prefiltered * (f0 * brdf.x + brdf.y);
+    vec3 color = (diffuseWeight * diffuseIbl + specularIbl) * occlusion;
     vec3 emissive = uEmissiveFactor;
     if (uHasEmissiveTexture == 1) {
         emissive *= pow(texture(uEmissive, selectUv(uEmissiveTexCoord)).rgb, vec3(2.2));
     }
     color += emissive;
-    color *= 1.15;
-    color = color / (color + vec3(1.0));
+    color = acesToneMap(color);
     outColor = vec4(pow(color, vec3(1.0 / 2.2)), base.a);
 }
 `;
@@ -332,28 +277,23 @@ precision highp float;
 in vec2 vNdc;
 uniform mat4 uInverseProjection;
 uniform mat4 uInverseView;
+uniform samplerCube uEnvironment;
 out vec4 outColor;
 
-vec3 studioRadiance(vec3 direction) {
-    // Keep in sync with the material shader's studioRadiance(..., 0.0).
-    float sky = smoothstep(-0.035, 0.055, direction.y);
-    vec3 floor = vec3(0.025, 0.032, 0.047);
-    vec3 skyColor = mix(vec3(0.105, 0.145, 0.225), vec3(0.40, 0.51, 0.70), max(direction.y, 0.0));
-    vec3 color = mix(floor, skyColor, sky);
-    color = mix(color, vec3(0.23, 0.29, 0.39), exp(-abs(direction.y) * 20.0) * 0.12);
-    vec3 keyDirection = normalize(vec3(-0.45, 0.78, 0.42));
-    vec3 rimDirection = normalize(vec3(0.52, 0.42, -0.72));
-    color += vec3(3.75, 3.85, 4.0) * pow(max(dot(direction, keyDirection), 0.0), 56.0);
-    color += vec3(0.95, 1.18, 1.65) * pow(max(dot(direction, rimDirection), 0.0), 30.0);
-    return color;
+vec3 acesToneMap(vec3 color) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
 }
 
 void main() {
     vec4 view = uInverseProjection * vec4(vNdc, 1.0, 1.0);
     view /= view.w;
     vec3 direction = normalize((uInverseView * vec4(view.xyz, 0.0)).xyz);
-    vec3 color = studioRadiance(direction);
-    color = color / (color + vec3(1.0));
+    vec3 color = acesToneMap(textureLod(uEnvironment, direction, 0.0).rgb);
     outColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
 }
 `;
@@ -506,8 +446,8 @@ export class Viewer {
         this.camera = {
             target: vec3.set(vec3.create(), 0, 0, 0),
             distance: 3,
-            azimuth: Math.PI * 0.25,
-            elevation: Math.PI * 0.2,
+            azimuth: DEFAULT_CAMERA_AZIMUTH,
+            elevation: DEFAULT_CAMERA_ELEVATION,
             fov: Math.PI / 4,
             near: 0.05,
             far: 1000,
@@ -555,8 +495,7 @@ export class Viewer {
         gl.depthFunc(gl.LEQUAL);
         gl.enable(gl.CULL_FACE);
         gl.cullFace(gl.BACK);
-        // Keep the canvas transparent so the visible studio backdrop in CSS
-        // matches the analytic environment used by the PBR shader.
+        // The background pass writes an opaque, tone-mapped environment.
         gl.clearColor(0, 0, 0, 0);
     }
 
@@ -605,10 +544,10 @@ export class Viewer {
             uOcclusionTexture: gl.getUniformLocation(p, 'uOcclusionTexture'),
             uOcclusionTexCoord: gl.getUniformLocation(p, 'uOcclusionTexCoord'),
             uOcclusionStrength: gl.getUniformLocation(p, 'uOcclusionStrength'),
-            uLightDir: gl.getUniformLocation(p, 'uLightDir'),
-            uLightColor: gl.getUniformLocation(p, 'uLightColor'),
-            uFillDir: gl.getUniformLocation(p, 'uFillDir'),
-            uFillColor: gl.getUniformLocation(p, 'uFillColor'),
+            uIrradianceMap: gl.getUniformLocation(p, 'uIrradianceMap'),
+            uPrefilteredMap: gl.getUniformLocation(p, 'uPrefilteredMap'),
+            uBrdfLut: gl.getUniformLocation(p, 'uBrdfLut'),
+            uEnvironmentMaxLod: gl.getUniformLocation(p, 'uEnvironmentMaxLod'),
             uCameraPos: gl.getUniformLocation(p, 'uCameraPos'),
         };
         this.locations = {
@@ -629,9 +568,11 @@ export class Viewer {
         this.backgroundUniforms = {
             uInverseProjection: gl.getUniformLocation(this.backgroundProgram, 'uInverseProjection'),
             uInverseView: gl.getUniformLocation(this.backgroundProgram, 'uInverseView'),
+            uEnvironment: gl.getUniformLocation(this.backgroundProgram, 'uEnvironment'),
         };
         // WebGL2 requires a VAO even for a shader driven solely by gl_VertexID.
         this.backgroundVao = gl.createVertexArray();
+        this.environmentIbl = createEnvironmentIbl(gl, (message, type) => this._log(message, type));
     }
 
     _setupResize() {
@@ -806,6 +747,8 @@ export class Viewer {
         });
 
         this.glResources = resources;
+        this.camera.azimuth = DEFAULT_CAMERA_AZIMUTH;
+        this.camera.elevation = DEFAULT_CAMERA_ELEVATION;
         this._updateWorldMatrices();
         this._updateSceneBounds();
         this._fitCameraToScene();
@@ -902,6 +845,7 @@ export class Viewer {
         if (this.lineProgram) this.gl.deleteProgram(this.lineProgram);
         if (this.backgroundProgram) this.gl.deleteProgram(this.backgroundProgram);
         if (this.backgroundVao) this.gl.deleteVertexArray(this.backgroundVao);
+        this.environmentIbl?.dispose();
     }
 
     resetView() {
@@ -914,8 +858,8 @@ export class Viewer {
         else {
             this.camera.target[0] = this.camera.target[1] = this.camera.target[2] = 0;
             this.camera.distance = 3;
-            this.camera.azimuth = Math.PI * 0.25;
-            this.camera.elevation = Math.PI * 0.2;
+            this.camera.azimuth = DEFAULT_CAMERA_AZIMUTH;
+            this.camera.elevation = DEFAULT_CAMERA_ELEVATION;
         }
         this.autoRotate = false;
     }
@@ -1078,11 +1022,8 @@ export class Viewer {
         gl.useProgram(this.program);
         gl.uniformMatrix4fv(this.uniforms.uProjection, false, this._projection);
         gl.uniformMatrix4fv(this.uniforms.uView, false, this._view);
-        gl.uniform3fv(this.uniforms.uLightDir, this._lightDir || (this._lightDir = new Float32Array([-0.45, 0.78, 0.42])));
-        gl.uniform3fv(this.uniforms.uLightColor, this._lightColor || (this._lightColor = new Float32Array([1.0, 1.03, 1.07])));
-        gl.uniform3fv(this.uniforms.uFillDir, this._fillDir || (this._fillDir = new Float32Array([0.52, 0.42, -0.72])));
-        gl.uniform3fv(this.uniforms.uFillColor, this._fillColor || (this._fillColor = new Float32Array([0.25, 0.32, 0.45])));
         gl.uniform3fv(this.uniforms.uCameraPos, eye);
+        this._bindEnvironmentIbl();
 
         for (const renderable of this.scene.renderables) {
             const node = renderable.node;
@@ -1267,7 +1208,7 @@ export class Viewer {
         gl.drawArrays(gl.LINES, 0, this._grid.count);
     }
 
-    /** Render the analytic studio environment in camera space before geometry. */
+    /** Render the same radiance cubemap used by material IBL. */
     _drawBackground() {
         const gl = this.gl;
         if (!mat4.invert(this._inverseProjection, this._projection)
@@ -1277,11 +1218,28 @@ export class Viewer {
         gl.useProgram(this.backgroundProgram);
         gl.uniformMatrix4fv(this.backgroundUniforms.uInverseProjection, false, this._inverseProjection);
         gl.uniformMatrix4fv(this.backgroundUniforms.uInverseView, false, this._inverseView);
+        gl.activeTexture(gl.TEXTURE5);
+        gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.environmentIbl.environment);
+        gl.uniform1i(this.backgroundUniforms.uEnvironment, 5);
         gl.bindVertexArray(this.backgroundVao);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         gl.bindVertexArray(null);
         gl.depthMask(true);
         gl.enable(gl.DEPTH_TEST);
+    }
+
+    _bindEnvironmentIbl() {
+        const gl = this.gl;
+        gl.activeTexture(gl.TEXTURE6);
+        gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.environmentIbl.irradiance);
+        gl.uniform1i(this.uniforms.uIrradianceMap, 6);
+        gl.activeTexture(gl.TEXTURE7);
+        gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.environmentIbl.prefiltered);
+        gl.uniform1i(this.uniforms.uPrefilteredMap, 7);
+        gl.activeTexture(gl.TEXTURE8);
+        gl.bindTexture(gl.TEXTURE_2D, this.environmentIbl.brdfLut);
+        gl.uniform1i(this.uniforms.uBrdfLut, 8);
+        gl.uniform1f(this.uniforms.uEnvironmentMaxLod, this.environmentIbl.maxLod);
     }
 
     /** Build a grid scaled to the loaded model's AABB. */
