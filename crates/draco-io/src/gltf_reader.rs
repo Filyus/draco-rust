@@ -717,7 +717,7 @@ impl GltfReader {
     /// Parse from GLB binary data.
     pub fn from_glb(data: &[u8]) -> Result<Self> {
         let container = parse_gltf_container(data)?;
-        if container.format != GltfContainerFormat::Glb {
+        if !container.format.is_glb() {
             return Err(GltfError::InvalidGlb("input is not a GLB container".into()));
         }
         Self::from_bytes(data)
@@ -808,7 +808,7 @@ impl GltfReader {
         }
         let buffers = load_buffers(
             &root,
-            container.format == GltfContainerFormat::Glb,
+            container.format.is_glb(),
             container.bin,
             resolver,
             limits,
@@ -1697,7 +1697,7 @@ fn load_buffers(
         });
     }
     let format = if is_glb {
-        GltfContainerFormat::Glb
+        GltfContainerFormat::GlbV2
     } else {
         GltfContainerFormat::Gltf
     };

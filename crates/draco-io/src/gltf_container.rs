@@ -12,7 +12,8 @@ use serde_json::Value;
 use crate::gltf_geometry::{GltfError, Result};
 
 const GLB_MAGIC: u32 = 0x4654_6c67;
-const GLB_VERSION: u32 = 2;
+const GLB_VERSION_V2: u32 = 2;
+const GLB_VERSION_V3: u32 = 3;
 const GLB_CHUNK_JSON: u32 = 0x4e4f_534a;
 const GLB_CHUNK_BIN: u32 = 0x004e_4942;
 
@@ -21,8 +22,28 @@ const GLB_CHUNK_BIN: u32 = 0x004e_4942;
 pub enum GltfContainerFormat {
     /// JSON glTF document.
     Gltf,
-    /// Binary GLB 2.0 document.
+    /// Binary GLB 2.0 document. Kept as the compatibility spelling for
+    /// [`Self::GlbV2`].
     Glb,
+    /// Binary GLB 2.0 document.
+    GlbV2,
+    /// Draft glTF 2.1 binary container (GLB version 3).
+    GlbV3,
+}
+
+impl GltfContainerFormat {
+    /// Whether this is either binary GLB container version.
+    pub const fn is_glb(self) -> bool {
+        matches!(self, Self::Glb | Self::GlbV2 | Self::GlbV3)
+    }
+
+    /// Canonicalize the legacy `Glb` spelling to GLB v2.
+    pub const fn canonical(self) -> Self {
+        match self {
+            Self::Glb => Self::GlbV2,
+            other => other,
+        }
+    }
 }
 
 /// Borrowed, strictly parsed glTF container.
@@ -46,6 +67,10 @@ pub enum OutputFormat {
     GltfEmbeddedBuffers,
     /// Emit a binary GLB 2.0 container.
     Glb,
+    /// Emit a binary GLB 2.0 container explicitly.
+    GlbV2,
+    /// Emit a draft glTF 2.1 GLB version 3 container.
+    GlbV3,
 }
 
 /// Optional resource quotas. `None` means unlimited.
@@ -194,7 +219,7 @@ fn read_file_fallibly(path: &Path, max_bytes: Option<usize>) -> Result<Vec<u8>> 
     Ok(data)
 }
 
-/// Strictly parse JSON glTF or a GLB 2.0 container.
+/// Strictly parse JSON glTF, GLB 2.0, or the draft GLB 3 container.
 pub fn parse_gltf_container(data: &[u8]) -> Result<GltfContainer<'_>> {
     if data.len() < 4 || read_u32(data, 0)? != GLB_MAGIC {
         return Ok(GltfContainer {
@@ -208,10 +233,13 @@ pub fn parse_gltf_container(data: &[u8]) -> Result<GltfContainer<'_>> {
             "file is too small for a GLB header".into(),
         ));
     }
-    if read_u32(data, 4)? != GLB_VERSION {
+    let version = read_u32(data, 4)?;
+    if version == GLB_VERSION_V3 {
+        return parse_glb_v3(data);
+    }
+    if version != GLB_VERSION_V2 {
         return Err(GltfError::InvalidGlb(format!(
-            "unsupported GLB version {}",
-            read_u32(data, 4)?
+            "unsupported GLB version {version}"
         )));
     }
     let declared = usize::try_from(read_u32(data, 8)?)
@@ -280,8 +308,96 @@ pub fn parse_gltf_container(data: &[u8]) -> Result<GltfContainer<'_>> {
     }
 
     Ok(GltfContainer {
-        format: GltfContainerFormat::Glb,
+        format: GltfContainerFormat::GlbV2,
         json: json.ok_or_else(|| GltfError::InvalidGlb("GLB has no JSON chunk".into()))?,
+        bin,
+    })
+}
+
+/// Parses the current draft GLB v3 wire format. Its header is
+/// `magic:u32, version:u32, length:u64`; each chunk header is
+/// `length:u64, type:u32, encoding:u32`. glTF 2.1 reserves `encoding` and
+/// requires it to be zero.
+fn parse_glb_v3(data: &[u8]) -> Result<GltfContainer<'_>> {
+    if data.len() < 16 {
+        return Err(GltfError::InvalidGlb(
+            "file is too small for a GLB v3 header".into(),
+        ));
+    }
+    let declared = read_u64(data, 8)?;
+    let actual = u64::try_from(data.len())
+        .map_err(|_| GltfError::InvalidGlb("input length cannot fit u64".into()))?;
+    if declared != actual {
+        return Err(GltfError::InvalidGlb(
+            "GLB v3 header length does not match file length".into(),
+        ));
+    }
+
+    let mut offset = 16usize;
+    let mut chunk_index = 0usize;
+    let mut json = None;
+    let mut bin = None;
+    while offset < data.len() {
+        let header_end = offset
+            .checked_add(16)
+            .filter(|end| *end <= data.len())
+            .ok_or_else(|| GltfError::InvalidGlb("partial GLB v3 chunk header".into()))?;
+        let length = usize::try_from(read_u64(data, offset)?).map_err(|_| {
+            GltfError::ResourceLimitExceeded("GLB v3 chunk exceeds platform address space".into())
+        })?;
+        let kind = read_u32(data, offset + 8)?;
+        let encoding = read_u32(data, offset + 12)?;
+        if encoding != 0 {
+            return Err(GltfError::InvalidGlb(
+                "GLB v3 chunk encoding is reserved and must be zero".into(),
+            ));
+        }
+        if !length.is_multiple_of(4) {
+            return Err(GltfError::InvalidGlb(
+                "GLB v3 chunk length is not 4-byte aligned".into(),
+            ));
+        }
+        let end = header_end
+            .checked_add(length)
+            .filter(|end| *end <= data.len())
+            .ok_or_else(|| GltfError::InvalidGlb("GLB v3 chunk extends past file end".into()))?;
+        let bytes = &data[header_end..end];
+        match kind {
+            GLB_CHUNK_JSON => {
+                if chunk_index != 0 || json.replace(bytes).is_some() {
+                    return Err(GltfError::InvalidGlb(
+                        "JSON must be the first and only GLB v3 JSON chunk".into(),
+                    ));
+                }
+                if !bytes
+                    .iter()
+                    .any(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+                {
+                    return Err(GltfError::InvalidGlb("GLB v3 JSON chunk is empty".into()));
+                }
+            }
+            GLB_CHUNK_BIN => {
+                if chunk_index != 1 || bin.replace(bytes).is_some() {
+                    return Err(GltfError::InvalidGlb(
+                        "BIN must be the second and only GLB v3 BIN chunk".into(),
+                    ));
+                }
+            }
+            _ if chunk_index == 0 => {
+                return Err(GltfError::InvalidGlb(
+                    "GLB v3 JSON chunk must be first".into(),
+                ));
+            }
+            _ => {}
+        }
+        offset = end;
+        chunk_index = chunk_index
+            .checked_add(1)
+            .ok_or_else(|| GltfError::InvalidGlb("too many GLB v3 chunks".into()))?;
+    }
+    Ok(GltfContainer {
+        format: GltfContainerFormat::GlbV3,
+        json: json.ok_or_else(|| GltfError::InvalidGlb("GLB v3 has no JSON chunk".into()))?,
         bin,
     })
 }
@@ -309,7 +425,7 @@ pub fn parse_glb_json_and_bin(data: &[u8]) -> Result<(&[u8], Option<&[u8]>)> {
         return Err(GltfError::InvalidGlb("GLB header is truncated".into()));
     }
     let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
-    if version != GLB_VERSION {
+    if version != GLB_VERSION_V2 {
         return Err(GltfError::InvalidGlb("unsupported GLB version".into()));
     }
     let declared = usize::try_from(u32::from_le_bytes(data[8..12].try_into().unwrap()))
@@ -466,7 +582,7 @@ fn resolve_gltf_buffer(
         return Ok(data);
     }
 
-    if format != GltfContainerFormat::Glb {
+    if !format.is_glb() {
         return Err(GltfError::InvalidGltf(format!(
             "Buffer {index} has no URI in JSON glTF"
         )));
@@ -537,15 +653,19 @@ pub fn serialize_gltf_document(
     output_format: OutputFormat,
 ) -> Result<Vec<u8>> {
     let format = match output_format {
-        OutputFormat::SameAsInput => input_format,
+        OutputFormat::SameAsInput => input_format.canonical(),
         OutputFormat::GltfEmbeddedBuffers => GltfContainerFormat::Gltf,
-        OutputFormat::Glb => GltfContainerFormat::Glb,
+        OutputFormat::Glb | OutputFormat::GlbV2 => GltfContainerFormat::GlbV2,
+        OutputFormat::GlbV3 => GltfContainerFormat::GlbV3,
     };
     let mut document = document.clone();
     normalize_single_buffer(&mut document, bin, format)?;
     match format {
         GltfContainerFormat::Gltf => serialize_json(&document),
-        GltfContainerFormat::Glb => build_glb_container(&document, bin),
+        GltfContainerFormat::Glb | GltfContainerFormat::GlbV2 => {
+            build_glb_container(&document, bin)
+        }
+        GltfContainerFormat::GlbV3 => build_glb_v3_container(&document, bin),
     }
 }
 
@@ -594,7 +714,7 @@ fn normalize_single_buffer(
                 Value::String(encode_data_uri("application/octet-stream", bin)?),
             );
         }
-        GltfContainerFormat::Glb => {
+        GltfContainerFormat::Glb | GltfContainerFormat::GlbV2 | GltfContainerFormat::GlbV3 => {
             buffer.remove("uri");
         }
     }
@@ -702,7 +822,7 @@ pub fn build_glb_container(document: &Value, bin: &[u8]) -> Result<Vec<u8>> {
         .try_reserve_exact(total)
         .map_err(|_| GltfError::ResourceLimitExceeded("GLB allocation failed".into()))?;
     output.extend_from_slice(&GLB_MAGIC.to_le_bytes());
-    output.extend_from_slice(&GLB_VERSION.to_le_bytes());
+    output.extend_from_slice(&GLB_VERSION_V2.to_le_bytes());
     output.extend_from_slice(&total_u32.to_le_bytes());
     output.extend_from_slice(&json_len.to_le_bytes());
     output.extend_from_slice(&GLB_CHUNK_JSON.to_le_bytes());
@@ -711,6 +831,49 @@ pub fn build_glb_container(document: &Value, bin: &[u8]) -> Result<Vec<u8>> {
         output.extend_from_slice(&bin_len.to_le_bytes());
         output.extend_from_slice(&GLB_CHUNK_BIN.to_le_bytes());
         output.extend_from_slice(&bin);
+    }
+    Ok(output)
+}
+
+/// Build a draft GLB v3 container with 64-bit lengths and zero chunk encoding.
+#[cfg(feature = "gltf-writer")]
+pub fn build_glb_v3_container(document: &Value, bin: &[u8]) -> Result<Vec<u8>> {
+    let mut json = serialize_json(document)?;
+    pad_to_four(&mut json, b' ')?;
+    let mut bin_copy = Vec::new();
+    bin_copy
+        .try_reserve_exact(bin.len())
+        .map_err(|_| GltfError::ResourceLimitExceeded("GLB v3 BIN allocation failed".into()))?;
+    bin_copy.extend_from_slice(bin);
+    pad_to_four(&mut bin_copy, 0)?;
+
+    let total = 16usize
+        .checked_add(16)
+        .and_then(|value| value.checked_add(json.len()))
+        .and_then(|value| {
+            if bin_copy.is_empty() {
+                Some(value)
+            } else {
+                value.checked_add(16 + bin_copy.len())
+            }
+        })
+        .ok_or_else(|| GltfError::InvalidGlb("GLB v3 size overflow".into()))?;
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(total)
+        .map_err(|_| GltfError::ResourceLimitExceeded("GLB v3 allocation failed".into()))?;
+    output.extend_from_slice(&GLB_MAGIC.to_le_bytes());
+    output.extend_from_slice(&GLB_VERSION_V3.to_le_bytes());
+    output.extend_from_slice(&(total as u64).to_le_bytes());
+    output.extend_from_slice(&(json.len() as u64).to_le_bytes());
+    output.extend_from_slice(&GLB_CHUNK_JSON.to_le_bytes());
+    output.extend_from_slice(&0u32.to_le_bytes());
+    output.extend_from_slice(&json);
+    if !bin_copy.is_empty() {
+        output.extend_from_slice(&(bin_copy.len() as u64).to_le_bytes());
+        output.extend_from_slice(&GLB_CHUNK_BIN.to_le_bytes());
+        output.extend_from_slice(&0u32.to_le_bytes());
+        output.extend_from_slice(&bin_copy);
     }
     Ok(output)
 }
@@ -740,6 +903,16 @@ fn read_u32(data: &[u8], offset: usize) -> Result<u32> {
     let mut bytes = [0u8; 4];
     bytes.copy_from_slice(&data[offset..end]);
     Ok(u32::from_le_bytes(bytes))
+}
+
+fn read_u64(data: &[u8], offset: usize) -> Result<u64> {
+    let end = offset
+        .checked_add(8)
+        .filter(|end| *end <= data.len())
+        .ok_or_else(|| GltfError::InvalidGlb("truncated u64".into()))?;
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&data[offset..end]);
+    Ok(u64::from_le_bytes(bytes))
 }
 
 #[cfg(feature = "gltf-writer")]
@@ -963,7 +1136,7 @@ mod tests {
                 .sum::<usize>();
         let mut output = Vec::with_capacity(total);
         output.extend_from_slice(&GLB_MAGIC.to_le_bytes());
-        output.extend_from_slice(&GLB_VERSION.to_le_bytes());
+        output.extend_from_slice(&GLB_VERSION_V2.to_le_bytes());
         output.extend_from_slice(&(total as u32).to_le_bytes());
         for (kind, bytes) in chunks {
             output.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
@@ -971,6 +1144,21 @@ mod tests {
             output.extend_from_slice(bytes);
         }
         output
+    }
+
+    #[cfg(feature = "gltf-writer")]
+    #[test]
+    fn glb_v3_roundtrips_and_rejects_nonzero_encoding() {
+        let document = serde_json::json!({ "asset": { "version": "2.1" } });
+        let bytes = build_glb_v3_container(&document, &[1, 2, 3]).unwrap();
+        let parsed = parse_gltf_container(&bytes).unwrap();
+        assert_eq!(parsed.format, GltfContainerFormat::GlbV3);
+        assert_eq!(parsed.bin, Some(&[1, 2, 3, 0][..]));
+
+        let mut malformed = bytes;
+        // v3 JSON chunk encoding is at byte 28: 16-byte header + length + type.
+        malformed[28..32].copy_from_slice(&1u32.to_le_bytes());
+        assert!(parse_gltf_container(&malformed).is_err());
     }
 
     #[test]
@@ -1057,7 +1245,7 @@ mod tests {
         });
         let bytes = build_glb_container(&document, &[1, 2, 3]).unwrap();
         let parsed = parse_gltf_container(&bytes).unwrap();
-        assert_eq!(parsed.format, GltfContainerFormat::Glb);
+        assert_eq!(parsed.format, GltfContainerFormat::GlbV2);
         assert_eq!(&parsed.bin.unwrap()[..3], &[1, 2, 3]);
         let parsed_json: Value = serde_json::from_slice(parsed.json).unwrap();
         assert_eq!(parsed_json["buffers"][0]["byteLength"], 3);

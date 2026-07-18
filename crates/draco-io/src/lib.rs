@@ -279,7 +279,8 @@ pub use gltf_compact::{
 };
 #[cfg(feature = "gltf-writer")]
 pub use gltf_container::{
-    build_glb_container, encode_data_uri, serialize_gltf_document, OutputFormat,
+    build_glb_container, build_glb_v3_container, encode_data_uri, serialize_gltf_document,
+    OutputFormat,
 };
 #[cfg(any(
     feature = "gltf-reader",
