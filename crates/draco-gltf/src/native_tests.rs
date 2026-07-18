@@ -37,6 +37,17 @@ fn native_import_reads_json() {
     );
 }
 
+#[test]
+fn native_compression_appends_a_decodable_draco_payload() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut import = parse_native(input, ValidationProfile::Gltf20).unwrap();
+    import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap();
+    let primitive = import.draco_primitives().next().unwrap();
+    assert_eq!(import.decode_primitive(primitive).unwrap().num_faces(), 1);
+}
+
 #[cfg(feature = "compact")]
 #[test]
 fn compact_facade_uses_native_document() {
