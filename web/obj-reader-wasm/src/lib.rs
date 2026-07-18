@@ -16,6 +16,9 @@ pub struct MeshData {
     pub normals: Vec<f32>,
     /// Texture coordinates (if present)
     pub uvs: Vec<f32>,
+    /// Name selected by the most recent OBJ `usemtl` directive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub material: Option<String>,
 }
 
 /// Parse result containing meshes and any warnings/errors.
@@ -78,12 +81,18 @@ pub fn parse_obj_bytes(data: &[u8]) -> JsValue {
 
 type ObjVertexRef = (usize, Option<usize>, Option<usize>);
 
+struct ObjFace {
+    vertices: Vec<ObjVertexRef>,
+    material: Option<String>,
+}
+
 fn parse_obj_internal(content: &str) -> ParseResult {
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut normals: Vec<[f32; 3]> = Vec::new();
     let mut texcoords: Vec<[f32; 2]> = Vec::new();
-    let mut faces: Vec<Vec<ObjVertexRef>> = Vec::new();
+    let mut faces: Vec<ObjFace> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    let mut current_material = None;
 
     for (line_num, line) in content.lines().enumerate() {
         let line = line.trim();
@@ -122,6 +131,9 @@ fn parse_obj_internal(content: &str) -> ParseResult {
                     texcoords.push([u, v]);
                 }
             }
+            "usemtl" => {
+                current_material = (!parts[1..].is_empty()).then(|| parts[1..].join(" "));
+            }
             "f" => {
                 let mut face_verts: Vec<ObjVertexRef> = Vec::new();
                 for part in parts.iter().skip(1) {
@@ -144,14 +156,66 @@ fn parse_obj_internal(content: &str) -> ParseResult {
                     face_verts.push((vi, ti, ni));
                 }
                 if face_verts.len() >= 3 {
-                    faces.push(face_verts);
+                    faces.push(ObjFace {
+                        vertices: face_verts,
+                        material: current_material.clone(),
+                    });
                 }
             }
             _ => {} // Ignore other directives
         }
     }
 
-    // Convert to indexed mesh (triangulate if needed)
+    let mut face_groups: Vec<(Option<String>, Vec<Vec<ObjVertexRef>>)> = Vec::new();
+    for face in faces {
+        if let Some((_, group)) = face_groups
+            .iter_mut()
+            .find(|(material, _)| *material == face.material)
+        {
+            group.push(face.vertices);
+        } else {
+            face_groups.push((face.material, vec![face.vertices]));
+        }
+    }
+
+    let mut meshes = Vec::with_capacity(face_groups.len().max(1));
+    for (material, faces) in face_groups {
+        meshes.push(build_mesh(
+            &faces,
+            &positions,
+            &normals,
+            &texcoords,
+            &mut warnings,
+            material,
+        ));
+    }
+    if meshes.is_empty() {
+        meshes.push(MeshData {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            material: None,
+        });
+    }
+
+    ParseResult {
+        success: true,
+        meshes,
+        error: None,
+        warnings,
+    }
+}
+
+fn build_mesh(
+    faces: &[Vec<ObjVertexRef>],
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    texcoords: &[[f32; 2]],
+    warnings: &mut Vec<String>,
+    material: Option<String>,
+) -> MeshData {
+    // Convert to indexed mesh (triangulate if needed).
     let mut out_positions: Vec<f32> = Vec::new();
     let mut out_normals: Vec<f32> = Vec::new();
     let mut out_uvs: Vec<f32> = Vec::new();
@@ -159,7 +223,7 @@ fn parse_obj_internal(content: &str) -> ParseResult {
 
     // Simple approach: expand all vertices (no deduplication for simplicity)
     let mut vertex_count: u32 = 0;
-    for face in &faces {
+    for face in faces {
         // Triangulate polygon (fan triangulation)
         for i in 1..face.len() - 1 {
             let triangle = [&face[0], &face[i], &face[i + 1]];
@@ -193,18 +257,12 @@ fn parse_obj_internal(content: &str) -> ParseResult {
         }
     }
 
-    let mesh = MeshData {
+    MeshData {
         positions: out_positions,
         indices: out_indices,
         normals: out_normals,
         uvs: out_uvs,
-    };
-
-    ParseResult {
-        success: true,
-        meshes: vec![mesh],
-        error: None,
-        warnings,
+        material,
     }
 }
 
@@ -243,5 +301,17 @@ f 1 3 4
             result.meshes[0].normals.len()
         );
         assert_eq!(result.meshes[0].indices.len(), 170 * 3);
+    }
+
+    #[test]
+    fn test_splits_meshes_on_usemtl() {
+        let result = parse_obj_internal(
+            "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nusemtl red\nf 1 2 3\nusemtl blue\nf 2 4 3\n",
+        );
+
+        assert!(result.success);
+        assert_eq!(result.meshes.len(), 2);
+        assert_eq!(result.meshes[0].material.as_deref(), Some("red"));
+        assert_eq!(result.meshes[1].material.as_deref(), Some("blue"));
     }
 }

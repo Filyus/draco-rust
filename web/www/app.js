@@ -335,7 +335,7 @@ async function handleFile(file, companionFiles = []) {
         let result;
         switch (extension) {
             case 'obj':
-                result = await parseObjFile(data);
+                result = await parseObjFile(data, currentSourceResources);
                 break;
             case 'ply':
                 result = await parsePlyFile(data);
@@ -369,13 +369,51 @@ async function handleFile(file, companionFiles = []) {
 }
 
 // Parse OBJ file
-async function parseObjFile(data) {
+async function parseObjFile(data, resources = Object.create(null)) {
     if (!modules.objReader.loaded) {
         return { success: false, error: 'OBJ Reader module not loaded' };
     }
     
     const textContent = new TextDecoder().decode(data);
-    return modules.objReader.module.parse_obj(textContent);
+    const result = modules.objReader.module.parse_obj(textContent);
+    if (result?.success) {
+        result.materials = parseObjMaterials(textContent, resources, result.warnings || (result.warnings = []));
+    }
+    return result;
+}
+
+function parseObjMaterials(objText, resources, warnings) {
+    const materials = Object.create(null);
+    const libraries = [];
+    for (const line of objText.split(/\r\n|[\r\n]/)) {
+        const match = line.trim().match(/^mtllib\s+(.+)$/i);
+        if (match) libraries.push(match[1].trim());
+    }
+    for (const library of libraries) {
+        const bytes = resources[library] || resources[basename(library)];
+        if (!bytes) {
+            warnings.push(`OBJ material library not selected: ${library}`);
+            continue;
+        }
+        let current = null;
+        const text = new TextDecoder().decode(bytes);
+        for (const line of text.split(/\r\n|[\r\n]/)) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) continue;
+            const [directive, ...values] = trimmed.split(/\s+/);
+            if (directive === 'newmtl') {
+                current = values.join(' ');
+                if (current) materials[current] ||= { diffuse: [0.8, 0.82, 0.86], alpha: 1 };
+            } else if (directive === 'Kd' && current && values.length >= 3) {
+                const diffuse = values.slice(0, 3).map(Number);
+                if (diffuse.every(Number.isFinite)) materials[current].diffuse = diffuse;
+            } else if ((directive === 'd' || directive === 'Tr') && current && values.length >= 1) {
+                const value = Number(values[0]);
+                if (Number.isFinite(value)) materials[current].alpha = directive === 'Tr' ? 1 - value : value;
+            }
+        }
+    }
+    return materials;
 }
 
 // Parse PLY file

@@ -31,12 +31,12 @@ export function buildSceneFromMeshes(parsed) {
 
     for (const mesh of meshes) {
         const positions = Float32Array.from(mesh.positions || []);
+        const vertexCount = positions.length / 3;
         const indices = mesh.indices ? Uint32Array.from(mesh.indices) : null;
-        const normals = mesh.normals && mesh.normals.length > 0 ? Float32Array.from(mesh.normals) : null;
-        const uvs = mesh.uvs && mesh.uvs.length > 0 ? Float32Array.from(mesh.uvs) : null;
+        const normals = mesh.normals?.length === positions.length ? Float32Array.from(mesh.normals) : null;
+        const uvs = mesh.uvs?.length === vertexCount * 2 ? Float32Array.from(mesh.uvs) : null;
         const colors = mesh.colors && mesh.colors.length > 0 ? Uint8Array.from(mesh.colors) : null;
 
-        const vertexCount = positions.length / 3;
         if (vertexCount === 0) continue;
 
         const localAabb = {
@@ -101,14 +101,20 @@ export function buildSceneFromMeshes(parsed) {
             };
         }
 
+        const sourceMaterial = parsed.materials?.[mesh.material];
         const material = {
-            baseColorFactor: colors ? [1, 1, 1, 1] : [0.7, 0.78, 0.88, 1],
+            baseColorFactor: colors
+                ? [1, 1, 1, 1]
+                : [...(sourceMaterial?.diffuse || [0.7, 0.78, 0.88]), sourceMaterial?.alpha ?? 1],
             // OBJ/PLY/FBX readers do not carry a material contract. Rendering
             // both sides keeps the diagnostic preview useful for exporters
             // whose triangle winding is opposite to WebGL's default.
             doubleSided: true,
             alphaMode: 'OPAQUE',
-            unlit: !normals,
+            // Without explicit normals the fragment shader derives a face
+            // normal from world-space derivatives, so these meshes still have
+            // useful diagnostic lighting.
+            unlit: false,
         };
 
         sceneMeshes.push({

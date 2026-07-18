@@ -208,3 +208,17 @@ test('converter previews OBJ meshes with reverse winding', async ({ page }) => {
   await expect(page.locator('#console')).not.toContainText('Preview failed');
   await expect(page.locator('#console')).not.toContainText('Skipped primitive');
 });
+
+test('converter preserves OBJ material groups for preview', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles([
+    path.join(repoRoot, 'testdata', 'mat_test.obj'),
+    path.join(repoRoot, 'testdata', 'mat_test.mtl'),
+  ]);
+
+  await expect(page.locator('#mesh-count')).toHaveText('7');
+  await expect(page.locator('#viewer-section')).toBeVisible();
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).not.toContainText('Skipped primitive');
+});
