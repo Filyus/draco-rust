@@ -589,6 +589,8 @@ export class Viewer {
             uInverseProjection: gl.getUniformLocation(this.backgroundProgram, 'uInverseProjection'),
             uInverseView: gl.getUniformLocation(this.backgroundProgram, 'uInverseView'),
         };
+        // WebGL2 requires a VAO even for a shader driven solely by gl_VertexID.
+        this.backgroundVao = gl.createVertexArray();
     }
 
     _setupResize() {
@@ -857,6 +859,8 @@ export class Viewer {
         this._resizeObserver?.disconnect();
         if (this.program) this.gl.deleteProgram(this.program);
         if (this.lineProgram) this.gl.deleteProgram(this.lineProgram);
+        if (this.backgroundProgram) this.gl.deleteProgram(this.backgroundProgram);
+        if (this.backgroundVao) this.gl.deleteVertexArray(this.backgroundVao);
     }
 
     resetView() {
@@ -1225,8 +1229,9 @@ export class Viewer {
         gl.useProgram(this.backgroundProgram);
         gl.uniformMatrix4fv(this.backgroundUniforms.uInverseProjection, false, this._inverseProjection);
         gl.uniformMatrix4fv(this.backgroundUniforms.uInverseView, false, this._inverseView);
-        gl.bindVertexArray(null);
+        gl.bindVertexArray(this.backgroundVao);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.bindVertexArray(null);
         gl.depthMask(true);
         gl.enable(gl.DEPTH_TEST);
     }

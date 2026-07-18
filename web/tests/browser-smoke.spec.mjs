@@ -236,6 +236,12 @@ test('3D preview renders a GLB into the WebGL2 canvas', async ({ page }) => {
   });
   expect(hasContext).toBe(true);
 
+  const webglError = await page.evaluate(() => {
+    const gl = document.getElementById('viewer-canvas')?.getContext('webgl2');
+    return gl?.getError();
+  });
+  expect(webglError).toBe(0);
+
   await expect(page.locator('#console')).not.toContainText('undefined');
 });
 
