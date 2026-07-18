@@ -271,6 +271,12 @@ pub use fbx_reader::{FbxMemoryReader, FbxReader};
 #[cfg_attr(docsrs, doc(cfg(feature = "fbx-writer")))]
 pub use fbx_writer::FbxWriter;
 // Reader-agnostic geometry decode + shared error type (reader or writer).
+#[cfg(feature = "gltf-compact")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gltf-compact")))]
+pub use gltf_compact::{
+    parse_compact_document, parse_compact_document_with_limits, CompactDocument, CompactLimits,
+    CompactMeshData, CompactNode, CompactScene,
+};
 #[cfg(feature = "gltf-writer")]
 pub use gltf_container::{
     build_glb_container, encode_data_uri, serialize_gltf_document, OutputFormat,

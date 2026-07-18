@@ -13,6 +13,8 @@ use nanoserde::SerJson;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+const COMPACT_LIMITS: gltf_compact::CompactLimits = gltf_compact::CompactLimits::WASM_DEFAULT;
+
 /// Mesh data structure for JavaScript interop.
 #[derive(SerJson, Clone, Default)]
 pub struct MeshData {
@@ -77,6 +79,12 @@ impl ParseResult {
 fn copy_uint8_array(array: &js_sys::Uint8Array) -> Result<Vec<u8>, String> {
     let len = usize::try_from(array.length())
         .map_err(|_| "Companion resource is too large".to_string())?;
+    if COMPACT_LIMITS
+        .max_resource_bytes
+        .is_some_and(|limit| len > limit)
+    {
+        return Err("Companion resource exceeds the configured size limit".to_string());
+    }
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(len)
@@ -167,7 +175,7 @@ fn parse_document_to_result(
     bin: Option<&[u8]>,
     resources: &[(String, Vec<u8>)],
 ) -> ParseResult {
-    match gltf_compact::parse_compact_document(json, bin, resources) {
+    match gltf_compact::parse_compact_document_with_limits(json, bin, resources, &COMPACT_LIMITS) {
         Ok(document) => ParseResult {
             success: true,
             meshes: document

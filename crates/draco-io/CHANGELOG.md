@@ -18,6 +18,16 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   binary for size-constrained front ends (WASM). The contract (FLOAT-only
   vertex attributes, single buffer, no sparse accessors, `KHR_draco_mesh_compression`
   as the only allowed required extension) is documented on the module.
+- `CompactLimits` and `parse_compact_document_with_limits` for bounded compact
+  parsing. The WASM reader applies conservative JSON, resource, buffer, and
+  decoded-geometry quotas by default.
+
+### Changed
+
+- The compact glTF reader now decodes FLOAT `COLOR_0` attributes and rejects
+  unsupported attribute semantics, multi-primitive meshes, invalid default
+  scenes, undeclared Draco usage, and multi-buffer documents instead of
+  silently producing incomplete scene data.
 
 ## [0.2.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.1.0...draco-io-v0.2.0) - 2026-07-16
 

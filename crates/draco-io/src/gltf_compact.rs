@@ -18,9 +18,9 @@
 //!
 //! - **Geometry primitives** with draw mode `4` (`TRIANGLES`) or `5`
 //!   (`TRIANGLE_STRIP`) only.
-//! - **Vertex attributes** (`POSITION`, `NORMAL`, `TEXCOORD_0`) must use
-//!   `componentType` `5126` (FLOAT) and must not be normalized. Quanted
-//!   integer attributes are not expanded.
+//! - **Vertex attributes** (`POSITION`, `NORMAL`, `TEXCOORD_0`, `COLOR_0`)
+//!   must use `componentType` `5126` (FLOAT) and must not be normalized.
+//!   Quantized integer attributes and every other semantic are rejected.
 //! - **Index accessors** (`SCALAR`, componentType `5121`/`5123`/`5125`).
 //! - **Color attributes** (`VEC3`/`VEC4`, FLOAT) are read when present.
 //! - A **single binary buffer**: every `bufferView` must reference `buffer: 0`.
@@ -35,6 +35,8 @@
 //!   URIs must be supplied via the resource map) but image bytes are never
 //!   materialized.
 //! - Node TRS and scene indices are bounds-checked; finite floats are enforced.
+//! - Each glTF mesh must contain exactly one primitive. This keeps node mesh
+//!   indices aligned with the flat [`CompactDocument::meshes`] output.
 
 use std::collections::HashMap;
 
@@ -49,6 +51,61 @@ use nanoserde::DeJson;
 
 use crate::gltf_container::decode_data_uri;
 use crate::gltf_geometry::{GltfError, Result};
+
+/// Optional limits for compact glTF parsing. `None` means unlimited.
+///
+/// The baseline [`parse_compact_document`] API remains unlimited for backward
+/// compatibility. Front ends that accept untrusted documents should use
+/// [`parse_compact_document_with_limits`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompactLimits {
+    /// Maximum UTF-8 JSON document size.
+    pub max_json_bytes: Option<usize>,
+    /// Maximum decoded size of one buffer or image resource.
+    pub max_resource_bytes: Option<usize>,
+    /// Maximum decoded size of all glTF buffers.
+    pub max_total_buffer_bytes: Option<usize>,
+    /// Maximum aggregate size of decoded geometry arrays.
+    pub max_result_bytes: Option<usize>,
+}
+
+impl CompactLimits {
+    /// Conservative limits for browser/WASM entry points.
+    pub const WASM_DEFAULT: Self = Self {
+        max_json_bytes: Some(16 * 1024 * 1024),
+        max_resource_bytes: Some(64 * 1024 * 1024),
+        max_total_buffer_bytes: Some(128 * 1024 * 1024),
+        max_result_bytes: Some(256 * 1024 * 1024),
+    };
+}
+
+#[derive(Default)]
+struct ResultBudget {
+    limit: Option<usize>,
+    used: usize,
+}
+
+impl ResultBudget {
+    fn new(limit: Option<usize>) -> Self {
+        Self { limit, used: 0 }
+    }
+
+    fn reserve<T>(&mut self, count: usize, what: &str) -> Result<()> {
+        let bytes = count
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| GltfError::ResourceLimitExceeded(format!("{what} size overflow")))?;
+        self.used = self
+            .used
+            .checked_add(bytes)
+            .ok_or_else(|| GltfError::ResourceLimitExceeded(format!("{what} size overflow")))?;
+        if self.limit.is_some_and(|limit| self.used > limit) {
+            return Err(GltfError::ResourceLimitExceeded(format!(
+                "decoded geometry exceeds the {what} budget"
+            )));
+        }
+        Ok(())
+    }
+}
 
 /// Decoded geometry for a single glTF primitive.
 ///
@@ -102,6 +159,8 @@ pub struct CompactDocument {
 #[derive(DeJson, Default)]
 struct CompactRoot {
     #[nserde(default)]
+    asset: Option<CompactAsset>,
+    #[nserde(default)]
     accessors: Vec<CompactAccessor>,
     #[nserde(default, rename = "bufferViews")]
     buffer_views: Vec<CompactBufferView>,
@@ -121,6 +180,12 @@ struct CompactRoot {
     extensions_used: Vec<String>,
     #[nserde(default, rename = "extensionsRequired")]
     extensions_required: Vec<String>,
+}
+
+#[derive(DeJson, Default)]
+struct CompactAsset {
+    #[nserde(default)]
+    version: String,
 }
 
 #[derive(DeJson, Default)]
@@ -168,6 +233,8 @@ struct CompactBuffer {
 struct CompactImage {
     #[nserde(default)]
     uri: Option<String>,
+    #[nserde(default, rename = "bufferView")]
+    buffer_view: Option<usize>,
 }
 
 #[derive(DeJson, Default)]
@@ -242,39 +309,32 @@ pub fn parse_compact_document(
     bin_buffer: Option<&[u8]>,
     resources: &[(String, Vec<u8>)],
 ) -> Result<CompactDocument> {
+    parse_compact_document_with_limits(json, bin_buffer, resources, &CompactLimits::default())
+}
+
+/// Parse a compact glTF document while enforcing explicit input and output
+/// limits.
+pub fn parse_compact_document_with_limits(
+    json: &str,
+    bin_buffer: Option<&[u8]>,
+    resources: &[(String, Vec<u8>)],
+    limits: &CompactLimits,
+) -> Result<CompactDocument> {
+    check_limit(json.len(), limits.max_json_bytes, "glTF JSON")?;
     let root: CompactRoot = DeJson::deserialize_json(json)
         .map_err(|_| GltfError::InvalidGltf("failed to parse glTF JSON".into()))?;
-    let resolved = if bin_buffer.is_none() {
-        root.buffers
-            .iter()
-            .find_map(|buffer| buffer.uri.as_deref())
-            .map(|uri| resolve_buffer_uri(uri, resources))
-            .transpose()
-    } else {
-        Ok(None)
-    }?;
+    let resolved = resolve_document_buffer(&root, bin_buffer, resources, limits)?;
     let buffer = bin_buffer.or(resolved.as_deref());
-    for image in &root.images {
-        if let Some(uri) = image.uri.as_deref() {
-            if uri.starts_with("data:") {
-                decode_data_uri(uri, None)
-                    .map_err(|_| GltfError::InvalidGltf("invalid image data URI".into()))?;
-            } else if !resources.iter().any(|(candidate, _)| candidate == uri) {
-                return Err(GltfError::InvalidGltf(uri.to_string()));
-            }
-        }
-    }
-    validate_document(&root, buffer)?;
+    validate_images(&root.images, resources, limits)?;
+    validate_document(&root, buffer, bin_buffer.is_some(), limits)?;
 
-    let uses_draco = root
-        .extensions_used
-        .iter()
-        .any(|name| name == "KHR_draco_mesh_compression");
+    let uses_draco = document_uses_draco(&root);
     let mut meshes = Vec::new();
     let total_primitives: usize = root.meshes.iter().map(|mesh| mesh.primitives.len()).sum();
     meshes
         .try_reserve_exact(total_primitives)
         .map_err(|_| GltfError::ResourceLimitExceeded("mesh result is too large".into()))?;
+    let mut budget = ResultBudget::new(limits.max_result_bytes);
     for gltf_mesh in &root.meshes {
         for primitive in &gltf_mesh.primitives {
             meshes.push(decode_primitive(
@@ -282,6 +342,7 @@ pub fn parse_compact_document(
                 primitive,
                 buffer,
                 gltf_mesh.name.clone(),
+                &mut budget,
             )?);
         }
     }
@@ -319,11 +380,99 @@ pub fn parse_compact_document(
     })
 }
 
+fn check_limit(length: usize, limit: Option<usize>, resource: &str) -> Result<()> {
+    if limit.is_some_and(|limit| length > limit) {
+        return Err(GltfError::ResourceLimitExceeded(format!(
+            "{resource} is {length} bytes, exceeding the configured limit"
+        )));
+    }
+    Ok(())
+}
+
+fn resolve_document_buffer(
+    root: &CompactRoot,
+    bin_buffer: Option<&[u8]>,
+    resources: &[(String, Vec<u8>)],
+    limits: &CompactLimits,
+) -> Result<Option<Vec<u8>>> {
+    if root.buffers.len() > 1 {
+        return Err(GltfError::Unsupported(
+            "compact reader supports exactly one buffer".into(),
+        ));
+    }
+    match (bin_buffer, root.buffers.first()) {
+        (Some(_), Some(buffer)) if buffer.uri.is_some() => Err(GltfError::InvalidGlb(
+            "GLB BIN chunk requires buffer 0 without a URI".into(),
+        )),
+        (Some(data), Some(_)) => {
+            check_limit(data.len(), limits.max_resource_bytes, "GLB BIN chunk")?;
+            check_limit(
+                data.len(),
+                limits.max_total_buffer_bytes,
+                "glTF buffers total",
+            )?;
+            Ok(None)
+        }
+        (Some(_), None) => Err(GltfError::InvalidGlb(
+            "GLB has a BIN chunk but declares no buffer".into(),
+        )),
+        (None, Some(buffer)) => buffer
+            .uri
+            .as_deref()
+            .map(|uri| resolve_buffer_uri(uri, resources, limits))
+            .transpose(),
+        (None, None) => Ok(None),
+    }
+}
+
+fn validate_images(
+    images: &[CompactImage],
+    resources: &[(String, Vec<u8>)],
+    limits: &CompactLimits,
+) -> Result<()> {
+    for image in images {
+        if image.buffer_view.is_some() {
+            return Err(GltfError::Unsupported(
+                "bufferView images are not supported by the compact reader".into(),
+            ));
+        }
+        if let Some(uri) = image.uri.as_deref() {
+            if uri.starts_with("data:") {
+                decode_data_uri(uri, limits.max_resource_bytes).map_err(|error| match error {
+                    GltfError::ResourceLimitExceeded(_) => error,
+                    _ => GltfError::InvalidGltf("invalid image data URI".into()),
+                })?;
+            } else {
+                let bytes = resources
+                    .iter()
+                    .find(|(candidate, _)| candidate == uri)
+                    .map(|(_, bytes)| bytes)
+                    .ok_or_else(|| GltfError::InvalidGltf(uri.to_string()))?;
+                check_limit(bytes.len(), limits.max_resource_bytes, uri)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn document_uses_draco(root: &CompactRoot) -> bool {
+    root.meshes.iter().any(|mesh| {
+        mesh.primitives.iter().any(|primitive| {
+            primitive
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.khr_draco.as_ref())
+                .is_some()
+        })
+    })
+}
+
 fn decode_primitive(
     root: &CompactRoot,
     primitive: &CompactPrimitive,
     buffer: Option<&[u8]>,
     name: Option<String>,
+    budget: &mut ResultBudget,
 ) -> Result<CompactMeshData> {
     if let Some(draco) = primitive
         .extensions
@@ -336,7 +485,7 @@ fn decode_primitive(
         let data = buffer
             .and_then(|bytes| buffer_view_slice(&root.buffer_views, view, bytes))
             .ok_or_else(|| GltfError::InvalidGltf("KHR Draco bufferView is out of range".into()))?;
-        let mut decoded = decode_draco_mesh(data, &draco.attributes)?;
+        let mut decoded = decode_draco_mesh(data, &draco.attributes, budget)?;
         decoded.name = name;
         return Ok(decoded);
     }
@@ -347,23 +496,26 @@ fn decode_primitive(
         ..Default::default()
     };
     if let Some(&index) = primitive.attributes.get("POSITION") {
-        mesh.positions = read_vec3(&root.accessors, &root.buffer_views, data, index)?;
+        mesh.positions = read_vec3(&root.accessors, &root.buffer_views, data, index, budget)?;
     }
     if let Some(&index) = primitive.attributes.get("NORMAL") {
-        mesh.normals = read_vec3(&root.accessors, &root.buffer_views, data, index)?;
+        mesh.normals = read_vec3(&root.accessors, &root.buffer_views, data, index, budget)?;
     }
     if let Some(&index) = primitive.attributes.get("TEXCOORD_0") {
-        mesh.uvs = read_vec2(&root.accessors, &root.buffer_views, data, index)?;
+        mesh.uvs = read_vec2(&root.accessors, &root.buffer_views, data, index, budget)?;
+    }
+    if let Some(&index) = primitive.attributes.get("COLOR_0") {
+        mesh.colors = read_color(&root.accessors, &root.buffer_views, data, index, budget)?;
     }
     if let Some(index) = primitive.indices {
-        mesh.indices = read_indices(&root.accessors, &root.buffer_views, data, index)?;
+        mesh.indices = read_indices(&root.accessors, &root.buffer_views, data, index, budget)?;
     }
     if primitive.mode.unwrap_or(4) == 5 {
         if mesh.indices.is_empty() {
             let count = mesh.positions.len() / 3;
-            mesh.indices = generate_sequential_indices(count)?;
+            mesh.indices = generate_sequential_indices(count, budget)?;
         }
-        mesh.indices = triangulate_strip(&mesh.indices);
+        mesh.indices = triangulate_strip(&mesh.indices, budget)?;
     } else if mesh.indices.is_empty() {
         let count = mesh.positions.len() / 3;
         if count % 3 != 0 {
@@ -371,7 +523,7 @@ fn decode_primitive(
                 "non-indexed TRIANGLES count is not divisible by three".into(),
             ));
         }
-        mesh.indices = generate_sequential_indices(count)?;
+        mesh.indices = generate_sequential_indices(count, budget)?;
     }
     if mesh.indices.len() % 3 != 0
         || mesh
@@ -384,23 +536,45 @@ fn decode_primitive(
     Ok(mesh)
 }
 
-fn generate_sequential_indices(count: usize) -> Result<Vec<u32>> {
+fn generate_sequential_indices(count: usize, budget: &mut ResultBudget) -> Result<Vec<u32>> {
+    budget.reserve::<u32>(count, "index result")?;
     (0..count)
         .map(u32::try_from)
         .collect::<std::result::Result<Vec<u32>, _>>()
         .map_err(|_| GltfError::ResourceLimitExceeded("vertex count exceeds u32".into()))
 }
 
-fn resolve_buffer_uri(uri: &str, resources: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
+fn resolve_buffer_uri(
+    uri: &str,
+    resources: &[(String, Vec<u8>)],
+    limits: &CompactLimits,
+) -> Result<Vec<u8>> {
     if uri.starts_with("data:") {
-        return decode_data_uri(uri, None)
-            .map_err(|_| GltfError::InvalidGltf("invalid buffer data URI".into()));
+        let data = decode_data_uri(uri, limits.max_resource_bytes).map_err(|error| match error {
+            GltfError::ResourceLimitExceeded(_) => error,
+            _ => GltfError::InvalidGltf("invalid buffer data URI".into()),
+        });
+        if let Ok(data) = &data {
+            check_limit(
+                data.len(),
+                limits.max_total_buffer_bytes,
+                "glTF buffers total",
+            )?;
+        }
+        return data;
     }
-    resources
+    let resource = resources
         .iter()
         .find(|(candidate, _)| candidate == uri)
-        .map(|(_, bytes)| bytes.clone())
-        .ok_or_else(|| GltfError::InvalidGltf(uri.to_string()))
+        .ok_or_else(|| GltfError::InvalidGltf(uri.to_string()))?;
+    let bytes = &resource.1;
+    check_limit(bytes.len(), limits.max_resource_bytes, uri)?;
+    check_limit(
+        bytes.len(),
+        limits.max_total_buffer_bytes,
+        "glTF buffers total",
+    )?;
+    Ok(bytes.clone())
 }
 
 fn buffer_view_slice<'a>(
@@ -414,11 +588,27 @@ fn buffer_view_slice<'a>(
     data.get(start..end)
 }
 
-fn validate_document(root: &CompactRoot, data: Option<&[u8]>) -> Result<()> {
-    let draco_used = root
+fn validate_document(
+    root: &CompactRoot,
+    data: Option<&[u8]>,
+    is_glb: bool,
+    limits: &CompactLimits,
+) -> Result<()> {
+    let asset = root
+        .asset
+        .as_ref()
+        .ok_or_else(|| GltfError::InvalidGltf("asset.version is missing".into()))?;
+    if asset.version != "2.0" {
+        return Err(GltfError::Unsupported(format!(
+            "glTF asset version {} is not supported",
+            asset.version
+        )));
+    }
+    let draco_declared = root
         .extensions_used
         .iter()
         .any(|name| name == "KHR_draco_mesh_compression");
+    let draco_used = document_uses_draco(root);
     if root
         .extensions_required
         .iter()
@@ -436,6 +626,26 @@ fn validate_document(root: &CompactRoot, data: Option<&[u8]>) -> Result<()> {
     {
         return Err(GltfError::InvalidGltf(
             "KHR_draco_mesh_compression is required but not used".into(),
+        ));
+    }
+    if draco_used && !draco_declared {
+        return Err(GltfError::InvalidGltf(
+            "KHR_draco_mesh_compression is used but missing from extensionsUsed".into(),
+        ));
+    }
+    if root.buffers.len() > 1 {
+        return Err(GltfError::Unsupported(
+            "compact reader supports exactly one buffer".into(),
+        ));
+    }
+    if is_glb
+        && root
+            .buffers
+            .first()
+            .is_some_and(|buffer| buffer.uri.is_some())
+    {
+        return Err(GltfError::InvalidGlb(
+            "GLB BIN chunk requires buffer 0 without a URI".into(),
         ));
     }
     let data = match data {
@@ -460,6 +670,12 @@ fn validate_document(root: &CompactRoot, data: Option<&[u8]>) -> Result<()> {
             "declared buffer length exceeds the supplied buffer".into(),
         ));
     }
+    check_limit(data.len(), limits.max_resource_bytes, "glTF buffer")?;
+    check_limit(
+        data.len(),
+        limits.max_total_buffer_bytes,
+        "glTF buffers total",
+    )?;
     for view in &root.buffer_views {
         if view.buffer != 0
             || view
@@ -515,7 +731,17 @@ fn validate_document(root: &CompactRoot, data: Option<&[u8]>) -> Result<()> {
             ));
         }
     }
+    if root.scene.is_some_and(|scene| scene >= root.scenes.len()) {
+        return Err(GltfError::InvalidGltf(
+            "default scene reference is out of range".into(),
+        ));
+    }
     for mesh in &root.meshes {
+        if mesh.primitives.len() > 1 {
+            return Err(GltfError::Unsupported(
+                "compact reader supports one primitive per mesh".into(),
+            ));
+        }
         for primitive in &mesh.primitives {
             if !primitive.attributes.contains_key("POSITION")
                 || !matches!(primitive.mode.unwrap_or(4), 4 | 5)
@@ -529,6 +755,30 @@ fn validate_document(root: &CompactRoot, data: Option<&[u8]>) -> Result<()> {
                 .as_ref()
                 .and_then(|extensions| extensions.khr_draco.as_ref())
                 .is_some();
+            if primitive.attributes.keys().any(|semantic| {
+                !matches!(
+                    semantic.as_str(),
+                    "POSITION" | "NORMAL" | "TEXCOORD_0" | "COLOR_0"
+                )
+            }) {
+                return Err(GltfError::Unsupported(
+                    "primitive has an unsupported vertex attribute semantic".into(),
+                ));
+            }
+            let position = primitive.attributes["POSITION"];
+            let position_count =
+                validate_attribute_accessor(root, data, position, "POSITION", has_draco)?;
+            for (semantic, &accessor) in &primitive.attributes {
+                if semantic == "POSITION" {
+                    continue;
+                }
+                let count = validate_attribute_accessor(root, data, accessor, semantic, has_draco)?;
+                if count != position_count {
+                    return Err(GltfError::InvalidGltf(
+                        "vertex attribute counts do not match POSITION".into(),
+                    ));
+                }
+            }
             for &accessor in primitive.attributes.values() {
                 validate_accessor(root, data, accessor, has_draco)?;
             }
@@ -563,6 +813,35 @@ fn validate_document(root: &CompactRoot, data: Option<&[u8]>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn validate_attribute_accessor(
+    root: &CompactRoot,
+    data: &[u8],
+    index: u32,
+    semantic: &str,
+    allow_missing_view: bool,
+) -> Result<usize> {
+    validate_accessor(root, data, index, allow_missing_view)?;
+    let accessor = root
+        .accessors
+        .get(
+            usize::try_from(index)
+                .map_err(|_| GltfError::InvalidGltf("accessor index exceeds usize".into()))?,
+        )
+        .ok_or_else(|| GltfError::InvalidGltf("accessor index is out of range".into()))?;
+    let valid_type = match semantic {
+        "POSITION" | "NORMAL" => accessor.accessor_type == "VEC3",
+        "TEXCOORD_0" => accessor.accessor_type == "VEC2",
+        "COLOR_0" => matches!(accessor.accessor_type.as_str(), "VEC3" | "VEC4"),
+        _ => false,
+    };
+    if !valid_type || accessor.component_type != 5126 || accessor.normalized {
+        return Err(GltfError::Unsupported(format!(
+            "{semantic} must use an unnormalized FLOAT accessor with the supported shape"
+        )));
+    }
+    Ok(accessor.count)
 }
 
 fn validate_accessor(
@@ -678,6 +957,7 @@ fn read_vec3(
     views: &[CompactBufferView],
     data: &[u8],
     index: u32,
+    budget: &mut ResultBudget,
 ) -> Result<Vec<f32>> {
     let (accessor, view, start) = accessor_bounds(accessors, views, index)?;
     if accessor.accessor_type != "VEC3" || accessor.component_type != 5126 || accessor.normalized {
@@ -686,6 +966,13 @@ fn read_vec3(
         ));
     }
     let stride = view.byte_stride.unwrap_or(12);
+    budget.reserve::<f32>(
+        accessor
+            .count
+            .checked_mul(3)
+            .ok_or_else(|| GltfError::ResourceLimitExceeded("VEC3 result size overflow".into()))?,
+        "VEC3 result",
+    )?;
     let mut output = Vec::new();
     output
         .try_reserve_exact(
@@ -737,6 +1024,7 @@ fn read_vec2(
     views: &[CompactBufferView],
     data: &[u8],
     index: u32,
+    budget: &mut ResultBudget,
 ) -> Result<Vec<f32>> {
     let (accessor, view, start) = accessor_bounds(accessors, views, index)?;
     if accessor.accessor_type != "VEC2" || accessor.component_type != 5126 || accessor.normalized {
@@ -745,6 +1033,13 @@ fn read_vec2(
         ));
     }
     let stride = view.byte_stride.unwrap_or(8);
+    budget.reserve::<f32>(
+        accessor
+            .count
+            .checked_mul(2)
+            .ok_or_else(|| GltfError::ResourceLimitExceeded("VEC2 result size overflow".into()))?,
+        "VEC2 result",
+    )?;
     let mut output = Vec::new();
     output
         .try_reserve_exact(
@@ -786,11 +1081,83 @@ fn read_vec2(
     Ok(output)
 }
 
+fn read_color(
+    accessors: &[CompactAccessor],
+    views: &[CompactBufferView],
+    data: &[u8],
+    index: u32,
+    budget: &mut ResultBudget,
+) -> Result<Vec<f32>> {
+    let (accessor, view, start) = accessor_bounds(accessors, views, index)?;
+    let components = match accessor.accessor_type.as_str() {
+        "VEC3" => 3usize,
+        "VEC4" => 4usize,
+        _ => {
+            return Err(GltfError::Unsupported(
+                "COLOR_0 must be a FLOAT VEC3 or VEC4".into(),
+            ));
+        }
+    };
+    if accessor.component_type != 5126 || accessor.normalized {
+        return Err(GltfError::Unsupported(
+            "COLOR_0 must be a FLOAT VEC3 or VEC4".into(),
+        ));
+    }
+    let row_size = components
+        .checked_mul(4)
+        .ok_or_else(|| GltfError::ResourceLimitExceeded("color row size overflow".into()))?;
+    let stride = view.byte_stride.unwrap_or(row_size);
+    budget.reserve::<f32>(
+        accessor
+            .count
+            .checked_mul(components)
+            .ok_or_else(|| GltfError::ResourceLimitExceeded("color result size overflow".into()))?,
+        "color result",
+    )?;
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(
+            accessor.count.checked_mul(components).ok_or_else(|| {
+                GltfError::ResourceLimitExceeded("color result size overflow".into())
+            })?,
+        )
+        .map_err(|_| GltfError::ResourceLimitExceeded("failed to allocate colors".into()))?;
+    for row in 0..accessor.count {
+        let offset = start
+            .checked_add(
+                row.checked_mul(stride)
+                    .ok_or_else(|| GltfError::InvalidGltf("color row offset overflow".into()))?,
+            )
+            .ok_or_else(|| GltfError::InvalidGltf("color row offset overflow".into()))?;
+        let end = offset
+            .checked_add(row_size)
+            .ok_or_else(|| GltfError::InvalidGltf("color row end overflow".into()))?;
+        let bytes = data
+            .get(offset..end)
+            .ok_or_else(|| GltfError::InvalidGltf("color value extends past its buffer".into()))?;
+        for component in bytes.chunks_exact(4) {
+            let value = f32::from_le_bytes(
+                component
+                    .try_into()
+                    .map_err(|_| GltfError::InvalidGltf("color component is malformed".into()))?,
+            );
+            if !value.is_finite() {
+                return Err(GltfError::InvalidGltf(
+                    "COLOR_0 contains a non-finite value".into(),
+                ));
+            }
+            output.push(value);
+        }
+    }
+    Ok(output)
+}
+
 fn read_indices(
     accessors: &[CompactAccessor],
     views: &[CompactBufferView],
     data: &[u8],
     index: u32,
+    budget: &mut ResultBudget,
 ) -> Result<Vec<u32>> {
     let (accessor, view, start) = accessor_bounds(accessors, views, index)?;
     if accessor.accessor_type != "SCALAR" || accessor.normalized {
@@ -809,6 +1176,7 @@ fn read_indices(
         }
     };
     let stride = view.byte_stride.unwrap_or(size);
+    budget.reserve::<u32>(accessor.count, "index result")?;
     let mut output = Vec::new();
     output
         .try_reserve_exact(accessor.count)
@@ -843,17 +1211,18 @@ fn read_indices(
     Ok(output)
 }
 
-fn triangulate_strip(indices: &[u32]) -> Vec<u32> {
+fn triangulate_strip(indices: &[u32], budget: &mut ResultBudget) -> Result<Vec<u32>> {
     if indices.len() < 3 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let Some(capacity) = (indices.len() - 2).checked_mul(3) else {
-        return Vec::new();
-    };
+    let capacity = (indices.len() - 2)
+        .checked_mul(3)
+        .ok_or_else(|| GltfError::ResourceLimitExceeded("triangle strip index overflow".into()))?;
+    budget.reserve::<u32>(capacity, "triangle strip index result")?;
     let mut output = Vec::new();
-    if output.try_reserve_exact(capacity).is_err() {
-        return Vec::new();
-    }
+    output.try_reserve_exact(capacity).map_err(|_| {
+        GltfError::ResourceLimitExceeded("failed to allocate triangle strip".into())
+    })?;
     for index in 2..indices.len() {
         if index % 2 == 0 {
             output.extend_from_slice(&[indices[index - 2], indices[index - 1], indices[index]]);
@@ -861,12 +1230,13 @@ fn triangulate_strip(indices: &[u32]) -> Vec<u32> {
             output.extend_from_slice(&[indices[index - 1], indices[index - 2], indices[index]]);
         }
     }
-    output
+    Ok(output)
 }
 
 fn decode_draco_mesh(
     data: &[u8],
     extension_attributes: &HashMap<String, u32>,
+    budget: &mut ResultBudget,
 ) -> Result<CompactMeshData> {
     let mut buffer = DecoderBuffer::new(data);
     let mut mesh = Mesh::new();
@@ -882,17 +1252,20 @@ fn decode_draco_mesh(
             "KHR Draco attribute id is not present in the decoded mesh".into(),
         ));
     }
-    let positions = draco_attribute(&mesh, GeometryAttributeType::Position, 3)?
+    let positions = draco_attribute(&mesh, GeometryAttributeType::Position, 3, budget)?
         .ok_or_else(|| GltfError::InvalidGltf("decoded Draco mesh has no POSITION".into()))?;
-    let normals = draco_attribute(&mesh, GeometryAttributeType::Normal, 3)?.unwrap_or_default();
-    let uvs = draco_attribute(&mesh, GeometryAttributeType::TexCoord, 2)?.unwrap_or_default();
-    let colors =
-        draco_attribute_range(&mesh, GeometryAttributeType::Color, 3, 4)?.unwrap_or_default();
+    let normals =
+        draco_attribute(&mesh, GeometryAttributeType::Normal, 3, budget)?.unwrap_or_default();
+    let uvs =
+        draco_attribute(&mesh, GeometryAttributeType::TexCoord, 2, budget)?.unwrap_or_default();
+    let colors = draco_attribute_range(&mesh, GeometryAttributeType::Color, 3, 4, budget)?
+        .unwrap_or_default();
     let count = mesh
         .num_faces()
         .checked_mul(3)
         .ok_or_else(|| GltfError::ResourceLimitExceeded("triangle index count overflow".into()))?;
     let mut indices = Vec::new();
+    budget.reserve::<u32>(count, "Draco index result")?;
     indices
         .try_reserve_exact(count)
         .map_err(|_| GltfError::ResourceLimitExceeded("failed to allocate indices".into()))?;
@@ -924,8 +1297,9 @@ fn draco_attribute(
     mesh: &Mesh,
     kind: GeometryAttributeType,
     components: u8,
+    budget: &mut ResultBudget,
 ) -> Result<Option<Vec<f32>>> {
-    draco_attribute_range(mesh, kind, components, components)
+    draco_attribute_range(mesh, kind, components, components, budget)
 }
 
 fn draco_attribute_range(
@@ -933,6 +1307,7 @@ fn draco_attribute_range(
     kind: GeometryAttributeType,
     min_components: u8,
     max_components: u8,
+    budget: &mut ResultBudget,
 ) -> Result<Option<Vec<f32>>> {
     let id = mesh.named_attribute_id(kind);
     if id < 0 {
@@ -961,17 +1336,14 @@ fn draco_attribute_range(
         )));
     }
     let mut output = Vec::new();
-    output
-        .try_reserve_exact(
-            mesh.num_points()
-                .checked_mul(usize::from(components))
-                .ok_or_else(|| {
-                    GltfError::ResourceLimitExceeded("attribute result size overflow".into())
-                })?,
-        )
-        .map_err(|_| {
-            GltfError::ResourceLimitExceeded("failed to allocate attribute result".into())
-        })?;
+    let count = mesh
+        .num_points()
+        .checked_mul(usize::from(components))
+        .ok_or_else(|| GltfError::ResourceLimitExceeded("attribute result size overflow".into()))?;
+    budget.reserve::<f32>(count, "Draco attribute result")?;
+    output.try_reserve_exact(count).map_err(|_| {
+        GltfError::ResourceLimitExceeded("failed to allocate attribute result".into())
+    })?;
     for point in 0..mesh.num_points() {
         let value = attribute
             .mapped_index(PointIndex(u32::try_from(point).map_err(|_| {
@@ -1034,6 +1406,32 @@ mod tests {
         .to_vec()
     }
 
+    fn color_triangle_resource() -> Vec<u8> {
+        let mut bytes = triangle_resource();
+        bytes.extend(
+            [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+                .into_iter()
+                .flat_map(f32::to_le_bytes),
+        );
+        bytes
+    }
+
+    fn color_triangle_json() -> &'static str {
+        r#"{
+          "asset":{"version":"2.0"},
+          "buffers":[{"uri":"triangle.bin","byteLength":72}],
+          "bufferViews":[
+            {"buffer":0,"byteOffset":0,"byteLength":36},
+            {"buffer":0,"byteOffset":36,"byteLength":36}
+          ],
+          "accessors":[
+            {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},
+            {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"}
+          ],
+          "meshes":[{"primitives":[{"attributes":{"POSITION":0,"COLOR_0":1}}]}]
+        }"#
+    }
+
     #[test]
     fn decodes_external_resource() {
         let resources = vec![("triangle.bin".to_string(), triangle_resource())];
@@ -1053,6 +1451,102 @@ mod tests {
         let json = std::str::from_utf8(&input).unwrap();
         let error = parse_compact_document(json, None, &[]).unwrap_err();
         assert!(matches!(error, GltfError::InvalidGltf(ref message) if message == "triangle.bin"));
+    }
+
+    #[test]
+    fn decodes_float_colors() {
+        let resources = vec![("triangle.bin".to_string(), color_triangle_resource())];
+        let document = parse_compact_document(color_triangle_json(), None, &resources).unwrap();
+        assert_eq!(
+            document.meshes[0].colors,
+            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_vertex_semantics() {
+        let resources = vec![("triangle.bin".to_string(), triangle_resource())];
+        let json = String::from_utf8(external_triangle_json())
+            .unwrap()
+            .replace("\"POSITION\":0", "\"POSITION\":0,\"TANGENT\":0");
+        let result = parse_compact_document(&json, None, &resources);
+        assert!(matches!(result, Err(GltfError::Unsupported(_))));
+    }
+
+    #[test]
+    fn rejects_mismatched_vertex_attribute_counts() {
+        let resources = vec![("triangle.bin".to_string(), color_triangle_resource())];
+        let json = color_triangle_json().replace(
+            "\"count\":3,\"type\":\"VEC3\"}\n          ],",
+            "\"count\":2,\"type\":\"VEC3\"}\n          ],",
+        );
+        let result = parse_compact_document(&json, None, &resources);
+        assert!(matches!(result, Err(GltfError::InvalidGltf(_))));
+    }
+
+    #[test]
+    fn rejects_default_scene_out_of_range() {
+        let resources = vec![("triangle.bin".to_string(), triangle_resource())];
+        let json = String::from_utf8(external_triangle_json())
+            .unwrap()
+            .replace("\"scene\":0", "\"scene\":1");
+        let result = parse_compact_document(&json, None, &resources);
+        assert!(matches!(result, Err(GltfError::InvalidGltf(_))));
+    }
+
+    #[test]
+    fn rejects_multiple_primitives_per_mesh() {
+        let resources = vec![("triangle.bin".to_string(), triangle_resource())];
+        let json = String::from_utf8(external_triangle_json())
+            .unwrap()
+            .replace(
+                "[{\"attributes\":{\"POSITION\":0}}]",
+                "[{\"attributes\":{\"POSITION\":0}},{\"attributes\":{\"POSITION\":0}}]",
+            );
+        let result = parse_compact_document(&json, None, &resources);
+        assert!(matches!(result, Err(GltfError::Unsupported(_))));
+    }
+
+    #[test]
+    fn rejects_draco_extension_missing_extensions_used() {
+        let json = r#"{
+          "asset":{"version":"2.0"},
+          "buffers":[{"byteLength":1}],
+          "bufferViews":[{"buffer":0,"byteLength":1}],
+          "accessors":[{"componentType":5126,"count":0,"type":"VEC3"}],
+          "meshes":[{"primitives":[{
+            "attributes":{"POSITION":0},
+            "extensions":{"KHR_draco_mesh_compression":{"bufferView":0,"attributes":{"POSITION":0}}}
+          }]}]
+        }"#;
+        let result = parse_compact_document(json, Some(&[0]), &[]);
+        assert!(matches!(result, Err(GltfError::InvalidGltf(_))));
+    }
+
+    #[test]
+    fn rejects_multiple_buffers() {
+        let json = r#"{
+          "asset":{"version":"2.0"},
+          "buffers":[{"byteLength":0},{"byteLength":0}],
+          "meshes":[]
+        }"#;
+        let result = parse_compact_document(json, None, &[]);
+        assert!(matches!(result, Err(GltfError::Unsupported(_))));
+    }
+
+    #[test]
+    fn enforces_compact_limits() {
+        let resources = vec![("triangle.bin".to_string(), triangle_resource())];
+        let result = parse_compact_document_with_limits(
+            std::str::from_utf8(&external_triangle_json()).unwrap(),
+            None,
+            &resources,
+            &CompactLimits {
+                max_result_bytes: Some(1),
+                ..CompactLimits::default()
+            },
+        );
+        assert!(matches!(result, Err(GltfError::ResourceLimitExceeded(_))));
     }
 
     #[test]

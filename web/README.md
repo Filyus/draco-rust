@@ -216,6 +216,9 @@ npm run test:browser
 
 Release builds enforce a `gltf_reader_bg.wasm` budget of at most 110 KiB gzip after `wasm-opt`. `--no-optimize` intentionally skips this release budget check. The reader is backed by the serde-free `gltf-compact` module in `draco-io` (the `serde`/`serde_json` dependencies are excluded from the WASM binary); the budget accommodates the small overhead of sharing that front end across the crate boundary.
 
+The glTF reader applies bounded compact parsing to untrusted input: 16 MiB JSON,
+64 MiB per resource, 128 MiB of buffers, and 256 MiB of decoded geometry.
+
 ## Development
 
 ### Project Structure
