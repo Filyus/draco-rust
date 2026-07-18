@@ -43,6 +43,56 @@ fn validation_rejects_dangling_core_references_and_draft_types_in_20() {
 }
 
 #[test]
+fn typed_views_reference_the_lossless_document() {
+    let document = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":12,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteOffset":4,"byteLength":8}],"accessors":[{"bufferView":0,"componentType":5126,"count":2,"type":"VEC3"}],"images":[{"uri":"albedo.png"}],"textures":[{"source":0}],"meshes":[{"primitives":[]}],"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"files":[{"uri":"child.gltf"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        document.buffer(crate::BufferIndex(0)).unwrap().uri(),
+        Some("mesh.bin")
+    );
+    assert_eq!(
+        document
+            .buffer_view(crate::BufferViewIndex(0))
+            .unwrap()
+            .byte_offset(),
+        4
+    );
+    assert_eq!(
+        document
+            .accessor(crate::AccessorIndex(0))
+            .unwrap()
+            .component_type(),
+        Some(crate::ComponentType::F32)
+    );
+    assert_eq!(
+        document.texture(crate::TextureIndex(0)).unwrap().source(),
+        Some(crate::ImageIndex(0))
+    );
+    assert_eq!(
+        document.node(crate::NodeIndex(0)).unwrap().mesh(),
+        Some(crate::MeshIndex(0))
+    );
+    assert_eq!(
+        document
+            .scene(crate::SceneIndex(0))
+            .unwrap()
+            .nodes()
+            .collect::<Vec<_>>(),
+        [crate::NodeIndex(0)]
+    );
+    assert_eq!(
+        document.file(crate::FileIndex(0)).unwrap().uri(),
+        Some("child.gltf")
+    );
+    assert_eq!(
+        document.to_json_bytes().unwrap().starts_with(b"{\"asset\""),
+        true
+    );
+}
+
+#[test]
 fn native_import_reads_json() {
     let import = parse_native(
         br#"{"asset":{"version":"2.1"},"buffers":[]}"#,

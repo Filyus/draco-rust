@@ -198,47 +198,92 @@ impl Document {
     pub fn accessors(&self) -> Objects<'_, AccessorIndex> {
         self.objects("accessors")
     }
+    pub fn accessor(&self, index: AccessorIndex) -> Option<Accessor<'_>> {
+        self.accessors().get(index).map(Accessor)
+    }
     pub fn animations(&self) -> Objects<'_, AnimationIndex> {
         self.objects("animations")
+    }
+    pub fn animation(&self, index: AnimationIndex) -> Option<Animation<'_>> {
+        self.animations().get(index).map(Animation)
     }
     pub fn buffers(&self) -> Objects<'_, BufferIndex> {
         self.objects("buffers")
     }
+    pub fn buffer(&self, index: BufferIndex) -> Option<Buffer<'_>> {
+        self.buffers().get(index).map(Buffer)
+    }
     pub fn buffer_views(&self) -> Objects<'_, BufferViewIndex> {
         self.objects("bufferViews")
+    }
+    pub fn buffer_view(&self, index: BufferViewIndex) -> Option<BufferView<'_>> {
+        self.buffer_views().get(index).map(BufferView)
     }
     pub fn cameras(&self) -> Objects<'_, CameraIndex> {
         self.objects("cameras")
     }
+    pub fn camera(&self, index: CameraIndex) -> Option<Camera<'_>> {
+        self.cameras().get(index).map(Camera)
+    }
     pub fn files(&self) -> Objects<'_, FileIndex> {
         self.objects("files")
+    }
+    pub fn file(&self, index: FileIndex) -> Option<File<'_>> {
+        self.files().get(index).map(File)
     }
     pub fn images(&self) -> Objects<'_, ImageIndex> {
         self.objects("images")
     }
+    pub fn image(&self, index: ImageIndex) -> Option<Image<'_>> {
+        self.images().get(index).map(Image)
+    }
     pub fn materials(&self) -> Objects<'_, MaterialIndex> {
         self.objects("materials")
+    }
+    pub fn material(&self, index: MaterialIndex) -> Option<Material<'_>> {
+        self.materials().get(index).map(Material)
     }
     pub fn meshes(&self) -> Objects<'_, MeshIndex> {
         self.objects("meshes")
     }
+    pub fn mesh(&self, index: MeshIndex) -> Option<Mesh<'_>> {
+        self.meshes().get(index).map(Mesh)
+    }
     pub fn nodes(&self) -> Objects<'_, NodeIndex> {
         self.objects("nodes")
+    }
+    pub fn node(&self, index: NodeIndex) -> Option<Node<'_>> {
+        self.nodes().get(index).map(Node)
     }
     pub fn samplers(&self) -> Objects<'_, SamplerIndex> {
         self.objects("samplers")
     }
+    pub fn sampler(&self, index: SamplerIndex) -> Option<Sampler<'_>> {
+        self.samplers().get(index).map(Sampler)
+    }
     pub fn scenes(&self) -> Objects<'_, SceneIndex> {
         self.objects("scenes")
+    }
+    pub fn scene(&self, index: SceneIndex) -> Option<Scene<'_>> {
+        self.scenes().get(index).map(Scene)
     }
     pub fn shapes(&self) -> Objects<'_, ShapeIndex> {
         self.objects("shapes")
     }
+    pub fn shape(&self, index: ShapeIndex) -> Option<Shape<'_>> {
+        self.shapes().get(index).map(Shape)
+    }
     pub fn skins(&self) -> Objects<'_, SkinIndex> {
         self.objects("skins")
     }
+    pub fn skin(&self, index: SkinIndex) -> Option<Skin<'_>> {
+        self.skins().get(index).map(Skin)
+    }
     pub fn textures(&self) -> Objects<'_, TextureIndex> {
         self.objects("textures")
+    }
+    pub fn texture(&self, index: TextureIndex) -> Option<Texture<'_>> {
+        self.textures().get(index).map(Texture)
     }
 
     /// Returns a primitive addressed by stable mesh and primitive indices.
@@ -440,6 +485,172 @@ impl<'a, I: Copy> ObjectRef<'a, I> {
     pub fn extras(self) -> Option<&'a Value> {
         self.value.get("extras")
     }
+}
+
+macro_rules! typed_object {
+    ($name:ident, $index:ident) => {
+        #[derive(Clone, Copy)]
+        pub struct $name<'a>(ObjectRef<'a, $index>);
+        impl<'a> $name<'a> {
+            pub fn index(self) -> $index {
+                self.0.index()
+            }
+            pub fn value(self) -> &'a Value {
+                self.0.value()
+            }
+            pub fn name(self) -> Option<&'a str> {
+                self.0.name()
+            }
+            pub fn uid(self) -> Option<&'a str> {
+                self.0.uid()
+            }
+            pub fn extras(self) -> Option<&'a Value> {
+                self.0.extras()
+            }
+            pub fn extensions(self) -> Option<&'a [(String, Value)]> {
+                self.0.extensions()
+            }
+        }
+    };
+}
+
+typed_object!(Accessor, AccessorIndex);
+typed_object!(Animation, AnimationIndex);
+typed_object!(Buffer, BufferIndex);
+typed_object!(BufferView, BufferViewIndex);
+typed_object!(Camera, CameraIndex);
+typed_object!(File, FileIndex);
+typed_object!(Image, ImageIndex);
+typed_object!(Material, MaterialIndex);
+typed_object!(Mesh, MeshIndex);
+typed_object!(Node, NodeIndex);
+typed_object!(Sampler, SamplerIndex);
+typed_object!(Scene, SceneIndex);
+typed_object!(Shape, ShapeIndex);
+typed_object!(Skin, SkinIndex);
+typed_object!(Texture, TextureIndex);
+
+impl<'a> Buffer<'a> {
+    pub fn byte_length(self) -> Option<u64> {
+        self.value().get("byteLength").and_then(Value::as_u64)
+    }
+    pub fn uri(self) -> Option<&'a str> {
+        self.value().get("uri").and_then(Value::as_str)
+    }
+}
+
+impl<'a> BufferView<'a> {
+    pub fn buffer(self) -> Option<BufferIndex> {
+        index_value(self.value(), "buffer").map(BufferIndex)
+    }
+    pub fn byte_offset(self) -> u64 {
+        self.value()
+            .get("byteOffset")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    }
+    pub fn byte_length(self) -> Option<u64> {
+        self.value().get("byteLength").and_then(Value::as_u64)
+    }
+    pub fn byte_stride(self) -> Option<u64> {
+        self.value().get("byteStride").and_then(Value::as_u64)
+    }
+}
+
+impl<'a> Accessor<'a> {
+    pub fn buffer_view(self) -> Option<BufferViewIndex> {
+        index_value(self.value(), "bufferView").map(BufferViewIndex)
+    }
+    pub fn count(self) -> Option<u64> {
+        self.value().get("count").and_then(Value::as_u64)
+    }
+    pub fn component_type(self) -> Option<ComponentType> {
+        self.value()
+            .get("componentType")
+            .and_then(Value::as_u64)
+            .and_then(ComponentType::from_gltf)
+    }
+    pub fn accessor_type(self) -> Option<&'a str> {
+        self.value().get("type").and_then(Value::as_str)
+    }
+    pub fn normalized(self) -> bool {
+        matches!(self.value().get("normalized"), Some(Value::Bool(true)))
+    }
+}
+
+impl<'a> Image<'a> {
+    pub fn uri(self) -> Option<&'a str> {
+        self.value().get("uri").and_then(Value::as_str)
+    }
+    pub fn buffer_view(self) -> Option<BufferViewIndex> {
+        index_value(self.value(), "bufferView").map(BufferViewIndex)
+    }
+}
+
+impl<'a> Texture<'a> {
+    pub fn source(self) -> Option<ImageIndex> {
+        index_value(self.value(), "source").map(ImageIndex)
+    }
+    pub fn sampler(self) -> Option<SamplerIndex> {
+        index_value(self.value(), "sampler").map(SamplerIndex)
+    }
+}
+
+impl<'a> Node<'a> {
+    pub fn mesh(self) -> Option<MeshIndex> {
+        index_value(self.value(), "mesh").map(MeshIndex)
+    }
+    pub fn camera(self) -> Option<CameraIndex> {
+        index_value(self.value(), "camera").map(CameraIndex)
+    }
+    pub fn skin(self) -> Option<SkinIndex> {
+        index_value(self.value(), "skin").map(SkinIndex)
+    }
+    pub fn children(self) -> impl Iterator<Item = NodeIndex> + 'a {
+        self.value()
+            .get("children")
+            .and_then(Value::as_array)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(Value::as_u64)
+            .filter_map(|index| usize::try_from(index).ok())
+            .map(NodeIndex)
+    }
+}
+
+impl<'a> Scene<'a> {
+    pub fn nodes(self) -> impl Iterator<Item = NodeIndex> + 'a {
+        self.value()
+            .get("nodes")
+            .and_then(Value::as_array)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(Value::as_u64)
+            .filter_map(|index| usize::try_from(index).ok())
+            .map(NodeIndex)
+    }
+}
+
+impl<'a> File<'a> {
+    pub fn uri(self) -> Option<&'a str> {
+        self.value().get("uri").and_then(Value::as_str)
+    }
+}
+
+impl<'a> Mesh<'a> {
+    pub fn primitive_count(self) -> usize {
+        self.value()
+            .get("primitives")
+            .and_then(Value::as_array)
+            .map_or(0, <[Value]>::len)
+    }
+}
+
+fn index_value(value: &Value, name: &str) -> Option<usize> {
+    value
+        .get(name)
+        .and_then(Value::as_u64)
+        .and_then(|index| usize::try_from(index).ok())
 }
 
 /// Typed iterator over a root-level glTF array.
