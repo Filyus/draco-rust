@@ -20,7 +20,7 @@ fn document_serializes_after_mutation() {
 
 #[test]
 fn draft_profile_accepts_files_shapes_and_nonsequential_semantics() {
-    let document = Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf"}],"shapes":[{}],"accessors":[{"componentType":5126,"type":"VEC3"},{"componentType":5126,"type":"VEC2"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_4":1}}]}]}"#).unwrap();
+    let document = Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","mimeType":"model/gltf+json"}],"shapes":[{}],"accessors":[{"componentType":5126,"type":"VEC3"},{"componentType":5126,"type":"VEC2"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_4":1}}]}]}"#).unwrap();
     document.validate(ValidationProfile::Gltf21Draft).unwrap();
 }
 
@@ -68,7 +68,7 @@ fn draft_validation_enforces_file_wide_uids() {
 #[test]
 fn typed_views_reference_the_lossless_document() {
     let document = Document::from_json_bytes(
-        br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":12,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteOffset":4,"byteLength":8}],"accessors":[{"bufferView":0,"componentType":5126,"count":2,"type":"VEC3"}],"images":[{"uri":"albedo.png"}],"textures":[{"source":0}],"materials":[{}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":0,"material":0,"targets":[{"POSITION":0}]}]}],"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0,"files":[{"uri":"child.gltf"}]}"#,
+        br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":12,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteOffset":4,"byteLength":8}],"accessors":[{"bufferView":0,"componentType":5126,"count":2,"type":"VEC3"}],"images":[{"uri":"albedo.png"}],"textures":[{"source":0}],"materials":[{}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":0,"material":0,"targets":[{"POSITION":0}]}]}],"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0,"files":[{"uri":"child.gltf","mimeType":"model/gltf+json"}]}"#,
     )
     .unwrap();
     assert_eq!(
@@ -140,18 +140,20 @@ fn validation_covers_scene_skin_and_animation_links() {
 #[test]
 fn explicit_asset_loading_tracks_provenance_and_rejects_cycles() {
     let root = parse(
-        br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf"}]}"#,
+        br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","mimeType":"model/gltf+json"}]}"#,
         ValidationProfile::Gltf21Draft,
     )
     .unwrap();
-    let resolver = |uri: &str| match uri {
+    let resolver = |uri: &str| {
+        match uri {
         "child.gltf" => {
-            Ok(br#"{"asset":{"version":"2.1"},"files":[{"uri":"root.gltf"}]}"#.to_vec())
+            Ok(br#"{"asset":{"version":"2.1"},"files":[{"uri":"root.gltf","mimeType":"model/gltf+json"}]}"#.to_vec())
         }
         "root.gltf" => {
-            Ok(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf"}]}"#.to_vec())
+            Ok(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","mimeType":"model/gltf+json"}]}"#.to_vec())
         }
         _ => Err(draco_io::GltfError::ExternalResourceDenied(uri.into())),
+    }
     };
     let child = root
         .load_asset(
@@ -186,7 +188,7 @@ fn explicit_asset_loading_tracks_provenance_and_rejects_cycles() {
 #[test]
 fn explicit_asset_loading_accepts_embedded_file_buffer_view() {
     let root = parse(
-        br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":27,"uri":"data:application/octet-stream;base64,eyJhc3NldCI6eyJ2ZXJzaW9uIjoiMi4xIn19"}],"bufferViews":[{"buffer":0,"byteLength":27}],"files":[{"bufferView":0}]}"#,
+        br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":27,"uri":"data:application/octet-stream;base64,eyJhc3NldCI6eyJ2ZXJzaW9uIjoiMi4xIn19"}],"bufferViews":[{"buffer":0,"byteLength":27}],"files":[{"bufferView":0,"mimeType":"model/gltf+json"}]}"#,
         ValidationProfile::Gltf21Draft,
     )
     .unwrap();
@@ -212,16 +214,18 @@ fn explicit_asset_loading_accepts_embedded_file_buffer_view() {
 #[test]
 fn explicit_asset_loading_honors_chain_depth_limit() {
     let root = parse(
-        br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf"}]}"#,
+        br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","mimeType":"model/gltf+json"}]}"#,
         ValidationProfile::Gltf21Draft,
     )
     .unwrap();
-    let resolver = |uri: &str| match uri {
+    let resolver = |uri: &str| {
+        match uri {
         "child.gltf" => {
-            Ok(br#"{"asset":{"version":"2.1"},"files":[{"uri":"leaf.gltf"}]}"#.to_vec())
+            Ok(br#"{"asset":{"version":"2.1"},"files":[{"uri":"leaf.gltf","mimeType":"model/gltf+json"}]}"#.to_vec())
         }
         "leaf.gltf" => Ok(br#"{"asset":{"version":"2.1"}}"#.to_vec()),
         _ => Err(draco_io::GltfError::ExternalResourceDenied(uri.into())),
+    }
     };
     let limits = draco_io::ResourceLimits {
         max_external_asset_depth: Some(1),
@@ -250,13 +254,21 @@ fn explicit_asset_loading_honors_chain_depth_limit() {
 #[test]
 fn draft_validation_checks_file_reference_form() {
     let both = Document::from_json_bytes(
-        br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","bufferView":0}],"bufferViews":[{"buffer":0}],"buffers":[{"byteLength":0}]}"#,
+        br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","bufferView":0,"mimeType":"model/gltf+json"}],"bufferViews":[{"buffer":0}],"buffers":[{"byteLength":0}]}"#,
     )
     .unwrap();
     assert!(both.validate(ValidationProfile::Gltf21Draft).is_err());
-    let neither =
-        Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{}]}"#).unwrap();
+    let neither = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.1"},"files":[{"mimeType":"model/gltf+json"}]}"#,
+    )
+    .unwrap();
     assert!(neither.validate(ValidationProfile::Gltf21Draft).is_err());
+    let missing_mime =
+        Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf"}]}"#)
+            .unwrap();
+    assert!(missing_mime
+        .validate(ValidationProfile::Gltf21Draft)
+        .is_err());
 }
 
 #[test]

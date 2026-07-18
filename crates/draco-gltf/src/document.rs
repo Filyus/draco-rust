@@ -390,6 +390,11 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
         check(image, "bufferView", "bufferViews")?;
     }
     for file in root.get("files").and_then(Value::as_array).unwrap_or(&[]) {
+        if file.get("mimeType").and_then(Value::as_str).is_none() {
+            return Err(Error::Validation(vec![
+                "file mimeType is missing or not a string".into(),
+            ]));
+        }
         let has_uri = match file.get("uri") {
             Some(value) if value.as_str().is_some() => true,
             Some(_) => {
@@ -802,6 +807,9 @@ impl<'a> Scene<'a> {
 }
 
 impl<'a> File<'a> {
+    pub fn mime_type(self) -> Option<&'a str> {
+        self.value().get("mimeType").and_then(Value::as_str)
+    }
     pub fn uri(self) -> Option<&'a str> {
         self.value().get("uri").and_then(Value::as_str)
     }
