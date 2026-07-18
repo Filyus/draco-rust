@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use crate::json::Value;
-use draco_core::{DecoderBuffer, Mesh, MeshDecoder};
+use draco_core::Mesh;
+#[cfg(feature = "draco-decode")]
+use draco_core::{DecoderBuffer, MeshDecoder};
 
 use crate::{Document, Error, PrimitiveRef, Result};
 
@@ -159,6 +161,7 @@ impl ExtensionHandler for DracoExtension {
         }
         Ok(())
     }
+    #[cfg(feature = "draco-decode")]
     fn decode_primitive(
         &self,
         document: &Document,
@@ -198,6 +201,10 @@ impl ExtensionHandler for DracoExtension {
     }
 }
 
+#[cfg_attr(
+    not(any(feature = "draco-decode", feature = "compact")),
+    allow(dead_code)
+)]
 #[derive(Clone, Debug)]
 pub(crate) struct DracoContract {
     pub buffer_view: usize,

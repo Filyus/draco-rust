@@ -13,6 +13,8 @@ pub mod fbx_writer;
 #[cfg(feature = "gltf")]
 pub mod gltf_container;
 #[cfg(feature = "gltf")]
+mod gltf_error;
+#[cfg(feature = "gltf-geometry")]
 pub mod gltf_geometry;
 #[cfg(feature = "obj-reader")]
 pub mod obj_reader;
@@ -39,7 +41,12 @@ pub use gltf_container::{
     ResourceLimits, ResourceResolver,
 };
 #[cfg(feature = "gltf")]
-pub use gltf_geometry::{decode_geometry, AccessorSource, DecodedAccessor, GltfError};
+pub use gltf_error::GltfError;
+#[cfg(feature = "gltf-geometry")]
+pub use gltf_geometry::{
+    decode_geometry, pack_draco_primitive, AccessorSource, DecodedAccessor, PackedAttribute,
+    PackedPrimitive,
+};
 #[cfg(feature = "obj-reader")]
 pub use obj_reader::ObjReader;
 #[cfg(feature = "obj-writer")]

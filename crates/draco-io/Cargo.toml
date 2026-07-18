@@ -40,7 +40,11 @@ all-writers = ["fbx-writer", "obj-writer", "ply-writer"]
 # Only glTF uses KHR_draco_mesh_compression and thus pulls the codec.
 fbx-reader = ["scene"]
 fbx-writer = []
-gltf = ["draco-core/decoder"]
+gltf = []
+gltf-geometry = ["gltf"]
+# Decoder support is separate from the container/accessor contracts, so a
+# compact glTF frontend can choose it without also enabling any encoder path.
+draco-decode = ["gltf-geometry", "draco-core/decoder"]
 # Optional compatibility mode for reading older Draco bitstreams embedded in
 # KHR_draco_mesh_compression payloads. Writers still emit the current bitstream.
 legacy-bitstream-decode = ["draco-core/legacy_bitstream_decode"]

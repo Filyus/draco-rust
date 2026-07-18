@@ -2,10 +2,11 @@ use std::path::Path;
 
 use crate::json::Value;
 
-use crate::{
-    Document, Error, ExtensionRegistry, FileIndex, PrimitiveRef, ResourceStore, Result,
-    ValidationProfile,
-};
+#[cfg(feature = "resources")]
+use crate::FileIndex;
+#[cfg(any(feature = "draco-decode", feature = "geometry"))]
+use crate::PrimitiveRef;
+use crate::{Document, Error, ExtensionRegistry, ResourceStore, Result, ValidationProfile};
 use draco_io::{
     parse_gltf_container, resolve_gltf_buffers, GltfBufferReference, GltfContainerFormat,
     ResourceLimits, ResourceResolver,
@@ -21,6 +22,7 @@ pub struct NativeImport {
     pub input_format: GltfContainerFormat,
     profile: ValidationProfile,
     extensions: ExtensionRegistry,
+    #[cfg(feature = "resources")]
     provenance: Vec<String>,
 }
 
@@ -35,6 +37,7 @@ impl NativeImport {
     }
 
     /// Iterates primitives carrying the built-in Draco extension.
+    #[cfg(feature = "draco-decode")]
     pub fn draco_primitives(&self) -> impl Iterator<Item = PrimitiveRef<'_>> + '_ {
         self.document
             .meshes()
@@ -56,6 +59,7 @@ impl NativeImport {
     }
 
     /// Decodes a primitive through the supplied native extension registry.
+    #[cfg(feature = "draco-decode")]
     pub fn decode_primitive(&self, primitive: PrimitiveRef<'_>) -> Result<draco_core::Mesh> {
         self.validate(&self.extensions)?;
         self.extensions
@@ -64,6 +68,7 @@ impl NativeImport {
 
     /// Decodes an ordinary (non-Draco) triangle or point primitive through the
     /// same geometry contract used by compact consumers.
+    #[cfg(feature = "geometry")]
     pub fn decode_geometry_primitive(
         &self,
         primitive: PrimitiveRef<'_>,
@@ -174,6 +179,7 @@ impl NativeImport {
     }
 
     /// Materializes all Draco primitives as ordinary indexed triangle geometry.
+    #[cfg(feature = "transform")]
     pub fn decompress_in_place(&mut self) -> Result<()> {
         let mut candidate = self.clone();
         candidate.decompress_in_place_inner()?;
@@ -181,6 +187,7 @@ impl NativeImport {
         Ok(())
     }
 
+    #[cfg(feature = "transform")]
     fn decompress_in_place_inner(&mut self) -> Result<()> {
         let mut plans = Vec::new();
         for mesh in self.document.meshes() {
@@ -311,17 +318,20 @@ impl NativeImport {
     }
 
     /// Lists declared glTF 2.1 `files` entries without resolving them.
+    #[cfg(feature = "resources")]
     pub fn external_assets(&self) -> impl Iterator<Item = FileIndex> + '_ {
         self.document.files().into_iter().map(|file| file.index())
     }
 
     /// URI chain leading to this import. It is intended for diagnostics and
     /// explicit cycle detection; it never triggers recursive loading itself.
+    #[cfg(feature = "resources")]
     pub fn provenance(&self) -> &[String] {
         &self.provenance
     }
 
     /// Explicitly resolves and parses one nested glTF file.
+    #[cfg(feature = "resources")]
     pub fn load_asset(
         &self,
         file: FileIndex,
@@ -341,6 +351,7 @@ impl NativeImport {
     }
 
     /// Explicitly loads one nested asset with a caller-selected graph depth limit.
+    #[cfg(feature = "resources")]
     pub fn load_asset_with_depth(
         &self,
         file: FileIndex,
@@ -382,6 +393,7 @@ impl NativeImport {
         Ok(loaded)
     }
 
+    #[cfg(feature = "resources")]
     fn embedded_file_bytes(&self, file: &Value) -> Result<Vec<u8>> {
         let view = file
             .get("bufferView")
@@ -414,6 +426,7 @@ impl NativeImport {
     }
 }
 
+#[cfg(feature = "transform")]
 pub(crate) fn decoded_attribute_bytes(mesh: &draco_core::Mesh, unique_id: u32) -> Result<Vec<u8>> {
     let attribute = mesh.attribute_by_unique_id(unique_id).ok_or_else(|| {
         Error::Extension(format!("decoded Draco attribute {unique_id} is missing"))
@@ -443,6 +456,7 @@ pub(crate) fn decoded_attribute_bytes(mesh: &draco_core::Mesh, unique_id: u32) -
     Ok(out)
 }
 
+#[cfg(feature = "transform")]
 pub(crate) fn decoded_index_bytes(mesh: &draco_core::Mesh) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(mesh.num_faces() * 12);
     for face in 0..mesh.num_faces() {
@@ -453,6 +467,7 @@ pub(crate) fn decoded_index_bytes(mesh: &draco_core::Mesh) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+#[cfg(feature = "transform")]
 fn append_view(root: &mut Value, buffer: usize, bytes: &mut Vec<u8>, data: &[u8]) -> Result<usize> {
     while !bytes.len().is_multiple_of(4) {
         bytes.push(0);
@@ -541,6 +556,7 @@ pub fn parse_native_with_options(
         input_format: container.format,
         profile,
         extensions: extensions.clone(),
+        #[cfg(feature = "resources")]
         provenance: Vec::new(),
     })
 }

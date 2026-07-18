@@ -18,15 +18,31 @@ rustdoc-args = ["--cfg", "docsrs"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 
 [dependencies]
-draco-core = { version = "1.0.0", path = "../draco-core", default-features = false, features = ["decoder", "encoder", "point_cloud_decode", "edgebreaker_valence_decode"] }
+draco-core = { version = "1.0.0", path = "../draco-core", default-features = false }
 # The shared container/resource layer and document-preserving compressor live
 # in draco-io; this crate owns the full scene model.
-draco-io = { version = "0.3.0", path = "../draco-io", default-features = false, features = ["gltf"] }
+draco-io = { version = "0.3.0", path = "../draco-io", default-features = false }
 thiserror = "2.0"
 
 [features]
-default = []
-compact = []
+default = ["full"]
+# Lossless JSON DOM, typed root views, GLB and resource contracts. This is the
+# common base for full scene and compact geometry consumers.
+document-core = ["draco-io/gltf"]
+# Accessor materialization and PackedPrimitive contracts.
+geometry = ["document-core", "draco-io/gltf-geometry"]
+# KHR_draco_mesh_compression decoding and Draco-backed packed geometry.
+draco-decode = ["geometry", "draco-io/draco-decode", "draco-core/decoder", "draco-core/point_cloud_decode", "draco-core/edgebreaker_valence_decode"]
+# Explicit `files` loading and resolver/provenance controls.
+resources = ["document-core"]
+# Strict scene cross-reference validation; the DOM remains lossless without it.
+scene-validation = ["document-core"]
+# Document-preserving Draco compression and decompression mutations.
+transform = ["draco-decode", "geometry", "draco-core/encoder"]
+# Release-grade scene API.
+full = ["document-core", "geometry", "draco-decode", "resources", "scene-validation", "transform"]
+# Small geometry-facing API. It deliberately excludes transform/encoder code.
+compact = ["document-core", "geometry", "draco-decode", "resources", "scene-validation"]
 # Decode embedded/external images through the shared resource resolver and the
 # `image` crate (PNG/JPEG codecs — the largest part of the build). Without it,
 # images are not decoded and `Import.images` is absent; glTF buffers still use

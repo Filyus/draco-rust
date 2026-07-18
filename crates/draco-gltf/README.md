@@ -32,6 +32,26 @@ feature for geometry-oriented views and `PackedPrimitive` buffers over the same
 native `Document`. `compact` names the smaller API surface; `PackedPrimitive`
 names the materialized contiguous geometry representation.
 
+## Features
+
+The feature graph separates document completeness from executable geometry
+operations:
+
+- `document-core` provides the lossless DOM, typed views, GLB and resource
+  contracts without a Draco decoder.
+- `geometry` adds accessor materialization and the `draco_io::PackedPrimitive`
+  contract.
+- `draco-decode` adds `KHR_draco_mesh_compression` decoding.
+- `resources` and `scene-validation` add explicit `files` loading and strict
+  scene validation; `transform` adds the Draco encoder and document mutations.
+- `full` is the default release scene API. `compact` is the compact runtime
+  path (`document-core + geometry + draco-decode`) and intentionally excludes
+  `transform`.
+
+For a decoder-only consumer, depend with `default-features = false, features =
+["compact"]`. The resulting document can still preserve every scene field; the
+excluded code is mutation and encoding behaviour, not a second document model.
+
 ## License
 
 Apache-2.0.

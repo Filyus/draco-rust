@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use crate::gltf_geometry::{GltfError, Result};
+use crate::gltf_error::{GltfError, Result};
 
 const GLB_MAGIC: u32 = 0x4654_6c67;
 const GLB_VERSION_V2: u32 = 2;

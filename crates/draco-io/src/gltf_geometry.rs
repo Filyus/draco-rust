@@ -11,61 +11,10 @@
 //! front ends (e.g. a `gltf-rs` document) can reuse the same decode logic with
 //! only the encoder, never linking the reader.
 
-use std::io;
-
+use crate::gltf_error::{GltfError, Result};
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::mesh::Mesh;
-use thiserror::Error;
-
-/// Errors that can occur when reading or decoding glTF geometry.
-#[derive(Error, Debug)]
-pub enum GltfError {
-    /// Filesystem or stream I/O failed.
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
-
-    /// glTF JSON parsing failed.
-    ///
-    /// Binary GLB structure is invalid.
-    #[error("Invalid GLB: {0}")]
-    InvalidGlb(String),
-
-    /// glTF JSON or accessor/buffer structure is invalid.
-    #[error("Invalid glTF: {0}")]
-    InvalidGltf(String),
-
-    /// Embedded Draco payload failed to decode.
-    #[error("Draco decode error: {0}")]
-    DracoDecode(#[source] draco_core::DracoError),
-
-    /// Draco encoding failed with a typed codec error.
-    #[error("Draco encode error: {0}")]
-    DracoEncode(#[source] draco_core::DracoError),
-
-    /// The asset uses a glTF feature outside this crate's geometry scope.
-    #[error("Unsupported feature: {0}")]
-    Unsupported(String),
-
-    /// An external resource was rejected by policy or confinement.
-    #[error("External resource denied: {0}")]
-    ExternalResourceDenied(String),
-
-    /// A configured resource quota or a checked allocation was exceeded.
-    #[error("Resource limit exceeded: {0}")]
-    ResourceLimitExceeded(String),
-
-    /// Unknown extension JSON contains binary references that cannot be remapped safely.
-    #[error("Opaque binary reference: {0}")]
-    OpaqueBinaryReference(String),
-
-    /// Compression options are outside their supported range.
-    #[error("Invalid compression options: {0}")]
-    InvalidOptions(String),
-}
-
-/// Result type used by glTF readers and the geometry decoder.
-pub type Result<T> = std::result::Result<T, GltfError>;
 
 pub(crate) const GLTF_MODE_POINTS: u32 = 0;
 pub(crate) const GLTF_MODE_TRIANGLES: u32 = 4;
@@ -89,6 +38,144 @@ pub struct DecodedAccessor {
     data_type: DataType,
     normalized: bool,
     bytes: Vec<u8>,
+}
+
+/// One materialized, tightly packed glTF geometry attribute.
+///
+/// This is deliberately independent of any document representation. It is the
+/// common boundary for scene importers, compact runtimes, and Draco decoding.
+#[derive(Clone, Debug)]
+pub struct PackedAttribute {
+    pub semantic: String,
+    pub components: u8,
+    pub component_type: u32,
+    pub normalized: bool,
+    pub bytes: Vec<u8>,
+}
+
+/// Materialized primitive geometry with contiguous attribute and index buffers.
+#[derive(Clone, Debug)]
+pub struct PackedPrimitive {
+    pub mode: u32,
+    pub indices: Option<PackedAttribute>,
+    pub attributes: Vec<PackedAttribute>,
+}
+
+impl PackedAttribute {
+    /// Creates a packed attribute from a checked accessor layout.
+    pub fn from_accessor(
+        semantic: impl Into<String>,
+        count: usize,
+        components: u8,
+        data_type: DataType,
+        normalized: bool,
+        bytes: Vec<u8>,
+    ) -> Result<Self> {
+        let expected = count
+            .checked_mul(components as usize)
+            .and_then(|value| value.checked_mul(data_type.byte_length()))
+            .ok_or_else(|| GltfError::InvalidGltf("packed accessor byte size overflow".into()))?;
+        if bytes.len() != expected {
+            return Err(GltfError::InvalidGltf(format!(
+                "packed accessor has {} bytes, expected {expected}",
+                bytes.len()
+            )));
+        }
+        Ok(Self {
+            semantic: semantic.into(),
+            components,
+            component_type: component_type_for_data_type(data_type)?,
+            normalized,
+            bytes,
+        })
+    }
+}
+
+/// Materializes a decoded Draco mesh using the semantic-to-unique-id mapping
+/// from `KHR_draco_mesh_compression`.
+pub fn pack_draco_primitive(
+    mode: u32,
+    mesh: &Mesh,
+    attributes: &[(String, u32)],
+) -> Result<PackedPrimitive> {
+    let attributes = attributes
+        .iter()
+        .map(|(semantic, unique_id)| {
+            let attribute = mesh.attribute_by_unique_id(*unique_id).ok_or_else(|| {
+                GltfError::InvalidGltf(format!("decoded Draco attribute {unique_id} is missing"))
+            })?;
+            PackedAttribute::from_accessor(
+                semantic.clone(),
+                mesh.num_points(),
+                attribute.num_components(),
+                attribute.data_type(),
+                attribute.normalized(),
+                packed_draco_attribute_bytes(mesh, *unique_id)?,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let index_count = mesh
+        .num_faces()
+        .checked_mul(3)
+        .ok_or_else(|| GltfError::InvalidGltf("Draco index count overflow".into()))?;
+    Ok(PackedPrimitive {
+        mode,
+        indices: Some(PackedAttribute::from_accessor(
+            "INDICES",
+            index_count,
+            1,
+            DataType::Uint32,
+            false,
+            packed_draco_index_bytes(mesh)?,
+        )?),
+        attributes,
+    })
+}
+
+fn packed_draco_attribute_bytes(mesh: &Mesh, unique_id: u32) -> Result<Vec<u8>> {
+    let attribute = mesh.attribute_by_unique_id(unique_id).ok_or_else(|| {
+        GltfError::InvalidGltf(format!("decoded Draco attribute {unique_id} is missing"))
+    })?;
+    let stride = usize::try_from(attribute.byte_stride())
+        .map_err(|_| GltfError::InvalidGltf("decoded Draco attribute stride is invalid".into()))?;
+    let byte_len = mesh.num_points().checked_mul(stride).ok_or_else(|| {
+        GltfError::ResourceLimitExceeded("decoded Draco attribute size overflow".into())
+    })?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(byte_len).map_err(|_| {
+        GltfError::ResourceLimitExceeded("decoded Draco attribute allocation failed".into())
+    })?;
+    out.resize(byte_len, 0);
+    let mut row = vec![0; stride];
+    for point in 0..mesh.num_points() {
+        let index = attribute.mapped_index(draco_core::PointIndex(point as u32));
+        if !attribute
+            .buffer()
+            .try_read(index.0 as usize * stride, &mut row)
+        {
+            return Err(GltfError::InvalidGltf(
+                "decoded Draco attribute is out of bounds".into(),
+            ));
+        }
+        out[point * stride..(point + 1) * stride].copy_from_slice(&row);
+    }
+    Ok(out)
+}
+
+fn packed_draco_index_bytes(mesh: &Mesh) -> Result<Vec<u8>> {
+    let byte_len = mesh.num_faces().checked_mul(12).ok_or_else(|| {
+        GltfError::ResourceLimitExceeded("decoded Draco index size overflow".into())
+    })?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(byte_len).map_err(|_| {
+        GltfError::ResourceLimitExceeded("decoded Draco index allocation failed".into())
+    })?;
+    for face in 0..mesh.num_faces() {
+        for point in mesh.face(draco_core::FaceIndex(face as u32)) {
+            out.extend_from_slice(&point.0.to_le_bytes());
+        }
+    }
+    Ok(out)
 }
 
 impl DecodedAccessor {

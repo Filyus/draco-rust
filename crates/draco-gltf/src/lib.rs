@@ -7,10 +7,14 @@ use std::path::Path;
 
 use thiserror::Error;
 
+#[cfg(feature = "geometry")]
 mod accessor;
+#[cfg(feature = "transform")]
 mod compression;
 pub mod document;
+#[cfg(feature = "geometry")]
 pub use accessor::{AccessorData, NativeAccessorSource};
+#[cfg(feature = "transform")]
 pub use compression::{CompressionOptions, CompressionReport};
 mod json;
 pub use document::{
@@ -29,7 +33,9 @@ pub use extensions::{
 #[cfg(feature = "compact")]
 pub mod compact;
 #[cfg(feature = "compact")]
-pub use compact::{CompactDocument, CompactMeshRange, PackedAttribute, PackedPrimitive};
+pub use compact::{CompactDocument, CompactMeshRange};
+#[cfg(feature = "compact")]
+pub use draco_io::{PackedAttribute, PackedPrimitive};
 mod native_import;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_import::open_native;
