@@ -1,9 +1,9 @@
 //! Shared glTF/GLB container and resource handling.
 
 use std::fs::{self, File};
-use std::io::Read;
 #[cfg(feature = "gltf-writer")]
 use std::io::{self, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 #[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
@@ -55,6 +55,101 @@ pub struct GltfContainer<'a> {
     pub json: &'a [u8],
     /// Optional GLB BIN chunk.
     pub bin: Option<&'a [u8]>,
+}
+
+/// A chunk address in a seekable GLB input. No chunk bytes are materialized.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlbChunkDescriptor {
+    pub offset: u64,
+    pub length: u64,
+    pub kind: u32,
+    pub encoding: u32,
+}
+
+/// Metadata for a seekable GLB input, suitable for range-based resource loading.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlbLayout {
+    pub format: GltfContainerFormat,
+    pub length: u64,
+    pub chunks: Vec<GlbChunkDescriptor>,
+}
+
+/// Inspects GLB v2/v3 headers from a seekable source without allocating chunks.
+pub fn inspect_glb<R: Read + Seek>(input: &mut R) -> Result<GlbLayout> {
+    input.seek(SeekFrom::Start(0))?;
+    let magic = read_u32_stream(input)?;
+    if magic != GLB_MAGIC {
+        return Err(GltfError::InvalidGlb("input is not a GLB container".into()));
+    }
+    let version = read_u32_stream(input)?;
+    let (format, length, header, chunk_header) = match version {
+        GLB_VERSION_V2 => (
+            GltfContainerFormat::GlbV2,
+            u64::from(read_u32_stream(input)?),
+            12u64,
+            8u64,
+        ),
+        GLB_VERSION_V3 => (
+            GltfContainerFormat::GlbV3,
+            read_u64_stream(input)?,
+            16u64,
+            16u64,
+        ),
+        _ => {
+            return Err(GltfError::InvalidGlb(format!(
+                "unsupported GLB version {version}"
+            )))
+        }
+    };
+    let actual = input.seek(SeekFrom::End(0))?;
+    if actual != length {
+        return Err(GltfError::InvalidGlb(
+            "GLB header length does not match stream length".into(),
+        ));
+    }
+    input.seek(SeekFrom::Start(header))?;
+    let mut chunks = Vec::new();
+    let mut offset = header;
+    while offset < length {
+        if length - offset < chunk_header {
+            return Err(GltfError::InvalidGlb("partial GLB chunk header".into()));
+        }
+        let chunk_length = if format == GltfContainerFormat::GlbV3 {
+            read_u64_stream(input)?
+        } else {
+            u64::from(read_u32_stream(input)?)
+        };
+        let kind = read_u32_stream(input)?;
+        let encoding = if format == GltfContainerFormat::GlbV3 {
+            read_u32_stream(input)?
+        } else {
+            0
+        };
+        if encoding != 0 {
+            return Err(GltfError::InvalidGlb(
+                "GLB v3 chunk encoding is reserved and must be zero".into(),
+            ));
+        }
+        if chunk_length % 4 != 0 || chunk_length > length - offset - chunk_header {
+            return Err(GltfError::InvalidGlb("invalid GLB chunk length".into()));
+        }
+        chunks.push(GlbChunkDescriptor {
+            offset: offset + chunk_header,
+            length: chunk_length,
+            kind,
+            encoding,
+        });
+        offset = offset
+            .checked_add(chunk_header)
+            .and_then(|value| value.checked_add(chunk_length))
+            .ok_or_else(|| GltfError::InvalidGlb("GLB chunk offset overflow".into()))?;
+        input.seek(SeekFrom::Start(offset))?;
+    }
+    Ok(GlbLayout {
+        format,
+        length,
+        chunks,
+    })
 }
 
 /// Output selection shared by the native and WASM glTF APIs.
@@ -915,6 +1010,17 @@ fn read_u64(data: &[u8], offset: usize) -> Result<u64> {
     Ok(u64::from_le_bytes(bytes))
 }
 
+fn read_u32_stream<R: Read>(input: &mut R) -> Result<u32> {
+    let mut bytes = [0; 4];
+    input.read_exact(&mut bytes)?;
+    Ok(u32::from_le_bytes(bytes))
+}
+fn read_u64_stream<R: Read>(input: &mut R) -> Result<u64> {
+    let mut bytes = [0; 8];
+    input.read_exact(&mut bytes)?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
 #[cfg(feature = "gltf-writer")]
 struct FallibleJsonBuffer {
     bytes: Vec<u8>,
@@ -1159,6 +1265,19 @@ mod tests {
         // v3 JSON chunk encoding is at byte 28: 16-byte header + length + type.
         malformed[28..32].copy_from_slice(&1u32.to_le_bytes());
         assert!(parse_gltf_container(&malformed).is_err());
+    }
+
+    #[cfg(feature = "gltf-writer")]
+    #[test]
+    fn seekable_v3_inspection_keeps_u64_chunk_descriptors() {
+        let document = serde_json::json!({ "asset": { "version": "2.1" } });
+        let bytes = build_glb_v3_container(&document, &[1, 2, 3]).unwrap();
+        let mut cursor = std::io::Cursor::new(bytes.clone());
+        let layout = inspect_glb(&mut cursor).unwrap();
+        assert_eq!(layout.format, GltfContainerFormat::GlbV3);
+        assert_eq!(layout.length, bytes.len() as u64);
+        assert_eq!(layout.chunks.len(), 2);
+        assert_eq!(layout.chunks[1].length, 4);
     }
 
     #[test]
