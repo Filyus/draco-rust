@@ -18,7 +18,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 
 [dependencies]
-draco-core = { version = "1.0.0", path = "../draco-core", default-features = false, features = ["decoder", "point_cloud_decode", "edgebreaker_valence_decode"] }
+draco-core = { version = "1.0.0", path = "../draco-core", default-features = false, features = ["decoder", "encoder", "point_cloud_decode", "edgebreaker_valence_decode"] }
 # The shared container/resource layer and document-preserving compressor live
 # in draco-io; this crate owns the full scene model.
 draco-io = { version = "0.3.0", path = "../draco-io", default-features = false, features = ["gltf"] }
