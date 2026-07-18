@@ -1,0 +1,24 @@
+[package]
+name = "gltf-compact-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Compact glTF geometry inspection for WebAssembly"
+repository = "https://github.com/Filyus/draco-rust"
+license = "Apache-2.0"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+nanoserde = { workspace = true }
+console_error_panic_hook = { workspace = true, optional = true }
+draco-gltf = { path = "../../crates/draco-gltf", default-features = false, features = ["compact"] }
+
+[features]
+default = []
+console_error_panic_hook = ["dep:console_error_panic_hook"]

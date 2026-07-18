@@ -1,7 +1,7 @@
 //! Full, lossless glTF 2.0 / pinned 2.1-draft model with Draco geometry.
 //!
-//! This crate intentionally has no dependency on `gltf-rs`: [`Document`] is
-//! the public scene model, and all unknown JSON remains part of that model.
+//! [`Document`] is the public scene model, and all unknown JSON remains part
+//! of that model.
 
 use std::path::Path;
 

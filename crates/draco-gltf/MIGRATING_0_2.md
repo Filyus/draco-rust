@@ -1,7 +1,6 @@
 # Migrating to draco-gltf 0.2
 
-0.2 removes the `gltf-rs` dependency and its re-export. `Import::document` is
-now the native lossless `Document`, not `gltf::Document`.
+0.2 exposes `Import::document` as the native lossless `Document`.
 
 - Replace `gltf` iterators with `Document` typed views, for example
   `document.meshes()` and `document.primitive(MeshIndex(0), 0)`.

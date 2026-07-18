@@ -1,8 +1,7 @@
 # glTF 2.1 draft support
 
-`draco-gltf` 0.2 uses its native lossless `Document` model and does not depend
-on `gltf-rs`. The targeted snapshot and update policy are in
-`GLTF_2_1_SNAPSHOT.md`.
+`draco-gltf` 0.2 uses its native lossless `Document` model. The targeted
+snapshot and update policy are in `GLTF_2_1_SNAPSHOT.md`.
 
 The draft profile preserves every JSON field and strictly validates the native
 surface used by this crate: GLB v3, `files`, shapes, UIDs, and non-sequential

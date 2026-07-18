@@ -19,6 +19,11 @@ Both functions use the same native lossless document model as the Rust API.
 They do not resolve companion files or turn scene documents into a flattened
 mesh representation.
 
+`gltf-compact-wasm` is the small JSON-only geometry inspection entry point.
+`inspect_compact_gltf(bytes, profile)` returns per-mesh primitive counts through
+the same `CompactDocument` facade; it does not include GLB/resources or Draco
+transforms.
+
 ## Build and test
 
 ```sh

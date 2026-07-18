@@ -1,7 +1,7 @@
 # draco-gltf
 
 Lossless native glTF 2.0 and pinned 2.1-draft scene handling with
-`KHR_draco_mesh_compression`. `draco-gltf` 0.2 has no dependency on `gltf-rs`.
+`KHR_draco_mesh_compression`.
 
 ```rust,no_run
 let mut scene = draco_gltf::import("model.glb")?;

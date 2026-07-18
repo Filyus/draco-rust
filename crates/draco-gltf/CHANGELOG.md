@@ -13,8 +13,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Breaking: replaced the `gltf-rs` public scene model with native lossless
-  `Document` typed views and indices. See `MIGRATING_0_2.md`.
+- Breaking: introduced native lossless `Document` typed views and indices.
+  See `MIGRATING_0_2.md`.
 - Added the pinned glTF 2.1 draft profile, GLB v3 support, native extension
   contracts, explicit `files` asset loading, and native Draco decode/compress/
   decompress operations.
@@ -53,15 +53,11 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Load and save full glTF scenes with Draco-compressed geometry, bridging
-  [`gltf`](https://crates.io/crates/gltf) (the whole scene model) and the Draco
-  crates.
+- Load and save full glTF scenes with Draco-compressed geometry.
 - `import` / `import_slice` for reading Draco glTF/GLB, `decode_primitive` to
-  decompress geometry, and `decompress_in_place` for transparent reading with
-  the plain gltf-rs API.
+  decompress geometry, and `decompress_in_place` for transparent reading.
 - `compress` to Draco-compress a full scene while preserving materials,
   textures, nodes, animations, skins, and unknown extensions.
-- Draco-aware, panic-safe validation on import (gltf-rs rejects Draco assets
-  outright).
+- Draco-aware, panic-safe validation on import.
 - WebAssembly support, and an optional `image` feature to shrink the build when
   texture pixels are not needed.

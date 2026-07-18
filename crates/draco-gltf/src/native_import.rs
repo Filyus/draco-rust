@@ -13,7 +13,7 @@ use draco_io::{
 #[cfg(not(target_arch = "wasm32"))]
 use draco_io::{ExternalFilePolicy, FileResourceResolver};
 
-/// Native, lossless glTF import independent of `gltf-rs`.
+/// Native, lossless glTF import.
 #[derive(Clone)]
 pub struct NativeImport {
     pub document: Document,

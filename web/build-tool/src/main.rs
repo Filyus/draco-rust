@@ -17,6 +17,7 @@ const MODULES: &[&str] = &[
     "ply-reader-wasm",
     "ply-writer-wasm",
     "gltf-document-wasm",
+    "gltf-compact-wasm",
     "gltf-canonicalize-wasm",
     "fbx-reader-wasm",
     "fbx-writer-wasm",
