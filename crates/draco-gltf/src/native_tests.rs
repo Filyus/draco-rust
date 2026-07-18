@@ -52,11 +52,22 @@ fn native_compression_appends_a_decodable_draco_payload() {
 fn native_compression_roundtrips_through_decompression() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
     let mut import = parse_native(input, ValidationProfile::Gltf20).unwrap();
-    import.compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default()).unwrap();
+    import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap();
     import.decompress_in_place().unwrap();
     let primitive = import.document.primitive(crate::MeshIndex(0), 0).unwrap();
-    assert!(primitive.extension(crate::KHR_DRACO_MESH_COMPRESSION).is_none());
-    assert_eq!(import.decode_geometry_primitive(primitive).unwrap().0.num_faces(), 1);
+    assert!(primitive
+        .extension(crate::KHR_DRACO_MESH_COMPRESSION)
+        .is_none());
+    assert_eq!(
+        import
+            .decode_geometry_primitive(primitive)
+            .unwrap()
+            .0
+            .num_faces(),
+        1
+    );
 }
 
 #[cfg(feature = "compact")]
