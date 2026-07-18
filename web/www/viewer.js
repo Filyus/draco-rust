@@ -752,6 +752,7 @@ export class Viewer {
     setScene(scene) {
         this._disposeGlResources();
         this._disposeGrid();
+        this._disposeGround();
         this.scene = scene;
         this.glResources = null;
         if (!scene) {
@@ -860,6 +861,7 @@ export class Viewer {
     clear() {
         this._disposeGlResources();
         this._disposeGrid();
+        this._disposeGround();
         this.scene = null;
         this.glResources = null;
         this.animation.clipIndex = -1;
@@ -872,6 +874,13 @@ export class Viewer {
             this.gl.deleteBuffer(this._grid.buffer);
             this._grid = null;
         }
+    }
+
+    _disposeGround() {
+        if (!this._ground) return;
+        this.gl.deleteBuffer(this._ground.buffer);
+        this.gl.deleteVertexArray(this._ground.vao);
+        this._ground = null;
     }
 
     _disposeGlResources() {
@@ -1072,9 +1081,6 @@ export class Viewer {
 
         this._drawBackground();
 
-        // Grid (drawn first, depth-disabled so it sits behind everything)
-        if (this.showGrid) this._drawGrid();
-
         gl.useProgram(this.program);
         gl.uniformMatrix4fv(this.uniforms.uProjection, false, this._projection);
         gl.uniformMatrix4fv(this.uniforms.uView, false, this._view);
@@ -1083,6 +1089,11 @@ export class Viewer {
         gl.uniform3fv(this.uniforms.uFillDir, this._fillDir || (this._fillDir = new Float32Array([0.52, 0.42, -0.72])));
         gl.uniform3fv(this.uniforms.uFillColor, this._fillColor || (this._fillColor = new Float32Array([0.25, 0.32, 0.45])));
         gl.uniform3fv(this.uniforms.uCameraPos, eye);
+
+        this._drawGround();
+        // Grid sits just above the real ground surface.
+        if (this.showGrid) this._drawGrid();
+        gl.useProgram(this.program);
 
         for (const renderable of this.scene.renderables) {
             const node = renderable.node;
@@ -1267,6 +1278,36 @@ export class Viewer {
         gl.drawArrays(gl.LINES, 0, this._grid.count);
     }
 
+    /** Draw a real, rough PBR floor instead of encoding the floor into the sky gradient. */
+    _drawGround() {
+        if (!this._ground) this._buildSceneGround();
+        const ground = this._ground;
+        if (!ground) return;
+
+        const gl = this.gl;
+        mat4.identity(this._model);
+        mat4.identity(this._normalMatrix);
+        gl.uniformMatrix4fv(this.uniforms.uModel, false, this._model);
+        gl.uniformMatrix4fv(this.uniforms.uNormalMatrix, false, this._normalMatrix);
+        gl.uniform1i(this.uniforms.uUseSkin, 0);
+        gl.uniform1i(this.uniforms.uJointCount, 0);
+        gl.uniform1i(this.uniforms.uMorphTargetCount, 0);
+        gl.uniform1fv(this.uniforms.uMorphWeights, this._zeroMorphWeights || (this._zeroMorphWeights = new Float32Array(4)));
+        this._applyMaterial({
+            baseColorFactor: [0.14, 0.16, 0.20, 1],
+            metallic: 0,
+            roughness: 0.94,
+            doubleSided: false,
+            alphaMode: 'OPAQUE',
+        }, ground);
+        gl.disable(gl.BLEND);
+        gl.depthMask(true);
+        gl.enable(gl.CULL_FACE);
+        gl.bindVertexArray(ground.vao);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        gl.bindVertexArray(null);
+    }
+
     /** Render the analytic studio environment in camera space before geometry. */
     _drawBackground() {
         const gl = this.gl;
@@ -1311,7 +1352,7 @@ export class Viewer {
         const maxI = Math.round((cx + half) / step);
         const minJ = Math.round((cz - half) / step);
         const maxJ = Math.round((cz + half) / step);
-        const gridY = box.min[1] - Math.max(step * 0.01, 0.0001);
+        const gridY = this._groundY(box, span) + Math.max(step * 0.0002, 0.00002);
         for (let i = minI; i <= maxI; i++) {
             const x = i * step;
             positions.push(x, gridY, minJ * step, x, gridY, maxJ * step);
@@ -1325,6 +1366,53 @@ export class Viewer {
         this.gl.bindBuffer(this.gl.ARRAY_BUFFER, buffer);
         this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(positions), this.gl.STATIC_DRAW);
         this._grid = { buffer, count: positions.length / 3 };
+    }
+
+    _groundY(box, span) {
+        return box.min[1] - Math.max(span * 0.002, 0.0005);
+    }
+
+    _buildSceneGround() {
+        const box = this.scene?.aabb;
+        if (!box) return;
+        const dx = box.max[0] - box.min[0];
+        const dz = box.max[2] - box.min[2];
+        const span = Math.max(dx, dz);
+        if (!isFinite(span) || span <= 0) return;
+
+        const centerX = (box.min[0] + box.max[0]) * 0.5;
+        const centerZ = (box.min[2] + box.max[2]) * 0.5;
+        // This is intentionally much larger than the display grid so ground
+        // reaches the camera horizon rather than ending as a visible square.
+        const half = Math.max(span * 64, this.camera.distance * 16, 10);
+        const y = this._groundY(box, span);
+        const x0 = centerX - half;
+        const x1 = centerX + half;
+        const z0 = centerZ - half;
+        const z1 = centerZ + half;
+        const vertices = new Float32Array([
+            x0, y, z0, 0, 1, 0,  x1, y, z1, 0, 1, 0,  x1, y, z0, 0, 1, 0,
+            x0, y, z0, 0, 1, 0,  x0, y, z1, 0, 1, 0,  x1, y, z1, 0, 1, 0,
+        ]);
+        const gl = this.gl;
+        const vao = gl.createVertexArray();
+        const buffer = gl.createBuffer();
+        gl.bindVertexArray(vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(this.locations.position);
+        gl.vertexAttribPointer(this.locations.position, 3, gl.FLOAT, false, 24, 0);
+        gl.enableVertexAttribArray(this.locations.normal);
+        gl.vertexAttribPointer(this.locations.normal, 3, gl.FLOAT, false, 24, 12);
+        gl.bindVertexArray(null);
+        this._ground = {
+            vao,
+            buffer,
+            hasNormals: true,
+            hasTexCoords0: false,
+            hasTexCoords1: false,
+            hasColors: false,
+        };
     }
 }
 
