@@ -21,7 +21,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 draco-core = { version = "1.0.0", path = "../draco-core", default-features = false, features = ["decoder", "point_cloud_decode", "edgebreaker_valence_decode"] }
 # The shared container/resource layer and document-preserving compressor live
 # in draco-io; this crate owns the full scene model.
-draco-io = { version = "0.2.0", path = "../draco-io", default-features = false, features = ["gltf-reader", "gltf-writer"] }
+draco-io = { version = "0.3.0", path = "../draco-io", default-features = false, features = ["gltf"] }
 thiserror = "2.0"
 
 [features]

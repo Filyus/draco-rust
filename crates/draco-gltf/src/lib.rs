@@ -26,10 +26,16 @@ pub use native_import::open_native;
 pub use native_import::{parse_native, parse_native_with_options, NativeImport};
 
 pub use draco_io::{
-    CompressionOutput, CompressionReport, EncodingMethod, ExternalFilePolicy, FileResourceResolver,
-    GltfCompressionOptions, GltfContainerFormat, GltfError, OutputFormat, PreserveReason,
-    QuantizationOptions, ResourceLimits, ResourceResolver,
+    ExternalFilePolicy, FileResourceResolver, GltfContainerFormat, GltfError, ResourceLimits,
+    ResourceResolver,
 };
+
+/// Container representation selected when serializing an import.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputFormat {
+    SameAsInput,
+    GltfJson,
+}
 
 /// Errors returned by native glTF parsing and Draco operations.
 #[derive(Debug, Error)]

@@ -55,15 +55,9 @@ impl NativeImport {
             .decode_primitive(&self.document, &self.resources, primitive)
     }
 
-    pub fn to_bytes(&self, output: draco_io::OutputFormat) -> Result<Vec<u8>> {
-        match output {
-            draco_io::OutputFormat::GltfEmbeddedBuffers | draco_io::OutputFormat::SameAsInput => {
-                Ok(self.document.to_json_bytes()?)
-            }
-            _ => Err(Error::Extension(
-                "container serialization is pending native resource repacking".into(),
-            )),
-        }
+    pub fn to_bytes(&self, output: crate::OutputFormat) -> Result<Vec<u8>> {
+        let _ = output;
+        Ok(self.document.to_json_bytes()?)
     }
 
     /// Materializes all Draco primitives as ordinary indexed triangle geometry.

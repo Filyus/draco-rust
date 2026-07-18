@@ -1,6 +1,6 @@
 [package]
 name = "draco-io"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Rust IO helpers for Draco geometry compression formats"
 license = "Apache-2.0"
@@ -17,22 +17,20 @@ exclude = [
     "tests/roundtrip.rs",
     "tools/blender_roundtrip.py",
 ]
+autotests = false
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)', 'cfg(feature, values("gltf-reader", "gltf-writer"))'] }
 
 [dependencies]
 draco-core = { version = "1.0.0", path = "../draco-core", default-features = false }
 thiserror = "2.0.17"
 byteorder = { version = "1.5.0", optional = true }
-serde = { version = "1.0.228", default-features = false, features = ["alloc", "derive"], optional = true }
-serde_json = { version = "1.0.148", optional = true, default-features = false, features = ["alloc"] }
 miniz_oxide = { version = "0.6", optional = true }
-nanoserde = { version = "0.2", default-features = false, features = ["std", "json"], optional = true }
 
 [features]
 default = [
@@ -41,27 +39,14 @@ default = [
     "compression",
     "point_cloud_decode",
 ]
-all-readers = ["fbx-reader", "gltf-reader", "obj-reader", "ply-reader"]
-all-writers = ["fbx-writer", "gltf-writer", "obj-writer", "ply-writer"]
+all-readers = ["fbx-reader", "obj-reader", "ply-reader"]
+all-writers = ["fbx-writer", "obj-writer", "ply-writer"]
 # Plain mesh formats (OBJ/PLY/FBX) only touch the geometry data model in
 # draco-core, never the Draco codec, so they do not enable encoder/decoder.
 # Only glTF uses KHR_draco_mesh_compression and thus pulls the codec.
 fbx-reader = ["scene"]
 fbx-writer = []
-gltf-reader = ["draco-core/decoder", "scene", "dep:serde", "dep:serde_json"]
-# Serde-free compact glTF reader front end: reuses the strict GLB container
-# and shared error type via `nanoserde`, without pulling the serde document
-# model into the binary. Intended for size-constrained front ends (WASM).
-gltf-compact = ["draco-core/decoder", "dep:nanoserde"]
-gltf-writer = [
-    "draco-core/decoder",
-    "draco-core/encoder",
-    "scene",
-    "dep:serde",
-    "dep:serde_json",
-    "serde/std",
-    "serde_json/std",
-]
+gltf = ["draco-core/decoder"]
 # Optional compatibility mode for reading older Draco bitstreams embedded in
 # KHR_draco_mesh_compression payloads. Writers still emit the current bitstream.
 legacy-bitstream-decode = ["draco-core/legacy_bitstream_decode"]
