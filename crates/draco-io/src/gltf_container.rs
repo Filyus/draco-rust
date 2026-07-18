@@ -231,6 +231,11 @@ pub struct ResourceLimits {
     pub max_total_buffer_bytes: Option<usize>,
     /// Maximum decoded image pixel count. Image decoders enforce this limit.
     pub max_image_pixels: Option<u64>,
+    /// Maximum number of explicit nested glTF assets on one `files` chain.
+    ///
+    /// The document layer owns graph traversal; this quota bounds each
+    /// caller-directed chain without triggering implicit recursion.
+    pub max_external_asset_depth: Option<usize>,
 }
 
 /// One glTF `buffers[]` declaration, independent of a JSON front end.

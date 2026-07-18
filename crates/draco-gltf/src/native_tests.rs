@@ -208,6 +208,57 @@ fn explicit_asset_loading_accepts_embedded_file_buffer_view() {
     );
 }
 
+#[cfg(feature = "resources")]
+#[test]
+fn explicit_asset_loading_honors_chain_depth_limit() {
+    let root = parse_native(
+        br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf"}]}"#,
+        ValidationProfile::Gltf21Draft,
+    )
+    .unwrap();
+    let resolver = |uri: &str| match uri {
+        "child.gltf" => {
+            Ok(br#"{"asset":{"version":"2.1"},"files":[{"uri":"leaf.gltf"}]}"#.to_vec())
+        }
+        "leaf.gltf" => Ok(br#"{"asset":{"version":"2.1"}}"#.to_vec()),
+        _ => Err(draco_io::GltfError::ExternalResourceDenied(uri.into())),
+    };
+    let limits = draco_io::ResourceLimits {
+        max_external_asset_depth: Some(1),
+        ..draco_io::ResourceLimits::default()
+    };
+    let child = root
+        .load_asset(
+            crate::FileIndex(0),
+            &resolver,
+            &limits,
+            ValidationProfile::Gltf21Draft,
+            &crate::ExtensionRegistry::default(),
+        )
+        .unwrap();
+    assert!(child
+        .load_asset(
+            crate::FileIndex(0),
+            &resolver,
+            &limits,
+            ValidationProfile::Gltf21Draft,
+            &crate::ExtensionRegistry::default(),
+        )
+        .is_err());
+}
+
+#[test]
+fn draft_validation_checks_file_reference_form() {
+    let both = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","bufferView":0}],"bufferViews":[{"buffer":0}],"buffers":[{"byteLength":0}]}"#,
+    )
+    .unwrap();
+    assert!(both.validate(ValidationProfile::Gltf21Draft).is_err());
+    let neither =
+        Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{}]}"#).unwrap();
+    assert!(neither.validate(ValidationProfile::Gltf21Draft).is_err());
+}
+
 #[test]
 fn native_import_reads_json() {
     let import = parse_native(

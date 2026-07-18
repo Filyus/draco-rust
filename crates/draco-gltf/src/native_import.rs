@@ -361,6 +361,9 @@ impl NativeImport {
         extensions: &ExtensionRegistry,
         max_depth: usize,
     ) -> Result<Self> {
+        let max_depth = limits
+            .max_external_asset_depth
+            .map_or(max_depth, |limit| limit.min(max_depth));
         if self.provenance.len() >= max_depth {
             return Err(Error::ResourceLimit(format!(
                 "nested glTF asset depth exceeds {max_depth}"

@@ -389,6 +389,32 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
     for image in root.get("images").and_then(Value::as_array).unwrap_or(&[]) {
         check(image, "bufferView", "bufferViews")?;
     }
+    for file in root.get("files").and_then(Value::as_array).unwrap_or(&[]) {
+        let has_uri = match file.get("uri") {
+            Some(value) if value.as_str().is_some() => true,
+            Some(_) => {
+                return Err(Error::Validation(vec!["file uri is not a string".into()]));
+            }
+            None => false,
+        };
+        let has_buffer_view = match file.get("bufferView") {
+            Some(value) if value.as_u64().is_some() => {
+                check(file, "bufferView", "bufferViews")?;
+                true
+            }
+            Some(_) => {
+                return Err(Error::Validation(vec![
+                    "file bufferView is not an index".into()
+                ]));
+            }
+            None => false,
+        };
+        if has_uri == has_buffer_view {
+            return Err(Error::Validation(vec![
+                "file must contain exactly one of uri or bufferView".into(),
+            ]));
+        }
+    }
     for texture in root
         .get("textures")
         .and_then(Value::as_array)
@@ -778,6 +804,9 @@ impl<'a> Scene<'a> {
 impl<'a> File<'a> {
     pub fn uri(self) -> Option<&'a str> {
         self.value().get("uri").and_then(Value::as_str)
+    }
+    pub fn buffer_view(self) -> Option<BufferViewIndex> {
+        index_value(self.value(), "bufferView").map(BufferViewIndex)
     }
 }
 
