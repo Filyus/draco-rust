@@ -217,7 +217,7 @@ fn collect_used_accessors(root: &crate::JsonValue) -> Result<Vec<bool>> {
             .as_array()
             .map_or(0, <[crate::JsonValue]>::len)
     ];
-    visit_accessor_refs(root, &mut used, false)?;
+    visit_core_accessor_refs(root, &mut used)?;
     Ok(used)
 }
 
@@ -242,7 +242,7 @@ fn prune_accessors(root: &mut crate::JsonValue, used: &[bool]) -> Result<Vec<Opt
 }
 
 fn remap_accessor_references(root: &mut crate::JsonValue, map: &[Option<usize>]) -> Result<()> {
-    remap_accessor_refs(root, map, false)
+    remap_core_accessor_refs(root, map)
 }
 
 fn collect_used_views(root: &crate::JsonValue) -> Result<Vec<bool>> {
@@ -252,142 +252,229 @@ fn collect_used_views(root: &crate::JsonValue) -> Result<Vec<bool>> {
             .as_array()
             .map_or(0, <[crate::JsonValue]>::len)
     ];
-    visit_buffer_view_refs(root, &mut used)?;
+    visit_core_buffer_view_refs(root, &mut used)?;
     Ok(used)
 }
 
 fn remap_buffer_view_references(root: &mut crate::JsonValue, map: &[Option<usize>]) -> Result<()> {
-    remap_buffer_view_refs(root, map)
+    remap_core_buffer_view_refs(root, map)
 }
 
-fn visit_accessor_refs(
-    value: &crate::JsonValue,
-    used: &mut [bool],
-    attributes: bool,
-) -> Result<()> {
-    match value {
-        crate::JsonValue::Array(values) => {
-            for value in values {
-                visit_accessor_refs(value, used, attributes)?;
-            }
-        }
-        crate::JsonValue::Object(values) if attributes => {
-            for (_, value) in values {
+fn visit_core_accessor_refs(root: &crate::JsonValue, used: &mut [bool]) -> Result<()> {
+    for mesh in root
+        .get("meshes")
+        .and_then(crate::JsonValue::as_array)
+        .unwrap_or(&[])
+    {
+        for primitive in mesh
+            .get("primitives")
+            .and_then(crate::JsonValue::as_array)
+            .unwrap_or(&[])
+        {
+            for (_, value) in primitive
+                .get("attributes")
+                .and_then(crate::JsonValue::as_object)
+                .unwrap_or(&[])
+            {
                 mark_used(value, used, "accessor")?;
             }
-        }
-        crate::JsonValue::Object(values) => {
-            for (name, value) in values {
-                if matches!(name.as_str(), "extensions" | "extras") {
-                    continue;
-                }
-                if matches!(name.as_str(), "attributes" | "targets") {
-                    visit_accessor_refs(value, used, true)?;
-                } else if matches!(
-                    name.as_str(),
-                    "indices" | "inverseBindMatrices" | "input" | "output"
-                ) {
-                    if value.as_u64().is_some() {
-                        mark_used(value, used, "accessor")?;
-                    } else {
-                        visit_accessor_refs(value, used, false)?;
-                    }
-                } else {
-                    visit_accessor_refs(value, used, false)?;
+            if let Some(value) = primitive.get("indices") {
+                mark_used(value, used, "accessor")?;
+            }
+            for target in primitive
+                .get("targets")
+                .and_then(crate::JsonValue::as_array)
+                .unwrap_or(&[])
+            {
+                for (_, value) in target.as_object().unwrap_or(&[]) {
+                    mark_used(value, used, "accessor")?;
                 }
             }
         }
-        _ => {}
+    }
+    for skin in root
+        .get("skins")
+        .and_then(crate::JsonValue::as_array)
+        .unwrap_or(&[])
+    {
+        if let Some(value) = skin.get("inverseBindMatrices") {
+            mark_used(value, used, "accessor")?;
+        }
+    }
+    for animation in root
+        .get("animations")
+        .and_then(crate::JsonValue::as_array)
+        .unwrap_or(&[])
+    {
+        for sampler in animation
+            .get("samplers")
+            .and_then(crate::JsonValue::as_array)
+            .unwrap_or(&[])
+        {
+            mark_used(&sampler["input"], used, "accessor")?;
+            mark_used(&sampler["output"], used, "accessor")?;
+        }
     }
     Ok(())
 }
 
-fn remap_accessor_refs(
-    value: &mut crate::JsonValue,
-    map: &[Option<usize>],
-    attributes: bool,
-) -> Result<()> {
-    match value {
-        crate::JsonValue::Array(values) => {
-            for value in values {
-                remap_accessor_refs(value, map, attributes)?;
+fn visit_core_buffer_view_refs(root: &crate::JsonValue, used: &mut [bool]) -> Result<()> {
+    for accessor in root
+        .get("accessors")
+        .and_then(crate::JsonValue::as_array)
+        .unwrap_or(&[])
+    {
+        if let Some(value) = accessor.get("bufferView") {
+            mark_used(value, used, "bufferView")?;
+        }
+        if let Some(sparse) = accessor.get("sparse") {
+            mark_used(&sparse["indices"]["bufferView"], used, "bufferView")?;
+            mark_used(&sparse["values"]["bufferView"], used, "bufferView")?;
+        }
+    }
+    for name in ["images", "files"] {
+        for object in root
+            .get(name)
+            .and_then(crate::JsonValue::as_array)
+            .unwrap_or(&[])
+        {
+            if let Some(value) = object.get("bufferView") {
+                mark_used(value, used, "bufferView")?;
             }
         }
-        crate::JsonValue::Object(values) if attributes => {
-            for (_, value) in values {
+    }
+    for mesh in root
+        .get("meshes")
+        .and_then(crate::JsonValue::as_array)
+        .unwrap_or(&[])
+    {
+        for primitive in mesh
+            .get("primitives")
+            .and_then(crate::JsonValue::as_array)
+            .unwrap_or(&[])
+        {
+            if let Some(value) = primitive
+                .get("extensions")
+                .and_then(|v| v.get(crate::KHR_DRACO_MESH_COMPRESSION))
+                .and_then(|v| v.get("bufferView"))
+            {
+                mark_used(value, used, "bufferView")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remap_core_accessor_refs(root: &mut crate::JsonValue, map: &[Option<usize>]) -> Result<()> {
+    if let Some(meshes) = root
+        .get_mut("meshes")
+        .and_then(crate::JsonValue::as_array_mut)
+    {
+        for mesh in meshes {
+            if let Some(primitives) = mesh
+                .get_mut("primitives")
+                .and_then(crate::JsonValue::as_array_mut)
+            {
+                for primitive in primitives {
+                    if let Some(values) = primitive
+                        .get_mut("attributes")
+                        .and_then(crate::JsonValue::as_object_mut)
+                    {
+                        for (_, value) in values {
+                            remap_index(value, map, "accessor")?;
+                        }
+                    }
+                    if let Some(value) = primitive.get_mut("indices") {
+                        remap_index(value, map, "accessor")?;
+                    }
+                    if let Some(targets) = primitive
+                        .get_mut("targets")
+                        .and_then(crate::JsonValue::as_array_mut)
+                    {
+                        for target in targets {
+                            if let Some(values) = target.as_object_mut() {
+                                for (_, value) in values {
+                                    remap_index(value, map, "accessor")?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(skins) = root
+        .get_mut("skins")
+        .and_then(crate::JsonValue::as_array_mut)
+    {
+        for skin in skins {
+            if let Some(value) = skin.get_mut("inverseBindMatrices") {
                 remap_index(value, map, "accessor")?;
             }
         }
-        crate::JsonValue::Object(values) => {
-            for (name, value) in values {
-                if matches!(name.as_str(), "extensions" | "extras") {
-                    continue;
+    }
+    if let Some(animations) = root
+        .get_mut("animations")
+        .and_then(crate::JsonValue::as_array_mut)
+    {
+        for animation in animations {
+            if let Some(samplers) = animation
+                .get_mut("samplers")
+                .and_then(crate::JsonValue::as_array_mut)
+            {
+                for sampler in samplers {
+                    remap_index(&mut sampler["input"], map, "accessor")?;
+                    remap_index(&mut sampler["output"], map, "accessor")?;
                 }
-                if matches!(name.as_str(), "attributes" | "targets") {
-                    remap_accessor_refs(value, map, true)?;
-                } else if matches!(
-                    name.as_str(),
-                    "indices" | "inverseBindMatrices" | "input" | "output"
-                ) {
-                    if value.as_u64().is_some() {
-                        remap_index(value, map, "accessor")?;
-                    } else {
-                        remap_accessor_refs(value, map, false)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remap_core_buffer_view_refs(root: &mut crate::JsonValue, map: &[Option<usize>]) -> Result<()> {
+    if let Some(accessors) = root
+        .get_mut("accessors")
+        .and_then(crate::JsonValue::as_array_mut)
+    {
+        for accessor in accessors {
+            if let Some(value) = accessor.get_mut("bufferView") {
+                remap_index(value, map, "bufferView")?;
+            }
+            if let Some(sparse) = accessor.get_mut("sparse") {
+                remap_index(&mut sparse["indices"]["bufferView"], map, "bufferView")?;
+                remap_index(&mut sparse["values"]["bufferView"], map, "bufferView")?;
+            }
+        }
+    }
+    for name in ["images", "files"] {
+        if let Some(values) = root.get_mut(name).and_then(crate::JsonValue::as_array_mut) {
+            for value in values {
+                if let Some(view) = value.get_mut("bufferView") {
+                    remap_index(view, map, "bufferView")?;
+                }
+            }
+        }
+    }
+    if let Some(meshes) = root
+        .get_mut("meshes")
+        .and_then(crate::JsonValue::as_array_mut)
+    {
+        for mesh in meshes {
+            if let Some(primitives) = mesh
+                .get_mut("primitives")
+                .and_then(crate::JsonValue::as_array_mut)
+            {
+                for primitive in primitives {
+                    if let Some(extension) = primitive
+                        .get_mut("extensions")
+                        .and_then(|v| v.get_mut(crate::KHR_DRACO_MESH_COMPRESSION))
+                    {
+                        remap_index(&mut extension["bufferView"], map, "bufferView")?;
                     }
-                } else {
-                    remap_accessor_refs(value, map, false)?;
                 }
             }
         }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn visit_buffer_view_refs(value: &crate::JsonValue, used: &mut [bool]) -> Result<()> {
-    match value {
-        crate::JsonValue::Array(values) => {
-            for value in values {
-                visit_buffer_view_refs(value, used)?;
-            }
-        }
-        crate::JsonValue::Object(values) => {
-            for (name, value) in values {
-                if name == "extras" {
-                    continue;
-                }
-                if name == "bufferView" {
-                    mark_used(value, used, "bufferView")?;
-                } else {
-                    visit_buffer_view_refs(value, used)?;
-                }
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn remap_buffer_view_refs(value: &mut crate::JsonValue, map: &[Option<usize>]) -> Result<()> {
-    match value {
-        crate::JsonValue::Array(values) => {
-            for value in values {
-                remap_buffer_view_refs(value, map)?;
-            }
-        }
-        crate::JsonValue::Object(values) => {
-            for (name, value) in values {
-                if name == "extras" {
-                    continue;
-                }
-                if name == "bufferView" {
-                    remap_index(value, map, "bufferView")?;
-                } else {
-                    remap_buffer_view_refs(value, map)?;
-                }
-            }
-        }
-        _ => {}
     }
     Ok(())
 }

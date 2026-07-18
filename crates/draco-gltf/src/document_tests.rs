@@ -485,6 +485,23 @@ fn draco_only_preserves_shared_raw_accessor_for_another_primitive() {
 }
 
 #[test]
+fn draco_only_preserves_unknown_json_index_like_fields() {
+    let input = br#"{"asset":{"version":"2.0"},"custom":{"bufferView":987,"attributes":{"POSITION":123}},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+    let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
+    import
+        .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        .unwrap();
+    assert_eq!(
+        import.document.as_value()["custom"]["bufferView"].as_u64(),
+        Some(987)
+    );
+    assert_eq!(
+        import.document.as_value()["custom"]["attributes"]["POSITION"].as_u64(),
+        Some(123)
+    );
+}
+
+#[test]
 fn compression_rejects_non_triangle_khr_mode() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"mode":0,"attributes":{"POSITION":0}}]}]}"#;
     let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
