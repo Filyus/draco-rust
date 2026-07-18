@@ -8,8 +8,8 @@ use draco_gltf::{GltfCompressionOptions, Import, OutputFormat};
 fn decoded_draco_stats(import: &Import) -> Result<(usize, usize), Box<dyn std::error::Error>> {
     let mut primitives = 0usize;
     let mut faces = 0usize;
-    for (_, primitive) in import.draco_primitives() {
-        let mesh = import.decode_primitive(&primitive)?;
+    for primitive in import.draco_primitives() {
+        let mesh = import.decode_primitive(primitive)?;
         if mesh.num_faces() == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

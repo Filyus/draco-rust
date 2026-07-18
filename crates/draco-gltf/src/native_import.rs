@@ -17,6 +17,7 @@ pub struct NativeImport {
     pub resources: ResourceStore,
     pub input_format: GltfContainerFormat,
     profile: ValidationProfile,
+    extensions: ExtensionRegistry,
 }
 
 impl NativeImport {
@@ -48,13 +49,35 @@ impl NativeImport {
     }
 
     /// Decodes a primitive through the supplied native extension registry.
-    pub fn decode_primitive(
+    pub fn decode_primitive(&self, primitive: PrimitiveRef<'_>) -> Result<draco_core::Mesh> {
+        self.validate(&self.extensions)?;
+        self.extensions
+            .decode_primitive(&self.document, &self.resources, primitive)
+    }
+
+    pub fn to_bytes(&self, output: draco_io::OutputFormat) -> Result<Vec<u8>> {
+        let (document, bin) = draco_io::consolidate_gltf_buffers(
+            self.document.as_value().clone(),
+            &self.resources.buffers,
+        )?;
+        Ok(draco_io::serialize_gltf_document(
+            &document,
+            &bin,
+            self.input_format,
+            output,
+        )?)
+    }
+
+    pub fn compress(&self) -> Result<draco_io::CompressionOutput<Vec<u8>>> {
+        self.compress_with_options(&draco_io::GltfCompressionOptions::default())
+    }
+
+    pub fn compress_with_options(
         &self,
-        primitive: PrimitiveRef<'_>,
-        extensions: &ExtensionRegistry,
-    ) -> Result<draco_core::Mesh> {
-        self.validate(extensions)?;
-        extensions.decode_primitive(&self.document, &self.resources, primitive)
+        options: &draco_io::GltfCompressionOptions,
+    ) -> Result<draco_io::CompressionOutput<Vec<u8>>> {
+        let bytes = self.to_bytes(draco_io::OutputFormat::GltfEmbeddedBuffers)?;
+        Ok(draco_io::compress_gltf_bytes_with_options(&bytes, options)?)
     }
 
     /// Lists declared glTF 2.1 `files` entries without resolving them.
@@ -152,5 +175,6 @@ pub fn parse_native_with_options(
         resources: ResourceStore { buffers },
         input_format: container.format,
         profile,
+        extensions: extensions.clone(),
     })
 }

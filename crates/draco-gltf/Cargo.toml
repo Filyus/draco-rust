@@ -1,8 +1,8 @@
 [package]
 name = "draco-gltf"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Load and save full glTF scenes with Draco geometry, bridging gltf-rs and draco-core/draco-io"
+description = "Load and save full glTF 2.0 and 2.1 draft scenes with Draco geometry"
 license = "Apache-2.0"
 repository = "https://github.com/Filyus/draco-rust"
 readme = "README.md"
@@ -18,7 +18,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 
 [dependencies]
-gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extensions", "extras"] }
 draco-core = { version = "1.0.0", path = "../draco-core", default-features = false, features = ["decoder", "point_cloud_decode", "edgebreaker_valence_decode"] }
 # The shared container/resource layer and the document-preserving compressor
 # live in draco-io; gltf-rs remains the full-scene model exposed by this crate.
@@ -26,16 +25,14 @@ draco-io = { version = "0.2.0", path = "../draco-io", default-features = false, 
 serde_json = "1.0"
 serde = "1.0"
 thiserror = "2.0"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"], optional = true }
 
 [features]
-default = ["image"]
+default = []
 # Decode embedded/external images through the shared resource resolver and the
 # `image` crate (PNG/JPEG codecs — the largest part of the build). Without it,
 # images are not decoded and `Import.images` is absent; glTF buffers still use
 # the same strict resolver. Useful for wasm and conversion pipelines where the
 # geometry, not the texture pixels, is what matters.
-image = ["gltf/import", "dep:image"]
 # Repository-fixture tests are intentionally opt-in and are not run from the
 # published crate tarball, which has no access to the workspace testdata tree.
 test = []
