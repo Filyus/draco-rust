@@ -46,6 +46,20 @@ fn native_import_preserves_unknown_json_and_decodes_draco() {
 }
 
 #[test]
+fn native_decompression_materializes_plain_geometry() {
+    let input = serde_json::to_vec(&compressed_document()).unwrap();
+    let mut import = parse_native(&input, ValidationProfile::Gltf20).unwrap();
+    import.decompress_in_place().unwrap();
+    assert_eq!(import.draco_primitives().count(), 0);
+    let primitive = import.document.primitive(MeshIndex(0), 0).unwrap();
+    assert_eq!(primitive.value()["mode"], 4);
+    assert!(primitive.value()["indices"].is_u64());
+    assert!(primitive.value()["attributes"]["POSITION"].is_u64());
+    let serialized = import.to_bytes(OutputFormat::GltfEmbeddedBuffers).unwrap();
+    parse_native(&serialized, ValidationProfile::Gltf20).unwrap();
+}
+
+#[test]
 fn draft_profile_accepts_files_shapes_and_nonsequential_semantics() {
     let value = serde_json::json!({
         "asset": { "version": "2.1" },
