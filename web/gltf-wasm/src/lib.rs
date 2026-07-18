@@ -233,6 +233,16 @@ fn name(value: &JsonValue, prefix: &str, index: usize) -> JsonValue {
     string(value.get("name"), &format!("{prefix}_{index}"))
 }
 
+fn texture_binding(texture: Option<&JsonValue>) -> JsonValue {
+    let Some(texture) = texture else {
+        return JsonValue::Null;
+    };
+    JsonValue::object([
+        ("index", index(texture.get("index"))),
+        ("texCoord", index(texture.get("texCoord"))),
+    ])
+}
+
 fn preview_manifest(document: &Document) -> JsonValue {
     const SUPPORTED_EXTENSIONS: &[&str] = &["KHR_materials_unlit", "KHR_texture_transform"];
     let root = document.as_value();
@@ -373,6 +383,26 @@ fn preview_manifest(document: &Document) -> JsonValue {
                             ),
                         ),
                     ]),
+                ),
+                (
+                    "metallic",
+                    number(pbr.and_then(|pbr| pbr.get("metallicFactor")), 1.0),
+                ),
+                (
+                    "roughness",
+                    number(pbr.and_then(|pbr| pbr.get("roughnessFactor")), 1.0),
+                ),
+                (
+                    "metallicRoughnessTexture",
+                    texture_binding(pbr.and_then(|pbr| pbr.get("metallicRoughnessTexture"))),
+                ),
+                (
+                    "emissiveFactor",
+                    fixed_array(material.get("emissiveFactor"), 3, &[0.0, 0.0, 0.0]),
+                ),
+                (
+                    "emissiveTexture",
+                    texture_binding(material.get("emissiveTexture")),
                 ),
                 ("doubleSided", boolean(material.get("doubleSided"), false)),
                 ("alphaMode", string(material.get("alphaMode"), "OPAQUE")),
@@ -1131,7 +1161,9 @@ mod tests {
                     "index":3,"texCoord":0,"extensions":{"KHR_texture_transform":{
                         "texCoord":1,"offset":[0.25,0.5],"scale":[2,3],"rotation":0.5
                     }}
-                }}}],
+                },"metallicFactor":0.25,"roughnessFactor":0.75,
+                "metallicRoughnessTexture":{"index":4,"texCoord":1}},
+                "emissiveFactor":[0.1,0.2,0.3],"emissiveTexture":{"index":5}}],
                 "textures":[{"source":0}],
                 "images":[{"uri":"base.png"}],
                 "meshes":[{"primitives":[{"material":0}]}],
@@ -1154,6 +1186,16 @@ mod tests {
         assert_eq!(
             manifest["materials"][0]["baseColorTextureTransform"]["offset"][0].as_f64(),
             Some(0.25)
+        );
+        assert_eq!(manifest["materials"][0]["metallic"].as_f64(), Some(0.25));
+        assert_eq!(manifest["materials"][0]["roughness"].as_f64(), Some(0.75));
+        assert_eq!(
+            manifest["materials"][0]["metallicRoughnessTexture"]["index"].as_u64(),
+            Some(4)
+        );
+        assert_eq!(
+            manifest["materials"][0]["emissiveTexture"]["index"].as_u64(),
+            Some(5)
         );
         assert_eq!(manifest["images"][0]["uri"].as_str(), Some("base.png"));
         assert!(manifest["warnings"].as_array().unwrap().is_empty());

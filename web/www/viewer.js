@@ -86,6 +86,15 @@ uniform int uBaseColorTexCoord;
 uniform vec2 uBaseColorTexOffset;
 uniform vec2 uBaseColorTexScale;
 uniform float uBaseColorTexRotation;
+uniform int uHasMetallicRoughnessTexture;
+uniform sampler2D uMetallicRoughness;
+uniform int uMetallicRoughnessTexCoord;
+uniform float uMetallic;
+uniform float uRoughness;
+uniform int uHasEmissiveTexture;
+uniform sampler2D uEmissive;
+uniform int uEmissiveTexCoord;
+uniform vec3 uEmissiveFactor;
 
 uniform vec3 uLightDir;        // direction TO light (key)
 uniform vec3 uLightColor;
@@ -96,17 +105,63 @@ uniform vec3 uCameraPos;
 
 out vec4 outColor;
 
+const float PI = 3.14159265359;
+
+vec2 selectUv(int texCoord) {
+    return texCoord == 1 ? vTexCoord1 : vTexCoord;
+}
+
+float distributionGgx(vec3 N, vec3 H, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float nDotH = max(dot(N, H), 0.0);
+    float nDotH2 = nDotH * nDotH;
+    float denominator = nDotH2 * (a2 - 1.0) + 1.0;
+    return a2 / max(PI * denominator * denominator, 0.0001);
+}
+
+float geometrySchlickGgx(float nDotV, float roughness) {
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
+    return nDotV / max(nDotV * (1.0 - k) + k, 0.0001);
+}
+
+float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+    return geometrySchlickGgx(max(dot(N, V), 0.0), roughness)
+        * geometrySchlickGgx(max(dot(N, L), 0.0), roughness);
+}
+
+vec3 fresnelSchlick(float cosTheta, vec3 f0) {
+    return f0 + (1.0 - f0) * pow(1.0 - cosTheta, 5.0);
+}
+
+vec3 directPbrLight(vec3 N, vec3 V, vec3 L, vec3 radiance, vec3 baseColor, float metallic, float roughness) {
+    vec3 H = normalize(V + L);
+    float nDotL = max(dot(N, L), 0.0);
+    float nDotV = max(dot(N, V), 0.0);
+    if (nDotL == 0.0 || nDotV == 0.0) return vec3(0.0);
+    vec3 f0 = mix(vec3(0.04), baseColor, metallic);
+    vec3 F = fresnelSchlick(max(dot(H, V), 0.0), f0);
+    float D = distributionGgx(N, H, roughness);
+    float G = geometrySmith(N, V, L, roughness);
+    vec3 specular = (D * G * F) / max(4.0 * nDotV * nDotL, 0.0001);
+    vec3 diffuse = (1.0 - F) * (1.0 - metallic) * baseColor / PI;
+    return (diffuse + specular) * radiance * nDotL;
+}
+
 void main() {
     vec4 base = uBaseColorFactor;
     if (uHasVertexColors == 1) base *= vColor;
+    vec4 baseSample = vec4(1.0);
     if (uHasTexture == 1) {
-        vec2 uv = uBaseColorTexCoord == 1 ? vTexCoord1 : vTexCoord;
+        vec2 uv = selectUv(uBaseColorTexCoord);
         uv *= uBaseColorTexScale;
         float c = cos(uBaseColorTexRotation);
         float s = sin(uBaseColorTexRotation);
         uv = vec2(c * uv.x - s * uv.y, s * uv.x + c * uv.y) + uBaseColorTexOffset;
-        base *= texture(uBaseColor, uv);
+        baseSample = texture(uBaseColor, uv);
     }
+    base *= baseSample;
 
     // Hard unlit materials (KHR_materials_unlit) keep flat shading.
     if (uUnlit == 1 || uBaseColorOnly == 1) {
@@ -130,23 +185,32 @@ void main() {
     // material rule so the visible side receives the same lighting either way.
     if (!gl_FrontFacing) N = -N;
 
-    vec3 L = normalize(uLightDir);
-    float diff = max(dot(N, L), 0.0);
-
-    vec3 F = normalize(uFillDir);
-    float fill = max(dot(N, F), 0.0) * 0.5;
-
-    // Hemisphere fill so back faces are never pure black.
-    float hemi = 0.5 + 0.5 * N.y;
-    vec3 ambient = uAmbient * (0.7 + 0.5 * hemi);
-
     vec3 V = normalize(uCameraPos - vWorldPos);
-    vec3 H = normalize(L + V);
-    float spec = pow(max(dot(N, H), 0.0), 48.0) * 0.3 * float(uHasNormals);
+    vec3 baseColor = uBaseColorFactor.rgb;
+    if (uHasVertexColors == 1) baseColor *= vColor.rgb;
+    if (uHasTexture == 1) baseColor *= pow(baseSample.rgb, vec3(2.2));
 
-    vec3 color = base.rgb * (ambient + uLightColor * diff + uFillColor * fill)
-                 + uLightColor * spec;
-    outColor = vec4(color, base.a);
+    float metallic = uMetallic;
+    float roughness = clamp(uRoughness, 0.045, 1.0);
+    if (uHasMetallicRoughnessTexture == 1) {
+        vec4 packed = texture(uMetallicRoughness, selectUv(uMetallicRoughnessTexCoord));
+        roughness = clamp(roughness * packed.g, 0.045, 1.0);
+        metallic *= packed.b;
+    }
+
+    vec3 L = normalize(uLightDir);
+    vec3 F = normalize(uFillDir);
+    vec3 color = directPbrLight(N, V, L, uLightColor, baseColor, metallic, roughness);
+    color += directPbrLight(N, V, F, uFillColor * 0.5, baseColor, metallic, roughness);
+    // A small neutral ambient term keeps non-metallic assets legible until IBL is added.
+    color += baseColor * uAmbient * (1.0 - metallic) * 0.35;
+    vec3 emissive = uEmissiveFactor;
+    if (uHasEmissiveTexture == 1) {
+        emissive *= pow(texture(uEmissive, selectUv(uEmissiveTexCoord)).rgb, vec3(2.2));
+    }
+    color += emissive;
+    color = color / (color + vec3(1.0));
+    outColor = vec4(pow(color, vec3(1.0 / 2.2)), base.a);
 }
 `;
 
@@ -381,6 +445,15 @@ export class Viewer {
             uBaseColorTexOffset: gl.getUniformLocation(p, 'uBaseColorTexOffset'),
             uBaseColorTexScale: gl.getUniformLocation(p, 'uBaseColorTexScale'),
             uBaseColorTexRotation: gl.getUniformLocation(p, 'uBaseColorTexRotation'),
+            uHasMetallicRoughnessTexture: gl.getUniformLocation(p, 'uHasMetallicRoughnessTexture'),
+            uMetallicRoughness: gl.getUniformLocation(p, 'uMetallicRoughness'),
+            uMetallicRoughnessTexCoord: gl.getUniformLocation(p, 'uMetallicRoughnessTexCoord'),
+            uMetallic: gl.getUniformLocation(p, 'uMetallic'),
+            uRoughness: gl.getUniformLocation(p, 'uRoughness'),
+            uHasEmissiveTexture: gl.getUniformLocation(p, 'uHasEmissiveTexture'),
+            uEmissive: gl.getUniformLocation(p, 'uEmissive'),
+            uEmissiveTexCoord: gl.getUniformLocation(p, 'uEmissiveTexCoord'),
+            uEmissiveFactor: gl.getUniformLocation(p, 'uEmissiveFactor'),
             uLightDir: gl.getUniformLocation(p, 'uLightDir'),
             uLightColor: gl.getUniformLocation(p, 'uLightColor'),
             uFillDir: gl.getUniformLocation(p, 'uFillDir'),
@@ -923,8 +996,8 @@ export class Viewer {
         const texCoord = material?.baseColorTexCoord ?? 0;
         const hasTexCoords = texCoord === 0 ? uploaded.hasTexCoords0
             : texCoord === 1 ? uploaded.hasTexCoords1 : false;
-        const hasTexture = material?.baseColorTexture !== null
-            && material?.baseColorTexture !== undefined && hasTexCoords;
+        const baseTexture = this.glResources.textures[material?.baseColorTexture];
+        const hasTexture = !!baseTexture && hasTexCoords;
         gl.uniform1i(this.uniforms.uHasTexture, hasTexture ? 1 : 0);
         gl.uniform1i(this.uniforms.uHasNormals, uploaded.hasNormals ? 1 : 0);
         gl.uniform1i(this.uniforms.uHasVertexColors, uploaded.hasColors ? 1 : 0);
@@ -932,9 +1005,8 @@ export class Viewer {
         gl.uniform1i(this.uniforms.uBaseColorOnly, this.baseColorOnly ? 1 : 0);
 
         if (hasTexture) {
-            const tex = this.glResources.textures[material.baseColorTexture];
             gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.bindTexture(gl.TEXTURE_2D, baseTexture);
             gl.uniform1i(this.uniforms.uBaseColor, 0);
         }
         const factor = material?.baseColorFactor || [1, 1, 1, 1];
@@ -946,6 +1018,40 @@ export class Viewer {
         gl.uniform2f(this.uniforms.uBaseColorTexOffset, offset[0], offset[1]);
         gl.uniform2f(this.uniforms.uBaseColorTexScale, scale[0], scale[1]);
         gl.uniform1f(this.uniforms.uBaseColorTexRotation, transform.rotation || 0);
+
+        const bindTexture = (binding, unit, textureUniform, hasUniform, texCoordUniform) => {
+            const texCoord = binding?.texCoord ?? 0;
+            const hasUv = texCoord === 0 ? uploaded.hasTexCoords0
+                : texCoord === 1 ? uploaded.hasTexCoords1 : false;
+            const textureIndex = binding?.index;
+            const texture = this.glResources.textures[textureIndex];
+            const enabled = !!texture && hasUv;
+            gl.uniform1i(hasUniform, enabled ? 1 : 0);
+            gl.uniform1i(texCoordUniform, texCoord);
+            if (enabled) {
+                gl.activeTexture(gl.TEXTURE0 + unit);
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.uniform1i(textureUniform, unit);
+            }
+        };
+        bindTexture(
+            material?.metallicRoughnessTexture,
+            1,
+            this.uniforms.uMetallicRoughness,
+            this.uniforms.uHasMetallicRoughnessTexture,
+            this.uniforms.uMetallicRoughnessTexCoord,
+        );
+        gl.uniform1f(this.uniforms.uMetallic, material?.metallic ?? 0);
+        gl.uniform1f(this.uniforms.uRoughness, material?.roughness ?? 1);
+        bindTexture(
+            material?.emissiveTexture,
+            2,
+            this.uniforms.uEmissive,
+            this.uniforms.uHasEmissiveTexture,
+            this.uniforms.uEmissiveTexCoord,
+        );
+        const emissive = material?.emissiveFactor || [0, 0, 0];
+        gl.uniform3f(this.uniforms.uEmissiveFactor, emissive[0], emissive[1], emissive[2]);
     }
 
     _computeJointMatrices(skin, meshWorld, jointOut) {

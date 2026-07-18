@@ -159,6 +159,25 @@ test('preview applies KHR_texture_transform', async ({ page }) => {
   await expect(page.locator('#console')).not.toContainText('Preview failed');
 });
 
+test('preview loads metallic-roughness and emissive PBR textures', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const fixture = path.join(repoRoot, 'testdata', 'Lantern', 'glTF');
+  await page.locator('#file-input').setInputFiles([
+    path.join(fixture, 'Lantern.gltf'),
+    path.join(fixture, 'Lantern.bin'),
+    path.join(fixture, 'Lantern_baseColor.png'),
+    path.join(fixture, 'Lantern_roughnessMetallic.png'),
+    path.join(fixture, 'Lantern_normal.png'),
+    path.join(fixture, 'Lantern_emissive.png'),
+  ]);
+
+  await expect(page.locator('#viewer-section')).toBeVisible();
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).not.toContainText('Preview failed');
+  await expect(page.locator('#console')).not.toContainText('Skipped primitive');
+});
+
 test('converter explains a missing external glTF buffer', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);
