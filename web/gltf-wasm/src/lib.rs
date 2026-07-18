@@ -438,7 +438,7 @@ impl GltfAsset {
     }
 
     /// Materializes every Draco primitive atomically into ordinary accessors.
-    #[cfg(feature = "write")]
+    #[cfg(all(feature = "write", feature = "draco-decode"))]
     pub fn decompress(&mut self) -> Result<(), JsValue> {
         self.import.decompress_in_place().map_err(wasm_error)
     }

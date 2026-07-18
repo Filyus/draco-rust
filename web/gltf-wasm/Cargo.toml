@@ -20,8 +20,9 @@ draco-gltf = { path = "../../crates/draco-gltf", default-features = false, featu
 draco-io = { path = "../../crates/draco-io", default-features = false, features = ["gltf"] }
 
 [features]
-default = ["read"]
+default = ["read", "draco-decode"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
-read = ["draco-gltf/geometry", "draco-gltf/draco-decode"]
+read = ["draco-gltf/geometry"]
+draco-decode = ["read", "draco-gltf/draco-decode"]
 write = ["read", "draco-gltf/write"]
-draco-encode = ["write", "draco-gltf/draco-encode"]
+draco-encode = ["write", "draco-decode", "draco-gltf/draco-encode"]

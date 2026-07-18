@@ -12,9 +12,11 @@ and reads ordinary or Draco-compressed primitives as `PackedGeometry`.
 `PackedGeometry` is constructible from JavaScript for applications that need to
 prepare geometry before an optional write build.
 
-The release artifact is read-only. Feature `write` adds raw
-`writePrimitive`, `pushPrimitive`, `fromGeometry`, JSON bundle output, and
-atomic Draco decompression. `draco-encode` adds explicit Draco storage.
+The release artifact enables `read` and `draco-decode`: it reads ordinary and
+Draco primitives. `write` adds raw `writePrimitive`, `pushPrimitive`,
+`fromGeometry`, and JSON bundle output. Add `draco-decode` to a custom write
+build for atomic Draco decompression; `draco-encode` includes both and adds
+explicit Draco storage.
 
 ```sh
 cargo run --manifest-path web/build-tool/Cargo.toml -- \
@@ -22,6 +24,9 @@ cargo run --manifest-path web/build-tool/Cargo.toml -- \
 cargo run --manifest-path web/build-tool/Cargo.toml -- \
   --module gltf-wasm --features write,draco-encode
 ```
+
+To deliberately omit the decoder in a custom raw-only build, invoke the
+underlying WASM build with `--no-default-features --features write`.
 
 For an application that only needs document inspection and lossless
 serialization, build the same module with `--no-default-features`; this is a
