@@ -65,10 +65,6 @@ test = []
 tempfile = "3.24.0"
 
 [[example]]
-name = "check_dedup"
-required-features = ["all-readers"]
-
-[[example]]
 name = "decode_drc"
 required-features = ["all-readers"]
 
@@ -77,20 +73,12 @@ name = "decode_rust_lamp"
 required-features = ["all-readers"]
 
 [[example]]
-name = "encode_lamp"
-required-features = ["all-writers", "all-readers"]
-
-[[example]]
 name = "fbx_demo"
 required-features = ["all-writers", "all-readers"]
 
 [[example]]
 name = "fbx_inspect"
 required-features = ["fbx-reader"]
-
-[[example]]
-name = "gltf_demo"
-required-features = ["gltf-writer", "gltf-reader"]
 
 [[example]]
 name = "polymorphic"
@@ -112,14 +100,3 @@ required-features = ["all-writers", "all-readers"]
 name = "geometry_contract"
 required-features = ["all-writers", "all-readers"]
 
-[[test]]
-name = "gltf_compress_fuzz_test"
-required-features = ["gltf-writer", "gltf-reader"]
-
-[[test]]
-name = "gltf_compress_test"
-required-features = ["gltf-writer", "gltf-reader"]
-
-[[test]]
-name = "gltf_reader_compact_parity"
-required-features = ["gltf-reader", "gltf-compact"]
