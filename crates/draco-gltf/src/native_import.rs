@@ -3,7 +3,8 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::{
-    Document, Error, ExtensionRegistry, FileIndex, ResourceStore, Result, ValidationProfile,
+    Document, Error, ExtensionRegistry, FileIndex, PrimitiveRef, ResourceStore, Result,
+    ValidationProfile,
 };
 use draco_io::{
     parse_gltf_container, resolve_gltf_buffers, ExternalFilePolicy, FileResourceResolver,
@@ -23,6 +24,37 @@ impl NativeImport {
         self.document.validate(self.profile)?;
         extensions.validate(&self.document)?;
         Ok(())
+    }
+
+    /// Iterates primitives carrying the built-in Draco extension.
+    pub fn draco_primitives(&self) -> impl Iterator<Item = PrimitiveRef<'_>> + '_ {
+        self.document
+            .meshes()
+            .into_iter()
+            .flat_map(move |mesh| {
+                let count = mesh
+                    .value()
+                    .get("primitives")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                (0..count)
+                    .filter_map(move |primitive| self.document.primitive(mesh.index(), primitive))
+            })
+            .filter(|primitive| {
+                primitive
+                    .extension(crate::KHR_DRACO_MESH_COMPRESSION)
+                    .is_some()
+            })
+    }
+
+    /// Decodes a primitive through the supplied native extension registry.
+    pub fn decode_primitive(
+        &self,
+        primitive: PrimitiveRef<'_>,
+        extensions: &ExtensionRegistry,
+    ) -> Result<draco_core::Mesh> {
+        self.validate(extensions)?;
+        extensions.decode_primitive(&self.document, &self.resources, primitive)
     }
 
     /// Lists declared glTF 2.1 `files` entries without resolving them.

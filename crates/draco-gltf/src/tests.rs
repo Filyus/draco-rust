@@ -735,3 +735,22 @@ fn decompressed_import_serializes_as_valid_glb_and_same_as_input() {
     assert_eq!(reader.read_positions().unwrap().count(), 3);
     assert_eq!(reader.read_indices().unwrap().into_u32().count(), 3);
 }
+
+#[test]
+fn native_import_decodes_draco_without_gltf_rs_types() {
+    let document = compressed_document(
+        &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        &[[0, 1, 2]],
+    );
+    let import = parse_native(
+        &serde_json::to_vec(&document).unwrap(),
+        ValidationProfile::Gltf20,
+    )
+    .unwrap();
+    let primitive = import.draco_primitives().next().unwrap();
+    let mesh = import
+        .decode_primitive(primitive, &ExtensionRegistry::default())
+        .unwrap();
+    assert_eq!(mesh.num_faces(), 1);
+    assert_eq!(mesh.num_points(), 3);
+}
