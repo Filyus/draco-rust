@@ -5,7 +5,7 @@
 
 use std::marker::PhantomData;
 
-use serde_json::Value;
+use crate::json::Value;
 
 use crate::{Error, Result};
 
@@ -91,7 +91,7 @@ pub struct Document {
 impl Document {
     /// Parses a JSON document, retaining the exact source bytes until mutation.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self> {
-        let root: Value = serde_json::from_slice(bytes)?;
+        let root = Value::parse(bytes).map_err(Error::Json)?;
         if !root.is_object() {
             return Err(Error::Validation(vec!["glTF root is not an object".into()]));
         }
@@ -127,7 +127,7 @@ impl Document {
     pub fn to_json_bytes(&self) -> Result<Vec<u8>> {
         match &self.original_json {
             Some(bytes) => Ok(bytes.clone()),
-            None => Ok(serde_json::to_vec(&self.root)?),
+            None => Ok(self.root.to_vec()),
         }
     }
 
@@ -136,7 +136,6 @@ impl Document {
         let asset = self
             .root
             .get("asset")
-            .and_then(Value::as_object)
             .ok_or_else(|| Error::Validation(vec!["asset is missing or not an object".into()]))?;
         let version = asset
             .get("version")
@@ -262,7 +261,7 @@ impl Document {
                 .root
                 .get(key)
                 .and_then(Value::as_array)
-                .map(Vec::as_slice)
+                .map(|value| &value[..])
                 .unwrap_or(&[]),
             marker: PhantomData,
         }
@@ -288,7 +287,7 @@ impl<'a, I: Copy> ObjectRef<'a, I> {
     pub fn uid(self) -> Option<&'a str> {
         self.value.get("uid").and_then(Value::as_str)
     }
-    pub fn extensions(self) -> Option<&'a serde_json::Map<String, Value>> {
+    pub fn extensions(self) -> Option<&'a [(String, Value)]> {
         self.value.get("extensions").and_then(Value::as_object)
     }
     pub fn extras(self) -> Option<&'a Value> {
@@ -371,7 +370,7 @@ impl<'a> PrimitiveRef<'a> {
     pub fn value(self) -> &'a Value {
         &self.document.as_value()["meshes"][self.mesh.0]["primitives"][self.primitive]
     }
-    pub fn attributes(self) -> Option<&'a serde_json::Map<String, Value>> {
+    pub fn attributes(self) -> Option<&'a [(String, Value)]> {
         self.value().get("attributes").and_then(Value::as_object)
     }
     pub fn extension(self, name: &str) -> Option<&'a Value> {

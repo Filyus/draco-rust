@@ -8,11 +8,13 @@ use std::path::Path;
 use thiserror::Error;
 
 pub mod document;
+mod json;
 pub use document::{
     AccessorIndex, AnimationIndex, BufferIndex, BufferViewIndex, CameraIndex, ComponentType,
     Document, FileIndex, ImageIndex, MaterialIndex, MeshIndex, NodeIndex, PrimitiveRef,
     SamplerIndex, SceneIndex, ShapeIndex, SkinIndex, TextureIndex, ValidationProfile,
 };
+pub use json::Value as JsonValue;
 pub mod extensions;
 pub use extensions::{
     DracoExtension, ExtensionHandler, ExtensionRegistry, ExtensionValidationContext, ResourceStore,
@@ -35,7 +37,7 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(String),
     #[error("Draco decode error: {0}")]
     Decode(#[from] draco_core::DracoError),
     #[error("draco-io error: {0}")]

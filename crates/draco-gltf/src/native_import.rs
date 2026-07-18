@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use serde_json::Value;
+use crate::json::Value;
 
 use crate::{
     Document, Error, ExtensionRegistry, FileIndex, PrimitiveRef, ResourceStore, Result,
@@ -37,7 +37,7 @@ impl NativeImport {
                     .value()
                     .get("primitives")
                     .and_then(Value::as_array)
-                    .map_or(0, Vec::len);
+                    .map_or(0, |values| values.len());
                 (0..count)
                     .filter_map(move |primitive| self.document.primitive(mesh.index(), primitive))
             })
@@ -56,28 +56,14 @@ impl NativeImport {
     }
 
     pub fn to_bytes(&self, output: draco_io::OutputFormat) -> Result<Vec<u8>> {
-        let (document, bin) = draco_io::consolidate_gltf_buffers(
-            self.document.as_value().clone(),
-            &self.resources.buffers,
-        )?;
-        Ok(draco_io::serialize_gltf_document(
-            &document,
-            &bin,
-            self.input_format,
-            output,
-        )?)
-    }
-
-    pub fn compress(&self) -> Result<draco_io::CompressionOutput<Vec<u8>>> {
-        self.compress_with_options(&draco_io::GltfCompressionOptions::default())
-    }
-
-    pub fn compress_with_options(
-        &self,
-        options: &draco_io::GltfCompressionOptions,
-    ) -> Result<draco_io::CompressionOutput<Vec<u8>>> {
-        let bytes = self.to_bytes(draco_io::OutputFormat::GltfEmbeddedBuffers)?;
-        Ok(draco_io::compress_gltf_bytes_with_options(&bytes, options)?)
+        match output {
+            draco_io::OutputFormat::GltfEmbeddedBuffers | draco_io::OutputFormat::SameAsInput => {
+                Ok(self.document.to_json_bytes()?)
+            }
+            _ => Err(Error::Extension(
+                "container serialization is pending native resource repacking".into(),
+            )),
+        }
     }
 
     /// Materializes all Draco primitives as ordinary indexed triangle geometry.
@@ -88,7 +74,7 @@ impl NativeImport {
                 .value()
                 .get("primitives")
                 .and_then(Value::as_array)
-                .map_or(0, Vec::len);
+                .map_or(0, |values| values.len());
             for primitive_index in 0..count {
                 let primitive = self
                     .document
@@ -97,7 +83,9 @@ impl NativeImport {
                 let Some(extension) = primitive.extension(crate::KHR_DRACO_MESH_COMPRESSION) else {
                     continue;
                 };
-                let mapping = draco_io::parse_khr_draco_extension_value(extension)?.attributes;
+                let mapping = crate::extensions::parse_draco_extension(Some(extension))?
+                    .ok_or_else(|| Error::Extension("missing Draco extension".into()))?
+                    .attributes;
                 let decoded = self.decode_primitive(primitive)?;
                 plans.push((mesh.index().0, primitive_index, mapping, decoded));
             }
@@ -127,7 +115,11 @@ impl NativeImport {
                     target["bufferView"] = Value::from(view as u64);
                     target["byteOffset"] = Value::from(0u64);
                     target["count"] = Value::from(mesh.num_points() as u64);
-                    target.as_object_mut().unwrap().remove("sparse");
+                    if let Some(object) = target.as_object_mut() {
+                        if let Some(index) = object.iter().position(|(name, _)| name == "sparse") {
+                            object.remove(index);
+                        }
+                    }
                 }
                 let indices = decoded_index_bytes(mesh)?;
                 let view = append_view(root, buffer_index, &mut bytes, &indices)?;
@@ -142,7 +134,7 @@ impl NativeImport {
                             .as_array_mut()
                             .ok_or_else(|| Error::Extension("accessors is not an array".into()))?;
                         let index = accessors.len();
-                        accessors.push(serde_json::json!({}));
+                        accessors.push(Value::Object(Vec::new()));
                         root["meshes"][*mesh_index]["primitives"][*primitive_index]["indices"] =
                             Value::from(index as u64);
                         index
@@ -163,13 +155,18 @@ impl NativeImport {
                     .get_mut("extensions")
                     .and_then(Value::as_object_mut)
                 {
-                    extensions.remove(crate::KHR_DRACO_MESH_COMPRESSION);
+                    if let Some(index) = extensions
+                        .iter()
+                        .position(|(name, _)| name == crate::KHR_DRACO_MESH_COMPRESSION)
+                    {
+                        extensions.remove(index);
+                    }
                 }
             }
             root["buffers"]
                 .as_array_mut()
                 .ok_or_else(|| Error::Extension("buffers is not an array".into()))?
-                .push(serde_json::json!({"byteLength": bytes.len()}));
+                .push(Value::object([("byteLength", Value::from(bytes.len()))]));
             for name in ["extensionsUsed", "extensionsRequired"] {
                 if let Some(values) = root.get_mut(name).and_then(Value::as_array_mut) {
                     values
@@ -256,9 +253,11 @@ fn append_view(root: &mut Value, buffer: usize, bytes: &mut Vec<u8>, data: &[u8]
         .as_array_mut()
         .ok_or_else(|| Error::Extension("bufferViews is not an array".into()))?;
     let index = views.len();
-    views.push(
-        serde_json::json!({"buffer": buffer, "byteOffset": offset, "byteLength": data.len()}),
-    );
+    views.push(Value::object([
+        ("buffer", Value::from(buffer)),
+        ("byteOffset", Value::from(offset)),
+        ("byteLength", Value::from(data.len())),
+    ]));
     Ok(index)
 }
 

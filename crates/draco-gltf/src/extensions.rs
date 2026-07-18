@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
+use crate::json::Value;
 use draco_core::{DecoderBuffer, Mesh, MeshDecoder};
-use serde_json::Value;
 
 use crate::{Document, Error, PrimitiveRef, Result};
 
@@ -113,12 +113,11 @@ impl ExtensionHandler for DracoExtension {
         document: &Document,
         context: &mut ExtensionValidationContext,
     ) -> Result<()> {
-        draco_io::validate_khr_draco_document(document.as_value())?;
         let accessors = document
             .as_value()
             .get("accessors")
             .and_then(Value::as_array)
-            .map(Vec::as_slice)
+            .map(|values| values)
             .unwrap_or(&[]);
         for mesh in document.meshes() {
             for primitive_index in mesh
@@ -130,19 +129,19 @@ impl ExtensionHandler for DracoExtension {
                 .enumerate()
             {
                 let primitive = primitive_index.1;
-                let Some(parsed) =
-                    draco_io::parse_khr_draco_mesh_compression(document.as_value(), primitive)?
+                let Some(_parsed) = parse_draco_extension(
+                    primitive
+                        .get("extensions")
+                        .and_then(|extensions| extensions.get(KHR_DRACO_MESH_COMPRESSION)),
+                )?
                 else {
                     continue;
                 };
-                if !parsed.required {
-                    continue;
-                }
                 for accessor in primitive
                     .get("attributes")
                     .and_then(Value::as_object)
                     .into_iter()
-                    .flat_map(|attrs| attrs.values())
+                    .flat_map(|attrs| attrs.iter().map(|(_, value)| value))
                     .chain(primitive.get("indices"))
                 {
                     if let Some(index) = accessor
@@ -168,7 +167,8 @@ impl ExtensionHandler for DracoExtension {
     ) -> Option<Result<Mesh>> {
         let extension = primitive.extension(self.name())?;
         Some((|| {
-            let parsed = draco_io::parse_khr_draco_extension_value(extension)?;
+            let parsed = parse_draco_extension(Some(extension))?
+                .ok_or_else(|| Error::Extension("missing Draco extension".into()))?;
             let view = document.as_value()["bufferViews"]
                 .as_array()
                 .and_then(|views| views.get(parsed.buffer_view))
@@ -196,6 +196,40 @@ impl ExtensionHandler for DracoExtension {
             Ok(mesh)
         })())
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DracoContract {
+    pub buffer_view: usize,
+    pub attributes: Vec<(String, u32)>,
+}
+
+pub(crate) fn parse_draco_extension(value: Option<&Value>) -> Result<Option<DracoContract>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let buffer_view = value
+        .get("bufferView")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| Error::Extension("Draco bufferView is invalid".into()))?;
+    let attributes = value
+        .get("attributes")
+        .and_then(Value::as_object)
+        .ok_or_else(|| Error::Extension("Draco attributes is invalid".into()))?
+        .iter()
+        .map(|(name, value)| {
+            value
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .map(|value| (name.clone(), value))
+                .ok_or_else(|| Error::Extension(format!("Draco attribute {name} is invalid")))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Some(DracoContract {
+        buffer_view,
+        attributes,
+    }))
 }
 
 impl Default for ExtensionRegistry {
