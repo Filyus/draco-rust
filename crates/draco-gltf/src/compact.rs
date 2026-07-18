@@ -73,10 +73,11 @@ impl NativeImport {
             .attribute_indices()
             .map(|(semantic, index)| {
                 let data = source.read_accessor(index.0)?;
-                PackedAttribute::from_accessor(
+                PackedAttribute::from_gltf_accessor(
                     semantic,
                     data.count,
                     data.components,
+                    data.component_type,
                     data.data_type,
                     data.normalized,
                     data.bytes,
@@ -88,10 +89,11 @@ impl NativeImport {
             .indices()
             .map(|index| {
                 let data = source.read_accessor(index.0)?;
-                PackedAttribute::from_accessor(
+                PackedAttribute::from_gltf_accessor(
                     "INDICES",
                     data.count,
                     data.components,
+                    data.component_type,
                     data.data_type,
                     data.normalized,
                     data.bytes,

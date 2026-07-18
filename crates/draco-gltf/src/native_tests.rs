@@ -322,6 +322,32 @@ fn compact_runtime_packs_accessor_geometry() {
 
 #[cfg(feature = "compact")]
 #[test]
+fn compact_runtime_preserves_draft_half_float_accessors() {
+    let input = br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":4,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteLength":4}],"accessors":[{"bufferView":0,"componentType":5131,"count":2,"type":"SCALAR"}],"meshes":[{"primitives":[{"attributes":{"_HALF":0}}]}]}"#;
+    let resolver = |uri: &str| match uri {
+        "mesh.bin" => Ok(vec![0, 60, 0, 64]),
+        _ => Err(draco_io::GltfError::ExternalResourceDenied(uri.into())),
+    };
+    let import = crate::parse_native_with_options(
+        input,
+        None,
+        Some(&resolver),
+        &draco_io::ResourceLimits::default(),
+        ValidationProfile::Gltf21Draft,
+        &crate::ExtensionRegistry::default(),
+    )
+    .unwrap();
+
+    let primitive = import
+        .decode_packed_primitive(crate::MeshIndex(0), 0)
+        .unwrap();
+    let half = &primitive.attributes[0];
+    assert_eq!(half.component_type, 5131);
+    assert_eq!(half.bytes, [0, 60, 0, 64]);
+}
+
+#[cfg(feature = "compact")]
+#[test]
 fn compact_runtime_materializes_sparse_accessors() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":26,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":2},{"buffer":0,"byteOffset":2,"byteLength":24}],"accessors":[{"componentType":5126,"count":3,"type":"VEC3","sparse":{"count":2,"indices":{"bufferView":0,"componentType":5121},"values":{"bufferView":1}}}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
     let mut buffer = vec![0, 2];

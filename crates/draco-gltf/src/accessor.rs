@@ -12,6 +12,7 @@ pub struct NativeAccessorSource<'a> {
 pub struct AccessorData {
     pub count: usize,
     pub components: u8,
+    pub component_type: u32,
     pub data_type: DataType,
     pub normalized: bool,
     pub bytes: Vec<u8>,
@@ -23,7 +24,7 @@ impl<'a> NativeAccessorSource<'a> {
             resources,
         }
     }
-    fn read(&self, index: usize) -> Result<(usize, u8, DataType, bool, Vec<u8>)> {
+    fn read(&self, index: usize) -> Result<(usize, u8, u32, DataType, bool, Vec<u8>)> {
         let accessor = self
             .document
             .as_value()
@@ -58,6 +59,9 @@ impl<'a> NativeAccessorSource<'a> {
             5125 => DataType::Uint32,
             5126 => DataType::Float32,
             5127 => DataType::Int32,
+            // `DataType` has no f16 variant. Its on-disk layout is identical
+            // to u16; `component` is preserved separately for packed output.
+            5131 => DataType::Uint16,
             5132 => DataType::Float64,
             5133 => DataType::Int64,
             5134 => DataType::Uint64,
@@ -112,6 +116,7 @@ impl<'a> NativeAccessorSource<'a> {
         Ok((
             count,
             components,
+            component as u32,
             data_type,
             accessor
                 .get("normalized")
@@ -268,10 +273,11 @@ impl<'a> NativeAccessorSource<'a> {
     }
 
     pub fn read_accessor(&self, index: usize) -> Result<AccessorData> {
-        let (count, components, data_type, normalized, bytes) = self.read(index)?;
+        let (count, components, component_type, data_type, normalized, bytes) = self.read(index)?;
         Ok(AccessorData {
             count,
             components,
+            component_type,
             data_type,
             normalized,
             bytes,
@@ -285,7 +291,7 @@ impl AccessorSource for NativeAccessorSource<'_> {
         expected: &[&str],
         allowed: &[u32],
     ) -> std::result::Result<DecodedAccessor, GltfError> {
-        let (count, c, t, n, b) = self
+        let (count, c, _, t, n, b) = self
             .read(index)
             .map_err(|e| GltfError::InvalidGltf(e.to_string()))?;
         let a = &self.document.as_value()["accessors"][index];
@@ -300,11 +306,14 @@ impl AccessorSource for NativeAccessorSource<'_> {
         DecodedAccessor::new(count, c, t, n, b)
     }
     fn read_indices(&self, index: usize) -> std::result::Result<Vec<u32>, GltfError> {
-        let (count, c, t, _, b) = self
+        let (count, c, component_type, t, _, b) = self
             .read(index)
             .map_err(|e| GltfError::InvalidGltf(e.to_string()))?;
         if c != 1 {
             return Err(GltfError::InvalidGltf("indices must be SCALAR".into()));
+        }
+        if !matches!(component_type, 5121 | 5123 | 5125) {
+            return Err(GltfError::Unsupported("index component type".into()));
         }
         let w = t.byte_length();
         (0..count)

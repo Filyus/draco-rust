@@ -89,6 +89,55 @@ impl PackedAttribute {
             bytes,
         })
     }
+
+    /// Creates a packed attribute while preserving the source glTF component
+    /// type. This supports draft storage definitions such as `HALF_FLOAT`
+    /// even when the Draco geometry model has no matching scalar type.
+    pub fn from_gltf_accessor(
+        semantic: impl Into<String>,
+        count: usize,
+        components: u8,
+        component_type: u32,
+        storage_type: DataType,
+        normalized: bool,
+        bytes: Vec<u8>,
+    ) -> Result<Self> {
+        let component_width = gltf_component_width(component_type)?;
+        if storage_type.byte_length() != component_width {
+            return Err(GltfError::InvalidGltf(format!(
+                "glTF componentType {component_type} does not match packed storage width"
+            )));
+        }
+        let expected = count
+            .checked_mul(components as usize)
+            .and_then(|value| value.checked_mul(component_width))
+            .ok_or_else(|| GltfError::InvalidGltf("packed accessor byte size overflow".into()))?;
+        if bytes.len() != expected {
+            return Err(GltfError::InvalidGltf(format!(
+                "packed accessor has {} bytes, expected {expected}",
+                bytes.len()
+            )));
+        }
+        Ok(Self {
+            semantic: semantic.into(),
+            components,
+            component_type,
+            normalized,
+            bytes,
+        })
+    }
+}
+
+fn gltf_component_width(component_type: u32) -> Result<usize> {
+    match component_type {
+        5120 | 5121 => Ok(1),
+        5122 | 5123 | 5131 => Ok(2),
+        5125 | 5126 | 5127 => Ok(4),
+        5132 | 5133 | 5134 => Ok(8),
+        _ => Err(GltfError::InvalidGltf(format!(
+            "unsupported glTF componentType {component_type}"
+        ))),
+    }
 }
 
 /// Materializes a decoded Draco mesh using the semantic-to-unique-id mapping
