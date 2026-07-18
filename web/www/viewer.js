@@ -79,6 +79,7 @@ uniform int uHasTexture;
 uniform int uHasNormals;
 uniform int uHasVertexColors;
 uniform int uUnlit;
+uniform int uBaseColorOnly;
 uniform sampler2D uBaseColor;
 uniform vec4 uBaseColorFactor;
 uniform int uBaseColorTexCoord;
@@ -108,7 +109,7 @@ void main() {
     }
 
     // Hard unlit materials (KHR_materials_unlit) keep flat shading.
-    if (uUnlit == 1) {
+    if (uUnlit == 1 || uBaseColorOnly == 1) {
         outColor = vec4(base.rgb, base.a);
         return;
     }
@@ -324,6 +325,8 @@ export class Viewer {
         // Display options
         this.wireframe = false;
         this.showGrid = true;
+        // Diagnostic mode: display base color data without preview lighting.
+        this.baseColorOnly = false;
         this.autoRotate = false;
 
         // Matrices
@@ -371,6 +374,7 @@ export class Viewer {
             uHasNormals: gl.getUniformLocation(p, 'uHasNormals'),
             uHasVertexColors: gl.getUniformLocation(p, 'uHasVertexColors'),
             uUnlit: gl.getUniformLocation(p, 'uUnlit'),
+            uBaseColorOnly: gl.getUniformLocation(p, 'uBaseColorOnly'),
             uBaseColor: gl.getUniformLocation(p, 'uBaseColor'),
             uBaseColorFactor: gl.getUniformLocation(p, 'uBaseColorFactor'),
             uBaseColorTexCoord: gl.getUniformLocation(p, 'uBaseColorTexCoord'),
@@ -925,6 +929,7 @@ export class Viewer {
         gl.uniform1i(this.uniforms.uHasNormals, uploaded.hasNormals ? 1 : 0);
         gl.uniform1i(this.uniforms.uHasVertexColors, uploaded.hasColors ? 1 : 0);
         gl.uniform1i(this.uniforms.uUnlit, material?.unlit ? 1 : 0);
+        gl.uniform1i(this.uniforms.uBaseColorOnly, this.baseColorOnly ? 1 : 0);
 
         if (hasTexture) {
             const tex = this.glResources.textures[material.baseColorTexture];

@@ -185,6 +185,12 @@ test('3D preview renders a GLB into the WebGL2 canvas', async ({ page }) => {
   await expect(page.locator('#console')).not.toContainText('Skipped primitive');
   await expect(page.locator('#console')).not.toContainText('Preview failed');
 
+  const baseColor = page.locator('#viewer-base-color');
+  await expect(baseColor).toHaveAttribute('aria-pressed', 'false');
+  await baseColor.click();
+  await expect(baseColor).toHaveAttribute('aria-pressed', 'true');
+  await expect(baseColor).toHaveClass(/active/);
+
   const hasContext = await page.evaluate(() => {
     const canvas = document.getElementById('viewer-canvas');
     const gl = canvas && canvas.getContext('webgl2');

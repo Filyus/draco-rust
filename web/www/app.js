@@ -65,6 +65,7 @@ const viewerPlaceholder = document.getElementById('viewer-placeholder');
 const viewerResetBtn = document.getElementById('viewer-reset');
 const viewerAutoRotateBtn = document.getElementById('viewer-autorotate');
 const viewerWireframeBtn = document.getElementById('viewer-wireframe');
+const viewerBaseColorBtn = document.getElementById('viewer-base-color');
 const viewerGridBtn = document.getElementById('viewer-grid');
 const viewerAnimation = document.getElementById('viewer-animation');
 const animPlayBtn = document.getElementById('anim-play');
@@ -226,6 +227,12 @@ function setupEventListeners() {
         if (!viewer) return;
         viewer.wireframe = !viewer.wireframe;
         viewerWireframeBtn.classList.toggle('active', viewer.wireframe);
+    });
+    viewerBaseColorBtn.addEventListener('click', () => {
+        if (!viewer) return;
+        viewer.baseColorOnly = !viewer.baseColorOnly;
+        viewerBaseColorBtn.classList.toggle('active', viewer.baseColorOnly);
+        viewerBaseColorBtn.setAttribute('aria-pressed', String(viewer.baseColorOnly));
     });
     viewerGridBtn.addEventListener('click', () => {
         if (!viewer) return;
