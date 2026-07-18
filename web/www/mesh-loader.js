@@ -123,7 +123,7 @@ export async function buildSceneFromMeshes(parsed, resources = Object.create(nul
             } else {
                 parsed.warnings ||= [];
                 parsed.warnings.push(
-                    `OBJ texture ignored for ${mesh.material}: mesh has no texture coordinates`,
+                    `OBJ texture ${sourceMaterial.baseColorTextureUri} ignored for ${mesh.material}: mesh has no texture coordinates`,
                 );
             }
         }

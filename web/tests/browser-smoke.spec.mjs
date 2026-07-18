@@ -221,6 +221,9 @@ test('converter preserves OBJ material groups for preview', async ({ page }) => 
   await expect(page.locator('#mesh-count')).toHaveText('7');
   await expect(page.locator('#viewer-section')).toBeVisible();
   await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).toContainText(
+    'OBJ texture black.png ignored for mat4: mesh has no texture coordinates',
+  );
   await expect(page.locator('#console')).not.toContainText('Skipped primitive');
   await expect(page.locator('#console')).not.toContainText('Preview failed');
 });
@@ -228,19 +231,32 @@ test('converter preserves OBJ material groups for preview', async ({ page }) => 
 test('converter applies a selected OBJ map_Kd texture', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);
-  const [obj, mtl, texture] = await Promise.all([
-    readFile(path.join(repoRoot, 'testdata', 'mat_test.obj')),
-    readFile(path.join(repoRoot, 'testdata', 'mat_test.mtl')),
-    readFile(path.join(repoRoot, 'testdata', 'Fox', 'glTF', 'Texture.png')),
-  ]);
+  const texture = await readFile(path.join(repoRoot, 'testdata', 'Fox', 'glTF', 'Texture.png'));
+  const obj = Buffer.from([
+    'mtllib textured.mtl',
+    'v 0 0 0',
+    'v 1 0 0',
+    'v 0 1 0',
+    'vt 0 0',
+    'vt 1 0',
+    'vt 0 1',
+    'usemtl textured',
+    'f 1/1 2/2 3/3',
+  ].join('\n'));
+  const mtl = Buffer.from([
+    'newmtl textured',
+    'Kd 1 1 1',
+    'map_Kd black.png',
+  ].join('\n'));
   await page.locator('#file-input').setInputFiles([
-    { name: 'mat_test.obj', mimeType: 'text/plain', buffer: obj },
-    { name: 'mat_test.mtl', mimeType: 'text/plain', buffer: mtl },
+    { name: 'textured.obj', mimeType: 'text/plain', buffer: obj },
+    { name: 'textured.mtl', mimeType: 'text/plain', buffer: mtl },
     { name: 'black.png', mimeType: 'image/png', buffer: texture },
   ]);
 
   await expect(page.locator('#viewer-section')).toBeVisible();
   await expect(page.locator('#console')).toContainText('Preview ready');
   await expect(page.locator('#console')).not.toContainText('OBJ texture not selected: black.png');
+  await expect(page.locator('#console')).not.toContainText('OBJ texture black.png ignored');
   await expect(page.locator('#console')).not.toContainText('Failed to decode OBJ texture black.png');
 });
