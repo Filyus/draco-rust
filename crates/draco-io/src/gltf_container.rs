@@ -100,6 +100,19 @@ pub fn build_glb_from_json(
     Ok(out)
 }
 
+#[cfg(test)]
+mod native_glb_tests {
+    use super::*;
+
+    #[test]
+    fn native_glb_v3_builder_roundtrips_container_layout() {
+        let bytes = build_glb_from_json(br#"{"asset":{"version":"2.1"}}"#, &[1, 2, 3], GltfContainerFormat::GlbV3).unwrap();
+        let parsed = parse_gltf_container(&bytes).unwrap();
+        assert_eq!(parsed.format, GltfContainerFormat::GlbV3);
+        assert_eq!(parsed.bin.unwrap()[..3], [1, 2, 3]);
+    }
+}
+
 impl GltfContainerFormat {
     /// Whether this is either binary GLB container version.
     pub const fn is_glb(self) -> bool {
