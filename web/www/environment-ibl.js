@@ -295,10 +295,12 @@ export function createEnvironmentIbl(gl, onLog = () => {}) {
         resources.framebuffer = framebuffer;
         resources.vao = vao;
 
-        const environment = cubeTexture(gl, 128, 1, format);
+        const environmentSize = 256;
+        const prefilteredSize = 128;
+        const environment = cubeTexture(gl, environmentSize, 1, format);
         const irradiance = cubeTexture(gl, 32, 1, format);
         const prefilteredLevels = 8;
-        const prefiltered = cubeTexture(gl, 128, prefilteredLevels, format);
+        const prefiltered = cubeTexture(gl, prefilteredSize, prefilteredLevels, format);
         resources.textures.push(environment, irradiance, prefiltered);
 
         const environmentProgram = program(gl, ENVIRONMENT_FRAGMENT);
@@ -309,7 +311,7 @@ export function createEnvironmentIbl(gl, onLog = () => {}) {
 
         gl.disable(gl.DEPTH_TEST);
         gl.depthMask(false);
-        renderCube(gl, framebuffer, vao, environment, 128, 1, (_level, _levels, face) => {
+        renderCube(gl, framebuffer, vao, environment, environmentSize, 1, (_level, _levels, face) => {
             gl.useProgram(environmentProgram);
             if (face !== undefined) gl.uniform1i(gl.getUniformLocation(environmentProgram, 'uFace'), face);
         });
@@ -325,7 +327,7 @@ export function createEnvironmentIbl(gl, onLog = () => {}) {
 
         gl.useProgram(prefilterProgram);
         gl.uniform1i(gl.getUniformLocation(prefilterProgram, 'uEnvironment'), 0);
-        renderCube(gl, framebuffer, vao, prefiltered, 128, prefilteredLevels, (level, levels, face) => {
+        renderCube(gl, framebuffer, vao, prefiltered, prefilteredSize, prefilteredLevels, (level, levels, face) => {
             gl.useProgram(prefilterProgram);
             gl.uniform1f(gl.getUniformLocation(prefilterProgram, 'uRoughness'), level / (levels - 1));
             if (face !== undefined) gl.uniform1i(gl.getUniformLocation(prefilterProgram, 'uFace'), face);

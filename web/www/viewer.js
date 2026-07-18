@@ -1201,7 +1201,7 @@ export class Viewer {
         if (!this._grid) return;
         gl.useProgram(this.lineProgram);
         gl.uniformMatrix4fv(this.lineUniforms.uProjectionView, false, this._projectionView);
-        gl.uniform3f(this.lineUniforms.uColor, 0.14, 0.19, 0.29);
+        gl.uniform3f(this.lineUniforms.uColor, 0.31, 0.40, 0.56);
         gl.bindBuffer(gl.ARRAY_BUFFER, this._grid.buffer);
         gl.enableVertexAttribArray(0);
         gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
