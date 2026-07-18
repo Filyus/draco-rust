@@ -11,8 +11,8 @@ const modules = {
     objWriter: { loaded: false, module: null },
     plyReader: { loaded: false, module: null },
     plyWriter: { loaded: false, module: null },
-    gltfReader: { loaded: false, module: null },
-    gltfWriter: { loaded: false, module: null },
+    gltfInspect: { loaded: false, module: null },
+    gltfCanonicalize: { loaded: false, module: null },
     fbxReader: { loaded: false, module: null },
     fbxWriter: { loaded: false, module: null },
 };
@@ -66,8 +66,8 @@ async function loadAllModules() {
         { key: 'objWriter', path: `./pkg/obj_writer.js${CACHE_BUST}`, statusId: 'obj-writer-status' },
         { key: 'plyReader', path: `./pkg/ply_reader.js${CACHE_BUST}`, statusId: 'ply-reader-status' },
         { key: 'plyWriter', path: `./pkg/ply_writer.js${CACHE_BUST}`, statusId: 'ply-writer-status' },
-        { key: 'gltfReader', path: `./pkg/gltf_reader.js${CACHE_BUST}`, statusId: 'gltf-reader-status' },
-        { key: 'gltfWriter', path: `./pkg/gltf_writer.js${CACHE_BUST}`, statusId: 'gltf-writer-status' },
+        { key: 'gltfInspect', path: `./pkg/gltf_inspect.js${CACHE_BUST}`, statusId: 'gltf-inspect-status' },
+        { key: 'gltfCanonicalize', path: `./pkg/gltf_canonicalize.js${CACHE_BUST}`, statusId: 'gltf-canonicalize-status' },
         { key: 'fbxReader', path: `./pkg/fbx_reader.js${CACHE_BUST}`, statusId: 'fbx-reader-status' },
         { key: 'fbxWriter', path: `./pkg/fbx_writer.js${CACHE_BUST}`, statusId: 'fbx-writer-status' },
     ];
@@ -297,22 +297,14 @@ async function parsePlyFile(data) {
 
 // Parse glTF/GLB file
 async function parseGltfFile(data, extension, resources = Object.create(null)) {
-    if (!modules.gltfReader.loaded) {
-        return { success: false, error: 'glTF Reader module not loaded' };
+    if (!modules.gltfInspect.loaded) {
+        return { success: false, error: 'glTF inspector module not loaded' };
     }
-    
     if (Object.keys(resources).length > 0) {
-        if (!modules.gltfReader.module.parse_gltf_with_resources) {
-            return { success: false, error: 'This glTF reader does not support companion resources' };
-        }
-        return modules.gltfReader.module.parse_gltf_with_resources(data, resources);
+        log('Companion resources are not loaded by the document inspector', 'warning');
     }
-    if (extension === 'glb') {
-        return modules.gltfReader.module.parse_glb(data);
-    } else {
-        const textContent = new TextDecoder().decode(data);
-        return modules.gltfReader.module.parse_gltf(textContent);
-    }
+    const result = modules.gltfInspect.module.inspect_gltf(data);
+    return { ...result, document: true, format: extension };
 }
 
 // Parse FBX file
@@ -326,6 +318,15 @@ async function parseFbxFile(data) {
 
 // Display mesh information
 function displayMeshInfo(result) {
+    if (result.document) {
+        document.getElementById('mesh-count').textContent = result.meshCount.toLocaleString();
+        document.getElementById('vertex-count').textContent = '—';
+        document.getElementById('triangle-count').textContent = result.primitiveCount.toLocaleString();
+        document.getElementById('has-normals').textContent = 'Not decoded';
+        document.getElementById('has-uvs').textContent = result.usesDraco ? 'Draco present' : 'Not decoded';
+        document.getElementById('warnings-container').style.display = 'none';
+        return;
+    }
     const meshes = result.meshes || [];
     
     let totalVertices = 0;
@@ -377,7 +378,7 @@ function updateExportOptions() {
 
 // Export file
 async function exportFile() {
-    if (!currentMeshData || !currentMeshData.meshes || currentMeshData.meshes.length === 0) {
+    if (!currentMeshData) {
         log('No mesh data to export', 'error');
         return;
     }
@@ -387,6 +388,18 @@ async function exportFile() {
     
     try {
         let result;
+        if (currentMeshData.document) {
+            if (format !== 'gltf' || currentFileType !== 'gltf') {
+                throw new Error('Document export currently canonicalizes JSON glTF only');
+            }
+            if (!modules.gltfCanonicalize.loaded) {
+                throw new Error('glTF canonicalizer module not loaded');
+            }
+            const data = modules.gltfCanonicalize.module.canonicalize_gltf(currentSourceData);
+            downloadResult({ success: true, json_data: new TextDecoder().decode(data) }, format);
+            log('Document canonicalized', 'success');
+            return;
+        }
         const meshes = prepareMeshesForExport(currentMeshData.meshes);
         
         switch (format) {
@@ -504,65 +517,10 @@ async function exportToPly(meshes) {
 
 // Export to glTF/GLB
 async function exportToGltf(meshes, format) {
-    if (!modules.gltfWriter.loaded) {
-        return { success: false, error: 'glTF Writer module not loaded' };
-    }
-    
-    const options = {
-        use_draco: useDraco.checked,
-        encoding_speed: parseInt(encodingSpeed.value),
-        encoding_method: parseInt(encodingMethod.value),
-        position_quantization: parseInt(positionBits.value) === 0
-            ? null
-            : parseInt(positionBits.value),
-        normal_quantization: parseInt(normalBits.value),
-        texcoord_quantization: parseInt(texcoordBits.value),
-        format: format,
+    return {
+        success: false,
+        error: `Creating ${format.toUpperCase()} from flattened meshes is not part of the document API`,
     };
-
-    if (
-        currentSourceData &&
-        currentFileType === format &&
-        (format === 'glb' || format === 'gltf')
-    ) {
-        if (useDraco.checked) {
-            if (modules.gltfWriter.module.compress_gltf_document) {
-                log('Compressing original glTF document while preserving materials...', 'info');
-                if (
-                    Object.keys(currentSourceResources).length > 0 &&
-                    modules.gltfWriter.module.compress_gltf_document_with_resources
-                ) {
-                    return modules.gltfWriter.module.compress_gltf_document_with_resources(
-                        currentSourceData,
-                        currentSourceResources,
-                        options,
-                    );
-                }
-                return modules.gltfWriter.module.compress_gltf_document(currentSourceData, options);
-            }
-            log('Document-preserving glTF compression is unavailable; falling back to mesh export', 'warning');
-        } else {
-            log('Exporting original glTF document to preserve materials...', 'info');
-            if (format === 'gltf') {
-                return {
-                    success: true,
-                    json_data: new TextDecoder().decode(currentSourceData),
-                    binary_data: null,
-                    error: null,
-                    draco_stats: null,
-                };
-            }
-            return {
-                success: true,
-                json_data: null,
-                binary_data: currentSourceData,
-                error: null,
-                draco_stats: null,
-            };
-        }
-    }
-    
-    return modules.gltfWriter.module.create_gltf(meshes, options);
 }
 
 // Export to FBX

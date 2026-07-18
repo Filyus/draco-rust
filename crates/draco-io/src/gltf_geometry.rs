@@ -73,8 +73,7 @@ pub(crate) const GLTF_COMPONENT_BYTE: u32 = 5120;
 pub(crate) const GLTF_COMPONENT_UNSIGNED_BYTE: u32 = 5121;
 pub(crate) const GLTF_COMPONENT_SHORT: u32 = 5122;
 pub(crate) const GLTF_COMPONENT_UNSIGNED_SHORT: u32 = 5123;
-// Index component type, used only by the reader's index decoding.
-#[cfg(feature = "gltf-reader")]
+// Index component type used by accessor decoding.
 pub(crate) const GLTF_COMPONENT_UNSIGNED_INT: u32 = 5125;
 pub(crate) const GLTF_COMPONENT_FLOAT: u32 = 5126;
 
@@ -390,21 +389,6 @@ pub fn decode_geometry<S: AccessorSource>(
     Ok((mesh, semantics))
 }
 
-/// Reads the attribute for `semantic` from `src` and adds it to `mesh`,
-/// returning its attribute id. Used by the reader for side attributes that
-/// accompany a Draco stream but are not carried inside it.
-#[cfg(feature = "gltf-reader")]
-pub(crate) fn add_named_attribute<S: AccessorSource>(
-    mesh: &mut Mesh,
-    src: &S,
-    semantic: &str,
-    accessor_idx: usize,
-    point_indices: Option<&[u32]>,
-) -> Result<i32> {
-    let spec = supported_semantic_spec(semantic)?;
-    read_and_add_standard_attribute(mesh, src, accessor_idx, semantic, spec, point_indices)
-}
-
 fn read_and_add_standard_attribute<S: AccessorSource>(
     mesh: &mut Mesh,
     src: &S,
@@ -595,7 +579,6 @@ pub(crate) fn component_type_for_data_type(data_type: DataType) -> Result<u32> {
         DataType::Uint8 => Ok(GLTF_COMPONENT_UNSIGNED_BYTE),
         DataType::Int16 => Ok(GLTF_COMPONENT_SHORT),
         DataType::Uint16 => Ok(GLTF_COMPONENT_UNSIGNED_SHORT),
-        #[cfg(feature = "gltf-reader")]
         DataType::Uint32 => Ok(GLTF_COMPONENT_UNSIGNED_INT),
         DataType::Float32 => Ok(GLTF_COMPONENT_FLOAT),
         _ => Err(GltfError::Unsupported(format!(

@@ -10,9 +10,6 @@ keywords = ["draco", "gltf", "obj", "ply", "fbx"]
 categories = ["compression", "encoding", "graphics", "parser-implementations"]
 exclude = [
     "tests/cpp_decode_test.rs",
-    "tests/encoding_speed_test.rs",
-    "tests/glb_roundtrip_test.rs",
-    "tests/gltf_compress_assets_test.rs",
     "tests/ply_bunny_test.rs",
     "tests/roundtrip.rs",
     "tools/blender_roundtrip.py",
@@ -22,9 +19,6 @@ autotests = false
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)', 'cfg(feature, values("gltf-reader", "gltf-writer"))'] }
 
 [dependencies]
 draco-core = { version = "1.0.0", path = "../draco-core", default-features = false }

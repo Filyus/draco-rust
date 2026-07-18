@@ -118,23 +118,6 @@ pub trait SceneReader: Reader {
 /// [`SceneWriter::add_scenes`]. Actual file output is still performed through
 /// the base [`Writer`] trait.
 ///
-/// # Example
-///
-/// ```no_run
-/// # #[cfg(feature = "gltf-writer")]
-/// # fn main() -> Result<(), std::io::Error> {
-/// use draco_io::{FbxWriter, Scene, SceneWriter, Writer};
-///
-/// let scene = Scene::new(Some("MyScene".to_string()));
-///
-/// let mut writer = FbxWriter::new();
-/// SceneWriter::add_scene(&mut writer, &scene)?;
-/// writer.write("output.fbx")?;
-/// # Ok(())
-/// # }
-/// # #[cfg(not(feature = "gltf-writer"))]
-/// # fn main() {}
-/// ```
 pub trait SceneWriter: Writer {
     /// Add a scene graph to be written.
     fn add_scene(&mut self, scene: &Scene) -> io::Result<()>;

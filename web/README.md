@@ -1,242 +1,31 @@
-# Draco Web 3D Format Converter
+# Draco Web Converter
 
-A web-based 3D format converter using WebAssembly modules built from the Draco I/O library.
+The WebAssembly workspace exposes browser-facing helpers for OBJ, PLY, FBX,
+and glTF assets. Every module is independently loaded by the static demo in
+`www/`.
 
-## Features
+## glTF modules
 
-- **Multiple Format Support**: Convert between OBJ, PLY, glTF/GLB, and FBX formats
-- **Draco Compression**: Optional Draco mesh compression for glTF/GLB exports
-- **Modular WASM**: Each reader/writer is a separate WASM module for efficient loading
-- **Browser-Based**: No server required, all processing happens client-side
-- **Configurable**: Adjustable quantization bits for Draco compression
+- `gltf-inspect-wasm` exports `inspect_gltf(bytes)`. It parses a JSON glTF or
+  GLB container with `draco-gltf` and returns document-level counts plus a
+  `usesDraco` flag.
+- `gltf-canonicalize-wasm` exports `canonicalize_gltf(bytes)`. It validates a JSON
+  glTF document and returns its native serialization. Unchanged documents keep
+  their original JSON bytes.
 
-## Architecture
+Both functions use the same native lossless document model as the Rust API.
+They do not resolve companion files or turn scene documents into a flattened
+mesh representation.
 
-The project is organized with each reader and writer as its own WASM module:
+## Build and test
 
-```
-web/
-├── Cargo.toml              # Workspace configuration
-├── build.ps1               # Windows build script
-├── build.sh                # Unix build script
-├── README.md               # This file
-│
-├── obj-reader-wasm/        # OBJ format reader
-├── obj-writer-wasm/        # OBJ format writer
-├── ply-reader-wasm/        # PLY format reader
-├── ply-writer-wasm/        # PLY format writer
-├── gltf-reader-wasm/       # glTF/GLB format reader (with Draco support)
-├── gltf-writer-wasm/       # glTF/GLB format writer (with Draco compression)
-├── fbx-reader-wasm/        # FBX binary format reader
-├── fbx-writer-wasm/        # FBX binary format writer
-│
-└── www/                    # Web application
-    ├── index.html          # Main page
-    ├── style.css           # Styling
-    ├── app.js              # Application logic
-    └── pkg/                # Built WASM modules (generated)
+```sh
+cargo run --manifest-path web/build-tool/Cargo.toml --
+cargo test --manifest-path web/Cargo.toml --workspace
+npm install --prefix web
+npm run --prefix web test:node
 ```
 
-## Building
-
-### Prerequisites
-
-1. **Rust**: Install from https://rustup.rs/
-2. **wasm-pack**: Install with `cargo install wasm-pack`
-3. **wasm-opt**: Install Binaryen or make `wasm-opt` available on `PATH` for optimized release builds
-
-### Build Steps
-
-The PowerShell and shell scripts are thin wrappers around the same Rust build tool, so Windows, Linux, macOS, and CI use one build pipeline.
-
-#### Windows (PowerShell)
-
-```powershell
-cd web
-.\build.ps1
-```
-
-#### Unix/macOS
-
-```bash
-cd web
-bash ./build.sh
-```
-
-### Direct Build Tool
-
-You can also call the shared build tool directly:
-
-```bash
-cargo run --manifest-path build-tool/Cargo.toml --
-```
-
-Release builds run `wasm-pack --release --no-opt`, then run `wasm-opt` manually with the bulk-memory and related feature flags required by these modules. The generated files keep the canonical `wasm-bindgen` names: `<module>.js`, `<module>.d.ts`, `<module>_bg.wasm`, and `<module>_bg.wasm.d.ts`.
-
-## Running
-
-After building, serve the `www` directory with any static file server:
-
-```bash
-cd www
-python -m http.server 8080
-```
-
-Then open http://localhost:8080 in your browser.
-
-### Alternative Servers
-
-```bash
-# Node.js (install: npm install -g serve)
-serve www
-
-# PHP
-php -S localhost:8080 -t www
-
-# Ruby
-ruby -run -e httpd www -p 8080
-```
-
-## Usage
-
-1. **Load a File**: Drag and drop a 3D file onto the drop zone, or click to browse. For external-buffer `.gltf`, select the main file and its `.bin`/image companions together.
-2. **Review**: Check the mesh information displayed (vertex count, triangles, etc.)
-3. **Configure Export**: Select output format and options
-4. **Export**: Click the Export button to download the converted file
-
-### Supported Formats
-
-| Format | Read | Write | Notes |
-|--------|------|-------|-------|
-| OBJ | ✓ | ✓ | ASCII format, vertices, normals, UVs, faces |
-| PLY | ✓ | ✓ | ASCII format, vertices, normals, colors |
-| glTF | ✓ | ✓ | Reads embedded/external resources; writes embedded buffers |
-| GLB | ✓ | ✓ | Binary glTF container |
-| FBX | ✓ | ✓ | Binary FBX 7.x format |
-
-### Draco Compression
-
-When exporting to glTF/GLB, you can enable Draco compression:
-
-- **Position Quantization**: 1-31 bits (default: 14; `null` disables quantization)
-- **Normal Quantization**: 2-30 bits (default: 10; `null` disables quantization)
-- **TexCoord Quantization**: 1-31 bits (default: 12; `null` disables quantization)
-
-Higher values = better quality, larger file size.
-
-The defaults are lossy. Embedded output always embeds geometry buffers, but it does not rewrite external image URIs; keep companion images with the output document.
-
-## API Reference
-
-Each WASM module exposes the following functions:
-
-### Common Functions
-
-```javascript
-// Get module version
-const version = module.version();  // crate package version
-
-// Get module name
-const name = module.module_name();  // e.g., "OBJ Reader"
-
-// Get supported extensions
-const exts = module.supported_extensions();  // e.g., ["obj"]
-```
-
-### Reader Functions
-
-```javascript
-// Parse file content (string for text formats)
-const result = objReader.parse_obj(textContent);
-
-// Parse file content (bytes for binary formats)
-const result = fbxReader.parse_fbx(uint8Array);
-
-// glTF with external buffers/resources. Keys must exactly match resource URIs.
-const gltf = gltfReader.parse_gltf_with_resources(mainBytes, {
-    "model.bin": modelBinBytes,
-    "albedo.png": albedoBytes,
-});
-// Missing buffer or image companions return { success: false, error: ... }.
-
-// Result structure:
-{
-    success: boolean,
-    meshes: [{
-        name: string | null,
-        positions: number[],  // [x0, y0, z0, x1, y1, z1, ...]
-        indices: number[],    // [i0, i1, i2, ...]
-        normals: number[],    // [nx0, ny0, nz0, ...]
-        uvs: number[],        // [u0, v0, u1, v1, ...]
-    }],
-    error: string | null,
-    warnings: string[],
-}
-```
-
-### Writer Functions
-
-```javascript
-// Create file content
-const result = objWriter.create_obj(meshData, options);
-
-// Mesh data structure:
-{
-    name: "MeshName",
-    positions: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, ...],
-    indices: [0, 1, 2, ...],
-    normals: [0.0, 1.0, 0.0, ...],  // optional
-    uvs: [0.0, 0.0, 1.0, 0.0, ...], // optional
-}
-
-// Result structure:
-{
-    success: boolean,
-    data: string,             // For text formats such as OBJ and PLY
-    json_data: string,        // For embedded .gltf output
-    binary_data: number[],    // For binary formats such as GLB and FBX
-    error: string | null,
-    compression_report: {
-        compressed_primitives: [{ mesh: number, primitive: number }],
-        preserved_primitives: [{ mesh: number, primitive: number, reason: string }],
-    } | null,
-}
-```
-
-## Runtime smoke tests and size budget
-
-After building the WASM packages, run:
-
-```bash
-npm install
-npm run test:node
-npx playwright install chromium
-npm run test:browser
-```
-
-Release builds enforce a `gltf_reader_bg.wasm` budget of at most 110 KiB gzip after `wasm-opt`. `--no-optimize` intentionally skips this release budget check. The reader is backed by the serde-free `gltf-compact` module in `draco-io` (the `serde`/`serde_json` dependencies are excluded from the WASM binary); the budget accommodates the small overhead of sharing that front end across the crate boundary.
-
-The glTF reader applies bounded compact parsing to untrusted input: 16 MiB JSON,
-64 MiB per resource, 128 MiB of buffers, and 256 MiB of decoded geometry.
-
-## Development
-
-### Project Structure
-
-Each WASM module is a separate Rust crate that depends on:
-- `draco-core`: Core mesh encoding/decoding functionality
-- `draco-io`: shared strict GLB container and Draco interoperability helpers
-  (the glTF reader uses the serde-free `gltf-compact` feature)
-- `wasm-bindgen`: Rust/JavaScript interop
-- `serde`: Data serialization (not linked into the glTF reader, which uses `nanoserde`)
-
-### Adding a New Format
-
-1. Create a new module directory (e.g., `xyz-reader-wasm/`)
-2. Add to workspace members in `web/Cargo.toml`
-3. Implement the reader/writer with wasm-bindgen exports
-4. Update the web app to load and use the new module
-
-## License
-
-See the main project LICENSE file.
+Optimized release builds use `wasm-opt` when it is available. The generated
+packages are written to `web/www/pkg/`; serve `web/www/` with any static file
+server to use the demo.

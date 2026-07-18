@@ -3,7 +3,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use draco_gltf::{GltfCompressionOptions, Import, OutputFormat};
+use draco_gltf::{CompressionOptions, Import, MeshIndex, OutputFormat};
 
 fn decoded_draco_stats(import: &Import) -> Result<(usize, usize), Box<dyn std::error::Error>> {
     let mut primitives = 0usize;
@@ -50,18 +50,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "too many arguments").into());
     }
 
-    let import = draco_gltf::import(&input)?;
+    let mut import = draco_gltf::import(&input)?;
     if let Some(output) = output {
-        let options = GltfCompressionOptions {
-            output_format: OutputFormat::Glb,
-            ..GltfCompressionOptions::default()
-        };
-        let compressed = import.compress_with_options(&options)?;
-        let verified = draco_gltf::import_slice(&compressed.data, None)?;
-        let (primitives, faces) = decoded_draco_stats(&verified)?;
-        std::fs::write(output, &compressed.data)?;
-        println!("compression_report={:?}", compressed.report);
-        println!("decoded_draco_primitives={primitives} decoded_faces={faces}");
+        let report = import.compress_primitive(MeshIndex(0), 0, CompressionOptions::default())?;
+        let bytes = import.to_bytes(OutputFormat::GltfJson)?;
+        std::fs::write(output, bytes)?;
+        println!("compression_report={report:?}");
     } else {
         let (primitives, faces) = decoded_draco_stats(&import)?;
         println!("decoded_draco_primitives={primitives} decoded_faces={faces}");

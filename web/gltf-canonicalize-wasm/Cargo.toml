@@ -1,0 +1,22 @@
+[package]
+name = "gltf-canonicalize-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Native glTF document canonicalization for WebAssembly"
+repository = "https://github.com/Filyus/draco-rust"
+license = "Apache-2.0"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = { workspace = true }
+console_error_panic_hook = { workspace = true, optional = true }
+draco-gltf = { path = "../../crates/draco-gltf", default-features = false }
+
+[features]
+default = []
+console_error_panic_hook = ["dep:console_error_panic_hook"]

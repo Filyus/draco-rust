@@ -1,13 +1,8 @@
 //! Shared glTF/GLB container and resource handling.
 
 use std::fs::{self, File};
-#[cfg(feature = "gltf-writer")]
-use std::io::{self, Write};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-
-#[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
-use serde_json::Value;
 
 use crate::gltf_geometry::{GltfError, Result};
 
@@ -22,9 +17,6 @@ const GLB_CHUNK_BIN: u32 = 0x004e_4942;
 pub enum GltfContainerFormat {
     /// JSON glTF document.
     Gltf,
-    /// Binary GLB 2.0 document. Kept as the compatibility spelling for
-    /// [`Self::GlbV2`].
-    Glb,
     /// Binary GLB 2.0 document.
     GlbV2,
     /// Draft glTF 2.1 binary container (GLB version 3).
@@ -37,7 +29,6 @@ pub fn build_glb_from_json(
     bin: &[u8],
     format: GltfContainerFormat,
 ) -> Result<Vec<u8>> {
-    let format = format.canonical();
     if !matches!(
         format,
         GltfContainerFormat::GlbV2 | GltfContainerFormat::GlbV3
@@ -121,15 +112,7 @@ mod native_glb_tests {
 impl GltfContainerFormat {
     /// Whether this is either binary GLB container version.
     pub const fn is_glb(self) -> bool {
-        matches!(self, Self::Glb | Self::GlbV2 | Self::GlbV3)
-    }
-
-    /// Canonicalize the legacy `Glb` spelling to GLB v2.
-    pub const fn canonical(self) -> Self {
-        match self {
-            Self::Glb => Self::GlbV2,
-            other => other,
-        }
+        matches!(self, Self::GlbV2 | Self::GlbV3)
     }
 }
 
@@ -237,22 +220,6 @@ pub fn inspect_glb<R: Read + Seek>(input: &mut R) -> Result<GlbLayout> {
         length,
         chunks,
     })
-}
-
-/// Output selection shared by the native and WASM glTF APIs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum OutputFormat {
-    /// Preserve the input container kind.
-    #[default]
-    SameAsInput,
-    /// Emit JSON glTF with its buffer embedded as a data URI.
-    GltfEmbeddedBuffers,
-    /// Emit a binary GLB 2.0 container.
-    Glb,
-    /// Emit a binary GLB 2.0 container explicitly.
-    GlbV2,
-    /// Emit a draft glTF 2.1 GLB version 3 container.
-    GlbV3,
 }
 
 /// Optional resource quotas. `None` means unlimited.
@@ -826,83 +793,6 @@ fn copy_prefix(data: &[u8], length: usize, label: &str) -> Result<Vec<u8>> {
     Ok(output)
 }
 
-/// Serialize a document and one consolidated binary buffer.
-#[cfg(feature = "gltf-writer")]
-pub fn serialize_gltf_document(
-    document: &Value,
-    bin: &[u8],
-    input_format: GltfContainerFormat,
-    output_format: OutputFormat,
-) -> Result<Vec<u8>> {
-    let format = match output_format {
-        OutputFormat::SameAsInput => input_format.canonical(),
-        OutputFormat::GltfEmbeddedBuffers => GltfContainerFormat::Gltf,
-        OutputFormat::Glb | OutputFormat::GlbV2 => GltfContainerFormat::GlbV2,
-        OutputFormat::GlbV3 => GltfContainerFormat::GlbV3,
-    };
-    let mut document = document.clone();
-    normalize_single_buffer(&mut document, bin, format)?;
-    match format {
-        GltfContainerFormat::Gltf => serialize_json(&document),
-        GltfContainerFormat::Glb | GltfContainerFormat::GlbV2 => {
-            build_glb_container(&document, bin)
-        }
-        GltfContainerFormat::GlbV3 => build_glb_v3_container(&document, bin),
-    }
-}
-
-#[cfg(feature = "gltf-writer")]
-fn normalize_single_buffer(
-    document: &mut Value,
-    bin: &[u8],
-    format: GltfContainerFormat,
-) -> Result<()> {
-    let root = document
-        .as_object_mut()
-        .ok_or_else(|| GltfError::InvalidGltf("glTF root is not an object".into()))?;
-    if bin.is_empty() {
-        let has_views = root
-            .get("bufferViews")
-            .and_then(Value::as_array)
-            .is_some_and(|views| !views.is_empty());
-        if has_views {
-            return Err(GltfError::InvalidGltf(
-                "empty consolidated buffer cannot back bufferViews".into(),
-            ));
-        }
-        root.remove("buffers");
-        return Ok(());
-    }
-
-    let buffers = root
-        .entry("buffers")
-        .or_insert_with(|| Value::Array(vec![Value::Object(Default::default())]))
-        .as_array_mut()
-        .ok_or_else(|| GltfError::InvalidGltf("buffers is not an array".into()))?;
-    if buffers.len() != 1 {
-        return Err(GltfError::InvalidGltf(format!(
-            "consolidated serializer requires exactly one buffer, got {}",
-            buffers.len()
-        )));
-    }
-    let buffer = buffers[0]
-        .as_object_mut()
-        .ok_or_else(|| GltfError::InvalidGltf("buffer 0 is not an object".into()))?;
-    buffer.insert("byteLength".into(), Value::from(bin.len() as u64));
-    match format {
-        GltfContainerFormat::Gltf => {
-            buffer.insert(
-                "uri".into(),
-                Value::String(encode_data_uri("application/octet-stream", bin)?),
-            );
-        }
-        GltfContainerFormat::Glb | GltfContainerFormat::GlbV2 | GltfContainerFormat::GlbV3 => {
-            buffer.remove("uri");
-        }
-    }
-    Ok(())
-}
-
 /// Decode a `data:` URI with an optional decoded-byte quota.
 pub fn decode_data_uri(uri: &str, max_bytes: Option<usize>) -> Result<Vec<u8>> {
     let body = uri
@@ -923,158 +813,6 @@ pub fn decode_data_uri(uri: &str, max_bytes: Option<usize>) -> Result<Vec<u8>> {
         percent_decode_with_limit(payload, max_bytes, "data URI")?
     };
     Ok(decoded)
-}
-
-/// Encode bytes as a base64 `data:` URI.
-#[cfg(feature = "gltf-writer")]
-pub fn encode_data_uri(media_type: &str, data: &[u8]) -> Result<String> {
-    let encoded_len = data
-        .len()
-        .checked_add(2)
-        .and_then(|length| length.checked_div(3))
-        .and_then(|length| length.checked_mul(4))
-        .ok_or_else(|| GltfError::ResourceLimitExceeded("base64 size overflow".into()))?;
-    let prefix_len = "data:;base64,"
-        .len()
-        .checked_add(media_type.len())
-        .ok_or_else(|| GltfError::ResourceLimitExceeded("data URI size overflow".into()))?;
-    let capacity = prefix_len
-        .checked_add(encoded_len)
-        .ok_or_else(|| GltfError::ResourceLimitExceeded("data URI size overflow".into()))?;
-    let mut output = String::new();
-    output
-        .try_reserve_exact(capacity)
-        .map_err(|_| GltfError::ResourceLimitExceeded("data URI allocation failed".into()))?;
-    output.push_str("data:");
-    output.push_str(media_type);
-    output.push_str(";base64,");
-    encode_base64_into(data, &mut output);
-    Ok(output)
-}
-
-/// Build a strict GLB 2.0 container without rewriting the JSON document.
-///
-/// Most callers should use [`serialize_gltf_document`], which also normalizes
-/// the consolidated buffer declaration. This lower-level helper is useful for
-/// fixtures whose JSON intentionally references companion resources.
-#[cfg(any(
-    feature = "gltf-writer",
-    all(test, any(feature = "gltf-reader", feature = "gltf-writer"))
-))]
-pub fn build_glb_container(document: &Value, bin: &[u8]) -> Result<Vec<u8>> {
-    // Reject an impossible BIN chunk before attempting to copy it. The padded
-    // chunk length and the complete GLB both have to fit GLB's u32 fields.
-    let bin_padding = (4 - bin.len() % 4) % 4;
-    let padded_bin_len = bin
-        .len()
-        .checked_add(bin_padding)
-        .ok_or_else(|| GltfError::InvalidGlb("BIN chunk size overflow".into()))?;
-    u32::try_from(padded_bin_len)
-        .map_err(|_| GltfError::InvalidGlb("BIN chunk exceeds the 32-bit limit".into()))?;
-
-    let mut json = serialize_json(document)?;
-    pad_to_four(&mut json, b' ')?;
-    let mut bin_copy = Vec::new();
-    bin_copy
-        .try_reserve_exact(bin.len())
-        .map_err(|_| GltfError::ResourceLimitExceeded("BIN chunk allocation failed".into()))?;
-    bin_copy.extend_from_slice(bin);
-    let mut bin = bin_copy;
-    pad_to_four(&mut bin, 0)?;
-
-    let mut total = 12usize
-        .checked_add(8)
-        .and_then(|value| value.checked_add(json.len()))
-        .ok_or_else(|| GltfError::InvalidGlb("GLB size overflow".into()))?;
-    if !bin.is_empty() {
-        total = total
-            .checked_add(8)
-            .and_then(|value| value.checked_add(bin.len()))
-            .ok_or_else(|| GltfError::InvalidGlb("GLB size overflow".into()))?;
-    }
-    let total_u32 = u32::try_from(total)
-        .map_err(|_| GltfError::InvalidGlb("GLB exceeds the 32-bit length limit".into()))?;
-    let json_len = u32::try_from(json.len())
-        .map_err(|_| GltfError::InvalidGlb("JSON chunk exceeds the 32-bit limit".into()))?;
-    let bin_len = u32::try_from(bin.len())
-        .map_err(|_| GltfError::InvalidGlb("BIN chunk exceeds the 32-bit limit".into()))?;
-
-    let mut output = Vec::new();
-    output
-        .try_reserve_exact(total)
-        .map_err(|_| GltfError::ResourceLimitExceeded("GLB allocation failed".into()))?;
-    output.extend_from_slice(&GLB_MAGIC.to_le_bytes());
-    output.extend_from_slice(&GLB_VERSION_V2.to_le_bytes());
-    output.extend_from_slice(&total_u32.to_le_bytes());
-    output.extend_from_slice(&json_len.to_le_bytes());
-    output.extend_from_slice(&GLB_CHUNK_JSON.to_le_bytes());
-    output.extend_from_slice(&json);
-    if !bin.is_empty() {
-        output.extend_from_slice(&bin_len.to_le_bytes());
-        output.extend_from_slice(&GLB_CHUNK_BIN.to_le_bytes());
-        output.extend_from_slice(&bin);
-    }
-    Ok(output)
-}
-
-/// Build a draft GLB v3 container with 64-bit lengths and zero chunk encoding.
-#[cfg(feature = "gltf-writer")]
-pub fn build_glb_v3_container(document: &Value, bin: &[u8]) -> Result<Vec<u8>> {
-    let mut json = serialize_json(document)?;
-    pad_to_four(&mut json, b' ')?;
-    let mut bin_copy = Vec::new();
-    bin_copy
-        .try_reserve_exact(bin.len())
-        .map_err(|_| GltfError::ResourceLimitExceeded("GLB v3 BIN allocation failed".into()))?;
-    bin_copy.extend_from_slice(bin);
-    pad_to_four(&mut bin_copy, 0)?;
-
-    let total = 16usize
-        .checked_add(16)
-        .and_then(|value| value.checked_add(json.len()))
-        .and_then(|value| {
-            if bin_copy.is_empty() {
-                Some(value)
-            } else {
-                value.checked_add(16 + bin_copy.len())
-            }
-        })
-        .ok_or_else(|| GltfError::InvalidGlb("GLB v3 size overflow".into()))?;
-    let mut output = Vec::new();
-    output
-        .try_reserve_exact(total)
-        .map_err(|_| GltfError::ResourceLimitExceeded("GLB v3 allocation failed".into()))?;
-    output.extend_from_slice(&GLB_MAGIC.to_le_bytes());
-    output.extend_from_slice(&GLB_VERSION_V3.to_le_bytes());
-    output.extend_from_slice(&(total as u64).to_le_bytes());
-    output.extend_from_slice(&(json.len() as u64).to_le_bytes());
-    output.extend_from_slice(&GLB_CHUNK_JSON.to_le_bytes());
-    output.extend_from_slice(&0u32.to_le_bytes());
-    output.extend_from_slice(&json);
-    if !bin_copy.is_empty() {
-        output.extend_from_slice(&(bin_copy.len() as u64).to_le_bytes());
-        output.extend_from_slice(&GLB_CHUNK_BIN.to_le_bytes());
-        output.extend_from_slice(&0u32.to_le_bytes());
-        output.extend_from_slice(&bin_copy);
-    }
-    Ok(output)
-}
-
-#[cfg(any(
-    feature = "gltf-writer",
-    all(test, any(feature = "gltf-reader", feature = "gltf-writer"))
-))]
-fn pad_to_four(bytes: &mut Vec<u8>, padding: u8) -> Result<()> {
-    let padding_len = (4 - bytes.len() % 4) % 4;
-    let padded_len = bytes
-        .len()
-        .checked_add(padding_len)
-        .ok_or_else(|| GltfError::ResourceLimitExceeded("padding size overflow".into()))?;
-    bytes
-        .try_reserve(padding_len)
-        .map_err(|_| GltfError::ResourceLimitExceeded("padding allocation failed".into()))?;
-    bytes.resize(padded_len, padding);
-    Ok(())
 }
 
 fn read_u32(data: &[u8], offset: usize) -> Result<u32> {
@@ -1106,50 +844,6 @@ fn read_u64_stream<R: Read>(input: &mut R) -> Result<u64> {
     let mut bytes = [0; 8];
     input.read_exact(&mut bytes)?;
     Ok(u64::from_le_bytes(bytes))
-}
-
-#[cfg(feature = "gltf-writer")]
-struct FallibleJsonBuffer {
-    bytes: Vec<u8>,
-    allocation_failed: bool,
-}
-
-#[cfg(feature = "gltf-writer")]
-impl Write for FallibleJsonBuffer {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.bytes.try_reserve(bytes.len()).is_err() {
-            self.allocation_failed = true;
-            return Err(io::Error::other("JSON allocation failed"));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-#[cfg(feature = "gltf-writer")]
-fn serialize_json(document: &Value) -> Result<Vec<u8>> {
-    let mut output = FallibleJsonBuffer {
-        bytes: Vec::new(),
-        allocation_failed: false,
-    };
-    if let Err(error) = serde_json::to_writer(&mut output, document) {
-        if output.allocation_failed {
-            return Err(GltfError::ResourceLimitExceeded(
-                "JSON allocation failed".into(),
-            ));
-        }
-        return Err(GltfError::Json(error));
-    }
-    Ok(output.bytes)
-}
-
-#[cfg(all(test, feature = "gltf-reader", not(feature = "gltf-writer")))]
-fn serialize_json(document: &Value) -> Result<Vec<u8>> {
-    Ok(serde_json::to_vec(document)?)
 }
 
 fn check_limit(length: usize, limit: Option<usize>, resource: &str) -> Result<()> {
@@ -1231,29 +925,6 @@ fn base64_value(byte: u8) -> Result<u8> {
         b'+' => Ok(62),
         b'/' => Ok(63),
         _ => Err(GltfError::InvalidGltf("invalid base64 character".into())),
-    }
-}
-
-#[cfg(feature = "gltf-writer")]
-fn encode_base64_into(data: &[u8], output: &mut String) {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    for chunk in data.chunks(3) {
-        let a = chunk[0] as u32;
-        let b = chunk.get(1).copied().unwrap_or(0) as u32;
-        let c = chunk.get(2).copied().unwrap_or(0) as u32;
-        let value = (a << 16) | (b << 8) | c;
-        output.push(TABLE[((value >> 18) & 63) as usize] as char);
-        output.push(TABLE[((value >> 12) & 63) as usize] as char);
-        output.push(if chunk.len() > 1 {
-            TABLE[((value >> 6) & 63) as usize] as char
-        } else {
-            '='
-        });
-        output.push(if chunk.len() > 2 {
-            TABLE[(value & 63) as usize] as char
-        } else {
-            '='
-        });
     }
 }
 
@@ -1339,34 +1010,6 @@ mod tests {
         output
     }
 
-    #[cfg(feature = "gltf-writer")]
-    #[test]
-    fn glb_v3_roundtrips_and_rejects_nonzero_encoding() {
-        let document = serde_json::json!({ "asset": { "version": "2.1" } });
-        let bytes = build_glb_v3_container(&document, &[1, 2, 3]).unwrap();
-        let parsed = parse_gltf_container(&bytes).unwrap();
-        assert_eq!(parsed.format, GltfContainerFormat::GlbV3);
-        assert_eq!(parsed.bin, Some(&[1, 2, 3, 0][..]));
-
-        let mut malformed = bytes;
-        // v3 JSON chunk encoding is at byte 28: 16-byte header + length + type.
-        malformed[28..32].copy_from_slice(&1u32.to_le_bytes());
-        assert!(parse_gltf_container(&malformed).is_err());
-    }
-
-    #[cfg(feature = "gltf-writer")]
-    #[test]
-    fn seekable_v3_inspection_keeps_u64_chunk_descriptors() {
-        let document = serde_json::json!({ "asset": { "version": "2.1" } });
-        let bytes = build_glb_v3_container(&document, &[1, 2, 3]).unwrap();
-        let mut cursor = std::io::Cursor::new(bytes.clone());
-        let layout = inspect_glb(&mut cursor).unwrap();
-        assert_eq!(layout.format, GltfContainerFormat::GlbV3);
-        assert_eq!(layout.length, bytes.len() as u64);
-        assert_eq!(layout.chunks.len(), 2);
-        assert_eq!(layout.chunks[1].length, 4);
-    }
-
     #[test]
     fn strict_data_uri_rejects_malformed_input() {
         assert_eq!(decode_data_uri("data:,a%20b", None).unwrap(), b"a b");
@@ -1440,82 +1083,5 @@ mod tests {
             },
         )
         .is_err());
-    }
-
-    #[test]
-    #[cfg(any(feature = "gltf-reader", feature = "gltf-writer"))]
-    fn glb_builder_and_parser_are_strict() {
-        let document = serde_json::json!({
-            "asset": {"version": "2.0"},
-            "buffers": [{"byteLength": 3}]
-        });
-        let bytes = build_glb_container(&document, &[1, 2, 3]).unwrap();
-        let parsed = parse_gltf_container(&bytes).unwrap();
-        assert_eq!(parsed.format, GltfContainerFormat::GlbV2);
-        assert_eq!(&parsed.bin.unwrap()[..3], &[1, 2, 3]);
-        let parsed_json: Value = serde_json::from_slice(parsed.json).unwrap();
-        assert_eq!(parsed_json["buffers"][0]["byteLength"], 3);
-        assert!(parsed_json["buffers"][0].get("uri").is_none());
-
-        let mut trailing = bytes;
-        trailing.push(0);
-        assert!(parse_gltf_container(&trailing).is_err());
-
-        let json = b"{\"asset\":{\"version\":\"2.0\"}} ";
-        let bin = [0u8; 4];
-        let bin_first = raw_glb(&[(GLB_CHUNK_BIN, &bin), (GLB_CHUNK_JSON, json)]);
-        assert!(parse_gltf_container(&bin_first).is_err());
-        let duplicate_bin = raw_glb(&[
-            (GLB_CHUNK_JSON, json),
-            (GLB_CHUNK_BIN, &bin),
-            (GLB_CHUNK_BIN, &bin),
-        ]);
-        assert!(parse_gltf_container(&duplicate_bin).is_err());
-        let unaligned = raw_glb(&[(GLB_CHUNK_JSON, b"{}")]);
-        assert!(parse_gltf_container(&unaligned).is_err());
-        let trailing_json_whitespace = raw_glb(&[(GLB_CHUNK_JSON, b"{}\t\t")]);
-        let parsed = parse_gltf_container(&trailing_json_whitespace).unwrap();
-        let parsed_json: Value = serde_json::from_slice(parsed.json).unwrap();
-        assert_eq!(parsed_json, serde_json::json!({}));
-
-        let invalid_bin_padding = [1u8, 0xff, 0, 0];
-        assert!(resolve_gltf_buffers(
-            &[GltfBufferReference {
-                uri: None,
-                byte_length: 1,
-            }],
-            GltfContainerFormat::Glb,
-            Some(&invalid_bin_padding),
-            None,
-            &ResourceLimits::default(),
-        )
-        .is_err());
-
-        let mut wrong_length = build_glb_container(&document, &[]).unwrap();
-        let declared = (wrong_length.len() as u32 - 1).to_le_bytes();
-        wrong_length[8..12].copy_from_slice(&declared);
-        assert!(parse_gltf_container(&wrong_length).is_err());
-    }
-
-    #[test]
-    #[cfg(feature = "gltf-writer")]
-    fn embedded_serializer_sets_uri_and_exact_length() {
-        let document = serde_json::json!({
-            "asset": {"version": "2.0"},
-            "buffers": [{"byteLength": 1, "uri": "old.bin"}]
-        });
-        let bytes = serialize_gltf_document(
-            &document,
-            &[1, 2, 3],
-            GltfContainerFormat::Glb,
-            OutputFormat::GltfEmbeddedBuffers,
-        )
-        .unwrap();
-        let output: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(output["buffers"][0]["byteLength"], 3);
-        assert_eq!(
-            output["buffers"][0]["uri"],
-            "data:application/octet-stream;base64,AQID"
-        );
     }
 }
