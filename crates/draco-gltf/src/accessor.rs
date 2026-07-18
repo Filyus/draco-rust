@@ -6,6 +6,16 @@ pub struct NativeAccessorSource<'a> {
     document: &'a Document,
     resources: &'a ResourceStore,
 }
+
+/// Tightly packed accessor payload for compact consumers.
+#[derive(Clone, Debug)]
+pub struct AccessorData {
+    pub count: usize,
+    pub components: u8,
+    pub data_type: DataType,
+    pub normalized: bool,
+    pub bytes: Vec<u8>,
+}
 impl<'a> NativeAccessorSource<'a> {
     pub fn new(document: &'a Document, resources: &'a ResourceStore) -> Self {
         Self {
@@ -114,6 +124,17 @@ impl<'a> NativeAccessorSource<'a> {
                 .unwrap_or(false),
             bytes,
         ))
+    }
+
+    pub fn read_accessor(&self, index: usize) -> Result<AccessorData> {
+        let (count, components, data_type, normalized, bytes) = self.read(index)?;
+        Ok(AccessorData {
+            count,
+            components,
+            data_type,
+            normalized,
+            bytes,
+        })
     }
 }
 impl AccessorSource for NativeAccessorSource<'_> {
