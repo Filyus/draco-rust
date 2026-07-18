@@ -54,6 +54,11 @@ pub use document::{
     Document, FileIndex, ImageIndex, MaterialIndex, MeshIndex, NodeIndex, PrimitiveRef,
     SamplerIndex, SceneIndex, ShapeIndex, SkinIndex, TextureIndex, ValidationProfile,
 };
+pub mod extensions;
+pub use extensions::{
+    DracoExtension, ExtensionHandler, ExtensionRegistry, ExtensionValidationContext, ResourceStore,
+    KHR_DRACO_MESH_COMPRESSION,
+};
 
 /// Re-export so callers can use the scene model without depending on `gltf`
 /// directly.
