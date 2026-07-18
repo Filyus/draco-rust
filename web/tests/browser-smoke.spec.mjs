@@ -120,6 +120,16 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   await expect(page.locator('#viewer-section')).toBeVisible();
   await expect(page.locator('#viewer-animation')).toBeVisible();
   await expect(page.locator('#anim-clip')).toHaveValue('0');
+  const smoothNormals = page.locator('#viewer-smooth-normals');
+  await expect(smoothNormals).toHaveAttribute('aria-pressed', 'true');
+  await smoothNormals.click();
+  await expect(smoothNormals).toHaveAttribute('aria-pressed', 'false');
+  await smoothNormals.click();
+  await expect(smoothNormals).toHaveAttribute('aria-pressed', 'true');
+  const webglError = await page.evaluate(
+    () => document.getElementById('viewer-canvas')?.getContext('webgl2')?.getError(),
+  );
+  expect(webglError).toBe(0);
 
   const dracoToggle = page.locator('#use-draco');
   if (await dracoToggle.isEnabled()) {

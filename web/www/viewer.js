@@ -31,6 +31,7 @@ layout(location=11) in vec3 aMorphNormal0;
 layout(location=12) in vec3 aMorphNormal1;
 layout(location=13) in vec3 aMorphNormal2;
 layout(location=14) in vec3 aMorphNormal3;
+layout(location=15) in vec3 aSmoothNormal;
 
 uniform mat4 uProjection;
 uniform mat4 uView;
@@ -41,6 +42,7 @@ uniform int uJointCount;
 uniform mat4 uJointMatrix[${MAX_JOINTS}];
 uniform int uMorphTargetCount;
 uniform float uMorphWeights[4];
+uniform int uUseSmoothNormals;
 
 out vec3 vNormal;
 out vec2 vTexCoord;
@@ -54,7 +56,7 @@ void main() {
     if (uMorphTargetCount > 1) morphedPosition += aMorphPosition1 * uMorphWeights[1];
     if (uMorphTargetCount > 2) morphedPosition += aMorphPosition2 * uMorphWeights[2];
     if (uMorphTargetCount > 3) morphedPosition += aMorphPosition3 * uMorphWeights[3];
-    vec3 morphedNormal = aNormal;
+    vec3 morphedNormal = uUseSmoothNormals == 1 ? aSmoothNormal : aNormal;
     if (uMorphTargetCount > 0) morphedNormal += aMorphNormal0 * uMorphWeights[0];
     if (uMorphTargetCount > 1) morphedNormal += aMorphNormal1 * uMorphWeights[1];
     if (uMorphTargetCount > 2) morphedNormal += aMorphNormal2 * uMorphWeights[2];
@@ -335,6 +337,116 @@ function byteView(data) {
     throw new Error('attribute payload is not binary data');
 }
 
+function buildSmoothNormalAttribute(primitive) {
+    const positions = primitive.attributes.POSITION;
+    const normals = primitive.attributes.NORMAL;
+    if (primitive.mode !== 4 || !positions
+        || positions.componentType !== 5126 || positions.components !== 3
+        || (normals && (normals.componentType !== 5126 || normals.components !== 3
+            || positions.count !== normals.count))
+        || positions.count === 0) {
+        return null;
+    }
+
+    const count = positions.count;
+    const positionBytes = byteView(positions.bytes);
+    const normalBytes = normals ? byteView(normals.bytes) : null;
+    if (positionBytes.byteLength !== count * 12
+        || (normalBytes && normalBytes.byteLength !== count * 12)) return null;
+    const positionView = new DataView(positionBytes.buffer, positionBytes.byteOffset, positionBytes.byteLength);
+    const normalView = normalBytes
+        ? new DataView(normalBytes.buffer, normalBytes.byteOffset, normalBytes.byteLength)
+        : null;
+    const position = (index, axis) => positionView.getFloat32((index * 3 + axis) * 4, true);
+    const sourceNormal = (index, axis) => normalView
+        ? normalView.getFloat32((index * 3 + axis) * 4, true)
+        : (axis === 1 ? 1 : 0);
+
+    // A preview equivalent of Blender's Shade Smooth: all exactly coincident
+    // vertices share one angle-weighted normal, including authored hard splits.
+    const groupIds = new Uint32Array(count);
+    const groups = new Map();
+    const sums = [];
+    for (let i = 0; i < count; i++) {
+        const key = `${position(i, 0)},${position(i, 1)},${position(i, 2)}`;
+        let group = groups.get(key);
+        if (group === undefined) {
+            group = sums.length / 3;
+            groups.set(key, group);
+            sums.push(0, 0, 0);
+        }
+        groupIds[i] = group;
+    }
+
+    const indices = primitive.indices;
+    let indexCount = count;
+    let indexAt = (index) => index;
+    if (indices) {
+        const bytes = byteView(indices.bytes);
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        indexCount = indices.count;
+        if (indices.componentType === 5121 && bytes.byteLength === indexCount) {
+            indexAt = (index) => view.getUint8(index);
+        } else if (indices.componentType === 5123 && bytes.byteLength === indexCount * 2) {
+            indexAt = (index) => view.getUint16(index * 2, true);
+        } else if (indices.componentType === 5125 && bytes.byteLength === indexCount * 4) {
+            indexAt = (index) => view.getUint32(index * 4, true);
+        } else {
+            return null;
+        }
+    }
+    if (indexCount % 3 !== 0) return null;
+
+    const cornerAngle = (ax, ay, az, bx, by, bz) => {
+        const divisor = Math.hypot(ax, ay, az) * Math.hypot(bx, by, bz);
+        if (divisor <= 1e-12) return 0;
+        return Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by + az * bz) / divisor)));
+    };
+    for (let offset = 0; offset < indexCount; offset += 3) {
+        const vertices = [indexAt(offset), indexAt(offset + 1), indexAt(offset + 2)];
+        if (vertices.some((index) => index >= count)) return null;
+        const points = vertices.map((index) => [position(index, 0), position(index, 1), position(index, 2)]);
+        const edge1 = points[1].map((value, axis) => value - points[0][axis]);
+        const edge2 = points[2].map((value, axis) => value - points[0][axis]);
+        let face = [
+            edge1[1] * edge2[2] - edge1[2] * edge2[1],
+            edge1[2] * edge2[0] - edge1[0] * edge2[2],
+            edge1[0] * edge2[1] - edge1[1] * edge2[0],
+        ];
+        const faceLength = Math.hypot(...face);
+        if (faceLength <= 1e-12) continue;
+        face = face.map((value) => value / faceLength);
+        for (let corner = 0; corner < 3; corner++) {
+            const point = points[corner];
+            const a = points[(corner + 1) % 3].map((value, axis) => value - point[axis]);
+            const b = points[(corner + 2) % 3].map((value, axis) => value - point[axis]);
+            const weight = cornerAngle(...a, ...b);
+            const base = groupIds[vertices[corner]] * 3;
+            sums[base] += face[0] * weight;
+            sums[base + 1] += face[1] * weight;
+            sums[base + 2] += face[2] * weight;
+        }
+    }
+
+    const output = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+        const base = groupIds[i] * 3;
+        const length = Math.hypot(sums[base], sums[base + 1], sums[base + 2]);
+        for (let axis = 0; axis < 3; axis++) {
+            output[i * 3 + axis] = length > 1e-12 ? sums[base + axis] / length : sourceNormal(i, axis);
+        }
+        const dot = normalView ? output[i * 3] * sourceNormal(i, 0)
+            + output[i * 3 + 1] * sourceNormal(i, 1)
+            + output[i * 3 + 2] * sourceNormal(i, 2) : 1;
+        if (dot < 0) {
+            output[i * 3] *= -1;
+            output[i * 3 + 1] *= -1;
+            output[i * 3 + 2] *= -1;
+        }
+    }
+    return { bytes: output, componentType: 5126, components: 3, normalized: false, count };
+}
+
 /**
  * Build GPU buffers for one Mesh primitive.
  * Returns an object describing attribute locations, VAO, index/element counts.
@@ -381,12 +493,19 @@ function uploadPrimitive(gl, primitive, locationMap) {
         weights: locationMap.weights,
         morphPositions: locationMap.morphPositions,
         morphNormals: locationMap.morphNormals,
+        smoothNormal: locationMap.smoothNormal,
     };
 
     const info = {
         vao,
         buffers,
         hasNormals: !!bindAttribute('NORMAL', layout.normal),
+        hasSmoothNormals: !!bindAccessor(
+            buildSmoothNormalAttribute(primitive),
+            'SMOOTH_NORMAL',
+            layout.smoothNormal,
+            3,
+        ),
         hasTexCoords0: !!bindAttribute('TEXCOORD_0', layout.texCoord),
         hasTexCoords1: !!bindAttribute('TEXCOORD_1', layout.texCoord1),
         hasColors: !!bindAttribute('COLOR_0', layout.color),
@@ -467,6 +586,9 @@ export class Viewer {
         this.showGrid = true;
         // Diagnostic mode: display base color data without preview lighting.
         this.baseColorOnly = false;
+        // Preview-friendly angle-weighted normals can be disabled to inspect
+        // the exact normals authored in the source asset.
+        this.smoothNormals = true;
         this.autoRotate = false;
 
         // Matrices
@@ -516,6 +638,7 @@ export class Viewer {
             uJointMatrix: gl.getUniformLocation(p, `uJointMatrix[0]`),
             uMorphTargetCount: gl.getUniformLocation(p, 'uMorphTargetCount'),
             uMorphWeights: gl.getUniformLocation(p, 'uMorphWeights[0]'),
+            uUseSmoothNormals: gl.getUniformLocation(p, 'uUseSmoothNormals'),
             uHasTexture: gl.getUniformLocation(p, 'uHasTexture'),
             uHasNormals: gl.getUniformLocation(p, 'uHasNormals'),
             uHasVertexColors: gl.getUniformLocation(p, 'uHasVertexColors'),
@@ -560,6 +683,7 @@ export class Viewer {
             weights: 5,
             morphPositions: [7, 8, 9, 10],
             morphNormals: [11, 12, 13, 14],
+            smoothNormal: 15,
         };
         this.lineUniforms = {
             uProjectionView: gl.getUniformLocation(this.lineProgram, 'uProjectionView'),
@@ -1056,8 +1180,14 @@ export class Viewer {
                 }
                 gl.uniform1i(this.uniforms.uMorphTargetCount, uploaded.morphTargetCount);
                 gl.uniform1fv(this.uniforms.uMorphWeights, morphWeights);
+                const useSmoothNormals = this.smoothNormals
+                    && uploaded.hasSmoothNormals && uploaded.morphTargetCount === 0;
+                gl.uniform1i(
+                    this.uniforms.uUseSmoothNormals,
+                    useSmoothNormals ? 1 : 0,
+                );
                 const material = this.scene.materials[materialIndex];
-                this._applyMaterial(material, uploaded);
+                this._applyMaterial(material, uploaded, useSmoothNormals);
                 gl.bindVertexArray(uploaded.vao);
 
                 if (material?.doubleSided) gl.disable(gl.CULL_FACE);
@@ -1100,7 +1230,7 @@ export class Viewer {
         }
     }
 
-    _applyMaterial(material, uploaded) {
+    _applyMaterial(material, uploaded, useSmoothNormals) {
         const gl = this.gl;
         const texCoord = material?.baseColorTexCoord ?? 0;
         const hasTexCoords = texCoord === 0 ? uploaded.hasTexCoords0
@@ -1108,7 +1238,7 @@ export class Viewer {
         const baseTexture = this.glResources.textures[material?.baseColorTexture];
         const hasTexture = !!baseTexture && hasTexCoords;
         gl.uniform1i(this.uniforms.uHasTexture, hasTexture ? 1 : 0);
-        gl.uniform1i(this.uniforms.uHasNormals, uploaded.hasNormals ? 1 : 0);
+        gl.uniform1i(this.uniforms.uHasNormals, uploaded.hasNormals || useSmoothNormals ? 1 : 0);
         gl.uniform1i(this.uniforms.uHasVertexColors, uploaded.hasColors ? 1 : 0);
         gl.uniform1i(this.uniforms.uUnlit, material?.unlit ? 1 : 0);
         gl.uniform1i(this.uniforms.uBaseColorOnly, this.baseColorOnly ? 1 : 0);

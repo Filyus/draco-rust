@@ -65,6 +65,7 @@ const viewerResetBtn = document.getElementById('viewer-reset');
 const viewerAutoRotateBtn = document.getElementById('viewer-autorotate');
 const viewerWireframeBtn = document.getElementById('viewer-wireframe');
 const viewerBaseColorBtn = document.getElementById('viewer-base-color');
+const viewerSmoothNormalsBtn = document.getElementById('viewer-smooth-normals');
 const viewerGridBtn = document.getElementById('viewer-grid');
 const viewerAnimation = document.getElementById('viewer-animation');
 const animPlayBtn = document.getElementById('anim-play');
@@ -232,6 +233,12 @@ function setupEventListeners() {
         viewer.baseColorOnly = !viewer.baseColorOnly;
         viewerBaseColorBtn.classList.toggle('active', viewer.baseColorOnly);
         viewerBaseColorBtn.setAttribute('aria-pressed', String(viewer.baseColorOnly));
+    });
+    viewerSmoothNormalsBtn.addEventListener('click', () => {
+        if (!viewer) return;
+        viewer.smoothNormals = !viewer.smoothNormals;
+        viewerSmoothNormalsBtn.classList.toggle('active', viewer.smoothNormals);
+        viewerSmoothNormalsBtn.setAttribute('aria-pressed', String(viewer.smoothNormals));
     });
     viewerGridBtn.addEventListener('click', () => {
         if (!viewer) return;

@@ -109,6 +109,7 @@ precision highp float;
 in vec2 vUv;
 uniform int uFace;
 uniform float uRoughness;
+uniform float uEnvironmentResolution;
 uniform samplerCube uEnvironment;
 out vec4 outColor;
 ${CUBE_DIRECTION}
@@ -124,6 +125,14 @@ vec3 importanceSampleGgx(vec2 xi, vec3 normal, float roughness) {
     return normalize(tangentBasis(normal) * halfVector);
 }
 
+float distributionGgx(vec3 normal, vec3 halfVector, float roughness) {
+    float alpha = roughness * roughness;
+    float alpha2 = alpha * alpha;
+    float nDotH = max(dot(normal, halfVector), 0.0);
+    float denominator = nDotH * nDotH * (alpha2 - 1.0) + 1.0;
+    return alpha2 / max(PI * denominator * denominator, 0.000001);
+}
+
 void main() {
     vec3 normal = cubeDirection(uFace, vUv);
     if (uRoughness < 0.001) {
@@ -133,13 +142,21 @@ void main() {
     vec3 view = normal;
     vec3 sum = vec3(0.0);
     float weight = 0.0;
-    const uint SAMPLE_COUNT = 64u;
+    const uint SAMPLE_COUNT = 256u;
     for (uint i = 0u; i < SAMPLE_COUNT; ++i) {
         vec3 halfVector = importanceSampleGgx(hammersley(i, SAMPLE_COUNT), normal, uRoughness);
         vec3 light = normalize(2.0 * dot(view, halfVector) * halfVector - view);
         float nDotL = max(dot(normal, light), 0.0);
         if (nDotL > 0.0) {
-            sum += textureLod(uEnvironment, light, 0.0).rgb * nDotL;
+            float nDotH = max(dot(normal, halfVector), 0.0);
+            float hDotV = max(dot(halfVector, view), 0.0);
+            float pdf = distributionGgx(normal, halfVector, uRoughness)
+                * nDotH / max(4.0 * hDotV, 0.0001);
+            float texelSolidAngle = 4.0 * PI
+                / (6.0 * uEnvironmentResolution * uEnvironmentResolution);
+            float sampleSolidAngle = 1.0 / (float(SAMPLE_COUNT) * pdf + 0.0001);
+            float sourceLod = max(0.0, 0.5 * log2(sampleSolidAngle / texelSolidAngle));
+            sum += textureLod(uEnvironment, light, sourceLod).rgb * nDotL;
             weight += nDotL;
         }
     }
@@ -297,9 +314,13 @@ export function createEnvironmentIbl(gl, onLog = () => {}) {
 
         const environmentSize = 256;
         const prefilteredSize = 128;
-        const environment = cubeTexture(gl, environmentSize, 1, format);
+        const environmentLevels = Math.floor(Math.log2(environmentSize)) + 1;
+        const environment = cubeTexture(gl, environmentSize, environmentLevels, format);
         const irradiance = cubeTexture(gl, 32, 1, format);
-        const prefilteredLevels = 8;
+        // Keep the roughest cubemap at 4x4 per face. A 1x1 face stores six
+        // unrelated directional averages and exposes cube-face transitions as
+        // star-shaped bands on smooth, high-roughness surfaces.
+        const prefilteredLevels = 6;
         const prefiltered = cubeTexture(gl, prefilteredSize, prefilteredLevels, format);
         resources.textures.push(environment, irradiance, prefiltered);
 
@@ -316,6 +337,10 @@ export function createEnvironmentIbl(gl, onLog = () => {}) {
             if (face !== undefined) gl.uniform1i(gl.getUniformLocation(environmentProgram, 'uFace'), face);
         });
 
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindTexture(gl.TEXTURE_CUBE_MAP, environment);
+        gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_CUBE_MAP, environment);
         gl.useProgram(irradianceProgram);
@@ -327,6 +352,10 @@ export function createEnvironmentIbl(gl, onLog = () => {}) {
 
         gl.useProgram(prefilterProgram);
         gl.uniform1i(gl.getUniformLocation(prefilterProgram, 'uEnvironment'), 0);
+        gl.uniform1f(
+            gl.getUniformLocation(prefilterProgram, 'uEnvironmentResolution'),
+            environmentSize,
+        );
         renderCube(gl, framebuffer, vao, prefiltered, prefilteredSize, prefilteredLevels, (level, levels, face) => {
             gl.useProgram(prefilterProgram);
             gl.uniform1f(gl.getUniformLocation(prefilterProgram, 'uRoughness'), level / (levels - 1));
