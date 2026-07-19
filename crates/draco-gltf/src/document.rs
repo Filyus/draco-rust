@@ -665,6 +665,7 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
             }
         }
     }
+    validate_node_hierarchy(root)?;
     check(root, "scene", "scenes")?;
     for skin in root.get("skins").and_then(Value::as_array).unwrap_or(&[]) {
         check(skin, "inverseBindMatrices", "accessors")?;
@@ -767,6 +768,95 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
         validate_shapes(root)?;
         validate_uids(root)?;
     }
+    Ok(())
+}
+
+fn validate_node_hierarchy(root: &Value) -> Result<()> {
+    let nodes = root.get("nodes").and_then(Value::as_array).unwrap_or(&[]);
+    let mut parents = vec![None; nodes.len()];
+    let mut edges = vec![Vec::new(); nodes.len()];
+
+    for (parent, node) in nodes.iter().enumerate() {
+        for child in node
+            .get("children")
+            .and_then(Value::as_array)
+            .unwrap_or(&[])
+        {
+            let child = child
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|child| *child < nodes.len())
+                .ok_or_else(|| {
+                    Error::Validation(vec!["node child references a missing node".into()])
+                })?;
+            if let Some(existing) = parents[child] {
+                let message = if existing == parent {
+                    format!("nodes[{parent}] lists child nodes[{child}] more than once")
+                } else {
+                    format!(
+                        "nodes[{child}] has multiple parents: nodes[{existing}] and nodes[{parent}]"
+                    )
+                };
+                return Err(Error::Validation(vec![message]));
+            }
+            parents[child] = Some(parent);
+            edges[parent].push(child);
+        }
+    }
+
+    // Iterative depth-first traversal avoids consuming the call stack on large
+    // scenes while still detecting back edges in disconnected node trees.
+    let mut state = vec![0u8; nodes.len()];
+    for start in 0..nodes.len() {
+        if state[start] != 0 {
+            continue;
+        }
+        state[start] = 1;
+        let mut stack = vec![(start, 0usize)];
+        while let Some((node, next_child)) = stack.last_mut() {
+            if *next_child == edges[*node].len() {
+                state[*node] = 2;
+                stack.pop();
+                continue;
+            }
+            let child = edges[*node][*next_child];
+            *next_child += 1;
+            match state[child] {
+                0 => {
+                    state[child] = 1;
+                    stack.push((child, 0));
+                }
+                1 => {
+                    return Err(Error::Validation(vec![format!(
+                        "node hierarchy contains a cycle through nodes[{child}]"
+                    )]))
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for (scene_index, scene) in root
+        .get("scenes")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+    {
+        for root_node in scene.get("nodes").and_then(Value::as_array).unwrap_or(&[]) {
+            let root_node = root_node
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|node| *node < nodes.len())
+                .ok_or_else(|| Error::Validation(vec!["scene references a missing node".into()]))?;
+            if let Some(parent) = parents[root_node] {
+                return Err(Error::Validation(vec![format!(
+                    "scenes[{scene_index}] uses nodes[{root_node}] as a root, but it is a child of nodes[{parent}]"
+                )]));
+            }
+        }
+    }
+
     Ok(())
 }
 

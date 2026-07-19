@@ -284,6 +284,25 @@ fn validation_covers_scene_skin_and_animation_links() {
 }
 
 #[test]
+fn validation_requires_node_hierarchy_to_be_disjoint_trees() {
+    for json in [
+        br#"{"asset":{"version":"2.0"},"nodes":[{"children":[2]},{"children":[2]},{}]}"#.as_slice(),
+        br#"{"asset":{"version":"2.0"},"nodes":[{"children":[1]},{"children":[0]}]}"#.as_slice(),
+        br#"{"asset":{"version":"2.0"},"nodes":[{"children":[1]},{}],"scenes":[{"nodes":[1]}]}"#
+            .as_slice(),
+    ] {
+        let document = Document::from_json_bytes(json).unwrap();
+        assert!(document.validate(ValidationProfile::Gltf20).is_err());
+    }
+
+    let valid = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.0"},"nodes":[{"children":[1,2]},{"mesh":0},{"mesh":0}],"meshes":[{"primitives":[]}],"scenes":[{"nodes":[0]}]}"#,
+    )
+    .unwrap();
+    valid.validate(ValidationProfile::Gltf20).unwrap();
+}
+
+#[test]
 fn explicit_asset_loading_tracks_provenance_and_rejects_cycles() {
     let root = parse(
         br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","mimeType":"model/gltf+json"}]}"#,

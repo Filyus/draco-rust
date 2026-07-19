@@ -337,7 +337,7 @@ function byteView(data) {
     throw new Error('attribute payload is not binary data');
 }
 
-function buildSmoothNormalAttribute(primitive) {
+export function buildSmoothNormalAttribute(primitive) {
     const positions = primitive.attributes.POSITION;
     const normals = primitive.attributes.NORMAL;
     if (primitive.mode !== 4 || !positions
@@ -362,18 +362,19 @@ function buildSmoothNormalAttribute(primitive) {
         ? normalView.getFloat32((index * 3 + axis) * 4, true)
         : (axis === 1 ? 1 : 0);
 
-    // A preview equivalent of Blender's Shade Smooth: all exactly coincident
-    // vertices share one angle-weighted normal, including authored hard splits.
+    // Join exactly coincident vertices for preview smoothing. When the asset
+    // supplies normals, retain authored creases of 60 degrees or more instead
+    // of rounding deliberately split cube edges and other hard surfaces.
     const groupIds = new Uint32Array(count);
     const groups = new Map();
-    const sums = [];
+    const contributions = [];
     for (let i = 0; i < count; i++) {
         const key = `${position(i, 0)},${position(i, 1)},${position(i, 2)}`;
         let group = groups.get(key);
         if (group === undefined) {
-            group = sums.length / 3;
+            group = contributions.length;
             groups.set(key, group);
-            sums.push(0, 0, 0);
+            contributions.push([]);
         }
         groupIds[i] = group;
     }
@@ -421,19 +422,42 @@ function buildSmoothNormalAttribute(primitive) {
             const a = points[(corner + 1) % 3].map((value, axis) => value - point[axis]);
             const b = points[(corner + 2) % 3].map((value, axis) => value - point[axis]);
             const weight = cornerAngle(...a, ...b);
-            const base = groupIds[vertices[corner]] * 3;
-            sums[base] += face[0] * weight;
-            sums[base + 1] += face[1] * weight;
-            sums[base + 2] += face[2] * weight;
+            contributions[groupIds[vertices[corner]]].push([
+                face[0],
+                face[1],
+                face[2],
+                weight,
+            ]);
         }
     }
 
     const output = new Float32Array(count * 3);
+    const creaseCosine = Math.cos(Math.PI / 3);
     for (let i = 0; i < count; i++) {
-        const base = groupIds[i] * 3;
-        const length = Math.hypot(sums[base], sums[base + 1], sums[base + 2]);
+        let reference = null;
+        if (normalView) {
+            const length = Math.hypot(sourceNormal(i, 0), sourceNormal(i, 1), sourceNormal(i, 2));
+            if (length > 1e-12) {
+                reference = [
+                    sourceNormal(i, 0) / length,
+                    sourceNormal(i, 1) / length,
+                    sourceNormal(i, 2) / length,
+                ];
+            }
+        }
+        const sum = [0, 0, 0];
+        for (const [x, y, z, weight] of contributions[groupIds[i]]) {
+            if (reference && x * reference[0] + y * reference[1] + z * reference[2]
+                < creaseCosine - 1e-6) {
+                continue;
+            }
+            sum[0] += x * weight;
+            sum[1] += y * weight;
+            sum[2] += z * weight;
+        }
+        const length = Math.hypot(...sum);
         for (let axis = 0; axis < 3; axis++) {
-            output[i * 3 + axis] = length > 1e-12 ? sums[base + axis] / length : sourceNormal(i, axis);
+            output[i * 3 + axis] = length > 1e-12 ? sum[axis] / length : sourceNormal(i, axis);
         }
         const dot = normalView ? output[i * 3] * sourceNormal(i, 0)
             + output[i * 3 + 1] * sourceNormal(i, 1)

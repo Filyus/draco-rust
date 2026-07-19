@@ -116,6 +116,57 @@ test('glTF CUBICSPLINE scales tangents by keyframe duration', async ({ page }) =
   expect(values.halfSecond).toBeCloseTo(0.0625);
 });
 
+test('preview smoothing preserves authored 90-degree creases', async ({ page }) => {
+  await page.goto('/index.html');
+  const normals = await page.evaluate(async () => {
+    const { buildSmoothNormalAttribute } = await import('/viewer.js');
+    const positions = new Float32Array([
+      0, 0, 0, 1, 0, 0, 0, 1, 0,
+      0, 0, 0, 0, 0, 1, 1, 0, 0,
+    ]);
+    const sourceNormals = new Float32Array([
+      0, 0, 1, 0, 0, 1, 0, 0, 1,
+      0, 1, 0, 0, 1, 0, 0, 1, 0,
+    ]);
+    const attribute = buildSmoothNormalAttribute({
+      mode: 4,
+      attributes: {
+        POSITION: { bytes: positions, componentType: 5126, components: 3, count: 6 },
+        NORMAL: { bytes: sourceNormals, componentType: 5126, components: 3, count: 6 },
+      },
+      indices: { bytes: new Uint8Array([0, 1, 2, 3, 4, 5]), componentType: 5121, count: 6 },
+    });
+    return Array.from(attribute.bytes);
+  });
+
+  expect(normals.slice(0, 3)).toEqual([0, 0, 1]);
+  expect(normals.slice(9, 12)).toEqual([0, 1, 0]);
+});
+
+test('scaled cube fixture uses valid node instances of one mesh', async ({ page }) => {
+  await page.goto('/index.html');
+  const fixture = path.join(repoRoot, 'testdata', 'CubeScaledInstances', 'glTF');
+  const source = Array.from(await readFile(path.join(fixture, 'cube_att.gltf')));
+  const buffer = Array.from(await readFile(path.join(fixture, 'buffer0.bin')));
+  const result = await page.evaluate(async ({ source, buffer }) => {
+    const api = await import('/pkg/gltf.js');
+    await api.default();
+    const asset = api.GltfAsset.withResources(
+      new Uint8Array(source),
+      { 'buffer0.bin': new Uint8Array(buffer) },
+      '2.0',
+    );
+    const manifest = JSON.parse(new TextDecoder().decode(asset.previewManifest()));
+    return {
+      roots: manifest.rootIndices,
+      meshNodes: manifest.nodes.filter((node) => node.mesh === 0).length,
+      meshes: manifest.meshes.length,
+    };
+  }, { source, buffer });
+
+  expect(result).toEqual({ roots: [0], meshNodes: 4, meshes: 1 });
+});
+
 test('converter resolves glTF companions and reports decoded geometry', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);
