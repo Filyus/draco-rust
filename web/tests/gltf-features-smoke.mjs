@@ -8,6 +8,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');
 const wantsWrite = process.argv.includes('--write');
 const wantsEncoder = process.argv.includes('--draco-encode');
+const wantsAccessors = process.argv.includes('--accessors');
 const wantsRawResources = process.argv.includes('--raw-resources');
 const api = await import(pathToFileURL(resolve(pkg, 'gltf.js')));
 const wasm = await readFile(resolve(pkg, 'gltf_bg.wasm'));
@@ -22,6 +23,18 @@ if ((typeof asset.compressPrimitive === 'function') !== wantsEncoder) {
 }
 if ((typeof asset.bufferBytes === 'function') !== wantsRawResources) {
   throw new Error('glTF raw resource API feature gate is incorrect');
+}
+if ((typeof asset.readAccessor === 'function') !== wantsAccessors) {
+  throw new Error('glTF accessor API feature gate is incorrect');
+}
+if ((typeof asset.bufferViewBytes === 'function') !== wantsRawResources) {
+  throw new Error('glTF buffer-view API feature gate is incorrect');
+}
+if (wantsAccessors) {
+  const accessor = asset.readAccessor(0);
+  if (accessor.count() !== 3 || accessor.components() !== 3 || accessor.bytes().length !== 36) {
+    throw new Error('glTF accessor API returned invalid data');
+  }
 }
 if (wantsRawResources) {
   if (asset.bufferCount() !== 1 || asset.bufferBytes(0).length !== 36) {
@@ -42,6 +55,7 @@ console.log(
   `glTF features smoke passed (${[
     wantsWrite && 'write',
     wantsEncoder && 'encode',
+    wantsAccessors && 'accessors',
     wantsRawResources && 'raw-resources',
   ].filter(Boolean).join(',') || 'read'})`,
 );

@@ -8,12 +8,16 @@
  *   - asset.bufferViewBytes(index)         -> Uint8Array (raw layout, for embedded images)
  *   - asset.json()                          -> lossless JSON document bytes
  *
- * Rust exposes a normalized preview manifest for scene structure, materials,
- * animation, samplers, and supported extensions. JavaScript only decodes
- * browser images and turns already-materialized buffers into WebGL resources.
+ * Rust owns container/resource resolution and binary materialization. This
+ * renderer adapter interprets scene, material, animation, and extension JSON
+ * because support policy and fallback behavior are specific to the preview.
  */
 
 const GL = WebGL2RenderingContext;
+const SUPPORTED_EXTENSIONS = new Set([
+    'KHR_materials_unlit',
+    'KHR_texture_transform',
+]);
 
 /**
  * Build a Scene from a parsed glTF document.
@@ -28,16 +32,18 @@ export async function buildSceneFromGltf(sourceData, resources, gltfModule, hook
 
     const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
     try {
-        const manifest = JSON.parse(new TextDecoder().decode(asset.previewManifest()));
-        const warnings = manifest.warnings || [];
-        const nodes = buildNodes(manifest.nodes || []);
-        const meshes = buildMeshes(asset, manifest.meshes || [], warnings);
+        const document = JSON.parse(new TextDecoder().decode(asset.json()));
+        const warnings = extensionWarnings(document);
+        const nodes = buildNodes(document.nodes || []);
+        const meshes = buildMeshes(asset, document.meshes || [], warnings);
         initializeMorphWeights(nodes, meshes, warnings);
-        const skins = buildSkins(asset, manifest.skins || [], nodes, warnings);
-        const materials = buildMaterials(manifest.materials || []);
-        const textures = await buildTextures(asset, manifest, resources, hooks);
-        const animations = buildAnimations(asset, manifest.animations || [], nodes, warnings);
-        const rootIndices = manifest.rootIndices || [];
+        const skins = buildSkins(asset, document.skins || [], nodes, warnings);
+        const materials = buildMaterials(document.materials || []);
+        const textures = await buildTextures(asset, document, resources, hooks);
+        const animations = buildAnimations(asset, document.animations || [], nodes, warnings);
+        const scenes = document.scenes || [];
+        const sceneIndex = typeof document.scene === 'number' ? document.scene : 0;
+        const rootIndices = scenes[sceneIndex]?.nodes || scenes[0]?.nodes || [];
 
         const { renderables, aabb } = computeRenderables(
             nodes,
@@ -65,6 +71,22 @@ export async function buildSceneFromGltf(sourceData, resources, gltfModule, hook
     } finally {
         asset.free();
     }
+}
+
+function extensionWarnings(document) {
+    const warnings = [];
+    const unsupported = (document.extensionsUsed || [])
+        .filter((extension) => !SUPPORTED_EXTENSIONS.has(extension));
+    if (unsupported.length > 0) {
+        warnings.push(`Unsupported glTF extensions ignored: ${unsupported.join(', ')}`);
+    }
+    if ((document.extensionsRequired || [])
+        .some((extension) => !SUPPORTED_EXTENSIONS.has(extension))) {
+        warnings.push(
+            'Model requires extensions that this viewer ignores; rendering may be incomplete',
+        );
+    }
+    return warnings;
 }
 
 function buildNodes(defs) {
@@ -269,30 +291,45 @@ function buildMaterials(defs) {
         alphaMode: 'OPAQUE',
         unlit: false,
     };
-    const list = defs.map((def, idx) => ({
+    const list = defs.map((def, idx) => {
+        const pbr = def.pbrMetallicRoughness || {};
+        const baseColor = pbr.baseColorTexture || null;
+        const transform = baseColor?.extensions?.KHR_texture_transform || {};
+        return {
             name: def.name || `material_${idx}`,
-            baseColorFactor: def.baseColorFactor || [1, 1, 1, 1],
-            baseColorTexture: typeof def.baseColorTexture === 'number' ? def.baseColorTexture : null,
-            baseColorTexCoord: def.baseColorTexCoord ?? 0,
+            baseColorFactor: pbr.baseColorFactor || [1, 1, 1, 1],
+            baseColorTexture: typeof baseColor?.index === 'number' ? baseColor.index : null,
+            baseColorTexCoord: transform.texCoord ?? baseColor?.texCoord ?? 0,
             baseColorTextureTransform: {
-                offset: def.baseColorTextureTransform?.offset || [0, 0],
-                scale: def.baseColorTextureTransform?.scale || [1, 1],
-                rotation: def.baseColorTextureTransform?.rotation ?? 0,
+                offset: transform.offset || [0, 0],
+                scale: transform.scale || [1, 1],
+                rotation: transform.rotation ?? 0,
             },
-            metallic: def.metallic ?? 1,
-            roughness: def.roughness ?? 1,
-            metallicRoughnessTexture: def.metallicRoughnessTexture || null,
+            metallic: pbr.metallicFactor ?? 1,
+            roughness: pbr.roughnessFactor ?? 1,
+            metallicRoughnessTexture: textureBinding(pbr.metallicRoughnessTexture),
             emissiveFactor: def.emissiveFactor || [0, 0, 0],
-            emissiveTexture: def.emissiveTexture || null,
-            normalTexture: def.normalTexture || null,
-            occlusionTexture: def.occlusionTexture || null,
+            emissiveTexture: textureBinding(def.emissiveTexture),
+            normalTexture: textureBinding(def.normalTexture, 'scale', 1),
+            occlusionTexture: textureBinding(def.occlusionTexture, 'strength', 1),
             doubleSided: !!def.doubleSided,
             alphaMode: def.alphaMode || 'OPAQUE',
             alphaCutoff: def.alphaCutoff ?? 0.5,
-            unlit: !!def.unlit,
-        }));
+            unlit: !!def.extensions?.KHR_materials_unlit,
+        };
+    });
     list.push(fallback);
     return list;
+}
+
+function textureBinding(info, scalarName = null, fallback = 1) {
+    if (!info || typeof info.index !== 'number') return null;
+    const binding = {
+        index: info.index,
+        texCoord: info.texCoord ?? 0,
+    };
+    if (scalarName) binding[scalarName] = info[scalarName] ?? fallback;
+    return binding;
 }
 
 async function buildTextures(asset, manifest, resources, hooks) {
@@ -423,19 +460,21 @@ function buildAnimations(asset, defs, nodes, warnings) {
         });
 
         const channels = (def.channels || []).map((ch) => {
-            const node = nodes[ch.node];
+            const target = ch.target || {};
+            const node = nodes[target.node];
             const sampler = samplers[ch.sampler];
             if (!node || !sampler) return null;
-            const targetCount = ch.path === 'weights' ? node.weights.length : 0;
-            if (!['translation', 'rotation', 'scale', 'weights'].includes(ch.path) || (ch.path === 'weights' && targetCount === 0)) {
+            const targetCount = target.path === 'weights' ? node.weights.length : 0;
+            if (!['translation', 'rotation', 'scale', 'weights'].includes(target.path)
+                || (target.path === 'weights' && targetCount === 0)) {
                 warnings.push(
-                    `Animation ${name}: ${ch.path} channels are not supported by the preview and were ignored`,
+                    `Animation ${name}: ${target.path} channels are not supported by the preview and were ignored`,
                 );
                 return null;
             }
             return {
                 node,
-                path: ch.path,
+                path: target.path,
                 sampler,
                 targetCount,
             };

@@ -18,6 +18,8 @@ export function embeddedTriangle() {
       componentType: 5126,
       count: 3,
       type: 'VEC3',
+      min: [0, 0, 0],
+      max: [1, 1, 0],
     }],
     meshes: [{
       name: 'Triangle',
@@ -39,6 +41,8 @@ export function externalTriangle() {
       componentType: 5126,
       count: 3,
       type: 'VEC3',
+      min: [0, 0, 0],
+      max: [1, 1, 0],
     }],
     meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
   });

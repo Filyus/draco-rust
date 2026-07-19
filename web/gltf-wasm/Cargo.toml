@@ -24,6 +24,8 @@ default = ["read", "draco-decode"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
 read = ["draco-gltf/read"]
 draco-decode = ["read", "draco-gltf/draco-decode"]
+# Generic non-primitive accessor materialization for animation, skins, and morphs.
+accessors = ["read", "draco-gltf/accessors"]
 raw-resources = ["read"]
 write = ["read", "draco-gltf/write"]
 draco-encode = ["write", "draco-decode", "draco-gltf/draco-encode"]

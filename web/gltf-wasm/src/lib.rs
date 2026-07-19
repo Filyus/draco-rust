@@ -2,15 +2,16 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(feature = "accessors")]
+use draco_gltf::AccessorData;
+#[cfg(any(feature = "accessors", feature = "raw-resources"))]
+use draco_gltf::DocumentAccessorSource;
 use draco_gltf::{
-    parse, parse_with_options, Document, ExtensionRegistry, Import, JsonValue, OutputFormat,
-    ResourceLimits, ResourceResolver, ValidationProfile,
+    parse, parse_with_options, Document, ExtensionRegistry, Import, OutputFormat, ResourceLimits,
+    ResourceResolver, ValidationProfile,
 };
 #[cfg(feature = "read")]
-use draco_gltf::{
-    AccessorData, ComponentType, DocumentAccessorSource, PackedAttribute, PackedIndices,
-    PrimitiveIndex, PrimitiveMode,
-};
+use draco_gltf::{ComponentType, PackedAttribute, PackedIndices, PrimitiveIndex, PrimitiveMode};
 #[cfg(feature = "draco-encode")]
 use draco_gltf::{CompressionOptions, GeometryEncoding, MeshIndex};
 use js_sys::{Object, Reflect, Uint8Array};
@@ -33,7 +34,7 @@ pub struct PackedGeometry {
 }
 
 /// One materialized glTF accessor with tightly packed owned bytes.
-#[cfg(feature = "read")]
+#[cfg(feature = "accessors")]
 #[wasm_bindgen]
 pub struct PackedAccessor {
     inner: AccessorData,
@@ -180,428 +181,6 @@ fn summary_to_js(summary: AssetSummary) -> JsValue {
     object.into()
 }
 
-fn value_array(value: Option<&JsonValue>) -> &[JsonValue] {
-    value.and_then(JsonValue::as_array).unwrap_or(&[])
-}
-
-fn string(value: Option<&JsonValue>, fallback: &str) -> JsonValue {
-    JsonValue::from(value.and_then(JsonValue::as_str).unwrap_or(fallback))
-}
-
-fn boolean(value: Option<&JsonValue>, fallback: bool) -> JsonValue {
-    match value {
-        Some(JsonValue::Bool(value)) => JsonValue::Bool(*value),
-        _ => JsonValue::Bool(fallback),
-    }
-}
-
-fn number(value: Option<&JsonValue>, fallback: f64) -> JsonValue {
-    value
-        .filter(|value| value.as_f64().is_some())
-        .cloned()
-        .unwrap_or_else(|| JsonValue::Number(fallback.to_string()))
-}
-
-fn index(value: Option<&JsonValue>) -> JsonValue {
-    value
-        .filter(|value| value.as_u64().is_some())
-        .cloned()
-        .unwrap_or(JsonValue::Null)
-}
-
-fn fixed_array(value: Option<&JsonValue>, length: usize, defaults: &[f64]) -> JsonValue {
-    let Some(values) = value.and_then(JsonValue::as_array) else {
-        return JsonValue::Array(
-            defaults
-                .iter()
-                .map(|value| JsonValue::Number(value.to_string()))
-                .collect(),
-        );
-    };
-    if values.len() != length || values.iter().any(|value| value.as_f64().is_none()) {
-        return JsonValue::Array(
-            defaults
-                .iter()
-                .map(|value| JsonValue::Number(value.to_string()))
-                .collect(),
-        );
-    }
-    JsonValue::Array(values.to_vec())
-}
-
-fn name(value: &JsonValue, prefix: &str, index: usize) -> JsonValue {
-    string(value.get("name"), &format!("{prefix}_{index}"))
-}
-
-fn texture_binding(texture: Option<&JsonValue>) -> JsonValue {
-    let Some(texture) = texture else {
-        return JsonValue::Null;
-    };
-    JsonValue::object([
-        ("index", index(texture.get("index"))),
-        ("texCoord", index(texture.get("texCoord"))),
-    ])
-}
-
-fn texture_binding_with_strength(
-    texture: Option<&JsonValue>,
-    property: &str,
-    fallback: f64,
-) -> JsonValue {
-    let mut binding = texture_binding(texture);
-    let Some(texture) = texture else {
-        return binding;
-    };
-    if let JsonValue::Object(entries) = &mut binding {
-        entries.push((property.into(), number(texture.get(property), fallback)));
-    }
-    binding
-}
-
-fn preview_manifest(document: &Document) -> JsonValue {
-    const SUPPORTED_EXTENSIONS: &[&str] = &["KHR_materials_unlit", "KHR_texture_transform"];
-    let root = document.as_value();
-    let mut warnings = Vec::new();
-    let extensions_used = value_array(root.get("extensionsUsed"));
-    let unsupported: Vec<_> = extensions_used
-        .iter()
-        .filter_map(JsonValue::as_str)
-        .filter(|extension| !SUPPORTED_EXTENSIONS.contains(extension))
-        .collect();
-    if !unsupported.is_empty() {
-        warnings.push(JsonValue::from(format!(
-            "Unsupported glTF extensions ignored: {}",
-            unsupported.join(", ")
-        )));
-    }
-    if value_array(root.get("extensionsRequired"))
-        .iter()
-        .filter_map(JsonValue::as_str)
-        .any(|extension| !SUPPORTED_EXTENSIONS.contains(&extension))
-    {
-        warnings.push(JsonValue::from(
-            "Model requires extensions that this viewer ignores; rendering may be incomplete",
-        ));
-    }
-
-    let nodes = value_array(root.get("nodes"))
-        .iter()
-        .enumerate()
-        .map(|(node_index, node)| {
-            JsonValue::object([
-                ("name", name(node, "node", node_index)),
-                (
-                    "translation",
-                    fixed_array(node.get("translation"), 3, &[0.0, 0.0, 0.0]),
-                ),
-                (
-                    "rotation",
-                    fixed_array(node.get("rotation"), 4, &[0.0, 0.0, 0.0, 1.0]),
-                ),
-                ("scale", fixed_array(node.get("scale"), 3, &[1.0, 1.0, 1.0])),
-                (
-                    "matrix",
-                    node.get("matrix").cloned().unwrap_or(JsonValue::Null),
-                ),
-                (
-                    "children",
-                    node.get("children")
-                        .cloned()
-                        .unwrap_or(JsonValue::Array(Vec::new())),
-                ),
-                ("mesh", index(node.get("mesh"))),
-                ("skin", index(node.get("skin"))),
-                (
-                    "weights",
-                    node.get("weights")
-                        .cloned()
-                        .unwrap_or(JsonValue::Array(Vec::new())),
-                ),
-            ])
-        })
-        .collect();
-
-    let meshes = value_array(root.get("meshes"))
-        .iter()
-        .enumerate()
-        .map(|(mesh_index, mesh)| {
-            let primitives = value_array(mesh.get("primitives"))
-                .iter()
-                .map(|primitive| {
-                    let targets = value_array(primitive.get("targets"))
-                        .iter()
-                        .map(|target| {
-                            JsonValue::object([
-                                ("POSITION", index(target.get("POSITION"))),
-                                ("NORMAL", index(target.get("NORMAL"))),
-                                ("TANGENT", index(target.get("TANGENT"))),
-                            ])
-                        })
-                        .collect();
-                    JsonValue::object([
-                        ("material", index(primitive.get("material"))),
-                        ("targets", JsonValue::Array(targets)),
-                    ])
-                })
-                .collect();
-            JsonValue::object([
-                ("name", name(mesh, "mesh", mesh_index)),
-                ("primitives", JsonValue::Array(primitives)),
-                (
-                    "weights",
-                    mesh.get("weights")
-                        .cloned()
-                        .unwrap_or(JsonValue::Array(Vec::new())),
-                ),
-            ])
-        })
-        .collect();
-
-    let materials = value_array(root.get("materials"))
-        .iter()
-        .enumerate()
-        .map(|(material_index, material)| {
-            let pbr = material.get("pbrMetallicRoughness");
-            let texture = pbr.and_then(|pbr| pbr.get("baseColorTexture"));
-            let transform = texture.and_then(|texture| {
-                texture
-                    .get("extensions")
-                    .and_then(|extensions| extensions.get("KHR_texture_transform"))
-            });
-            JsonValue::object([
-                ("name", name(material, "material", material_index)),
-                (
-                    "baseColorFactor",
-                    fixed_array(
-                        pbr.and_then(|pbr| pbr.get("baseColorFactor")),
-                        4,
-                        &[1.0, 1.0, 1.0, 1.0],
-                    ),
-                ),
-                (
-                    "baseColorTexture",
-                    index(texture.and_then(|texture| texture.get("index"))),
-                ),
-                (
-                    "baseColorTexCoord",
-                    index(transform.and_then(|transform| transform.get("texCoord")))
-                        .as_u64()
-                        .map(JsonValue::from)
-                        .unwrap_or_else(|| {
-                            index(texture.and_then(|texture| texture.get("texCoord")))
-                        }),
-                ),
-                (
-                    "baseColorTextureTransform",
-                    JsonValue::object([
-                        (
-                            "offset",
-                            fixed_array(
-                                transform.and_then(|transform| transform.get("offset")),
-                                2,
-                                &[0.0, 0.0],
-                            ),
-                        ),
-                        (
-                            "scale",
-                            fixed_array(
-                                transform.and_then(|transform| transform.get("scale")),
-                                2,
-                                &[1.0, 1.0],
-                            ),
-                        ),
-                        (
-                            "rotation",
-                            number(
-                                transform.and_then(|transform| transform.get("rotation")),
-                                0.0,
-                            ),
-                        ),
-                    ]),
-                ),
-                (
-                    "metallic",
-                    number(pbr.and_then(|pbr| pbr.get("metallicFactor")), 1.0),
-                ),
-                (
-                    "roughness",
-                    number(pbr.and_then(|pbr| pbr.get("roughnessFactor")), 1.0),
-                ),
-                (
-                    "metallicRoughnessTexture",
-                    texture_binding(pbr.and_then(|pbr| pbr.get("metallicRoughnessTexture"))),
-                ),
-                (
-                    "emissiveFactor",
-                    fixed_array(material.get("emissiveFactor"), 3, &[0.0, 0.0, 0.0]),
-                ),
-                (
-                    "emissiveTexture",
-                    texture_binding(material.get("emissiveTexture")),
-                ),
-                (
-                    "normalTexture",
-                    texture_binding_with_strength(material.get("normalTexture"), "scale", 1.0),
-                ),
-                (
-                    "occlusionTexture",
-                    texture_binding_with_strength(
-                        material.get("occlusionTexture"),
-                        "strength",
-                        1.0,
-                    ),
-                ),
-                ("doubleSided", boolean(material.get("doubleSided"), false)),
-                ("alphaMode", string(material.get("alphaMode"), "OPAQUE")),
-                ("alphaCutoff", number(material.get("alphaCutoff"), 0.5)),
-                (
-                    "unlit",
-                    JsonValue::Bool(
-                        material
-                            .get("extensions")
-                            .and_then(|extensions| extensions.get("KHR_materials_unlit"))
-                            .is_some(),
-                    ),
-                ),
-            ])
-        })
-        .collect();
-
-    let images = value_array(root.get("images"))
-        .iter()
-        .enumerate()
-        .map(|(image_index, image)| {
-            JsonValue::object([
-                ("name", name(image, "image", image_index)),
-                ("uri", image.get("uri").cloned().unwrap_or(JsonValue::Null)),
-                ("bufferView", index(image.get("bufferView"))),
-                (
-                    "mimeType",
-                    image.get("mimeType").cloned().unwrap_or(JsonValue::Null),
-                ),
-            ])
-        })
-        .collect();
-    let samplers = value_array(root.get("samplers"))
-        .iter()
-        .map(|sampler| {
-            JsonValue::object([
-                ("wrapS", number(sampler.get("wrapS"), 10497.0)),
-                ("wrapT", number(sampler.get("wrapT"), 10497.0)),
-                ("minFilter", number(sampler.get("minFilter"), 9987.0)),
-                ("magFilter", number(sampler.get("magFilter"), 9729.0)),
-            ])
-        })
-        .collect();
-    let textures = value_array(root.get("textures"))
-        .iter()
-        .enumerate()
-        .map(|(texture_index, texture)| {
-            JsonValue::object([
-                ("name", name(texture, "texture", texture_index)),
-                ("source", index(texture.get("source"))),
-                ("sampler", index(texture.get("sampler"))),
-            ])
-        })
-        .collect();
-
-    let skins = value_array(root.get("skins"))
-        .iter()
-        .enumerate()
-        .map(|(skin_index, skin)| {
-            JsonValue::object([
-                ("name", name(skin, "skin", skin_index)),
-                (
-                    "joints",
-                    skin.get("joints")
-                        .cloned()
-                        .unwrap_or(JsonValue::Array(Vec::new())),
-                ),
-                (
-                    "inverseBindMatrices",
-                    index(skin.get("inverseBindMatrices")),
-                ),
-            ])
-        })
-        .collect();
-    let animations = value_array(root.get("animations"))
-        .iter()
-        .enumerate()
-        .map(|(animation_index, animation)| {
-            let samplers = value_array(animation.get("samplers"))
-                .iter()
-                .map(|sampler| {
-                    JsonValue::object([
-                        ("input", index(sampler.get("input"))),
-                        ("output", index(sampler.get("output"))),
-                        (
-                            "interpolation",
-                            string(sampler.get("interpolation"), "LINEAR"),
-                        ),
-                    ])
-                })
-                .collect();
-            let channels = value_array(animation.get("channels"))
-                .iter()
-                .map(|channel| {
-                    let target = channel.get("target");
-                    JsonValue::object([
-                        ("sampler", index(channel.get("sampler"))),
-                        ("node", index(target.and_then(|target| target.get("node")))),
-                        (
-                            "path",
-                            string(target.and_then(|target| target.get("path")), "translation"),
-                        ),
-                    ])
-                })
-                .collect();
-            JsonValue::object([
-                ("name", name(animation, "animation", animation_index)),
-                ("samplers", JsonValue::Array(samplers)),
-                ("channels", JsonValue::Array(channels)),
-            ])
-        })
-        .collect();
-    let scenes = value_array(root.get("scenes"))
-        .iter()
-        .map(|scene| {
-            JsonValue::object([(
-                "nodes",
-                scene
-                    .get("nodes")
-                    .cloned()
-                    .unwrap_or(JsonValue::Array(Vec::new())),
-            )])
-        })
-        .collect();
-    let scene_index = root.get("scene").and_then(JsonValue::as_u64).unwrap_or(0);
-    let root_indices = value_array(root.get("scenes"))
-        .get(scene_index as usize)
-        .and_then(|scene| scene.get("nodes"))
-        .cloned()
-        .or_else(|| {
-            value_array(root.get("scenes"))
-                .first()
-                .and_then(|scene| scene.get("nodes"))
-                .cloned()
-        })
-        .unwrap_or(JsonValue::Array(Vec::new()));
-
-    JsonValue::object([
-        ("nodes", JsonValue::Array(nodes)),
-        ("meshes", JsonValue::Array(meshes)),
-        ("materials", JsonValue::Array(materials)),
-        ("images", JsonValue::Array(images)),
-        ("samplers", JsonValue::Array(samplers)),
-        ("textures", JsonValue::Array(textures)),
-        ("skins", JsonValue::Array(skins)),
-        ("animations", JsonValue::Array(animations)),
-        ("scenes", JsonValue::Array(scenes)),
-        ("rootIndices", root_indices),
-        ("warnings", JsonValue::Array(warnings)),
-    ])
-}
-
 #[wasm_bindgen(start)]
 pub fn init() {
     #[cfg(feature = "console_error_panic_hook")]
@@ -695,7 +274,7 @@ impl GltfAsset {
     /// Sparse values are applied and interleaved input is deinterleaved. The
     /// returned [`PackedAccessor`] owns its payload, so later document changes
     /// cannot invalidate JavaScript views created from it.
-    #[cfg(feature = "read")]
+    #[cfg(feature = "accessors")]
     #[wasm_bindgen(js_name = readAccessor)]
     pub fn read_accessor(&self, index: usize) -> Result<PackedAccessor, JsValue> {
         DocumentAccessorSource::new(&self.import.document, &self.import.resources)
@@ -706,9 +285,8 @@ impl GltfAsset {
 
     /// Copies one resolved buffer view while retaining its original layout.
     ///
-    /// This is intended for embedded images and extension payloads. Accessor
-    /// consumers should prefer [`GltfAsset::read_accessor`].
-    #[cfg(feature = "read")]
+    /// This is intended for embedded images and extension payloads.
+    #[cfg(feature = "raw-resources")]
     #[wasm_bindgen(js_name = bufferViewBytes)]
     pub fn buffer_view_bytes(&self, index: usize) -> Result<Vec<u8>, JsValue> {
         DocumentAccessorSource::new(&self.import.document, &self.import.resources)
@@ -725,9 +303,8 @@ impl GltfAsset {
 
     /// Copies one complete resolved glTF buffer into JavaScript.
     ///
-    /// This operation can duplicate a large allocation. Prefer
-    /// [`GltfAsset::read_accessor`] or [`GltfAsset::buffer_view_bytes`] when a
-    /// narrower range is sufficient.
+    /// This operation can duplicate a large allocation. Prefer a primitive,
+    /// accessor, or buffer-view read when a narrower range is sufficient.
     #[cfg(feature = "raw-resources")]
     #[wasm_bindgen(js_name = bufferBytes)]
     pub fn buffer_bytes(&self, index: usize) -> Result<Vec<u8>, JsValue> {
@@ -830,16 +407,6 @@ impl GltfAsset {
     /// Returns the lossless JSON document. Untouched JSON keeps its source bytes.
     pub fn json(&self) -> Result<Vec<u8>, JsValue> {
         self.import.document.to_json_bytes().map_err(wasm_error)
-    }
-
-    /// Returns the normalized scene description consumed by the web preview.
-    ///
-    /// Geometry and accessors remain addressable through [`GltfAsset::read_primitive`]
-    /// and [`GltfAsset::read_accessor`], while this manifest owns glTF-specific
-    /// scene, material, animation, sampler, and extension interpretation.
-    #[wasm_bindgen(js_name = previewManifest)]
-    pub fn preview_manifest(&self) -> Vec<u8> {
-        preview_manifest(&self.import.document).to_vec()
     }
 
     /// Returns minified JSON while preserving object order and number lexemes.
@@ -959,7 +526,7 @@ impl GltfAsset {
     }
 }
 
-#[cfg(feature = "read")]
+#[cfg(feature = "accessors")]
 #[wasm_bindgen]
 impl PackedAccessor {
     /// Returns the number of accessor elements.
@@ -1191,102 +758,6 @@ impl GeometryWriteOptions {
 impl Default for GeometryWriteOptions {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn preview_manifest_normalizes_texture_transform_and_scene_links() {
-        let document = Document::from_json_bytes(
-            br#"{
-                "asset":{"version":"2.0"},
-                "extensionsUsed":["KHR_texture_transform"],
-                "materials":[{"pbrMetallicRoughness":{"baseColorTexture":{
-                    "index":3,"texCoord":0,"extensions":{"KHR_texture_transform":{
-                        "texCoord":1,"offset":[0.25,0.5],"scale":[2,3],"rotation":0.5
-                    }}
-                },"metallicFactor":0.25,"roughnessFactor":0.75,
-                "metallicRoughnessTexture":{"index":4,"texCoord":1}},
-                "emissiveFactor":[0.1,0.2,0.3],"emissiveTexture":{"index":5},
-                "normalTexture":{"index":6,"scale":0.5},
-                "occlusionTexture":{"index":7,"strength":0.25}}],
-                "textures":[{"source":0}],
-                "images":[{"uri":"base.png"}],
-                "meshes":[{"primitives":[{"material":0}]}],
-                "nodes":[{"mesh":0}],
-                "scenes":[{"nodes":[0]}],"scene":0
-            }"#,
-        )
-        .unwrap();
-
-        let manifest = preview_manifest(&document);
-        assert_eq!(manifest["rootIndices"][0].as_u64(), Some(0));
-        assert_eq!(
-            manifest["materials"][0]["baseColorTexture"].as_u64(),
-            Some(3)
-        );
-        assert_eq!(
-            manifest["materials"][0]["baseColorTexCoord"].as_u64(),
-            Some(1)
-        );
-        assert_eq!(
-            manifest["materials"][0]["baseColorTextureTransform"]["offset"][0].as_f64(),
-            Some(0.25)
-        );
-        assert_eq!(manifest["materials"][0]["metallic"].as_f64(), Some(0.25));
-        assert_eq!(manifest["materials"][0]["roughness"].as_f64(), Some(0.75));
-        assert_eq!(
-            manifest["materials"][0]["metallicRoughnessTexture"]["index"].as_u64(),
-            Some(4)
-        );
-        assert_eq!(
-            manifest["materials"][0]["emissiveTexture"]["index"].as_u64(),
-            Some(5)
-        );
-        assert_eq!(
-            manifest["materials"][0]["normalTexture"]["scale"].as_f64(),
-            Some(0.5)
-        );
-        assert_eq!(
-            manifest["materials"][0]["occlusionTexture"]["strength"].as_f64(),
-            Some(0.25)
-        );
-        assert_eq!(manifest["images"][0]["uri"].as_str(), Some("base.png"));
-        assert!(manifest["warnings"].as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn preview_manifest_preserves_morph_target_links_and_weights() {
-        let document = Document::from_json_bytes(
-            br#"{
-                "asset":{"version":"2.0"},
-                "meshes":[{"weights":[0.25],"primitives":[{
-                    "targets":[{"POSITION":3,"NORMAL":4,"TANGENT":5}]
-                }]}],
-                "nodes":[{"mesh":0,"weights":[0.75]}],
-                "scenes":[{"nodes":[0]}],"scene":0
-            }"#,
-        )
-        .unwrap();
-
-        let manifest = preview_manifest(&document);
-        assert_eq!(manifest["meshes"][0]["weights"][0].as_f64(), Some(0.25));
-        assert_eq!(manifest["nodes"][0]["weights"][0].as_f64(), Some(0.75));
-        assert_eq!(
-            manifest["meshes"][0]["primitives"][0]["targets"][0]["POSITION"].as_u64(),
-            Some(3)
-        );
-        assert_eq!(
-            manifest["meshes"][0]["primitives"][0]["targets"][0]["NORMAL"].as_u64(),
-            Some(4)
-        );
-        assert_eq!(
-            manifest["meshes"][0]["primitives"][0]["targets"][0]["TANGENT"].as_u64(),
-            Some(5)
-        );
     }
 }
 

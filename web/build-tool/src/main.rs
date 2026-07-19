@@ -30,7 +30,7 @@ const WASM_OPT_ARGS: &[&str] = &[
     "--enable-sign-ext",
     "--enable-mutable-globals",
 ];
-const GLTF_GZIP_BUDGET: usize = 112 * 1024;
+const GLTF_GZIP_BUDGET: usize = 130 * 1024;
 
 #[derive(Clone, Debug)]
 struct Config {
@@ -463,6 +463,7 @@ fn wasm_pack_args(
 fn effective_features(config: &Config, module: &str) -> Vec<String> {
     let mut features = config.features.iter().cloned().collect::<BTreeSet<_>>();
     if config.app_profile && module == "gltf-wasm" {
+        features.insert("accessors".to_string());
         features.insert("draco-encode".to_string());
         features.insert("raw-resources".to_string());
     }

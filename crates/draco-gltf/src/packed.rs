@@ -140,6 +140,16 @@ pub enum GeometryError {
         /// Number of vertices in the primitive.
         vertex_count: usize,
     },
+    /// Decoded Draco topology disagrees with its glTF accessor metadata.
+    #[error("decoded Draco {semantic} count {decoded} does not match accessor count {declared}")]
+    DracoAccessorCount {
+        /// Attribute semantic or `indices`.
+        semantic: String,
+        /// Count materialized from the Draco stream.
+        decoded: u64,
+        /// Count declared by the glTF accessor.
+        declared: u64,
+    },
     /// A component type is outside the selected validation profile.
     #[error("component type {component_type:?} is not permitted by {profile:?}")]
     ComponentTypeProfile {

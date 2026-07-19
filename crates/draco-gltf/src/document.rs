@@ -215,6 +215,9 @@ impl Document {
     }
 
     /// Performs the core structural checks required before transforming a document.
+    ///
+    /// This includes core reference integrity and the required finite `min` and
+    /// `max` bounds for every accessor used as a primitive `POSITION` attribute.
     pub fn validate(&self, profile: ValidationProfile) -> Result<()> {
         let asset = self
             .root
@@ -609,6 +612,12 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
                             "attribute {semantic} references missing accessors[{index}]"
                         )]));
                     }
+                    if semantic == "POSITION" {
+                        validate_position_accessor(
+                            root,
+                            usize::try_from(index).expect("accessor index was range checked"),
+                        )?;
+                    }
                 }
             }
         }
@@ -767,6 +776,48 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
     if profile == ValidationProfile::Gltf21Draft {
         validate_shapes(root)?;
         validate_uids(root)?;
+    }
+    Ok(())
+}
+
+fn validate_position_accessor(root: &Value, index: usize) -> Result<()> {
+    let accessor = root
+        .get("accessors")
+        .and_then(Value::as_array)
+        .and_then(|accessors| accessors.get(index))
+        .ok_or_else(|| Error::Validation(vec![format!("POSITION accessor {index} is missing")]))?;
+    if accessor.get("type").and_then(Value::as_str) != Some("VEC3") {
+        return Err(Error::Validation(vec![format!(
+            "POSITION accessor {index} must have type VEC3"
+        )]));
+    }
+
+    let mut bounds = Vec::with_capacity(2);
+    for field in ["min", "max"] {
+        let values = accessor
+            .get(field)
+            .and_then(Value::as_array)
+            .filter(|values| values.len() == 3)
+            .ok_or_else(|| {
+                Error::Validation(vec![format!(
+                    "POSITION accessor {index} must define three-component {field} bounds"
+                )])
+            })?;
+        let values = values
+            .iter()
+            .map(|value| value.as_f64().filter(|value| value.is_finite()))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                Error::Validation(vec![format!(
+                    "POSITION accessor {index} {field} bounds must be finite numbers"
+                )])
+            })?;
+        bounds.push(values);
+    }
+    if bounds[0].iter().zip(&bounds[1]).any(|(min, max)| min > max) {
+        return Err(Error::Validation(vec![format!(
+            "POSITION accessor {index} min bounds exceed max bounds"
+        )]));
     }
     Ok(())
 }

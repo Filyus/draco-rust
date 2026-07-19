@@ -1,7 +1,9 @@
 use crate::{Error, Import, Result};
 use draco_core::{
-    draco_types::DataType, encoder_buffer::EncoderBuffer, encoder_options::EncoderOptions,
-    mesh_encoder::MeshEncoder,
+    draco_types::DataType,
+    encoder_buffer::EncoderBuffer,
+    encoder_options::EncoderOptions,
+    mesh_encoder::{EncodedMeshInfo, MeshEncoder},
 };
 
 /// How the exported primitive exposes its Draco payload.
@@ -61,6 +63,7 @@ fn detach_draco_only_accessors(
             layout.points,
             attribute.components,
             attribute.data_type,
+            attribute.position_bounds.as_ref(),
         )?;
     }
 
@@ -81,15 +84,16 @@ fn detach_draco_only_accessors(
     };
     root["meshes"][mesh_index]["primitives"][primitive_index]["indices"] =
         crate::JsonValue::from(accessor as u64);
-    set_draco_accessor_layout(root, accessor, layout.faces * 3, 1, DataType::Uint32)?;
+    set_draco_accessor_layout(root, accessor, layout.faces * 3, 1, DataType::Uint32, None)?;
     Ok(())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct DracoAttributeLayout {
     unique_id: u32,
     components: u8,
     data_type: DataType,
+    position_bounds: Option<(Vec<f64>, Vec<f64>)>,
 }
 
 struct DracoGeometryLayout {
@@ -99,23 +103,40 @@ struct DracoGeometryLayout {
 }
 
 impl DracoGeometryLayout {
-    fn from_mesh(mesh: &draco_core::Mesh, mapping: &[(String, u32)]) -> Result<Self> {
+    fn from_encoded_info(info: &EncodedMeshInfo, mapping: &[(String, u32)]) -> Result<Self> {
         let attributes = mapping
             .iter()
-            .map(|(_, unique_id)| {
-                let attribute = mesh.attribute_by_unique_id(*unique_id).ok_or_else(|| {
-                    Error::Extension(format!("encoded Draco attribute {unique_id} is missing"))
-                })?;
+            .map(|(semantic, unique_id)| {
+                let attribute = info
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.unique_id == *unique_id)
+                    .ok_or_else(|| {
+                        Error::Extension(format!("encoded Draco attribute {unique_id} is missing"))
+                    })?;
+                let position_bounds = if semantic == "POSITION" {
+                    Some((
+                        attribute.position_min.clone().ok_or_else(|| {
+                            Error::Extension("encoded POSITION min bounds are missing".into())
+                        })?,
+                        attribute.position_max.clone().ok_or_else(|| {
+                            Error::Extension("encoded POSITION max bounds are missing".into())
+                        })?,
+                    ))
+                } else {
+                    None
+                };
                 Ok(DracoAttributeLayout {
                     unique_id: *unique_id,
-                    components: attribute.num_components(),
-                    data_type: attribute.data_type(),
+                    components: attribute.num_components,
+                    data_type: attribute.data_type,
+                    position_bounds,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
-            points: mesh.num_points(),
-            faces: mesh.num_faces(),
+            points: info.num_encoded_points,
+            faces: info.num_encoded_faces,
             attributes,
         })
     }
@@ -140,6 +161,7 @@ fn set_draco_accessor_layout(
     count: usize,
     components: u8,
     data_type: DataType,
+    position_bounds: Option<&(Vec<f64>, Vec<f64>)>,
 ) -> Result<()> {
     let component_type = match data_type {
         DataType::Int8 => 5120,
@@ -173,7 +195,24 @@ fn set_draco_accessor_layout(
     accessor["componentType"] = crate::JsonValue::from(component_type as u64);
     accessor["type"] = crate::JsonValue::from(accessor_type);
     if let Some(object) = accessor.as_object_mut() {
-        object.retain(|(name, _)| name != "bufferView" && name != "byteOffset" && name != "sparse");
+        object.retain(|(name, _)| {
+            !matches!(
+                name.as_str(),
+                "bufferView" | "byteOffset" | "sparse" | "min" | "max"
+            )
+        });
+    }
+    if let Some((min, max)) = position_bounds {
+        accessor["min"] = crate::JsonValue::Array(
+            min.iter()
+                .map(|value| crate::JsonValue::Number(crate::writer::finite_float_lexeme(*value)))
+                .collect(),
+        );
+        accessor["max"] = crate::JsonValue::Array(
+            max.iter()
+                .map(|value| crate::JsonValue::Number(crate::writer::finite_float_lexeme(*value)))
+                .collect(),
+        );
     }
     Ok(())
 }
@@ -675,7 +714,7 @@ impl Import {
         &self,
         mesh: draco_core::Mesh,
         options: CompressionOptions,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<(Vec<u8>, EncodedMeshInfo)> {
         let mut encoder = MeshEncoder::new();
         encoder.set_mesh(mesh);
         let mut settings = EncoderOptions::new();
@@ -685,7 +724,11 @@ impl Import {
         encoder
             .encode(&settings, &mut output)
             .map_err(|error| Error::Extension(error.to_string()))?;
-        Ok(output.data().to_vec())
+        let info = encoder
+            .encoded_mesh_info()
+            .cloned()
+            .ok_or_else(|| Error::Extension("Draco encoder did not return mesh info".into()))?;
+        Ok((output.data().to_vec(), info))
     }
 
     /// Compresses one ordinary triangle primitive atomically.
@@ -736,8 +779,8 @@ impl Import {
             ));
         }
         let (geometry, mapping) = self.decode_geometry_primitive(reference)?;
-        let layout = DracoGeometryLayout::from_mesh(&geometry, &mapping)?;
-        let bytes = self.encode_draco_geometry(geometry, options)?;
+        let (bytes, encoded_info) = self.encode_draco_geometry(geometry, options)?;
+        let layout = DracoGeometryLayout::from_encoded_info(&encoded_info, &mapping)?;
         let buffer = self.resources.buffers.len();
         let view;
         {

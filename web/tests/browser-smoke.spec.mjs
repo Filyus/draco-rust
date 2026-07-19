@@ -9,6 +9,7 @@ import {
   externalTriangle,
   triangleBytes,
 } from './smoke-fixtures.mjs';
+import { decodeFirstDracoPrimitive } from './draco-interop.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -27,7 +28,7 @@ test('glTF asset API reads document, geometry, accessors, GLB, and resources', a
     const packed = asset.readPrimitive(0, 0);
     const accessor = asset.readAccessor(0);
     const bufferView = asset.bufferViewBytes(0);
-    const previewManifest = JSON.parse(new TextDecoder().decode(asset.previewManifest()));
+    const sceneDocument = JSON.parse(new TextDecoder().decode(asset.json()));
     const glb = asset.glb(2);
     const roundtrip = new api.GltfAsset(glb, '2.0');
     let missing = false;
@@ -56,10 +57,10 @@ test('glTF asset API reads document, geometry, accessors, GLB, and resources', a
         bytes: accessor.bytes().length,
       },
       bufferViewBytes: bufferView.length,
-      previewManifest: {
-        roots: previewManifest.rootIndices,
-        meshes: previewManifest.meshes.length,
-        materials: previewManifest.materials.length,
+      sceneDocument: {
+        roots: sceneDocument.scenes[sceneDocument.scene ?? 0]?.nodes ?? [],
+        meshes: sceneDocument.meshes?.length ?? 0,
+        materials: sceneDocument.materials?.length ?? 0,
       },
       animation: {
         times: Array.from(new Float32Array(times.bytes().buffer)),
@@ -90,7 +91,7 @@ test('glTF asset API reads document, geometry, accessors, GLB, and resources', a
     bytes: 36,
   });
   expect(result.bufferViewBytes).toBe(36);
-  expect(result.previewManifest).toEqual({ roots: [0], meshes: 1, materials: 0 });
+  expect(result.sceneDocument).toEqual({ roots: [0], meshes: 1, materials: 0 });
   expect(result.animation).toEqual({
     times: [0, 1],
     translations: [0, 0, 0, 1, 2, 3],
@@ -156,11 +157,12 @@ test('scaled cube fixture uses valid node instances of one mesh', async ({ page 
       { 'buffer0.bin': new Uint8Array(buffer) },
       '2.0',
     );
-    const manifest = JSON.parse(new TextDecoder().decode(asset.previewManifest()));
+    const document = JSON.parse(new TextDecoder().decode(asset.json()));
+    const roots = document.scenes?.[document.scene ?? 0]?.nodes ?? [];
     return {
-      roots: manifest.rootIndices,
-      meshNodes: manifest.nodes.filter((node) => node.mesh === 0).length,
-      meshes: manifest.meshes.length,
+      roots,
+      meshNodes: document.nodes.filter((node) => node.mesh === 0).length,
+      meshes: document.meshes.length,
     };
   }, { source, buffer });
 
@@ -206,6 +208,15 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   await page.getByRole('button', { name: '⬇ Convert & Download' }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe('export.glb');
+  if (await dracoToggle.isEnabled()) {
+    const downloadedPath = await download.path();
+    expect(downloadedPath).not.toBeNull();
+    const decoded = await decodeFirstDracoPrimitive(await readFile(downloadedPath));
+    expect(decoded.points).toBe(1728);
+    expect(decoded.faces).toBe(576);
+    expect(decoded.declaredPoints).toBe(decoded.points);
+    expect(decoded.declaredIndices).toBe(decoded.faces * 3);
+  }
   await expect(page.locator('#console')).toContainText(
     (await dracoToggle.isEnabled())
       ? 'Document compressed with Draco and exported as GLB'

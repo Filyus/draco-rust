@@ -73,6 +73,7 @@ jobs:
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features document
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features geometry
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features read
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features accessors
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features read,draco-decode
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features write
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features draco-encode
@@ -81,6 +82,7 @@ jobs:
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features read
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features read,draco-decode
+          cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features accessors
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features raw-resources
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features write
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features write,draco-decode
@@ -171,6 +173,12 @@ jobs:
           npm run test:gltf-features -- --write
         working-directory: web
 
+      - name: Build and smoke glTF accessor profile
+        run: |
+          cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-wasm --features accessors --force
+          npm run test:gltf-features -- --accessors
+        working-directory: web
+
       - name: Build and smoke glTF Draco encode profile
         run: |
           cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-wasm --features write,draco-encode --force
@@ -179,6 +187,10 @@ jobs:
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
+        working-directory: web
+
+      - name: Build converter glTF profile
+        run: cargo run --manifest-path build-tool/Cargo.toml -- --app --module gltf-wasm --force
         working-directory: web
 
       - name: Run browser smoke

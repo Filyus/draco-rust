@@ -94,7 +94,10 @@ impl<'a> DocumentAccessorSource<'a> {
         Ok(output)
     }
 
-    fn read(&self, index: usize) -> Result<(usize, u8, u32, DataType, bool, Vec<u8>)> {
+    fn read<const MATRICES: bool>(
+        &self,
+        index: usize,
+    ) -> Result<(usize, u8, u32, DataType, bool, Vec<u8>)> {
         let accessor = self
             .document
             .as_value()
@@ -116,9 +119,9 @@ impl<'a> DocumentAccessorSource<'a> {
             "VEC2" => 2,
             "VEC3" => 3,
             "VEC4" => 4,
-            "MAT2" => 4,
-            "MAT3" => 9,
-            "MAT4" => 16,
+            "MAT2" if MATRICES => 4,
+            "MAT3" if MATRICES => 9,
+            "MAT4" if MATRICES => 16,
             _ => return Err(Error::Extension("accessor type is invalid".into())),
         };
         let component = accessor
@@ -145,7 +148,7 @@ impl<'a> DocumentAccessorSource<'a> {
                 ))
             }
         };
-        let layout = accessor_layout(accessor_type, data_type.byte_length())?;
+        let layout = accessor_layout::<MATRICES>(accessor_type, data_type.byte_length())?;
         let width = layout.tight_width;
         let byte_len = count
             .checked_mul(width)
@@ -351,8 +354,18 @@ impl<'a> DocumentAccessorSource<'a> {
     }
 
     /// Reads and materializes one accessor by zero-based index.
+    #[cfg(feature = "accessors")]
     pub fn read_accessor(&self, index: usize) -> Result<AccessorData> {
-        let (count, components, component_type, data_type, normalized, bytes) = self.read(index)?;
+        self.read_accessor_inner::<true>(index)
+    }
+
+    pub(crate) fn read_geometry_accessor(&self, index: usize) -> Result<AccessorData> {
+        self.read_accessor_inner::<false>(index)
+    }
+
+    fn read_accessor_inner<const MATRICES: bool>(&self, index: usize) -> Result<AccessorData> {
+        let (count, components, component_type, data_type, normalized, bytes) =
+            self.read::<MATRICES>(index)?;
         let accessor_type = self
             .document
             .as_value()
@@ -375,15 +388,18 @@ impl<'a> DocumentAccessorSource<'a> {
     }
 }
 
-fn accessor_layout(accessor_type: &str, component_width: usize) -> Result<AccessorLayout> {
+fn accessor_layout<const MATRICES: bool>(
+    accessor_type: &str,
+    component_width: usize,
+) -> Result<AccessorLayout> {
     let (columns, rows) = match accessor_type {
         "SCALAR" => (1, 1),
         "VEC2" => (1, 2),
         "VEC3" => (1, 3),
         "VEC4" => (1, 4),
-        "MAT2" => (2, 2),
-        "MAT3" => (3, 3),
-        "MAT4" => (4, 4),
+        "MAT2" if MATRICES => (2, 2),
+        "MAT3" if MATRICES => (3, 3),
+        "MAT4" if MATRICES => (4, 4),
         _ => return Err(Error::Extension("accessor type is invalid".into())),
     };
     let column_width = rows * component_width;
@@ -458,7 +474,7 @@ impl AccessorSource for DocumentAccessorSource<'_> {
         allowed: &[u32],
     ) -> std::result::Result<DecodedAccessor, GltfError> {
         let (count, c, _, t, n, b) = self
-            .read(index)
+            .read::<false>(index)
             .map_err(|e| GltfError::InvalidGltf(e.to_string()))?;
         let a = &self.document.as_value()["accessors"][index];
         if !expected.contains(&a.get("type").and_then(|v| v.as_str()).unwrap_or(""))
@@ -473,7 +489,7 @@ impl AccessorSource for DocumentAccessorSource<'_> {
     }
     fn read_indices(&self, index: usize) -> std::result::Result<Vec<u32>, GltfError> {
         let (count, c, component_type, t, _, b) = self
-            .read(index)
+            .read::<false>(index)
             .map_err(|e| GltfError::InvalidGltf(e.to_string()))?;
         if c != 1 {
             return Err(GltfError::InvalidGltf("indices must be SCALAR".into()));

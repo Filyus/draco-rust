@@ -14,6 +14,16 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `AccessorData::accessor_type` and
   `DocumentAccessorSource::read_buffer_view` for generic accessor and embedded
   payload consumers, including WebAssembly bindings.
+- Domain feature `accessors` for generic matrix-capable accessor
+  materialization; primitive geometry reading remains in `read`.
+
+### Fixed
+
+- Draco compression now derives accessor counts, component layouts, and
+  `POSITION` bounds from the encoded topology, including when the encoder drops
+  unused points. Decode rejects accessor counts that disagree with the stream.
+- Strict validation requires finite, ordered three-component bounds on
+  `POSITION` accessors.
 
 ## [0.2.0] - 2026-07-18
 

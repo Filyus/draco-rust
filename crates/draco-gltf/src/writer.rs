@@ -301,7 +301,7 @@ impl BoundScalar {
     }
 }
 
-fn finite_float_lexeme(value: f64) -> String {
+pub(crate) fn finite_float_lexeme(value: f64) -> String {
     let bits = value.to_bits();
     let negative = bits >> 63 != 0;
     let exponent = ((bits >> 52) & 0x7ff) as i32;

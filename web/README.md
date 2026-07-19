@@ -8,28 +8,32 @@ FBX and glTF assets.
 `gltf-wasm` is the single browser entry point for glTF. Its default artifact
 exports `GltfAsset`: it opens JSON glTF and GLB, resolves an explicit resource
 map, validates 2.0/2.1 profiles, preserves or minifies JSON, writes GLB v2/v3,
-reads ordinary or Draco-compressed primitives as `PackedGeometry`, materializes
-arbitrary accessors as `PackedAccessor`, and copies embedded payloads with
-`bufferViewBytes`.
+and reads ordinary or Draco-compressed primitives as `PackedGeometry`.
 `PackedGeometry` is constructible from JavaScript for applications that need to
 prepare geometry before an optional write build.
 
 The release artifact enables `read` and `draco-decode`: it reads ordinary and
-Draco primitives. `write` adds raw `writePrimitive`, `pushPrimitive`,
+Draco primitives while animations and the rest of the scene remain available
+through the lossless document JSON. Feature `accessors` adds generic
+`readAccessor` materialization as `PackedAccessor`; use it for animation
+channels, skin inverse-bind matrices, morph targets, and other non-primitive
+accessors. `write` adds raw `writePrimitive`, `pushPrimitive`,
 `fromGeometry`, and JSON bundle output. Add `draco-decode` to a custom write
 build for atomic Draco decompression; `draco-encode` includes both and adds
 explicit Draco storage.
 
-Feature `raw-resources` adds `bufferCount` and `bufferBytes` for callers that
-need complete resolved buffers. These methods return owned copies and are kept
-out of the lightweight release artifact; the converter app profile includes
-them.
+Feature `raw-resources` adds `bufferCount`, `bufferBytes`, and
+`bufferViewBytes` for callers that need resolved binary payloads. These methods
+return owned copies and are kept out of the lightweight release artifact. The
+converter app profile includes both `accessors` and `raw-resources`.
 
 ```sh
 cargo run --manifest-path web/build-tool/Cargo.toml -- \
   --module gltf-wasm --features write
 cargo run --manifest-path web/build-tool/Cargo.toml -- \
   --module gltf-wasm --features write,draco-encode
+cargo run --manifest-path web/build-tool/Cargo.toml -- \
+  --module gltf-wasm --features accessors
 ```
 
 To deliberately omit the decoder in a custom raw-only build, invoke the
@@ -43,12 +47,13 @@ Reference optimized sizes from the 2026-07-18 Windows stable toolchain build:
 
 | glTF build | raw WASM | gzip |
 | --- | ---: | ---: |
-| reader + Draco decode | 271,295 B | 111,081 B |
-| reader + raw write | 292,465 B | 119,746 B |
-| converter app (`draco-encode`, `raw-resources`) | 430,964 B | 171,736 B |
+| reader + Draco decode | 295,370 B | 129,513 B |
+| reader + Draco decode + accessors | 299,579 B | 131,162 B |
+| converter app (`accessors`, `draco-encode`, `raw-resources`) | 464,799 B | 194,699 B |
 
-The released reader is 108.5 KiB gzip, within the 112 KiB budget. Writer sizes
-are informational because those features are not included in the release asset.
+The released reader is 126.5 KiB gzip, within the 130 KiB budget. Optional and
+converter sizes are informational because those features are not included in
+the release asset.
 
 ## Converter preview
 
@@ -64,8 +69,8 @@ as warnings instead of changing exported assets.
 
 `build.ps1` defaults to the interactive converter profile: the format modules
 use their normal features and `gltf-wasm` additionally enables
-`draco-encode`. Use `-ReleaseProfile` when reproducing the lightweight glTF
-release artifact and its size budget.
+`accessors`, `draco-encode`, and `raw-resources`. Use `-ReleaseProfile` when
+reproducing the lightweight glTF release artifact and its size budget.
 
 ```powershell
 ./build.ps1 -Serve

@@ -20,14 +20,26 @@ const asset = new api.GltfAsset(input, '2.0');
 if (
   typeof asset.decompress === 'function'
   || typeof asset.compressPrimitive === 'function'
+  || typeof asset.readAccessor === 'function'
+  || typeof asset.bufferViewBytes === 'function'
+  || typeof asset.previewManifest === 'function'
   || api.GltfAsset.prototype.decompress
   || api.GltfAsset.prototype.compressPrimitive
+  || api.GltfAsset.prototype.readAccessor
+  || api.GltfAsset.prototype.bufferViewBytes
+  || api.GltfAsset.prototype.previewManifest
 ) {
-  throw new Error('default glTF artifact unexpectedly includes write or encoder API');
+  throw new Error('default glTF artifact unexpectedly includes renderer or writer API');
 }
 const types = await readFile(resolve(pkg, 'gltf.d.ts'), 'utf8');
-if (types.includes('decompress') || types.includes('compressPrimitive')) {
-  throw new Error('default glTF declarations unexpectedly include write or encoder API');
+if (
+  types.includes('decompress')
+  || types.includes('compressPrimitive')
+  || types.includes('readAccessor')
+  || types.includes('bufferViewBytes')
+  || types.includes('previewManifest')
+) {
+  throw new Error('default glTF declarations unexpectedly include renderer or writer API');
 }
 const summary = asset.summary();
 if (!summary.success || summary.meshCount !== 1 || summary.primitiveCount !== 1) {

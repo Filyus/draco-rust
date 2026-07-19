@@ -4,6 +4,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { validateBytes } from 'gltf-validator';
 
+import { decodeFirstDracoPrimitive } from './draco-interop.mjs';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');
 const api = await import(pathToFileURL(resolve(pkg, 'gltf.js')));
@@ -45,6 +47,17 @@ if (
   || packed.indexCount() !== 3
 ) {
   throw new Error('glTF write roundtrip failed');
+}
+if (draco) {
+  const decoded = await decodeFirstDracoPrimitive(glb);
+  if (
+    decoded.points !== 3
+    || decoded.faces !== 1
+    || decoded.declaredPoints !== decoded.points
+    || decoded.declaredIndices !== decoded.faces * 3
+  ) {
+    throw new Error(`official draco3d metadata mismatch: ${JSON.stringify(decoded)}`);
+  }
 }
 const bundle = document.gltfBundle();
 if (bundle.resourceCount() !== 1 || bundle.resourceBytes(0).length === 0) {

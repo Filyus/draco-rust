@@ -59,15 +59,17 @@ by the caller and resource limits.
 - `draco-decode`: `KHR_draco_mesh_compression` decoding.
 - `resources`: explicit URI and `files` resolution.
 - `scene-validation`: strict scene-reference validation.
-- `read`: ordinary accessor reading with resources and validation.
+- `read`: ordinary primitive reading with resources and validation.
+- `accessors`: generic accessor materialization, including matrix accessors.
 - `write`: raw geometry construction and document mutation.
 - `draco-encode`: Draco writing; depends on `write` and `draco-decode`.
 - `full`: the default complete profile.
 
 Use `default-features = false, features = ["read", "draco-decode"]` for a
 small Draco-capable reader. Add `write` for raw output or `draco-encode` for
-compressed output. Every profile uses the same document and packed-geometry
-types; no second parser or scene model exists.
+compressed output, and `accessors` when animation, skin, morph, or other
+non-primitive payloads must be materialized. Every profile uses the same
+document and packed-geometry types; no second parser or scene model exists.
 
 See [`GLTF_2_1_SUPPORT.md`](GLTF_2_1_SUPPORT.md) for the support matrix and
 upstream links. `GLTF_2_1_SNAPSHOT.md` records the pinned draft and update

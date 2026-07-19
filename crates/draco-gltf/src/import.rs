@@ -189,8 +189,68 @@ impl Import {
     #[cfg(feature = "draco-decode")]
     pub fn decode_draco_primitive(&self, primitive: PrimitiveRef<'_>) -> Result<draco_core::Mesh> {
         self.validate(&self.extensions)?;
-        self.extensions
-            .decode_primitive(&self.document, &self.resources, primitive)
+        let mesh = self
+            .extensions
+            .decode_primitive(&self.document, &self.resources, primitive)?;
+        self.validate_decoded_draco_counts(primitive, &mesh)?;
+        Ok(mesh)
+    }
+
+    #[cfg(feature = "draco-decode")]
+    fn validate_decoded_draco_counts(
+        &self,
+        primitive: PrimitiveRef<'_>,
+        mesh: &draco_core::Mesh,
+    ) -> Result<()> {
+        let decoded_points = u64::try_from(mesh.num_points())
+            .map_err(|_| Error::ResourceLimit("decoded Draco point count exceeds u64".into()))?;
+        for (semantic, index) in primitive.attribute_indices() {
+            let declared = self
+                .document
+                .accessor(index)
+                .and_then(|accessor| accessor.count())
+                .ok_or_else(|| {
+                    Error::Validation(vec![format!(
+                        "Draco attribute {semantic:?} accessor count is missing"
+                    )])
+                })?;
+            if declared != decoded_points {
+                return Err(crate::GeometryError::DracoAccessorCount {
+                    semantic: semantic.into(),
+                    decoded: decoded_points,
+                    declared,
+                }
+                .into());
+            }
+        }
+
+        if primitive.mode() == crate::PrimitiveMode::Triangles.to_gltf() {
+            if let Some(index) = primitive.indices() {
+                let declared = self
+                    .document
+                    .accessor(index)
+                    .and_then(|accessor| accessor.count())
+                    .ok_or_else(|| {
+                        Error::Validation(vec!["Draco index accessor count is missing".into()])
+                    })?;
+                let decoded = mesh
+                    .num_faces()
+                    .checked_mul(3)
+                    .and_then(|count| u64::try_from(count).ok())
+                    .ok_or_else(|| {
+                        Error::ResourceLimit("decoded Draco index count exceeds u64".into())
+                    })?;
+                if declared != decoded {
+                    return Err(crate::GeometryError::DracoAccessorCount {
+                        semantic: "indices".into(),
+                        decoded,
+                        declared,
+                    }
+                    .into());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Reads one ordinary or Draco-compressed primitive into packed buffers.
@@ -236,7 +296,7 @@ impl Import {
         let attributes = reference
             .attribute_indices()
             .map(|(semantic, index)| {
-                let data = source.read_accessor(index.0)?;
+                let data = source.read_geometry_accessor(index.0)?;
                 let component_type = crate::ComponentType::from_gltf(data.component_type as u64)
                     .ok_or_else(|| {
                         Error::Extension(format!(
@@ -258,7 +318,7 @@ impl Import {
         let indices = reference
             .indices()
             .map(|index| {
-                let data = source.read_accessor(index.0)?;
+                let data = source.read_geometry_accessor(index.0)?;
                 let component_type = crate::ComponentType::from_gltf(data.component_type as u64)
                     .ok_or_else(|| {
                         Error::Extension(format!(
