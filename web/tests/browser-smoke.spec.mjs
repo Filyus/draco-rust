@@ -102,6 +102,20 @@ test('glTF asset API reads document, geometry, accessors, GLB, and resources', a
   expect(result.resolved.success).toBe(true);
 });
 
+test('glTF CUBICSPLINE scales tangents by keyframe duration', async ({ page }) => {
+  await page.goto('/index.html');
+  const values = await page.evaluate(async () => {
+    const { cubicSplineInterpolate } = await import('/viewer.js');
+    return {
+      twoSeconds: cubicSplineInterpolate(0, 1, 0, 0, 0.5, 2),
+      halfSecond: cubicSplineInterpolate(0, 1, 0, 0, 0.5, 0.5),
+    };
+  });
+
+  expect(values.twoSeconds).toBeCloseTo(0.25);
+  expect(values.halfSecond).toBeCloseTo(0.0625);
+});
+
 test('converter resolves glTF companions and reports decoded geometry', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);

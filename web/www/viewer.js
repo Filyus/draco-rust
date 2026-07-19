@@ -1442,11 +1442,20 @@ function applyAnimation(scene, clipIndex, t) {
 
         const interpolation = sampler.interpolation || 'LINEAR';
         const path = channel.path;
-        applyChannel(channel.node, path, channel.targetCount, interpolation, output, i0, frac);
+        applyChannel(
+            channel.node,
+            path,
+            channel.targetCount,
+            interpolation,
+            output,
+            i0,
+            frac,
+            t1 - t0,
+        );
     }
 }
 
-function applyChannel(node, path, targetCount, interpolation, output, i0, frac) {
+function applyChannel(node, path, targetCount, interpolation, output, i0, frac, duration) {
     const out = path === 'weights' ? node.weights : node.trs[path];
     // Keep this guard at the render boundary so an unsupported future channel
     // cannot break the animation loop and leave the preview canvas stale.
@@ -1474,15 +1483,15 @@ function applyChannel(node, path, targetCount, interpolation, output, i0, frac) 
         const m0 = base0 + 2 * components;
         const p1 = base1 + components;
         const m1 = base1;
-        const t = frac;
-        const t2 = t * t;
-        const t3 = t2 * t;
-        const c0 = 2 * t3 - 3 * t2 + 1;
-        const c1 = t3 - 2 * t2 + t;
-        const c2 = -2 * t3 + 3 * t2;
-        const c3 = t3 - t2;
         for (let k = 0; k < components; k++) {
-            out[k] = c0 * output[p0 + k] + c1 * output[m0 + k] + c2 * output[p1 + k] + c3 * output[m1 + k];
+            out[k] = cubicSplineInterpolate(
+                output[p0 + k],
+                output[m0 + k],
+                output[p1 + k],
+                output[m1 + k],
+                frac,
+                duration,
+            );
         }
         if (path === 'rotation') {
             const len = Math.hypot(out[0], out[1], out[2], out[3]) || 1;
@@ -1500,4 +1509,18 @@ function applyChannel(node, path, targetCount, interpolation, output, i0, frac) 
             out[k] = output[base0 + k] + (output[base1 + k] - output[base0 + k]) * frac;
         }
     }
+}
+
+/** Evaluate one component of a glTF CUBICSPLINE animation segment. */
+export function cubicSplineInterpolate(p0, outTangent0, p1, inTangent1, t, duration) {
+    const t2 = t * t;
+    const t3 = t2 * t;
+    const c0 = 2 * t3 - 3 * t2 + 1;
+    const c1 = t3 - 2 * t2 + t;
+    const c2 = -2 * t3 + 3 * t2;
+    const c3 = t3 - t2;
+    return c0 * p0
+        + c1 * duration * outTangent0
+        + c2 * p1
+        + c3 * duration * inTangent1;
 }
