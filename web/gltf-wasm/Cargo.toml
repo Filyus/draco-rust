@@ -16,13 +16,15 @@ crate-type = ["cdylib", "rlib"]
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 console_error_panic_hook = { workspace = true, optional = true }
-draco-gltf = { path = "../../crates/draco-gltf", default-features = false, features = ["document", "resources", "scene-validation"] }
+draco-gltf = { path = "../../crates/draco-gltf", default-features = false, features = ["document", "resources"] }
 draco-io = { path = "../../crates/draco-io", default-features = false, features = ["gltf"] }
 
 [features]
 default = ["read", "draco-decode"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
 read = ["draco-gltf/read"]
+# Full document graph validation for applications opening untrusted assets.
+strict-validation = ["draco-gltf/strict-validation"]
 draco-decode = ["read", "draco-gltf/draco-decode"]
 # Generic non-primitive accessor materialization for animation, skins, and morphs.
 accessors = ["read", "draco-gltf/accessors"]

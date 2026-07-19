@@ -9,6 +9,7 @@ const pkg = resolve(here, '..', 'www', 'pkg');
 const wantsWrite = process.argv.includes('--write');
 const wantsEncoder = process.argv.includes('--draco-encode');
 const wantsAccessors = process.argv.includes('--accessors');
+const wantsStrictValidation = process.argv.includes('--strict-validation');
 const wantsRawResources = process.argv.includes('--raw-resources');
 const api = await import(pathToFileURL(resolve(pkg, 'gltf.js')));
 const wasm = await readFile(resolve(pkg, 'gltf_bg.wasm'));
@@ -26,6 +27,9 @@ if ((typeof asset.bufferBytes === 'function') !== wantsRawResources) {
 }
 if ((typeof asset.readAccessor === 'function') !== wantsAccessors) {
   throw new Error('glTF accessor API feature gate is incorrect');
+}
+if ((typeof asset.validate === 'function') !== wantsStrictValidation) {
+  throw new Error('glTF strict validation API feature gate is incorrect');
 }
 if ((typeof asset.bufferViewBytes === 'function') !== wantsRawResources) {
   throw new Error('glTF buffer-view API feature gate is incorrect');
@@ -56,6 +60,7 @@ console.log(
     wantsWrite && 'write',
     wantsEncoder && 'encode',
     wantsAccessors && 'accessors',
+    wantsStrictValidation && 'strict-validation',
     wantsRawResources && 'raw-resources',
   ].filter(Boolean).join(',') || 'read'})`,
 );

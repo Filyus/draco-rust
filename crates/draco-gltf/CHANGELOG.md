@@ -16,6 +16,9 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   payload consumers, including WebAssembly bindings.
 - Domain feature `accessors` for generic matrix-capable accessor
   materialization; primitive geometry reading remains in `read`.
+- `strict-validation` feature for complete glTF graph and POSITION-bounds
+  validation. The compact `read` profile keeps basic structural checks and
+  bounds-safe accessor materialization without paying for the global pass.
 
 ### Fixed
 

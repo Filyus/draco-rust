@@ -58,7 +58,7 @@ by the caller and resource limits.
 - `geometry`: accessor materialization and `PackedGeometry`.
 - `draco-decode`: `KHR_draco_mesh_compression` decoding.
 - `resources`: explicit URI and `files` resolution.
-- `scene-validation`: strict scene-reference validation.
+- `strict-validation`: strict scene-reference, node-tree, and POSITION-bounds validation.
 - `read`: ordinary primitive reading with resources and validation.
 - `accessors`: generic accessor materialization, including matrix accessors.
 - `write`: raw geometry construction and document mutation.
@@ -66,7 +66,8 @@ by the caller and resource limits.
 - `full`: the default complete profile.
 
 Use `default-features = false, features = ["read", "draco-decode"]` for a
-small Draco-capable reader. Add `write` for raw output or `draco-encode` for
+small Draco-capable reader. Add `strict-validation` when opening untrusted
+assets requires a full graph pass, `write` for raw output or `draco-encode` for
 compressed output, and `accessors` when animation, skin, morph, or other
 non-primitive payloads must be materialized. Every profile uses the same
 document and packed-geometry types; no second parser or scene model exists.

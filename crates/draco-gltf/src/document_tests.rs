@@ -52,6 +52,21 @@ fn document_preserves_untouched_json() {
     assert_eq!(document.to_json_bytes().unwrap(), bytes);
 }
 
+#[cfg(not(feature = "strict-validation"))]
+#[test]
+fn basic_validation_defers_scene_graph_checks() {
+    let invalid = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":1}}]}]}"#,
+    )
+    .unwrap();
+    invalid.validate(ValidationProfile::Gltf20).unwrap();
+    parse(
+        invalid.to_json_bytes().unwrap().as_slice(),
+        ValidationProfile::Gltf20,
+    )
+    .unwrap();
+}
+
 #[test]
 fn document_serializes_after_mutation() {
     let mut document = Document::from_json_bytes(br#"{"asset":{"version":"2.0"}}"#).unwrap();
@@ -68,6 +83,7 @@ fn draft_profile_accepts_files_shapes_and_nonsequential_semantics() {
     document.validate(ValidationProfile::Gltf21Draft).unwrap();
 }
 
+#[cfg(feature = "strict-validation")]
 #[test]
 fn draft_validation_covers_published_scene_links() {
     let document = Document::from_json_bytes(
@@ -169,6 +185,7 @@ fn embedded_external_assets_resolve_packaged_file_names() {
     assert_eq!(child.resources.buffers, vec![vec![0; 36]]);
 }
 
+#[cfg(feature = "strict-validation")]
 #[test]
 fn validation_rejects_dangling_core_references_and_draft_types_in_20() {
     let dangling = Document::from_json_bytes(
@@ -195,6 +212,7 @@ fn validation_rejects_dangling_core_references_and_draft_types_in_20() {
         .is_ok());
 }
 
+#[cfg(feature = "strict-validation")]
 #[test]
 fn draft_validation_enforces_file_wide_uids() {
     let valid = Document::from_json_bytes(
@@ -274,6 +292,7 @@ fn typed_views_reference_the_lossless_document() {
     assert!(document.to_json_bytes().unwrap().starts_with(b"{\"asset\""));
 }
 
+#[cfg(feature = "strict-validation")]
 #[test]
 fn validation_covers_scene_skin_and_animation_links() {
     let document = Document::from_json_bytes(
@@ -287,6 +306,7 @@ fn validation_covers_scene_skin_and_animation_links() {
     assert!(invalid.validate(ValidationProfile::Gltf20).is_err());
 }
 
+#[cfg(feature = "strict-validation")]
 #[test]
 fn validation_requires_finite_ordered_position_bounds() {
     for accessor in [
@@ -309,6 +329,7 @@ fn validation_requires_finite_ordered_position_bounds() {
     valid.validate(ValidationProfile::Gltf20).unwrap();
 }
 
+#[cfg(feature = "strict-validation")]
 #[test]
 fn validation_requires_node_hierarchy_to_be_disjoint_trees() {
     for json in [
@@ -442,6 +463,7 @@ fn explicit_asset_loading_honors_chain_depth_limit() {
         .is_err());
 }
 
+#[cfg(feature = "strict-validation")]
 #[test]
 fn draft_validation_checks_file_reference_form() {
     let both = Document::from_json_bytes(

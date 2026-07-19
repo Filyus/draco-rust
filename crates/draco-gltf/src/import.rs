@@ -105,6 +105,8 @@ impl Import {
     }
 
     /// Validates the document and all registered extension handlers.
+    ///
+    /// With `strict-validation`, this also checks the complete scene graph.
     pub fn validate(&self, extensions: &ExtensionRegistry) -> Result<()> {
         self.document.validate(self.profile)?;
         extensions.validate(&self.document)?;
@@ -722,7 +724,9 @@ impl Import {
     }
 }
 
-/// Parses glTF or GLB bytes and validates them with `profile`.
+/// Parses glTF or GLB bytes and applies the selected profile's basic checks.
+///
+/// Enable `strict-validation` to validate all cross-references before loading.
 pub fn parse(bytes: &[u8], profile: ValidationProfile) -> Result<Import> {
     parse_with_options(
         bytes,
@@ -735,7 +739,7 @@ pub fn parse(bytes: &[u8], profile: ValidationProfile) -> Result<Import> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Opens a glTF or GLB file and validates it with `profile`.
+/// Opens a glTF or GLB file and applies the selected profile's basic checks.
 pub fn open(path: impl AsRef<Path>, profile: ValidationProfile) -> Result<Import> {
     let path = path.as_ref();
     let bytes = std::fs::read(path)?;

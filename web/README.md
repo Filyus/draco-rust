@@ -7,7 +7,7 @@ FBX and glTF assets.
 
 `gltf-wasm` is the single browser entry point for glTF. Its default artifact
 exports `GltfAsset`: it opens JSON glTF and GLB, resolves an explicit resource
-map, validates 2.0/2.1 profiles, preserves or minifies JSON, writes GLB v2/v3,
+map, applies basic 2.0/2.1 profile checks, preserves or minifies JSON, writes GLB v2/v3,
 and reads ordinary or Draco-compressed primitives as `PackedGeometry`.
 `PackedGeometry` is constructible from JavaScript for applications that need to
 prepare geometry before an optional write build.
@@ -22,6 +22,12 @@ accessors. `write` adds raw `writePrimitive`, `pushPrimitive`,
 build for atomic Draco decompression; `draco-encode` includes both and adds
 explicit Draco storage.
 
+Feature `strict-validation` adds full cross-reference, node-tree, and
+`POSITION`-bounds validation. It is enabled by the converter app and all write
+profiles, but excluded from the release reader to keep the common read path
+small. Enable it when an application needs to reject malformed scene graphs at
+load time.
+
 Feature `raw-resources` adds `bufferCount`, `bufferBytes`, and
 `bufferViewBytes` for callers that need resolved binary payloads. These methods
 return owned copies and are kept out of the lightweight release artifact. The
@@ -34,6 +40,8 @@ cargo run --manifest-path web/build-tool/Cargo.toml -- \
   --module gltf-wasm --features write,draco-encode
 cargo run --manifest-path web/build-tool/Cargo.toml -- \
   --module gltf-wasm --features accessors
+cargo run --manifest-path web/build-tool/Cargo.toml -- \
+  --module gltf-wasm --features strict-validation
 ```
 
 To deliberately omit the decoder in a custom raw-only build, invoke the
@@ -43,15 +51,16 @@ For an application that only needs document inspection and lossless
 serialization, build the same module with `--no-default-features`; this is a
 custom profile rather than a separate public package.
 
-Reference optimized sizes from the 2026-07-18 Windows stable toolchain build:
+Reference optimized sizes from the 2026-07-19 Windows stable toolchain build:
 
 | glTF build | raw WASM | gzip |
 | --- | ---: | ---: |
-| reader + Draco decode | 295,370 B | 129,513 B |
-| reader + Draco decode + accessors | 299,579 B | 131,162 B |
-| converter app (`accessors`, `draco-encode`, `raw-resources`) | 464,799 B | 194,699 B |
+| reader + Draco decode | 251,460 B | 105,075 B |
+| reader + Draco decode + accessors | 255,669 B | 106,631 B |
+| reader + Draco decode + strict validation | 295,370 B | 129,515 B |
+| converter app (`accessors`, `strict-validation`, `draco-encode`, `raw-resources`) | 464,791 B | 194,719 B |
 
-The released reader is 126.5 KiB gzip, within the 130 KiB budget. Optional and
+The released reader is 102.7 KiB gzip, within the 112 KiB budget. Optional and
 converter sizes are informational because those features are not included in
 the release asset.
 
@@ -69,7 +78,7 @@ as warnings instead of changing exported assets.
 
 `build.ps1` defaults to the interactive converter profile: the format modules
 use their normal features and `gltf-wasm` additionally enables
-`accessors`, `draco-encode`, and `raw-resources`. Use `-ReleaseProfile` when
+`accessors`, `strict-validation`, `draco-encode`, and `raw-resources`. Use `-ReleaseProfile` when
 reproducing the lightweight glTF release artifact and its size budget.
 
 ```powershell

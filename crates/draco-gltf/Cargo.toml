@@ -35,19 +35,20 @@ geometry = ["document", "draco-io/gltf-geometry"]
 draco-decode = ["geometry", "draco-io/draco-decode", "draco-core/decoder", "draco-core/point_cloud_decode", "draco-core/edgebreaker_valence_decode"]
 # Explicit `files` loading and resolver/provenance controls.
 resources = ["document"]
-# Strict scene cross-reference validation; the DOM remains lossless without it.
-scene-validation = ["document"]
-# Ordinary primitive reading with resources and strict scene validation.
-read = ["geometry", "resources", "scene-validation"]
+# Strict cross-reference, node-tree, and POSITION-bounds validation. The DOM
+# remains lossless and the reader remains bounds-safe without this pass.
+strict-validation = ["document"]
+# Ordinary bounds-safe primitive reading with explicit resources.
+read = ["geometry", "resources"]
 # Generic accessor materialization, including matrix accessors used by skins.
 accessors = ["read"]
 # Raw accessor construction and document geometry mutation.
-write = ["read"]
+write = ["read", "strict-validation"]
 # Document-preserving Draco encoding. Decoding is required for recompression and
 # atomic decompression transforms.
 draco-encode = ["write", "draco-decode", "draco-core/encoder"]
 # Release-grade scene API.
-full = ["read", "accessors", "draco-decode", "write", "draco-encode"]
+full = ["read", "accessors", "strict-validation", "draco-decode", "write", "draco-encode"]
 # Repository-fixture tests are intentionally opt-in and are not run from the
 # published crate tarball, which has no access to the workspace testdata tree.
 test = []

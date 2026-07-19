@@ -73,15 +73,19 @@ jobs:
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features document
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features geometry
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features read
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features strict-validation
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features read,strict-validation
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features accessors
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features read,draco-decode
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features write
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features draco-encode
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --features full
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --no-default-features --features read,draco-decode
+          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --no-default-features --features read,draco-decode,strict-validation
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features read
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features read,draco-decode
+          cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features strict-validation
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features accessors
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features raw-resources
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features write
@@ -177,6 +181,12 @@ jobs:
         run: |
           cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-wasm --features accessors --force
           npm run test:gltf-features -- --accessors
+        working-directory: web
+
+      - name: Build and smoke strict glTF reader profile
+        run: |
+          cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-wasm --features strict-validation --force
+          npm run test:gltf-features -- --strict-validation
         working-directory: web
 
       - name: Build and smoke glTF Draco encode profile

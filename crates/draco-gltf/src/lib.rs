@@ -90,7 +90,7 @@ pub enum Error {
     /// An extension contract rejected the document or transform.
     #[error("extension error: {0}")]
     Extension(String),
-    /// Strict document validation failed.
+    /// Document validation failed.
     #[error("glTF validation failed: {0:?}")]
     Validation(Vec<String>),
     /// A configured resource or graph quota was exceeded.
@@ -110,7 +110,7 @@ pub struct ImportOptions<'a> {
     pub resolver: Option<&'a dyn ResourceResolver>,
     /// Resource and graph quotas applied during loading.
     pub limits: ResourceLimits,
-    /// Profile used for strict validation after parsing.
+    /// Profile used for basic checks and strict validation when enabled.
     pub profile: ValidationProfile,
     /// Extension handlers available to validation and transforms.
     pub extensions: ExtensionRegistry,
@@ -176,7 +176,9 @@ pub fn import_slice_with_options(bytes: &[u8], options: &ImportOptions<'_>) -> R
     )
 }
 
-/// Validates a document against the pinned draft profile.
+/// Applies the available checks for the pinned draft profile.
+///
+/// Enable `strict-validation` for complete reference and scene-graph checks.
 pub fn validate(document: &Document) -> Result<()> {
     document.validate(ValidationProfile::Gltf21Draft)
 }

@@ -214,10 +214,11 @@ impl Document {
         self.root.to_vec()
     }
 
-    /// Performs the core structural checks required before transforming a document.
+    /// Performs basic structural checks, plus strict graph checks when enabled.
     ///
-    /// This includes core reference integrity and the required finite `min` and
-    /// `max` bounds for every accessor used as a primitive `POSITION` attribute.
+    /// Enable the `strict-validation` feature to additionally check core
+    /// references, node trees, and finite ordered `POSITION` bounds. Compact
+    /// readers retain local bounds checks while materializing individual data.
     pub fn validate(&self, profile: ValidationProfile) -> Result<()> {
         let asset = self
             .root
@@ -280,7 +281,7 @@ impl Document {
                 "glTF 2.1 fields require the draft profile".into(),
             ]));
         }
-        #[cfg(feature = "scene-validation")]
+        #[cfg(feature = "strict-validation")]
         validate_references(&self.root, profile)?;
         Ok(())
     }
@@ -448,7 +449,7 @@ impl Document {
     }
 }
 
-#[cfg(feature = "scene-validation")]
+#[cfg(feature = "strict-validation")]
 fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
     let len = |name: &str| -> usize {
         root.get(name)
@@ -780,6 +781,7 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "strict-validation")]
 fn validate_position_accessor(root: &Value, index: usize) -> Result<()> {
     let accessor = root
         .get("accessors")
@@ -822,6 +824,7 @@ fn validate_position_accessor(root: &Value, index: usize) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "strict-validation")]
 fn validate_node_hierarchy(root: &Value) -> Result<()> {
     let nodes = root.get("nodes").and_then(Value::as_array).unwrap_or(&[]);
     let mut parents = vec![None; nodes.len()];
@@ -911,7 +914,7 @@ fn validate_node_hierarchy(root: &Value) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "scene-validation")]
+#[cfg(feature = "strict-validation")]
 fn validate_draco_extension(
     root: &Value,
     check: &impl Fn(&Value, &str, &str) -> Result<()>,
@@ -1024,7 +1027,7 @@ fn validate_draco_extension(
     Ok(())
 }
 
-#[cfg(feature = "scene-validation")]
+#[cfg(feature = "strict-validation")]
 fn validate_shapes(root: &Value) -> Result<()> {
     const CORE_TYPES: [&str; 5] = ["box", "capsule", "cylinder", "plane", "sphere"];
     for shape in root.get("shapes").and_then(Value::as_array).unwrap_or(&[]) {
@@ -1040,7 +1043,7 @@ fn validate_shapes(root: &Value) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "scene-validation")]
+#[cfg(feature = "strict-validation")]
 fn validate_uids(root: &Value) -> Result<()> {
     use std::collections::BTreeMap;
 

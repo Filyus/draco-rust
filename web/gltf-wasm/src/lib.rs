@@ -426,6 +426,7 @@ impl GltfAsset {
     }
 
     /// Strictly validates the asset with the selected glTF profile.
+    #[cfg(feature = "strict-validation")]
     pub fn validate(&self, validation_profile: &str) -> Result<(), JsValue> {
         self.import
             .document

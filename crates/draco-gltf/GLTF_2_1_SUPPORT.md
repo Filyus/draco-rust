@@ -13,7 +13,7 @@ dependency update.
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| glTF 2.0 core | Supported | Lossless JSON document, typed root views, strict cross-reference validation, resources, accessors, scenes, animations, skins and materials. |
+| glTF 2.0 core | Supported | Lossless JSON document, typed root views, resources, accessors, scenes, animations, skins and materials. Complete cross-reference validation is available with `strict-validation`. |
 | Unknown JSON and extensions | Supported | Unknown properties, `extras`, number lexemes and unregistered extension payloads survive parse/edit/write. Untouched JSON is returned byte-for-byte. |
 | GLB v2 | Supported | Read, write and validation. |
 | GLB v3 draft | Supported | Read/write, `u64` lengths, zero reserved chunk encoding, checked range descriptors and seekable input. Slice APIs remain available for small files. |
