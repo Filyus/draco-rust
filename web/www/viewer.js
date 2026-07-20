@@ -570,7 +570,7 @@ function uploadPrimitive(gl, primitive, locationMap) {
 export class Viewer {
     constructor(canvas, hooks = {}) {
         this.canvas = canvas;
-        this.hooks = hooks; // { onSceneLoaded(scene), onError(msg), onLog(msg, type) }
+        this.hooks = hooks; // { onSceneLoaded(scene), onError(msg), onLog(msg, type), onAutoRotateChange(enabled) }
         this.gl = canvas.getContext('webgl2', {
             antialias: true,
             alpha: true,
@@ -787,7 +787,7 @@ export class Viewer {
                 panning = true;
             } else {
             }
-            this.autoRotate = false;
+            this.setAutoRotate(false);
             this._lastPinch = null;
             e.preventDefault();
         });
@@ -836,6 +836,13 @@ export class Viewer {
 
     _log(msg, type = 'info') {
         this.hooks.onLog?.(msg, type);
+    }
+
+    setAutoRotate(enabled) {
+        const next = Boolean(enabled);
+        if (this.autoRotate === next) return;
+        this.autoRotate = next;
+        this.hooks.onAutoRotateChange?.(next);
     }
 
     setScene(scene) {

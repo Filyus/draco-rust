@@ -76,6 +76,11 @@ const animScrub = document.getElementById('anim-scrub');
 const animSpeed = document.getElementById('anim-speed');
 const animSpeedValue = document.getElementById('anim-speed-value');
 
+function syncAutoRotateButton(enabled) {
+    viewerAutoRotateBtn.classList.toggle('active', enabled);
+    viewerAutoRotateBtn.setAttribute('aria-pressed', String(enabled));
+}
+
 function setupChoiceControl(select) {
     const control = document.querySelector(`[data-choice-for="${select.id}"]`);
     if (!control) return;
@@ -246,9 +251,7 @@ function setupEventListeners() {
     });
     viewerAutoRotateBtn.addEventListener('click', () => {
         if (!viewer) return;
-        viewer.autoRotate = !viewer.autoRotate;
-        viewerAutoRotateBtn.classList.toggle('active', viewer.autoRotate);
-        viewerAutoRotateBtn.setAttribute('aria-pressed', String(viewer.autoRotate));
+        viewer.setAutoRotate(!viewer.autoRotate);
     });
     viewerWireframeBtn.addEventListener('click', () => {
         if (!viewer) return;
@@ -937,7 +940,9 @@ function ensureViewer() {
                 if (scene) updateAnimationUi(scene);
             },
             onAnimationEnded: () => updateAnimationPlayButton(),
+            onAutoRotateChange: syncAutoRotateButton,
         });
+        syncAutoRotateButton(viewer.autoRotate);
         viewerGridBtn.classList.add('active');
     } catch (error) {
         log(`Preview unavailable: ${errorMessage(error)}`, 'error');

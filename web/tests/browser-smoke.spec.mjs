@@ -155,6 +155,31 @@ test('preview Reset restores the default orbit camera direction', async ({ page 
   expect(camera.autoRotate).toBe(true);
 });
 
+test('manual camera interaction synchronizes the Auto-rotate button', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles(
+    path.join(repoRoot, 'testdata', 'Box', 'glTF_Binary', 'Box.glb'),
+  );
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  const autoRotate = page.locator('#viewer-autorotate');
+  await autoRotate.click();
+  await expect(autoRotate).toHaveAttribute('aria-pressed', 'true');
+  await expect(autoRotate).toHaveClass(/active/);
+
+  const canvas = page.locator('#viewer-canvas');
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.55, box.y + box.height * 0.5);
+  await page.mouse.up();
+
+  await expect(autoRotate).toHaveAttribute('aria-pressed', 'false');
+  await expect(autoRotate).not.toHaveClass(/active/);
+});
+
 test('preview Base color bypasses environment lighting and studio IBL has usable exposure', async ({ page }) => {
   await page.goto('/index.html');
   const pixels = await page.evaluate(async () => {
