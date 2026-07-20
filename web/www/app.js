@@ -281,7 +281,7 @@ function setupEventListeners() {
         if (!viewer || !viewer.scene?.animations?.length) return;
         viewer.animation.playing = !viewer.animation.playing;
         if (viewer.animation.playing && viewer.animation.time >= viewer.scene.animations[viewer.animation.clipIndex].duration) {
-            viewer.animation.time = 0;
+            viewer.seekAnimation(0);
         }
         updateAnimationPlayButton();
     });
@@ -289,7 +289,7 @@ function setupEventListeners() {
         if (!viewer) return;
         const idx = Number(animClipSelect.value);
         viewer.animation.clipIndex = idx;
-        viewer.animation.time = 0;
+        viewer.seekAnimation(0);
         syncAnimationClipSelection();
         updateAnimationScrub();
     });
@@ -316,7 +316,8 @@ function setupEventListeners() {
         viewer.animation.playing = false;
         updateAnimationPlayButton();
         const t = (Number(animScrub.value) / 1000) * clip.duration;
-        viewer.animation.time = t;
+        viewer.seekAnimation(t);
+        updateAnimationScrub();
     });
     animSpeed.addEventListener('input', () => {
         const v = Number(animSpeed.value) / 100;
@@ -1129,11 +1130,7 @@ function updateAnimationPlayButton() {
 // Animation scrub/timeline ticker — bound to the render loop via rAF.
 function animationTick() {
     if (viewer && viewer.scene?.animations?.length && viewer.animation.clipIndex >= 0) {
-        const clip = viewer.scene.animations[viewer.animation.clipIndex];
-        if (clip) {
-            animTimeLabel.textContent = `${viewer.animation.time.toFixed(2)}s / ${clip.duration.toFixed(2)}s`;
-            animScrub.value = String(Math.round((viewer.animation.time / Math.max(clip.duration, 0.0001)) * 1000));
-        }
+        updateAnimationScrub();
     }
     requestAnimationFrame(animationTick);
 }
@@ -1142,7 +1139,9 @@ requestAnimationFrame(animationTick);
 function updateAnimationScrub() {
     if (!viewer || !viewer.scene?.animations?.length) return;
     const clip = viewer.scene.animations[viewer.animation.clipIndex];
-    if (clip) animScrub.value = String(Math.round((viewer.animation.time / Math.max(clip.duration, 0.0001)) * 1000));
+    if (!clip) return;
+    animTimeLabel.textContent = `${viewer.animation.time.toFixed(2)}s / ${clip.duration.toFixed(2)}s`;
+    animScrub.value = String(Math.round((viewer.animation.time / Math.max(clip.duration, 0.0001)) * 1000));
 }
 
 // Clear loaded file

@@ -155,6 +155,51 @@ test('preview Reset restores the default orbit camera direction', async ({ page 
   expect(camera.autoRotate).toBe(true);
 });
 
+test('preview seek applies the selected animation frame immediately', async ({ page }) => {
+  await page.goto('/index.html');
+  const state = await page.evaluate(async () => {
+    const { Viewer } = await import('/viewer.js');
+    const viewer = Object.create(Viewer.prototype);
+    const node = {
+      localMatrix: new Float32Array(16),
+      trs: {
+        translation: new Float32Array([0, 0, 0]),
+        rotation: new Float32Array([0, 0, 0, 1]),
+        scale: new Float32Array([1, 1, 1]),
+      },
+    };
+    viewer.scene = {
+      animations: [{
+        duration: 2,
+        channels: [{
+          node,
+          path: 'translation',
+          targetCount: 3,
+          sampler: {
+            input: new Float32Array([0, 2]),
+            output: new Float32Array([0, 0, 0, 4, 2, -2]),
+            interpolation: 'LINEAR',
+          },
+        }],
+      }],
+    };
+    viewer.animation = { clipIndex: 0, time: 0 };
+
+    const applied = viewer.seekAnimation(1);
+    return {
+      applied,
+      time: viewer.animation.time,
+      translation: Array.from(node.trs.translation),
+      localMatrix: node.localMatrix,
+    };
+  });
+
+  expect(state.applied).toBe(true);
+  expect(state.time).toBe(1);
+  expect(state.translation).toEqual([2, 1, -1]);
+  expect(state.localMatrix).toBeNull();
+});
+
 test('manual camera interaction synchronizes the Auto-rotate button', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);

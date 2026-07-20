@@ -1076,17 +1076,25 @@ export class Viewer {
     _advanceAnimation(dt) {
         const clip = this.scene.animations[this.animation.clipIndex];
         if (!clip) return;
-        this.animation.time += dt * this.animation.speed;
-        if (this.animation.time > clip.duration) {
+        let time = this.animation.time + dt * this.animation.speed;
+        if (time > clip.duration) {
             if (this.animation.loop) {
-                this.animation.time = this.animation.time % clip.duration;
+                time = clip.duration > 0 ? time % clip.duration : 0;
             } else {
-                this.animation.time = clip.duration;
+                time = clip.duration;
                 this.animation.playing = false;
                 this.hooks.onAnimationEnded?.();
             }
         }
+        this.seekAnimation(time);
+    }
+
+    seekAnimation(time) {
+        const clip = this.scene?.animations?.[this.animation.clipIndex];
+        if (!clip) return false;
+        this.animation.time = Math.max(0, Math.min(clip.duration, Number(time) || 0));
         applyAnimation(this.scene, this.animation.clipIndex, this.animation.time);
+        return true;
     }
 
     _updateWorldMatrices() {
