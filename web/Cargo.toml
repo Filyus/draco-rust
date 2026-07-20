@@ -3,13 +3,10 @@ resolver = "2"
 members = [
     "build-tool",
     "dev-server",
-    "obj-reader-wasm",
-    "obj-writer-wasm",
-    "ply-reader-wasm",
-    "ply-writer-wasm",
+    "obj-wasm",
+    "ply-wasm",
     "gltf-wasm",
-    "fbx-reader-wasm",
-    "fbx-writer-wasm",
+    "fbx-wasm",
 ]
 
 [workspace.dependencies]

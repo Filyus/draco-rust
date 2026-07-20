@@ -1,8 +1,8 @@
 [package]
-name = "fbx-reader-wasm"
+name = "fbx-wasm"
 version = "0.1.0"
 edition = "2021"
-description = "Draco web FBX reader (WASM)"
+description = "Draco web FBX reader and writer (WASM)"
 repository = "https://github.com/Filyus/draco-rust"
 license = "Apache-2.0"
 
@@ -16,10 +16,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
 console_error_panic_hook = { workspace = true, optional = true }
-miniz_oxide = "0.9.1"
-draco-core = { path = "../../crates/draco-core", default-features = false, features = ["decoder"] }
-draco-io = { path = "../../crates/draco-io", default-features = false, features = ["fbx-reader"] }
+# FBX array zlib inflation, required only by the reader.
+miniz_oxide = { version = "0.9.1", optional = true }
 
 [features]
-default = []
+default = ["read", "write"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
+# FBX binary reading (`parse_fbx`). Enables zlib-inflated array decoding.
+read = ["dep:miniz_oxide"]
+# FBX binary writing (`create_fbx`).
+write = []

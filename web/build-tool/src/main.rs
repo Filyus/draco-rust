@@ -11,15 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use miniz_oxide::deflate::compress_to_vec;
 
-const MODULES: &[&str] = &[
-    "obj-reader-wasm",
-    "obj-writer-wasm",
-    "ply-reader-wasm",
-    "ply-writer-wasm",
-    "gltf-wasm",
-    "fbx-reader-wasm",
-    "fbx-writer-wasm",
-];
+const MODULES: &[&str] = &["obj-wasm", "ply-wasm", "gltf-wasm", "fbx-wasm"];
 
 const WASM_OPT_ARGS: &[&str] = &[
     "-Oz",

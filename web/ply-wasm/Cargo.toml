@@ -1,8 +1,8 @@
 [package]
-name = "ply-reader-wasm"
+name = "ply-wasm"
 version = "0.1.0"
 edition = "2021"
-description = "Draco web PLY reader (WASM)"
+description = "Draco web PLY reader and writer (WASM)"
 repository = "https://github.com/Filyus/draco-rust"
 license = "Apache-2.0"
 
@@ -19,9 +19,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
 console_error_panic_hook = { workspace = true, optional = true }
-draco-core = { path = "../../crates/draco-core", default-features = false, features = ["decoder"] }
-draco-io = { path = "../../crates/draco-io", default-features = false, features = ["ply-reader"] }
+draco-core = { path = "../../crates/draco-core", default-features = false, optional = true }
+draco-io = { path = "../../crates/draco-io", default-features = false }
 
 [features]
-default = []
+default = ["read", "write"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
+# PLY reading (`parse_ply` / `parse_ply_bytes`).
+read = ["dep:draco-core", "draco-core/decoder", "draco-io/ply-reader"]
+# PLY writing (`create_ply`).
+write = ["dep:draco-core", "draco-core/encoder", "draco-io/ply-writer"]

@@ -1,0 +1,28 @@
+[package]
+name = "obj-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Draco web OBJ reader and writer (WASM)"
+repository = "https://github.com/Filyus/draco-rust"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+console_error_panic_hook = { workspace = true, optional = true }
+draco-core = { path = "../../crates/draco-core", default-features = false, optional = true }
+draco-io = { path = "../../crates/draco-io", default-features = false }
+
+[features]
+default = ["read", "write"]
+console_error_panic_hook = ["dep:console_error_panic_hook"]
+# OBJ reading (`parse_obj` / `parse_obj_bytes`).
+read = ["dep:draco-core", "draco-core/decoder", "draco-io/obj-reader"]
+# OBJ writing (`create_obj` / `create_obj_multi`).
+write = ["dep:draco-core", "draco-core/encoder", "draco-io/obj-writer"]

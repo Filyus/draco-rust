@@ -78,13 +78,10 @@ jobs:
           mkdir -p dist
 
           modules=(
-            "obj_reader"
-            "obj_writer"
-            "ply_reader"
-            "ply_writer"
+            "obj"
+            "ply"
             "gltf"
-            "fbx_reader"
-            "fbx_writer"
+            "fbx"
           )
 
           for module in "${modules[@]}"; do

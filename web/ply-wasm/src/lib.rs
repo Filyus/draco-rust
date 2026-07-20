@@ -1,54 +1,12 @@
-//! PLY Reader WASM module.
+//! PLY reader and writer WASM module.
 //!
-//! Provides PLY file parsing functionality for web applications.
-//! Supports ASCII and binary PLY parsing via `parse_ply_bytes`.
+//! Provides PLY parsing (ASCII and binary) and generation for web applications.
+//! The reader and writer are independent: build with `--features read` or
+//! `--features write` (both are on by default) to control which half of the API
+//! is exported.
 
-use draco_core::draco_types::DataType;
-use draco_core::geometry_attribute::GeometryAttributeType;
-use draco_core::geometry_indices::FaceIndex;
-use draco_core::mesh::Mesh;
-use draco_io::ply_reader::PlyReader;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
-
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = console)]
-    fn log(s: &str);
-}
-
-/// Mesh data structure for JavaScript interop.
-#[derive(Serialize, Deserialize)]
-pub struct MeshData {
-    /// Vertex positions as flat array [x0, y0, z0, x1, y1, z1, ...]
-    pub positions: Vec<f32>,
-    /// Face indices as flat array (triangles)
-    pub indices: Vec<u32>,
-    /// Vertex normals (if present)
-    pub normals: Vec<f32>,
-    /// Vertex colors as flat array [r0, g0, b0, a0, ...] (0-255)
-    pub colors: Vec<u8>,
-}
-
-/// Parse result containing meshes and any warnings/errors.
-#[derive(Serialize, Deserialize)]
-pub struct ParseResult {
-    pub success: bool,
-    pub meshes: Vec<MeshData>,
-    pub error: Option<String>,
-    pub warnings: Vec<String>,
-    /// PLY header information
-    pub header: Option<PlyHeader>,
-}
-
-/// PLY header information.
-#[derive(Serialize, Deserialize, Clone)]
-pub struct PlyHeader {
-    pub format: String,
-    pub vertex_count: usize,
-    pub face_count: usize,
-    pub properties: Vec<String>,
-}
 
 /// Initialize panic hook for better error messages in browser console.
 #[wasm_bindgen(start)]
@@ -63,25 +21,73 @@ pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Get the module name.
-#[wasm_bindgen]
-pub fn module_name() -> String {
-    "PLY Reader".to_string()
-}
-
 /// Get supported file extensions.
 #[wasm_bindgen]
 pub fn supported_extensions() -> Vec<String> {
     vec!["ply".to_string()]
 }
 
+// ===========================================================================
+// Reader
+// ===========================================================================
+
+#[cfg(any(feature = "read", feature = "write"))]
+use draco_core::draco_types::DataType;
+// `GeometryAttributeType` and `Mesh` are shared by both halves.
+#[cfg(any(feature = "read", feature = "write"))]
+use draco_core::geometry_attribute::GeometryAttributeType;
+#[cfg(any(feature = "read", feature = "write"))]
+use draco_core::geometry_indices::FaceIndex;
+#[cfg(any(feature = "read", feature = "write"))]
+use draco_core::mesh::Mesh;
+#[cfg(feature = "read")]
+use draco_io::ply_reader::PlyReader;
+
+/// Mesh data produced by the PLY reader, for JavaScript interop.
+#[cfg(feature = "read")]
+#[derive(Serialize, Deserialize)]
+pub struct MeshData {
+    /// Vertex positions as flat array [x0, y0, z0, x1, y1, z1, ...]
+    pub positions: Vec<f32>,
+    /// Face indices as flat array (triangles)
+    pub indices: Vec<u32>,
+    /// Vertex normals (if present)
+    pub normals: Vec<f32>,
+    /// Vertex colors as flat array [r0, g0, b0, a0, ...] (0-255)
+    pub colors: Vec<u8>,
+}
+
+/// Parse result containing meshes and any warnings/errors.
+#[cfg(feature = "read")]
+#[derive(Serialize, Deserialize)]
+pub struct ParseResult {
+    pub success: bool,
+    pub meshes: Vec<MeshData>,
+    pub error: Option<String>,
+    pub warnings: Vec<String>,
+    /// PLY header information
+    pub header: Option<PlyHeader>,
+}
+
+/// PLY header information.
+#[cfg(feature = "read")]
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PlyHeader {
+    pub format: String,
+    pub vertex_count: usize,
+    pub face_count: usize,
+    pub properties: Vec<String>,
+}
+
 /// Helper to convert a ParseResult to JsValue via JSON.
+#[cfg(feature = "read")]
 fn to_js_value(result: &ParseResult) -> JsValue {
     let json = serde_json::to_string(result).unwrap_or_else(|_| "{}".to_string());
     js_sys::JSON::parse(&json).unwrap_or(JsValue::NULL)
 }
 
 /// Parse PLY file content from a string (ASCII PLY).
+#[cfg(feature = "read")]
 #[wasm_bindgen]
 pub fn parse_ply(content: &str) -> JsValue {
     let result =
@@ -90,6 +96,7 @@ pub fn parse_ply(content: &str) -> JsValue {
 }
 
 /// Parse PLY file content from bytes.
+#[cfg(feature = "read")]
 #[wasm_bindgen]
 pub fn parse_ply_bytes(data: &[u8]) -> JsValue {
     // Catch any panics
@@ -129,6 +136,7 @@ pub fn parse_ply_bytes(data: &[u8]) -> JsValue {
     to_js_value(&result)
 }
 
+#[cfg(feature = "read")]
 fn parse_ply_with_core(data: &[u8]) -> Result<ParseResult, String> {
     let mesh = PlyReader::read_from_bytes(data).map_err(|error| error.to_string())?;
     let mesh_data = mesh_to_js_data(&mesh);
@@ -141,6 +149,7 @@ fn parse_ply_with_core(data: &[u8]) -> Result<ParseResult, String> {
     })
 }
 
+#[cfg(feature = "read")]
 fn parse_header_info(data: &[u8]) -> Option<PlyHeader> {
     let header_end = data
         .windows(b"end_header".len())
@@ -169,6 +178,7 @@ fn parse_header_info(data: &[u8]) -> Option<PlyHeader> {
     })
 }
 
+#[cfg(feature = "read")]
 fn is_ascii_ply(data: &[u8]) -> bool {
     data.starts_with(b"ply")
         && parse_header_info(data)
@@ -176,6 +186,7 @@ fn is_ascii_ply(data: &[u8]) -> bool {
             .unwrap_or(false)
 }
 
+#[cfg(feature = "read")]
 fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
     let positions = read_attribute_as_f32(mesh, GeometryAttributeType::Position, 3);
     let normals = read_attribute_as_f32(mesh, GeometryAttributeType::Normal, 3);
@@ -193,6 +204,7 @@ fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
     }
 }
 
+#[cfg(feature = "read")]
 fn read_attribute_as_f32(
     mesh: &Mesh,
     attribute_type: GeometryAttributeType,
@@ -240,6 +252,7 @@ fn read_attribute_as_f32(
     out
 }
 
+#[cfg(feature = "read")]
 fn read_color_attribute(mesh: &Mesh) -> Vec<u8> {
     let att_id = mesh.named_attribute_id(GeometryAttributeType::Color);
     if att_id < 0 {
@@ -252,6 +265,7 @@ fn read_color_attribute(mesh: &Mesh) -> Vec<u8> {
     Vec::new()
 }
 
+#[cfg(feature = "read")]
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct PlyProperty {
@@ -262,6 +276,7 @@ struct PlyProperty {
     list_elem_type: Option<String>,
 }
 
+#[cfg(feature = "read")]
 fn parse_ply_internal(content: &str) -> ParseResult {
     let mut lines = content.lines().peekable();
     let mut warnings: Vec<String> = Vec::new();
@@ -397,6 +412,8 @@ fn parse_ply_internal(content: &str) -> ParseResult {
         };
     }
 
+    let _ = face_properties; // retained for header fidelity, not used by ASCII path
+
     let mut positions: Vec<f32> = Vec::with_capacity(vertex_count * 3);
     let mut normals: Vec<f32> = Vec::new();
     let mut colors: Vec<u8> = Vec::new();
@@ -507,8 +524,226 @@ fn parse_ply_internal(content: &str) -> ParseResult {
     }
 }
 
-#[cfg(test)]
-mod tests {
+// ===========================================================================
+// Writer
+// ===========================================================================
+
+#[cfg(feature = "write")]
+use draco_core::geometry_attribute::PointAttribute;
+#[cfg(feature = "write")]
+use draco_core::geometry_indices::PointIndex;
+#[cfg(feature = "write")]
+use draco_io::{PlyFormat, PlyWriter, Writer};
+
+/// Input mesh data consumed by the PLY writer, from JavaScript.
+#[cfg(feature = "write")]
+#[derive(Serialize, Deserialize, Clone)]
+pub struct MeshInput {
+    /// Vertex positions as flat array [x0, y0, z0, x1, y1, z1, ...]
+    pub positions: Vec<f32>,
+    /// Face indices as flat array (triangles)
+    pub indices: Vec<u32>,
+    /// Vertex normals (optional)
+    pub normals: Option<Vec<f32>>,
+    /// Vertex colors as [r, g, b, a, ...] 0-255 (optional)
+    pub colors: Option<Vec<u8>>,
+}
+
+/// Export options.
+#[cfg(feature = "write")]
+#[derive(Serialize, Deserialize, Default)]
+pub struct ExportOptions {
+    /// Include normals in output
+    pub include_normals: Option<bool>,
+    /// Include colors in output
+    pub include_colors: Option<bool>,
+    /// Decimal precision for coordinates
+    pub precision: Option<u32>,
+    /// Output format: "ascii" or "binary_little_endian"
+    pub format: Option<String>,
+}
+
+/// Export result.
+#[cfg(feature = "write")]
+#[derive(Serialize, Deserialize)]
+pub struct ExportResult {
+    pub success: bool,
+    pub data: Option<String>,
+    pub binary_data: Option<Vec<u8>>,
+    pub error: Option<String>,
+}
+
+/// Create PLY content from mesh data.
+#[cfg(feature = "write")]
+#[wasm_bindgen]
+pub fn create_ply(mesh_js: JsValue, options_js: JsValue) -> JsValue {
+    let mesh: MeshInput = match serde_wasm_bindgen::from_value(mesh_js) {
+        Ok(m) => m,
+        Err(e) => {
+            let result = ExportResult {
+                success: false,
+                data: None,
+                binary_data: None,
+                error: Some(format!("Invalid mesh data: {}", e)),
+            };
+            return serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL);
+        }
+    };
+
+    let options: ExportOptions = serde_wasm_bindgen::from_value(options_js).unwrap_or_default();
+    let result = create_ply_internal(&mesh, &options);
+    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+}
+
+#[cfg(feature = "write")]
+fn create_ply_internal(mesh: &MeshInput, options: &ExportOptions) -> ExportResult {
+    let format = options.format.as_deref().unwrap_or("ascii");
+    let ply_format = match format {
+        "ascii" => PlyFormat::Ascii,
+        "binary_little_endian" => PlyFormat::BinaryLittleEndian,
+        "binary_big_endian" => PlyFormat::BinaryBigEndian,
+        other => {
+            return ExportResult {
+                success: false,
+                data: None,
+                binary_data: None,
+                error: Some(format!("Unsupported PLY format: {}", other)),
+            };
+        }
+    };
+
+    match create_ply_with_core(mesh, options, ply_format) {
+        Ok(bytes) => {
+            if ply_format == PlyFormat::Ascii {
+                match String::from_utf8(bytes) {
+                    Ok(data) => ExportResult {
+                        success: true,
+                        data: Some(data),
+                        binary_data: None,
+                        error: None,
+                    },
+                    Err(error) => ExportResult {
+                        success: false,
+                        data: None,
+                        binary_data: None,
+                        error: Some(error.to_string()),
+                    },
+                }
+            } else {
+                ExportResult {
+                    success: true,
+                    data: None,
+                    binary_data: Some(bytes),
+                    error: None,
+                }
+            }
+        }
+        Err(error) => ExportResult {
+            success: false,
+            data: None,
+            binary_data: None,
+            error: Some(error),
+        },
+    }
+}
+
+#[cfg(feature = "write")]
+fn create_ply_with_core(
+    input: &MeshInput,
+    options: &ExportOptions,
+    format: PlyFormat,
+) -> Result<Vec<u8>, String> {
+    let mesh = mesh_input_to_core_mesh(input, options)?;
+    let mut writer = PlyWriter::new().with_format(format);
+    Writer::add_mesh(&mut writer, &mesh, None).map_err(|error| error.to_string())?;
+    writer.write_to_vec().map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "write")]
+fn mesh_input_to_core_mesh(input: &MeshInput, options: &ExportOptions) -> Result<Mesh, String> {
+    if !input.positions.len().is_multiple_of(3) {
+        return Err("positions length must be divisible by 3".to_string());
+    }
+    if !input.indices.len().is_multiple_of(3) {
+        return Err("indices length must be divisible by 3".to_string());
+    }
+
+    let vertex_count = input.positions.len() / 3;
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(vertex_count);
+
+    let mut pos_att = PointAttribute::new();
+    pos_att.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        vertex_count,
+    );
+    for (i, chunk) in input.positions.chunks_exact(3).enumerate() {
+        let bytes: Vec<u8> = chunk.iter().flat_map(|value| value.to_le_bytes()).collect();
+        pos_att.buffer_mut().write(i * 12, &bytes);
+    }
+    mesh.add_attribute(pos_att);
+
+    if options.include_normals.unwrap_or(true) {
+        if let Some(normals) = &input.normals {
+            if normals.len() >= vertex_count * 3 {
+                let mut normal_att = PointAttribute::new();
+                normal_att.init(
+                    GeometryAttributeType::Normal,
+                    3,
+                    DataType::Float32,
+                    false,
+                    vertex_count,
+                );
+                for (i, chunk) in normals.chunks_exact(3).take(vertex_count).enumerate() {
+                    let bytes: Vec<u8> =
+                        chunk.iter().flat_map(|value| value.to_le_bytes()).collect();
+                    normal_att.buffer_mut().write(i * 12, &bytes);
+                }
+                mesh.add_attribute(normal_att);
+            }
+        }
+    }
+
+    if options.include_colors.unwrap_or(true) {
+        if let Some(colors) = &input.colors {
+            if colors.len() >= vertex_count * 4 {
+                let mut color_att = PointAttribute::new();
+                color_att.init(
+                    GeometryAttributeType::Color,
+                    4,
+                    DataType::Uint8,
+                    true,
+                    vertex_count,
+                );
+                color_att.buffer_mut().write(0, &colors[..vertex_count * 4]);
+                mesh.add_attribute(color_att);
+            }
+        }
+    }
+
+    mesh.set_num_faces(input.indices.len() / 3);
+    for (i, chunk) in input.indices.chunks_exact(3).enumerate() {
+        mesh.set_face(
+            FaceIndex(i as u32),
+            [
+                PointIndex(chunk[0]),
+                PointIndex(chunk[1]),
+                PointIndex(chunk[2]),
+            ],
+        );
+    }
+    Ok(mesh)
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(all(test, feature = "read"))]
+mod reader_tests {
     use super::*;
 
     fn binary_ply_quad(format: &str) -> Vec<u8> {
@@ -645,5 +880,28 @@ end_header
         let data = binary_ply_quad("binary_big_endian");
         let result = parse_ply_with_core(&data).expect("big-endian binary PLY should parse");
         assert_binary_quad_result(result, "binary_big_endian");
+    }
+}
+
+#[cfg(all(test, feature = "write"))]
+mod writer_tests {
+    use super::*;
+
+    #[test]
+    fn test_create_simple_ply() {
+        let mesh = MeshInput {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+            colors: None,
+        };
+
+        let result = create_ply_internal(&mesh, &ExportOptions::default());
+        assert!(result.success);
+        assert!(result.data.is_some());
+        let data = result.data.unwrap();
+        assert!(data.contains("ply"));
+        assert!(data.contains("element vertex 3"));
+        assert!(data.contains("element face 1"));
     }
 }
