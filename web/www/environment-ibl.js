@@ -58,17 +58,19 @@ out vec4 outColor;
 ${CUBE_DIRECTION}
 
 vec3 environmentRadiance(vec3 direction) {
-    float sky = smoothstep(-0.025, 0.045, direction.y);
+    // Neutral cyclorama: the upper hemisphere is a studio wall, not a sky.
+    float wall = smoothstep(-0.08, 0.10, direction.y);
     float height = pow(max(direction.y, 0.0), 0.45);
-    vec3 floorRadiance = vec3(0.035, 0.040, 0.050);
-    vec3 skyRadiance = mix(vec3(0.16, 0.21, 0.31), vec3(0.38, 0.52, 0.78), height);
-    vec3 radiance = mix(floorRadiance, skyRadiance, sky);
+    vec3 floorRadiance = vec3(0.035, 0.037, 0.040);
+    vec3 wallRadiance = mix(vec3(0.14, 0.145, 0.15), vec3(0.32, 0.33, 0.35), height);
+    vec3 radiance = mix(floorRadiance, wallRadiance, wall);
 
-    // Finite-area studio emitters represented directly in the radiance field.
+    // Broad softboxes represented directly in the radiance field. Their wide
+    // lobes read as studio reflections rather than small distant suns.
     vec3 key = normalize(vec3(-0.45, 0.78, 0.42));
-    vec3 rim = normalize(vec3(0.52, 0.42, -0.72));
-    radiance += vec3(7.0, 6.7, 6.2) * pow(max(dot(direction, key), 0.0), 72.0);
-    radiance += vec3(1.8, 2.2, 3.2) * pow(max(dot(direction, rim), 0.0), 44.0);
+    vec3 fill = normalize(vec3(0.52, 0.42, -0.72));
+    radiance += vec3(4.8, 4.6, 4.3) * pow(max(dot(direction, key), 0.0), 36.0);
+    radiance += vec3(1.25, 1.35, 1.55) * pow(max(dot(direction, fill), 0.0), 24.0);
     return radiance;
 }
 

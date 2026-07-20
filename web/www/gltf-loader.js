@@ -73,6 +73,159 @@ export async function buildSceneFromGltf(sourceData, resources, gltfModule, hook
     }
 }
 
+/**
+ * Decode a glTF document into the flat triangle meshes consumed by the
+ * format-writer WASM modules. Unlike the preview scene this intentionally
+ * drops materials, animation, skins, and node transforms: the OBJ/PLY/FBX
+ * writers currently accept geometry buffers only.
+ */
+export function buildFlatMeshesFromGltf(sourceData, resources, gltfModule) {
+    const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
+    try {
+        const document = JSON.parse(new TextDecoder().decode(asset.json()));
+        const definitions = document.meshes || [];
+        const meshes = [];
+
+        for (let meshIndex = 0; meshIndex < asset.meshCount(); meshIndex += 1) {
+            const primitiveCount = asset.primitiveCount(meshIndex);
+            for (let primitiveIndex = 0; primitiveIndex < primitiveCount; primitiveIndex += 1) {
+                const packed = asset.readPrimitive(meshIndex, primitiveIndex);
+                try {
+                    const attributes = new Map();
+                    for (let index = 0; index < packed.attributeCount(); index += 1) {
+                        attributes.set(packed.attributeSemantic(index), {
+                            bytes: new Uint8Array(packed.attributeBytes(index)),
+                            componentType: packed.attributeComponentType(index),
+                            components: packed.attributeComponents(index),
+                            normalized: packed.attributeNormalized(index),
+                            count: packed.attributeElementCount(index),
+                        });
+                    }
+
+                    const position = attributes.get('POSITION');
+                    if (!position || position.components !== 3 || position.count === 0) continue;
+                    const sourceIndices = packed.hasIndices()
+                        ? packedIndices(packed)
+                        : Array.from({ length: position.count }, (_, index) => index);
+                    const indices = triangleIndices(packed.mode(), sourceIndices);
+                    if (indices.length === 0) continue;
+
+                    const normal = attributes.get('NORMAL');
+                    const texcoord = attributes.get('TEXCOORD_0');
+                    const meshName = definitions[meshIndex]?.name || `mesh_${meshIndex}`;
+                    meshes.push({
+                        name: primitiveCount === 1 ? meshName : `${meshName}_${primitiveIndex}`,
+                        positions: packedAttributeNumbers(position),
+                        indices,
+                        normals: normal?.components === 3 && normal.count === position.count
+                            ? packedAttributeNumbers(normal)
+                            : null,
+                        uvs: texcoord?.components === 2 && texcoord.count === position.count
+                            ? packedAttributeNumbers(texcoord)
+                            : null,
+                    });
+                } finally {
+                    packed.free();
+                }
+            }
+        }
+        return meshes;
+    } finally {
+        asset.free();
+    }
+}
+
+function packedAttributeNumbers(attribute) {
+    const componentSize = componentByteSize(attribute.componentType);
+    const elementCount = attribute.count * attribute.components;
+    if (attribute.bytes.byteLength !== elementCount * componentSize) {
+        throw new Error('Packed glTF attribute has an invalid byte length');
+    }
+    const view = new DataView(
+        attribute.bytes.buffer,
+        attribute.bytes.byteOffset,
+        attribute.bytes.byteLength,
+    );
+    const result = new Array(elementCount);
+    for (let index = 0; index < elementCount; index += 1) {
+        const value = readComponent(view, index * componentSize, attribute.componentType);
+        result[index] = attribute.normalized
+            ? normalizedComponent(value, attribute.componentType)
+            : value;
+    }
+    return result;
+}
+
+function packedIndices(packed) {
+    const bytes = new Uint8Array(packed.indexBytes());
+    const componentType = packed.indexComponentType();
+    const componentSize = componentByteSize(componentType);
+    if (bytes.byteLength !== packed.indexCount() * componentSize) {
+        throw new Error('Packed glTF indices have an invalid byte length');
+    }
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return Array.from(
+        { length: packed.indexCount() },
+        (_, index) => readComponent(view, index * componentSize, componentType),
+    );
+}
+
+function triangleIndices(mode, source) {
+    if (mode === 4) return source.slice(0, source.length - (source.length % 3));
+    const result = [];
+    if (mode === 5) {
+        for (let index = 2; index < source.length; index += 1) {
+            const a = source[index - 2];
+            const b = source[index - 1];
+            const c = source[index];
+            if (a === b || b === c || a === c) continue;
+            result.push(...(index % 2 === 0 ? [a, b, c] : [b, a, c]));
+        }
+    } else if (mode === 6) {
+        for (let index = 2; index < source.length; index += 1) {
+            const a = source[0];
+            const b = source[index - 1];
+            const c = source[index];
+            if (a !== b && b !== c && a !== c) result.push(a, b, c);
+        }
+    }
+    return result;
+}
+
+function componentByteSize(componentType) {
+    switch (componentType) {
+        case 5120:
+        case 5121: return 1;
+        case 5122:
+        case 5123: return 2;
+        case 5125:
+        case 5126: return 4;
+        default: throw new Error(`Unsupported glTF component type ${componentType}`);
+    }
+}
+
+function readComponent(view, offset, componentType) {
+    switch (componentType) {
+        case 5120: return view.getInt8(offset);
+        case 5121: return view.getUint8(offset);
+        case 5122: return view.getInt16(offset, true);
+        case 5123: return view.getUint16(offset, true);
+        case 5125: return view.getUint32(offset, true);
+        case 5126: return view.getFloat32(offset, true);
+        default: throw new Error(`Unsupported glTF component type ${componentType}`);
+    }
+}
+
+function normalizedComponent(value, componentType) {
+    switch (componentType) {
+        case 5120: return Math.max(value / 127, -1);
+        case 5121: return value / 255;
+        case 5122: return Math.max(value / 32767, -1);
+        case 5123: return value / 65535;
+        default: return value;
+    }
+}
+
 function extensionWarnings(document) {
     const warnings = [];
     const unsupported = (document.extensionsUsed || [])
@@ -286,7 +439,7 @@ function identityMat4() {
 
 function buildMaterials(defs) {
     const fallback = {
-        baseColorFactor: [0.8, 0.82, 0.86, 1],
+        baseColorFactor: [1, 1, 1, 1],
         doubleSided: false,
         alphaMode: 'OPAQUE',
         unlit: false,

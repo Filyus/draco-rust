@@ -612,7 +612,7 @@ export class Viewer {
         this.baseColorOnly = false;
         // Preview-friendly angle-weighted normals can be disabled to inspect
         // the exact normals authored in the source asset.
-        this.smoothNormals = true;
+        this.smoothNormals = false;
         this.autoRotate = false;
 
         // Matrices
@@ -997,6 +997,8 @@ export class Viewer {
     }
 
     resetView() {
+        this.camera.azimuth = DEFAULT_CAMERA_AZIMUTH;
+        this.camera.elevation = DEFAULT_CAMERA_ELEVATION;
         if (this.scene) {
             this._updateWorldMatrices();
             this._updateSceneBounds();
@@ -1006,10 +1008,7 @@ export class Viewer {
         else {
             this.camera.target[0] = this.camera.target[1] = this.camera.target[2] = 0;
             this.camera.distance = 3;
-            this.camera.azimuth = DEFAULT_CAMERA_AZIMUTH;
-            this.camera.elevation = DEFAULT_CAMERA_ELEVATION;
         }
-        this.autoRotate = false;
     }
 
     _fitCameraToScene() {

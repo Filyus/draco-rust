@@ -117,6 +117,108 @@ test('glTF CUBICSPLINE scales tangents by keyframe duration', async ({ page }) =
   expect(values.halfSecond).toBeCloseTo(0.0625);
 });
 
+test('preview Reset restores the default orbit camera direction', async ({ page }) => {
+  await page.goto('/index.html');
+  const camera = await page.evaluate(async () => {
+    const { Viewer } = await import('/viewer.js');
+    const viewer = Object.create(Viewer.prototype);
+    viewer.camera = {
+      target: new Float32Array([8, 9, 10]),
+      distance: 42,
+      azimuth: -1.3,
+      elevation: 1.1,
+    };
+    viewer.scene = {};
+    viewer.autoRotate = true;
+    viewer._updateWorldMatrices = () => {};
+    viewer._updateSceneBounds = () => {};
+    viewer._disposeGrid = () => {};
+    viewer._fitCameraToScene = () => {
+      viewer.camera.target.set([1, 2, 3]);
+      viewer.camera.distance = 7;
+    };
+
+    viewer.resetView();
+    return {
+      azimuth: viewer.camera.azimuth,
+      elevation: viewer.camera.elevation,
+      target: Array.from(viewer.camera.target),
+      distance: viewer.camera.distance,
+      autoRotate: viewer.autoRotate,
+    };
+  });
+
+  expect(camera.azimuth).toBeCloseTo(Math.PI * 0.25);
+  expect(camera.elevation).toBeCloseTo(Math.PI * 0.09);
+  expect(camera.target).toEqual([1, 2, 3]);
+  expect(camera.distance).toBe(7);
+  expect(camera.autoRotate).toBe(true);
+});
+
+test('preview Base color bypasses environment lighting and studio IBL has usable exposure', async ({ page }) => {
+  await page.goto('/index.html');
+  const pixels = await page.evaluate(async () => {
+    const [{ Viewer }, { buildSceneFromMeshes }] = await Promise.all([
+      import('/viewer.js'),
+      import('/mesh-loader.js'),
+    ]);
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
+    document.body.appendChild(canvas);
+    const viewer = new Viewer(canvas);
+    const scene = await buildSceneFromMeshes({
+      meshes: [{
+        positions: [-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0],
+        normals: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1],
+        indices: [0, 1, 2, 0, 2, 3],
+      }],
+    });
+    viewer.setScene(scene);
+    viewer.baseColorOnly = true;
+    viewer.showGrid = false;
+    viewer.camera.target.set([0, 0, 0]);
+    viewer.camera.distance = 3;
+    viewer.camera.azimuth = 0;
+    viewer.camera.elevation = 0;
+    const sample = () => {
+      viewer._render();
+      const rgba = new Uint8Array(4);
+      viewer.gl.readPixels(32, 32, 1, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, rgba);
+      return Array.from(rgba);
+    };
+    const baseColor = sample();
+    viewer.baseColorOnly = false;
+    Object.assign(scene.materials[0], {
+      baseColorFactor: [1, 1, 1, 1], metallic: 0, roughness: 1,
+    });
+    const whiteRough = sample();
+    scene.materials[0].baseColorFactor = [0.5, 0.5, 0.5, 1];
+    const grayRough = sample();
+    Object.assign(scene.materials[0], {
+      baseColorFactor: [1, 1, 1, 1], roughness: 0.5,
+    });
+    const whiteMedium = sample();
+    Object.assign(scene.materials[0], {
+      baseColorFactor: [0.8, 0.8, 0.8, 1], metallic: 1,
+    });
+    const metalMedium = sample();
+    viewer.dispose();
+    canvas.remove();
+    return { baseColor, whiteRough, grayRough, whiteMedium, metalMedium };
+  });
+
+  expect(pixels.baseColor[0]).toBe(255);
+  expect(pixels.baseColor[1]).toBe(pixels.baseColor[0]);
+  expect(pixels.baseColor[2]).toBe(pixels.baseColor[0]);
+  expect(pixels.baseColor[3]).toBe(255);
+  const displayLuminance = ([red, green, blue]) => 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  expect(displayLuminance(pixels.whiteRough)).toBeGreaterThan(155);
+  expect(displayLuminance(pixels.whiteRough)).toBeLessThan(220);
+  expect(displayLuminance(pixels.grayRough)).toBeGreaterThan(105);
+  expect(displayLuminance(pixels.metalMedium)).toBeGreaterThan(105);
+  expect(Math.max(...pixels.whiteMedium.slice(0, 3))).toBeLessThan(240);
+});
+
 test('preview smoothing preserves authored 90-degree creases', async ({ page }) => {
   await page.goto('/index.html');
   const normals = await page.evaluate(async () => {
@@ -187,12 +289,33 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   await expect(page.locator('#viewer-section')).toBeVisible();
   await expect(page.locator('#viewer-animation')).toBeVisible();
   await expect(page.locator('#anim-clip')).toHaveValue('0');
+  const animationTrigger = page.locator('#anim-clip-trigger');
+  await expect(animationTrigger).toContainText('Survey');
+  await animationTrigger.click();
+  await expect(page.locator('#anim-clip-menu')).toBeVisible();
+  await page.locator('.anim-clip-option[data-value="1"]').click();
+  await expect(page.locator('#anim-clip')).toHaveValue('1');
+  await expect(animationTrigger).toContainText('Walk');
+  await expect(animationTrigger).toHaveAttribute('aria-expanded', 'false');
+  await animationTrigger.press('ArrowDown');
+  await expect(page.locator('#anim-clip')).toHaveValue('2');
+  await expect(animationTrigger).toContainText('Run');
+  await animationTrigger.press('ArrowUp');
+  await expect(page.locator('#anim-clip')).toHaveValue('1');
+  await animationTrigger.click();
+  const selectedClip = page.locator('.anim-clip-option.selected');
+  await selectedClip.press('ArrowDown');
+  const runClip = page.locator('.anim-clip-option[data-value="2"]');
+  await expect(runClip).toBeFocused();
+  await runClip.press('Enter');
+  await expect(page.locator('#anim-clip')).toHaveValue('2');
+  await expect(animationTrigger).toHaveAttribute('aria-expanded', 'false');
   const smoothNormals = page.locator('#viewer-smooth-normals');
-  await expect(smoothNormals).toHaveAttribute('aria-pressed', 'true');
-  await smoothNormals.click();
   await expect(smoothNormals).toHaveAttribute('aria-pressed', 'false');
   await smoothNormals.click();
   await expect(smoothNormals).toHaveAttribute('aria-pressed', 'true');
+  await smoothNormals.click();
+  await expect(smoothNormals).toHaveAttribute('aria-pressed', 'false');
   const webglError = await page.evaluate(
     () => document.getElementById('viewer-canvas')?.getContext('webgl2')?.getError(),
   );
@@ -329,6 +452,55 @@ test('3D preview renders a GLB into the WebGL2 canvas', async ({ page }) => {
   expect(webglError).toBe(0);
 
   await expect(page.locator('#console')).not.toContainText('undefined');
+});
+
+test('mobile preview height remains stable after clearing a desktop-loaded file', async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles(
+    path.join(repoRoot, 'testdata', 'Box', 'glTF_Binary', 'Box.glb'),
+  );
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  await page.setViewportSize({ width: 800, height: 900 });
+  const loadedHeight = await page.locator('#viewer-section').evaluate((element) => element.getBoundingClientRect().height);
+  await page.locator('#clear-file').click();
+  await expect(page.locator('#drop-zone')).toBeVisible();
+  const clearedHeight = await page.locator('#viewer-section').evaluate((element) => element.getBoundingClientRect().height);
+
+  expect(Math.abs(loadedHeight - clearedHeight)).toBeLessThan(1);
+  await expect(page.locator('#drop-zone')).toHaveCSS('display', 'grid');
+});
+
+test('converter exports a glTF document through the FBX writer', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles(
+    path.join(repoRoot, 'testdata', 'Box', 'glTF_Binary', 'Box.glb'),
+  );
+
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await page.locator('[data-choice-for="export-format"] [data-value="fbx"]').click();
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('#export-btn').click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe('export.fbx');
+
+  const downloadedPath = await download.path();
+  expect(downloadedPath).not.toBeNull();
+  const bytes = await readFile(downloadedPath);
+  expect(bytes.subarray(0, 21).toString('binary')).toBe('Kaydara FBX Binary  \u0000');
+  await expect(page.locator('#console')).toContainText('Export complete!');
+  await expect(page.locator('#console')).not.toContainText('Document export to FBX is not supported');
+
+  await page.locator('#file-input').setInputFiles({
+    name: 'roundtrip.fbx',
+    mimeType: 'application/octet-stream',
+    buffer: bytes,
+  });
+  await expect(page.locator('#console')).toContainText('Successfully parsed roundtrip.fbx');
+  await expect(page.locator('#console')).not.toContainText('Failed to parse file');
 });
 
 test('preview renders a glTF morph target animation', async ({ page }) => {

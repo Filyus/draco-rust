@@ -3,284 +3,282 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Draco 3D Format Converter</title>
+    <title>Draco 3D Studio</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-    <main class="app-container">
-        
-        <header>
-            <h1>🔷 Draco 3D Converter</h1>
-            <p class="subtitle">Convert & Compress 3D Models in your Browser</p>
+    <main class="app">
+
+        <!-- Sticky header with brand + module status -->
+        <header class="app-header">
+            <div class="brand">
+                <span class="brand-icon">🔷</span>
+                <div class="brand-text">
+                    <h1>Draco <span class="brand-accent">3D</span> Studio</h1>
+                    <p class="subtitle">Convert &amp; Compress 3D Models</p>
+                </div>
+            </div>
+            <section class="modules-section" aria-label="WASM Modules Status">
+                <div class="modules-scroll-container">
+                    <div class="module-pill" id="obj-status">
+                        <span class="module-name">OBJ</span>
+                        <span class="status-indicator loading" aria-live="polite">
+                            <span class="status-dot"></span>
+                            <span class="status-text">Loading...</span>
+                        </span>
+                    </div>
+                    <div class="module-pill" id="ply-status">
+                        <span class="module-name">PLY</span>
+                        <span class="status-indicator loading" aria-live="polite">
+                            <span class="status-dot"></span>
+                            <span class="status-text">Loading...</span>
+                        </span>
+                    </div>
+                    <div class="module-pill" id="gltf-status">
+                        <span class="module-name">glTF</span>
+                        <span class="status-indicator loading" aria-live="polite">
+                            <span class="status-dot"></span>
+                            <span class="status-text">Loading...</span>
+                        </span>
+                    </div>
+                    <div class="module-pill" id="fbx-status">
+                        <span class="module-name">FBX</span>
+                        <span class="status-indicator loading" aria-live="polite">
+                            <span class="status-dot"></span>
+                            <span class="status-text">Loading...</span>
+                        </span>
+                    </div>
+                </div>
+            </section>
         </header>
 
-        <!-- Module Status Row (Wasm Modules) -->
-        <section class="card modules-section" aria-label="WASM Modules Status">
-            <div class="modules-scroll-container">
-                
-                <!-- OBJ Modules -->
-                <div class="module-pill" id="obj-reader-status">
-                    <span class="module-name">OBJ Reader</span>
-                    <span class="status-indicator loading" aria-live="polite">
-                        <span class="status-dot"></span>
-                        <span class="status-text">Loading...</span>
-                    </span>
-                </div>
-                <div class="module-pill" id="obj-writer-status">
-                    <span class="module-name">OBJ Writer</span>
-                    <span class="status-indicator loading" aria-live="polite">
-                        <span class="status-dot"></span>
-                        <span class="status-text">Loading...</span>
-                    </span>
-                </div>
+        <!-- Two-column workspace -->
+        <div class="workspace">
 
-                <!-- PLY Modules -->
-                <div class="module-pill" id="ply-reader-status">
-                    <span class="module-name">PLY Reader</span>
-                    <span class="status-indicator loading" aria-live="polite">
-                        <span class="status-dot"></span>
-                        <span class="status-text">Loading...</span>
-                    </span>
-                </div>
-                <div class="module-pill" id="ply-writer-status">
-                    <span class="module-name">PLY Writer</span>
-                    <span class="status-indicator loading" aria-live="polite">
-                        <span class="status-dot"></span>
-                        <span class="status-text">Loading...</span>
-                    </span>
-                </div>
+            <!-- Sidebar: import + export -->
+            <aside class="sidebar">
 
-                <!-- glTF Modules -->
-                <div class="module-pill" id="gltf-status">
-                    <span class="module-name">glTF</span>
-                    <span class="status-indicator loading" aria-live="polite">
-                        <span class="status-dot"></span>
-                        <span class="status-text">Loading...</span>
-                    </span>
-                </div>
-                <!-- FBX Modules -->
-                <div class="module-pill" id="fbx-reader-status">
-                    <span class="module-name">FBX Reader</span>
-                    <span class="status-indicator loading" aria-live="polite">
-                        <span class="status-dot"></span>
-                        <span class="status-text">Loading...</span>
-                    </span>
-                </div>
-                <div class="module-pill" id="fbx-writer-status">
-                    <span class="module-name">FBX Writer</span>
-                    <span class="status-indicator loading" aria-live="polite">
-                        <span class="status-dot"></span>
-                        <span class="status-text">Loading...</span>
-                    </span>
-                </div>
+                <section class="card panel" id="input-section">
+                    <h2>1. Import</h2>
 
-            </div>
-        </section>
-
-        <!-- Input Section -->
-        <section class="card input-section">
-            <h2>1. Import Model</h2>
-            
-            <div id="drop-zone" class="drop-zone">
-                <div class="drop-content">
-                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem">📁</div>
-                    <p>Drag & Drop a 3D file here</p>
-                    <p style="font-size: 0.8rem; opacity: 0.7;">Include referenced .bin/images for glTF and .mtl/textures for OBJ in the same selection</p>
-                    <label class="browse-btn">
-                        Browse Files
-                        <input type="file" id="file-input" accept=".obj,.mtl,.ply,.gltf,.glb,.fbx,.bin,.png,.jpg,.jpeg,.webp,.ktx2" multiple hidden>
-                    </label>
-                </div>
-            </div>
-
-            <!-- Loaded File Info (Hidden by default) -->
-            <div id="file-info" class="file-info-bar" style="display: none;">
-                <div class="file-meta">
-                    <span class="file-name" id="file-name">model.obj</span>
-                    <span class="file-size" id="file-size">12.5 MB</span>
-                </div>
-                <button id="clear-file" class="icon-btn" title="Remove file">✕</button>
-            </div>
-        </section>
-
-        <!-- 3D Preview (Hidden by default) -->
-        <section id="viewer-section" class="card viewer-section" style="display: none;">
-            <h2>2. 3D Preview</h2>
-            <div class="viewer-wrapper">
-                <canvas id="viewer-canvas" class="viewer-canvas" aria-label="3D model preview"></canvas>
-            </div>
-
-            <div class="viewer-toolbar">
-                <button type="button" class="viewer-btn" id="viewer-reset" title="Reset camera">⟳ Reset</button>
-                <button type="button" class="viewer-btn" id="viewer-autorotate" title="Auto-rotate">↻ Auto-rotate</button>
-                <button type="button" class="viewer-btn" id="viewer-wireframe" title="Wireframe">▦ Wireframe</button>
-                <button type="button" class="viewer-btn" id="viewer-base-color" title="Show base color without preview lighting" aria-pressed="false">◉ Base color</button>
-                <button type="button" class="viewer-btn active" id="viewer-smooth-normals" title="Recalculate angle-weighted preview normals" aria-pressed="true">◒ Smooth</button>
-                <button type="button" class="viewer-btn" id="viewer-grid" title="Toggle grid"># Grid</button>
-            </div>
-
-            <div class="viewer-animation" id="viewer-animation" style="display: none;">
-                <div class="anim-row">
-                    <button type="button" class="viewer-btn" id="anim-play" title="Play / pause">▶</button>
-                    <select id="anim-clip" class="anim-clip" aria-label="Animation clip"></select>
-                    <label class="anim-loop">
-                        <input type="checkbox" id="anim-loop" checked> Loop
-                    </label>
-                    <span class="anim-time" id="anim-time">0.00s</span>
-                </div>
-                <div class="anim-row">
-                    <input type="range" id="anim-scrub" min="0" max="1000" value="0" step="1" class="anim-scrub">
-                </div>
-                <div class="anim-row">
-                    <label class="anim-speed-label">
-                        Speed <span id="anim-speed-value">1.00×</span>
-                        <input type="range" id="anim-speed" min="0" max="200" value="100" step="1" class="anim-speed">
-                    </label>
-                </div>
-            </div>
-        </section>
-
-        <!-- Mesh Preview Stats (Hidden by default) -->
-        <section id="preview-section" class="card" style="display: none;">
-            <h2>3. Mesh Details</h2>
-            <div class="stats-grid">
-                <div class="stat-box">
-                    <span class="stat-label">Meshes</span>
-                    <span id="mesh-count" class="stat-value">0</span>
-                </div>
-                <div class="stat-box">
-                    <span class="stat-label">Vertices</span>
-                    <span id="vertex-count" class="stat-value">0</span>
-                </div>
-                <div class="stat-box">
-                    <span class="stat-label">Triangles</span>
-                    <span id="triangle-count" class="stat-value">0</span>
-                </div>
-                <div class="stat-box">
-                    <span class="stat-label">Normals</span>
-                    <span id="has-normals" class="stat-value">-</span>
-                </div>
-                <div class="stat-box">
-                    <span class="stat-label">UVs</span>
-                    <span id="has-uvs" class="stat-value">-</span>
-                </div>
-            </div>
-
-            <div id="warnings-container" class="warnings-box" style="display: none;">
-                <strong>⚠️ Warning:</strong>
-                <ul id="warnings-list"></ul>
-            </div>
-        </section>
-
-        <!-- Export & Conversion (Hidden by default) -->
-        <section id="export-section" class="card" style="display: none;">
-            <h2>4. Export Settings</h2>
-            
-            <div class="options-grid">
-                <!-- Format Selection -->
-                <div class="option-group">
-                    <label for="export-format">Target Format</label>
-                    <select id="export-format">
-                        <option value="glb" selected>GLB (Binary glTF)</option>
-                        <option value="gltf">glTF (JSON)</option>
-                        <option value="obj">OBJ (Wavefront)</option>
-                        <option value="ply">PLY (Polygon File Format)</option>
-                    </select>
-
-                    <div style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 1.5rem;">
-                        <label class="checkbox-label" style="display:flex; align-items:center; gap: 8px;">
-                            <input type="checkbox" id="include-normals" checked>
-                            <span>Include Normals</span>
-                        </label>
-                        <label class="checkbox-label" style="display:flex; align-items:center; gap: 8px;">
-                            <input type="checkbox" id="include-uvs" checked>
-                            <span>Include UVs</span>
-                        </label>
-                    </div>
-                </div>
-
-                <!-- Draco Options -->
-                <div class="option-group" id="draco-options">
-                    <label class="checkbox-label" style="display:flex; align-items:center; gap: 8px;">
-                        <input type="checkbox" id="use-draco">
-                        <span id="use-draco-label">Enable Draco Compression</span>
-                    </label>
-
-                    <div id="draco-settings" class="draco-sliders" style="display: none;">
-                        <div class="slider-row">
-                            <div class="slider-header">
-                                <span>Encoding Speed</span>
-                                <span><span id="speed-value">5</span> (0=best, 10=fastest)</span>
-                            </div>
-                            <input type="range" id="encoding-speed" min="0" max="10" value="5">
-                        </div>
-
-                        <div class="slider-row">
-                            <div class="slider-header">
-                                <span>Compression Method</span>
-                            </div>
-                            <select id="encoding-method">
-                                <option value="-1" selected>Auto</option>
-                                <option value="0">Sequential</option>
-                                <option value="1">Edgebreaker</option>
-                            </select>
-                        </div>
-
-                        <div class="slider-row">
-                            <div class="slider-header">
-                                <span>Position Quantization</span>
-                                <span><span id="position-bits-value">14</span> bits (0=no quant)</span>
-                            </div>
-                            <input type="range" id="position-bits" min="0" max="16" value="14">
-                        </div>
-
-                        <div class="slider-row">
-                            <div class="slider-header">
-                                <span>Normal Quantization</span>
-                                <span><span id="normal-bits-value">10</span> bits</span>
-                            </div>
-                            <input type="range" id="normal-bits" min="6" max="14" value="10">
-                        </div>
-
-                        <div class="slider-row">
-                            <div class="slider-header">
-                                <span>TexCoord Quantization</span>
-                                <span><span id="texcoord-bits-value">12</span> bits</span>
-                            </div>
-                            <input type="range" id="texcoord-bits" min="8" max="14" value="12">
+                    <div id="drop-zone" class="drop-zone">
+                        <div class="drop-content">
+                            <div style="font-size: 2.5rem; margin-bottom: 0.5rem">📁</div>
+                            <p>Drag &amp; Drop a 3D file here</p>
+                            <p style="font-size: 0.8rem; opacity: 0.7;">Include referenced .bin/images for glTF and .mtl/textures for OBJ in the same selection</p>
+                            <label class="browse-btn">
+                                Browse Files
+                                <input type="file" id="file-input" accept=".obj,.mtl,.ply,.gltf,.glb,.fbx,.bin,.png,.jpg,.jpeg,.webp,.ktx2" multiple hidden>
+                            </label>
                         </div>
                     </div>
-                </div>
-            </div>
 
-            <button id="export-btn" class="primary-btn">
-                <span>⬇</span> Convert & Download
-            </button>
+                    <div id="file-info" class="file-info-bar" style="display: none;">
+                        <div class="file-meta">
+                            <span class="file-name" id="file-name">model.obj</span>
+                            <span class="file-size" id="file-size">12.5 MB</span>
+                        </div>
+                        <button id="clear-file" class="icon-btn" title="Remove file">✕</button>
+                    </div>
+                </section>
 
-            <!-- Compression Stats (Hidden until export completes) -->
-            <div id="compression-stats" class="stats-box" style="display: none; margin-top: 1.5rem; padding: 1rem; background: #1e3a5f; border-radius: 8px; border: 1px solid #3b82f6; color: #f8fafc;">
-                <strong style="color: #60a5fa;">✅ Compression Statistics:</strong>
-                <div style="margin-top: 0.5rem; font-size: 0.9rem; color: #e2e8f0;">
-                    <div><strong>Method:</strong> <span id="stats-method">-</span></div>
-                    <div><strong>Speed:</strong> <span id="stats-speed">-</span></div>
-                    <div><strong>Prediction Scheme:</strong> <span id="stats-prediction">-</span></div>
-                    <div><strong>Compressed Size:</strong> <span id="stats-size">-</span></div>
-                </div>
-            </div>
-        </section>
+                <section class="card panel" id="export-section" style="display: none;">
+                    <h2>2. Export</h2>
 
-        <!-- Console Log -->
-        <section class="card">
+                    <div class="option-group">
+                        <label for="export-format">Target Format</label>
+                        <select id="export-format" class="native-choice" aria-hidden="true" tabindex="-1">
+                            <option value="glb" selected>GLB (Binary glTF)</option>
+                            <option value="gltf">glTF (JSON)</option>
+                            <option value="obj">OBJ (Wavefront)</option>
+                            <option value="ply">PLY (Polygon File Format)</option>
+                            <option value="fbx">FBX (Autodesk)</option>
+                        </select>
+                        <div class="choice-grid format-choices" data-choice-for="export-format" role="group" aria-label="Target Format">
+                            <button type="button" data-value="glb" title="GLB (Binary glTF)">GLB</button>
+                            <button type="button" data-value="gltf" title="glTF (JSON)">glTF</button>
+                            <button type="button" data-value="obj" title="OBJ (Wavefront)">OBJ</button>
+                            <button type="button" data-value="ply" title="PLY (Polygon File Format)">PLY</button>
+                            <button type="button" data-value="fbx" title="FBX (Autodesk)">FBX</button>
+                        </div>
+
+                        <div class="checkbox-row">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="include-normals" checked>
+                                <span>Normals</span>
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="include-uvs" checked>
+                                <span>UVs</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="option-group" id="draco-options">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="use-draco">
+                            <span id="use-draco-label">Enable Draco Compression</span>
+                        </label>
+
+                        <div id="draco-settings" class="draco-sliders" style="display: none;">
+                            <div class="slider-row">
+                                <div class="slider-header">
+                                    <span>Encoding Speed</span>
+                                    <span><span id="speed-value">5</span> (0=best, 10=fastest)</span>
+                                </div>
+                                <input type="range" id="encoding-speed" min="0" max="10" value="5">
+                            </div>
+
+                            <div class="slider-row">
+                                <div class="slider-header">
+                                    <span>Compression Method</span>
+                                </div>
+                                <select id="encoding-method" class="native-choice" aria-hidden="true" tabindex="-1">
+                                    <option value="-1" selected>Auto</option>
+                                    <option value="0">Sequential</option>
+                                    <option value="1">Edgebreaker</option>
+                                </select>
+                                <div class="choice-grid method-choices" data-choice-for="encoding-method" role="group" aria-label="Compression Method">
+                                    <button type="button" data-value="-1">Auto</button>
+                                    <button type="button" data-value="0">Sequential</button>
+                                    <button type="button" data-value="1">Edgebreaker</button>
+                                </div>
+                            </div>
+
+                            <div class="slider-row">
+                                <div class="slider-header">
+                                    <span>Position Quantization</span>
+                                    <span><span id="position-bits-value">14</span> bits (0=no quant)</span>
+                                </div>
+                                <input type="range" id="position-bits" min="0" max="16" value="14">
+                            </div>
+
+                            <div class="slider-row">
+                                <div class="slider-header">
+                                    <span>Normal Quantization</span>
+                                    <span><span id="normal-bits-value">10</span> bits</span>
+                                </div>
+                                <input type="range" id="normal-bits" min="6" max="14" value="10">
+                            </div>
+
+                            <div class="slider-row">
+                                <div class="slider-header">
+                                    <span>TexCoord Quantization</span>
+                                    <span><span id="texcoord-bits-value">12</span> bits</span>
+                                </div>
+                                <input type="range" id="texcoord-bits" min="8" max="14" value="12">
+                            </div>
+                        </div>
+                    </div>
+
+                    <button id="export-btn" class="primary-btn">
+                        <span>⬇</span> Convert &amp; Download
+                    </button>
+
+                    <div id="compression-stats" class="stats-box" style="display: none; margin-top: 1rem; padding: 1rem; background: #1e3a5f; border-radius: 8px; border: 1px solid #3b82f6; color: #f8fafc;">
+                        <strong style="color: #60a5fa;">✅ Compression Statistics:</strong>
+                        <div style="margin-top: 0.5rem; font-size: 0.9rem; color: #e2e8f0;">
+                            <div><strong>Method:</strong> <span id="stats-method">-</span></div>
+                            <div><strong>Speed:</strong> <span id="stats-speed">-</span></div>
+                            <div><strong>Prediction Scheme:</strong> <span id="stats-prediction">-</span></div>
+                            <div><strong>Compressed Size:</strong> <span id="stats-size">-</span></div>
+                        </div>
+                    </div>
+                </section>
+
+            </aside>
+
+            <!-- Main canvas area: viewer + mesh details -->
+            <section class="canvas-area">
+
+                <section id="viewer-section" class="card">
+                    <h2>3D Preview</h2>
+                    <div class="viewer-wrapper">
+                        <canvas id="viewer-canvas" class="viewer-canvas" aria-label="3D model preview"></canvas>
+                        <div class="viewer-placeholder" id="viewer-placeholder">
+                            <div class="placeholder-icon">🖼️</div>
+                            <p class="placeholder-title">No model loaded</p>
+                            <p class="placeholder-hint">Drop a file in the sidebar to preview it here</p>
+                        </div>
+
+                        <div class="viewer-toolbar">
+                            <button type="button" class="viewer-btn" id="viewer-reset" title="Reset view"><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M2.5 10v3.5H6M13.5 10v3.5H10"/><circle cx="8" cy="8" r="1.5"/></svg><span>Reset view</span></button>
+                            <button type="button" class="viewer-btn" id="viewer-autorotate" title="Auto-rotate" aria-pressed="false"><svg class="viewer-btn-icon viewer-btn-icon--autorotate" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2.5" class="icon-fill"/><path d="M17.7 17.7A8 8 0 1 1 19.9 10.2"/><path d="m17.5 10.2 2.5 3 2-3.4"/></svg><span>Auto-rotate</span></button>
+                            <button type="button" class="viewer-btn" id="viewer-wireframe" title="Wireframe"><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 13.5 4.7 8 7.9 2.5 4.7 8 1.5Z"/><path d="M2.5 4.7V11L8 14.3l5.5-3.3V4.7M8 7.9v6.4"/></svg><span>Wireframe</span></button>
+                            <button type="button" class="viewer-btn" id="viewer-base-color" title="Show base color without preview lighting" aria-pressed="false"><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5"/><circle cx="8" cy="8" r="2" class="icon-fill"/></svg><span>Base color</span></button>
+                            <button type="button" class="viewer-btn" id="viewer-smooth-normals" title="Use angle-weighted normals for smooth preview shading" aria-pressed="false"><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="M8 3a5 5 0 0 1 0 10Z" class="icon-fill icon-muted-fill"/></svg><span>Smooth shading</span></button>
+                            <button type="button" class="viewer-btn" id="viewer-grid" title="Toggle grid"><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 2.5h11v11h-11zM6.2 2.5v11M9.8 2.5v11M2.5 6.2h11M2.5 9.8h11"/></svg><span>Grid</span></button>
+                        </div>
+
+                        <div class="viewer-animation" id="viewer-animation" style="display: none;">
+                            <div class="anim-row">
+                                <button type="button" class="anim-play-btn" id="anim-play" title="Play" aria-label="Play animation"><span class="anim-play-icon" aria-hidden="true"></span></button>
+                                <div class="anim-clip-picker">
+                                    <select id="anim-clip" class="anim-clip-native" aria-hidden="true" tabindex="-1"></select>
+                                    <button type="button" class="anim-clip-trigger" id="anim-clip-trigger" aria-haspopup="listbox" aria-expanded="false" aria-controls="anim-clip-menu">
+                                        <span id="anim-clip-label">Animation</span>
+                                        <span class="anim-clip-chevron" aria-hidden="true"></span>
+                                    </button>
+                                    <div class="anim-clip-menu" id="anim-clip-menu" role="listbox" aria-label="Animation clip" hidden></div>
+                                </div>
+                                <label class="anim-loop">
+                                    <input type="checkbox" id="anim-loop" checked> Loop
+                                </label>
+                                <span class="anim-time" id="anim-time">0.00s</span>
+                            </div>
+                            <div class="anim-row anim-track-row">
+                                <input type="range" id="anim-scrub" min="0" max="1000" value="0" step="1" class="anim-scrub">
+                                <label class="anim-speed-label">
+                                    Speed <span id="anim-speed-value">1.00×</span>
+                                    <input type="range" id="anim-speed" min="0" max="200" value="100" step="1" class="anim-speed">
+                                </label>
+                            </div>
+                        </div>
+
+                        <section id="preview-section" style="display: none;">
+                            <div class="stats-grid">
+                                <div class="stat-box">
+                                    <span class="stat-label">Meshes</span>
+                                    <span id="mesh-count" class="stat-value">0</span>
+                                </div>
+                                <div class="stat-box">
+                                    <span class="stat-label">Vertices</span>
+                                    <span id="vertex-count" class="stat-value">0</span>
+                                </div>
+                                <div class="stat-box">
+                                    <span class="stat-label">Triangles</span>
+                                    <span id="triangle-count" class="stat-value">0</span>
+                                </div>
+                                <div class="stat-box">
+                                    <span class="stat-label">Normals</span>
+                                    <span id="has-normals" class="stat-value">-</span>
+                                </div>
+                                <div class="stat-box">
+                                    <span class="stat-label">UVs</span>
+                                    <span id="has-uvs" class="stat-value">-</span>
+                                </div>
+                            </div>
+
+                            <div id="warnings-container" class="warnings-box" style="display: none;">
+                                <strong>⚠️ Warning:</strong>
+                                <ul id="warnings-list"></ul>
+                            </div>
+                        </section>
+                    </div>
+                </section>
+
+            </section>
+
+        </div>
+
+        <!-- Full-width console -->
+        <section class="card console-card">
             <h2>Activity Log</h2>
             <div id="console" class="console-output">
                 <div class="console-line info">Ready. Please verify WASM modules are loaded above.</div>
             </div>
         </section>
-
-        <footer>
-            <p>Powered by <a href="https://github.com/google/draco" target="_blank" rel="noopener">Google Draco</a></p>
-        </footer>
 
     </main>
 

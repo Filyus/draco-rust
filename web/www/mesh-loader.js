@@ -105,7 +105,7 @@ export async function buildSceneFromMeshes(parsed, resources = Object.create(nul
         const material = {
             baseColorFactor: colors
                 ? [1, 1, 1, 1]
-                : [...(sourceMaterial?.diffuse || [0.7, 0.78, 0.88]), sourceMaterial?.alpha ?? 1],
+                : [...(sourceMaterial?.diffuse || [1, 1, 1]), sourceMaterial?.alpha ?? 1],
             // OBJ/PLY/FBX readers do not carry a material contract. Rendering
             // both sides keeps the diagnostic preview useful for exporters
             // whose triangle winding is opposite to WebGL's default.

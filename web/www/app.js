@@ -6,18 +6,15 @@
  */
 
 import { Viewer } from './viewer.js';
-import { buildSceneFromGltf } from './gltf-loader.js';
+import { buildFlatMeshesFromGltf, buildSceneFromGltf } from './gltf-loader.js';
 import { buildSceneFromMeshes } from './mesh-loader.js';
 
 // Module state
 const modules = {
-    objReader: { loaded: false, module: null },
-    objWriter: { loaded: false, module: null },
-    plyReader: { loaded: false, module: null },
-    plyWriter: { loaded: false, module: null },
+    obj: { loaded: false, module: null },
+    ply: { loaded: false, module: null },
     gltf: { loaded: false, module: null },
-    fbxReader: { loaded: false, module: null },
-    fbxWriter: { loaded: false, module: null },
+    fbx: { loaded: false, module: null },
 };
 
 // Current loaded mesh data
@@ -70,11 +67,39 @@ const viewerGridBtn = document.getElementById('viewer-grid');
 const viewerAnimation = document.getElementById('viewer-animation');
 const animPlayBtn = document.getElementById('anim-play');
 const animClipSelect = document.getElementById('anim-clip');
+const animClipTrigger = document.getElementById('anim-clip-trigger');
+const animClipLabel = document.getElementById('anim-clip-label');
+const animClipMenu = document.getElementById('anim-clip-menu');
 const animLoopCheckbox = document.getElementById('anim-loop');
 const animTimeLabel = document.getElementById('anim-time');
 const animScrub = document.getElementById('anim-scrub');
 const animSpeed = document.getElementById('anim-speed');
 const animSpeedValue = document.getElementById('anim-speed-value');
+
+function setupChoiceControl(select) {
+    const control = document.querySelector(`[data-choice-for="${select.id}"]`);
+    if (!control) return;
+    const buttons = Array.from(control.querySelectorAll('button[data-value]'));
+    const sync = () => {
+        for (const button of buttons) {
+            const selected = button.dataset.value === select.value;
+            button.classList.toggle('selected', selected);
+            button.setAttribute('aria-pressed', String(selected));
+        }
+    };
+    for (const button of buttons) {
+        button.addEventListener('click', () => {
+            if (button.dataset.value === select.value) return;
+            select.value = button.dataset.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+    }
+    select.addEventListener('change', sync);
+    sync();
+}
+
+setupChoiceControl(exportFormat);
+setupChoiceControl(encodingMethod);
 
 // Initialize application
 async function init() {
@@ -94,13 +119,10 @@ async function loadAllModules() {
     // Cache-bust to ensure fresh WASM/JS are loaded (helps avoid stale cached files during development)
     const CACHE_BUST = `?v=${Date.now()}`;
     const moduleConfigs = [
-        { key: 'objReader', path: `./pkg/obj_reader.js${CACHE_BUST}`, statusId: 'obj-reader-status' },
-        { key: 'objWriter', path: `./pkg/obj_writer.js${CACHE_BUST}`, statusId: 'obj-writer-status' },
-        { key: 'plyReader', path: `./pkg/ply_reader.js${CACHE_BUST}`, statusId: 'ply-reader-status' },
-        { key: 'plyWriter', path: `./pkg/ply_writer.js${CACHE_BUST}`, statusId: 'ply-writer-status' },
+        { key: 'obj', path: `./pkg/obj.js${CACHE_BUST}`, statusId: 'obj-status' },
+        { key: 'ply', path: `./pkg/ply.js${CACHE_BUST}`, statusId: 'ply-status' },
         { key: 'gltf', path: `./pkg/gltf.js${CACHE_BUST}`, statusId: 'gltf-status' },
-        { key: 'fbxReader', path: `./pkg/fbx_reader.js${CACHE_BUST}`, statusId: 'fbx-reader-status' },
-        { key: 'fbxWriter', path: `./pkg/fbx_writer.js${CACHE_BUST}`, statusId: 'fbx-writer-status' },
+        { key: 'fbx', path: `./pkg/fbx.js${CACHE_BUST}`, statusId: 'fbx-status' },
     ];
 
     const loadPromises = moduleConfigs.map(config => loadModule(config));
@@ -122,7 +144,8 @@ async function loadModule({ key, path, statusId }) {
     
     try {
         const module = await import(path);
-        await module.default();
+        const wasmUrl = new URL(path.replace(/\.js(\?.*)?$/, '_bg.wasm$1'), window.location.href);
+        await module.default(wasmUrl);
         
         modules[key].module = module;
         modules[key].loaded = true;
@@ -143,7 +166,7 @@ async function loadModule({ key, path, statusId }) {
         }
         
         const version = module.version ? module.version() : '?';
-        log(`${module.module_name ? module.module_name() : key} v${version} loaded`, 'success');
+        log(`${key} v${version} loaded`, 'success');
     } catch (error) {
         const statusText = indicator.querySelector('.status-text');
         const statusDot = indicator.querySelector('.status-dot');
@@ -196,7 +219,7 @@ function setupEventListeners() {
     
     // Draco checkbox
     useDraco.addEventListener('change', () => {
-        dracoSettings.style.display = useDraco.checked ? 'block' : 'none';
+        dracoSettings.style.display = useDraco.checked ? 'grid' : 'none';
     });
     
     // Quantization sliders
@@ -217,11 +240,15 @@ function setupEventListeners() {
     exportBtn.addEventListener('click', exportFile);
 
     // 3D preview toolbar
-    viewerResetBtn.addEventListener('click', () => viewer?.resetView());
+    viewerResetBtn.addEventListener('click', () => {
+        if (!viewer) return;
+        viewer.resetView();
+    });
     viewerAutoRotateBtn.addEventListener('click', () => {
         if (!viewer) return;
         viewer.autoRotate = !viewer.autoRotate;
         viewerAutoRotateBtn.classList.toggle('active', viewer.autoRotate);
+        viewerAutoRotateBtn.setAttribute('aria-pressed', String(viewer.autoRotate));
     });
     viewerWireframeBtn.addEventListener('click', () => {
         if (!viewer) return;
@@ -260,7 +287,21 @@ function setupEventListeners() {
         const idx = Number(animClipSelect.value);
         viewer.animation.clipIndex = idx;
         viewer.animation.time = 0;
+        syncAnimationClipSelection();
         updateAnimationScrub();
+    });
+    animClipTrigger.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const open = animClipTrigger.getAttribute('aria-expanded') !== 'true';
+        if (open) openAnimationClipMenu();
+        else closeAnimationClipMenu();
+    });
+    animClipMenu.addEventListener('click', (event) => event.stopPropagation());
+    animClipTrigger.addEventListener('keydown', handleAnimationClipTriggerKeydown);
+    animClipMenu.addEventListener('keydown', handleAnimationClipMenuKeydown);
+    document.addEventListener('click', closeAnimationClipMenu);
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeAnimationClipMenu();
     });
     animLoopCheckbox.addEventListener('change', () => {
         if (viewer) viewer.animation.loop = animLoopCheckbox.checked;
@@ -308,7 +349,7 @@ function updateDracoEncoderAvailability() {
     useDracoLabel.textContent = available
         ? 'Enable Draco Compression'
         : 'Draco Compression (not included in this build)';
-    dracoSettings.style.display = available && useDraco.checked ? 'block' : 'none';
+    dracoSettings.style.display = available && useDraco.checked ? 'grid' : 'none';
 }
 
 async function handleFile(file, companionFiles = []) {
@@ -366,7 +407,7 @@ async function handleFile(file, companionFiles = []) {
             currentMeshData = result;
             displayMeshInfo(result);
             previewSection.style.display = 'block';
-            exportSection.style.display = 'block';
+            exportSection.style.display = 'flex';
             log(`Successfully parsed ${file.name}`, 'success');
             await loadPreview(extension);
         } else {
@@ -383,12 +424,12 @@ async function handleFile(file, companionFiles = []) {
 
 // Parse OBJ file
 async function parseObjFile(data, resources = Object.create(null)) {
-    if (!modules.objReader.loaded) {
-        return { success: false, error: 'OBJ Reader module not loaded' };
+    if (!modules.obj.loaded) {
+        return { success: false, error: 'OBJ module not loaded' };
     }
-    
+
     const textContent = new TextDecoder().decode(data);
-    const result = modules.objReader.module.parse_obj(textContent);
+    const result = modules.obj.module.parse_obj(textContent);
     if (result?.success) {
         result.materials = parseObjMaterials(textContent, resources, result.warnings || (result.warnings = []));
     }
@@ -416,7 +457,7 @@ function parseObjMaterials(objText, resources, warnings) {
             const [directive, ...values] = trimmed.split(/\s+/);
             if (directive === 'newmtl') {
                 current = values.join(' ');
-                if (current) materials[current] ||= { diffuse: [0.8, 0.82, 0.86], alpha: 1 };
+                if (current) materials[current] ||= { diffuse: [1, 1, 1], alpha: 1 };
             } else if (directive === 'Kd' && current && values.length >= 3) {
                 const diffuse = values.slice(0, 3).map(Number);
                 if (diffuse.every(Number.isFinite)) materials[current].diffuse = diffuse;
@@ -453,11 +494,11 @@ function resourceBasename(path) {
 
 // Parse PLY file
 async function parsePlyFile(data) {
-    if (!modules.plyReader.loaded) {
-        return { success: false, error: 'PLY Reader module not loaded' };
+    if (!modules.ply.loaded) {
+        return { success: false, error: 'PLY module not loaded' };
     }
-    
-    const result = modules.plyReader.module.parse_ply_bytes(data);
+
+    const result = modules.ply.module.parse_ply_bytes(data);
     console.log('[JS] PLY parse result:', result);
     if (result.meshes) {
         for (const mesh of result.meshes) {
@@ -543,11 +584,11 @@ function triangleCountForMode(mode, elementCount) {
 
 // Parse FBX file
 async function parseFbxFile(data) {
-    if (!modules.fbxReader.loaded) {
-        return { success: false, error: 'FBX Reader module not loaded' };
+    if (!modules.fbx.loaded) {
+        return { success: false, error: 'FBX module not loaded' };
     }
-    
-    return modules.fbxReader.module.parse_fbx(data);
+
+    return modules.fbx.module.parse_fbx(data);
 }
 
 // Display mesh information
@@ -604,7 +645,7 @@ function updateExportOptions() {
     
     // Show/hide Draco options for glTF formats only
     if (format === 'gltf' || format === 'glb') {
-        dracoOptions.style.display = 'block';
+        dracoOptions.style.display = 'flex';
     } else {
         dracoOptions.style.display = 'none';
     }
@@ -622,13 +663,23 @@ async function exportFile() {
     
     try {
         let result;
-        if (currentMeshData.document) {
+        if (currentMeshData.document && (format === 'gltf' || format === 'glb')) {
             result = exportGltfDocument(format);
             downloadResult(result, format);
             log(result.message, 'success');
             return;
         }
-        const meshes = prepareMeshesForExport(currentMeshData.meshes);
+        const sourceMeshes = currentMeshData.document
+            ? buildFlatMeshesFromGltf(
+                currentSourceData,
+                currentSourceResources,
+                modules.gltf.module,
+            )
+            : currentMeshData.meshes;
+        const meshes = prepareMeshesForExport(sourceMeshes);
+        if (meshes.length === 0) {
+            throw new Error('The document contains no triangle geometry to export');
+        }
         
         switch (format) {
             case 'obj':
@@ -755,40 +806,40 @@ function prepareMeshesForExport(meshes) {
 
 // Export to OBJ
 async function exportToObj(meshes) {
-    if (!modules.objWriter.loaded) {
-        return { success: false, error: 'OBJ Writer module not loaded' };
+    if (!modules.obj.loaded) {
+        return { success: false, error: 'OBJ module not loaded' };
     }
-    
+
     const options = {
         include_normals: document.getElementById('include-normals').checked,
         include_uvs: document.getElementById('include-uvs').checked,
         precision: 6,
     };
-    
+
     if (meshes.length === 1) {
-        return modules.objWriter.module.create_obj(meshes[0], options);
+        return modules.obj.module.create_obj(meshes[0], options);
     } else {
-        return modules.objWriter.module.create_obj_multi(meshes, options);
+        return modules.obj.module.create_obj_multi(meshes, options);
     }
 }
 
 // Export to PLY
 async function exportToPly(meshes) {
-    if (!modules.plyWriter.loaded) {
-        return { success: false, error: 'PLY Writer module not loaded' };
+    if (!modules.ply.loaded) {
+        return { success: false, error: 'PLY module not loaded' };
     }
-    
+
     // PLY only supports single mesh, merge if multiple
     const merged = mergeMeshes(meshes);
-    
+
     const options = {
         include_normals: document.getElementById('include-normals').checked,
         include_colors: true,
         precision: 6,
         format: 'ascii',
     };
-    
-    return modules.plyWriter.module.create_ply(merged, options);
+
+    return modules.ply.module.create_ply(merged, options);
 }
 
 // Export to glTF/GLB
@@ -801,15 +852,15 @@ async function exportToGltf(meshes, format) {
 
 // Export to FBX
 async function exportToFbx(meshes) {
-    if (!modules.fbxWriter.loaded) {
-        return { success: false, error: 'FBX Writer module not loaded' };
+    if (!modules.fbx.loaded) {
+        return { success: false, error: 'FBX module not loaded' };
     }
-    
+
     const options = {
         version: 7500,
     };
-    
-    return modules.fbxWriter.module.create_fbx(meshes, options);
+
+    return modules.fbx.module.create_fbx(meshes, options);
 }
 
 // Merge multiple meshes into one
@@ -896,7 +947,7 @@ function ensureViewer() {
 }
 
 async function loadPreview(extension) {
-    viewerSection.style.display = 'block';
+    viewerSection.classList.add('loaded');
 
     // Yield to the browser so the section layout settles before measuring the canvas.
     await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -950,6 +1001,7 @@ function updateAnimationUi(scene) {
         animClipSelect.appendChild(option);
     }
     animClipSelect.value = String(viewer.animation.clipIndex);
+    rebuildAnimationClipMenu();
     updateAnimationPlayButton();
     updateAnimationScrub();
 }
@@ -957,19 +1009,116 @@ function updateAnimationUi(scene) {
 function resetAnimationUi() {
     viewerAnimation.style.display = 'none';
     animClipSelect.innerHTML = '';
+    animClipMenu.replaceChildren();
+    animClipLabel.textContent = 'Animation';
+    closeAnimationClipMenu();
     animTimeLabel.textContent = '0.00s';
     animScrub.value = 0;
     animSpeedValue.textContent = '1.00×';
     animSpeed.value = 100;
-    animPlayBtn.textContent = '▶';
     animPlayBtn.classList.remove('active');
+    animPlayBtn.title = 'Play';
+    animPlayBtn.setAttribute('aria-label', 'Play animation');
+}
+
+function rebuildAnimationClipMenu() {
+    animClipMenu.replaceChildren();
+    for (const option of animClipSelect.options) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'anim-clip-option';
+        button.dataset.value = option.value;
+        button.id = `anim-clip-option-${option.value}`;
+        button.tabIndex = -1;
+        button.setAttribute('role', 'option');
+        button.textContent = option.textContent;
+        button.addEventListener('click', () => {
+            animClipSelect.value = option.value;
+            animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            closeAnimationClipMenu(true);
+        });
+        animClipMenu.appendChild(button);
+    }
+    syncAnimationClipSelection();
+}
+
+function syncAnimationClipSelection() {
+    const selected = animClipSelect.selectedOptions[0];
+    animClipLabel.textContent = selected?.textContent || 'Animation';
+    for (const option of animClipMenu.querySelectorAll('.anim-clip-option')) {
+        const active = option.dataset.value === animClipSelect.value;
+        option.classList.toggle('selected', active);
+        option.setAttribute('aria-selected', String(active));
+        if (active) animClipTrigger.setAttribute('aria-activedescendant', option.id);
+    }
+}
+
+function openAnimationClipMenu() {
+    animClipTrigger.setAttribute('aria-expanded', 'true');
+    animClipMenu.hidden = false;
+    const selected = animClipMenu.querySelector('.anim-clip-option.selected')
+        || animClipMenu.querySelector('.anim-clip-option');
+    selected?.focus();
+}
+
+function closeAnimationClipMenu(restoreFocus = false) {
+    animClipTrigger.setAttribute('aria-expanded', 'false');
+    animClipMenu.hidden = true;
+    if (restoreFocus) animClipTrigger.focus();
+}
+
+function selectAnimationClipAt(index) {
+    const options = [...animClipSelect.options];
+    if (options.length === 0) return;
+    const wrapped = (index + options.length) % options.length;
+    animClipSelect.value = options[wrapped].value;
+    animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function handleAnimationClipTriggerKeydown(event) {
+    const options = [...animClipSelect.options];
+    if (options.length === 0) return;
+    const current = Math.max(0, options.findIndex(option => option.value === animClipSelect.value));
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        selectAnimationClipAt(current + (event.key === 'ArrowDown' ? 1 : -1));
+    } else if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault();
+        selectAnimationClipAt(event.key === 'Home' ? 0 : options.length - 1);
+    } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openAnimationClipMenu();
+    }
+}
+
+function handleAnimationClipMenuKeydown(event) {
+    const options = [...animClipMenu.querySelectorAll('.anim-clip-option')];
+    const current = options.indexOf(document.activeElement);
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        closeAnimationClipMenu(true);
+        return;
+    }
+    let next = current;
+    if (event.key === 'ArrowDown') next = (current + 1) % options.length;
+    else if (event.key === 'ArrowUp') next = (current - 1 + options.length) % options.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = options.length - 1;
+    else return;
+    event.preventDefault();
+    options[next]?.focus();
+    if (options[next]) {
+        animClipSelect.value = options[next].dataset.value;
+        animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    }
 }
 
 function updateAnimationPlayButton() {
     if (!viewer || !viewer.scene?.animations?.length) return;
     const playing = viewer.animation.playing;
-    animPlayBtn.textContent = playing ? '⏸' : '▶';
     animPlayBtn.classList.toggle('active', playing);
+    animPlayBtn.title = playing ? 'Pause' : 'Play';
+    animPlayBtn.setAttribute('aria-label', playing ? 'Pause animation' : 'Play animation');
 }
 
 // Animation scrub/timeline ticker — bound to the render loop via rAF.
@@ -999,10 +1148,10 @@ function clearFile() {
     currentSourceResources = Object.create(null);
     
     fileInfo.style.display = 'none';
-    dropZone.style.display = 'block';
+    dropZone.style.display = 'grid';
     previewSection.style.display = 'none';
     exportSection.style.display = 'none';
-    viewerSection.style.display = 'none';
+    viewerSection.classList.remove('loaded');
     viewer?.clear();
     resetAnimationUi();
 
