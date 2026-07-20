@@ -38,6 +38,8 @@ Makefile
 *.lib
 *.dll
 *.obj
+!testdata/test_nm_seq_100.obj
+!testdata/mat_test.obj
 *.a
 *.o
 *.dylib
