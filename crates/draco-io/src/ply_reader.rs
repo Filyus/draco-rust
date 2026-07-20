@@ -1601,8 +1601,19 @@ end_header
 
     #[test]
     fn test_read_binary_little_endian_mesh_with_cr_only_header() {
-        let mesh = PlyReader::read_from_bytes(include_bytes!("../../../testdata/delim_test.ply"))
-            .expect("CR-only binary PLY header should parse");
+        let mut ply = b"ply\rformat binary_little_endian 1.0\relement vertex 24\rproperty float x\rproperty float y\rproperty float z\relement face 1\rproperty list uchar int vertex_indices\rend_header\r".to_vec();
+        for index in 0..24 {
+            ply.extend_from_slice(&(index as f32).to_le_bytes());
+            ply.extend_from_slice(&0.0f32.to_le_bytes());
+            ply.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        ply.extend_from_slice(&[3]);
+        for index in [0i32, 1, 2] {
+            ply.extend_from_slice(&index.to_le_bytes());
+        }
+
+        let mesh =
+            PlyReader::read_from_bytes(&ply).expect("CR-only binary PLY header should parse");
 
         assert_eq!(mesh.num_points(), 24);
         assert!(mesh.num_faces() > 0);
