@@ -8,6 +8,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.4](https://github.com/Filyus/draco-rust/compare/draco-core-v1.0.3...draco-core-v1.0.4) - 2026-07-20
+
 ### Fixed
 
 - Feature-disabled builds no longer compile unused codec internals or encoder
