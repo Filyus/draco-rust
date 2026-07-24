@@ -27,6 +27,14 @@ let currentSourceResources = Object.create(null);
 // 3D preview viewer (lazily created on first use)
 let viewer = null;
 
+// Opt-in diagnostics for importer/exporter development. Normal conversion
+// warnings still go through the visible log panel; this only replaces noisy
+// object dumps that were previously emitted for every PLY/export operation.
+const debugLogging = new URLSearchParams(globalThis.location?.search || '').has('debug');
+function debugLog(...values) {
+    if (debugLogging) console.debug('[Draco debug]', ...values);
+}
+
 function errorMessage(error) {
     if (error && typeof error.message === 'string') {
         return error.message;
@@ -532,10 +540,10 @@ async function parsePlyFile(data) {
     }
 
     const result = modules.ply.module.parse_ply_bytes(data);
-    console.log('[JS] PLY parse result:', result);
+    debugLog('PLY parse result:', result);
     if (result.meshes) {
         for (const mesh of result.meshes) {
-            console.log('[JS] PLY mesh: positions=', mesh.positions?.length, 
+            debugLog('PLY mesh: positions=', mesh.positions?.length,
                 ', indices=', mesh.indices?.length,
                 ', normals=', mesh.normals?.length);
         }
@@ -826,9 +834,9 @@ function prepareMeshesForExport(meshes) {
     const includeNormals = document.getElementById('include-normals').checked;
     const includeUvs = document.getElementById('include-uvs').checked;
     
-    console.log('[JS] prepareMeshesForExport called with', meshes.length, 'meshes');
+    debugLog('prepareMeshesForExport called with', meshes.length, 'meshes');
     for (const mesh of meshes) {
-        console.log('[JS] Input mesh:', 
+        debugLog('Input mesh:',
             'positions:', mesh.positions?.length,
             'indices:', mesh.indices?.length,
             'normals:', mesh.normals?.length,
@@ -861,9 +869,9 @@ function prepareMeshesForExport(meshes) {
         })),
     }));
     
-    console.log('[JS] Output meshes:');
+    debugLog('Output meshes:');
     for (const mesh of result) {
-        console.log('[JS] Output mesh:', 
+        debugLog('Output mesh:',
             'positions:', mesh.positions?.length,
             'indices:', mesh.indices?.length,
             'normals:', mesh.normals?.length,

@@ -5,15 +5,15 @@
 // still being a different dance. Blender receives the exact source FBX and
 // the viewer receives the same bytes through the WASM reader.
 // Run: node tests/fbx-blender-motion-probe.mjs
-import { existsSync, readFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { here, loadWasm, mixamoFbx, readBytes } from './fbx-test-utils.mjs';
 
 const BLENDER = process.env.BLENDER
     || 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe';
-const MIXAMO = 'D:/Projects/Three.ts/examples/models/fbx/mixamo.fbx';
+const MIXAMO = mixamoFbx;
 if (!existsSync(BLENDER) || !existsSync(MIXAMO)) {
     console.log('SKIP Blender Mixamo motion probe (local Blender or fixture missing)');
     process.exit(0);
@@ -27,8 +27,6 @@ if (typeof globalThis.WebGL2RenderingContext === 'undefined') {
     };
 }
 
-const here = dirname(fileURLToPath(import.meta.url));
-const pkg = resolve(here, '..', 'www', 'pkg');
 const times = [0, 4.2083335, 8.416667, 12.625, 16.833334];
 const bones = [
     'mixamorig:Hips', 'mixamorig:Spine', 'mixamorig:Spine1', 'mixamorig:Spine2',
@@ -61,11 +59,10 @@ const line = blender.stdout.split(/\r?\n/).find((value) => value.startsWith('DRA
 if (!line) throw new Error('Blender did not emit Mixamo world-position samples');
 const blenderSamples = JSON.parse(line.slice('DRACO_BLENDER_JSON='.length));
 
-const fbx = await import(pathToFileURL(resolve(pkg, 'fbx.js')));
-await fbx.default({ module_or_path: await readFile(resolve(pkg, 'fbx_bg.wasm')) });
+const fbx = await loadWasm('fbx');
 const { buildSceneFromFbx } = await import(pathToFileURL(resolve(here, '..', 'www', 'mesh-loader.js')));
 const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'www', 'viewer.js')));
-const parsed = fbx.parse_fbx(new Uint8Array(readFileSync(MIXAMO)));
+const parsed = fbx.parse_fbx(await readBytes(MIXAMO));
 const scene = await buildSceneFromFbx(parsed);
 const probe = Object.create(Viewer.prototype);
 probe.scene = scene;
