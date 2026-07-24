@@ -642,6 +642,33 @@ function fbxAnimationToViewer(clip, nodeById, nodeByName) {
             }
             output = quatOut;
             interpolation = 'LINEAR';
+        } else if (channel.path === 'translation') {
+            // FBX curves carry the raw Lcl Translation values. The node's
+            // rest transform may also include pivots and pre/post rotation,
+            // so assigning those raw values directly moves the skeleton away
+            // from its BindPose even at the first key. Preserve the authored
+            // root-motion delta while anchoring that first key to the same
+            // rest translation used for the bind matrix.
+            const rest = node.restTrs?.translation || [0, 0, 0];
+            const rawRest = [output[0] || 0, output[1] || 0, output[2] || 0];
+            const translated = new Float32Array(output.length);
+            for (let i = 0; i < input.length; i++) {
+                const offset = i * 3;
+                translated[offset] = rest[0] + (output[offset] - rawRest[0]);
+                translated[offset + 1] = rest[1] + (output[offset + 1] - rawRest[1]);
+                translated[offset + 2] = rest[2] + (output[offset + 2] - rawRest[2]);
+            }
+            output = translated;
+            // The semantic FBX decoder exposes cubic tangents separately,
+            // whereas viewer.js expects glTF's interleaved cubic layout.
+            // Translation values above are deliberately rebased, so passing
+            // the value-only FBX array through as CUBICSPLINE makes the
+            // viewer read past every third key and turns the root transform
+            // into NaN midway through this Mixamo clip.  The project's FBX
+            // interoperability profile uses a target-equivalent linear bake
+            // for transform curves; retain the dense authored values and
+            // sample them linearly just as the rotation adapter does.
+            if (interpolation === 'CUBICSPLINE') interpolation = 'LINEAR';
         } else if (interpolation === 'CUBICSPLINE') {
             // `FbxAnimSampler.output` contains only key values.  Interleave
             // FBX's separate in/out tangent arrays into the glTF-shaped
