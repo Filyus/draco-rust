@@ -621,15 +621,13 @@ function fbxAnimationToViewer(clip, nodeById, nodeByName) {
             // used by skeletal clips and avoids feeding tangent data into the
             // Euler value conversion.
             const values = output;
-            const rawRest = eulerXyzToQuat(values[0] || 0, values[1] || 0, values[2] || 0);
-            // `node.restTrs.rotation` comes from the complete FBX rest
-            // matrix, including PreRotation and PostRotation.  Apply the
-            // constant correction to every animated Lcl Rotation so that the
-            // first key exactly matches the rest pose instead of replacing it.
-            const correction = quatMultiply(
-                node.restTrs?.rotation || [0, 0, 0, 1],
-                quatInverse(rawRest),
-            );
+            // `node.restTrs.rotation` is the static FBX rotation basis (the
+            // Mixamo rig's PreRotation for this source).  Lcl Rotation keys
+            // are absolute authored values in that basis, not deltas from
+            // the skin BindPose.  Compose the basis with every raw key;
+            // normalizing against the first key silently replaced the
+            // animation's opening pose with the T-pose and changed the dance.
+            const correction = node.restTrs?.rotation || [0, 0, 0, 1];
             for (let i = 0; i < frames; i++) {
                 const rx = values[i * 3] || 0;
                 const ry = values[i * 3 + 1] || 0;
