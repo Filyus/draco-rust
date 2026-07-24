@@ -16,13 +16,17 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
 console_error_panic_hook = { workspace = true, optional = true }
-# FBX array zlib inflation, required only by the reader.
-miniz_oxide = { version = "0.9.1", optional = true }
+draco-core = { path = "../../crates/draco-core", default-features = false, optional = true }
+draco-io = { path = "../../crates/draco-io", default-features = false, optional = true }
 
 [features]
 default = ["read", "write"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
-# FBX binary reading (`parse_fbx`). Enables zlib-inflated array decoding.
-read = ["dep:miniz_oxide"]
+# FBX binary reading (`parse_fbx`). The shared reader preserves the model tree
+# and supported local transforms instead of exposing only a flat mesh list.
+# `draco-io/compression` enables zlib inflation for FBX array payloads, which
+# every real-world FBX exporter (Maya/Blender/MotionBuilder) emits; without it
+# the reader fails with "FBX array compression not supported".
+read = ["dep:draco-core", "dep:draco-io", "draco-io/fbx-reader", "draco-io/compression"]
 # FBX binary writing (`create_fbx`).
-write = []
+write = ["dep:draco-core", "dep:draco-io", "draco-io/fbx-writer"]

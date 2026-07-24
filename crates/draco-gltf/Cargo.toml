@@ -28,7 +28,7 @@ thiserror = "2.0"
 default = ["full"]
 # Lossless JSON DOM, typed root views, GLB and resource contracts. This is the
 # common base for scene and geometry consumers.
-document = ["draco-io/gltf"]
+document = ["draco-io/gltf-container"]
 # Accessor materialization and PackedGeometry contracts.
 geometry = ["document", "draco-io/gltf-geometry"]
 # KHR_draco_mesh_compression decoding and Draco-backed packed geometry.

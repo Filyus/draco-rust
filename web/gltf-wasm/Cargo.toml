@@ -17,7 +17,7 @@ wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 console_error_panic_hook = { workspace = true, optional = true }
 draco-gltf = { path = "../../crates/draco-gltf", default-features = false, features = ["document", "resources"] }
-draco-io = { path = "../../crates/draco-io", default-features = false, features = ["gltf"] }
+draco-io = { path = "../../crates/draco-io", default-features = false, features = ["gltf-container"] }
 
 [features]
 default = ["read", "draco-decode"]

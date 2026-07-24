@@ -262,7 +262,7 @@ select.native-choice { display: none; }
     gap: 5px;
 }
 
-.format-choices { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.format-choices { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .method-choices { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 0; }
 
 .choice-grid button {
@@ -489,6 +489,10 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 .viewer-btn:hover .viewer-btn-icon { color: #c5d8f2; }
 .viewer-btn.active { color: #fff; background: rgba(71, 127, 220, 0.86); }
 .viewer-btn.active .viewer-btn-icon { color: #fff; }
+.viewer-btn:disabled { cursor: default; color: #647793; opacity: 0.72; }
+.viewer-btn:disabled .viewer-btn-icon { color: #647793; }
+.viewer-btn:disabled:hover { color: #647793; background: transparent; }
+.viewer-btn:disabled:hover .viewer-btn-icon { color: #647793; }
 
 .viewer-animation {
     position: absolute;

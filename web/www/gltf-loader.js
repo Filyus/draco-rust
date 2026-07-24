@@ -13,6 +13,19 @@
  * because support policy and fallback behavior are specific to the preview.
  */
 
+import {
+    buildFbxMeshSkin,
+    buildFbxMaterials,
+    buildFbxMorphTargets,
+    buildFbxSkins,
+    buildFbxTextures,
+    buildFbxWorldMatrices,
+    convertGltfVectorArrayToFbx,
+    fbxRowMajorMatrix,
+    extractGltfCubicSegment,
+    quaternionKeysToFbxEuler,
+} from './fbx-scene-adapter.js';
+
 const GL = WebGL2RenderingContext;
 const SUPPORTED_EXTENSIONS = new Set([
     'KHR_materials_unlit',
@@ -112,6 +125,10 @@ export function buildFlatMeshesFromGltf(sourceData, resources, gltfModule) {
 
                     const normal = attributes.get('NORMAL');
                     const texcoord = attributes.get('TEXCOORD_0');
+                    const joints0 = attributes.get('JOINTS_0');
+                    const weights0 = attributes.get('WEIGHTS_0');
+                    const joints1 = attributes.get('JOINTS_1');
+                    const weights1 = attributes.get('WEIGHTS_1');
                     const meshName = definitions[meshIndex]?.name || `mesh_${meshIndex}`;
                     meshes.push({
                         name: primitiveCount === 1 ? meshName : `${meshName}_${primitiveIndex}`,
@@ -123,6 +140,14 @@ export function buildFlatMeshesFromGltf(sourceData, resources, gltfModule) {
                         uvs: texcoord?.components === 2 && texcoord.count === position.count
                             ? packedAttributeNumbers(texcoord)
                             : null,
+                        joints0: joints0?.components === 4 && joints0.count === position.count
+                            ? packedAttributeNumbers(joints0) : null,
+                        weights0: weights0?.components === 4 && weights0.count === position.count
+                            ? packedAttributeNumbers(weights0) : null,
+                        joints1: joints1?.components === 4 && joints1.count === position.count
+                            ? packedAttributeNumbers(joints1) : null,
+                        weights1: weights1?.components === 4 && weights1.count === position.count
+                            ? packedAttributeNumbers(weights1) : null,
                     });
                 } finally {
                     packed.free();
@@ -133,6 +158,223 @@ export function buildFlatMeshesFromGltf(sourceData, resources, gltfModule) {
     } finally {
         asset.free();
     }
+}
+
+/** Build the hierarchy and local transforms representable by FBX export. */
+export function buildFbxSceneFromGltf(sourceData, resources, gltfModule, options = {}) {
+    const legacyCompatibility = options.legacyCompatibility === true;
+    const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
+    try {
+        const document = JSON.parse(new TextDecoder().decode(asset.json()));
+        const definitions = document.meshes || [];
+        const flatMeshes = buildFlatMeshesFromGltf(sourceData, resources, gltfModule);
+        const meshesByDefinition = definitions.map((definition, meshIndex) => {
+            const primitives = definition.primitives || [];
+            return flatMeshes.splice(0, primitives.length).map((mesh, primitiveIndex) => {
+                const material = primitives[primitiveIndex]?.material;
+                return {
+                    ...mesh,
+                    positions: convertGltfVectorArrayToFbx(mesh.positions),
+                    normals: mesh.normals && convertGltfVectorArrayToFbx(mesh.normals),
+                    // glTF texture coordinates are consumed with a top-left
+                    // image origin in the web preview. FBX's UV convention as
+                    // interpreted by Blender uses the opposite V direction.
+                    // Convert only at the glTF -> FBX boundary; FBX re-export
+                    // must preserve the coordinates it originally read.
+                    uvs: mesh.uvs
+                        ? mesh.uvs.map((value, component) => (component % 2 === 1 ? 1 - value : value))
+                        : null,
+                    materialIndices: typeof material === 'number'
+                        ? Array(mesh.indices.length / 3).fill(material)
+                        : [],
+                    morphTargets: buildFbxMorphTargets(
+                        asset,
+                        primitives[primitiveIndex]?.targets || [],
+                        definitions[meshIndex]?.weights || [],
+                        readAccessorAsTyped,
+                    ),
+                };
+            });
+        });
+        const nodes = document.nodes || [];
+        const warnings = [];
+        const sceneIndex = typeof document.scene === 'number' ? document.scene : 0;
+        const roots = document.scenes?.[sceneIndex]?.nodes || document.scenes?.[0]?.nodes
+            || nodes.map((_, index) => index).filter((index) => !nodes.some((node) => node.children?.includes(index)));
+        const nodeRecords = buildNodes(nodes);
+        // The FBX animation bridge needs a concrete morph-weight count even
+        // when glTF omits the optional node.weights array.
+        nodeRecords.forEach((node, index) => {
+            const definition = nodes[index] || {};
+            const meshDefinition = typeof definition.mesh === 'number'
+                ? definitions[definition.mesh]
+                : null;
+            const targetCount = meshDefinition?.primitives?.reduce(
+                (count, primitive) => Math.max(count, (primitive.targets || []).length),
+                0,
+            ) || 0;
+            if (targetCount > 0 && node.weights.length === 0) {
+                node.weights = Float32Array.from(
+                    Array.from({ length: targetCount }, (_, target) =>
+                        Number(meshDefinition.weights?.[target]) || 0),
+                );
+            }
+        });
+        const worlds = buildFbxWorldMatrices(nodes, roots, composeTrs);
+        const skins = buildFbxSkins(
+            asset, document.skins || [], worlds, warnings, readAccessorAsTyped, composeTrs,
+        );
+        const buildNode = (index, isRoot = false) => {
+            const node = nodes[index] || {};
+            return {
+                id: index + 1,
+                name: node.name || `node_${index}`,
+                matrix: scaleFbxRootMatrix(
+                    fbxRowMajorMatrix(node, composeTrs),
+                ),
+                meshes: typeof node.mesh === 'number'
+                    ? (meshesByDefinition[node.mesh] || []).map((mesh) => ({
+                        ...mesh,
+                        skin: typeof node.skin === 'number'
+                            ? buildFbxMeshSkin(
+                                mesh, skins[node.skin], index + 1, worlds[index], composeTrs,
+                            )
+                            : null,
+                        morphTargets: (mesh.morphTargets || []).map((target, targetIndex) => ({
+                            ...target,
+                            defaultWeight: Number(node.weights?.[targetIndex] ?? target.defaultWeight) * 100,
+                        })),
+                    }))
+                    : [],
+                children: (node.children || []).map((child) => buildNode(child, false)),
+            };
+        };
+        return {
+            rootNodes: roots.map((root) => buildNode(root, true)),
+            materials: buildFbxMaterials(document.materials || []),
+            textures: buildFbxTextures(asset, document, resources, resolveUriBytes),
+            animations: buildFbxAnimations(
+                asset, document.animations || [], nodeRecords, warnings, legacyCompatibility,
+            ),
+            warnings,
+        };
+    } finally {
+        asset.free();
+    }
+}
+
+/** Convert glTF TRS clips to the FBX animation contract used by fbx-wasm. */
+function buildFbxAnimations(asset, definitions, nodes, warnings, legacyCompatibility = false) {
+    return buildAnimations(asset, definitions, nodes, warnings).map((animation) => {
+        const channels = animation.channels.flatMap((channel) => {
+            if (channel.path === 'weights') {
+                const targetCount = channel.targetCount || 0;
+                const interpolation = String(channel.sampler.interpolation || 'LINEAR').toLowerCase();
+                const cubic = interpolation === 'cubicspline';
+                const result = [];
+                for (let target = 0; target < targetCount; target++) {
+                    const values = Array.from(channel.sampler.output);
+                    const output = [];
+                    const inTangents = [];
+                    const outTangents = [];
+                    if (cubic) {
+                        for (let frame = 0; frame < channel.sampler.input.length; frame++) {
+                            const base = frame * targetCount * 3;
+                            output.push((values[base + targetCount + target] || 0) * 100);
+                            inTangents.push((values[base + target] || 0) * 100);
+                            outTangents.push((values[base + targetCount * 2 + target] || 0) * 100);
+                        }
+                    } else {
+                        for (let frame = 0; frame < channel.sampler.input.length; frame++) {
+                            output.push((values[frame * targetCount + target] || 0) * 100);
+                        }
+                    }
+                    result.push({
+                        nodeName: channel.node.name,
+                        nodeId: channel.node.index + 1,
+                        morphTargetIndex: target,
+                        path: 'morphweight',
+                        sampler: {
+                            input: Array.from(channel.sampler.input),
+                            output,
+                            interpolation: legacyCompatibility
+                                ? 'linear'
+                                : (cubic ? 'cubic' : (interpolation === 'step' ? 'step' : 'linear')),
+                            inTangents: !legacyCompatibility && cubic ? inTangents : null,
+                            outTangents: !legacyCompatibility && cubic ? outTangents : null,
+                        },
+                    });
+                }
+                return result;
+            }
+            if (!['translation', 'rotation', 'scale'].includes(channel.path)) return [];
+            const interpolation = String(channel.sampler.interpolation || 'LINEAR').toLowerCase();
+            const input = Array.from(channel.sampler.input);
+            const values = Array.from(channel.sampler.output);
+            const cubic = interpolation === 'cubicspline';
+            const keyValues = cubic
+                ? extractGltfCubicSegment(values, channel.path === 'rotation' ? 4 : 3, 1)
+                : values;
+            const output = channel.path === 'rotation'
+                ? quaternionKeysToFbxEuler(keyValues)
+                : channel.path === 'translation'
+                    ? convertGltfVectorArrayToFbx(keyValues)
+                    : convertGltfScaleKeysToFbx(keyValues);
+            if (output.length !== input.length * 3) {
+                warnings.push(`Animation ${animation.name}: invalid ${channel.path} sampler was skipped for FBX export`);
+                return [];
+            }
+            return [{
+                nodeName: channel.node.name,
+                nodeId: channel.node.index + 1,
+                path: channel.path,
+                sampler: {
+                    input,
+                    output,
+                    interpolation: legacyCompatibility ? 'linear' : (cubic ? 'cubic' : (interpolation === 'step' ? 'step' : 'linear')),
+                    // glTF cubic tangents are preserved for vector channels.
+                    // Quaternion -> Euler conversion is non-linear, so its
+                    // derivative cannot be represented component-wise in FBX.
+                    inTangents: !legacyCompatibility && cubic && channel.path !== 'rotation'
+                        ? extractGltfCubicSegment(values, 3, 0) : null,
+                    outTangents: !legacyCompatibility && cubic && channel.path !== 'rotation'
+                        ? extractGltfCubicSegment(values, 3, 2) : null,
+                },
+            }];
+        });
+        return channels.length > 0 ? { name: animation.name, duration: animation.duration, channels } : null;
+    }).filter(Boolean);
+}
+
+function convertGltfScaleKeysToFbx(values) {
+    const converted = Array.from(values);
+    for (let offset = 0; offset + 2 < converted.length; offset += 3) {
+        [converted[offset + 1], converted[offset + 2]] = [converted[offset + 2], converted[offset + 1]];
+    }
+    return converted;
+}
+
+// Scale is carried by `UnitScaleFactor = 100.0` in the writer's GlobalSettings
+// (Blender reads it as the centimeters->meters factor). This function used to
+// pre-multiply root matrices by 100 for Blender's legacy importer, which
+// would now make every imported scene 100× too large. We keep the signature
+// for the call site, but the matrix is returned unchanged.
+function scaleFbxRootMatrix(matrix) {
+    return matrix;
+}
+
+function composeTrs(translation, rotation, scale) {
+    const [x, y, z, w] = rotation;
+    const [sx, sy, sz] = scale;
+    const xx = x * x; const yy = y * y; const zz = z * z;
+    const xy = x * y; const xz = x * z; const yz = y * z;
+    const wx = w * x; const wy = w * y; const wz = w * z;
+    return [
+        (1 - 2 * (yy + zz)) * sx, (2 * (xy + wz)) * sx, (2 * (xz - wy)) * sx, 0,
+        (2 * (xy - wz)) * sy, (1 - 2 * (xx + zz)) * sy, (2 * (yz + wx)) * sy, 0,
+        (2 * (xz + wy)) * sz, (2 * (yz - wx)) * sz, (1 - 2 * (xx + yy)) * sz, 0,
+        translation[0], translation[1], translation[2], 1,
+    ];
 }
 
 function packedAttributeNumbers(attribute) {
@@ -242,7 +484,7 @@ function extensionWarnings(document) {
     return warnings;
 }
 
-function buildNodes(defs) {
+export function buildNodes(defs) {
     return defs.map((def, index) => {
         const trs = {
             translation: def.translation ? Array.from(def.translation) : [0, 0, 0],
@@ -372,7 +614,7 @@ function initializeMorphWeights(nodes, meshes, warnings) {
     }
 }
 
-function readAccessorAsTyped(asset, index) {
+export function readAccessorAsTyped(asset, index) {
     const packed = asset.readAccessor(index);
     try {
         const componentType = packed.componentType();
@@ -574,7 +816,7 @@ async function loadImageBytes(bytes, mime, hooks) {
     }
 }
 
-function resolveUriBytes(uri, resources) {
+export function resolveUriBytes(uri, resources) {
     if (uri.startsWith('data:')) {
         const comma = uri.indexOf(',');
         const meta = uri.substring(0, comma);
@@ -599,7 +841,7 @@ function basename(path) {
     return slash >= 0 ? path.substring(slash + 1) : path;
 }
 
-function buildAnimations(asset, defs, nodes, warnings) {
+export function buildAnimations(asset, defs, nodes, warnings) {
     return defs.map((def, animIndex) => {
         const name = def.name || `animation_${animIndex}`;
         const samplers = (def.samplers || []).map((s) => {

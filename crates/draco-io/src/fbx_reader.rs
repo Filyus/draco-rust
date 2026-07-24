@@ -1,14 +1,17 @@
-//! FBX binary format reader for meshes and supported model hierarchies.
+//! FBX binary format reader for meshes, materials, and TRS animation.
 //!
 //! Supports reading:
 //! - Binary FBX format (versions 7.x)
-//! - Vertex positions
+//! - Vertex positions, normals, and texture coordinates
 //! - Polygon/face indices
 //! - Model hierarchy and local transforms through [`FbxReader::read_scene`]
+//! - Phong/Lambert materials, textures, and per-polygon material indices
+//! - Node-TRS animation (`AnimationStack` / `AnimationLayer` /
+//!   `AnimationCurveNode` / `AnimationCurve`) flattened into TRS channels
 //!
-//! FBX layer elements such as normals, colors, UVs, materials, animation, and
-//! skinning are not mapped yet. They require explicit per-layer mapping support
-//! before they can be represented safely as Draco attributes.
+//! FBX pivots and inheritance rules, cameras, lights, and arbitrary metadata
+//! are not represented. Skin clusters, bind poses, blend-shape deltas, and
+//! local TRS animation are retained in [`crate::FbxScene`].
 //!
 //! # Example
 //!
@@ -35,6 +38,23 @@ use draco_core::mesh::Mesh;
 
 use crate::traits::ReadFromBytes;
 
+#[derive(Debug)]
+struct FbxGeometrySource {
+    mesh: Mesh,
+    material_indices: Vec<i32>,
+    control_points: Vec<[f32; 3]>,
+    polygon_vertex_indices: Vec<i32>,
+    uv_sets: Vec<crate::fbx_scene::FbxUvSet>,
+    normal_sets: Vec<crate::fbx_scene::FbxNormalSet>,
+}
+
+#[doc(hidden)]
+pub use crate::fbx_scene::{
+    FbxAnimChannel, FbxAnimChannelPath, FbxAnimInterpolation, FbxAnimSampler, FbxAnimation,
+    FbxMeshInstance, FbxNodeId, FbxScene, FbxSceneNode, FbxTexture, FbxTextureBinding,
+    FbxTextureSlot, FbxTransform,
+};
+
 /// FBX file magic: "Kaydara FBX Binary  \0"
 const FBX_MAGIC: &[u8; 21] = b"Kaydara FBX Binary  \0";
 
@@ -46,64 +66,6 @@ pub struct FbxReader<R: Read + Seek = BufReader<File>> {
 
 /// FBX reader backed by in-memory bytes.
 pub type FbxMemoryReader = FbxReader<Cursor<Vec<u8>>>;
-
-/// Local transform extracted from an FBX model node.
-///
-/// This matrix is synthesized from the supported local translation, rotation,
-/// and scaling properties. It does not preserve FBX pivot or inheritance rules.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FbxTransform {
-    /// Row-major 4x4 transform matrix.
-    pub matrix: [[f32; 4]; 4],
-}
-
-/// Geometry attached to one [`FbxSceneNode`].
-///
-/// This is a materialized Draco mesh, not a lossless FBX geometry object.
-#[derive(Debug, Clone)]
-pub struct FbxMeshInstance {
-    /// Name supplied by the FBX geometry node, when available.
-    pub name: Option<String>,
-    /// Decoded mesh geometry.
-    pub mesh: Mesh,
-}
-
-/// A node in the hierarchy extracted from FBX `Model` connections.
-///
-/// Materials, skins, animation, pivot transforms, and unsupported layer data
-/// are intentionally not represented here.
-#[derive(Debug, Clone)]
-pub struct FbxSceneNode {
-    /// Name supplied by the FBX model node, when available.
-    pub name: Option<String>,
-    /// Supported local transform properties synthesized into a matrix.
-    pub transform: Option<FbxTransform>,
-    /// Geometry attached directly to this model node.
-    pub mesh_instances: Vec<FbxMeshInstance>,
-    /// Child model nodes.
-    pub children: Vec<FbxSceneNode>,
-}
-
-impl FbxSceneNode {
-    fn new(name: Option<String>) -> Self {
-        Self {
-            name,
-            transform: None,
-            mesh_instances: Vec::new(),
-            children: Vec::new(),
-        }
-    }
-}
-
-/// Hierarchy and geometry extracted from an FBX file.
-///
-/// Unlike `draco_gltf::Document`, this is a deliberately lossy format-specific
-/// view. Use [`FbxReader::read_nodes`] when callers need the parsed FBX nodes.
-#[derive(Debug, Clone, Default)]
-pub struct FbxScene {
-    /// Top-level FBX model nodes.
-    pub root_nodes: Vec<FbxSceneNode>,
-}
 
 /// An FBX node with properties and children.
 #[derive(Debug, Clone)]
@@ -193,11 +155,14 @@ impl crate::traits::Reader for FbxReader<Cursor<Vec<u8>>> {
 }
 
 impl<R: Read + Seek> FbxReader<R> {
-    /// Reads the supported hierarchy from FBX model and geometry connections.
+    /// Reads the supported hierarchy, materials, textures, and animation from FBX.
     ///
-    /// The result retains model names, local transforms, and materialized mesh
-    /// geometry. It intentionally omits FBX layers, materials, skins,
-    /// animation, pivots, and inheritance rules.
+    /// The result retains model names, local transforms, materialized mesh
+    /// geometry (positions, normals, UVs), per-polygon material indices,
+    /// Phong/Lambert materials, textures, and node-TRS animation. It
+    /// intentionally omits FBX pivots, pre/post rotations, inheritance rules,
+    /// cameras, and arbitrary metadata. It retains skin clusters, bind poses,
+    /// blend-shape deltas, and local TRS animation.
     ///
     /// ```no_run
     /// use draco_io::FbxMemoryReader;
@@ -211,52 +176,279 @@ impl<R: Read + Seek> FbxReader<R> {
     pub fn read_scene(&mut self) -> io::Result<FbxScene> {
         let nodes = self.read_nodes()?;
 
-        // Build maps: id -> Model/Geometry nodes
+        // Build object id -> node maps for every object type we care about.
         use std::collections::HashMap;
         let mut model_map: HashMap<i64, &FbxNode> = HashMap::new();
         let mut geometry_map: HashMap<i64, &FbxNode> = HashMap::new();
-        let mut connections: Vec<(i64, i64)> = Vec::new(); // (child, parent)
+        let mut material_map: HashMap<i64, &FbxNode> = HashMap::new();
+        let mut texture_map: HashMap<i64, &FbxNode> = HashMap::new();
+        let mut video_map: HashMap<i64, &FbxNode> = HashMap::new();
+        let mut astack_map: HashMap<i64, &FbxNode> = HashMap::new();
+        let mut alayer_map: HashMap<i64, &FbxNode> = HashMap::new();
+        let mut acnode_map: HashMap<i64, &FbxNode> = HashMap::new();
+        let mut acurve_map: HashMap<i64, &FbxNode> = HashMap::new();
+        let mut deformer_map: HashMap<i64, &FbxNode> = HashMap::new();
+        let mut pose_map: HashMap<i64, &FbxNode> = HashMap::new();
+        let mut saw_deformer = false;
+        let mut saw_blend_shape = false;
+        let mut connections: Vec<FbxConnection> = Vec::new();
 
         for n in &nodes {
             if n.name == "Objects" {
                 for child in &n.children {
+                    let Some(FbxProperty::I64(id)) = child.properties.first() else {
+                        continue;
+                    };
                     match child.name.as_str() {
                         "Model" => {
-                            if let Some(FbxProperty::I64(id)) = child.properties.first() {
-                                model_map.insert(*id, child);
-                            }
+                            model_map.insert(*id, child);
                         }
                         "Geometry" => {
-                            if let Some(FbxProperty::I64(id)) = child.properties.first() {
-                                geometry_map.insert(*id, child);
+                            geometry_map.insert(*id, child);
+                        }
+                        "Material" => {
+                            material_map.insert(*id, child);
+                        }
+                        "Texture" => {
+                            texture_map.insert(*id, child);
+                        }
+                        "Video" => {
+                            video_map.insert(*id, child);
+                        }
+                        "AnimationStack" => {
+                            astack_map.insert(*id, child);
+                        }
+                        "AnimationLayer" => {
+                            alayer_map.insert(*id, child);
+                        }
+                        "AnimationCurveNode" => {
+                            acnode_map.insert(*id, child);
+                        }
+                        "AnimationCurve" => {
+                            acurve_map.insert(*id, child);
+                        }
+                        "Pose" => {
+                            pose_map.insert(*id, child);
+                        }
+                        "Deformer" => {
+                            deformer_map.insert(*id, child);
+                            // Deformers are either skin clusters or blend shapes.
+                            // Inspect the subclass on the name property.
+                            if object_name_subclass(child)
+                                .map(|s| s == "BlendShape" || s == "BlendShapeChannel")
+                                .unwrap_or(true)
+                            {
+                                saw_blend_shape = true;
+                            } else {
+                                saw_deformer = true;
                             }
+                        }
+                        "BlendShape" | "BlendShapeChannel" => {
+                            saw_blend_shape = true;
                         }
                         _ => {}
                     }
                 }
             } else if n.name == "Connections" {
                 for c in &n.children {
-                    // Expect properties: String("OO"), I64(child), I64(parent)
-                    if let (
-                        Some(FbxProperty::String(_kind)),
-                        Some(FbxProperty::I64(child)),
-                        Some(FbxProperty::I64(parent)),
-                    ) = (
-                        c.properties.first(),
-                        c.properties.get(1),
-                        c.properties.get(2),
-                    ) {
-                        connections.push((*child, *parent));
+                    let kind = match c.properties.first() {
+                        Some(FbxProperty::String(s)) if s == "OO" => ConnectionKind::Oo,
+                        Some(FbxProperty::String(s)) if s == "OP" => ConnectionKind::Op,
+                        _ => continue,
+                    };
+                    let Some(FbxProperty::I64(child)) = c.properties.get(1) else {
+                        continue;
+                    };
+                    let Some(FbxProperty::I64(parent)) = c.properties.get(2) else {
+                        continue;
+                    };
+                    let property = match c.properties.get(3) {
+                        Some(FbxProperty::String(s)) => Some(s.clone()),
+                        _ => None,
+                    };
+                    connections.push(FbxConnection {
+                        kind,
+                        child: *child,
+                        parent: *parent,
+                        property,
+                    });
+                }
+            }
+        }
+
+        // Detect skins more reliably: any Cluster SubDeformer counts as skin.
+        if !saw_deformer {
+            for n in &nodes {
+                if n.name == "Objects" {
+                    for child in &n.children {
+                        if child.name == "Deformer"
+                            && object_name_subclass(child)
+                                .map(|s| s == "Cluster")
+                                .unwrap_or(false)
+                        {
+                            saw_deformer = true;
+                            break;
+                        }
                     }
                 }
             }
         }
 
-        // Build parent map for models
+        let mut warnings = Vec::new();
+        let mut warned_inherit_type = false;
+        for model in model_map.values() {
+            for property in model
+                .children
+                .iter()
+                .filter(|child| child.name == "Properties70")
+            {
+                for entry in &property.children {
+                    let Some(FbxProperty::String(name)) = entry.properties.first() else {
+                        continue;
+                    };
+                    if name != "InheritType" || warned_inherit_type {
+                        continue;
+                    }
+                    let inherit_type = entry.properties.iter().find_map(|value| match value {
+                        FbxProperty::I32(value) => Some(*value),
+                        FbxProperty::I64(value) => i32::try_from(*value).ok(),
+                        _ => None,
+                    });
+                    let local_scale = model
+                        .children
+                        .iter()
+                        .find(|child| child.name == "Properties70")
+                        .and_then(|properties| {
+                            properties.children.iter().find_map(|property| {
+                                let Some(FbxProperty::String(name)) = property.properties.first()
+                                else {
+                                    return None;
+                                };
+                                if !name.contains("Lcl Scaling") {
+                                    return None;
+                                }
+                                let values: Vec<f32> = property
+                                    .properties
+                                    .iter()
+                                    .filter_map(|value| match value {
+                                        FbxProperty::F64(value) => Some(*value as f32),
+                                        FbxProperty::F32(value) => Some(*value),
+                                        _ => None,
+                                    })
+                                    .take(3)
+                                    .collect();
+                                (values.len() == 3).then_some([values[0], values[1], values[2]])
+                            })
+                        });
+                    let uniform_scale = local_scale
+                        .map(|scale| {
+                            (scale[0] - scale[1]).abs() <= 1e-5
+                                && (scale[1] - scale[2]).abs() <= 1e-5
+                        })
+                        .unwrap_or(true);
+                    let known_type = matches!(inherit_type, Some(0..=2));
+                    if !(known_type && uniform_scale) {
+                        warnings.push(format!(
+                            "FBX model uses unsupported {name}; local TRS was imported without that FBX transform rule"
+                        ));
+                        warned_inherit_type = true;
+                    }
+                }
+            }
+        }
+        let _ = (saw_deformer, saw_blend_shape);
+
+        // ---- Materials ----------------------------------------------------
+        let mut materials: Vec<crate::fbx_scene::FbxMaterial> = Vec::new();
+        let mut material_index_by_id: HashMap<i64, usize> = HashMap::new();
+        let mut material_ids: Vec<i64> = material_map.keys().copied().collect();
+        material_ids.sort_unstable();
+        for id in material_ids {
+            let node = material_map[&id];
+            let mut material = parse_material(node);
+            material.textures = collect_material_texture_bindings(id, &texture_map, &connections);
+            material_index_by_id.insert(id, materials.len());
+            materials.push(material);
+        }
+
+        // ---- Textures -----------------------------------------------------
+        let mut textures: Vec<crate::fbx_scene::FbxTexture> = Vec::new();
+        let mut texture_index_by_id: HashMap<i64, usize> = HashMap::new();
+        // Build texture -> video connection map first so each Texture knows
+        // where to pull its embedded bytes from.
+        let mut texture_video: HashMap<i64, i64> = HashMap::new();
+        for conn in &connections {
+            if conn.kind == ConnectionKind::Oo
+                && texture_map.contains_key(&conn.child)
+                && video_map.contains_key(&conn.parent)
+            {
+                texture_video.entry(conn.child).or_insert(conn.parent);
+            }
+            // Video -> Texture (media -> clip) is also common.
+            if conn.kind == ConnectionKind::Oo
+                && video_map.contains_key(&conn.child)
+                && texture_map.contains_key(&conn.parent)
+            {
+                texture_video.entry(conn.parent).or_insert(conn.child);
+            }
+        }
+        let mut texture_ids: Vec<i64> = texture_map.keys().copied().collect();
+        texture_ids.sort_unstable();
+        for id in texture_ids {
+            let node = texture_map[&id];
+            let mut texture = parse_texture(node);
+            if let Some(&video_id) = texture_video.get(&id) {
+                if let Some(video) = video_map.get(&video_id) {
+                    let v = parse_texture(video);
+                    if texture.content.is_none() {
+                        texture.content = v.content;
+                    }
+                    if texture.filename.is_none() {
+                        texture.filename = v.filename;
+                    }
+                    if texture.name.is_none() {
+                        texture.name = v.name;
+                    }
+                }
+            }
+            texture_index_by_id.insert(id, textures.len());
+            textures.push(texture);
+        }
+
+        // Remap material texture bindings from FBX texture ids to scene indices.
+        for material in &mut materials {
+            for binding in &mut material.textures {
+                let fbx_id = binding.texture_index as i64;
+                if let Some(&resolved) = texture_index_by_id.get(&fbx_id) {
+                    binding.texture_index = resolved;
+                }
+            }
+        }
+
+        // ---- Model hierarchy + per-model materials -----------------------
+        // Map each model id to the list of material indices connected to it.
+        let mut model_material_ids: HashMap<i64, Vec<i32>> = HashMap::new();
+        for conn in &connections {
+            if conn.kind == ConnectionKind::Oo
+                && material_map.contains_key(&conn.child)
+                && model_map.contains_key(&conn.parent)
+            {
+                let mat_index = material_index_by_id[&conn.child] as i32;
+                model_material_ids
+                    .entry(conn.parent)
+                    .or_default()
+                    .push(mat_index);
+            }
+        }
+
+        // Build parent map for models (same as before but over FbxConnection).
         let mut model_children: HashMap<i64, Vec<i64>> = HashMap::new();
-        for (child, parent) in connections.iter() {
-            if model_map.contains_key(child) || model_map.contains_key(parent) {
-                model_children.entry(*parent).or_default().push(*child);
+        for conn in connections.iter() {
+            if model_map.contains_key(&conn.child) || model_map.contains_key(&conn.parent) {
+                model_children
+                    .entry(conn.parent)
+                    .or_default()
+                    .push(conn.child);
             }
         }
 
@@ -265,6 +457,34 @@ impl<R: Read + Seek> FbxReader<R> {
             let mut translation = None;
             let mut rotation = None;
             let mut scaling = None;
+            let mut pre_rotation = None;
+            let mut post_rotation = None;
+            let mut rotation_offset = None;
+            let mut rotation_pivot = None;
+            let mut scaling_offset = None;
+            let mut scaling_pivot = None;
+
+            fn property_vec3(property: &FbxNode) -> Option<[f32; 3]> {
+                for value in &property.properties {
+                    if let crate::fbx_reader::FbxProperty::F64Array(values) = value {
+                        if values.len() >= 3 {
+                            return Some([values[0] as f32, values[1] as f32, values[2] as f32]);
+                        }
+                    }
+                }
+
+                let values: Vec<f32> = property
+                    .properties
+                    .iter()
+                    .filter_map(|value| match value {
+                        crate::fbx_reader::FbxProperty::F64(value) => Some(*value as f32),
+                        crate::fbx_reader::FbxProperty::F32(value) => Some(*value),
+                        _ => None,
+                    })
+                    .take(3)
+                    .collect();
+                (values.len() == 3).then(|| [values[0], values[1], values[2]])
+            }
 
             for child in &node.children {
                 if child.name == "Properties70" {
@@ -274,35 +494,22 @@ impl<R: Read + Seek> FbxReader<R> {
                             prop.properties.first()
                         {
                             if name.contains("Lcl Translation") {
-                                // find F64Array in properties
-                                for p in &prop.properties {
-                                    if let crate::fbx_reader::FbxProperty::F64Array(arr) = p {
-                                        if arr.len() >= 3 {
-                                            translation =
-                                                Some([arr[0] as f32, arr[1] as f32, arr[2] as f32]);
-                                        }
-                                    }
-                                }
+                                translation = property_vec3(prop);
                             }
                             if name.contains("Lcl Rotation") {
-                                for p in &prop.properties {
-                                    if let crate::fbx_reader::FbxProperty::F64Array(arr) = p {
-                                        if arr.len() >= 3 {
-                                            rotation =
-                                                Some([arr[0] as f32, arr[1] as f32, arr[2] as f32]);
-                                        }
-                                    }
-                                }
+                                rotation = property_vec3(prop);
                             }
                             if name.contains("Lcl Scaling") {
-                                for p in &prop.properties {
-                                    if let crate::fbx_reader::FbxProperty::F64Array(arr) = p {
-                                        if arr.len() >= 3 {
-                                            scaling =
-                                                Some([arr[0] as f32, arr[1] as f32, arr[2] as f32]);
-                                        }
-                                    }
-                                }
+                                scaling = property_vec3(prop);
+                            }
+                            match name.as_str() {
+                                "PreRotation" => pre_rotation = property_vec3(prop),
+                                "PostRotation" => post_rotation = property_vec3(prop),
+                                "RotationOffset" => rotation_offset = property_vec3(prop),
+                                "RotationPivot" => rotation_pivot = property_vec3(prop),
+                                "ScalingOffset" => scaling_offset = property_vec3(prop),
+                                "ScalingPivot" => scaling_pivot = property_vec3(prop),
+                                _ => {}
                             }
                         }
                     }
@@ -313,51 +520,154 @@ impl<R: Read + Seek> FbxReader<R> {
                 return None;
             }
 
-            // Build simple 4x4 matrix from TRS (rotation in degrees XYZ)
+            // FBX local transform stack (without the parent-dependent
+            // InheritType rule):
+            // T * Roff * Rp * PreR * R * PostR^-1 * Rp^-1 * Soff * Sp * S * Sp^-1.
+            // The packed scene layout is also the WebGL column-major layout.
             let t = translation.unwrap_or([0.0, 0.0, 0.0]);
             let r_deg = rotation.unwrap_or([0.0, 0.0, 0.0]);
             let s = scaling.unwrap_or([1.0, 1.0, 1.0]);
 
-            let rx = r_deg[0].to_radians();
-            let ry = r_deg[1].to_radians();
-            let rz = r_deg[2].to_radians();
-
-            let (sx, cx) = rx.sin_cos();
-            let (sy, cy) = ry.sin_cos();
-            let (sz, cz) = rz.sin_cos();
-
-            // Rotation matrices around X, Y, Z (Rz * Ry * Rx)
-            let m00 = cz * cy;
-            let m01 = cz * sy * sx - sz * cx;
-            let m02 = cz * sy * cx + sz * sx;
-
-            let m10 = sz * cy;
-            let m11 = sz * sy * sx + cz * cx;
-            let m12 = sz * sy * cx - cz * sx;
-
-            let m20 = -sy;
-            let m21 = cy * sx;
-            let m22 = cy * cx;
-
-            let mat = [
-                [m00 * s[0], m01 * s[1], m02 * s[2], 0.0],
-                [m10 * s[0], m11 * s[1], m12 * s[2], 0.0],
-                [m20 * s[0], m21 * s[1], m22 * s[2], 0.0],
-                [t[0], t[1], t[2], 1.0],
-            ];
+            fn identity() -> [[f32; 4]; 4] {
+                [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ]
+            }
+            // FbxTransform is packed column-major: its outer index is the
+            // column and its inner index is the row. Evaluate the local stack
+            // in that layout so the result can go straight to WebGL.
+            fn multiply(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+                let mut result = [[0.0; 4]; 4];
+                for column in 0..4 {
+                    for row in 0..4 {
+                        result[column][row] =
+                            (0..4).map(|index| a[index][row] * b[column][index]).sum();
+                    }
+                }
+                result
+            }
+            fn translation_matrix(values: [f32; 3]) -> [[f32; 4]; 4] {
+                let mut matrix = identity();
+                matrix[3][0] = values[0];
+                matrix[3][1] = values[1];
+                matrix[3][2] = values[2];
+                matrix
+            }
+            fn scale(values: [f32; 3]) -> [[f32; 4]; 4] {
+                [
+                    [values[0], 0.0, 0.0, 0.0],
+                    [0.0, values[1], 0.0, 0.0],
+                    [0.0, 0.0, values[2], 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ]
+            }
+            fn rotation_matrix(values: [f32; 3]) -> [[f32; 4]; 4] {
+                let (sin_x, cos_x) = values[0].to_radians().sin_cos();
+                let (sin_y, cos_y) = values[1].to_radians().sin_cos();
+                let (sin_z, cos_z) = values[2].to_radians().sin_cos();
+                // Rz * Ry * Rx, packed by column for FBX/WebGL.
+                [
+                    [
+                        cos_z * cos_y,
+                        sin_z * cos_y,
+                        -sin_y,
+                        0.0,
+                    ],
+                    [
+                        cos_z * sin_y * sin_x - sin_z * cos_x,
+                        sin_z * sin_y * sin_x + cos_z * cos_x,
+                        cos_y * sin_x,
+                        0.0,
+                    ],
+                    [
+                        cos_z * sin_y * cos_x + sin_z * sin_x,
+                        sin_z * sin_y * cos_x - cos_z * sin_x,
+                        cos_y * cos_x,
+                        0.0,
+                    ],
+                    [0.0, 0.0, 0.0, 1.0],
+                ]
+            }
+            let inverse_translation =
+                |values: [f32; 3]| translation_matrix([-values[0], -values[1], -values[2]]);
+            let inverse_rotation = |values: [f32; 3]| {
+                let rotation = rotation_matrix(values);
+                let mut inverse = [[0.0; 4]; 4];
+                for column in 0..4 {
+                    for row in 0..4 {
+                        inverse[column][row] = rotation[row][column];
+                    }
+                }
+                inverse
+            };
+            // Blender's FBX bind matrices encode the pre-rotation with the
+            // opposite handedness from the local Euler property.  Applying
+            // its inverse here keeps Mixamo-style armatures aligned while
+            // leaving ordinary TRS-only files unchanged.
+            let inverse_pre_rotation = pre_rotation
+                .map(|values| [-values[0], -values[1], -values[2]])
+                .unwrap_or([0.0; 3]);
+            // The scene matrix uses the same packed layout as the writer:
+            // translation occupies the final packed column.  Do not multiply
+            // the local translation through the rotation stack here; doing so
+            // rotates a node's origin (and breaks ordinary TRS-only FBX
+            // written by us).  The pivot terms below only shape the linear
+            // part and their translation compensation.
+            let mut mat = identity();
+            for term in [
+                translation_matrix(rotation_offset.unwrap_or([0.0; 3])),
+                translation_matrix(rotation_pivot.unwrap_or([0.0; 3])),
+                rotation_matrix(inverse_pre_rotation),
+                rotation_matrix(r_deg),
+                inverse_rotation(post_rotation.unwrap_or([0.0; 3])),
+                inverse_translation(rotation_pivot.unwrap_or([0.0; 3])),
+                translation_matrix(scaling_offset.unwrap_or([0.0; 3])),
+                translation_matrix(scaling_pivot.unwrap_or([0.0; 3])),
+                scale(s),
+                inverse_translation(scaling_pivot.unwrap_or([0.0; 3])),
+            ] {
+                mat = multiply(mat, term);
+            }
+            mat[3][0] += t[0];
+            mat[3][1] += t[1];
+            mat[3][2] += t[2];
 
             Some(FbxTransform { matrix: mat })
         }
 
         // Build nodes recursively
+        fn object_name(node: &FbxNode) -> Option<String> {
+            match node.properties.get(1) {
+                Some(FbxProperty::String(name)) => name
+                    .split('\0')
+                    .next()
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string),
+                _ => None,
+            }
+        }
+
+        let mut ordered_model_ids: Vec<i64> = model_map.keys().copied().collect();
+        ordered_model_ids.sort_unstable();
+        let model_node_ids: HashMap<i64, FbxNodeId> = ordered_model_ids
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| (id, FbxNodeId((index + 1) as u32)))
+            .collect();
+
         fn build_model_node(
             id: i64,
             model_map: &std::collections::HashMap<i64, &FbxNode>,
             model_children: &std::collections::HashMap<i64, Vec<i64>>,
             model_mesh_instances: &std::collections::HashMap<i64, Vec<FbxMeshInstance>>,
+            model_node_ids: &std::collections::HashMap<i64, FbxNodeId>,
         ) -> FbxSceneNode {
             let node_src = model_map.get(&id).unwrap();
-            let mut node = FbxSceneNode::new(Some(node_src.name.clone()));
+            let mut node = FbxSceneNode::new(object_name(node_src));
+            node.id = model_node_ids[&id];
             node.transform = parse_transform(node_src);
             if let Some(mesh_instances) = model_mesh_instances.get(&id) {
                 node.mesh_instances.extend(mesh_instances.clone());
@@ -371,6 +681,7 @@ impl<R: Read + Seek> FbxReader<R> {
                             model_map,
                             model_children,
                             model_mesh_instances,
+                            model_node_ids,
                         ));
                     }
                 }
@@ -381,23 +692,91 @@ impl<R: Read + Seek> FbxReader<R> {
         // Map geometries to models and create mesh instances.
         let mut model_mesh_instances: std::collections::HashMap<i64, Vec<FbxMeshInstance>> =
             std::collections::HashMap::new();
-        for (geom_id, geom_node) in geometry_map.iter() {
-            if let Some(mesh) = self.geometry_to_mesh(geom_node)? {
+        let mut geometry_ids: Vec<i64> = geometry_map.keys().copied().collect();
+        geometry_ids.sort_unstable();
+        for geom_id in geometry_ids {
+            let geom_node = geometry_map[&geom_id];
+            if let Some(source) = self.geometry_to_mesh(geom_node)? {
+                let mesh = &source.mesh;
+                let material_indices = source.material_indices.clone();
                 // find connection mapping geometry -> model
-                for (child, parent) in connections.iter() {
-                    if *child == *geom_id && model_map.contains_key(parent) {
+                for conn in connections.iter() {
+                    if conn.child == geom_id && model_map.contains_key(&conn.parent) {
+                        // If the geometry does not carry its own material layer,
+                        // fall back to materials connected directly to the model.
+                        let mut indices = material_indices.clone();
+                        if let Some(model_mats) = model_material_ids.get(&conn.parent) {
+                            if indices.is_empty() {
+                                if !model_mats.is_empty() {
+                                    let first = model_mats[0];
+                                    // One entry per triangulated face.
+                                    indices = vec![first; mesh.num_faces()];
+                                }
+                            } else {
+                                // LayerElementMaterial values address the
+                                // material slots attached to this Model. Map
+                                // them back to the document-wide material
+                                // indices exposed by FbxScene.
+                                indices = indices
+                                    .into_iter()
+                                    .map(|slot| {
+                                        usize::try_from(slot)
+                                            .ok()
+                                            .and_then(|slot| model_mats.get(slot).copied())
+                                            .unwrap_or(model_mats[0])
+                                    })
+                                    .collect();
+                            }
+                        }
                         let mesh_instance = FbxMeshInstance {
-                            name: Some(geom_node.name.clone()),
-                            mesh: mesh.clone(),
+                            name: object_name(geom_node),
+                            mesh: source.mesh.clone(),
+                            control_points: source.control_points.clone(),
+                            polygon_vertex_indices: source.polygon_vertex_indices.clone(),
+                            uv_sets: source.uv_sets.clone(),
+                            normal_sets: source.normal_sets.clone(),
+                            material_indices: indices,
+                            skin: parse_skin_for_geometry(
+                                geom_id,
+                                &deformer_map,
+                                &pose_map,
+                                &connections,
+                                &model_node_ids,
+                            ),
+                            morph_targets: parse_morph_targets_for_geometry(
+                                geom_id,
+                                &geometry_map,
+                                &deformer_map,
+                                &connections,
+                            ),
                         };
                         model_mesh_instances
-                            .entry(*parent)
+                            .entry(conn.parent)
                             .or_default()
                             .push(mesh_instance);
                     }
                 }
             }
         }
+
+        // ---- Animation ----------------------------------------------------
+        let model_name_map: HashMap<i64, String> = model_map
+            .iter()
+            .filter_map(|(id, node)| object_name(node).map(|name| (*id, name)))
+            .collect();
+
+        let animations = self.parse_animations(
+            &nodes,
+            &connections,
+            &astack_map,
+            &alayer_map,
+            &acnode_map,
+            &acurve_map,
+            &model_map,
+            &model_name_map,
+            &model_node_ids,
+            &morph_animation_targets(&geometry_map, &deformer_map, &connections, &model_map),
+        );
 
         // Build root nodes: any model with parent 0 (or with no parent present)
         let mut root_nodes = Vec::new();
@@ -408,7 +787,7 @@ impl<R: Read + Seek> FbxReader<R> {
             .filter(|id| {
                 !connections
                     .iter()
-                    .any(|(child, parent)| child == id && model_map.contains_key(parent))
+                    .any(|conn| conn.child == *id && model_map.contains_key(&conn.parent))
             })
             .collect();
 
@@ -418,10 +797,562 @@ impl<R: Read + Seek> FbxReader<R> {
                 &model_map,
                 &model_children,
                 &model_mesh_instances,
+                &model_node_ids,
             ));
         }
 
-        Ok(FbxScene { root_nodes })
+        Ok(FbxScene {
+            root_nodes,
+            materials,
+            textures,
+            animations,
+            warnings,
+        })
+    }
+}
+
+fn identity_transform() -> FbxTransform {
+    FbxTransform {
+        matrix: [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+    }
+}
+
+fn transform_array(node: &FbxNode, child_name: &str) -> Option<FbxTransform> {
+    let values = node
+        .children
+        .iter()
+        .find(|child| child.name == child_name)?
+        .properties
+        .first()?;
+    let values: Vec<f32> = match values {
+        FbxProperty::F64Array(values) => values.iter().copied().map(|value| value as f32).collect(),
+        FbxProperty::F32Array(values) => values.clone(),
+        _ => return None,
+    };
+    if values.len() != 16 {
+        return None;
+    }
+    // Preserve the 16-value FBX matrix layout. In particular, cluster
+    // Transform/TransformLink translations are already at elements 12..14;
+    // transposing here moves them into the projective row and explodes a
+    // skinned mesh.
+    let mut matrix = [[0.0; 4]; 4];
+    for (index, value) in values.into_iter().enumerate() {
+        matrix[index / 4][index % 4] = value;
+    }
+    Some(FbxTransform { matrix })
+}
+
+fn child_i32_array(node: &FbxNode, child_name: &str) -> Vec<i32> {
+    node.children
+        .iter()
+        .find(|child| child.name == child_name)
+        .and_then(|child| child.properties.first())
+        .and_then(|value| match value {
+            FbxProperty::I32Array(values) => Some(values.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn child_f64_array(node: &FbxNode, child_name: &str) -> Vec<f64> {
+    node.children
+        .iter()
+        .find(|child| child.name == child_name)
+        .and_then(|child| child.properties.first())
+        .and_then(|value| match value {
+            FbxProperty::F64Array(values) => Some(values.clone()),
+            FbxProperty::F32Array(values) => Some(values.iter().copied().map(f64::from).collect()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn parse_skin_for_geometry(
+    geometry_id: i64,
+    deformers: &std::collections::HashMap<i64, &FbxNode>,
+    poses: &std::collections::HashMap<i64, &FbxNode>,
+    connections: &[FbxConnection],
+    model_node_ids: &std::collections::HashMap<i64, FbxNodeId>,
+) -> Option<crate::fbx_scene::FbxSkin> {
+    let skin_ids: Vec<i64> = connections
+        .iter()
+        .filter(|connection| {
+            connection.kind == ConnectionKind::Oo && connection.parent == geometry_id
+        })
+        .map(|connection| connection.child)
+        .filter(|id| {
+            deformers
+                .get(id)
+                .and_then(|node| deformer_type(node).map(str::to_string))
+                .as_deref()
+                == Some("Skin")
+        })
+        .collect();
+    if skin_ids.is_empty() {
+        return None;
+    }
+
+    let mut clusters = Vec::new();
+    for skin_id in skin_ids {
+        for cluster_id in connections
+            .iter()
+            .filter(|connection| {
+                connection.kind == ConnectionKind::Oo && connection.parent == skin_id
+            })
+            .map(|connection| connection.child)
+        {
+            let Some(cluster) = deformers.get(&cluster_id) else {
+                continue;
+            };
+            if deformer_type(cluster) != Some("Cluster") {
+                continue;
+            }
+            let Some(joint_model_id) = connections
+                .iter()
+                .find(|connection| {
+                    connection.kind == ConnectionKind::Oo && connection.parent == cluster_id
+                })
+                .map(|connection| connection.child)
+            else {
+                continue;
+            };
+            let Some(&joint_node_id) = model_node_ids.get(&joint_model_id) else {
+                continue;
+            };
+            let indices = child_i32_array(cluster, "Indexes")
+                .into_iter()
+                .filter_map(|index| u32::try_from(index).ok())
+                .collect::<Vec<_>>();
+            let mut weights = child_f64_array(cluster, "Weights")
+                .into_iter()
+                .map(|weight| weight as f32)
+                .collect::<Vec<_>>();
+            weights.truncate(indices.len());
+            if weights.len() != indices.len() {
+                continue;
+            }
+            clusters.push(crate::fbx_scene::FbxSkinCluster {
+                joint_node_id,
+                control_point_indices: indices,
+                weights,
+                mesh_bind_transform: transform_array(cluster, "Transform")
+                    .unwrap_or_else(identity_transform),
+                joint_bind_transform: transform_array(cluster, "TransformLink")
+                    .unwrap_or_else(identity_transform),
+                armature_bind_transform: transform_array(cluster, "TransformAssociateModel"),
+            });
+        }
+    }
+
+    let mut bind_pose = Vec::new();
+    for pose in poses.values() {
+        let is_bind_pose = pose
+            .children
+            .iter()
+            .find(|child| child.name == "Type")
+            .and_then(|child| child.properties.first())
+            .and_then(|value| match value {
+                FbxProperty::String(value) => Some(value == "BindPose"),
+                _ => None,
+            })
+            .unwrap_or(false);
+        if !is_bind_pose {
+            continue;
+        }
+        for pose_node in &pose.children {
+            if pose_node.name != "PoseNode" {
+                continue;
+            }
+            let model_id = pose_node
+                .children
+                .iter()
+                .find(|child| child.name == "Node")
+                .and_then(|child| child.properties.first())
+                .and_then(|value| match value {
+                    FbxProperty::I64(value) => Some(*value),
+                    _ => None,
+                });
+            let matrix = transform_array(pose_node, "Matrix");
+            if let (Some(_model_id), Some(matrix), Some(&node_id)) = (
+                model_id,
+                matrix,
+                model_id.and_then(|id| model_node_ids.get(&id)),
+            ) {
+                if !bind_pose.iter().any(|(existing, _)| *existing == node_id) {
+                    bind_pose.push((node_id, matrix));
+                }
+            }
+        }
+    }
+    Some(crate::fbx_scene::FbxSkin {
+        clusters,
+        bind_pose,
+    })
+}
+
+fn child_f64(node: &FbxNode, name: &str) -> Option<f64> {
+    node.children
+        .iter()
+        .find(|child| child.name == name)
+        .and_then(|child| child.properties.first())
+        .and_then(|value| match value {
+            FbxProperty::F64(value) => Some(*value),
+            FbxProperty::F32(value) => Some(*value as f64),
+            _ => None,
+        })
+}
+
+fn parse_morph_targets_for_geometry(
+    geometry_id: i64,
+    geometries: &std::collections::HashMap<i64, &FbxNode>,
+    deformers: &std::collections::HashMap<i64, &FbxNode>,
+    connections: &[FbxConnection],
+) -> Vec<crate::fbx_scene::FbxMorphTarget> {
+    let mut targets = Vec::new();
+    for blend_shape_id in connections
+        .iter()
+        .filter(|connection| {
+            connection.kind == ConnectionKind::Oo && connection.parent == geometry_id
+        })
+        .map(|connection| connection.child)
+    {
+        let Some(blend_shape) = deformers.get(&blend_shape_id) else {
+            continue;
+        };
+        if deformer_type(blend_shape) != Some("BlendShape") {
+            continue;
+        }
+        for channel_id in connections
+            .iter()
+            .filter(|connection| {
+                connection.kind == ConnectionKind::Oo && connection.parent == blend_shape_id
+            })
+            .map(|connection| connection.child)
+        {
+            let Some(channel) = deformers.get(&channel_id) else {
+                continue;
+            };
+            if deformer_type(channel) != Some("BlendShapeChannel") {
+                continue;
+            }
+            for shape_id in connections
+                .iter()
+                .filter(|connection| {
+                    connection.kind == ConnectionKind::Oo && connection.parent == channel_id
+                })
+                .map(|connection| connection.child)
+            {
+                let Some(shape) = geometries.get(&shape_id) else {
+                    continue;
+                };
+                let indices = child_i32_array(shape, "Indexes")
+                    .into_iter()
+                    .filter_map(|index| u32::try_from(index).ok())
+                    .collect::<Vec<_>>();
+                let vertices = child_f64_array(shape, "Vertices");
+                if vertices.len() != indices.len() * 3 {
+                    continue;
+                }
+                let position_deltas = vertices
+                    .chunks_exact(3)
+                    .map(|values| [values[0] as f32, values[1] as f32, values[2] as f32])
+                    .collect();
+                let full_weight = child_f64_array(channel, "FullWeights")
+                    .first()
+                    .copied()
+                    .unwrap_or(100.0) as f32;
+                targets.push(crate::fbx_scene::FbxMorphTarget {
+                    name: match shape.properties.get(1) {
+                        Some(FbxProperty::String(name)) => {
+                            name.split('\0').next().map(str::to_string)
+                        }
+                        _ => None,
+                    },
+                    control_point_indices: indices,
+                    position_deltas,
+                    normal_deltas: None,
+                    default_weight: child_f64(channel, "DeformPercent").unwrap_or(0.0) as f32,
+                    full_weight,
+                });
+            }
+        }
+    }
+    targets
+}
+
+/// Resolve BlendShapeChannel object ids to their owning Model and target slot.
+/// FBX animation curves target the channel deformer rather than the mesh
+/// model, so this bridge is required to expose them through the scene API.
+fn morph_animation_targets(
+    geometries: &std::collections::HashMap<i64, &FbxNode>,
+    deformers: &std::collections::HashMap<i64, &FbxNode>,
+    connections: &[FbxConnection],
+    models: &std::collections::HashMap<i64, &FbxNode>,
+) -> std::collections::HashMap<i64, (i64, u32)> {
+    let mut result = std::collections::HashMap::new();
+    for geometry_id in geometries.keys().copied() {
+        let Some(model_id) = connections.iter().find_map(|connection| {
+            (connection.kind == ConnectionKind::Oo
+                && connection.child == geometry_id
+                && models.contains_key(&connection.parent))
+            .then_some(connection.parent)
+        }) else {
+            continue;
+        };
+        for blend_shape_id in connections
+            .iter()
+            .filter(|connection| {
+                connection.kind == ConnectionKind::Oo
+                    && connection.parent == geometry_id
+                    && deformers
+                        .get(&connection.child)
+                        .and_then(|node| deformer_type(node))
+                        == Some("BlendShape")
+            })
+            .map(|connection| connection.child)
+        {
+            for (index, channel_id) in connections
+                .iter()
+                .filter(|connection| {
+                    connection.kind == ConnectionKind::Oo
+                        && connection.parent == blend_shape_id
+                        && deformers
+                            .get(&connection.child)
+                            .and_then(|node| deformer_type(node))
+                            == Some("BlendShapeChannel")
+                })
+                .map(|connection| connection.child)
+                .enumerate()
+            {
+                result.insert(channel_id, (model_id, index as u32));
+            }
+        }
+    }
+    result
+}
+
+/// FBX object-to-object connection type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionKind {
+    /// `OO` object-to-object connection.
+    Oo,
+    /// `OP` object-to-property connection (carries a property name).
+    Op,
+}
+
+/// A parsed FBX connection entry.
+#[derive(Debug, Clone)]
+struct FbxConnection {
+    kind: ConnectionKind,
+    child: i64,
+    parent: i64,
+    property: Option<String>,
+}
+
+/// Reads the object subclass from a `\0\x01`-separated FBX name property.
+fn object_name_subclass(node: &FbxNode) -> Option<String> {
+    match node.properties.get(1) {
+        Some(FbxProperty::String(name)) => name.split('\u{1}').nth(1).map(str::to_string),
+        _ => None,
+    }
+}
+
+/// FBX Deformer objects carry their effective kind in the third object
+/// property; the second name component is merely `Deformer`/`SubDeformer`.
+fn deformer_type(node: &FbxNode) -> Option<&str> {
+    match node.properties.get(2) {
+        Some(FbxProperty::String(value)) if !value.is_empty() => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+/// Collects material property texture bindings as placeholders; the FBX
+/// texture id is stored in `texture_index` and resolved to a scene index by
+/// the caller after the texture list is finalized.
+fn collect_material_texture_bindings(
+    material_id: i64,
+    texture_map: &std::collections::HashMap<i64, &FbxNode>,
+    connections: &[FbxConnection],
+) -> Vec<crate::fbx_scene::FbxTextureBinding> {
+    let mut bindings = Vec::new();
+    for conn in connections {
+        if conn.kind != ConnectionKind::Op || conn.parent != material_id {
+            continue;
+        }
+        let Some(slot_name) = conn.property.as_deref() else {
+            continue;
+        };
+        let Some(slot) = crate::fbx_scene::FbxTextureSlot::from_property_name(slot_name) else {
+            continue;
+        };
+        if !texture_map.contains_key(&conn.child) {
+            continue;
+        }
+        bindings.push(crate::fbx_scene::FbxTextureBinding {
+            slot,
+            texture_index: conn.child as usize,
+        });
+    }
+    bindings
+}
+
+/// Extracts a named scalar/`Color`/`Vector`/`Vector3D` property from a
+/// `Properties70` block of the given FBX object.
+fn properties70_lookup<'a>(node: &'a FbxNode, name: &str) -> Option<&'a FbxNode> {
+    for child in &node.children {
+        if child.name != "Properties70" {
+            continue;
+        }
+        for prop in &child.children {
+            if prop.name != "P" {
+                continue;
+            }
+            if let Some(FbxProperty::String(prop_name)) = prop.properties.first() {
+                if prop_name == name {
+                    return Some(prop);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn property_scalar(prop: &FbxNode) -> Option<f32> {
+    // Properties70 P node layout: [name, type, subtype, flags, value(s)...]
+    // Scalar properties start at index 4.
+    for value in prop.properties.iter().skip(4) {
+        match value {
+            FbxProperty::F64(v) => return Some(*v as f32),
+            FbxProperty::F32(v) => return Some(*v),
+            FbxProperty::I32(v) => return Some(*v as f32),
+            FbxProperty::I64(v) => return Some(*v as f32),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn property_vec3(prop: &FbxNode) -> Option<[f32; 3]> {
+    let values: Vec<f32> = prop
+        .properties
+        .iter()
+        .skip(4)
+        .filter_map(|value| match value {
+            FbxProperty::F64(v) => Some(*v as f32),
+            FbxProperty::F32(v) => Some(*v),
+            _ => None,
+        })
+        .take(3)
+        .collect();
+    (values.len() == 3).then(|| [values[0], values[1], values[2]])
+}
+
+fn parse_material(node: &FbxNode) -> crate::fbx_scene::FbxMaterial {
+    let name = match node.properties.get(1) {
+        Some(FbxProperty::String(raw)) => raw
+            .split('\0')
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        _ => None,
+    };
+    let shading_model = read_shading_model(node);
+
+    let get_color = |name: &str| properties70_lookup(node, name).and_then(property_vec3);
+    let get_scalar = |name: &str| properties70_lookup(node, name).and_then(property_scalar);
+
+    crate::fbx_scene::FbxMaterial {
+        name,
+        shading_model,
+        diffuse: get_color("DiffuseColor"),
+        specular: get_color("SpecularColor"),
+        emissive: get_color("EmissiveColor"),
+        ambient: get_color("AmbientColor"),
+        diffuse_factor: get_scalar("DiffuseFactor"),
+        specular_factor: get_scalar("SpecularFactor"),
+        shininess: get_scalar("Shininess"),
+        emissive_factor: get_scalar("EmissiveFactor"),
+        reflection_factor: get_scalar("ReflectionFactor"),
+        transparency_factor: get_scalar("TransparencyFactor"),
+        opacity: get_scalar("Opacity"),
+        bump_factor: get_scalar("BumpFactor"),
+        textures: Vec::new(),
+    }
+}
+
+/// Reads `ShadingModel`, which some files store as a Properties70 string and
+/// others as the third object-level string property.
+fn read_shading_model(node: &FbxNode) -> Option<String> {
+    for child in &node.children {
+        if child.name != "Properties70" {
+            continue;
+        }
+        for prop in &child.children {
+            if prop.name != "P" {
+                continue;
+            }
+            if let Some(FbxProperty::String(name)) = prop.properties.first() {
+                if name == "ShadingModel" {
+                    for value in prop.properties.iter().skip(4) {
+                        if let FbxProperty::String(s) = value {
+                            return Some(s.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Fall back to the object-level third property.
+    if let Some(FbxProperty::String(raw)) = node.properties.get(2) {
+        if !raw.is_empty() {
+            return Some(raw.clone());
+        }
+    }
+    None
+}
+
+fn parse_texture(node: &FbxNode) -> crate::fbx_scene::FbxTexture {
+    let name = match node.properties.get(1) {
+        Some(FbxProperty::String(raw)) => raw
+            .split('\0')
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        _ => None,
+    };
+    let mut filename = None;
+    let mut content = None;
+    for child in &node.children {
+        match child.name.as_str() {
+            "RelativeFilename" | "FileName" | "Filename" => {
+                if filename.is_none() {
+                    if let Some(FbxProperty::String(s)) = child.properties.first() {
+                        if !s.is_empty() {
+                            filename = Some(s.clone());
+                        }
+                    }
+                }
+            }
+            "Content" => {
+                if let Some(FbxProperty::Raw(bytes)) = child.properties.first() {
+                    if !bytes.is_empty() {
+                        content = Some(bytes.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    crate::fbx_scene::FbxTexture {
+        name,
+        content,
+        filename,
     }
 }
 
@@ -709,8 +1640,8 @@ impl<R: Read + Seek> FbxReader<R> {
             if node.name == "Objects" {
                 for child in &node.children {
                     if child.name == "Geometry" {
-                        if let Some(mesh) = self.geometry_to_mesh(child)? {
-                            meshes.push(mesh);
+                        if let Some(source) = self.geometry_to_mesh(child)? {
+                            meshes.push(source.mesh);
                         }
                     }
                 }
@@ -720,10 +1651,17 @@ impl<R: Read + Seek> FbxReader<R> {
         Ok(meshes)
     }
 
-    /// Convert a Geometry node to a Mesh.
-    fn geometry_to_mesh(&self, geometry: &FbxNode) -> io::Result<Option<Mesh>> {
+    /// Convert a Geometry node to a Mesh, plus per-triangle material indices.
+    ///
+    /// The returned `material_indices` align with the fan-triangulated face
+    /// order of the Draco `Mesh` (one entry per triangle). The list is empty
+    /// when the geometry does not carry a `LayerElementMaterial` layer.
+    fn geometry_to_mesh(&self, geometry: &FbxNode) -> io::Result<Option<FbxGeometrySource>> {
         let mut vertices: Option<Vec<f64>> = None;
         let mut polygon_indices: Option<Vec<i32>> = None;
+        let mut normals_layers: Vec<&FbxNode> = Vec::new();
+        let mut uv_layers: Vec<&FbxNode> = Vec::new();
+        let mut material_layer: Option<&FbxNode> = None;
 
         for child in &geometry.children {
             match child.name.as_str() {
@@ -737,6 +1675,11 @@ impl<R: Read + Seek> FbxReader<R> {
                         polygon_indices = Some(arr.clone());
                     }
                 }
+                "LayerElementNormal" => normals_layers.push(child),
+                "LayerElementUV" => uv_layers.push(child),
+                "LayerElementMaterial" if material_layer.is_none() => {
+                    material_layer = Some(child);
+                }
                 _ => {}
             }
         }
@@ -749,6 +1692,11 @@ impl<R: Read + Seek> FbxReader<R> {
             Some(p) => p,
             None => return Ok(None),
         };
+
+        let control_points = vertices
+            .chunks_exact(3)
+            .map(|value| [value[0] as f32, value[1] as f32, value[2] as f32])
+            .collect::<Vec<_>>();
 
         // Build mesh
         let mut mesh = Mesh::new();
@@ -776,6 +1724,10 @@ impl<R: Read + Seek> FbxReader<R> {
         // Parse polygon indices (FBX uses negative index to mark end of polygon)
         let mut faces: Vec<[u32; 3]> = Vec::new();
         let mut current_polygon: Vec<i32> = Vec::new();
+        // Track the original polygon index per generated triangle so we can
+        // remap ByPolygon material indices to fan-triangulated face order.
+        let mut tri_polygon_index: Vec<usize> = Vec::new();
+        let mut polygon_count = 0usize;
 
         for &idx in &polygon_indices {
             if idx < 0 {
@@ -790,9 +1742,11 @@ impl<R: Read + Seek> FbxReader<R> {
                         let v1 = current_polygon[i] as u32;
                         let v2 = current_polygon[i + 1] as u32;
                         faces.push([v0, v1, v2]);
+                        tri_polygon_index.push(polygon_count);
                     }
                 }
                 current_polygon.clear();
+                polygon_count += 1;
             } else {
                 current_polygon.push(idx);
             }
@@ -815,7 +1769,756 @@ impl<R: Read + Seek> FbxReader<R> {
         // This ensures binary compatibility when encoding.
         mesh.deduplicate_point_ids();
 
-        Ok(Some(mesh))
+        // Attach normals (ByVertice / Direct, the same convention the FBX
+        // writer emits). FBX stores one normal per control point under
+        // `ByVertice`, or per polygon-vertex under `ByPolygonVertex`; we
+        // expand both to per-point storage so Draco can compress them.
+        if let Some(layer) = normals_layers.first().copied() {
+            if let Some(values) = read_layer_float3(layer, "Normals") {
+                add_per_point_attribute(
+                    &mut mesh,
+                    GeometryAttributeType::Normal,
+                    num_vertices,
+                    polygon_indices.as_ref(),
+                    layer,
+                    &values,
+                );
+            }
+        }
+        if let Some(layer) = uv_layers.first().copied() {
+            if let Some(values) = read_layer_float2(layer, "UV") {
+                add_per_point_attribute_2(
+                    &mut mesh,
+                    GeometryAttributeType::TexCoord,
+                    num_vertices,
+                    polygon_indices.as_ref(),
+                    layer,
+                    &values,
+                );
+            }
+        }
+
+        // Per-triangle material indices.
+        let material_indices = material_layer
+            .and_then(|layer| {
+                let mapping = layer_string(layer, "MappingInformationType");
+                let reference = layer_string(layer, "ReferenceInformationType");
+                let data = layer_int_array(layer, "Materials");
+                expand_material_indices(
+                    mapping.as_deref(),
+                    reference.as_deref(),
+                    data.as_deref(),
+                    polygon_count,
+                    &tri_polygon_index,
+                )
+            })
+            .unwrap_or_default();
+
+        let uv_sets = uv_layers
+            .into_iter()
+            .filter_map(|layer| {
+                let values = read_layer_float2(layer, "UV")?
+                    .chunks_exact(2)
+                    .map(|value| [value[0], value[1]])
+                    .collect();
+                Some(crate::fbx_scene::FbxUvSet {
+                    name: layer_string(layer, "Name"),
+                    mapping: layer_string(layer, "MappingInformationType"),
+                    reference: layer_string(layer, "ReferenceInformationType"),
+                    values,
+                    indices: layer_int_array(layer, "UVIndex").unwrap_or_default(),
+                })
+            })
+            .collect();
+        let normal_sets = normals_layers
+            .into_iter()
+            .filter_map(|layer| {
+                let values = read_layer_float3(layer, "Normals")?
+                    .chunks_exact(3)
+                    .map(|value| [value[0], value[1], value[2]])
+                    .collect();
+                Some(crate::fbx_scene::FbxNormalSet {
+                    name: layer_string(layer, "Name"),
+                    mapping: layer_string(layer, "MappingInformationType"),
+                    reference: layer_string(layer, "ReferenceInformationType"),
+                    values,
+                    indices: layer_int_array(layer, "NormalsIndex")
+                        .or_else(|| layer_int_array(layer, "NormalIndex"))
+                        .unwrap_or_default(),
+                })
+            })
+            .collect();
+
+        Ok(Some(FbxGeometrySource {
+            mesh,
+            material_indices,
+            control_points,
+            polygon_vertex_indices: polygon_indices,
+            uv_sets,
+            normal_sets,
+        }))
+    }
+
+    /// Flatten the FBX animation graph into one [`FbxAnimation`] per
+    /// `AnimationStack` + first connected `AnimationLayer`.
+    fn parse_animations(
+        &self,
+        nodes: &[FbxNode],
+        connections: &[FbxConnection],
+        astack_map: &std::collections::HashMap<i64, &FbxNode>,
+        alayer_map: &std::collections::HashMap<i64, &FbxNode>,
+        acnode_map: &std::collections::HashMap<i64, &FbxNode>,
+        acurve_map: &std::collections::HashMap<i64, &FbxNode>,
+        model_map: &std::collections::HashMap<i64, &FbxNode>,
+        model_name_map: &std::collections::HashMap<i64, String>,
+        model_node_ids: &std::collections::HashMap<i64, FbxNodeId>,
+        morph_targets: &std::collections::HashMap<i64, (i64, u32)>,
+    ) -> Vec<FbxAnimation> {
+        let fbx_ktime = fbx_ktime_for(nodes, self.version);
+        let ktime_f = match fbx_ktime {
+            0 => 1.0,
+            v => v as f32,
+        };
+
+        // acnode_id -> (layer_id, model_id, path). The FBX convention (and
+        // Blender's io_scene_fbx) wires the AnimationCurveNode as the *child*
+        // of an OP connection whose parent is the animated Model, with the
+        // animated property name ("Lcl Translation" etc.) as the 4th field.
+        let mut acnode_targets: std::collections::HashMap<
+            i64,
+            (i64, i64, FbxAnimChannelPath, Option<u32>),
+        > = std::collections::HashMap::new();
+        for conn in connections {
+            if conn.kind != ConnectionKind::Op {
+                continue;
+            }
+            if !acnode_map.contains_key(&conn.child) {
+                continue;
+            }
+            let Some(property) = conn.property.as_deref() else {
+                continue;
+            };
+            let Some(path) = FbxAnimChannelPath::from_property_name(property) else {
+                continue;
+            };
+            let (model_id, morph_target_index) = if model_map.contains_key(&conn.parent) {
+                (conn.parent, None)
+            } else if path == FbxAnimChannelPath::MorphWeight {
+                let Some(&(model_id, target_index)) = morph_targets.get(&conn.parent) else {
+                    continue;
+                };
+                (model_id, Some(target_index))
+            } else {
+                continue;
+            };
+            // Find the layer that owns this curve node (OO curvenode -> layer).
+            let mut layer_id = None;
+            for c2 in connections {
+                if c2.kind == ConnectionKind::Oo
+                    && c2.child == conn.child
+                    && alayer_map.contains_key(&c2.parent)
+                {
+                    layer_id = Some(c2.parent);
+                    break;
+                }
+            }
+            if let Some(layer_id) = layer_id {
+                acnode_targets.insert(conn.child, (layer_id, model_id, path, morph_target_index));
+            }
+        }
+
+        // acnode_id -> { component -> (times, values, flags) }
+        let mut acnode_curves: std::collections::HashMap<
+            i64,
+            std::collections::BTreeMap<u32, FbxAnimCurveData>,
+        > = std::collections::HashMap::new();
+        for conn in connections {
+            if conn.kind != ConnectionKind::Op {
+                continue;
+            }
+            if !acurve_map.contains_key(&conn.child) {
+                continue;
+            }
+            if !acnode_targets.contains_key(&conn.parent) {
+                continue;
+            }
+            let component = match conn.property.as_deref() {
+                Some("d|X") => 0,
+                Some("d|Y") => 1,
+                Some("d|Z") => 2,
+                _ => continue,
+            };
+            if let Some(curve) = parse_curve(acurve_map[&conn.child]) {
+                acnode_curves
+                    .entry(conn.parent)
+                    .or_default()
+                    .insert(component, curve);
+            }
+        }
+
+        // Group curve nodes by (stack, layer, model, path).
+        let mut stacks_layers: std::collections::HashMap<
+            i64,
+            std::collections::HashMap<i64, Vec<(i64, i64, FbxAnimChannelPath, Option<u32>)>>,
+        > = std::collections::HashMap::new();
+        for (acnode_id, (layer_id, model_id, path, morph_target_index)) in &acnode_targets {
+            // Find stacks owning this layer.
+            let mut stack_ids = Vec::new();
+            for c2 in connections {
+                if c2.kind == ConnectionKind::Oo
+                    && c2.child == *layer_id
+                    && astack_map.contains_key(&c2.parent)
+                {
+                    stack_ids.push(c2.parent);
+                }
+            }
+            for stack_id in stack_ids {
+                stacks_layers
+                    .entry(stack_id)
+                    .or_default()
+                    .entry(*layer_id)
+                    .or_default()
+                    .push((*acnode_id, *model_id, *path, *morph_target_index));
+            }
+        }
+
+        let mut animations = Vec::new();
+        for (stack_id, layers) in stacks_layers {
+            let stack_node = astack_map.get(&stack_id);
+            let name = stack_node.and_then(|n| match n.properties.get(1) {
+                Some(FbxProperty::String(raw)) => raw
+                    .split('\0')
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+                _ => None,
+            });
+            // Flatten all layers into one animation. Blender does the same:
+            // each layer produces an independent action, but most files have a
+            // single layer per stack.
+            let mut channels = Vec::new();
+            let mut max_time = 0.0f32;
+            for (_layer_id, entries) in layers {
+                // Group curve nodes by (model, path) before flattening.
+                let mut groups: std::collections::HashMap<
+                    (i64, FbxAnimChannelPath, Option<u32>),
+                    Vec<i64>,
+                > = std::collections::HashMap::new();
+                for (acnode_id, model_id, path, morph_target_index) in entries {
+                    groups
+                        .entry((model_id, path, morph_target_index))
+                        .or_default()
+                        .push(acnode_id);
+                }
+                for ((model_id, path, morph_target_index), acnode_ids) in groups {
+                    // Combine the X/Y/Z curves across all matching curve nodes
+                    // (Blender notes that each curve node has a unique set of
+                    // channels, so in practice there is exactly one entry).
+                    let mut by_component: std::collections::BTreeMap<u32, FbxAnimCurveData> =
+                        std::collections::BTreeMap::new();
+                    for acnode_id in acnode_ids {
+                        if let Some(curves) = acnode_curves.get(&acnode_id) {
+                            for (component, curve) in curves {
+                                by_component
+                                    .entry(*component)
+                                    .or_insert_with(|| curve.clone());
+                            }
+                        }
+                    }
+                    let Some(channel) = flatten_curve(&by_component, path, ktime_f) else {
+                        continue;
+                    };
+                    if let (Some(node_name), Some(&node_id)) =
+                        (model_name_map.get(&model_id), model_node_ids.get(&model_id))
+                    {
+                        max_time =
+                            max_time.max(channel.sampler.input.last().copied().unwrap_or(0.0));
+                        channels.push(FbxAnimChannel {
+                            node_id,
+                            node_name: node_name.clone(),
+                            path,
+                            morph_target_index,
+                            sampler: channel.sampler,
+                        });
+                    }
+                }
+            }
+            if channels.is_empty() {
+                continue;
+            }
+            animations.push(FbxAnimation {
+                name,
+                duration: max_time,
+                channels,
+            });
+        }
+        animations
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FbxAnimCurveData {
+    key_times: Vec<i64>,
+    key_values: Vec<f32>,
+    key_attr_flags: Vec<i32>,
+    in_tangents: Vec<f32>,
+    out_tangents: Vec<f32>,
+}
+
+fn parse_curve(node: &FbxNode) -> Option<FbxAnimCurveData> {
+    let mut key_times = None;
+    let mut key_values = None;
+    let mut key_attr_flags = None;
+    let mut key_attr_data = None;
+    let mut key_attr_ref_count = None;
+    for child in &node.children {
+        match child.name.as_str() {
+            "KeyTime" => {
+                if let Some(FbxProperty::I64Array(arr)) = child.properties.first() {
+                    key_times = Some(arr.clone());
+                }
+            }
+            "KeyValueFloat" => {
+                if let Some(FbxProperty::F32Array(arr)) = child.properties.first() {
+                    key_values = Some(arr.clone());
+                }
+            }
+            "KeyAttrFlags" => {
+                if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
+                    key_attr_flags = Some(arr.clone());
+                }
+            }
+            "KeyAttrDataFloat" => {
+                if let Some(FbxProperty::F32Array(arr)) = child.properties.first() {
+                    key_attr_data = Some(arr.clone());
+                }
+            }
+            "KeyAttrRefCount" => {
+                if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
+                    key_attr_ref_count = Some(arr.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    let key_times = key_times?;
+    let key_values = key_values?;
+    if key_times.is_empty() || key_values.len() != key_times.len() {
+        return None;
+    }
+    let mut expanded_flags = Vec::with_capacity(key_times.len());
+    let mut expanded_attrs = Vec::with_capacity(key_times.len());
+    if let (Some(flags), Some(data), Some(refs)) =
+        (key_attr_flags, key_attr_data, key_attr_ref_count)
+    {
+        if flags.len() == refs.len() && data.len() == refs.len() * 4 {
+            for ((flag, count), attrs) in flags.into_iter().zip(refs).zip(data.chunks_exact(4)) {
+                for _ in 0..count.max(0) {
+                    expanded_flags.push(flag);
+                    expanded_attrs.push([attrs[0], attrs[1]]);
+                }
+            }
+        }
+    }
+    if expanded_flags.len() != key_times.len() {
+        expanded_flags = vec![0x4; key_times.len()];
+        expanded_attrs = vec![[0.0, 0.0]; key_times.len()];
+    }
+    let mut in_tangents = vec![0.0; key_times.len()];
+    let mut out_tangents = vec![0.0; key_times.len()];
+    for (index, attrs) in expanded_attrs.iter().enumerate() {
+        out_tangents[index] = attrs[0];
+        if index + 1 < in_tangents.len() {
+            in_tangents[index + 1] = attrs[1];
+        }
+    }
+    Some(FbxAnimCurveData {
+        key_times,
+        key_values,
+        key_attr_flags: expanded_flags,
+        in_tangents,
+        out_tangents,
+    })
+}
+
+/// Combine per-component curves into a single TRS channel sampler.
+///
+/// Times are taken from the X (component 0) curve when available, then Y, then
+/// Z. Missing components default to 0. Interpolation is read from the first
+/// `KeyAttrFlags` entry of the chosen time axis.
+fn flatten_curve(
+    by_component: &std::collections::BTreeMap<u32, FbxAnimCurveData>,
+    path: FbxAnimChannelPath,
+    ktime_f: f32,
+) -> Option<FbxAnimChannel> {
+    let time_axis = by_component
+        .get(&0)
+        .or_else(|| by_component.get(&1))
+        .or_else(|| by_component.get(&2))?;
+    let n = time_axis.key_times.len();
+    let mut input = Vec::with_capacity(n);
+    let component_count = path.component_count();
+    let mut output = Vec::with_capacity(n * component_count);
+    let mut in_tangents = Vec::with_capacity(n * component_count);
+    let mut out_tangents = Vec::with_capacity(n * component_count);
+    let flags = time_axis.key_attr_flags.first().copied().unwrap_or(0);
+    let interpolation = FbxAnimInterpolation::from_key_attr_flags(flags);
+    for i in 0..n {
+        input.push(time_axis.key_times[i] as f32 / ktime_f);
+        for component in 0..component_count as u32 {
+            let value = by_component.get(&component).and_then(|curve| {
+                if i < curve.key_values.len() {
+                    Some(curve.key_values[i])
+                } else {
+                    None
+                }
+            });
+            output.push(value.unwrap_or(0.0));
+            in_tangents.push(
+                by_component
+                    .get(&component)
+                    .and_then(|curve| curve.in_tangents.get(i))
+                    .copied()
+                    .unwrap_or(0.0),
+            );
+            out_tangents.push(
+                by_component
+                    .get(&component)
+                    .and_then(|curve| curve.out_tangents.get(i))
+                    .copied()
+                    .unwrap_or(0.0),
+            );
+        }
+    }
+    // FBX stores Euler rotations in degrees; convert to radians so the JS
+    // viewer's Euler→quaternion helper matches expectations. Translation and
+    // scale are passed through unchanged.
+    if path == FbxAnimChannelPath::Rotation {
+        for chunk in output.chunks_mut(3) {
+            for value in chunk.iter_mut() {
+                *value = value.to_radians();
+            }
+        }
+        for chunk in in_tangents.chunks_mut(3) {
+            for value in chunk.iter_mut() {
+                *value = value.to_radians();
+            }
+        }
+        for chunk in out_tangents.chunks_mut(3) {
+            for value in chunk.iter_mut() {
+                *value = value.to_radians();
+            }
+        }
+    }
+    Some(FbxAnimChannel {
+        node_id: FbxNodeId(0),
+        node_name: String::new(),
+        path,
+        morph_target_index: None,
+        sampler: FbxAnimSampler {
+            input,
+            output,
+            interpolation,
+            in_tangents: (interpolation == FbxAnimInterpolation::Cubic).then_some(in_tangents),
+            out_tangents: (interpolation == FbxAnimInterpolation::Cubic).then_some(out_tangents),
+        },
+    })
+}
+
+/// Determine the FBX KTime ticks-per-second value.
+///
+/// Pre-7.7 files use `46186158000`. FBX 2019.5+ (version 7700+) introduced an
+/// opt-in `141120000` ticks/second default; the legacy value is selected by
+/// `FBXHeaderExtension/OtherFlags/TCDefinition == 127`. See Blender's
+/// `io_scene_fbx` `FBX_KTIME` constants for the canonical encoding.
+fn fbx_ktime_for(nodes: &[FbxNode], version: u32) -> u64 {
+    const KTIME_V7: u64 = 46_186_158_000;
+    const KTIME_V8: u64 = 141_120_000;
+    if version >= 8000 {
+        return KTIME_V8;
+    }
+    if version >= 7700 {
+        // Inspect OtherFlags/TCDefinition. 127 selects the legacy V7 value;
+        // anything else (or missing) opts into V8.
+        for n in nodes {
+            if n.name != "FBXHeaderExtension" {
+                continue;
+            }
+            let mut header_version = 0;
+            let mut other_flags: Option<&FbxNode> = None;
+            for child in &n.children {
+                if child.name == "FBXHeaderVersion" {
+                    if let Some(FbxProperty::I32(v)) = child.properties.first() {
+                        header_version = *v;
+                    }
+                } else if child.name == "OtherFlags" && other_flags.is_none() {
+                    other_flags = Some(child);
+                }
+            }
+            if header_version >= 1004 {
+                if let Some(flags) = other_flags {
+                    for flag in &flags.children {
+                        if flag.name == "TCDefinition" {
+                            if let Some(FbxProperty::I32(v)) = flag.properties.first() {
+                                return if *v == 127 { KTIME_V7 } else { KTIME_V8 };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Pre-8000 default for 7.7+ files without an explicit TCDefinition is V7.
+        return KTIME_V7;
+    }
+    KTIME_V7
+}
+
+fn layer_string(layer: &FbxNode, name: &str) -> Option<String> {
+    for child in &layer.children {
+        if child.name == name {
+            if let Some(FbxProperty::String(s)) = child.properties.first() {
+                return Some(s.clone());
+            }
+        }
+    }
+    None
+}
+
+fn layer_int_array(layer: &FbxNode, name: &str) -> Option<Vec<i32>> {
+    for child in &layer.children {
+        if child.name == name {
+            if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
+                return Some(arr.clone());
+            }
+        }
+    }
+    None
+}
+
+fn read_layer_float3(layer: &FbxNode, name: &str) -> Option<Vec<f32>> {
+    for child in &layer.children {
+        if child.name == name {
+            if let Some(FbxProperty::F64Array(arr)) = child.properties.first() {
+                return Some(arr.iter().map(|v| *v as f32).collect());
+            }
+            if let Some(FbxProperty::F32Array(arr)) = child.properties.first() {
+                return Some(arr.clone());
+            }
+        }
+    }
+    None
+}
+
+fn read_layer_float2(layer: &FbxNode, name: &str) -> Option<Vec<f32>> {
+    for child in &layer.children {
+        if child.name == name {
+            if let Some(FbxProperty::F64Array(arr)) = child.properties.first() {
+                return Some(arr.iter().map(|v| *v as f32).collect());
+            }
+            if let Some(FbxProperty::F32Array(arr)) = child.properties.first() {
+                return Some(arr.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Expand a `LayerElementMaterial` data array to per-triangle material indices.
+fn expand_material_indices(
+    mapping: Option<&str>,
+    reference: Option<&str>,
+    data: Option<&[i32]>,
+    polygon_count: usize,
+    tri_polygon_index: &[usize],
+) -> Option<Vec<i32>> {
+    let mapping = mapping.unwrap_or("AllSame");
+    let data = data?;
+    // `IndexToDirect` semantics: each entry of `Materials` is itself the
+    // absolute material index (FBX rarely uses a separate index array for
+    // materials, but we honour `IndexToDirect` by treating `data` as the
+    // direct list when no separate index exists).
+    let _ = reference;
+    let per_polygon: Vec<i32> = match mapping {
+        "AllSame" => {
+            let value = data.first().copied().unwrap_or(0);
+            vec![value; polygon_count.max(1)]
+        }
+        "ByPolygon" | "ByPolygonSide" => data.to_vec(),
+        "ByPolygonVertex" => {
+            // We do not retain per-vertex polygon order here; pick the first
+            // vertex entry of each polygon. The caller passes
+            // `tri_polygon_index` keyed by polygon index.
+            // Without polygon-vertex correspondence we fall back to AllSame.
+            let value = data.first().copied().unwrap_or(0);
+            vec![value; polygon_count.max(1)]
+        }
+        _ => return None,
+    };
+    if per_polygon.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::with_capacity(tri_polygon_index.len());
+    for &polygon_index in tri_polygon_index {
+        let value = per_polygon
+            .get(polygon_index)
+            .copied()
+            .unwrap_or(per_polygon[0]);
+        out.push(value);
+    }
+    Some(out)
+}
+
+fn add_per_point_attribute(
+    mesh: &mut Mesh,
+    attribute_type: GeometryAttributeType,
+    num_points: usize,
+    polygon_indices: &[i32],
+    layer: &FbxNode,
+    values: &[f32],
+) {
+    let mapping = layer_string(layer, "MappingInformationType").unwrap_or_default();
+    let reference = layer_string(layer, "ReferenceInformationType").unwrap_or_default();
+    let index = if reference == "IndexToDirect" {
+        layer_int_array(layer, "NormalsIndex").or_else(|| layer_int_array(layer, "NormalIndex"))
+    } else {
+        None
+    };
+    let stride = 3;
+    let resolved = resolve_layer_values(
+        &mapping,
+        &reference,
+        index.as_deref(),
+        values,
+        stride,
+        num_points,
+        polygon_indices,
+    );
+    let count = resolved.len() / stride;
+    let mut att = PointAttribute::new();
+    att.init(
+        attribute_type,
+        3,
+        DataType::Float32,
+        false,
+        count.max(num_points),
+    );
+    let buffer = att.buffer_mut();
+    for i in 0..count {
+        let bytes: Vec<u8> = (0..stride)
+            .flat_map(|c| resolved[i * stride + c].to_le_bytes())
+            .collect();
+        buffer.write(i * 12, &bytes);
+    }
+    mesh.add_attribute(att);
+}
+
+fn add_per_point_attribute_2(
+    mesh: &mut Mesh,
+    attribute_type: GeometryAttributeType,
+    num_points: usize,
+    polygon_indices: &[i32],
+    layer: &FbxNode,
+    values: &[f32],
+) {
+    let mapping = layer_string(layer, "MappingInformationType").unwrap_or_default();
+    let reference = layer_string(layer, "ReferenceInformationType").unwrap_or_default();
+    let index = if reference == "IndexToDirect" {
+        layer_int_array(layer, "UVIndex")
+    } else {
+        None
+    };
+    let stride = 2;
+    let resolved = resolve_layer_values(
+        &mapping,
+        &reference,
+        index.as_deref(),
+        values,
+        stride,
+        num_points,
+        polygon_indices,
+    );
+    let count = resolved.len() / stride;
+    let mut att = PointAttribute::new();
+    att.init(
+        attribute_type,
+        2,
+        DataType::Float32,
+        false,
+        count.max(num_points),
+    );
+    let buffer = att.buffer_mut();
+    for i in 0..count {
+        let bytes: Vec<u8> = (0..stride)
+            .flat_map(|c| resolved[i * stride + c].to_le_bytes())
+            .collect();
+        buffer.write(i * 8, &bytes);
+    }
+    mesh.add_attribute(att);
+}
+
+/// Resolve a `LayerElement*` data array to per-point values.
+///
+/// FBX supports `ByVertice`/`ByPolygonVertex`/`AllSame` mapping and
+/// `Direct`/`IndexToDirect` reference modes. We always emit one value per
+/// control point so the writer can re-serialize under `ByVertice`/`Direct`,
+/// matching the existing FBX writer convention.
+fn resolve_layer_values(
+    mapping: &str,
+    reference: &str,
+    index: Option<&[i32]>,
+    values: &[f32],
+    stride: usize,
+    num_points: usize,
+    polygon_indices: &[i32],
+) -> Vec<f32> {
+    // Helper: pick the value tuple at a logical position.
+    let tuple_at = |pos: usize| -> Vec<f32> {
+        let resolved_pos = if reference == "IndexToDirect" {
+            index
+                .and_then(|idx| idx.get(pos).map(|v| *v as usize))
+                .unwrap_or(pos)
+        } else {
+            pos
+        };
+        let start = resolved_pos * stride;
+        if start + stride <= values.len() {
+            values[start..start + stride].to_vec()
+        } else {
+            vec![0.0; stride]
+        }
+    };
+
+    match mapping {
+        "ByVertice" | "ByVertex" | "ByVerticeOrPolygon" => {
+            (0..num_points).flat_map(tuple_at).collect()
+        }
+        "AllSame" => {
+            let first = tuple_at(0);
+            (0..num_points)
+                .flat_map(|_| first.iter().copied())
+                .collect()
+        }
+        "ByPolygonVertex" => {
+            // Spread per-polygon-vertex values back to control points. We
+            // pick the last value seen per control point (common DCC behavior
+            // for hard normals).
+            let mut per_point = vec![0f32; num_points * stride];
+            let mut vertex_pos = 0usize;
+            for &idx in polygon_indices {
+                let actual = if idx < 0 { !idx } else { idx };
+                if let Some(point) =
+                    per_point.get_mut(actual as usize * stride..actual as usize * stride + stride)
+                {
+                    let tuple = tuple_at(vertex_pos);
+                    for c in 0..stride.min(point.len()) {
+                        point[c] = tuple[c];
+                    }
+                }
+                vertex_pos += 1;
+            }
+            per_point
+        }
+        _ => (0..num_points).flat_map(tuple_at).collect(),
     }
 }
 

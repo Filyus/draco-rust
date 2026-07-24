@@ -2,10 +2,17 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { embeddedTriangle, externalTriangle, triangleBytes } from './smoke-fixtures.mjs';
+import {
+  animatedTranslation, embeddedTriangle, externalTriangle, triangleBytes,
+} from './smoke-fixtures.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');
+
+async function isReleaseProfile() {
+  const stamp = JSON.parse(await readFile(resolve(pkg, 'gltf.build-stamp.json'), 'utf8'));
+  return stamp.config_key.includes('features=;');
+}
 
 async function load(name) {
   const module = await import(pathToFileURL(resolve(pkg, `${name}.js`)));
@@ -17,7 +24,8 @@ async function load(name) {
 const api = await load('gltf');
 const input = new TextEncoder().encode(embeddedTriangle());
 const asset = new api.GltfAsset(input, '2.0');
-if (
+const releaseProfile = await isReleaseProfile();
+if (releaseProfile && (
   typeof asset.decompress === 'function'
   || typeof asset.compressPrimitive === 'function'
   || typeof asset.readAccessor === 'function'
@@ -28,17 +36,17 @@ if (
   || api.GltfAsset.prototype.readAccessor
   || api.GltfAsset.prototype.bufferViewBytes
   || api.GltfAsset.prototype.previewManifest
-) {
+)) {
   throw new Error('default glTF artifact unexpectedly includes renderer or writer API');
 }
 const types = await readFile(resolve(pkg, 'gltf.d.ts'), 'utf8');
-if (
+if (releaseProfile && (
   types.includes('decompress')
   || types.includes('compressPrimitive')
   || types.includes('readAccessor')
   || types.includes('bufferViewBytes')
   || types.includes('previewManifest')
-) {
+)) {
   throw new Error('default glTF declarations unexpectedly include renderer or writer API');
 }
 const summary = asset.summary();
@@ -47,7 +55,7 @@ if (!summary.success || summary.meshCount !== 1 || summary.primitiveCount !== 1)
 }
 
 const primitive = asset.readPrimitive(0, 0);
-if ('GeometryWriteOptions' in api || typeof api.GltfAsset.fromGeometry === 'function') {
+if (releaseProfile && ('GeometryWriteOptions' in api || typeof api.GltfAsset.fromGeometry === 'function')) {
   throw new Error('default glTF artifact unexpectedly includes writer API');
 }
 if (
@@ -81,6 +89,101 @@ const resolved = api.GltfAsset.withResources(
   '2.0',
 ).summary();
 if (!resolved.success || resolved.meshCount !== 1) {
-  throw new Error(`resource-map smoke failed: ${JSON.stringify(resolved)}`);
+    throw new Error(`resource-map smoke failed: ${JSON.stringify(resolved)}`);
+}
+
+const fbx = await load('fbx');
+const fbxScene = {
+  rootNodes: [{
+    name: 'AnimatedTriangle',
+    meshes: [{
+      name: 'Triangle',
+      positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      uvs: [0, 0, 1, 0, 0, 1],
+      materialIndices: [1],
+    }],
+    children: [],
+  }],
+  materials: [{
+    name: 'Red',
+    shadingModel: 'Phong',
+    diffuse: [1, 0, 0],
+    shininess: 20,
+  }, {
+    name: 'Blue',
+    shadingModel: 'Phong',
+    diffuse: [0, 0, 1],
+  }],
+  animations: [{
+    name: 'Move',
+    duration: 1,
+    channels: [{
+      nodeName: 'AnimatedTriangle',
+      path: 'translation',
+      sampler: {
+        input: [0, 1],
+        output: [0, 0, 0, 1, 0, 0],
+        interpolation: 'linear',
+      },
+    }],
+  }],
+};
+const fbxExport = fbx.create_fbx_scene(fbxScene, {});
+if (!fbxExport.success || !fbxExport.binary_data?.length) {
+  throw new Error(`FBX scene export smoke failed: ${fbxExport.error}`);
+}
+const fbxRoundtrip = fbx.parse_fbx(fbxExport.binary_data);
+if (
+  !fbxRoundtrip.success
+  || fbxRoundtrip.materials?.[1]?.name !== 'Blue'
+  || fbxRoundtrip.scene?.rootNodes?.[0]?.meshes?.[0]?.materialIndices?.[0] !== 1
+  || fbxRoundtrip.scene?.rootNodes?.[0]?.meshes?.[0]?.uvs?.length !== 6
+  || fbxRoundtrip.animations?.[0]?.channels?.length !== 1
+) {
+  throw new Error(`FBX material/animation smoke failed: ${JSON.stringify(fbxRoundtrip)}`);
+}
+
+// FBX export from glTF must carry the document's material assignments and
+// node animation, rather than only the hierarchy and triangle buffers.
+globalThis.WebGL2RenderingContext = {};
+const { buildFbxSceneFromGltf } = await import('../www/gltf-loader.js');
+const animatedDocument = JSON.parse(animatedTranslation());
+animatedDocument.nodes[0] = { name: 'AnimatedTriangle' };
+const animatedFbxScene = buildFbxSceneFromGltf(
+  new TextEncoder().encode(JSON.stringify(animatedDocument)),
+  {},
+  api,
+);
+const materialDocument = JSON.parse(embeddedTriangle());
+materialDocument.materials = [{
+  name: 'Blue',
+  pbrMetallicRoughness: { baseColorFactor: [0, 0, 1, 1] },
+}];
+materialDocument.meshes[0].primitives[0].material = 0;
+const materialFbxScene = buildFbxSceneFromGltf(
+  new TextEncoder().encode(JSON.stringify(materialDocument)),
+  {},
+  api,
+);
+if (
+  materialFbxScene.materials?.[0]?.name !== 'Blue'
+  || materialFbxScene.rootNodes?.[0]?.meshes?.[0]?.materialIndices?.[0] !== 0
+  || animatedFbxScene.animations?.[0]?.channels?.[0]?.path !== 'translation'
+) {
+  throw new Error('glTF to FBX scene conversion smoke failed');
+}
+const materialFbxRoundtrip = fbx.parse_fbx(
+  fbx.create_fbx_scene(materialFbxScene, {}).binary_data,
+);
+const animatedFbxRoundtrip = fbx.parse_fbx(
+  fbx.create_fbx_scene(animatedFbxScene, {}).binary_data,
+);
+if (
+  materialFbxRoundtrip.materials?.[0]?.name !== 'Blue'
+  || materialFbxRoundtrip.scene?.rootNodes?.[0]?.meshes?.[0]?.materialIndices?.[0] !== 0
+  || animatedFbxRoundtrip.animations?.[0]?.channels?.[0]?.path !== 'translation'
+) {
+  throw new Error('glTF to FBX exported data smoke failed');
 }
 console.log('Node WASM smoke passed');

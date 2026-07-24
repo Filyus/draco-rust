@@ -94,6 +94,7 @@
                             <option value="obj">OBJ (Wavefront)</option>
                             <option value="ply">PLY (Polygon File Format)</option>
                             <option value="fbx">FBX (Autodesk)</option>
+                            <option value="fbx-legacy">Legacy FBX (Blender)</option>
                         </select>
                         <div class="choice-grid format-choices" data-choice-for="export-format" role="group" aria-label="Target Format">
                             <button type="button" data-value="glb" title="GLB (Binary glTF)">GLB</button>
@@ -101,6 +102,7 @@
                             <button type="button" data-value="obj" title="OBJ (Wavefront)">OBJ</button>
                             <button type="button" data-value="ply" title="PLY (Polygon File Format)">PLY</button>
                             <button type="button" data-value="fbx" title="FBX (Autodesk)">FBX</button>
+                            <button type="button" data-value="fbx-legacy" title="FBX for Blender's legacy importer">Legacy FBX</button>
                         </div>
 
                         <div class="checkbox-row">
@@ -202,13 +204,13 @@
                             <p class="placeholder-hint">Drop a file in the sidebar to preview it here</p>
                         </div>
 
-                        <div class="viewer-toolbar">
-                            <button type="button" class="viewer-btn" id="viewer-reset" title="Reset view"><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M2.5 10v3.5H6M13.5 10v3.5H10"/><circle cx="8" cy="8" r="1.5"/></svg><span>Reset view</span></button>
-                            <button type="button" class="viewer-btn" id="viewer-autorotate" title="Auto-rotate" aria-pressed="false"><svg class="viewer-btn-icon viewer-btn-icon--autorotate" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2.5" class="icon-fill"/><path d="M17.7 17.7A8 8 0 1 1 19.9 10.2"/><path d="m17.5 10.2 2.5 3 2-3.4"/></svg><span>Auto-rotate</span></button>
-                            <button type="button" class="viewer-btn" id="viewer-wireframe" title="Wireframe"><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 13.5 4.7 8 7.9 2.5 4.7 8 1.5Z"/><path d="M2.5 4.7V11L8 14.3l5.5-3.3V4.7M8 7.9v6.4"/></svg><span>Wireframe</span></button>
-                            <button type="button" class="viewer-btn" id="viewer-base-color" title="Show base color without preview lighting" aria-pressed="false"><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5"/><circle cx="8" cy="8" r="2" class="icon-fill"/></svg><span>Base color</span></button>
-                            <button type="button" class="viewer-btn" id="viewer-smooth-normals" title="Use angle-weighted normals for smooth preview shading" aria-pressed="false"><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="M8 3a5 5 0 0 1 0 10Z" class="icon-fill icon-muted-fill"/></svg><span>Smooth shading</span></button>
-                            <button type="button" class="viewer-btn" id="viewer-grid" title="Toggle grid"><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 2.5h11v11h-11zM6.2 2.5v11M9.8 2.5v11M2.5 6.2h11M2.5 9.8h11"/></svg><span>Grid</span></button>
+                        <div class="viewer-toolbar" role="toolbar" aria-label="Preview controls">
+                            <button type="button" class="viewer-btn" id="viewer-reset" title="Reset view" disabled><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M2.5 10v3.5H6M13.5 10v3.5H10"/><circle cx="8" cy="8" r="1.5"/></svg><span>Reset view</span></button>
+                            <button type="button" class="viewer-btn" id="viewer-autorotate" title="Auto-rotate" aria-pressed="false" disabled><svg class="viewer-btn-icon viewer-btn-icon--autorotate" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2.5" class="icon-fill"/><path d="M17.7 17.7A8 8 0 1 1 19.9 10.2"/><path d="m17.5 10.2 2.5 3 2-3.4"/></svg><span>Auto-rotate</span></button>
+                            <button type="button" class="viewer-btn" id="viewer-wireframe" title="Wireframe" aria-pressed="false" disabled><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 13.5 4.7 8 7.9 2.5 4.7 8 1.5Z"/><path d="M2.5 4.7V11L8 14.3l5.5-3.3V4.7M8 7.9v6.4"/></svg><span>Wireframe</span></button>
+                            <button type="button" class="viewer-btn" id="viewer-base-color" title="Show base color without preview lighting" aria-pressed="false" disabled><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5"/><circle cx="8" cy="8" r="2" class="icon-fill"/></svg><span>Base color</span></button>
+                            <button type="button" class="viewer-btn" id="viewer-smooth-normals" title="Use angle-weighted normals for smooth preview shading" aria-pressed="false" disabled><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="M8 3a5 5 0 0 1 0 10Z" class="icon-fill icon-muted-fill"/></svg><span>Smooth shading</span></button>
+                            <button type="button" class="viewer-btn" id="viewer-grid" title="Toggle grid" aria-pressed="true" disabled><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 2.5h11v11h-11zM6.2 2.5v11M9.8 2.5v11M2.5 6.2h11M2.5 9.8h11"/></svg><span>Grid</span></button>
                         </div>
 
                         <div class="viewer-animation" id="viewer-animation" style="display: none;">

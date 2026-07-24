@@ -6,8 +6,9 @@
  */
 
 import { Viewer } from './viewer.js';
-import { buildFlatMeshesFromGltf, buildSceneFromGltf } from './gltf-loader.js';
-import { buildSceneFromMeshes } from './mesh-loader.js';
+import { buildFbxSceneFromGltf, buildFlatMeshesFromGltf, buildSceneFromGltf } from './gltf-loader.js';
+import { buildSceneFromFbx, buildSceneFromMeshes } from './mesh-loader.js';
+import { isAsciiFbx, parseAsciiFbx } from './ascii-fbx-loader.js';
 
 // Module state
 const modules = {
@@ -75,6 +76,32 @@ const animTimeLabel = document.getElementById('anim-time');
 const animScrub = document.getElementById('anim-scrub');
 const animSpeed = document.getElementById('anim-speed');
 const animSpeedValue = document.getElementById('anim-speed-value');
+const viewerControls = [
+    viewerResetBtn,
+    viewerAutoRotateBtn,
+    viewerWireframeBtn,
+    viewerBaseColorBtn,
+    viewerSmoothNormalsBtn,
+    viewerGridBtn,
+];
+
+function setViewerControlsEnabled(enabled) {
+    for (const control of viewerControls) control.disabled = !enabled;
+}
+
+function syncViewerToolbar() {
+    if (!viewer) return;
+    syncAutoRotateButton(viewer.autoRotate);
+    for (const [button, enabled] of [
+        [viewerWireframeBtn, viewer.wireframe],
+        [viewerBaseColorBtn, viewer.baseColorOnly],
+        [viewerSmoothNormalsBtn, viewer.smoothNormals],
+        [viewerGridBtn, viewer.showGrid],
+    ]) {
+        button.classList.toggle('active', enabled);
+        button.setAttribute('aria-pressed', String(enabled));
+    }
+}
 
 function syncAutoRotateButton(enabled) {
     viewerAutoRotateBtn.classList.toggle('active', enabled);
@@ -257,6 +284,7 @@ function setupEventListeners() {
         if (!viewer) return;
         viewer.wireframe = !viewer.wireframe;
         viewerWireframeBtn.classList.toggle('active', viewer.wireframe);
+        viewerWireframeBtn.setAttribute('aria-pressed', String(viewer.wireframe));
     });
     viewerBaseColorBtn.addEventListener('click', () => {
         if (!viewer) return;
@@ -274,6 +302,7 @@ function setupEventListeners() {
         if (!viewer) return;
         viewer.showGrid = !viewer.showGrid;
         viewerGridBtn.classList.toggle('active', viewer.showGrid);
+        viewerGridBtn.setAttribute('aria-pressed', String(viewer.showGrid));
     });
 
     // Animation controls
@@ -588,6 +617,7 @@ function triangleCountForMode(mode, elementCount) {
 
 // Parse FBX file
 async function parseFbxFile(data) {
+    if (isAsciiFbx(data)) return parseAsciiFbx(data);
     if (!modules.fbx.loaded) {
         return { success: false, error: 'FBX module not loaded' };
     }
@@ -673,6 +703,21 @@ async function exportFile() {
             log(result.message, 'success');
             return;
         }
+        const legacyFbx = format === 'fbx-legacy';
+        if ((format === 'fbx' || legacyFbx) && currentMeshData.scene) {
+            result = await exportToFbxScene(
+                prepareFbxSceneForExport(currentMeshData.scene, legacyFbx),
+                legacyFbx,
+            );
+        } else if (currentMeshData.document && (format === 'fbx' || legacyFbx)) {
+            const scene = prepareFbxSceneForExport(buildFbxSceneFromGltf(
+                currentSourceData,
+                currentSourceResources,
+                modules.gltf.module,
+                { legacyCompatibility: legacyFbx },
+            ), legacyFbx);
+            result = await exportToFbxScene(scene, legacyFbx);
+        } else {
         const sourceMeshes = currentMeshData.document
             ? buildFlatMeshesFromGltf(
                 currentSourceData,
@@ -697,8 +742,10 @@ async function exportFile() {
                 result = await exportToGltf(meshes, format);
                 break;
             case 'fbx':
+            case 'fbx-legacy':
                 result = await exportToFbx(meshes);
                 break;
+        }
         }
         
         if (result && result.success) {
@@ -794,6 +841,24 @@ function prepareMeshesForExport(meshes) {
         indices: Array.from(mesh.indices || []),
         normals: includeNormals ? Array.from(mesh.normals || []) : null,
         uvs: includeUvs ? Array.from(mesh.uvs || []) : null,
+        controlPoints: mesh.controlPoints ? Array.from(mesh.controlPoints) : null,
+        polygonVertexIndices: mesh.polygonVertexIndices
+            ? Array.from(mesh.polygonVertexIndices)
+            : null,
+        uvSets: (mesh.uvSets || []).map((set) => ({
+            name: set.name,
+            mapping: set.mapping,
+            reference: set.reference,
+            values: Array.from(set.values || []),
+            indices: Array.from(set.indices || []),
+        })),
+        normalSets: (mesh.normalSets || []).map((set) => ({
+            name: set.name,
+            mapping: set.mapping,
+            reference: set.reference,
+            values: Array.from(set.values || []),
+            indices: Array.from(set.indices || []),
+        })),
     }));
     
     console.log('[JS] Output meshes:');
@@ -806,6 +871,79 @@ function prepareMeshesForExport(meshes) {
     }
     
     return result;
+}
+
+function prepareFbxSceneForExport(scene, legacyCompatibility = false) {
+    const prepareNode = (node) => ({
+        ...node,
+        meshes: (node.meshes || []).map((sourceMesh) => {
+            const [mesh] = prepareMeshesForExport([sourceMesh]);
+            return {
+                ...mesh,
+            // Keep FBX per-polygon assignments: `fbx-wasm` maps these to
+            // LayerElementMaterial when serializing the scene again.
+                materialIndices: Array.isArray(sourceMesh.materialIndices)
+                ? sourceMesh.materialIndices
+                : [],
+                skin: sourceMesh.skin || null,
+                morphTargets: sourceMesh.morphTargets || [],
+            };
+        }),
+        children: (node.children || []).map(prepareNode),
+    });
+    const prepared = {
+        rootNodes: (scene.rootNodes || []).map(prepareNode),
+        materials: (scene.materials || []).map(prepareFbxMaterialForExport),
+        textures: scene.textures || [],
+        animations: (scene.animations || []).map((animation) => prepareFbxAnimationForExport(
+            animation, legacyCompatibility,
+        )),
+    };
+    return prepared;
+}
+
+/** Strip viewer-only fields and keep what fbx-wasm's MaterialInput accepts. */
+function prepareFbxMaterialForExport(material) {
+    if (!material) return material;
+    return {
+        name: material.name,
+        shadingModel: material.shadingModel,
+        diffuse: material.diffuse,
+        specular: material.specular,
+        emissive: material.emissive,
+        ambient: material.ambient,
+        diffuseFactor: material.diffuseFactor,
+        specularFactor: material.specularFactor,
+        shininess: material.shininess,
+        emissiveFactor: material.emissiveFactor,
+        reflectionFactor: material.reflectionFactor,
+        transparencyFactor: material.transparencyFactor,
+        opacity: material.opacity,
+        bumpFactor: material.bumpFactor,
+        textures: material.textures || [],
+    };
+}
+
+/** Pass animation clips through; fbx-wasm's AnimationInput mirrors the reader. */
+function prepareFbxAnimationForExport(animation, legacyCompatibility = false) {
+    if (!animation) return animation;
+    return {
+        name: animation.name,
+        duration: animation.duration,
+        channels: (animation.channels || []).map((channel) => ({
+            nodeName: channel.nodeName,
+            nodeId: channel.nodeId,
+            path: channel.path,
+            sampler: legacyCompatibility ? {
+                ...channel.sampler,
+                // Legacy's importer has fragile support for cubic tangents.
+                // Preserve key values but write robust linear curves.
+                interpolation: 'linear',
+                inTangents: null,
+                outTangents: null,
+            } : channel.sampler,
+        })),
+    };
 }
 
 // Export to OBJ
@@ -867,6 +1005,13 @@ async function exportToFbx(meshes) {
     return modules.fbx.module.create_fbx(meshes, options);
 }
 
+async function exportToFbxScene(scene, legacyCompatibility = false) {
+    if (!modules.fbx.loaded) {
+        return { success: false, error: 'FBX module not loaded' };
+    }
+    return modules.fbx.module.create_fbx_scene(scene, { version: 7500, legacyCompatibility });
+}
+
 // Merge multiple meshes into one
 function mergeMeshes(meshes) {
     if (meshes.length === 1) return meshes[0];
@@ -907,7 +1052,8 @@ function mergeMeshes(meshes) {
 // Download the export result
 function downloadResult(result, format) {
     let blob;
-    let filename = `export.${format}`;
+    const extension = format === 'fbx-legacy' ? 'fbx' : format;
+    let filename = `export.${extension}`;
     
     if (result.binary_data) {
         blob = new Blob([new Uint8Array(result.binary_data)], { type: 'application/octet-stream' });
@@ -943,8 +1089,7 @@ function ensureViewer() {
             onAnimationEnded: () => updateAnimationPlayButton(),
             onAutoRotateChange: syncAutoRotateButton,
         });
-        syncAutoRotateButton(viewer.autoRotate);
-        viewerGridBtn.classList.add('active');
+        syncViewerToolbar();
     } catch (error) {
         log(`Preview unavailable: ${errorMessage(error)}`, 'error');
         viewer = null;
@@ -954,6 +1099,7 @@ function ensureViewer() {
 
 async function loadPreview(extension) {
     viewerSection.classList.add('loaded');
+    setViewerControlsEnabled(false);
 
     // Yield to the browser so the section layout settles before measuring the canvas.
     await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -973,6 +1119,12 @@ async function loadPreview(extension) {
                 modules.gltf.module,
                 { onLog: (msg, type) => log(msg, type) },
             );
+        } else if (extension === 'fbx' && currentMeshData?.scene) {
+            scene = await buildSceneFromFbx(
+                currentMeshData,
+                currentSourceResources,
+                { onLog: (msg, type) => log(msg, type) },
+            );
         } else if (currentMeshData?.meshes) {
             scene = await buildSceneFromMeshes(
                 currentMeshData,
@@ -988,9 +1140,12 @@ async function loadPreview(extension) {
         }
 
         viewer.setScene(scene);
+        setViewerControlsEnabled(true);
+        syncViewerToolbar();
         log('Preview ready', 'success');
     } catch (error) {
         viewer.clear();
+        setViewerControlsEnabled(false);
         log(`Preview failed: ${errorMessage(error)}`, 'error');
     }
 }
@@ -1157,6 +1312,7 @@ function clearFile() {
     exportSection.style.display = 'none';
     viewerSection.classList.remove('loaded');
     viewer?.clear();
+    setViewerControlsEnabled(false);
     resetAnimationUi();
 
     fileInput.value = '';

@@ -1461,7 +1461,18 @@ export class Viewer {
 function applyAnimation(scene, clipIndex, t) {
     const clip = scene.animations[clipIndex];
     if (!clip) return;
-    // Reset nodes to rest pose for channels we are animating.
+    // Reset each animated node before applying this frame. This is important
+    // when switching clips, and for permissive FBX where a static rest matrix
+    // is converted to TRS only once its Lcl animation is evaluated.
+    const resetNodes = new Set();
+    for (const channel of clip.channels) {
+        const node = channel.node;
+        if (!node || resetNodes.has(node) || !node.restTrs) continue;
+        node.trs.translation = [...node.restTrs.translation];
+        node.trs.rotation = [...node.restTrs.rotation];
+        node.trs.scale = [...node.restTrs.scale];
+        resetNodes.add(node);
+    }
     for (const channel of clip.channels) {
         const sampler = channel.sampler;
         const input = sampler.input;
