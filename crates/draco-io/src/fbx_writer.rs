@@ -2722,11 +2722,13 @@ mod tests {
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Root".to_string()),
                 transform: None,
+                has_complex_transform_stack: false,
                 mesh_instances: Vec::new(),
                 children: vec![FbxSceneNode {
                     id: crate::fbx_scene::FbxNodeId(2),
                     name: Some("Child".to_string()),
                     transform: Some(child_transform),
+                    has_complex_transform_stack: false,
                     mesh_instances: vec![FbxMeshInstance {
                         name: Some("Triangle".to_string()),
                         mesh: create_triangle_mesh(),
@@ -2811,12 +2813,14 @@ mod tests {
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Armature".to_string()),
                 transform: None,
+                has_complex_transform_stack: false,
                 mesh_instances: Vec::new(),
                 children: vec![
                     FbxSceneNode {
                         id: crate::fbx_scene::FbxNodeId(2),
                         name: Some("Bone".to_string()),
                         transform: Some(identity),
+                        has_complex_transform_stack: false,
                         mesh_instances: Vec::new(),
                         children: Vec::new(),
                     },
@@ -2824,6 +2828,7 @@ mod tests {
                         id: crate::fbx_scene::FbxNodeId(3),
                         name: Some("Mesh".to_string()),
                         transform: Some(identity),
+                        has_complex_transform_stack: false,
                         mesh_instances: vec![FbxMeshInstance {
                             name: Some("Triangle".to_string()),
                             mesh: create_triangle_mesh(),

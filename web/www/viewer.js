@@ -1467,10 +1467,11 @@ function applyAnimation(scene, clipIndex, t) {
     const resetNodes = new Set();
     for (const channel of clip.channels) {
         const node = channel.node;
-        if (!node || resetNodes.has(node) || !node.restTrs) continue;
-        node.trs.translation = [...node.restTrs.translation];
-        node.trs.rotation = [...node.restTrs.rotation];
-        node.trs.scale = [...node.restTrs.scale];
+        const animationRest = node?.animationTrs || node?.restTrs;
+        if (!node || resetNodes.has(node) || !animationRest) continue;
+        node.trs.translation = [...animationRest.translation];
+        node.trs.rotation = [...animationRest.rotation];
+        node.trs.scale = [...animationRest.scale];
         resetNodes.add(node);
     }
     for (const channel of clip.channels) {

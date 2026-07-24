@@ -6,7 +6,7 @@
     "test:node": "node tests/node-smoke.mjs",
     "test:fbx-mixamo": "node tests/fbx-matrix-probe.mjs",
     "test:fbx-morph": "node tests/fbx-morph-probe.mjs",
-    "test:fbx-samba": "node tests/fbx-animated-scene-probe.mjs",
+    "test:fbx-samba": "node tests/fbx-samba-blender-motion-probe.mjs",
     "test:fbx-fox": "node tests/fbx-fox-roundtrip-probe.mjs",
     "test:fbx-motion": "node tests/fbx-blender-motion-probe.mjs",
     "test:gltf-features": "node tests/gltf-features-smoke.mjs",

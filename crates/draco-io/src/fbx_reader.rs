@@ -453,7 +453,7 @@ impl<R: Read + Seek> FbxReader<R> {
         }
 
         // Helper to parse transform from Model node's Properties70
-        fn parse_transform(node: &FbxNode) -> Option<FbxTransform> {
+        fn parse_transform(node: &FbxNode) -> Option<(FbxTransform, bool)> {
             let mut translation = None;
             let mut rotation = None;
             let mut scaling = None;
@@ -635,7 +635,21 @@ impl<R: Read + Seek> FbxReader<R> {
             mat[3][1] += t[1];
             mat[3][2] += t[2];
 
-            Some(FbxTransform { matrix: mat })
+            // A bind pose contains the exporter-evaluated local orientation
+            // for nodes that use FBX's pre/post rotation or pivot terms. The
+            // semantic preview keeps that baked basis for animation, while
+            // ordinary Model TRS nodes keep their authored local values.
+            let non_zero = |values: Option<[f32; 3]>| {
+                values.is_some_and(|values| values.iter().any(|value| value.abs() > f32::EPSILON))
+            };
+            let has_complex_transform_stack = non_zero(pre_rotation)
+                || non_zero(post_rotation)
+                || non_zero(rotation_offset)
+                || non_zero(rotation_pivot)
+                || non_zero(scaling_offset)
+                || non_zero(scaling_pivot);
+
+            Some((FbxTransform { matrix: mat }, has_complex_transform_stack))
         }
 
         // Build nodes recursively
@@ -668,7 +682,10 @@ impl<R: Read + Seek> FbxReader<R> {
             let node_src = model_map.get(&id).unwrap();
             let mut node = FbxSceneNode::new(object_name(node_src));
             node.id = model_node_ids[&id];
-            node.transform = parse_transform(node_src);
+            if let Some((transform, has_complex_transform_stack)) = parse_transform(node_src) {
+                node.transform = Some(transform);
+                node.has_complex_transform_stack = has_complex_transform_stack;
+            }
             if let Some(mesh_instances) = model_mesh_instances.get(&id) {
                 node.mesh_instances.extend(mesh_instances.clone());
             }

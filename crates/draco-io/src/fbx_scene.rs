@@ -142,6 +142,11 @@ pub struct FbxSceneNode {
     pub name: Option<String>,
     /// Supported local transform properties synthesized into a matrix.
     pub transform: Option<FbxTransform>,
+    /// Whether the node's static local transform uses FBX rotation/pivot
+    /// terms beyond plain local TRS. Consumers that only receive the lossy
+    /// matrix can use the skin bind pose as the baked local basis for these
+    /// nodes while preserving raw Model TRS for ordinary nodes.
+    pub has_complex_transform_stack: bool,
     /// Geometry attached directly to this model node.
     pub mesh_instances: Vec<FbxMeshInstance>,
     /// Child model nodes.
@@ -155,6 +160,7 @@ impl FbxSceneNode {
             id: FbxNodeId(0),
             name,
             transform: None,
+            has_complex_transform_stack: false,
             mesh_instances: Vec::new(),
             children: Vec::new(),
         }

@@ -147,15 +147,28 @@ function buildFbxNodes(roots) {
         const localMatrix = bindMatrix
             ? Float32Array.from(parentBindMatrix ? (multiplyMat4(invertMat4(parentBindMatrix), bindMatrix) || bindMatrix) : bindMatrix)
             : sourceMatrix ? Float32Array.from(sourceMatrix) : null;
-        // BindPose world matrices are authoritative for skinned FBX rest
-        // placement. Decompose their reconstructed local matrix so animation
-        // can use the static FBX basis without changing viewer's shared TRS.
+        // BindPose world matrices are authoritative for static skin
+        // placement. Animated Lcl properties use the Model's own static
+        // transform basis when it is ordinary TRS. For nodes with FBX
+        // pre/post rotation or pivot terms, the BindPose local is the
+        // equivalent baked basis emitted by the decoder; it preserves the
+        // existing Mixamo convention without applying that correction to
+        // plain-TRS rigs such as Samba Dancing.
+        const bindTrs = localMatrix ? decomposeFbxMatrix(localMatrix) : restTrs();
+        const animationTrs = sourceMatrix && !source.hasComplexTransformStack
+            ? decomposeFbxMatrix(sourceMatrix)
+            : cloneTrs(bindTrs);
+        const usesAuthoredModelTrs = Boolean(sourceMatrix && !source.hasComplexTransformStack);
         const nodeIndex = nodes.length;
         const node = {
             id: nodeId,
             name: source.name || `node_${nodes.length}`,
-            trs: localMatrix ? decomposeFbxMatrix(localMatrix) : restTrs(),
-            restTrs: null,
+            trs: cloneTrs(bindTrs),
+            restTrs: cloneTrs(bindTrs),
+            bindTrs,
+            animationTrs,
+            hasComplexTransformStack: Boolean(source.hasComplexTransformStack),
+            usesAuthoredModelTrs,
             localMatrix,
             children: [],
             weights: Float32Array.from((source.meshes?.[0]?.morphTargets || []).map((target) => (Number(target.defaultWeight) || 0) / 100)),
@@ -163,7 +176,6 @@ function buildFbxNodes(roots) {
             skinIndex: -1,
             world: new Float32Array(16),
         };
-        node.restTrs = cloneTrs(node.trs);
         nodes.push(node);
         if (source.name) nodeByName.set(source.name, node);
         if (nodeId !== null) nodeById.set(nodeId, node);
@@ -188,7 +200,16 @@ function attachFbxSkins(roots, renderables, nodeById) {
                 const bindPose = new Map((sourceMesh.skin.bindPose || []).map((entry) => [entry.nodeId, entry.matrix]));
                 const joints = sourceMesh.skin.clusters.map((cluster) => {
                     const meshBind = bindPose.get(ownerNode?.id) || cluster.meshBindTransform || identityMat4();
-                    const jointBind = bindPose.get(cluster.jointNodeId) || cluster.jointBindTransform || identityMat4();
+                    const jointNode = nodeById.get(cluster.jointNodeId);
+                    // For plain-TRS bones the Cluster TransformLink is the
+                    // authored bone rest matrix. FBX BindPose entries may
+                    // carry an exporter axis conversion instead (Samba
+                    // Dancing's toe/arm bones do). Nodes with a pre/post or
+                    // pivot stack retain the BindPose as their baked basis,
+                    // which is the established Mixamo path.
+                    const jointBind = jointNode?.hasComplexTransformStack
+                        ? (bindPose.get(cluster.jointNodeId) || cluster.jointBindTransform || identityMat4())
+                        : (cluster.jointBindTransform || bindPose.get(cluster.jointNodeId) || identityMat4());
                     const inverseJointBind = invertMat4(jointBind) || identityMat4();
                     return {
                         node: nodeById.get(cluster.jointNodeId),

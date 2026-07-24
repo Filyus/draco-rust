@@ -382,6 +382,11 @@ pub struct SceneNodeOutput {
     pub name: Option<String>,
     /// Column-major local transform used by WebGL.
     pub matrix: Option<Vec<f32>>,
+    /// True when the source Model used pre/post rotation or pivot terms.
+    /// The JS FBX adapter uses the skin bind pose as the baked local basis
+    /// for these nodes; plain Model TRS remains authored animation data.
+    #[serde(default)]
+    pub has_complex_transform_stack: bool,
     pub meshes: Vec<MeshData>,
     pub children: Vec<SceneNodeOutput>,
 }
@@ -450,6 +455,7 @@ fn scene_node_to_output(node: &FbxSceneNode) -> SceneNodeOutput {
         matrix: node
             .transform
             .map(|transform| transform.matrix.into_iter().flatten().collect()),
+        has_complex_transform_stack: node.has_complex_transform_stack,
         meshes: node
             .mesh_instances
             .iter()
@@ -1317,6 +1323,7 @@ fn scene_node_to_fbx(input: SceneNodeInput) -> Result<FbxSceneNode, String> {
         id: FbxNodeId(input.id),
         name: input.name,
         transform,
+        has_complex_transform_stack: false,
         mesh_instances: input
             .meshes
             .into_iter()
@@ -2092,6 +2099,7 @@ mod reader_tests {
                 id: FbxNodeId(1),
                 name: Some("Root".to_string()),
                 transform: None,
+                has_complex_transform_stack: false,
                 mesh_instances: vec![FbxMeshInstance {
                     name: Some("Triangle".to_string()),
                     mesh: triangle_mesh(),
@@ -2126,6 +2134,7 @@ mod reader_tests {
                 id: FbxNodeId(1),
                 name: Some("Root".to_string()),
                 transform: None,
+                has_complex_transform_stack: false,
                 mesh_instances: Vec::new(),
                 children: Vec::new(),
             }],

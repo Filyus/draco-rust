@@ -93,7 +93,7 @@ function composeFbxRotationBasis(node, input, values) {
     // Lcl Rotation keys are absolute authored values in the static FBX
     // rotation basis, not deltas from the skin BindPose. Normalizing against
     // the first key would replace the opening dance pose with the T-pose.
-    const staticBasis = node.restTrs?.rotation || [0, 0, 0, 1];
+    const staticBasis = node.animationTrs?.rotation || node.restTrs?.rotation || [0, 0, 0, 1];
     for (let frame = 0; frame < input.length; frame++) {
         const offset = frame * 3;
         const q = quatMultiply(staticBasis, eulerXyzToQuat(
@@ -110,9 +110,13 @@ function composeFbxRotationBasis(node, input, values) {
 }
 
 function rebaseFbxTranslationToBindRest(node, input, values) {
+    // Plain Model TRS keys already use the same source space as their static
+    // local transform. Retaining their absolute values is necessary for the
+    // Cluster TransformLink skin basis (for example Samba Dancing's hips).
+    if (node.usesAuthoredModelTrs) return values;
     // Preserve the raw FBX root-motion delta but anchor its first key to the
     // rest translation reconstructed from the skin BindPose.
-    const rest = node.restTrs?.translation || [0, 0, 0];
+    const rest = node.animationTrs?.translation || node.restTrs?.translation || [0, 0, 0];
     const rawRest = [values[0] || 0, values[1] || 0, values[2] || 0];
     const translated = new Float32Array(values.length);
     for (let frame = 0; frame < input.length; frame++) {
