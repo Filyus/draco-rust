@@ -116,3 +116,6 @@ node_modules/
 playwright-report/
 test-results/
 .playwright/
+
+# Local scratch/debug artifacts
+.scratch/
