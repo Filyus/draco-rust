@@ -124,6 +124,7 @@ struct MeshData {
     polygon_vertex_indices: Option<Vec<i32>>,
     uv_sets: Vec<crate::fbx_scene::FbxUvSet>,
     normal_sets: Vec<crate::fbx_scene::FbxNormalSet>,
+    color_sets: Vec<crate::fbx_scene::FbxColorSet>,
 }
 
 /// Internal FBX Model data.
@@ -312,6 +313,7 @@ impl FbxWriter {
         polygon_vertex_indices: &[i32],
         uv_sets: &[crate::fbx_scene::FbxUvSet],
         normal_sets: &[crate::fbx_scene::FbxNormalSet],
+        color_sets: &[crate::fbx_scene::FbxColorSet],
     ) -> io::Result<()> {
         validate_supported_fbx_attributes(mesh)?;
         let geometry_id = self.allocate_id();
@@ -341,6 +343,7 @@ impl FbxWriter {
                 .then(|| polygon_vertex_indices.to_vec()),
             uv_sets: uv_sets.to_vec(),
             normal_sets: normal_sets.to_vec(),
+            color_sets: color_sets.to_vec(),
         });
         if let Some(skin) = skin {
             let skin_id = self.allocate_id();
@@ -547,6 +550,7 @@ impl FbxWriter {
                 &mesh_instance.polygon_vertex_indices,
                 &mesh_instance.uv_sets,
                 &mesh_instance.normal_sets,
+                &mesh_instance.color_sets,
             )?;
         }
         let _ = mesh_count;
@@ -672,7 +676,19 @@ impl Writer for FbxWriter {
     fn add_mesh(&mut self, mesh: &Mesh, name: Option<&str>) -> io::Result<()> {
         let name = name.unwrap_or("Mesh").to_string();
         let model_id = self.add_model(name.clone(), None, None, Vec::new());
-        self.add_mesh_to_model(mesh, &name, model_id, &[], None, &[], &[], &[], &[], &[])
+        self.add_mesh_to_model(
+            mesh,
+            &name,
+            model_id,
+            &[],
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+        )
     }
 
     fn write<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
@@ -1755,6 +1771,11 @@ fn write_geometry<W: Write + Seek>(
             }
         }
 
+        // Vertex colours, when the source carried any.
+        for color_set in &mesh_data.color_sets {
+            write_layer_element_color_set(w, is_64, color_set, options)?;
+        }
+
         // UVs (LayerElementUV, ByVertice/Direct).
         if mesh_data.uv_sets.is_empty() {
             if let Some(uvs) = &mesh_data.uvs {
@@ -1795,6 +1816,9 @@ fn write_geometry<W: Write + Seek>(
                     for index in 0..mesh_data.uv_sets.len() {
                         write_layer_element_index(lw, is_64, "LayerElementUV", index as i32)?;
                     }
+                }
+                for index in 0..mesh_data.color_sets.len() {
+                    write_layer_element_index(lw, is_64, "LayerElementColor", index as i32)?;
                 }
                 if !mesh_data.material_indices.is_empty() {
                     write_layer_element(lw, is_64, "LayerElementMaterial")?;
@@ -1933,6 +1957,38 @@ fn write_layer_element_uv_set<W: Write + Seek>(
             indices.finish()?;
         }
         let _ = index;
+        Ok(())
+    })
+}
+
+fn write_layer_element_color_set<W: Write + Seek>(
+    writer: &mut W,
+    is_64: bool,
+    set: &crate::fbx_scene::FbxColorSet,
+    options: &WriterOptions,
+) -> io::Result<()> {
+    let node = NodeWriter::start(writer, "LayerElementColor", is_64)?;
+    node.finish_with_children(|w| {
+        write_layer_header_with_name(
+            w,
+            is_64,
+            set.name.as_deref().unwrap_or("Col"),
+            set.mapping.as_deref().unwrap_or("ByPolygonVertex"),
+            set.reference.as_deref().unwrap_or("Direct"),
+        )?;
+        let values: Vec<f64> = set
+            .values
+            .iter()
+            .flat_map(|value| value.iter().map(|component| f64::from(*component)))
+            .collect();
+        let mut data = NodeWriter::start(w, "Colors", is_64)?;
+        data.write_property_f64_array(&values, options)?;
+        data.finish()?;
+        if set.reference.as_deref() == Some("IndexToDirect") && !set.indices.is_empty() {
+            let mut indices = NodeWriter::start(w, "ColorIndex", is_64)?;
+            indices.write_property_i32_array(&set.indices, options)?;
+            indices.finish()?;
+        }
         Ok(())
     })
 }
@@ -2648,12 +2704,13 @@ fn validate_supported_fbx_attributes(mesh: &Mesh) -> io::Result<()> {
         match attribute_type {
             GeometryAttributeType::Position
             | GeometryAttributeType::Normal
-            | GeometryAttributeType::TexCoord => {}
+            | GeometryAttributeType::TexCoord
+            | GeometryAttributeType::Color => {}
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "FBX writer currently supports only Position, Normal, and TexCoord attributes; {:?} is not written",
+                        "FBX writer currently supports only Position, Normal, TexCoord and Color attributes; {:?} is not written",
                         attribute_type
                     ),
                 ));
@@ -2901,6 +2958,7 @@ mod tests {
                         polygon_vertex_indices: Vec::new(),
                         uv_sets: Vec::new(),
                         normal_sets: Vec::new(),
+                        color_sets: Vec::new(),
                         material_indices: Vec::new(),
                         skin: None,
                         morph_targets: Vec::new(),
@@ -3057,6 +3115,7 @@ mod tests {
                             polygon_vertex_indices: Vec::new(),
                             uv_sets: Vec::new(),
                             normal_sets: Vec::new(),
+                            color_sets: Vec::new(),
                             material_indices: Vec::new(),
                             skin: Some(crate::fbx_scene::FbxSkin {
                                 clusters: vec![crate::fbx_scene::FbxSkinCluster {
@@ -3158,6 +3217,63 @@ mod tests {
             sampler.out_tangents.as_deref(),
             Some(&[1.0, 2.0, 3.0, 0.0, 0.0, 0.0][..])
         );
+    }
+
+    #[test]
+    #[cfg(feature = "fbx-reader")]
+    fn scene_roundtrip_preserves_vertex_colors() {
+        let colors = crate::fbx_scene::FbxColorSet {
+            name: Some("Col".to_string()),
+            mapping: Some("ByPolygonVertex".to_string()),
+            reference: Some("Direct".to_string()),
+            values: vec![
+                [1.0, 0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, 0.5],
+            ],
+            indices: Vec::new(),
+        };
+        let scene = FbxScene {
+            root_nodes: vec![FbxSceneNode {
+                id: crate::fbx_scene::FbxNodeId(1),
+                name: Some("Colored".to_string()),
+                transform: None,
+                transform_stack: None,
+                has_complex_transform_stack: false,
+                mesh_instances: vec![FbxMeshInstance {
+                    name: Some("Tri".to_string()),
+                    mesh: create_triangle_mesh(),
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    polygon_vertex_indices: vec![0, 1, !2],
+                    uv_sets: Vec::new(),
+                    normal_sets: Vec::new(),
+                    color_sets: vec![colors.clone()],
+                    material_indices: Vec::new(),
+                    skin: None,
+                    morph_targets: Vec::new(),
+                }],
+                children: Vec::new(),
+            }],
+            ..FbxScene::default()
+        };
+
+        let output = crate::FbxScene::from_bytes(&scene.to_bytes().unwrap()).unwrap();
+        let instance = &output.root_nodes[0].mesh_instances[0];
+        assert_eq!(instance.color_sets.len(), 1, "colour layer should survive");
+        let read_back = &instance.color_sets[0];
+        assert_eq!(read_back.values, colors.values);
+        assert_eq!(read_back.mapping.as_deref(), Some("ByPolygonVertex"));
+
+        // Alpha must survive too, and reach the Draco mesh as a 4-component
+        // Color attribute.
+        let render = instance.to_render_mesh();
+        assert_eq!(render.colors.len(), 1);
+        assert_eq!(render.colors[0].values[2], [0.0, 0.0, 1.0, 0.5]);
+        let id = instance
+            .mesh
+            .named_attribute_id(draco_core::geometry_attribute::GeometryAttributeType::Color);
+        assert!(id >= 0, "the Draco mesh should carry a Color attribute");
+        assert_eq!(instance.mesh.attribute(id).num_components(), 4);
     }
 
     #[test]

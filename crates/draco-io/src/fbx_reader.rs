@@ -44,12 +44,13 @@ struct FbxGeometrySource {
     polygon_vertex_indices: Vec<i32>,
     uv_sets: Vec<crate::fbx_scene::FbxUvSet>,
     normal_sets: Vec<crate::fbx_scene::FbxNormalSet>,
+    color_sets: Vec<crate::fbx_scene::FbxColorSet>,
 }
 
 #[doc(hidden)]
 pub use crate::fbx_scene::{
     FbxAnimChannel, FbxAnimChannelPath, FbxAnimInterpolation, FbxAnimSampler, FbxAnimation,
-    FbxMeshInstance, FbxNodeId, FbxScene, FbxSceneNode, FbxTexture, FbxTextureBinding,
+    FbxColorSet, FbxMeshInstance, FbxNodeId, FbxScene, FbxSceneNode, FbxTexture, FbxTextureBinding,
     FbxTextureSlot, FbxTransform, FbxWarning, FbxWarningCode,
 };
 
@@ -858,6 +859,7 @@ impl<R: Read + Seek> FbxReader<R> {
                             polygon_vertex_indices: source.polygon_vertex_indices.clone(),
                             uv_sets: source.uv_sets.clone(),
                             normal_sets: source.normal_sets.clone(),
+                            color_sets: source.color_sets.clone(),
                             material_indices: indices,
                             skin: parse_skin_for_geometry(
                                 geom_id,
@@ -2247,6 +2249,7 @@ impl<R: Read + Seek> FbxReader<R> {
         let mut polygon_indices: Option<Vec<i32>> = None;
         let mut normals_layers: Vec<&FbxNode> = Vec::new();
         let mut uv_layers: Vec<&FbxNode> = Vec::new();
+        let mut color_layers: Vec<&FbxNode> = Vec::new();
         let mut material_layer: Option<&FbxNode> = None;
 
         for child in &geometry.children {
@@ -2262,6 +2265,7 @@ impl<R: Read + Seek> FbxReader<R> {
                     }
                 }
                 "LayerElementNormal" => normals_layers.push(child),
+                "LayerElementColor" => color_layers.push(child),
                 "LayerElementUV" => uv_layers.push(child),
                 "LayerElementMaterial" if material_layer.is_none() => {
                     material_layer = Some(child);
@@ -2319,7 +2323,7 @@ impl<R: Read + Seek> FbxReader<R> {
         let uv_sets: Vec<crate::fbx_scene::FbxUvSet> = uv_layers
             .into_iter()
             .filter_map(|layer| {
-                let values = read_layer_float2(layer, "UV")?
+                let values = read_layer_floats(layer, "UV")?
                     .chunks_exact(2)
                     .map(|value| [value[0], value[1]])
                     .collect();
@@ -2335,7 +2339,7 @@ impl<R: Read + Seek> FbxReader<R> {
         let normal_sets: Vec<crate::fbx_scene::FbxNormalSet> = normals_layers
             .into_iter()
             .filter_map(|layer| {
-                let values = read_layer_float3(layer, "Normals")?
+                let values = read_layer_floats(layer, "Normals")?
                     .chunks_exact(3)
                     .map(|value| [value[0], value[1], value[2]])
                     .collect();
@@ -2350,6 +2354,30 @@ impl<R: Read + Seek> FbxReader<R> {
                 })
             })
             .collect();
+        let color_sets: Vec<crate::fbx_scene::FbxColorSet> = color_layers
+            .into_iter()
+            .filter_map(|layer| {
+                let raw = read_layer_floats(layer, "Colors")?;
+                // FBX writes RGBA here, but a three-component source is legal
+                // in the wild; pad it opaque rather than dropping the layer.
+                let values = if raw.len() % 4 == 0 {
+                    raw.chunks_exact(4)
+                        .map(|value| [value[0], value[1], value[2], value[3]])
+                        .collect()
+                } else {
+                    raw.chunks_exact(3)
+                        .map(|value| [value[0], value[1], value[2], 1.0])
+                        .collect()
+                };
+                Some(crate::fbx_scene::FbxColorSet {
+                    name: layer_string(layer, "Name"),
+                    mapping: layer_string(layer, "MappingInformationType"),
+                    reference: layer_string(layer, "ReferenceInformationType"),
+                    values,
+                    indices: layer_int_array(layer, "ColorIndex").unwrap_or_default(),
+                })
+            })
+            .collect();
 
         // Build the Draco mesh on the polygon-corner domain. Resolving layer
         // elements onto control points cannot represent a UV or hard-normal
@@ -2359,6 +2387,7 @@ impl<R: Read + Seek> FbxReader<R> {
             &polygon_indices,
             &uv_sets,
             &normal_sets,
+            &color_sets,
         );
         let mesh = crate::fbx_render_mesh::build_draco_mesh(&render);
 
@@ -2369,6 +2398,7 @@ impl<R: Read + Seek> FbxReader<R> {
             polygon_vertex_indices: polygon_indices,
             uv_sets,
             normal_sets,
+            color_sets,
         }))
     }
 
@@ -2861,21 +2891,10 @@ fn layer_int_array(layer: &FbxNode, name: &str) -> Option<Vec<i32>> {
     None
 }
 
-fn read_layer_float3(layer: &FbxNode, name: &str) -> Option<Vec<f32>> {
-    for child in &layer.children {
-        if child.name == name {
-            if let Some(FbxProperty::F64Array(arr)) = child.properties.first() {
-                return Some(arr.iter().map(|v| *v as f32).collect());
-            }
-            if let Some(FbxProperty::F32Array(arr)) = child.properties.first() {
-                return Some(arr.clone());
-            }
-        }
-    }
-    None
-}
-
-fn read_layer_float2(layer: &FbxNode, name: &str) -> Option<Vec<f32>> {
+/// Reads a layer element's flat float payload, whatever its component count.
+///
+/// FBX writes these as `f64` arrays; some exporters use `f32`.
+fn read_layer_floats(layer: &FbxNode, name: &str) -> Option<Vec<f32>> {
     for child in &layer.children {
         if child.name == name {
             if let Some(FbxProperty::F64Array(arr)) = child.properties.first() {

@@ -118,10 +118,27 @@ function buildNodeMeshes(document, node, meshIndex, nodeIndex, sourceMeshes, wor
         }
         if (sourceUnits && sourceMesh?.uvSets?.length) meshInput.uvSets = structuredClone(sourceMesh.uvSets);
         if (sourceUnits && sourceMesh?.normalSets?.length) meshInput.normalSets = structuredClone(sourceMesh.normalSets);
-        for (const semantic of ['COLOR_0', 'TANGENT']) {
-            if (primitive.attributes?.[semantic] !== undefined) {
-                warnings.push(`FBX export preserves ${semantic} in SceneDocument/glTF but the typed FBX writer does not yet emit this layer`);
+        if (sourceUnits && sourceMesh?.colorSets?.length) {
+            meshInput.colorSets = structuredClone(sourceMesh.colorSets);
+        } else {
+            // COLOR_0 is corner-domain RGBA, which is exactly what
+            // LayerElementColor stores as ByPolygonVertex/Direct.
+            const colors = optionalAttribute(document, primitive, 'COLOR_0', null);
+            if (colors?.length) {
+                const vertexCount = positions.length / 3;
+                // glTF allows COLOR_0 as VEC3 or VEC4; FBX stores RGBA.
+                const rgba = colors.length === vertexCount * 4
+                    ? Array.from(colors)
+                    : Array.from({ length: vertexCount * 4 }, (_, index) => (
+                        index % 4 === 3 ? 1 : colors[Math.floor(index / 4) * 3 + (index % 4)]
+                    ));
+                meshInput.colorSets = [{
+                    name: 'Col', mapping: 'ByPolygonVertex', reference: 'Direct', values: rgba, indices: [],
+                }];
             }
+        }
+        if (primitive.attributes?.TANGENT !== undefined) {
+            warnings.push('FBX export preserves TANGENT in SceneDocument/glTF but the typed FBX writer does not yet emit this layer');
         }
         const skinIndex = node.skin;
         if (Number.isInteger(skinIndex) && document.skins[skinIndex]) {

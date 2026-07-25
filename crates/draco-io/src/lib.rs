@@ -55,9 +55,9 @@ pub use fbx_render_mesh::{FbxRenderLayer, FbxRenderMesh};
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
 pub use fbx_scene::{
     FbxAnimChannel, FbxAnimChannelPath, FbxAnimInterpolation, FbxAnimSampler, FbxAnimation,
-    FbxGlobalSettings, FbxMaterial, FbxMeshInstance, FbxMorphTarget, FbxNodeId, FbxNormalSet,
-    FbxScene, FbxSceneNode, FbxSkin, FbxSkinCluster, FbxTexture, FbxTextureBinding, FbxTextureSlot,
-    FbxTransform, FbxTransformStack, FbxUvSet, FbxWarning, FbxWarningCode,
+    FbxColorSet, FbxGlobalSettings, FbxMaterial, FbxMeshInstance, FbxMorphTarget, FbxNodeId,
+    FbxNormalSet, FbxScene, FbxSceneNode, FbxSkin, FbxSkinCluster, FbxTexture, FbxTextureBinding,
+    FbxTextureSlot, FbxTransform, FbxTransformStack, FbxUvSet, FbxWarning, FbxWarningCode,
 };
 #[cfg(feature = "fbx-writer")]
 pub use fbx_writer::FbxWriter;

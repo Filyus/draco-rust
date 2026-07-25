@@ -202,6 +202,9 @@ function appendMesh(source, materialMap, document) {
     const attributes = { POSITION: appendFloatAccessor(document, scaleVector3(source.positions || []), 3) };
     if (source.normals?.length === vertexCount * 3) attributes.NORMAL = appendFloatAccessor(document, source.normals, 3);
     if (source.uvs?.length === vertexCount * 2) attributes.TEXCOORD_0 = appendFloatAccessor(document, source.uvs, 2);
+    // FBX LayerElementColor is linear RGBA on the polygon-corner domain, which
+    // is already what the render mesh hands us.
+    if (source.colors?.length === vertexCount * 4) attributes.COLOR_0 = appendFloatAccessor(document, source.colors, 4);
     for (let set = 1; set < (source.uvSets?.length || 0) && set < 8; set += 1) {
         const expanded = expandFbxLayer(source, source.uvSets[set], 2, vertexCount);
         if (expanded) attributes[`TEXCOORD_${set}`] = appendFloatAccessor(document, expanded, 2);

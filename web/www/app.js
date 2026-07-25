@@ -1185,6 +1185,13 @@ function prepareMeshesForExport(meshes) {
             values: Array.from(set.values || []),
             indices: Array.from(set.indices || []),
         })),
+        colorSets: (mesh.colorSets || []).map((set) => ({
+            name: set.name,
+            mapping: set.mapping,
+            reference: set.reference,
+            values: Array.from(set.values || []),
+            indices: Array.from(set.indices || []),
+        })),
     }));
     
     debugLog('Output meshes:');

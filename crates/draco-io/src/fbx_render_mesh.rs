@@ -16,7 +16,7 @@ use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 
-use crate::fbx_scene::{FbxMeshInstance, FbxNormalSet, FbxUvSet};
+use crate::fbx_scene::{FbxColorSet, FbxMeshInstance, FbxNormalSet, FbxUvSet};
 
 /// One layer element resolved onto the polygon-corner domain.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -39,6 +39,8 @@ pub struct FbxRenderMesh {
     pub normals: Vec<FbxRenderLayer<[f32; 3]>>,
     /// Every `LayerElementUV`, in source order.
     pub uvs: Vec<FbxRenderLayer<[f32; 2]>>,
+    /// Every `LayerElementColor`, in source order. Linear RGBA.
+    pub colors: Vec<FbxRenderLayer<[f32; 4]>>,
     /// Triangle-fan indices into the corner arrays.
     pub indices: Vec<u32>,
     /// Corner count of each source polygon, in order.
@@ -113,6 +115,25 @@ fn uv_layer(set: &FbxUvSet, corners: &[(u32, usize)]) -> FbxRenderLayer<[f32; 2]
     }
 }
 
+fn color_layer(set: &FbxColorSet, corners: &[(u32, usize)]) -> FbxRenderLayer<[f32; 4]> {
+    FbxRenderLayer {
+        name: set.name.clone(),
+        values: corners
+            .iter()
+            .map(|&(control_point, corner)| {
+                resolve_layer_value(
+                    set.mapping.as_deref(),
+                    set.reference.as_deref(),
+                    &set.indices,
+                    &set.values,
+                    control_point as usize,
+                    corner,
+                )
+            })
+            .collect(),
+    }
+}
+
 fn normal_layer(set: &FbxNormalSet, corners: &[(u32, usize)]) -> FbxRenderLayer<[f32; 3]> {
     FbxRenderLayer {
         name: set.name.clone(),
@@ -144,6 +165,7 @@ pub fn expand_to_render_mesh(
     polygon_vertex_indices: &[i32],
     uv_sets: &[FbxUvSet],
     normal_sets: &[FbxNormalSet],
+    color_sets: &[FbxColorSet],
 ) -> FbxRenderMesh {
     let mut render = FbxRenderMesh::default();
     if control_points.is_empty() || polygon_vertex_indices.is_empty() {
@@ -195,6 +217,10 @@ pub fn expand_to_render_mesh(
         .iter()
         .map(|set| normal_layer(set, &emitted))
         .collect();
+    render.colors = color_sets
+        .iter()
+        .map(|set| color_layer(set, &emitted))
+        .collect();
     render
 }
 
@@ -205,15 +231,21 @@ pub fn expand_to_render_mesh(
 /// while collapsing the interior duplicates that plain corner expansion would
 /// triple. This is the same trade-off a glTF exporter makes.
 ///
-/// Only the first UV and normal set reach the Draco mesh; Draco has no concept
-/// of multiple sets. The rest stay on [`FbxRenderMesh`].
+/// Only the first UV, normal and colour set reach the Draco mesh; Draco has no
+/// concept of multiple sets. The rest stay on [`FbxRenderMesh`].
 pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
     let normals = render.normals.first();
     let uvs = render.uvs.first();
+    let colors = render.colors.first();
 
     // Weld on the exact bit patterns so the key is hashable and two corners
     // only merge when they are genuinely identical.
-    type WeldKey = ([u32; 3], Option<[u32; 3]>, Option<[u32; 2]>);
+    type WeldKey = (
+        [u32; 3],
+        Option<[u32; 3]>,
+        Option<[u32; 2]>,
+        Option<[u32; 4]>,
+    );
     let mut unique: HashMap<WeldKey, u32> = HashMap::new();
     let mut order: Vec<usize> = Vec::new();
     let mut remapped: Vec<u32> = Vec::with_capacity(render.corner_count());
@@ -222,7 +254,8 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
         let position = render.positions[corner].map(f32::to_bits);
         let normal = normals.map(|layer| layer.values[corner].map(f32::to_bits));
         let uv = uvs.map(|layer| layer.values[corner].map(f32::to_bits));
-        let key: WeldKey = (position, normal, uv);
+        let color = colors.map(|layer| layer.values[corner].map(f32::to_bits));
+        let key: WeldKey = (position, normal, uv, color);
         let next = unique.len() as u32;
         let index = *unique.entry(key).or_insert_with(|| {
             order.push(corner);
@@ -290,6 +323,25 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
         mesh.add_attribute(tex_coord);
     }
 
+    if let Some(layer) = colors {
+        let mut color = PointAttribute::new();
+        color.init(
+            GeometryAttributeType::Color,
+            4,
+            DataType::Float32,
+            false,
+            point_count,
+        );
+        for (index, &corner) in order.iter().enumerate() {
+            let bytes: Vec<u8> = layer.values[corner]
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+            color.buffer_mut().write(index * 16, &bytes);
+        }
+        mesh.add_attribute(color);
+    }
+
     mesh.set_num_faces(remapped.len() / 3);
     for (face, triangle) in remapped.chunks_exact(3).enumerate() {
         mesh.set_face(
@@ -312,6 +364,7 @@ impl FbxMeshInstance {
             &self.polygon_vertex_indices,
             &self.uv_sets,
             &self.normal_sets,
+            &self.color_sets,
         )
     }
 
@@ -355,6 +408,7 @@ mod tests {
                 indices: Vec::new(),
             }],
             normal_sets: Vec::new(),
+            color_sets: Vec::new(),
             material_indices: Vec::new(),
             skin: None,
             morph_targets: Vec::new(),

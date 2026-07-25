@@ -199,6 +199,8 @@ pub struct FbxMeshInstance {
     pub uv_sets: Vec<FbxUvSet>,
     /// Original normal layer elements, including mapping/reference information.
     pub normal_sets: Vec<FbxNormalSet>,
+    /// Original colour layer elements, including mapping/reference information.
+    pub color_sets: Vec<FbxColorSet>,
     /// Per-polygon material index from `LayerElementMaterial`, when present.
     ///
     /// Each entry corresponds to one triangle in fan-triangulation order
@@ -238,6 +240,24 @@ pub struct FbxNormalSet {
     pub reference: Option<String>,
     /// Direct normal values.
     pub values: Vec<[f32; 3]>,
+    /// Optional direct-value indices.
+    pub indices: Vec<i32>,
+}
+
+/// A preserved FBX `LayerElementColor`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FbxColorSet {
+    /// FBX colour set name.
+    pub name: Option<String>,
+    /// FBX mapping information type.
+    pub mapping: Option<String>,
+    /// FBX reference information type.
+    pub reference: Option<String>,
+    /// Linear RGBA values.
+    ///
+    /// FBX normally stores four components; a three-component source is
+    /// padded with an opaque alpha.
+    pub values: Vec<[f32; 4]>,
     /// Optional direct-value indices.
     pub indices: Vec<i32>,
 }

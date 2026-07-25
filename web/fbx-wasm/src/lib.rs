@@ -64,6 +64,9 @@ pub struct MeshData {
     pub normals: Vec<f32>,
     /// Texture coordinates (if present)
     pub uvs: Vec<f32>,
+    /// Per-render-vertex linear RGBA, from the first colour layer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub colors: Vec<f32>,
     /// Per-triangle indices into the scene material list.
     ///
     /// This retains FBX `LayerElementMaterial` assignments for a later
@@ -103,6 +106,20 @@ pub struct MeshData {
     pub uv_sets: Vec<UvSetOutput>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub normal_sets: Vec<NormalSetOutput>,
+    /// Original `LayerElementColor` layers, including mapping metadata.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub color_sets: Vec<ColorSetOutput>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorSetOutput {
+    pub name: Option<String>,
+    pub mapping: Option<String>,
+    pub reference: Option<String>,
+    /// Flat linear RGBA.
+    pub values: Vec<f32>,
+    pub indices: Vec<i32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -580,6 +597,21 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
             indices: set.indices.clone(),
         })
         .collect();
+    mesh.color_sets = instance
+        .color_sets
+        .iter()
+        .map(|set| ColorSetOutput {
+            name: set.name.clone(),
+            mapping: set.mapping.clone(),
+            reference: set.reference.clone(),
+            values: set
+                .values
+                .iter()
+                .flat_map(|value| value.iter().copied())
+                .collect(),
+            indices: set.indices.clone(),
+        })
+        .collect();
     mesh.normal_sets = instance
         .normal_sets
         .iter()
@@ -609,6 +641,17 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
         mesh.indices = render.indices.clone();
         mesh.normals = render
             .normals
+            .first()
+            .map(|layer| {
+                layer
+                    .values
+                    .iter()
+                    .flat_map(|value| value.iter().copied())
+                    .collect()
+            })
+            .unwrap_or_default();
+        mesh.colors = render
+            .colors
             .first()
             .map(|layer| {
                 layer
@@ -857,6 +900,7 @@ fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
     let positions = read_attribute_as_f32(mesh, GeometryAttributeType::Position, 3);
     let normals = read_attribute_as_f32(mesh, GeometryAttributeType::Normal, 3);
     let uvs = read_attribute_as_f32(mesh, GeometryAttributeType::TexCoord, 2);
+    let colors = read_attribute_as_f32(mesh, GeometryAttributeType::Color, 4);
     let mut indices = Vec::with_capacity(mesh.num_faces() * 3);
     for index in 0..mesh.num_faces() {
         let face = mesh.face(FaceIndex(index as u32));
@@ -868,6 +912,7 @@ fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
         indices,
         normals,
         uvs,
+        colors,
         material_indices: Vec::new(),
         material: None,
         skin: None,
@@ -880,6 +925,7 @@ fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
         polygon_vertex_indices: Vec::new(),
         uv_sets: Vec::new(),
         normal_sets: Vec::new(),
+        color_sets: Vec::new(),
     }
 }
 
@@ -970,6 +1016,8 @@ pub struct MeshInput {
     pub uv_sets: Vec<UvSetOutput>,
     #[serde(default)]
     pub normal_sets: Vec<NormalSetOutput>,
+    #[serde(default)]
+    pub color_sets: Vec<ColorSetOutput>,
     /// Per-triangle indices into `SceneInput::materials`.
     #[serde(default)]
     pub material_indices: Vec<i32>,
@@ -1445,6 +1493,21 @@ fn mesh_input_to_instance(mesh: &MeshInput, index: usize) -> Result<FbxMeshInsta
                 indices: set.indices.clone(),
             })
             .collect(),
+        color_sets: mesh
+            .color_sets
+            .iter()
+            .map(|set| draco_io::FbxColorSet {
+                name: set.name.clone(),
+                mapping: set.mapping.clone(),
+                reference: set.reference.clone(),
+                values: set
+                    .values
+                    .chunks_exact(4)
+                    .map(|value| [value[0], value[1], value[2], value[3]])
+                    .collect(),
+                indices: set.indices.clone(),
+            })
+            .collect(),
         normal_sets: mesh
             .normal_sets
             .iter()
@@ -1777,6 +1840,7 @@ mod reader_tests {
                     polygon_vertex_indices: Vec::new(),
                     uv_sets: Vec::new(),
                     normal_sets: Vec::new(),
+                    color_sets: Vec::new(),
                     material_indices: Vec::new(),
                     skin: None,
                     morph_targets: Vec::new(),
@@ -1902,6 +1966,7 @@ mod writer_tests {
             polygon_vertex_indices: None,
             uv_sets: Vec::new(),
             normal_sets: Vec::new(),
+            color_sets: Vec::new(),
             material_indices: Vec::new(),
             skin: None,
             morph_targets: Vec::new(),
