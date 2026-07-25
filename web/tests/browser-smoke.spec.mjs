@@ -132,6 +132,38 @@ test('glTF can build a portable SceneDocument without browser image handles', as
   expect(result.textureHasImage).toBe(false);
 });
 
+test('portable SceneDocument serializes through typed glTF WASM to GLB', async ({ page }) => {
+  await page.goto('/index.html');
+  const result = await page.evaluate(async ({ animated }) => {
+    const [api, importer, exporter] = await Promise.all([
+      import('/pkg/gltf.js'),
+      import('/gltf-scene-document.js'),
+      import('/scene-document-gltf.js'),
+    ]);
+    await api.default();
+    const document = importer.buildSceneDocumentFromGltf(
+      new TextEncoder().encode(animated), {}, api,
+    );
+    const output = exporter.serializeSceneDocumentToGlb(document, api);
+    const roundtrip = new api.GltfAsset(output.binary, '2.0');
+    const summary = roundtrip.summary();
+    roundtrip.free();
+    return {
+      magic: Array.from(output.binary.slice(0, 4)),
+      summary,
+      warnings: output.warnings.length,
+      capabilities: output.capabilities,
+    };
+  }, { animated: animatedTranslation() });
+
+  expect(result.magic).toEqual([0x67, 0x6c, 0x54, 0x46]);
+  expect(result.summary.success).toBe(true);
+  expect(result.summary.sceneCount).toBe(1);
+  expect(result.capabilities.gltf20).toBe(true);
+  expect(result.capabilities.glb).toBe(true);
+  expect(result.warnings).toBeGreaterThanOrEqual(0);
+});
+
 test('glTF CUBICSPLINE scales tangents by keyframe duration', async ({ page }) => {
   await page.goto('/index.html');
   const values = await page.evaluate(async () => {

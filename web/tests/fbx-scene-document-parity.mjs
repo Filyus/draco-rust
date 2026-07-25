@@ -33,6 +33,14 @@ function sample(scene, time) {
     });
 }
 
+function normalizeFbxWorldToMeters(matrix) {
+    const output = [...matrix];
+    output[12] *= 0.01;
+    output[13] *= 0.01;
+    output[14] *= 0.01;
+    return output;
+}
+
 for (const [label, path] of [['Mixamo', mixamoFbx], ['Samba', sambaFbx]]) {
     const parsed = fbx.parse_fbx(await readBytes(path));
     if (!parsed.success || !parsed.scene) throw new Error(`${label} semantic parse failed`);
@@ -48,7 +56,7 @@ for (const [label, path] of [['Mixamo', mixamoFbx], ['Samba', sambaFbx]]) {
     const times = [0, portable.animations[0].duration * 0.25, portable.animations[0].duration * 0.5, portable.animations[0].duration * 0.75, portable.animations[0].duration];
     let worst = 0;
     for (const time of times) {
-        const expected = sample(direct, time);
+        const expected = sample(direct, time).map(normalizeFbxWorldToMeters);
         const actual = sample(portable, time);
         for (let bone = 0; bone < bones.length; bone += 1) {
             for (let component = 0; component < 16; component += 1) {

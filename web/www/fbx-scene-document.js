@@ -11,13 +11,22 @@ import { adaptFbxAnimation } from './fbx-animation-adapter.js';
 import { adaptFbxMaterial } from './fbx-material-adapter.js';
 import { assertValidSceneDocument, createSceneDocument } from './scene-document.js';
 
+// The semantic decoder currently exposes the common FBX centimeter-space
+// values. SceneDocument is canonical glTF-meter space; normalize only here so
+// the active direct FBX viewer keeps its established source-space behavior.
+const FBX_CENTIMETERS_TO_METERS = 0.01;
+
 /** Adapt a semantic `fbx-wasm` parse result into a portable SceneDocument. */
 export function buildSceneDocumentFromFbx(parsed, resources = Object.create(null)) {
     const roots = parsed?.scene?.rootNodes;
     if (!Array.isArray(roots) || roots.length === 0) {
         throw new Error('FBX SceneDocument import requires semantic binary FBX scene data');
     }
-    const document = createSceneDocument({ warnings: [...(parsed.warnings || [])] });
+    const document = createSceneDocument({ warnings: [
+        ...(parsed.warnings || []),
+        'FBX centimeter-space geometry and transforms were normalized to meters for SceneDocument',
+        'FBX UnitScaleFactor is not yet exposed by the semantic decoder; SceneDocument assumes the common centimeter source unit',
+    ] });
     const { materialMap } = collectFbxMaterials(parsed, resources, document);
     const state = buildFbxNodeState(roots, document);
     attachMeshesAndSkins(roots, state, materialMap, document);
@@ -93,10 +102,11 @@ function buildFbxNodeState(roots, document) {
     const append = (source, parentBind = null) => {
         const bind = Number.isInteger(source.id) ? bindPoseByNodeId.get(source.id) : null;
         const sourceMatrix = validMatrix(source.matrix) ? source.matrix : null;
-        const localMatrix = bind
+        const rawLocalMatrix = bind
             ? Float32Array.from(parentBind ? (multiplyMat4(invertMat4(parentBind), bind) || bind) : bind)
             : sourceMatrix ? Float32Array.from(sourceMatrix) : Float32Array.from(identityMat4());
-        const bindTrs = decomposeMatrix(localMatrix);
+        const localMatrix = scaleMatrixTranslation(rawLocalMatrix);
+        const bindTrs = decomposeMatrix(rawLocalMatrix);
         const animationTrs = sourceMatrix && !source.hasComplexTransformStack
             ? decomposeMatrix(sourceMatrix)
             : cloneTrs(bindTrs);
@@ -121,7 +131,7 @@ function buildFbxNodeState(roots, document) {
             animationTrs,
             hasComplexTransformStack: Boolean(source.hasComplexTransformStack),
             usesAuthoredModelTrs: Boolean(sourceMatrix && !source.hasComplexTransformStack),
-            localMatrix,
+            localMatrix: rawLocalMatrix,
             weights: Float32Array.from(morphWeights(source.meshes?.[0])),
             source,
         };
@@ -174,7 +184,7 @@ function attachMeshesAndSkins(roots, state, materialMap, document) {
 
 function appendMesh(source, materialMap, document) {
     const vertexCount = (source.positions?.length || 0) / 3;
-    const attributes = { POSITION: appendFloatAccessor(document, source.positions || [], 3) };
+    const attributes = { POSITION: appendFloatAccessor(document, scaleVector3(source.positions || []), 3) };
     if (source.normals?.length === vertexCount * 3) attributes.NORMAL = appendFloatAccessor(document, source.normals, 3);
     if (source.uvs?.length === vertexCount * 2) attributes.TEXCOORD_0 = appendFloatAccessor(document, source.uvs, 2);
     if (source.joints0?.length === vertexCount * 4 && source.weights0?.length === vertexCount * 4) {
@@ -211,10 +221,10 @@ function appendSkin(sourceMesh, ownerState, state, document) {
             document.warnings.push(`FBX skin cluster targets missing joint ${cluster.jointNodeId} and was omitted`);
             continue;
         }
-        const meshBind = bindPose.get(ownerState.id) || cluster.meshBindTransform || identityMat4();
-        const jointBind = jointState.hasComplexTransformStack
+        const meshBind = scaleMatrixTranslation(bindPose.get(ownerState.id) || cluster.meshBindTransform || identityMat4());
+        const jointBind = scaleMatrixTranslation(jointState.hasComplexTransformStack
             ? (bindPose.get(cluster.jointNodeId) || cluster.jointBindTransform || identityMat4())
-            : (cluster.jointBindTransform || bindPose.get(cluster.jointNodeId) || identityMat4());
+            : (cluster.jointBindTransform || bindPose.get(cluster.jointNodeId) || identityMat4()));
         const inverse = invertMat4(jointBind) || identityMat4();
         joints.push(jointState.documentNode);
         matrices.push(...(multiplyMat4(inverse, meshBind) || inverse));
@@ -234,7 +244,7 @@ function appendMorphTargets(source, vertexCount, document) {
         for (let entry = 0; entry < renderIndices.length; entry += 1) {
             const render = renderIndices[entry] * 3;
             const delta = entry * 3;
-            if (render + 2 < position.length && delta + 2 < renderDeltas.length) position.set(renderDeltas.slice(delta, delta + 3), render);
+            if (render + 2 < position.length && delta + 2 < renderDeltas.length) position.set(scaleVector3(renderDeltas.slice(delta, delta + 3)), render);
         }
         const output = { POSITION: appendFloatAccessor(document, position, 3) };
         if (target.renderNormalDeltas?.length) {
@@ -265,7 +275,7 @@ function appendFbxAnimations(clips, state, document) {
             const time = nodeChannels[0].sampler.input;
             for (const path of ['translation', 'rotation', 'scale']) {
                 const sourceChannel = nodeChannels.find((channel) => channel.path === path);
-                const channel = sourceChannel || constantFbxChannel(node, path, time);
+                const channel = sourceChannel ? scaleFbxAnimationChannel(sourceChannel) : constantFbxChannel(node, path, time);
                 const sampler = appendAnimationSampler(document, channel.sampler, path === 'weights' ? channel.targetCount : undefined);
                 const samplerIndex = samplers.length;
                 samplers.push(sampler);
@@ -282,10 +292,20 @@ function appendFbxAnimations(clips, state, document) {
 }
 
 function constantFbxChannel(node, path, input) {
-    const values = path === 'rotation' ? node.animationTrs.rotation : node.animationTrs[path];
+    const values = path === 'translation'
+        ? node.animationTrs.translation.map((value) => value * FBX_CENTIMETERS_TO_METERS)
+        : path === 'rotation' ? node.animationTrs.rotation : node.animationTrs[path];
     const output = new Float32Array(input.length * values.length);
     for (let index = 0; index < input.length; index += 1) output.set(values, index * values.length);
     return { path, sampler: { input, output, interpolation: 'LINEAR' } };
+}
+
+function scaleFbxAnimationChannel(channel) {
+    if (channel.path !== 'translation') return channel;
+    return {
+        ...channel,
+        sampler: { ...channel.sampler, output: scaleVector3(channel.sampler.output) },
+    };
 }
 
 function appendAnimationSampler(document, sampler, targetCount) {
@@ -354,6 +374,20 @@ function decomposeMatrix(matrix) {
 
 function cloneTrs(trs) {
     return { translation: [...trs.translation], rotation: [...trs.rotation], scale: [...trs.scale] };
+}
+
+function scaleVector3(values) {
+    const output = new Float32Array(values.length);
+    for (let index = 0; index < values.length; index += 1) output[index] = values[index] * FBX_CENTIMETERS_TO_METERS;
+    return output;
+}
+
+function scaleMatrixTranslation(matrix) {
+    const output = Float32Array.from(matrix);
+    output[12] *= FBX_CENTIMETERS_TO_METERS;
+    output[13] *= FBX_CENTIMETERS_TO_METERS;
+    output[14] *= FBX_CENTIMETERS_TO_METERS;
+    return output;
 }
 
 function validMatrix(matrix) {
