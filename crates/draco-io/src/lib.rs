@@ -62,10 +62,10 @@ pub use fbx_render_mesh::{FbxGeometryLayers, FbxRenderLayer, FbxRenderMesh};
 pub use fbx_scene::{
     FbxAnimChannel, FbxAnimChannelPath, FbxAnimInterpolation, FbxAnimSampler, FbxAnimation,
     FbxBinormalSet, FbxCamera, FbxColorSet, FbxCreaseKind, FbxCreaseLayer, FbxGlobalSettings,
-    FbxLayerSet, FbxLight, FbxMaterial, FbxMeshInstance, FbxMorphTarget, FbxNodeAttribute,
-    FbxNodeId, FbxNormalSet, FbxScene, FbxSceneNode, FbxSkin, FbxSkinCluster, FbxSmoothingLayer,
-    FbxTangentSet, FbxTexture, FbxTextureBinding, FbxTextureSlot, FbxTransform, FbxTransformStack,
-    FbxUvSet, FbxWarning, FbxWarningCode,
+    FbxLayerSet, FbxLight, FbxMaterial, FbxMeshInstance, FbxMeshLayers, FbxMorphTarget,
+    FbxNodeAttribute, FbxNodeId, FbxNormalSet, FbxScene, FbxSceneNode, FbxSkin, FbxSkinCluster,
+    FbxSmoothingLayer, FbxTangentSet, FbxTexture, FbxTextureBinding, FbxTextureSlot, FbxTransform,
+    FbxTransformStack, FbxUvSet, FbxWarning, FbxWarningCode,
 };
 #[cfg(feature = "fbx-writer")]
 pub use fbx_writer::FbxWriter;

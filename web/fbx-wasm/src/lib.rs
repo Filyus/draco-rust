@@ -659,6 +659,7 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
         .collect();
     mesh.polygon_vertex_indices = instance.polygon_vertex_indices.clone();
     mesh.uv_sets = instance
+        .layers
         .uv_sets
         .iter()
         .map(|set| UvSetOutput {
@@ -674,16 +675,19 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
         })
         .collect();
     mesh.tangent_sets = instance
+        .layers
         .tangent_sets
         .iter()
         .map(tangent_set_to_output)
         .collect();
     mesh.binormal_sets = instance
+        .layers
         .binormal_sets
         .iter()
         .map(tangent_set_to_output)
         .collect();
     mesh.smoothing_layers = instance
+        .layers
         .smoothing_layers
         .iter()
         .map(|layer| SmoothingLayerOutput {
@@ -692,6 +696,7 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
         })
         .collect();
     mesh.crease_layers = instance
+        .layers
         .crease_layers
         .iter()
         .map(|layer| CreaseLayerOutput {
@@ -704,6 +709,7 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
         })
         .collect();
     mesh.color_sets = instance
+        .layers
         .color_sets
         .iter()
         .map(|set| ColorSetOutput {
@@ -719,6 +725,7 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
         })
         .collect();
     mesh.normal_sets = instance
+        .layers
         .normal_sets
         .iter()
         .map(|set| NormalSetOutput {
@@ -1635,79 +1642,85 @@ fn mesh_input_to_instance(mesh: &MeshInput, index: usize) -> Result<FbxMeshInsta
             .map(|value| [value[0], value[1], value[2]])
             .collect(),
         polygon_vertex_indices: mesh.polygon_vertex_indices.clone().unwrap_or_default(),
-        smoothing_layers: mesh
-            .smoothing_layers
-            .iter()
-            .map(|layer| draco_io::FbxSmoothingLayer {
-                mapping: layer.mapping.clone(),
-                values: layer.values.clone(),
-            })
-            .collect(),
-        crease_layers: mesh
-            .crease_layers
-            .iter()
-            .map(|layer| draco_io::FbxCreaseLayer {
-                kind: if layer.kind == "vertex" {
-                    draco_io::FbxCreaseKind::Vertex
-                } else {
-                    draco_io::FbxCreaseKind::Edge
-                },
-                mapping: layer.mapping.clone(),
-                values: layer.values.clone(),
-            })
-            .collect(),
-        tangent_sets: mesh.tangent_sets.iter().map(tangent_output_to_fbx).collect(),
-        binormal_sets: mesh
-            .binormal_sets
-            .iter()
-            .map(tangent_output_to_fbx)
-            .collect(),
-        uv_sets: mesh
-            .uv_sets
-            .iter()
-            .map(|set| draco_io::FbxUvSet {
-                name: set.name.clone(),
-                mapping: set.mapping.clone(),
-                reference: set.reference.clone(),
-                values: set
-                    .values
-                    .chunks_exact(2)
-                    .map(|value| [value[0], value[1]])
-                    .collect(),
-                indices: set.indices.clone(),
-            })
-            .collect(),
         edges: mesh.edges.clone(),
-        color_sets: mesh
-            .color_sets
-            .iter()
-            .map(|set| draco_io::FbxColorSet {
-                name: set.name.clone(),
-                mapping: set.mapping.clone(),
-                reference: set.reference.clone(),
-                values: set
-                    .values
-                    .chunks_exact(4)
-                    .map(|value| [value[0], value[1], value[2], value[3]])
-                    .collect(),
-                indices: set.indices.clone(),
-            })
-            .collect(),
-        normal_sets: mesh
-            .normal_sets
-            .iter()
-            .map(|set| draco_io::FbxNormalSet {
-                name: set.name.clone(),
-                mapping: set.mapping.clone(),
-                reference: set.reference.clone(),
-                values: set
-                    .values
-                    .chunks_exact(3)
-                    .map(|value| [value[0], value[1], value[2]])
-                    .collect(),
-                indices: set.indices.clone(),
-            })
-            .collect(),
+        layers: draco_io::FbxMeshLayers {
+            smoothing_layers: mesh
+                .smoothing_layers
+                .iter()
+                .map(|layer| draco_io::FbxSmoothingLayer {
+                    mapping: layer.mapping.clone(),
+                    values: layer.values.clone(),
+                })
+                .collect(),
+            crease_layers: mesh
+                .crease_layers
+                .iter()
+                .map(|layer| draco_io::FbxCreaseLayer {
+                    kind: if layer.kind == "vertex" {
+                        draco_io::FbxCreaseKind::Vertex
+                    } else {
+                        draco_io::FbxCreaseKind::Edge
+                    },
+                    mapping: layer.mapping.clone(),
+                    values: layer.values.clone(),
+                })
+                .collect(),
+            tangent_sets: mesh
+                .tangent_sets
+                .iter()
+                .map(tangent_output_to_fbx)
+                .collect(),
+            binormal_sets: mesh
+                .binormal_sets
+                .iter()
+                .map(tangent_output_to_fbx)
+                .collect(),
+            uv_sets: mesh
+                .uv_sets
+                .iter()
+                .map(|set| draco_io::FbxUvSet {
+                    name: set.name.clone(),
+                    mapping: set.mapping.clone(),
+                    reference: set.reference.clone(),
+                    values: set
+                        .values
+                        .chunks_exact(2)
+                        .map(|value| [value[0], value[1]])
+                        .collect(),
+                    indices: set.indices.clone(),
+                })
+                .collect(),
+            color_sets: mesh
+                .color_sets
+                .iter()
+                .map(|set| draco_io::FbxColorSet {
+                    name: set.name.clone(),
+                    mapping: set.mapping.clone(),
+                    reference: set.reference.clone(),
+                    values: set
+                        .values
+                        .chunks_exact(4)
+                        .map(|value| [value[0], value[1], value[2], value[3]])
+                        .collect(),
+                    indices: set.indices.clone(),
+                })
+                .collect(),
+            normal_sets: mesh
+                .normal_sets
+                .iter()
+                .map(|set| draco_io::FbxNormalSet {
+                    name: set.name.clone(),
+                    mapping: set.mapping.clone(),
+                    reference: set.reference.clone(),
+                    values: set
+                        .values
+                        .chunks_exact(3)
+                        .map(|value| [value[0], value[1], value[2]])
+                        .collect(),
+                    indices: set.indices.clone(),
+                })
+                .collect(),
+        },
         material_indices: mesh.material_indices.clone(),
         skin: mesh.skin.as_ref().map(skin_input_to_fbx).transpose()?,
         morph_targets: mesh
@@ -2022,19 +2035,7 @@ mod reader_tests {
                 mesh_instances: vec![FbxMeshInstance {
                     name: Some("Triangle".to_string()),
                     mesh: triangle_mesh(),
-                    control_points: Vec::new(),
-                    polygon_vertex_indices: Vec::new(),
-                    uv_sets: Vec::new(),
-                    normal_sets: Vec::new(),
-                    color_sets: Vec::new(),
-                    tangent_sets: Vec::new(),
-                    binormal_sets: Vec::new(),
-                    smoothing_layers: Vec::new(),
-                    crease_layers: Vec::new(),
-                    edges: Vec::new(),
-                    material_indices: Vec::new(),
-                    skin: None,
-                    morph_targets: Vec::new(),
+                    ..Default::default()
                 }],
                 attribute: None,
                 children: Vec::new(),

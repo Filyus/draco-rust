@@ -17,8 +17,8 @@ use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 
 use crate::fbx_scene::{
-    FbxBinormalSet, FbxColorSet, FbxLayerSet, FbxMeshInstance, FbxNormalSet, FbxTangentSet,
-    FbxUvSet,
+    FbxBinormalSet, FbxColorSet, FbxCreaseLayer, FbxLayerSet, FbxMeshInstance, FbxMeshLayers,
+    FbxNormalSet, FbxSmoothingLayer, FbxTangentSet, FbxUvSet,
 };
 
 /// One layer element resolved onto the polygon-corner domain.
@@ -72,10 +72,16 @@ impl FbxRenderMesh {
     }
 }
 
-/// Borrowed FBX geometry, as [`expand_to_render_mesh`] consumes it.
+/// Borrowed FBX geometry, as [`expand_to_render_mesh`] and the writer consume
+/// it.
+///
+/// The borrowed counterpart of [`FbxMeshLayers`] plus the positions and
+/// indices those layers index into. Flat slices rather than a borrow of the
+/// owning struct so the reader can assemble one from decode locals before an
+/// [`FbxMeshInstance`] exists, and so it stays `Copy`.
 ///
 /// A struct rather than a positional argument list because the list grows with
-/// every layer family the crate learns to read, and seven adjacent slices of
+/// every layer family the crate learns to read, and nine adjacent slices of
 /// nearly interchangeable types are easy to transpose silently.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FbxGeometryLayers<'a> {
@@ -93,19 +99,41 @@ pub struct FbxGeometryLayers<'a> {
     pub tangent_sets: &'a [FbxTangentSet],
     /// Binormal layer elements.
     pub binormal_sets: &'a [FbxBinormalSet],
+    /// Smoothing layers.
+    ///
+    /// Scalars on a non-corner domain, so unlike the families above these do
+    /// not reach [`FbxRenderMesh`]; they are carried for the writer.
+    pub smoothing_layers: &'a [FbxSmoothingLayer],
+    /// Edge and vertex crease layers, carried for the writer as above.
+    pub crease_layers: &'a [FbxCreaseLayer],
 }
 
 impl<'a> FbxGeometryLayers<'a> {
     /// Borrows every layer family from a decoded mesh instance.
     pub fn from_instance(instance: &'a FbxMeshInstance) -> Self {
+        Self::new(
+            &instance.control_points,
+            &instance.polygon_vertex_indices,
+            &instance.layers,
+        )
+    }
+
+    /// Borrows layers that are not (yet) attached to an instance.
+    pub fn new(
+        control_points: &'a [[f32; 3]],
+        polygon_vertex_indices: &'a [i32],
+        layers: &'a FbxMeshLayers,
+    ) -> Self {
         Self {
-            control_points: &instance.control_points,
-            polygon_vertex_indices: &instance.polygon_vertex_indices,
-            uv_sets: &instance.uv_sets,
-            normal_sets: &instance.normal_sets,
-            color_sets: &instance.color_sets,
-            tangent_sets: &instance.tangent_sets,
-            binormal_sets: &instance.binormal_sets,
+            control_points,
+            polygon_vertex_indices,
+            uv_sets: &layers.uv_sets,
+            normal_sets: &layers.normal_sets,
+            color_sets: &layers.color_sets,
+            tangent_sets: &layers.tangent_sets,
+            binormal_sets: &layers.binormal_sets,
+            smoothing_layers: &layers.smoothing_layers,
+            crease_layers: &layers.crease_layers,
         }
     }
 }
@@ -198,6 +226,10 @@ pub fn expand_to_render_mesh(source: FbxGeometryLayers<'_>) -> FbxRenderMesh {
         color_sets,
         tangent_sets,
         binormal_sets,
+        // Scalars on the edge, polygon, or control-point domain. This mesh is
+        // indexed by polygon corner, which cannot represent them.
+        smoothing_layers: _,
+        crease_layers: _,
     } = source;
     let mut render = FbxRenderMesh::default();
     if control_points.is_empty() || polygon_vertex_indices.is_empty() {
@@ -428,8 +460,6 @@ mod tests {
     /// it -- the seam case that control-point resolution destroys.
     fn seamed_quad() -> FbxMeshInstance {
         FbxMeshInstance {
-            name: None,
-            mesh: Mesh::new(),
             control_points: vec![
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
@@ -438,23 +468,17 @@ mod tests {
             ],
             // One quad: 0, 1, 2, ~3
             polygon_vertex_indices: vec![0, 1, 2, !3],
-            uv_sets: vec![FbxUvSet {
-                name: Some("map1".to_string()),
-                mapping: Some("ByPolygonVertex".to_string()),
-                reference: Some("Direct".to_string()),
-                values: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 0.5]],
-                indices: Vec::new(),
-            }],
-            normal_sets: Vec::new(),
-            color_sets: Vec::new(),
-            tangent_sets: Vec::new(),
-            binormal_sets: Vec::new(),
-            smoothing_layers: Vec::new(),
-            crease_layers: Vec::new(),
-            edges: Vec::new(),
-            material_indices: Vec::new(),
-            skin: None,
-            morph_targets: Vec::new(),
+            layers: FbxMeshLayers {
+                uv_sets: vec![FbxUvSet {
+                    name: Some("map1".to_string()),
+                    mapping: Some("ByPolygonVertex".to_string()),
+                    reference: Some("Direct".to_string()),
+                    values: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 0.5]],
+                    indices: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
         }
     }
 

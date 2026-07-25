@@ -122,7 +122,7 @@ fn max_uv_sets(scene: &FbxScene) -> usize {
     fn visit(node: &draco_io::FbxSceneNode) -> usize {
         node.mesh_instances
             .iter()
-            .map(|m| m.uv_sets.len())
+            .map(|m| m.layers.uv_sets.len())
             .chain(node.children.iter().map(visit))
             .max()
             .unwrap_or(0)
@@ -134,7 +134,7 @@ fn count_color_sets(scene: &FbxScene) -> usize {
     fn visit(node: &draco_io::FbxSceneNode) -> usize {
         node.mesh_instances
             .iter()
-            .map(|m| m.color_sets.len())
+            .map(|m| m.layers.color_sets.len())
             .sum::<usize>()
             + node.children.iter().map(visit).sum::<usize>()
     }

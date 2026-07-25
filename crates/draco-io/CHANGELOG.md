@@ -34,8 +34,20 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   so `FbxReader`, `FbxScene::from_bytes` and the `Reader` traits all accept it
   without a separate entry point. The web app's regex ASCII fallback, which
   recovered geometry only, is removed.
+- **Breaking.** The seven layer-element families move off `FbxMeshInstance`
+  into a new `FbxMeshLayers` struct behind one `layers` field, taking the
+  instance from fifteen fields to nine. `FbxMeshInstance` and `FbxMeshLayers`
+  both derive `Default`, so a literal need only name the fields it cares
+  about; that is what keeps the next layer family from touching every
+  construction site again.
 - **Breaking.** `expand_to_render_mesh` takes an `FbxGeometryLayers` borrow
-  struct instead of five positional slices.
+  struct instead of five positional slices. That struct now also carries
+  `smoothing_layers` and `crease_layers`, which the writer previously received
+  as separate arguments.
+- The FBX binary container decoder moves to a new `fbx_container` module;
+  `fbx_reader` keeps only the scene layer above the node tree and re-exports
+  `FbxNode`, `FbxProperty`, `FbxReader` and `FbxMemoryReader`, so existing
+  paths still resolve.
 - `FbxUvSet`, `FbxNormalSet` and `FbxColorSet` are now aliases of a shared
   `FbxLayerSet<N>`. Field names and public paths are unchanged.
 - `FbxWarningCode::DroppedLayerElement` names each `LayerElement*` the reader

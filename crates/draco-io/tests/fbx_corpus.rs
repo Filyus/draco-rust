@@ -308,21 +308,24 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
             out.push(MeshSummary {
                 control_points: mesh.control_points.len(),
                 polygon_corners: mesh.polygon_vertex_indices.len(),
-                uv_sets: mesh.uv_sets.len(),
-                color_sets: mesh.color_sets.len(),
+                uv_sets: mesh.layers.uv_sets.len(),
+                color_sets: mesh.layers.color_sets.len(),
                 edges: mesh.edges.len(),
                 material_indices: mesh.material_indices.clone(),
                 tangent_sets: mesh
+                    .layers
                     .tangent_sets
                     .iter()
                     .map(|set| (set.layer.values.len(), set.has_handedness))
                     .collect(),
                 binormal_sets: mesh
+                    .layers
                     .binormal_sets
                     .iter()
                     .map(|set| (set.layer.values.len(), set.has_handedness))
                     .collect(),
                 smoothing_layers: mesh
+                    .layers
                     .smoothing_layers
                     .iter()
                     .map(|layer| {
@@ -333,6 +336,7 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
                     })
                     .collect(),
                 crease_layers: mesh
+                    .layers
                     .crease_layers
                     .iter()
                     .map(|layer| {

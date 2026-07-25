@@ -223,10 +223,48 @@ pub struct FbxGlobalSettings {
     pub time_mode: Option<i32>,
 }
 
+/// The layer elements preserved from one FBX geometry node.
+///
+/// Grouped rather than spread across [`FbxMeshInstance`] because they are one
+/// kind of thing that grows together: every format capability added so far
+/// arrived as another layer family, and each one that lands as a bare field
+/// has to be threaded through every construction site and every signature
+/// that carries geometry. [`crate::FbxGeometryLayers`] is the borrowed view of
+/// this plus the positions and indices it indexes into.
+#[derive(Debug, Clone, Default)]
+pub struct FbxMeshLayers {
+    /// Original UV layer elements, including mapping/reference information.
+    pub uv_sets: Vec<FbxUvSet>,
+    /// Original normal layer elements, including mapping/reference information.
+    pub normal_sets: Vec<FbxNormalSet>,
+    /// Original colour layer elements, including mapping/reference information.
+    pub color_sets: Vec<FbxColorSet>,
+    /// Original tangent layer elements, with handedness merged into `w`.
+    ///
+    /// Draco has no tangent attribute, so these never reach
+    /// [`FbxMeshInstance::mesh`]; they travel on the instance and through
+    /// [`crate::FbxRenderMesh`] instead, the same way extra UV sets do.
+    pub tangent_sets: Vec<FbxTangentSet>,
+    /// Original binormal layer elements.
+    ///
+    /// Derivable from the normal and tangent, and absent from glTF, so these
+    /// exist only so an FBX document survives a rewrite unchanged.
+    pub binormal_sets: Vec<FbxBinormalSet>,
+    /// Original `LayerElementSmoothing` layers.
+    ///
+    /// Hard and soft edges. glTF has no equivalent, so these survive an
+    /// FBX-to-FBX rewrite but do not travel further. A layer whose length does
+    /// not match the domain its mapping names is dropped with a warning rather
+    /// than kept as misaligned data.
+    pub smoothing_layers: Vec<FbxSmoothingLayer>,
+    /// Original `LayerElementEdgeCrease` and `LayerElementVertexCrease` layers.
+    pub crease_layers: Vec<FbxCreaseLayer>,
+}
+
 /// Geometry attached to one [`FbxSceneNode`].
 ///
 /// This is materialized Draco geometry, not a lossless FBX geometry object.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FbxMeshInstance {
     /// Name supplied by the FBX geometry node, when available.
     pub name: Option<String>,
@@ -237,23 +275,8 @@ pub struct FbxMeshInstance {
     pub control_points: Vec<[f32; 3]>,
     /// Original FBX polygon-corner indices. Negative values terminate a face.
     pub polygon_vertex_indices: Vec<i32>,
-    /// Original UV layer elements, including mapping/reference information.
-    pub uv_sets: Vec<FbxUvSet>,
-    /// Original normal layer elements, including mapping/reference information.
-    pub normal_sets: Vec<FbxNormalSet>,
-    /// Original colour layer elements, including mapping/reference information.
-    pub color_sets: Vec<FbxColorSet>,
-    /// Original tangent layer elements, with handedness merged into `w`.
-    ///
-    /// Draco has no tangent attribute, so these never reach
-    /// [`Self::mesh`]; they travel on the instance and through
-    /// [`crate::FbxRenderMesh`] instead, the same way extra UV sets do.
-    pub tangent_sets: Vec<FbxTangentSet>,
-    /// Original binormal layer elements.
-    ///
-    /// Derivable from the normal and tangent, and absent from glTF, so these
-    /// exist only so an FBX document survives a rewrite unchanged.
-    pub binormal_sets: Vec<FbxBinormalSet>,
+    /// Layer elements preserved from the source geometry node.
+    pub layers: FbxMeshLayers,
     /// Original FBX `Edges` array, verbatim.
     ///
     /// Each entry indexes [`Self::polygon_vertex_indices`], naming the polygon
@@ -262,15 +285,6 @@ pub struct FbxMeshInstance {
     /// so it is kept raw rather than normalized. It is also the domain
     /// `ByEdge` layer elements address.
     pub edges: Vec<i32>,
-    /// Original `LayerElementSmoothing` layers.
-    ///
-    /// Hard and soft edges. glTF has no equivalent, so these survive an
-    /// FBX-to-FBX rewrite but do not travel further. A layer whose length does
-    /// not match the domain its mapping names is dropped with a warning rather
-    /// than kept as misaligned data.
-    pub smoothing_layers: Vec<FbxSmoothingLayer>,
-    /// Original `LayerElementEdgeCrease` and `LayerElementVertexCrease` layers.
-    pub crease_layers: Vec<FbxCreaseLayer>,
     /// Per-polygon material index from `LayerElementMaterial`, when present.
     ///
     /// Each entry corresponds to one triangle in fan-triangulation order

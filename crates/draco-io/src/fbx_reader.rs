@@ -51,23 +51,17 @@ struct FbxGeometrySource {
     material_indices: Vec<i32>,
     control_points: Vec<[f32; 3]>,
     polygon_vertex_indices: Vec<i32>,
-    uv_sets: Vec<crate::fbx_scene::FbxUvSet>,
-    normal_sets: Vec<crate::fbx_scene::FbxNormalSet>,
-    color_sets: Vec<crate::fbx_scene::FbxColorSet>,
-    tangent_sets: Vec<FbxTangentSet>,
-    binormal_sets: Vec<FbxBinormalSet>,
+    layers: FbxMeshLayers,
     edges: Vec<i32>,
-    smoothing_layers: Vec<FbxSmoothingLayer>,
-    crease_layers: Vec<FbxCreaseLayer>,
 }
 
 #[doc(hidden)]
 pub use crate::fbx_scene::{
     FbxAnimChannel, FbxAnimChannelPath, FbxAnimInterpolation, FbxAnimSampler, FbxAnimation,
     FbxBinormalSet, FbxColorSet, FbxCreaseKind, FbxCreaseLayer, FbxLayerSet, FbxMeshInstance,
-    FbxNodeAttribute, FbxNodeId, FbxNormalSet, FbxScene, FbxSceneNode, FbxSmoothingLayer,
-    FbxTangentSet, FbxTexture, FbxTextureBinding, FbxTextureSlot, FbxTransform, FbxUvSet,
-    FbxWarning, FbxWarningCode,
+    FbxMeshLayers, FbxNodeAttribute, FbxNodeId, FbxNormalSet, FbxScene, FbxSceneNode,
+    FbxSmoothingLayer, FbxTangentSet, FbxTexture, FbxTextureBinding, FbxTextureSlot, FbxTransform,
+    FbxUvSet, FbxWarning, FbxWarningCode,
 };
 // Implement the Reader trait for the concrete BufReader<File> specialization.
 impl crate::traits::Reader for FbxReader<BufReader<File>> {
@@ -554,14 +548,8 @@ impl<R: Read + Seek> FbxReader<R> {
                             mesh: source.mesh.clone(),
                             control_points: source.control_points.clone(),
                             polygon_vertex_indices: source.polygon_vertex_indices.clone(),
-                            uv_sets: source.uv_sets.clone(),
-                            normal_sets: source.normal_sets.clone(),
-                            color_sets: source.color_sets.clone(),
-                            tangent_sets: source.tangent_sets.clone(),
-                            binormal_sets: source.binormal_sets.clone(),
+                            layers: source.layers.clone(),
                             edges: source.edges.clone(),
-                            smoothing_layers: source.smoothing_layers.clone(),
-                            crease_layers: source.crease_layers.clone(),
                             material_indices: indices,
                             skin: parse_skin_for_geometry(
                                 geom_id,
@@ -1860,16 +1848,21 @@ impl<R: Read + Seek> FbxReader<R> {
         // Build the Draco mesh on the polygon-corner domain. Resolving layer
         // elements onto control points cannot represent a UV or hard-normal
         // seam, and silently averaged them away.
+        let layers = FbxMeshLayers {
+            uv_sets,
+            normal_sets,
+            color_sets,
+            tangent_sets,
+            binormal_sets,
+            smoothing_layers,
+            crease_layers,
+        };
         let render = crate::fbx_render_mesh::expand_to_render_mesh(
-            crate::fbx_render_mesh::FbxGeometryLayers {
-                control_points: &control_points,
-                polygon_vertex_indices: &polygon_indices,
-                uv_sets: &uv_sets,
-                normal_sets: &normal_sets,
-                color_sets: &color_sets,
-                tangent_sets: &tangent_sets,
-                binormal_sets: &binormal_sets,
-            },
+            crate::fbx_render_mesh::FbxGeometryLayers::new(
+                &control_points,
+                &polygon_indices,
+                &layers,
+            ),
         );
         let mesh = crate::fbx_render_mesh::build_draco_mesh(&render);
 
@@ -1878,14 +1871,8 @@ impl<R: Read + Seek> FbxReader<R> {
             material_indices,
             control_points,
             polygon_vertex_indices: polygon_indices,
-            uv_sets,
-            normal_sets,
-            color_sets,
-            tangent_sets,
-            binormal_sets,
+            layers,
             edges,
-            smoothing_layers,
-            crease_layers,
         }))
     }
 

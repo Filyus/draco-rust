@@ -262,7 +262,7 @@ fn mesh_source_stats(scene: &FbxScene) -> Vec<(String, usize, usize, usize)> {
                 mesh.name.clone().unwrap_or_default(),
                 mesh.control_points.len(),
                 mesh.polygon_vertex_indices.len(),
-                mesh.uv_sets.len(),
+                mesh.layers.uv_sets.len(),
             ));
         }
         for child in &node.children {

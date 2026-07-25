@@ -313,8 +313,6 @@ impl FbxWriter {
         morph_targets: &[crate::fbx_scene::FbxMorphTarget],
         layers: crate::fbx_render_mesh::FbxGeometryLayers<'_>,
         edges: &[i32],
-        smoothing_layers: &[crate::fbx_scene::FbxSmoothingLayer],
-        crease_layers: &[crate::fbx_scene::FbxCreaseLayer],
     ) -> io::Result<()> {
         let crate::fbx_render_mesh::FbxGeometryLayers {
             control_points,
@@ -324,6 +322,8 @@ impl FbxWriter {
             color_sets,
             tangent_sets,
             binormal_sets,
+            smoothing_layers,
+            crease_layers,
         } = layers;
         validate_supported_fbx_attributes(mesh)?;
         let geometry_id = self.allocate_id();
@@ -573,8 +573,6 @@ impl FbxWriter {
                 &mesh_instance.morph_targets,
                 crate::fbx_render_mesh::FbxGeometryLayers::from_instance(mesh_instance),
                 &mesh_instance.edges,
-                &mesh_instance.smoothing_layers,
-                &mesh_instance.crease_layers,
             )?;
         }
         let _ = mesh_count;
@@ -710,8 +708,6 @@ impl Writer for FbxWriter {
             // A flat Draco mesh carries no FBX layer elements of its own; the
             // writer derives normals and UVs from its attributes instead.
             crate::fbx_render_mesh::FbxGeometryLayers::default(),
-            &[],
-            &[],
             &[],
         )
     }
@@ -3051,7 +3047,8 @@ mod tests {
     // Only the round-trip tests below build scenes, and those need the reader.
     #[cfg(feature = "fbx-reader")]
     use crate::fbx_scene::{
-        FbxAnimation, FbxMeshInstance, FbxScene, FbxSceneNode, FbxTransform, FbxTransformStack,
+        FbxAnimation, FbxMeshInstance, FbxMeshLayers, FbxScene, FbxSceneNode, FbxTransform,
+        FbxTransformStack,
     };
     use draco_core::draco_types::DataType;
     use draco_core::geometry_attribute::PointAttribute;
@@ -3191,19 +3188,7 @@ mod tests {
                     mesh_instances: vec![FbxMeshInstance {
                         name: Some("Triangle".to_string()),
                         mesh: create_triangle_mesh(),
-                        control_points: Vec::new(),
-                        polygon_vertex_indices: Vec::new(),
-                        uv_sets: Vec::new(),
-                        normal_sets: Vec::new(),
-                        color_sets: Vec::new(),
-                        tangent_sets: Vec::new(),
-                        binormal_sets: Vec::new(),
-                        smoothing_layers: Vec::new(),
-                        crease_layers: Vec::new(),
-                        edges: Vec::new(),
-                        material_indices: Vec::new(),
-                        skin: None,
-                        morph_targets: Vec::new(),
+                        ..Default::default()
                     }],
                     attribute: None,
                     children: Vec::new(),
@@ -3357,17 +3342,6 @@ mod tests {
                         mesh_instances: vec![FbxMeshInstance {
                             name: Some("Triangle".to_string()),
                             mesh: create_triangle_mesh(),
-                            control_points: Vec::new(),
-                            polygon_vertex_indices: Vec::new(),
-                            uv_sets: Vec::new(),
-                            normal_sets: Vec::new(),
-                            color_sets: Vec::new(),
-                            tangent_sets: Vec::new(),
-                            binormal_sets: Vec::new(),
-                            smoothing_layers: Vec::new(),
-                            crease_layers: Vec::new(),
-                            edges: Vec::new(),
-                            material_indices: Vec::new(),
                             skin: Some(crate::fbx_scene::FbxSkin {
                                 clusters: vec![crate::fbx_scene::FbxSkinCluster {
                                     joint_node_id: crate::fbx_scene::FbxNodeId(2),
@@ -3390,6 +3364,7 @@ mod tests {
                                 default_weight: 0.0,
                                 full_weight: 100.0,
                             }],
+                            ..Default::default()
                         }],
                         attribute: None,
                         children: Vec::new(),
@@ -3494,17 +3469,8 @@ mod tests {
             ],
             // Two quads, so two polygons but four fan triangles.
             polygon_vertex_indices: vec![0, 1, 2, !3, 4, 5, 6, !7],
-            uv_sets: Vec::new(),
-            normal_sets: Vec::new(),
-            color_sets: Vec::new(),
-            tangent_sets: Vec::new(),
-            binormal_sets: Vec::new(),
-            smoothing_layers: Vec::new(),
-            crease_layers: Vec::new(),
-            edges: Vec::new(),
             material_indices: vec![0, 0, 1, 1],
-            skin: None,
-            morph_targets: Vec::new(),
+            ..Default::default()
         };
         instance.mesh = instance.to_draco_mesh();
 
@@ -3577,17 +3543,12 @@ mod tests {
                     mesh: create_triangle_mesh(),
                     control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                     polygon_vertex_indices: vec![0, 1, !2],
-                    uv_sets: Vec::new(),
-                    normal_sets: Vec::new(),
-                    color_sets: Vec::new(),
-                    tangent_sets: vec![set.clone()],
-                    binormal_sets: vec![set],
-                    smoothing_layers: Vec::new(),
-                    crease_layers: Vec::new(),
-                    edges: Vec::new(),
-                    material_indices: Vec::new(),
-                    skin: None,
-                    morph_targets: Vec::new(),
+                    layers: FbxMeshLayers {
+                        tangent_sets: vec![set.clone()],
+                        binormal_sets: vec![set],
+                        ..Default::default()
+                    },
+                    ..Default::default()
                 }],
                 attribute: None,
                 children: Vec::new(),
@@ -3610,9 +3571,9 @@ mod tests {
             let output = crate::FbxScene::from_bytes(&bytes).unwrap();
             let instance = &output.root_nodes[0].mesh_instances[0];
 
-            assert_eq!(instance.tangent_sets.len(), 1);
-            assert_eq!(instance.binormal_sets.len(), 1);
-            let tangents = &instance.tangent_sets[0];
+            assert_eq!(instance.layers.tangent_sets.len(), 1);
+            assert_eq!(instance.layers.binormal_sets.len(), 1);
+            let tangents = &instance.layers.tangent_sets[0];
             assert_eq!(tangents.has_handedness, has_handedness);
 
             let expected_w = if has_handedness { -1.0 } else { 1.0 };
@@ -3650,38 +3611,34 @@ mod tests {
             mesh: create_triangle_mesh(),
             control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             polygon_vertex_indices: vec![0, 1, !2],
-            uv_sets: Vec::new(),
-            normal_sets: Vec::new(),
-            color_sets: Vec::new(),
-            tangent_sets: Vec::new(),
-            binormal_sets: Vec::new(),
             edges: vec![0, 1, 2],
-            smoothing_layers: vec![
-                crate::fbx_scene::FbxSmoothingLayer {
-                    mapping: Some("ByEdge".to_string()),
-                    values: vec![1, 0, 1],
-                },
-                crate::fbx_scene::FbxSmoothingLayer {
-                    mapping: Some("ByPolygon".to_string()),
-                    values: vec![1],
-                },
-            ],
-            crease_layers: vec![
-                crate::fbx_scene::FbxCreaseLayer {
-                    kind: crate::fbx_scene::FbxCreaseKind::Edge,
-                    mapping: Some("ByEdge".to_string()),
-                    // A weight an integer type would flatten to 0.
-                    values: vec![0.25, 0.5, 1.0],
-                },
-                crate::fbx_scene::FbxCreaseLayer {
-                    kind: crate::fbx_scene::FbxCreaseKind::Vertex,
-                    mapping: Some("ByVertice".to_string()),
-                    values: vec![0.75, 0.0, 0.125],
-                },
-            ],
-            material_indices: Vec::new(),
-            skin: None,
-            morph_targets: Vec::new(),
+            layers: FbxMeshLayers {
+                smoothing_layers: vec![
+                    crate::fbx_scene::FbxSmoothingLayer {
+                        mapping: Some("ByEdge".to_string()),
+                        values: vec![1, 0, 1],
+                    },
+                    crate::fbx_scene::FbxSmoothingLayer {
+                        mapping: Some("ByPolygon".to_string()),
+                        values: vec![1],
+                    },
+                ],
+                crease_layers: vec![
+                    crate::fbx_scene::FbxCreaseLayer {
+                        kind: crate::fbx_scene::FbxCreaseKind::Edge,
+                        mapping: Some("ByEdge".to_string()),
+                        // A weight an integer type would flatten to 0.
+                        values: vec![0.25, 0.5, 1.0],
+                    },
+                    crate::fbx_scene::FbxCreaseLayer {
+                        kind: crate::fbx_scene::FbxCreaseKind::Vertex,
+                        mapping: Some("ByVertice".to_string()),
+                        values: vec![0.75, 0.0, 0.125],
+                    },
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
         };
         let scene = FbxScene {
             root_nodes: vec![FbxSceneNode {
@@ -3699,8 +3656,14 @@ mod tests {
 
         let output = crate::FbxScene::from_bytes(&scene.to_bytes().unwrap()).unwrap();
         let read_back = &output.root_nodes[0].mesh_instances[0];
-        assert_eq!(read_back.smoothing_layers, instance.smoothing_layers);
-        assert_eq!(read_back.crease_layers, instance.crease_layers);
+        assert_eq!(
+            read_back.layers.smoothing_layers,
+            instance.layers.smoothing_layers
+        );
+        assert_eq!(
+            read_back.layers.crease_layers,
+            instance.layers.crease_layers
+        );
     }
 
     /// A `ByEdge` layer in a geometry with no `Edges` array addresses the edges
@@ -3726,17 +3689,11 @@ mod tests {
                     mesh: create_triangle_mesh(),
                     control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                     polygon_vertex_indices: vec![0, 1, !2],
-                    uv_sets: Vec::new(),
-                    normal_sets: Vec::new(),
-                    color_sets: Vec::new(),
-                    tangent_sets: Vec::new(),
-                    binormal_sets: Vec::new(),
-                    edges: Vec::new(),
-                    smoothing_layers: vec![smoothing.clone()],
-                    crease_layers: Vec::new(),
-                    material_indices: Vec::new(),
-                    skin: None,
-                    morph_targets: Vec::new(),
+                    layers: FbxMeshLayers {
+                        smoothing_layers: vec![smoothing.clone()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
                 }],
                 attribute: None,
                 children: Vec::new(),
@@ -3747,7 +3704,7 @@ mod tests {
         let output = crate::FbxScene::from_bytes(&scene.to_bytes().unwrap()).unwrap();
         let read_back = &output.root_nodes[0].mesh_instances[0];
         assert!(read_back.edges.is_empty());
-        assert_eq!(read_back.smoothing_layers, vec![smoothing]);
+        assert_eq!(read_back.layers.smoothing_layers, vec![smoothing]);
     }
 
     /// An FBX `Texture` need not be named, and a rewrite must not give it one.
@@ -3806,23 +3763,17 @@ mod tests {
                     mesh: create_triangle_mesh(),
                     control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                     polygon_vertex_indices: vec![0, 1, !2],
-                    uv_sets: Vec::new(),
-                    normal_sets: Vec::new(),
-                    color_sets: vec![crate::fbx_scene::FbxColorSet {
-                        name: Some("Col".to_string()),
-                        mapping: Some("ByPolygonVertex".to_string()),
-                        reference: Some("Direct".to_string()),
-                        values: vec![[1.0, 0.0, 0.0, 1.0]; 3],
-                        indices: Vec::new(),
-                    }],
-                    tangent_sets: Vec::new(),
-                    binormal_sets: Vec::new(),
-                    smoothing_layers: Vec::new(),
-                    crease_layers: Vec::new(),
-                    edges: Vec::new(),
-                    material_indices: Vec::new(),
-                    skin: None,
-                    morph_targets: Vec::new(),
+                    layers: FbxMeshLayers {
+                        color_sets: vec![crate::fbx_scene::FbxColorSet {
+                            name: Some("Col".to_string()),
+                            mapping: Some("ByPolygonVertex".to_string()),
+                            reference: Some("Direct".to_string()),
+                            values: vec![[1.0, 0.0, 0.0, 1.0]; 3],
+                            indices: Vec::new(),
+                        }],
+                        ..Default::default()
+                    },
+                    ..Default::default()
                 }],
                 attribute: None,
                 children: Vec::new(),
@@ -3889,17 +3840,11 @@ mod tests {
                     mesh: create_triangle_mesh(),
                     control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                     polygon_vertex_indices: vec![0, 1, !2],
-                    uv_sets: Vec::new(),
-                    normal_sets: Vec::new(),
-                    color_sets: vec![colors.clone()],
-                    tangent_sets: Vec::new(),
-                    binormal_sets: Vec::new(),
-                    smoothing_layers: Vec::new(),
-                    crease_layers: Vec::new(),
-                    edges: Vec::new(),
-                    material_indices: Vec::new(),
-                    skin: None,
-                    morph_targets: Vec::new(),
+                    layers: FbxMeshLayers {
+                        color_sets: vec![colors.clone()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
                 }],
                 attribute: None,
                 children: Vec::new(),
@@ -3909,8 +3854,12 @@ mod tests {
 
         let output = crate::FbxScene::from_bytes(&scene.to_bytes().unwrap()).unwrap();
         let instance = &output.root_nodes[0].mesh_instances[0];
-        assert_eq!(instance.color_sets.len(), 1, "colour layer should survive");
-        let read_back = &instance.color_sets[0];
+        assert_eq!(
+            instance.layers.color_sets.len(),
+            1,
+            "colour layer should survive"
+        );
+        let read_back = &instance.layers.color_sets[0];
         assert_eq!(read_back.values, colors.values);
         assert_eq!(read_back.mapping.as_deref(), Some("ByPolygonVertex"));
 
