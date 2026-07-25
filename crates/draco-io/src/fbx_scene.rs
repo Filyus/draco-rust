@@ -117,7 +117,9 @@ impl FbxWarning {
 /// file produces thousands of identical strings and buries anything else.
 ///
 /// Lives beside [`FbxWarning`] rather than in either reader half because both
-/// the container decoder and the scene layer raise notices.
+/// the container decoder and the scene layer raise notices. Both of those are
+/// read-side, so a writer-only build has no caller for it.
+#[cfg(feature = "fbx-reader")]
 pub(crate) fn push_warning(
     warnings: &mut Vec<FbxWarning>,
     code: FbxWarningCode,
