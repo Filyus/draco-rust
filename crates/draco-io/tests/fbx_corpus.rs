@@ -174,6 +174,117 @@ fn big_endian_matches_its_little_endian_twin() {
     }
 }
 
+/// Writing a decoded scene back out and reading it again must preserve the
+/// semantic content the reader exposes.
+///
+/// This is what turns the corpus into a bug finder rather than a crash
+/// detector: it caught per-polygon material assignments being destroyed on
+/// n-gon meshes, because `LayerElementMaterial` is ByPolygon while the
+/// in-memory indices are per triangle.
+#[test]
+fn scenes_survive_a_write_and_read_cycle() {
+    let Some(dir) = corpus_dir() else {
+        eprintln!("skipping: set DRACO_FBX_CORPUS to a directory of .fbx files");
+        return;
+    };
+
+    let mut files = Vec::new();
+    collect_fbx(&dir, &mut files);
+    files.sort();
+
+    let mut compared = 0;
+    let mut mismatches: Vec<String> = Vec::new();
+    for path in &files {
+        // Skip the fuzz corpus: those are deliberately corrupt.
+        if path.components().any(|c| c.as_os_str() == "fuzz") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let Ok(original) = FbxScene::from_bytes(&bytes) else {
+            continue;
+        };
+        let Ok(written) = original.to_bytes() else {
+            continue;
+        };
+        let Ok(roundtrip) = FbxScene::from_bytes(&written) else {
+            mismatches.push(format!(
+                "{}: rewritten file does not read back",
+                path.display()
+            ));
+            continue;
+        };
+        compared += 1;
+
+        let before = summarize(&original);
+        let after = summarize(&roundtrip);
+        if before != after {
+            mismatches.push(format!(
+                "{}:\n     before {before:?}\n     after  {after:?}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+        }
+    }
+
+    println!(
+        "round-tripped {compared} files, {} mismatched",
+        mismatches.len()
+    );
+    for line in mismatches.iter().take(10) {
+        println!("  {line}");
+    }
+    assert!(
+        mismatches.is_empty(),
+        "{} files changed across a write/read cycle",
+        mismatches.len()
+    );
+}
+
+/// Per-mesh counts that a lossless-enough round-trip must preserve.
+#[derive(Debug, PartialEq, Eq)]
+struct SceneSummary {
+    materials: usize,
+    textures: usize,
+    animations: usize,
+    meshes: Vec<(usize, usize, usize, usize, Vec<i32>)>,
+}
+
+fn summarize(scene: &FbxScene) -> SceneSummary {
+    fn visit(node: &draco_io::FbxSceneNode, out: &mut Vec<(usize, usize, usize, usize, Vec<i32>)>) {
+        for mesh in &node.mesh_instances {
+            // A Geometry with neither vertices nor polygons carries nothing
+            // but a name. The writer emits no geometry nodes for it, so it
+            // does not come back; that is accepted rather than padded out
+            // with empty arrays other importers would have to interpret.
+            if mesh.control_points.is_empty() && mesh.polygon_vertex_indices.is_empty() {
+                continue;
+            }
+            out.push((
+                mesh.control_points.len(),
+                mesh.polygon_vertex_indices.len(),
+                mesh.uv_sets.len(),
+                mesh.color_sets.len(),
+                mesh.material_indices.clone(),
+            ));
+        }
+        for child in &node.children {
+            visit(child, out);
+        }
+    }
+    let mut meshes = Vec::new();
+    for root in &scene.root_nodes {
+        visit(root, &mut meshes);
+    }
+    meshes.sort();
+    SceneSummary {
+        materials: scene.materials.len(),
+        textures: scene.textures.len(),
+        animations: scene.animations.len(),
+        meshes,
+    }
+}
+
 fn control_point_total(scene: &FbxScene) -> usize {
     fn visit(node: &draco_io::FbxSceneNode) -> usize {
         node.mesh_instances

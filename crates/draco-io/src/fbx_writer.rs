@@ -524,21 +524,32 @@ impl FbxWriter {
                 .as_deref()
                 .or(node.name.as_deref())
                 .unwrap_or("Mesh");
-            let local_material_indices = mesh_instance
-                .material_indices
-                .iter()
-                .map(|&index| {
-                    usize::try_from(index)
-                        .ok()
-                        .and_then(|global| {
-                            referenced_material_indices
-                                .iter()
-                                .position(|&slot| slot == global)
-                        })
-                        .map(|local| local as i32)
-                        .unwrap_or(0)
-                })
-                .collect::<Vec<_>>();
+            // `material_indices` addresses the scene material list; the
+            // written layer addresses the slots connected to this Model.
+            //
+            // A file can carry a material layer with no `Material` objects at
+            // all (Revit exports do). There is nothing to map onto then, so
+            // pass the slots through instead of collapsing them to zero, which
+            // would erase the face grouping the layer encodes.
+            let local_material_indices = if referenced_material_indices.is_empty() {
+                mesh_instance.material_indices.clone()
+            } else {
+                mesh_instance
+                    .material_indices
+                    .iter()
+                    .map(|&index| {
+                        usize::try_from(index)
+                            .ok()
+                            .and_then(|global| {
+                                referenced_material_indices
+                                    .iter()
+                                    .position(|&slot| slot == global)
+                            })
+                            .map(|local| local as i32)
+                            .unwrap_or(0)
+                    })
+                    .collect::<Vec<_>>()
+            };
             self.add_mesh_to_model(
                 &mesh_instance.mesh,
                 name,
@@ -1754,7 +1765,11 @@ fn write_geometry<W: Write + Seek>(
             .polygon_vertex_indices
             .as_deref()
             .unwrap_or(&mesh_data.indices);
-        if !polygon_indices.is_empty() {
+        // Emit the node even when empty, as long as the geometry has vertices.
+        // A vertices-only Geometry is legal -- Blender writes one for a curve
+        // with no faces -- and the reader treats a missing PolygonVertexIndex
+        // as "not a mesh", so skipping it dropped the object entirely.
+        if !polygon_indices.is_empty() || !vertices.is_empty() {
             let mut poly_node = NodeWriter::start(w, "PolygonVertexIndex", is_64)?;
             poly_node.write_property_i32_array(polygon_indices, options)?;
             poly_node.finish()?;
@@ -1788,7 +1803,14 @@ fn write_geometry<W: Write + Seek>(
         }
 
         if !mesh_data.material_indices.is_empty() {
-            write_layer_element_material(w, is_64, &mesh_data.material_indices, options)?;
+            // `LayerElementMaterial` is ByPolygon, but `material_indices` is
+            // per triangle. When the original n-gon stream is being written
+            // those counts differ, so collapse back to one entry per polygon.
+            let per_polygon = collapse_material_indices_to_polygons(
+                &mesh_data.material_indices,
+                mesh_data.polygon_vertex_indices.as_deref(),
+            );
+            write_layer_element_material(w, is_64, &per_polygon, options)?;
         }
 
         // Layer aggregation node (FBX requires a Layer entry per used element).
@@ -1991,6 +2013,42 @@ fn write_layer_element_color_set<W: Write + Seek>(
         }
         Ok(())
     })
+}
+
+/// Collapses per-triangle material indices to one entry per source polygon.
+///
+/// `FbxMeshInstance::material_indices` holds one entry per fan-triangulated
+/// triangle, while `LayerElementMaterial` is addressed ByPolygon. Writing the
+/// triangle list verbatim beside an n-gon `PolygonVertexIndex` stream made the
+/// reader take the first N entries as the polygon assignments, which silently
+/// dropped every material past the first few polygons.
+///
+/// With no polygon stream the writer emits one triangle per polygon, so the
+/// list already matches.
+fn collapse_material_indices_to_polygons(
+    material_indices: &[i32],
+    polygon_vertex_indices: Option<&[i32]>,
+) -> Vec<i32> {
+    let Some(polygons) = polygon_vertex_indices else {
+        return material_indices.to_vec();
+    };
+
+    let mut per_polygon = Vec::new();
+    let mut triangle = 0usize;
+    let mut corners = 0usize;
+    for &encoded in polygons {
+        corners += 1;
+        if encoded >= 0 {
+            continue;
+        }
+        // A polygon of `corners` vertices fan-triangulates into `corners - 2`
+        // triangles, which all carry the same material.
+        let triangles = corners.saturating_sub(2);
+        per_polygon.push(material_indices.get(triangle).copied().unwrap_or(0));
+        triangle += triangles;
+        corners = 0;
+    }
+    per_polygon
 }
 
 fn write_layer_element_material<W: Write + Seek>(
@@ -3216,6 +3274,77 @@ mod tests {
         assert_eq!(
             sampler.out_tangents.as_deref(),
             Some(&[1.0, 2.0, 3.0, 0.0, 0.0, 0.0][..])
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "fbx-reader")]
+    fn scene_roundtrip_preserves_per_polygon_materials_on_ngons() {
+        // `LayerElementMaterial` is ByPolygon while `material_indices` is per
+        // triangle. Writing the triangle list verbatim beside an n-gon polygon
+        // stream made the reader take its first N entries as the polygon
+        // assignments, so every quad after the first lost its material.
+        let mut instance = FbxMeshInstance {
+            name: Some("Quads".to_string()),
+            mesh: create_triangle_mesh(),
+            control_points: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [3.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ],
+            // Two quads, so two polygons but four fan triangles.
+            polygon_vertex_indices: vec![0, 1, 2, !3, 4, 5, 6, !7],
+            uv_sets: Vec::new(),
+            normal_sets: Vec::new(),
+            color_sets: Vec::new(),
+            material_indices: vec![0, 0, 1, 1],
+            skin: None,
+            morph_targets: Vec::new(),
+        };
+        instance.mesh = instance.to_draco_mesh();
+
+        let named = |name: &str| crate::fbx_scene::FbxMaterial {
+            name: Some(name.to_string()),
+            ..crate::fbx_scene::FbxMaterial::default()
+        };
+        let scene = FbxScene {
+            root_nodes: vec![FbxSceneNode {
+                id: crate::fbx_scene::FbxNodeId(1),
+                name: Some("Node".to_string()),
+                transform: None,
+                transform_stack: None,
+                has_complex_transform_stack: false,
+                mesh_instances: vec![instance],
+                children: Vec::new(),
+            }],
+            materials: vec![named("Red"), named("Blue")],
+            ..FbxScene::default()
+        };
+
+        let output = crate::FbxScene::from_bytes(&scene.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            output.root_nodes[0].mesh_instances[0].material_indices,
+            vec![0, 0, 1, 1],
+            "the second quad should keep its own material"
+        );
+    }
+
+    #[test]
+    fn collapsing_material_indices_takes_one_entry_per_polygon() {
+        // A quad and a triangle: 2 + 1 fan triangles.
+        let collapsed =
+            collapse_material_indices_to_polygons(&[7, 7, 3], Some(&[0, 1, 2, !3, 4, 5, !6]));
+        assert_eq!(collapsed, vec![7, 3]);
+
+        // Without a polygon stream the writer emits one triangle per polygon.
+        assert_eq!(
+            collapse_material_indices_to_polygons(&[1, 2, 3], None),
+            vec![1, 2, 3]
         );
     }
 
