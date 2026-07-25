@@ -53,7 +53,7 @@ struct FbxGeometrySource {
 pub use crate::fbx_scene::{
     FbxAnimChannel, FbxAnimChannelPath, FbxAnimInterpolation, FbxAnimSampler, FbxAnimation,
     FbxMeshInstance, FbxNodeId, FbxScene, FbxSceneNode, FbxTexture, FbxTextureBinding,
-    FbxTextureSlot, FbxTransform,
+    FbxTextureSlot, FbxTransform, FbxWarning, FbxWarningCode,
 };
 
 /// FBX file magic: "Kaydara FBX Binary  \0"
@@ -104,7 +104,7 @@ pub struct FbxReader<R: Read + Seek = BufReader<File>> {
     /// Merged into [`crate::FbxScene::warnings`] by `read_scene`. Deviations
     /// that are tolerated in lenient mode are reported here rather than
     /// silently accepted.
-    warnings: Vec<String>,
+    warnings: Vec<FbxWarning>,
 }
 
 /// Running totals for the limits that apply to a whole document.
@@ -269,8 +269,6 @@ impl<R: Read + Seek> FbxReader<R> {
         let mut acurve_map: HashMap<i64, &FbxNode> = HashMap::new();
         let mut deformer_map: HashMap<i64, &FbxNode> = HashMap::new();
         let mut pose_map: HashMap<i64, &FbxNode> = HashMap::new();
-        let mut saw_deformer = false;
-        let mut saw_blend_shape = false;
         let mut connections: Vec<FbxConnection> = Vec::new();
 
         for n in &nodes {
@@ -316,19 +314,6 @@ impl<R: Read + Seek> FbxReader<R> {
                         }
                         "Deformer" => {
                             deformer_map.insert(*id, child);
-                            // Deformers are either skin clusters or blend shapes.
-                            // Inspect the subclass on the name property.
-                            if object_name_subclass(child)
-                                .map(|s| s == "BlendShape" || s == "BlendShapeChannel")
-                                .unwrap_or(true)
-                            {
-                                saw_blend_shape = true;
-                            } else {
-                                saw_deformer = true;
-                            }
-                        }
-                        "BlendShape" | "BlendShapeChannel" => {
-                            saw_blend_shape = true;
                         }
                         _ => {}
                     }
@@ -356,24 +341,6 @@ impl<R: Read + Seek> FbxReader<R> {
                         parent: *parent,
                         property,
                     });
-                }
-            }
-        }
-
-        // Detect skins more reliably: any Cluster SubDeformer counts as skin.
-        if !saw_deformer {
-            for n in &nodes {
-                if n.name == "Objects" {
-                    for child in &n.children {
-                        if child.name == "Deformer"
-                            && object_name_subclass(child)
-                                .map(|s| s == "Cluster")
-                                .unwrap_or(false)
-                        {
-                            saw_deformer = true;
-                            break;
-                        }
-                    }
                 }
             }
         }
@@ -434,15 +401,20 @@ impl<R: Read + Seek> FbxReader<R> {
                         .unwrap_or(true);
                     let known_type = matches!(inherit_type, Some(0..=2));
                     if !(known_type && uniform_scale) {
-                        warnings.push(format!(
-                            "FBX model uses unsupported {name}; local TRS was imported without that FBX transform rule"
-                        ));
+                        push_warning(
+                            &mut warnings,
+                            FbxWarningCode::UnsupportedTransformInherit,
+                            format!(
+                                "FBX model uses unsupported {name}; local TRS was imported \
+                                 without that FBX transform rule"
+                            ),
+                            None,
+                        );
                         warned_inherit_type = true;
                     }
                 }
             }
         }
-        let _ = (saw_deformer, saw_blend_shape);
 
         // ---- Materials ----------------------------------------------------
         let mut materials: Vec<crate::fbx_scene::FbxMaterial> = Vec::new();
@@ -1353,14 +1325,6 @@ struct FbxConnection {
     property: Option<String>,
 }
 
-/// Reads the object subclass from a `\0\x01`-separated FBX name property.
-fn object_name_subclass(node: &FbxNode) -> Option<String> {
-    match node.properties.get(1) {
-        Some(FbxProperty::String(name)) => name.split('\u{1}').nth(1).map(str::to_string),
-        _ => None,
-    }
-}
-
 /// FBX Deformer objects carry their effective kind in the third object
 /// property; the second name component is merely `Deformer`/`SubDeformer`.
 fn deformer_type(node: &FbxNode) -> Option<&str> {
@@ -1647,21 +1611,21 @@ impl<R: Read + Seek> FbxReader<R> {
     }
 
     /// Records a tolerated container-layout deviation, or fails in strict mode.
-    ///
-    /// Deduplicated by message so one malformed pattern repeated across
-    /// thousands of nodes does not produce thousands of identical notices.
-    fn note_deviation(&mut self, message: String) -> io::Result<()> {
+    fn note_deviation(
+        &mut self,
+        code: FbxWarningCode,
+        message: String,
+        subject: Option<&str>,
+    ) -> io::Result<()> {
         if self.options.strict {
             return Err(io::Error::new(io::ErrorKind::InvalidData, message));
         }
-        if !self.warnings.contains(&message) {
-            self.warnings.push(message);
-        }
+        push_warning(&mut self.warnings, code, message, subject);
         Ok(())
     }
 
     /// Container-layout notices collected by the most recent read.
-    pub fn warnings(&self) -> &[String] {
+    pub fn warnings(&self) -> &[FbxWarning] {
         &self.warnings
     }
 
@@ -1755,10 +1719,14 @@ impl<R: Read + Seek> FbxReader<R> {
         // worth reporting even though we still accept it.
         if end_offset == 0 && name_len == 0 {
             if num_properties != 0 || property_list_len != 0 {
-                self.note_deviation(format!(
-                    "FBX: null record has non-zero property fields \
-                     (count {num_properties}, list length {property_list_len})"
-                ))?;
+                self.note_deviation(
+                    FbxWarningCode::MalformedNullRecord,
+                    format!(
+                        "FBX: null record has non-zero property fields \
+                         (count {num_properties}, list length {property_list_len})"
+                    ),
+                    None,
+                )?;
             }
             return Ok(None);
         }
@@ -1770,7 +1738,9 @@ impl<R: Read + Seek> FbxReader<R> {
         let declared_end = (end_offset != 0).then_some(end_offset);
         if declared_end.is_none() {
             self.note_deviation(
+                FbxWarningCode::MissingNodeEndOffset,
                 "FBX: a named node declares no end offset; reading it without children".to_string(),
+                None,
             )?;
         }
 
@@ -1851,10 +1821,14 @@ impl<R: Read + Seek> FbxReader<R> {
 
         let properties_read_to = self.reader.stream_position()?;
         if properties_read_to != properties_end {
-            self.note_deviation(format!(
-                "FBX: node '{name}' property list ended at {properties_read_to}, \
-                 but its header declared {properties_end}"
-            ))?;
+            self.note_deviation(
+                FbxWarningCode::PropertyListLengthMismatch,
+                format!(
+                    "FBX: node '{name}' property list ended at {properties_read_to}, \
+                     but its header declared {properties_end}"
+                ),
+                Some(&name),
+            )?;
             self.reader.seek(SeekFrom::Start(properties_end))?;
         }
 
@@ -2576,8 +2550,17 @@ impl<R: Read + Seek> FbxReader<R> {
         }
 
         // Group curve nodes by (stack, layer, model, path).
+        //
+        // Every iteration below walks ids in sorted order rather than hash
+        // order. FBX object ids are stable within a document, so this makes
+        // the channel list a property of the file instead of the process --
+        // otherwise two reads of the same bytes produce differently ordered
+        // channels and any positional comparison comes out garbage.
         let mut stacks_layers: StacksLayers = std::collections::HashMap::new();
-        for (acnode_id, (layer_id, model_id, path, morph_target_index)) in &acnode_targets {
+        let mut acnode_ids_sorted: Vec<i64> = acnode_targets.keys().copied().collect();
+        acnode_ids_sorted.sort_unstable();
+        for acnode_id in &acnode_ids_sorted {
+            let (layer_id, model_id, path, morph_target_index) = &acnode_targets[acnode_id];
             // Find stacks owning this layer.
             let mut stack_ids = Vec::new();
             for c2 in connections {
@@ -2599,7 +2582,10 @@ impl<R: Read + Seek> FbxReader<R> {
         }
 
         let mut animations = Vec::new();
-        for (stack_id, layers) in stacks_layers {
+        let mut stack_ids_sorted: Vec<i64> = stacks_layers.keys().copied().collect();
+        stack_ids_sorted.sort_unstable();
+        for stack_id in stack_ids_sorted {
+            let layers = &stacks_layers[&stack_id];
             let stack_node = astack_map.get(&stack_id);
             let name = stack_node.and_then(|n| match n.properties.get(1) {
                 Some(FbxProperty::String(raw)) => raw
@@ -2614,26 +2600,35 @@ impl<R: Read + Seek> FbxReader<R> {
             // single layer per stack.
             let mut channels = Vec::new();
             let mut max_time = 0.0f32;
-            for (_layer_id, entries) in layers {
+            let mut layer_ids_sorted: Vec<i64> = layers.keys().copied().collect();
+            layer_ids_sorted.sort_unstable();
+            for layer_id in layer_ids_sorted {
+                let entries = &layers[&layer_id];
                 // Group curve nodes by (model, path) before flattening.
                 let mut groups: std::collections::HashMap<
                     (i64, FbxAnimChannelPath, Option<u32>),
                     Vec<i64>,
                 > = std::collections::HashMap::new();
-                for (acnode_id, model_id, path, morph_target_index) in entries {
+                for &(acnode_id, model_id, path, morph_target_index) in entries {
                     groups
                         .entry((model_id, path, morph_target_index))
                         .or_default()
                         .push(acnode_id);
                 }
-                for ((model_id, path, morph_target_index), acnode_ids) in groups {
+                let mut group_keys: Vec<(i64, FbxAnimChannelPath, Option<u32>)> =
+                    groups.keys().copied().collect();
+                group_keys.sort_unstable_by_key(|(model_id, path, morph_target_index)| {
+                    (*model_id, *path as u8, *morph_target_index)
+                });
+                for (model_id, path, morph_target_index) in group_keys {
+                    let acnode_ids = &groups[&(model_id, path, morph_target_index)];
                     // Combine the X/Y/Z curves across all matching curve nodes
                     // (Blender notes that each curve node has a unique set of
                     // channels, so in practice there is exactly one entry).
                     let mut by_component: std::collections::BTreeMap<u32, FbxAnimCurveData> =
                         std::collections::BTreeMap::new();
                     for acnode_id in acnode_ids {
-                        if let Some(curves) = acnode_curves.get(&acnode_id) {
+                        if let Some(curves) = acnode_curves.get(acnode_id) {
                             for (component, curve) in curves {
                                 by_component
                                     .entry(*component)
@@ -2670,6 +2665,29 @@ impl<R: Read + Seek> FbxReader<R> {
         }
         animations
     }
+}
+
+/// Appends a warning, collapsing repeats of the same `(code, subject)` pair
+/// into a single entry with a count.
+///
+/// Without this, a malformed pattern repeated across every node in a large
+/// file produces thousands of identical strings and buries anything else.
+fn push_warning(
+    warnings: &mut Vec<FbxWarning>,
+    code: FbxWarningCode,
+    message: String,
+    subject: Option<&str>,
+) {
+    if let Some(existing) = warnings
+        .iter_mut()
+        .find(|warning| warning.code == code && warning.subject.as_deref() == subject)
+    {
+        existing.count = existing.count.saturating_add(1);
+        return;
+    }
+    let mut warning = FbxWarning::new(code, message);
+    warning.subject = subject.map(str::to_owned);
+    warnings.push(warning);
 }
 
 /// Curve nodes grouped by `AnimationStack` id, then by `AnimationLayer` id.
@@ -3315,6 +3333,60 @@ mod tests {
         let error = reader.read_nodes().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("too short"), "{error}");
+    }
+
+    #[test]
+    fn repeated_deviations_collapse_into_one_counted_warning() {
+        // A malformed pattern repeated across a large file must not produce
+        // one warning per node.
+        let mut warnings = Vec::new();
+        for _ in 0..5 {
+            push_warning(
+                &mut warnings,
+                FbxWarningCode::PropertyListLengthMismatch,
+                "mismatch".to_string(),
+                Some("Geometry"),
+            );
+        }
+        push_warning(
+            &mut warnings,
+            FbxWarningCode::PropertyListLengthMismatch,
+            "mismatch".to_string(),
+            Some("Model"),
+        );
+
+        assert_eq!(warnings.len(), 2, "distinct subjects stay distinct");
+        assert_eq!(warnings[0].count, 5);
+        assert_eq!(warnings[0].to_string(), "mismatch (x5)");
+        assert_eq!(warnings[1].count, 1);
+        assert_eq!(warnings[1].to_string(), "mismatch");
+    }
+
+    #[test]
+    fn a_tolerated_deviation_is_reported_and_strict_mode_rejects_it() {
+        // A terminator carrying non-zero property fields: accepted with a
+        // notice, refused outright when strict.
+        let mut data = Vec::new();
+        data.extend_from_slice(FBX_MAGIC);
+        data.push(FBX_MAGIC_TAIL);
+        data.push(0);
+        data.extend_from_slice(&7400u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes()); // end_offset
+        data.extend_from_slice(&3u32.to_le_bytes()); // num_properties, should be 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // property_list_len
+        data.push(0); // name_len
+
+        let mut reader = FbxReader::new(Cursor::new(data.clone())).unwrap();
+        let scene = reader.read_scene().unwrap();
+        assert_eq!(scene.warnings.len(), 1);
+        assert_eq!(scene.warnings[0].code, FbxWarningCode::MalformedNullRecord);
+        assert!(!scene.warnings[0].code.is_data_loss());
+        assert_eq!(scene.warnings[0].code.as_str(), "malformed-null-record");
+
+        let strict = FbxReader::new_with_options(Cursor::new(data), FbxReadOptions::strict())
+            .unwrap()
+            .read_scene();
+        assert!(strict.is_err(), "strict mode should reject the deviation");
     }
 
     #[test]

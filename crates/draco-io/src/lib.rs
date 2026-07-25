@@ -52,7 +52,7 @@ pub use fbx_scene::{
     FbxAnimChannel, FbxAnimChannelPath, FbxAnimInterpolation, FbxAnimSampler, FbxAnimation,
     FbxGlobalSettings, FbxMaterial, FbxMeshInstance, FbxMorphTarget, FbxNodeId, FbxNormalSet,
     FbxScene, FbxSceneNode, FbxSkin, FbxSkinCluster, FbxTexture, FbxTextureBinding, FbxTextureSlot,
-    FbxTransform, FbxTransformStack, FbxUvSet,
+    FbxTransform, FbxTransformStack, FbxUvSet, FbxWarning, FbxWarningCode,
 };
 #[cfg(feature = "fbx-writer")]
 pub use fbx_writer::FbxWriter;

@@ -1,8 +1,108 @@
 //! Shared, lossy FBX scene values.
 
+use std::fmt;
 use std::io;
 
 use draco_core::mesh::Mesh;
+
+/// What kind of deviation or loss a [`FbxWarning`] describes.
+///
+/// Codes are stable identifiers; the human-readable text lives on the warning
+/// itself and may be reworded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum FbxWarningCode {
+    /// A terminator record carried non-zero property fields.
+    MalformedNullRecord,
+    /// A named node declared no end offset, so it was read without children.
+    MissingNodeEndOffset,
+    /// A node's property list ended somewhere other than its header declared.
+    PropertyListLengthMismatch,
+    /// A node record claimed to end past the end of the file.
+    NodeEndPastEndOfFile,
+    /// A Model used an FBX inheritance rule the imported transform cannot
+    /// express, so its local TRS is missing that rule.
+    UnsupportedTransformInherit,
+    /// A layer element used a mapping or reference mode that could not be
+    /// resolved, so default values were substituted.
+    UnsupportedLayerMapping,
+}
+
+impl FbxWarningCode {
+    /// Whether data present in the file is absent from the decoded scene.
+    ///
+    /// Container-layout notices describe a tolerated deviation but no loss;
+    /// the semantic codes describe something the caller will not find in the
+    /// result. A converter can use this to decide what to surface downstream.
+    pub fn is_data_loss(self) -> bool {
+        match self {
+            FbxWarningCode::MalformedNullRecord
+            | FbxWarningCode::PropertyListLengthMismatch
+            | FbxWarningCode::NodeEndPastEndOfFile => false,
+            FbxWarningCode::MissingNodeEndOffset
+            | FbxWarningCode::UnsupportedTransformInherit
+            | FbxWarningCode::UnsupportedLayerMapping => true,
+        }
+    }
+
+    /// Stable machine-readable slug, for logs and downstream reports.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FbxWarningCode::MalformedNullRecord => "malformed-null-record",
+            FbxWarningCode::MissingNodeEndOffset => "missing-node-end-offset",
+            FbxWarningCode::PropertyListLengthMismatch => "property-list-length-mismatch",
+            FbxWarningCode::NodeEndPastEndOfFile => "node-end-past-end-of-file",
+            FbxWarningCode::UnsupportedTransformInherit => "unsupported-transform-inherit",
+            FbxWarningCode::UnsupportedLayerMapping => "unsupported-layer-mapping",
+        }
+    }
+}
+
+/// One non-fatal notice raised while reading an FBX document.
+///
+/// Occurrences are collapsed by `(code, subject)`: a malformed pattern
+/// repeated across thousands of nodes yields one warning with a count, not
+/// thousands of identical strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FbxWarning {
+    /// Stable classification of the notice.
+    pub code: FbxWarningCode,
+    /// Human-readable description.
+    pub message: String,
+    /// Owning FBX object name, when one is known.
+    pub subject: Option<String>,
+    /// How many times this `(code, subject)` pair fired. Never zero.
+    pub count: u32,
+}
+
+impl FbxWarning {
+    /// Creates a warning that has fired once.
+    pub fn new(code: FbxWarningCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            subject: None,
+            count: 1,
+        }
+    }
+
+    /// Attaches the FBX object this notice is about.
+    #[must_use]
+    pub fn with_subject(mut self, subject: impl Into<String>) -> Self {
+        self.subject = Some(subject.into());
+        self
+    }
+}
+
+impl fmt::Display for FbxWarning {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.message)?;
+        if self.count > 1 {
+            write!(formatter, " (x{})", self.count)?;
+        }
+        Ok(())
+    }
+}
 
 /// Stable, document-local identifier for an FBX model node.
 ///
@@ -474,9 +574,12 @@ pub struct FbxScene {
     pub textures: Vec<FbxTexture>,
     /// Animation takes (one per `AnimationStack` + first `AnimationLayer`).
     pub animations: Vec<FbxAnimation>,
-    /// Non-fatal notices collected while reading, such as unsupported FBX
-    /// pivot or inheritance-mode properties.
-    pub warnings: Vec<String>,
+    /// Non-fatal notices collected while reading: tolerated container-layout
+    /// deviations, and FBX semantics the decoded scene cannot express.
+    ///
+    /// Filter on [`FbxWarningCode::is_data_loss`] to separate "this file is
+    /// unusual" from "something in this file is missing from the result".
+    pub warnings: Vec<FbxWarning>,
 }
 
 impl FbxScene {

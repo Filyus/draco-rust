@@ -479,7 +479,9 @@ fn parse_fbx_scene(data: &[u8]) -> ParseResult {
                 success: true,
                 meshes,
                 error: None,
-                warnings: scene.warnings.clone(),
+                // The JS side shows these as plain strings; `Display` renders
+                // the message and, for repeats, the occurrence count.
+                warnings: scene.warnings.iter().map(ToString::to_string).collect(),
                 version,
                 scene: Some(scene_out),
                 materials,
