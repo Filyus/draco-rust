@@ -670,33 +670,88 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 
 .warnings-box { margin-top: 6px; padding: 9px 11px; border: 0; border-radius: 8px; color: #f2c76c; background: rgba(47, 38, 21, 0.94); backdrop-filter: blur(9px); }
 .warnings-box ul { padding-left: 17px; }
-.scene-summary-compact { margin-top: 8px; padding: 8px 10px; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; border: 1px solid rgba(123, 153, 194, 0.2); border-radius: 8px; color: #c7d8ed; background: rgba(7, 17, 30, 0.72); font-size: 0.68rem; }
-.scene-summary-compact[hidden], .scene-summary[hidden] { display: none !important; }
-.scene-summary-compact-label { color: #e3edff; font-weight: 700; }
-.scene-summary-compact-text { color: #9db1cd; text-align: right; }
-.scene-details-panel { min-width: 0; min-height: 0; flex: 0 0 auto; gap: 0; overflow: hidden; }
-.scene-summary { padding: 9px 11px; border: 1px solid rgba(123, 153, 194, 0.16); border-radius: 8px; color: #c7d8ed; background: rgba(7, 17, 30, 0.72); }
-.scene-summary[open] { padding-bottom: 10px; }
-.scene-summary-title { cursor: pointer; color: #e3edff; font-size: 0.72rem; font-weight: 650; }
-.scene-summary-title::marker { color: #7ea9e8; }
-.scene-tree { max-height: clamp(180px, 42dvh, 440px); margin: 9px 0 8px; overflow-y: auto; border: 1px solid rgba(123, 153, 194, 0.12); border-radius: 6px; background: rgba(3, 10, 19, 0.46); }
-.scene-tree-node > summary { list-style: disclosure-closed; }
-.scene-tree-node[open] > summary { list-style: disclosure-open; }
-.scene-tree-leaf { list-style: none; }
-.scene-tree-children { border-left: 1px solid rgba(123, 153, 194, 0.12); }
-.scene-tree-row { min-height: 25px; padding-top: 4px; padding-right: 7px; padding-bottom: 4px; display: flex; align-items: center; justify-content: space-between; gap: 6px; border-bottom: 1px solid rgba(123, 153, 194, 0.08); color: #b9cbe2; font-size: 0.67rem; }
-.scene-tree-row:last-child { border-bottom: 0; }
-.scene-tree-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scene-panel[hidden], .scene-info[hidden], .scene-warnings-section[hidden] { display: none !important; }
+
+/* The scene card holds nothing but the tree, so it can hand it every spare pixel. */
+.scene-section { min-width: 0; min-height: 180px; flex: 1 1 auto; padding: 11px; gap: 0; overflow: hidden; }
+.scene-panel { min-height: 0; flex: 1 1 auto; display: flex; flex-direction: column; color: #c7d8ed; }
+.scene-panel-header { flex-shrink: 0; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.scene-panel-title { margin: 0; color: #a7b8d1; font-size: 0.68rem; font-weight: 750; letter-spacing: 0.09em; text-transform: uppercase; }
+.scene-tree-tools { flex-shrink: 0; display: inline-flex; gap: 4px; }
+.scene-tree-tool { padding: 2px 7px; border: 1px solid rgba(123, 153, 194, 0.24); border-radius: 5px; color: #9db1cd; font-size: 0.6rem; background: transparent; cursor: pointer; }
+.scene-tree-tool:hover { color: #dce8fb; border-color: rgba(126, 169, 232, 0.6); background: rgba(93, 129, 178, 0.18); }
+.scene-tree { min-height: 88px; flex: 1 1 auto; margin: 0; padding: 4px 2px 4px 0; overflow: auto; }
+.scene-tree-node, .scene-tree-leaf { list-style: none; }
+.scene-tree-node > summary { list-style: none; }
+.scene-tree-node > summary::-webkit-details-marker { display: none; }
+
+/* Nested containers draw the connector lines, so the hierarchy reads as a tree. */
+.scene-tree-children { margin-left: 7px; }
+.scene-tree-children > * { position: relative; padding-left: 13px; }
+.scene-tree-children > *::before { content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 1px; background: rgba(123, 153, 194, 0.24); }
+.scene-tree-children > *::after { content: ''; position: absolute; top: 12px; left: 0; width: 9px; height: 1px; background: rgba(123, 153, 194, 0.24); }
+.scene-tree-children > .scene-tree-last::before { bottom: auto; height: 12px; }
+
+/* Rows size to their content and the tree scrolls horizontally, so node names are never clipped. */
+.scene-tree-row { min-width: 100%; width: max-content; min-height: 25px; padding: 3px 8px 3px 0; display: flex; align-items: center; gap: 7px; border-radius: 4px; color: #ccdcf1; font-size: 0.72rem; line-height: 1.45; }
+.scene-tree-node > summary.scene-tree-row { cursor: pointer; }
+.scene-tree-row:hover { background: rgba(93, 129, 178, 0.16); }
+.scene-tree-row:focus-visible { outline: 1px solid #7ea9e8; outline-offset: -1px; }
+
+/* Branch chevron reads as a control: boxed, tinted and rotating on open.
+   The glyph is a clipped square rather than a border triangle so it sits dead centre. */
+.scene-tree-twisty { flex-shrink: 0; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid rgba(126, 169, 232, 0.42); border-radius: 4px; color: #9cc4f5; background: rgba(93, 129, 178, 0.2); }
+.scene-tree-twisty::before { content: ''; width: 7px; height: 7px; background: currentColor; clip-path: polygon(22% 2%, 82% 50%, 22% 98%); transition: transform 0.12s ease; }
+.scene-tree-node[open] > .scene-tree-row .scene-tree-twisty::before { transform: rotate(90deg); }
+.scene-tree-row:hover .scene-tree-twisty { color: #e3edff; border-color: rgba(126, 169, 232, 0.85); background: rgba(93, 129, 178, 0.42); }
+/* Leaves keep the alignment spacer but no visible box. */
+.scene-tree-twisty-empty, .scene-tree-row:hover .scene-tree-twisty-empty { border: 0; background: transparent; }
+.scene-tree-twisty-empty::before { content: none; }
+
+.scene-tree-label { flex: 0 0 auto; margin-right: auto; padding-right: 4px; white-space: nowrap; }
+.scene-tree-orphans-title { margin: 8px 0 3px; color: #8ea3bf; font-size: 0.6rem; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; }
 .scene-tree-badges { flex-shrink: 0; display: inline-flex; gap: 3px; }
-.scene-tree-badge { padding: 2px 4px; border-radius: 4px; color: #b7cbe6; font-size: 0.56rem; line-height: 1; background: rgba(69, 102, 148, 0.55); }
+.scene-tree-badge { padding: 2px 5px; border-radius: 4px; color: #c2d5ee; font-size: 0.6rem; line-height: 1.2; background: rgba(69, 102, 148, 0.55); }
 .scene-tree-badge-skin { color: #d9c9f2; background: rgba(111, 77, 155, 0.55); }
 .scene-tree-badge-animation { color: #c8efd9; background: rgba(45, 117, 80, 0.55); }
 .scene-tree-empty { padding: 10px; color: #91a5c0; font-size: 0.67rem; }
-.scene-capability-summary { margin: 8px 0 0; color: #9db1cd; font-size: 0.67rem; line-height: 1.4; }
-.scene-companions { display: grid; gap: 3px; margin-top: 8px; color: #91a5c0; font-size: 0.64rem; line-height: 1.35; }
-.scene-companions > div { display: flex; gap: 6px; }
-.scene-companion-title { min-width: 62px; color: #b9cbe2; font-weight: 650; }
-.scene-warning-list, .capability-box ul { margin: 6px 0 0; padding-left: 16px; color: #f2c76c; font-size: 0.66rem; line-height: 1.4; }
+/* Facts about the scene are a card of their own, so they never compete with the tree. */
+.scene-info { flex: 0 0 auto; padding: 10px 12px; color: #c7d8ed; }
+/* Collapsed by default, with the same chevron affordance as the warnings card. */
+.scene-info-title { cursor: pointer; display: flex; align-items: center; gap: 7px; color: #a7b8d1; font-size: 0.68rem; font-weight: 750; letter-spacing: 0.09em; text-transform: uppercase; list-style: none; }
+.scene-info-title::-webkit-details-marker { display: none; }
+.scene-info-title:hover { color: #dce8fb; }
+.scene-info-chevron { flex-shrink: 0; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid rgba(126, 169, 232, 0.42); border-radius: 4px; color: #9cc4f5; background: rgba(93, 129, 178, 0.2); }
+.scene-info-chevron::before { content: ''; width: 7px; height: 7px; background: currentColor; clip-path: polygon(22% 2%, 82% 50%, 22% 98%); transition: transform 0.12s ease; }
+.scene-info-details[open] .scene-info-chevron::before { transform: rotate(90deg); }
+.scene-capability-summary { margin: 7px 0 0; color: #8fa4c0; font-size: 0.65rem; line-height: 1.45; }
+.scene-companions { display: grid; gap: 4px; margin-top: 9px; color: #a5b8d1; font-size: 0.67rem; line-height: 1.4; }
+.scene-companions > div { display: flex; gap: 8px; }
+.scene-companion-title { flex-shrink: 0; min-width: 64px; color: #cadaf0; font-weight: 650; }
+.capability-box ul { margin: 6px 0 0; padding-left: 16px; color: #f2c76c; font-size: 0.66rem; line-height: 1.4; }
+
+/* Warnings are a standalone card in the sidebar, so expanding them cannot resize
+   or overflow the scene card above. */
+.scene-warnings-section { flex: 0 0 auto; padding: 10px 12px; border: 1px solid rgba(196, 154, 62, 0.28); background: rgba(38, 31, 18, 0.92); }
+.scene-warnings { min-width: 0; }
+.scene-warning-list { margin: 9px 0 0; padding: 0; max-height: clamp(140px, 30dvh, 320px); overflow-y: auto; list-style: none; }
+.scene-warning-item { padding: 7px 8px; display: flex; align-items: flex-start; gap: 8px; border-radius: 5px; color: #e7d1a0; font-size: 0.67rem; line-height: 1.45; }
+.scene-warning-item:nth-child(odd) { background: rgba(230, 189, 99, 0.06); }
+.scene-warning-item:hover { background: rgba(230, 189, 99, 0.12); }
+.scene-warning-index { flex-shrink: 0; min-width: 17px; height: 17px; padding: 0 4px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; color: #2a2010; font-size: 0.58rem; font-weight: 800; font-variant-numeric: tabular-nums; background: #e6bd63; }
+.scene-warning-text { min-width: 0; overflow-wrap: anywhere; }
+.scene-warning-more { padding: 8px 0 0; background: none; }
+.scene-warning-more:hover { background: none; }
+.scene-warning-more-button { width: 100%; padding: 5px 8px; border: 1px dashed rgba(230, 189, 99, 0.45); border-radius: 5px; color: #e6bd63; font-size: 0.64rem; font-weight: 650; background: transparent; cursor: pointer; }
+.scene-warning-more-button:hover { color: #ffd88a; border-color: rgba(230, 189, 99, 0.8); background: rgba(230, 189, 99, 0.12); }
+.scene-warnings-title { cursor: pointer; display: flex; align-items: center; gap: 7px; color: #f2c76c; font-size: 0.7rem; font-weight: 650; list-style: none; }
+.scene-warnings-title::-webkit-details-marker { display: none; }
+.scene-warnings-title:hover { color: #ffd88a; }
+.scene-warnings-chevron { flex-shrink: 0; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid rgba(230, 189, 99, 0.5); border-radius: 4px; background: rgba(230, 189, 99, 0.14); }
+.scene-warnings-chevron::before { content: ''; width: 7px; height: 7px; background: currentColor; clip-path: polygon(22% 2%, 82% 50%, 22% 98%); transition: transform 0.12s ease; }
+.scene-warnings[open] .scene-warnings-chevron::before { transform: rotate(90deg); }
+.scene-warnings-heading { margin-right: auto; }
+.scene-warnings-count { min-width: 18px; padding: 1px 6px; border-radius: 9px; color: #2a2010; font-size: 0.6rem; font-weight: 700; text-align: center; background: #e6bd63; }
 .capability-box { margin-top: 10px; padding: 9px 11px; border: 1px solid rgba(123, 153, 194, 0.16); border-radius: 8px; color: #c7d8ed; background: rgba(7, 17, 30, 0.72); }
 .capability-box p { margin: 5px 0 0; color: #9db1cd; font-size: 0.67rem; line-height: 1.4; }
 
@@ -725,6 +780,9 @@ footer { display: none; }
     .app { height: auto; min-height: 100dvh; }
     .workspace, .workspace.scene-loaded, .workspace.export-loaded { overflow: visible; grid-template-columns: 1fr; }
     .sidebar { overflow: visible; }
+    /* Without a height-constrained sidebar the tree needs an explicit cap again. */
+    .scene-section { flex: none; }
+    .scene-tree { max-height: clamp(220px, 48dvh, 460px); }
     .canvas-area { height: clamp(380px, 55dvh, 520px); min-height: 0; }
     #viewer-section { height: 100%; min-height: 0; flex: none; }
     #export-section { min-height: 0; }

@@ -175,12 +175,10 @@ test('FBX SceneDocument exports to GLB and reloads without flattening', async ({
   for (const fixture of [mixamoFbx, sambaFbx]) {
     await page.locator('#file-input').setInputFiles(fixture);
     await expect(page.locator('#console')).toContainText('Preview ready');
-    await expect(page.locator('#scene-summary-compact')).toBeVisible();
-    await expect(page.locator('#scene-summary-compact')).toContainText('Scene document ready');
-    expect(await page.locator('#scene-summary-compact').evaluate((element) => Boolean(element.closest('#input-section')))).toBe(true);
-    await expect(page.locator('#scene-summary')).toBeVisible();
-    expect(await page.locator('#scene-summary').evaluate((element) => Boolean(element.closest('#scene-details-section')))).toBe(true);
-    expect(await page.locator('#scene-summary').evaluate((element) => element.open)).toBe(true);
+    await expect(page.locator('#scene-summary-compact')).toHaveCount(0);
+    await expect(page.locator('#scene-panel')).toBeVisible();
+    expect(await page.locator('#scene-panel').evaluate((element) => Boolean(element.closest('#scene-section')))).toBe(true);
+    expect(await page.locator('#scene-panel').evaluate((element) => element.tagName)).toBe('SECTION');
     await expect(page.locator('#scene-tree .scene-tree-row')).not.toHaveCount(0);
     await expect(page.locator('#scene-tree .scene-tree-node')).not.toHaveCount(0);
     await expect(page.locator('#scene-node-stat')).not.toHaveText('0');
@@ -216,10 +214,9 @@ test('FBX SceneDocument exports through the typed FBX writer', async ({ page }) 
   await waitForConverterReady(page);
   await page.locator('#file-input').setInputFiles(mixamoFbx);
   await expect(page.locator('#console')).toContainText('Preview ready');
-  await expect(page.locator('#scene-summary-compact')).toBeVisible();
-  expect(await page.locator('#scene-summary-compact').evaluate((element) => Boolean(element.closest('#input-section')))).toBe(true);
-  await expect(page.locator('#scene-summary')).toBeVisible();
-  expect(await page.locator('#scene-summary').evaluate((element) => Boolean(element.closest('#scene-details-section')))).toBe(true);
+  await expect(page.locator('#scene-summary-compact')).toHaveCount(0);
+  await expect(page.locator('#scene-panel')).toBeVisible();
+  expect(await page.locator('#scene-panel').evaluate((element) => Boolean(element.closest('#scene-section')))).toBe(true);
   await expect(page.locator('#export-capability-report')).toBeVisible();
   expect(await page.locator('#export-section').evaluate((element) => Boolean(element.closest('#export-sidebar')))).toBe(true);
   await page.locator('[data-choice-for="export-format"] [data-value="fbx"]').click();
@@ -249,18 +246,16 @@ test('shared scene details expose all animation clips', async ({ page }) => {
     path.join(fox, 'Fox.bin'),
   ]);
   await expect(page.locator('#console')).toContainText('Preview ready');
-  await expect(page.locator('#scene-summary-compact')).toBeVisible();
-  expect(await page.locator('#scene-summary-compact').evaluate((element) => Boolean(element.closest('#input-section')))).toBe(true);
-  await expect(page.locator('#scene-summary')).toBeVisible();
-  expect(await page.locator('#scene-summary').evaluate((element) => Boolean(element.closest('#scene-details-section')))).toBe(true);
+  await expect(page.locator('#scene-panel')).toBeVisible();
+  expect(await page.locator('#scene-panel').evaluate((element) => Boolean(element.closest('#scene-section')))).toBe(true);
   await expect(page.locator('#scene-clip-stat')).toHaveText('3');
   await expect(page.locator('#anim-clip option')).toHaveCount(3);
 });
 
 test('scene details stays hidden before load and exposes a hierarchy tree after load', async ({ page }) => {
   await page.goto('/index.html');
-  await expect(page.locator('#scene-details-section')).toBeHidden();
-  await expect(page.locator('#scene-summary-compact')).toBeHidden();
+  await expect(page.locator('#scene-section')).toBeHidden();
+  await expect(page.locator('#scene-warnings-section')).toBeHidden();
   await waitForConverterReady(page);
   const fox = path.join(repoRoot, 'testdata', 'Fox', 'glTF');
   await page.locator('#file-input').setInputFiles([
@@ -268,12 +263,27 @@ test('scene details stays hidden before load and exposes a hierarchy tree after 
     path.join(fox, 'Fox.bin'),
   ]);
   await expect(page.locator('#console')).toContainText('Preview ready');
-  await expect(page.locator('#scene-details-section')).toBeVisible();
+  await expect(page.locator('#scene-section')).toBeVisible();
   await expect(page.locator('#scene-tree')).toBeVisible();
   await expect(page.locator('#scene-tree .scene-tree-row')).not.toHaveCount(0);
-  expect(await page.locator('#scene-summary').evaluate((element) => element.open)).toBe(true);
+  // The root scene block never collapses, so it is a plain section without an open state.
+  await expect(page.locator('#scene-panel')).toBeVisible();
+  expect(await page.locator('#scene-panel').evaluate((element) => element.tagName)).toBe('SECTION');
   await expect(page.locator('#scene-tree .scene-tree-node[open]')).not.toHaveCount(0);
   await expect(page.locator('#scene-tree .scene-tree-badge-animation')).not.toHaveCount(0);
+  await expect(page.locator('#scene-tree .scene-tree-children')).not.toHaveCount(0);
+  await expect(page.locator('#scene-tree .scene-tree-twisty')).not.toHaveCount(0);
+  // Branch rows stay obviously expandable: collapse-all then expand-all round-trips.
+  await page.locator('#scene-tree-collapse').click();
+  await expect(page.locator('#scene-tree .scene-tree-node[open]')).toHaveCount(0);
+  await page.locator('#scene-tree-expand').click();
+  await expect(page.locator('#scene-tree .scene-tree-node:not([open])')).toHaveCount(0);
+  // Warnings live in their own collapsible panel that only appears when there is something to show.
+  const warningsVisible = await page.locator('#scene-warnings-section').isVisible();
+  if (warningsVisible) {
+    expect(await page.locator('#scene-warnings').evaluate((element) => element.open)).toBe(false);
+    expect(Number(await page.locator('#scene-warning-count').textContent())).toBeGreaterThan(0);
+  }
   const layout = await page.locator('.sidebar').first().evaluate((element) => ({
     overflowY: getComputedStyle(element).overflowY,
     maxHeight: getComputedStyle(element).maxHeight,

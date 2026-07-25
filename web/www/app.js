@@ -104,18 +104,16 @@ const viewerControls = [
     viewerSmoothNormalsBtn,
     viewerGridBtn,
 ];
-const sceneSummary = document.getElementById('scene-summary');
-const sceneDetailsSection = document.getElementById('scene-details-section');
+const scenePanel = document.getElementById('scene-panel');
+const sceneSection = document.getElementById('scene-section');
 const workspace = document.querySelector('.workspace');
 const sidebar = document.querySelector('.sidebar');
 const exportSidebar = document.getElementById('export-sidebar');
-const sceneSummaryCompact = document.getElementById('scene-summary-compact');
-const sceneSummaryCompactText = document.getElementById('scene-summary-compact-text');
 const sceneTree = document.getElementById('scene-tree');
 const sceneResourceList = document.getElementById('scene-resource-list');
 const sceneMaterialList = document.getElementById('scene-material-list');
 const sceneClipList = document.getElementById('scene-clip-list');
-const sceneSummaryFields = {
+const sceneStatFields = {
     nodes: document.getElementById('scene-node-stat'),
     meshes: document.getElementById('mesh-count'),
     materials: document.getElementById('scene-material-stat'),
@@ -124,12 +122,32 @@ const sceneSummaryFields = {
     clips: document.getElementById('scene-clip-stat'),
 };
 const sceneCapabilitySummary = document.getElementById('scene-capability-summary');
+const sceneInfo = document.getElementById('scene-info');
 const sceneWarningList = document.getElementById('scene-warning-list');
+const sceneWarnings = document.getElementById('scene-warnings');
+const sceneWarningsSection = document.getElementById('scene-warnings-section');
+const sceneWarningCount = document.getElementById('scene-warning-count');
+const sceneTreeExpandButton = document.getElementById('scene-tree-expand');
+const sceneTreeCollapseButton = document.getElementById('scene-tree-collapse');
+
+const setSceneTreeExpanded = (expanded) => {
+    for (const branch of sceneTree.querySelectorAll('details.scene-tree-node')) branch.open = expanded;
+};
+sceneTreeExpandButton?.addEventListener('click', () => setSceneTreeExpanded(true));
+sceneTreeCollapseButton?.addEventListener('click', () => setSceneTreeExpanded(false));
 
 // Keep the workflow columns source-neutral: import + hierarchy on the left,
 // export/report on the right. The existing viewport statistics stay in place.
-if (sidebar && sceneDetailsSection && sceneDetailsSection.parentElement !== sidebar) {
-    sidebar.append(sceneDetailsSection);
+if (sidebar && sceneSection && sceneSection.parentElement !== sidebar) {
+    sidebar.append(sceneSection);
+}
+// Contents and warnings are their own cards below the scene card, so neither can
+// squeeze the tree or overflow the scene layout.
+if (sidebar && sceneInfo && sceneInfo.parentElement !== sidebar) {
+    sidebar.append(sceneInfo);
+}
+if (sidebar && sceneWarningsSection && sceneWarningsSection.parentElement !== sidebar) {
+    sidebar.append(sceneWarningsSection);
 }
 if (exportSidebar && exportSection && exportSection.parentElement !== exportSidebar) {
     exportSidebar.append(exportSection);
@@ -695,9 +713,10 @@ async function parseFbxFile(data) {
 
 function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
     if (!sceneDocument) {
-        sceneSummary.hidden = true;
-        sceneSummaryCompact.hidden = true;
-        sceneDetailsSection.style.display = 'none';
+        scenePanel.hidden = true;
+        sceneInfo.hidden = true;
+        setWarningPanel([]);
+        sceneSection.style.display = 'none';
         workspace.classList.remove('scene-loaded');
         return;
     }
@@ -707,26 +726,25 @@ function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
             (total, mesh) => total + mesh.primitives.reduce((count, primitive) => count + (primitive.targets?.length || 0), 0),
             0,
         );
-        sceneSummaryFields.nodes.textContent = sceneDocument.nodes.length.toLocaleString();
-        sceneSummaryFields.meshes.textContent = sceneDocument.meshes.length.toLocaleString();
-        sceneSummaryFields.materials.textContent = sceneDocument.materials.length.toLocaleString();
-        sceneSummaryFields.skins.textContent = sceneDocument.skins.length.toLocaleString();
-        sceneSummaryFields.morphs.textContent = morphs.toLocaleString();
-        sceneSummaryFields.clips.textContent = sceneDocument.animations.length.toLocaleString();
-        sceneSummaryCompactText.textContent = 'Scene document ready';
+        sceneStatFields.nodes.textContent = sceneDocument.nodes.length.toLocaleString();
+        sceneStatFields.meshes.textContent = sceneDocument.meshes.length.toLocaleString();
+        sceneStatFields.materials.textContent = sceneDocument.materials.length.toLocaleString();
+        sceneStatFields.skins.textContent = sceneDocument.skins.length.toLocaleString();
+        sceneStatFields.morphs.textContent = morphs.toLocaleString();
+        sceneStatFields.clips.textContent = sceneDocument.animations.length.toLocaleString();
         renderSceneTree(sceneDocument);
         renderSceneCompanions(sceneDocument);
-        sceneSummaryCompact.hidden = false;
-        sceneDetailsSection.style.display = 'flex';
+        sceneSection.style.display = 'flex';
         workspace.classList.add('scene-loaded');
         sceneCapabilitySummary.textContent = describeSceneCapabilities(validation.capabilities);
-        setWarningList(sceneWarningList, [...sceneDocument.warnings, ...validation.warnings, ...extraWarnings]);
-        sceneSummary.open = true;
-        sceneSummary.hidden = false;
+        setWarningPanel([...sceneDocument.warnings, ...validation.warnings, ...extraWarnings]);
+        scenePanel.hidden = false;
+        sceneInfo.hidden = false;
     } catch (error) {
-        sceneSummary.hidden = true;
-        sceneSummaryCompact.hidden = true;
-        sceneDetailsSection.style.display = 'none';
+        scenePanel.hidden = true;
+        sceneInfo.hidden = true;
+        setWarningPanel([]);
+        sceneSection.style.display = 'none';
         exportSidebar.style.display = 'none';
         workspace.classList.remove('scene-loaded');
         workspace.classList.remove('export-loaded');
@@ -765,14 +783,54 @@ function describeSceneCapabilities(capabilities = {}) {
         : 'The shared scene model contains hierarchy and geometry data.';
 }
 
-function setWarningList(list, warnings) {
+const WARNING_PREVIEW_COUNT = 8;
+
+// Renders a numbered list; the overflow row is a real button that reveals the rest.
+function setWarningList(list, warnings, limit = WARNING_PREVIEW_COUNT) {
     list.replaceChildren();
-    const unique = [...new Set(warnings.filter((warning) => typeof warning === 'string' && warning.trim()))];
-    for (const warning of unique.slice(0, 8)) {
+    const unique = uniqueWarnings(warnings);
+    const shown = Number.isFinite(limit) ? unique.slice(0, limit) : unique;
+    shown.forEach((warning, index) => {
         const item = document.createElement('li');
-        item.textContent = warning;
+        item.className = 'scene-warning-item';
+        const marker = document.createElement('span');
+        marker.className = 'scene-warning-index';
+        marker.setAttribute('aria-hidden', 'true');
+        marker.textContent = String(index + 1);
+        const text = document.createElement('span');
+        text.className = 'scene-warning-text';
+        text.textContent = warning;
+        item.append(marker, text);
+        list.appendChild(item);
+    });
+    const hidden = unique.length - shown.length;
+    if (hidden > 0) {
+        const item = document.createElement('li');
+        item.className = 'scene-warning-item scene-warning-more';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'scene-warning-more-button';
+        button.textContent = `Show ${hidden} more`;
+        button.addEventListener('click', () => setWarningList(list, unique, Number.POSITIVE_INFINITY));
+        item.appendChild(button);
         list.appendChild(item);
     }
+    return unique;
+}
+
+function uniqueWarnings(warnings) {
+    return [...new Set(warnings.filter((warning) => typeof warning === 'string' && warning.trim()))];
+}
+
+// The warnings live in their own collapsible panel so the scene tree stays readable.
+// Collapsed state still advertises how many warnings are waiting.
+function setWarningPanel(warnings) {
+    if (!sceneWarnings) return;
+    const unique = setWarningList(sceneWarningList, warnings);
+    const total = unique.length;
+    sceneWarningCount.textContent = String(total);
+    if (sceneWarningsSection) sceneWarningsSection.hidden = total === 0;
+    if (total === 0) sceneWarnings.open = false;
 }
 
 function renderSceneTree(sceneDocument) {
@@ -790,13 +848,21 @@ function renderSceneTree(sceneDocument) {
         visited.add(nodeIndex);
         const node = sceneDocument.nodes[nodeIndex] || {};
         const children = (node.children || []).filter((child) => Number.isInteger(child) && child >= 0 && child < sceneDocument.nodes.length);
-        const wrapper = children.length > 0 ? document.createElement('details') : document.createElement('div');
-        wrapper.className = children.length > 0 ? 'scene-tree-node' : 'scene-tree-leaf';
-        if (children.length > 0) wrapper.open = true;
-        const row = document.createElement(children.length > 0 ? 'summary' : 'div');
+        const branching = children.length > 0;
+        const wrapper = branching ? document.createElement('details') : document.createElement('div');
+        wrapper.className = branching ? 'scene-tree-node' : 'scene-tree-leaf';
+        if (branching) wrapper.open = true;
+        const row = document.createElement(branching ? 'summary' : 'div');
         row.className = 'scene-tree-row';
         row.dataset.nodeIndex = String(nodeIndex);
-        row.style.paddingLeft = `${8 + depth * 12}px`;
+        row.dataset.depth = String(depth);
+        row.setAttribute('role', 'treeitem');
+        // Nesting supplies the indentation, so rows no longer need inline padding math.
+        const twisty = document.createElement('span');
+        // Leaves get an invisible spacer instead of a control, so only real branches show a box.
+        twisty.className = branching ? 'scene-tree-twisty' : 'scene-tree-twisty scene-tree-twisty-empty';
+        twisty.setAttribute('aria-hidden', 'true');
+        row.appendChild(twisty);
         const label = document.createElement('span');
         label.className = 'scene-tree-label';
         label.textContent = node.name || `Node ${nodeIndex}`;
@@ -814,17 +880,33 @@ function renderSceneTree(sceneDocument) {
         if (animatedNodes.has(nodeIndex)) addBadge('animated', 'animation');
         row.appendChild(badges);
         wrapper.appendChild(row);
-        if (children.length > 0) {
+        if (branching) {
             const childList = document.createElement('div');
             childList.className = 'scene-tree-children';
+            childList.setAttribute('role', 'group');
             wrapper.appendChild(childList);
-            for (const child of children) appendNode(child, depth + 1, visited, childList);
+            children.forEach((child, position) => {
+                const before = childList.childElementCount;
+                appendNode(child, depth + 1, visited, childList);
+                // Mark the visually last child so its guide line can stop at the elbow.
+                if (childList.childElementCount > before && position === children.length - 1) {
+                    childList.lastElementChild.classList.add('scene-tree-last');
+                }
+            });
         }
         target.appendChild(wrapper);
     };
     const visited = new Set();
     for (const root of sceneDocument.rootNodes) appendNode(root, 0, visited, sceneTree);
-    sceneDocument.nodes.forEach((_, index) => appendNode(index, 0, visited, sceneTree));
+    const orphans = document.createElement('div');
+    orphans.className = 'scene-tree-orphans';
+    sceneDocument.nodes.forEach((_, index) => appendNode(index, 0, visited, orphans));
+    if (orphans.childElementCount > 0) {
+        const heading = document.createElement('div');
+        heading.className = 'scene-tree-orphans-title';
+        heading.textContent = 'Detached nodes';
+        sceneTree.append(heading, orphans);
+    }
 }
 
 function renderSceneCompanions(sceneDocument) {
@@ -1564,9 +1646,10 @@ function clearFile() {
     viewer?.clear();
     setViewerControlsEnabled(false);
     resetAnimationUi();
-    sceneSummary.hidden = true;
-    sceneSummaryCompact.hidden = true;
-    sceneDetailsSection.style.display = 'none';
+    scenePanel.hidden = true;
+    sceneInfo.hidden = true;
+    setWarningPanel([]);
+    sceneSection.style.display = 'none';
     exportSidebar.style.display = 'none';
     workspace.classList.remove('export-loaded');
     workspace.classList.remove('scene-loaded');
