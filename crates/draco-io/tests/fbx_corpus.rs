@@ -863,6 +863,93 @@ fn cameras_and_lights_survive_a_rewrite() {
     );
 }
 
+/// A property an exporter states once in `Definitions` still reaches the
+/// object it applies to.
+///
+/// Revit puts almost the whole camera in the `FbxCamera` template: the object
+/// itself declares no focal length and no field of view at all. Reading only
+/// the object's own properties left the camera with neither, and Blender's
+/// ufbx importer -- which resolves the template and so has no default to fall
+/// back on -- opened the rewritten file with a focal length of zero.
+#[test]
+fn a_camera_inherits_what_the_document_states_once_for_its_class() {
+    let Some(dir) = corpus_dir() else {
+        eprintln!("skipping: set DRACO_FBX_CORPUS to a directory of .fbx files");
+        return;
+    };
+    let path = dir.join("revit_empty_7400_binary.fbx");
+    if !path.exists() {
+        eprintln!("skipping: {} is not in this corpus", path.display());
+        return;
+    }
+    let scene = FbxScene::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+
+    fn find(node: &draco_io::FbxSceneNode) -> Option<draco_io::FbxCamera> {
+        if let Some(draco_io::FbxNodeAttribute::Camera(camera)) = &node.attribute {
+            return Some(camera.clone());
+        }
+        node.children.iter().find_map(find)
+    }
+    let camera = scene
+        .root_nodes
+        .iter()
+        .find_map(find)
+        .expect("the Revit document has a camera");
+
+    // Template-only, every one of them.
+    assert!(
+        (camera.focal_length.unwrap() - 34.893_276).abs() < 1e-3,
+        "{:?}",
+        camera.focal_length
+    );
+    assert!(
+        (camera.field_of_view.unwrap() - 25.115).abs() < 1e-3,
+        "{:?}",
+        camera.field_of_view
+    );
+    assert_eq!(camera.aspect_width, Some(320.0));
+    assert_eq!(camera.aspect_height, Some(200.0));
+    assert_eq!(camera.aperture_mode, Some(2));
+    // Stated on the object, and it must win: the template says 10.0 and 4000.0.
+    assert!((camera.near_plane.unwrap() - 0.001).abs() < 1e-6);
+    assert!((camera.far_plane.unwrap() - 128.365_84).abs() < 1e-2);
+}
+
+/// A class default must not overwrite what a material states about itself.
+///
+/// Maya writes each material's real shading model as a `ShadingModel` node
+/// beside `Properties70`, and this crate read neither that node nor the
+/// template. Adding the template alone relabelled all twelve of this file's
+/// materials with the template's single `Lambert`, `phong` ones included --
+/// invisible to a write-and-read cycle, which would then agree with itself.
+#[test]
+fn a_material_keeps_the_shading_model_it_declares() {
+    let Some(dir) = corpus_dir() else {
+        eprintln!("skipping: set DRACO_FBX_CORPUS to a directory of .fbx files");
+        return;
+    };
+    let path = dir.join("maya_material_chart_7700_binary.fbx");
+    if !path.exists() {
+        eprintln!("skipping: {} is not in this corpus", path.display());
+        return;
+    }
+    let scene = FbxScene::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+
+    let mut models: Vec<String> = scene
+        .materials
+        .iter()
+        .map(|material| material.shading_model.clone().unwrap_or_default())
+        .collect();
+    models.sort();
+    assert_eq!(
+        models,
+        [
+            "lambert", "lambert", "lambert", "lambert", "phong", "phong", "unknown", "unknown",
+            "unknown", "unknown", "unknown", "unknown",
+        ]
+    );
+}
+
 /// The Blender 2.79 default scene has one camera and one light with values a
 /// person can check by eye, which the aggregate counts above cannot.
 ///

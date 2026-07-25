@@ -78,6 +78,17 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Values an exporter states once in `Definitions/PropertyTemplate` were not
+  read, so a property stated there and not on the object was lost. The object
+  always wins -- 5553 properties in the corpus are declared in both places,
+  `Lcl Translation` on 928 models among them. Recovers the whole
+  field-of-view and focal-length block of the Revit cameras, which declare
+  almost nothing directly and previously opened at focal length zero in
+  Blender's ufbx importer.
+- A material's `ShadingModel` is read from the `ShadingModel` node beside its
+  `Properties70`, which Maya writes and this crate never looked at. Both of
+  the material's own spellings now rank above the class template, which
+  otherwise relabels every `phong` material `Lambert`.
 - A `Model` whose local matrix could not be decomposed -- a zero scale, which
   Maya writes for a collapsed pivot -- failed the whole document, even when it
   carried an authored transform stack that made the decomposition unnecessary.

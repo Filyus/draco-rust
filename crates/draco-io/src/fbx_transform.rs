@@ -19,10 +19,11 @@ use std::collections::HashMap;
 
 use crate::fbx_container::{FbxNode, FbxProperty};
 use crate::fbx_scene::{push_warning, FbxTransform, FbxWarning, FbxWarningCode};
+use crate::fbx_templates::{ObjectProperties, PropertyTemplates};
 
 // Helper to parse transform from Model node's Properties70
 pub(crate) fn parse_transform(
-    node: &FbxNode,
+    properties: ObjectProperties<'_>,
 ) -> Option<(FbxTransform, crate::fbx_scene::FbxTransformStack, bool)> {
     let mut translation = None;
     let mut rotation = None;
@@ -78,34 +79,36 @@ pub(crate) fn parse_transform(
         })
     }
 
-    for child in &node.children {
-        if child.name == "Properties70" {
-            for prop in &child.children {
-                // property nodes often have first property as name string
-                if let Some(crate::fbx_reader::FbxProperty::String(name)) = prop.properties.first()
-                {
-                    if name.contains("Lcl Translation") {
-                        translation = property_vec3(prop);
-                    }
-                    if name.contains("Lcl Rotation") {
-                        rotation = property_vec3(prop);
-                    }
-                    if name.contains("Lcl Scaling") {
-                        scaling = property_vec3(prop);
-                    }
-                    match name.as_str() {
-                        "PreRotation" => pre_rotation = property_vec3(prop),
-                        "PostRotation" => post_rotation = property_vec3(prop),
-                        "RotationOffset" => rotation_offset = property_vec3(prop),
-                        "RotationPivot" => rotation_pivot = property_vec3(prop),
-                        "ScalingOffset" => scaling_offset = property_vec3(prop),
-                        "ScalingPivot" => scaling_pivot = property_vec3(prop),
-                        "RotationOrder" => rotation_order = property_i32(prop),
-                        "RotationActive" => rotation_active = property_bool(prop),
-                        "InheritType" => inherit_type = property_i32(prop),
-                        _ => {}
-                    }
-                }
+    // The class defaults first, then the object's own values over the top.
+    // Last write wins, so the object wins -- which is the whole point: 928
+    // models in this crate's corpus override the template's Lcl Translation,
+    // and taking the template instead would move every one to the origin.
+    let blocks = properties.template().into_iter().chain(
+        properties
+            .node()
+            .children
+            .iter()
+            .filter(|child| child.name == "Properties70"),
+    );
+    for block in blocks {
+        for prop in &block.children {
+            let Some(FbxProperty::String(name)) = prop.properties.first() else {
+                continue;
+            };
+            match name.as_str() {
+                "Lcl Translation" => translation = property_vec3(prop),
+                "Lcl Rotation" => rotation = property_vec3(prop),
+                "Lcl Scaling" => scaling = property_vec3(prop),
+                "PreRotation" => pre_rotation = property_vec3(prop),
+                "PostRotation" => post_rotation = property_vec3(prop),
+                "RotationOffset" => rotation_offset = property_vec3(prop),
+                "RotationPivot" => rotation_pivot = property_vec3(prop),
+                "ScalingOffset" => scaling_offset = property_vec3(prop),
+                "ScalingPivot" => scaling_pivot = property_vec3(prop),
+                "RotationOrder" => rotation_order = property_i32(prop),
+                "RotationActive" => rotation_active = property_bool(prop),
+                "InheritType" => inherit_type = property_i32(prop),
+                _ => {}
             }
         }
     }
@@ -309,72 +312,54 @@ pub(crate) fn transform_array(node: &FbxNode, child_name: &str) -> Option<FbxTra
 /// Only the first such Model is reported: the notice describes a property of
 /// the file, and repeating it per Model would bury everything else. Models are
 /// visited in authored order so the scan does not depend on hash iteration.
-pub(crate) fn collect_transform_warnings(
-    model_map: &HashMap<i64, &FbxNode>,
+pub(crate) fn collect_transform_warnings<'a>(
+    model_map: &HashMap<i64, &'a FbxNode>,
     model_order: &[i64],
+    templates: &PropertyTemplates<'a>,
     warnings: &mut Vec<FbxWarning>,
 ) {
     for model in model_order.iter().filter_map(|id| model_map.get(id)) {
-        for properties in model
-            .children
-            .iter()
-            .filter(|child| child.name == "Properties70")
-        {
-            for entry in &properties.children {
-                let Some(FbxProperty::String(name)) = entry.properties.first() else {
-                    continue;
-                };
-                if name != "InheritType" {
-                    continue;
-                }
-                let inherit_type = entry.properties.iter().find_map(|value| match value {
-                    FbxProperty::I32(value) => Some(*value),
-                    FbxProperty::I64(value) => i32::try_from(*value).ok(),
+        let properties = ObjectProperties::new(model, templates);
+        // Resolved the same way the transform itself is, or the notice would
+        // describe a document different from the one that was imported.
+        let Some(entry) = properties.get("InheritType") else {
+            continue;
+        };
+        let inherit_type = entry.properties.iter().find_map(|value| match value {
+            FbxProperty::I32(value) => Some(*value),
+            FbxProperty::I64(value) => i32::try_from(*value).ok(),
+            _ => None,
+        });
+        let local_scale = properties.get("Lcl Scaling").and_then(|property| {
+            let values: Vec<f32> = property
+                .properties
+                .iter()
+                .filter_map(|value| match value {
+                    FbxProperty::F64(value) => Some(*value as f32),
+                    FbxProperty::F32(value) => Some(*value),
                     _ => None,
-                });
-                let local_scale = properties.children.iter().find_map(|property| {
-                    let Some(FbxProperty::String(name)) = property.properties.first() else {
-                        return None;
-                    };
-                    if !name.contains("Lcl Scaling") {
-                        return None;
-                    }
-                    let values: Vec<f32> = property
-                        .properties
-                        .iter()
-                        .filter_map(|value| match value {
-                            FbxProperty::F64(value) => Some(*value as f32),
-                            FbxProperty::F32(value) => Some(*value),
-                            _ => None,
-                        })
-                        .take(3)
-                        .collect();
-                    // `then_some` evaluates its argument eagerly, so indexing
-                    // here panicked whenever the property carried fewer than
-                    // three numbers.
-                    (values.len() == 3).then(|| [values[0], values[1], values[2]])
-                });
-                // A non-uniform scale is what makes the unsupported inherit
-                // modes observable; uniform scale behaves the same either way.
-                let uniform_scale = local_scale
-                    .map(|scale| {
-                        (scale[0] - scale[1]).abs() <= 1e-5 && (scale[1] - scale[2]).abs() <= 1e-5
-                    })
-                    .unwrap_or(true);
-                if matches!(inherit_type, Some(0..=2)) && uniform_scale {
-                    continue;
-                }
-                push_warning(
-                    warnings,
-                    FbxWarningCode::UnsupportedTransformInherit,
-                    format!(
-                        "FBX model uses unsupported {name}; local TRS was imported \
-                         without that FBX transform rule"
-                    ),
-                    None,
-                );
-                return;
-            }
+                })
+                .take(3)
+                .collect();
+            // `then_some` evaluates its argument eagerly, so indexing here
+            // panicked whenever the property carried fewer than three numbers.
+            (values.len() == 3).then(|| [values[0], values[1], values[2]])
+        });
+        // A non-uniform scale is what makes the unsupported inherit modes
+        // observable; uniform scale behaves the same either way.
+        let uniform_scale = local_scale
+            .map(|scale| (scale[0] - scale[1]).abs() <= 1e-5 && (scale[1] - scale[2]).abs() <= 1e-5)
+            .unwrap_or(true);
+        if matches!(inherit_type, Some(0..=2)) && uniform_scale {
+            continue;
         }
+        push_warning(
+            warnings,
+            FbxWarningCode::UnsupportedTransformInherit,
+            "FBX model uses unsupported InheritType; local TRS was imported \
+             without that FBX transform rule"
+                .to_string(),
+            None,
+        );
     }
 }

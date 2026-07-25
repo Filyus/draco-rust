@@ -31,6 +31,8 @@ pub mod fbx_render_mesh;
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
 mod fbx_scene;
 #[cfg(feature = "fbx-reader")]
+mod fbx_templates;
+#[cfg(feature = "fbx-reader")]
 /// Composition of the FBX transform stack into a local matrix.
 mod fbx_transform;
 #[cfg(feature = "fbx-writer")]

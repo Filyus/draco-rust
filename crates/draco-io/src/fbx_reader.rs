@@ -40,6 +40,7 @@ use std::path::Path;
 use draco_core::mesh::Mesh;
 
 use crate::fbx_scene::push_warning;
+use crate::fbx_templates::{ObjectProperties, PropertyTemplates};
 use crate::fbx_transform::{
     collect_transform_warnings, identity_transform, parse_transform, transform_array,
 };
@@ -125,6 +126,7 @@ impl<R: Read + Seek> FbxReader<R> {
             deformer_map,
             pose_map,
             connections,
+            templates,
             ..
         } = &index;
 
@@ -149,13 +151,23 @@ impl<R: Read + Seek> FbxReader<R> {
                 None,
             );
         }
-        collect_transform_warnings(model_map, model_order, &mut warnings);
-        let node_attributes =
-            parse_node_attributes(attribute_map, model_map, connections, &mut warnings);
+        collect_transform_warnings(model_map, model_order, templates, &mut warnings);
+        let node_attributes = parse_node_attributes(
+            attribute_map,
+            model_map,
+            connections,
+            templates,
+            &mut warnings,
+        );
 
         // ---- Materials and textures ---------------------------------------
-        let (materials, material_index_by_id, textures) =
-            parse_materials_and_textures(material_map, texture_map, video_map, connections);
+        let (materials, material_index_by_id, textures) = parse_materials_and_textures(
+            material_map,
+            texture_map,
+            video_map,
+            connections,
+            templates,
+        );
 
         // ---- Model hierarchy + per-model materials -----------------------
         // Map each model id to the list of material indices connected to it.
@@ -289,16 +301,16 @@ impl<R: Read + Seek> FbxReader<R> {
             })
             .collect();
 
+        let graph = ModelGraph {
+            models: model_map,
+            children: &model_children,
+            mesh_instances: &model_mesh_instances,
+            node_ids: &model_node_ids,
+            attributes: &node_attributes,
+            templates,
+        };
         for id in top_level {
-            root_nodes.push(build_model_node(
-                id,
-                model_map,
-                &model_children,
-                &model_mesh_instances,
-                &model_node_ids,
-                &node_attributes,
-                &mut Vec::new(),
-            ));
+            root_nodes.push(build_model_node(id, &graph, &mut Vec::new()));
         }
 
         Ok(FbxScene {
@@ -324,27 +336,32 @@ fn object_name(node: &FbxNode) -> Option<String> {
     }
 }
 
-fn build_model_node(
-    id: i64,
-    model_map: &std::collections::HashMap<i64, &FbxNode>,
-    model_children: &std::collections::HashMap<i64, Vec<i64>>,
-    model_mesh_instances: &std::collections::HashMap<i64, Vec<FbxMeshInstance>>,
-    model_node_ids: &std::collections::HashMap<i64, FbxNodeId>,
-    node_attributes: &std::collections::HashMap<i64, FbxNodeAttribute>,
-    ancestors: &mut Vec<i64>,
-) -> FbxSceneNode {
-    let node_src = model_map.get(&id).unwrap();
+/// Everything `build_model_node` needs about the document's model graph.
+///
+/// These six are only ever passed together, and passing them one by one put
+/// the function at the argument limit before it had a resolver to carry.
+struct ModelGraph<'a, 'n> {
+    models: &'a std::collections::HashMap<i64, &'n FbxNode>,
+    children: &'a std::collections::HashMap<i64, Vec<i64>>,
+    mesh_instances: &'a std::collections::HashMap<i64, Vec<FbxMeshInstance>>,
+    node_ids: &'a std::collections::HashMap<i64, FbxNodeId>,
+    attributes: &'a std::collections::HashMap<i64, FbxNodeAttribute>,
+    templates: &'a PropertyTemplates<'n>,
+}
+
+fn build_model_node(id: i64, graph: &ModelGraph<'_, '_>, ancestors: &mut Vec<i64>) -> FbxSceneNode {
+    let node_src = graph.models.get(&id).unwrap();
     let mut node = FbxSceneNode::new(object_name(node_src));
-    node.id = model_node_ids[&id];
+    node.id = graph.node_ids[&id];
     if let Some((transform, transform_stack, has_complex_transform_stack)) =
-        parse_transform(node_src)
+        parse_transform(ObjectProperties::new(node_src, graph.templates))
     {
         node.transform = Some(transform);
         node.transform_stack = Some(transform_stack);
         node.has_complex_transform_stack = has_complex_transform_stack;
     }
-    node.attribute = node_attributes.get(&id).cloned();
-    if let Some(mesh_instances) = model_mesh_instances.get(&id) {
+    node.attribute = graph.attributes.get(&id).cloned();
+    if let Some(mesh_instances) = graph.mesh_instances.get(&id) {
         node.mesh_instances.extend(mesh_instances.clone());
     }
 
@@ -355,23 +372,15 @@ fn build_model_node(
     if ancestors.len() >= MAX_MODEL_DEPTH {
         return node;
     }
-    if let Some(children) = model_children.get(&id) {
+    if let Some(children) = graph.children.get(&id) {
         ancestors.push(id);
         for &cid in children {
             // A document may connect a Model to one of its own
             // ancestors -- `synthetic_id_collision_7500` in the ufbx
             // corpus does -- and following that cycle recurses until
             // the stack is gone. The scene simply stops there.
-            if model_map.contains_key(&cid) && !ancestors.contains(&cid) {
-                node.children.push(build_model_node(
-                    cid,
-                    model_map,
-                    model_children,
-                    model_mesh_instances,
-                    model_node_ids,
-                    node_attributes,
-                    ancestors,
-                ));
+            if graph.models.contains_key(&cid) && !ancestors.contains(&cid) {
+                node.children.push(build_model_node(cid, graph, ancestors));
             }
         }
         ancestors.pop();
@@ -759,6 +768,8 @@ struct FbxObjectIndex<'a> {
     /// id 7.x uses. Nothing in this index can hold them, so counting them is
     /// how the reader notices it decoded a document it does not understand.
     name_keyed_objects: usize,
+    /// Class defaults the document states once, in `Definitions`.
+    templates: PropertyTemplates<'a>,
 }
 
 impl<'a> FbxObjectIndex<'a> {
@@ -779,6 +790,7 @@ impl<'a> FbxObjectIndex<'a> {
             attribute_map: HashMap::new(),
             connections: Vec::new(),
             name_keyed_objects: 0,
+            templates: PropertyTemplates::build(nodes),
         };
 
         for node in nodes {
@@ -888,11 +900,12 @@ impl FbxConnection {
 ///
 /// Both lists are ordered by FBX object id rather than hash order, so a
 /// document always decodes to the same material and texture indices.
-fn parse_materials_and_textures(
-    material_map: &HashMap<i64, &FbxNode>,
+fn parse_materials_and_textures<'a>(
+    material_map: &HashMap<i64, &'a FbxNode>,
     texture_map: &HashMap<i64, &FbxNode>,
     video_map: &HashMap<i64, &FbxNode>,
     connections: &[FbxConnection],
+    templates: &PropertyTemplates<'a>,
 ) -> (
     Vec<crate::fbx_scene::FbxMaterial>,
     HashMap<i64, usize>,
@@ -903,7 +916,7 @@ fn parse_materials_and_textures(
     let mut material_ids: Vec<i64> = material_map.keys().copied().collect();
     material_ids.sort_unstable();
     for id in material_ids {
-        let mut material = parse_material(material_map[&id]);
+        let mut material = parse_material(ObjectProperties::new(material_map[&id], templates));
         material.textures = collect_material_texture_bindings(id, texture_map, connections);
         material_index_by_id.insert(id, materials.len());
         materials.push(material);
@@ -999,10 +1012,11 @@ fn collect_material_texture_bindings(
 /// this walks the connection list once rather than searching per node. Ids are
 /// visited in sorted order so a document always produces the same warnings in
 /// the same order.
-fn parse_node_attributes(
-    attribute_map: &HashMap<i64, &FbxNode>,
+fn parse_node_attributes<'a>(
+    attribute_map: &HashMap<i64, &'a FbxNode>,
     model_map: &HashMap<i64, &FbxNode>,
     connections: &[FbxConnection],
+    templates: &PropertyTemplates<'a>,
     warnings: &mut Vec<FbxWarning>,
 ) -> HashMap<i64, FbxNodeAttribute> {
     let mut by_model: Vec<(i64, i64)> = connections
@@ -1023,10 +1037,12 @@ fn parse_node_attributes(
         };
         match class {
             "Camera" => {
-                resolved.insert(model_id, FbxNodeAttribute::Camera(parse_camera(node)));
+                let properties = ObjectProperties::new(node, templates);
+                resolved.insert(model_id, FbxNodeAttribute::Camera(parse_camera(properties)));
             }
             "Light" => {
-                resolved.insert(model_id, FbxNodeAttribute::Light(parse_light(node)));
+                let properties = ObjectProperties::new(node, templates);
+                resolved.insert(model_id, FbxNodeAttribute::Light(parse_light(properties)));
             }
             // A skeleton attribute is consumed by the skin path and a `Null`
             // carries nothing but a transform, so neither is a loss worth
@@ -1046,9 +1062,9 @@ fn parse_node_attributes(
     resolved
 }
 
-fn parse_camera(node: &FbxNode) -> crate::fbx_scene::FbxCamera {
-    let scalar = |name: &str| properties70_lookup(node, name).and_then(property_scalar);
-    let vector = |name: &str| properties70_lookup(node, name).and_then(property_vec3);
+fn parse_camera(properties: ObjectProperties<'_>) -> crate::fbx_scene::FbxCamera {
+    let scalar = |name: &str| properties.get(name).and_then(property_scalar);
+    let vector = |name: &str| properties.get(name).and_then(property_vec3);
     crate::fbx_scene::FbxCamera {
         position: vector("Position"),
         interest_position: vector("InterestPosition"),
@@ -1070,38 +1086,17 @@ fn parse_camera(node: &FbxNode) -> crate::fbx_scene::FbxCamera {
     }
 }
 
-fn parse_light(node: &FbxNode) -> crate::fbx_scene::FbxLight {
-    let scalar = |name: &str| properties70_lookup(node, name).and_then(property_scalar);
+fn parse_light(properties: ObjectProperties<'_>) -> crate::fbx_scene::FbxLight {
+    let scalar = |name: &str| properties.get(name).and_then(property_scalar);
     crate::fbx_scene::FbxLight {
         light_type: scalar("LightType").map(|v| v as i32),
-        color: properties70_lookup(node, "Color").and_then(property_vec3),
+        color: properties.get("Color").and_then(property_vec3),
         intensity: scalar("Intensity"),
         cast_light: scalar("CastLight").map(|v| v != 0.0),
         cast_shadows: scalar("CastShadows").map(|v| v != 0.0),
         decay_type: scalar("DecayType").map(|v| v as i32),
         decay_start: scalar("DecayStart"),
     }
-}
-
-/// Extracts a named scalar/`Color`/`Vector`/`Vector3D` property from a
-/// `Properties70` block of the given FBX object.
-fn properties70_lookup<'a>(node: &'a FbxNode, name: &str) -> Option<&'a FbxNode> {
-    for child in &node.children {
-        if child.name != "Properties70" {
-            continue;
-        }
-        for prop in &child.children {
-            if prop.name != "P" {
-                continue;
-            }
-            if let Some(FbxProperty::String(prop_name)) = prop.properties.first() {
-                if prop_name == name {
-                    return Some(prop);
-                }
-            }
-        }
-    }
-    None
 }
 
 fn property_scalar(prop: &FbxNode) -> Option<f32> {
@@ -1134,8 +1129,8 @@ fn property_vec3(prop: &FbxNode) -> Option<[f32; 3]> {
     (values.len() == 3).then(|| [values[0], values[1], values[2]])
 }
 
-fn parse_material(node: &FbxNode) -> crate::fbx_scene::FbxMaterial {
-    let name = match node.properties.get(1) {
+fn parse_material(properties: ObjectProperties<'_>) -> crate::fbx_scene::FbxMaterial {
+    let name = match properties.node().properties.get(1) {
         Some(FbxProperty::String(raw)) => raw
             .split('\0')
             .next()
@@ -1143,10 +1138,10 @@ fn parse_material(node: &FbxNode) -> crate::fbx_scene::FbxMaterial {
             .map(str::to_string),
         _ => None,
     };
-    let shading_model = read_shading_model(node);
+    let shading_model = read_shading_model(properties);
 
-    let get_color = |name: &str| properties70_lookup(node, name).and_then(property_vec3);
-    let get_scalar = |name: &str| properties70_lookup(node, name).and_then(property_scalar);
+    let get_color = |name: &str| properties.get(name).and_then(property_vec3);
+    let get_scalar = |name: &str| properties.get(name).and_then(property_scalar);
 
     crate::fbx_scene::FbxMaterial {
         name,
@@ -1167,35 +1162,61 @@ fn parse_material(node: &FbxNode) -> crate::fbx_scene::FbxMaterial {
     }
 }
 
-/// Reads `ShadingModel`, which some files store as a Properties70 string and
-/// others as the third object-level string property.
-fn read_shading_model(node: &FbxNode) -> Option<String> {
-    for child in &node.children {
-        if child.name != "Properties70" {
-            continue;
-        }
-        for prop in &child.children {
-            if prop.name != "P" {
-                continue;
-            }
-            if let Some(FbxProperty::String(name)) = prop.properties.first() {
-                if name == "ShadingModel" {
-                    for value in prop.properties.iter().skip(4) {
-                        if let FbxProperty::String(s) = value {
-                            return Some(s.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // Fall back to the object-level third property.
-    if let Some(FbxProperty::String(raw)) = node.properties.get(2) {
-        if !raw.is_empty() {
-            return Some(raw.clone());
-        }
-    }
-    None
+/// Reads `ShadingModel`, which a document may state in any of four places.
+///
+/// In order, because they disagree: a `Properties70` entry on the material, a
+/// `ShadingModel` node beside `Properties70`, the class template, and finally
+/// the object record's own class string.
+///
+/// The middle two are what make the order matter. Maya writes the material's
+/// real model -- `lambert`, `phong`, `unknown`, differing per material -- as
+/// the sibling node, and 174 of the 188 materials in this crate's corpus get
+/// theirs only from the template. Consulting the template before the sibling
+/// would relabel every one of those Maya materials with the template's single
+/// class default, which is how a rewrite turned a `phong` material into a
+/// `Lambert` one.
+fn read_shading_model(properties: ObjectProperties<'_>) -> Option<String> {
+    let object = properties.node();
+    let from_own_properties = properties
+        .node()
+        .children
+        .iter()
+        .filter(|child| child.name == "Properties70")
+        .find_map(|block| crate::fbx_templates::find_property(block, "ShadingModel"))
+        .and_then(string_value);
+    let from_sibling_node = object
+        .children
+        .iter()
+        .find(|child| child.name == "ShadingModel")
+        .and_then(|child| match child.properties.first() {
+            Some(FbxProperty::String(model)) if !model.is_empty() => Some(model.clone()),
+            _ => None,
+        });
+    let from_template = properties
+        .template()
+        .and_then(|block| crate::fbx_templates::find_property(block, "ShadingModel"))
+        .and_then(string_value);
+    let from_class = match object.properties.get(2) {
+        Some(FbxProperty::String(raw)) if !raw.is_empty() => Some(raw.clone()),
+        _ => None,
+    };
+
+    from_own_properties
+        .or(from_sibling_node)
+        .or(from_template)
+        .or(from_class)
+}
+
+/// The first string value of a `P` record, past its four name and type fields.
+fn string_value(property: &FbxNode) -> Option<String> {
+    property
+        .properties
+        .iter()
+        .skip(4)
+        .find_map(|value| match value {
+            FbxProperty::String(text) => Some(text.clone()),
+            _ => None,
+        })
 }
 
 fn parse_texture(node: &FbxNode) -> crate::fbx_scene::FbxTexture {

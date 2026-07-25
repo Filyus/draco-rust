@@ -106,7 +106,19 @@ version 6100 and fall in this category.
 | Cameras and lights (`NodeAttribute`) | Yes | Yes |
 | Skins, bind poses, and influences | Yes | Yes |
 | Blend shapes / morph targets | Yes | Yes |
-| `Definitions` property templates | No | n/a |
+| `Definitions` property templates | Yes | n/a |
+
+An exporter that gives a whole class the same value writes it once as a
+`Definitions/PropertyTemplate` and leaves it off the objects, so those values
+are read too — the Revit cameras declare almost nothing directly. **The object
+always wins**: 5553 properties in the corpus are declared in both places, `Lcl
+Translation` on 928 models among them, and letting the template override would
+move every one of them to the origin. Templates are matched to objects by the
+`ObjectType` name, which is the object record's node name, except for
+`NodeAttribute`: a document declares only one template for it while the record
+covers unrelated classes, so the template's own class must match the object's
+(`FbxCamera` to `Camera`, `FbxSkeleton` to `LimbNode`, and so on). Nothing
+derives that pairing from the strings.
 
 Layer elements are resolved on the polygon-corner domain, so a UV or hard-normal
 seam survives instead of being averaged onto its control point. The Draco mesh
