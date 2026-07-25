@@ -35,7 +35,7 @@
 
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{self, BufWriter, Cursor, Seek, Write};
+use std::io::{self, BufWriter, Cursor, Write};
 use std::path::Path;
 
 use draco_core::geometry_attribute::GeometryAttributeType;
@@ -43,9 +43,7 @@ use draco_core::geometry_indices::FaceIndex;
 use draco_core::mesh::Mesh;
 
 use crate::fbx_ascii_syntax::{name_class, FBX_VERSION};
-use crate::fbx_encoder::{
-    encode_node, write_footer, write_null_record, NodeWriter, WriterOptions, FBX_MAGIC,
-};
+use crate::fbx_encoder::{encode_node, write_footer, write_null_record, WriterOptions, FBX_MAGIC};
 use crate::fbx_node::{FbxNode, FbxProperty};
 use crate::traits::{WriteToBytes, Writer};
 
@@ -584,32 +582,18 @@ impl FbxWriter {
         self.write_to(&mut writer)
     }
 
-    /// Write the FBX data to a writer.
-    pub fn write_to<W: Write + Seek>(&self, writer: &mut W) -> io::Result<()> {
-        let options = WriterOptions {
-            compress: self.compress,
-            compression_threshold: self.compression_threshold,
-        };
-
-        // Write header
-        writer.write_all(FBX_MAGIC)?;
-        writer.write_all(&[0x1A, 0x00])?; // Reserved bytes
-        writer.write_all(&FBX_VERSION.to_le_bytes())?;
-
-        let is_64 = FBX_VERSION >= 7500;
-
-        // Write standard FBX sections
-        encode_node(writer, &header_extension_node(), is_64, &options)?;
-        encode_node(
-            writer,
-            &global_settings_node(self.global_settings.as_ref()),
-            is_64,
-            &options,
-        )?;
-        encode_node(writer, &documents_node(), is_64, &options)?;
-        encode_node(
-            writer,
-            &definitions_node(
+    /// Assembles the whole document as a tree of records.
+    ///
+    /// Everything about what this file contains is decided here; nothing in
+    /// it knows how a record is spelled in bytes. `encode_node` is the only
+    /// thing that does, which is what makes a second container backend a
+    /// matter of writing one printer rather than a second document builder.
+    fn build_document(&self) -> io::Result<Vec<FbxNode>> {
+        let mut document = vec![
+            header_extension_node(),
+            global_settings_node(self.global_settings.as_ref()),
+            documents_node(),
+            definitions_node(
                 &self.meshes,
                 &self.models,
                 &self.materials,
@@ -618,11 +602,8 @@ impl FbxWriter {
                 &self.skins,
                 &self.morphs,
             ),
-            is_64,
-            &options,
-        )?;
-        write_objects(
-            writer,
+        ];
+        document.push(objects_node(
             &self.meshes,
             &self.models,
             &self.materials,
@@ -630,37 +611,45 @@ impl FbxWriter {
             &self.anim,
             &self.skins,
             &self.morphs,
-            is_64,
-            &options,
-        )?;
-        encode_node(
-            writer,
-            &connections_node(
-                &self.models,
-                &self.meshes,
-                &self.textures,
-                &self.anim,
-                &self.connections,
-                &self.skins,
-                &self.morphs,
-            ),
-            is_64,
-            &options,
-        )?;
+        )?);
+        document.push(connections_node(
+            &self.models,
+            &self.meshes,
+            &self.textures,
+            &self.anim,
+            &self.connections,
+            &self.skins,
+            &self.morphs,
+        ));
+        Ok(document)
+    }
 
-        // Write NULL record to mark end of top-level nodes
-        write_null_record(writer, is_64)?;
-
-        // Write footer
-        write_footer(writer)?;
-
-        Ok(())
+    /// Write the FBX data to a writer.
+    ///
+    /// Takes only `Write`: the backpatched node header needs to seek, but it
+    /// does that inside a buffer of its own rather than in the caller's sink.
+    pub fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        writer.write_all(&self.write_to_vec()?)
     }
 
     /// Write the FBX data into a byte vector.
     pub fn write_to_vec(&self) -> io::Result<Vec<u8>> {
+        let options = WriterOptions {
+            compress: self.compress,
+            compression_threshold: self.compression_threshold,
+        };
+        let is_64 = FBX_VERSION >= 7500;
+
         let mut cursor = Cursor::new(Vec::new());
-        self.write_to(&mut cursor)?;
+        cursor.write_all(FBX_MAGIC)?;
+        cursor.write_all(&[0x1A, 0x00])?; // Reserved bytes
+        cursor.write_all(&FBX_VERSION.to_le_bytes())?;
+        for node in self.build_document()? {
+            encode_node(&mut cursor, &node, is_64, &options)?;
+        }
+        // Marks the end of the top-level nodes.
+        write_null_record(&mut cursor, is_64)?;
+        write_footer(&mut cursor)?;
         Ok(cursor.into_inner())
     }
 
@@ -1093,10 +1082,9 @@ fn object_type_node(type_name: &str, count: i32) -> FbxNode {
     }
 }
 
-// Takes one slice per FBX object type; see `write_definitions`.
+// Takes one slice per FBX object type; see `definitions_node`.
 #[allow(clippy::too_many_arguments)]
-fn write_objects<W: Write + Seek>(
-    writer: &mut W,
+fn objects_node(
     meshes: &[MeshData],
     models: &[ModelData],
     materials: &[MaterialData],
@@ -1104,43 +1092,38 @@ fn write_objects<W: Write + Seek>(
     anim: &[AnimStackData],
     skins: &[SkinData],
     morphs: &[MorphData],
-    is_64: bool,
-    options: &WriterOptions,
-) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "Objects", is_64)?;
-    node.finish_with_children(|w| {
-        for mesh_data in meshes {
-            encode_node(w, &geometry_node(mesh_data), is_64, options)?;
-        }
-        for model_data in models {
-            encode_node(w, &model_node(model_data)?, is_64, options)?;
-        }
-        for model_data in models.iter().filter(|model| model.class == "LimbNode") {
-            encode_node(w, &limb_node_attribute_node(model_data), is_64, options)?;
-        }
-        for material_data in materials {
-            encode_node(w, &material_node(material_data), is_64, options)?;
-        }
-        for texture_data in textures {
-            encode_node(w, &texture_node(texture_data), is_64, options)?;
-            encode_node(w, &video_node(texture_data), is_64, options)?;
-        }
-        for stack in anim {
-            for node in animation_stack_nodes(stack) {
-                encode_node(w, &node, is_64, options)?;
-            }
-        }
-        for skin in skins {
-            for node in skin_nodes(skin, models) {
-                encode_node(w, &node, is_64, options)?;
-            }
-        }
-        for morph in morphs {
-            for node in morph_nodes(morph) {
-                encode_node(w, &node, is_64, options)?;
-            }
-        }
-        Ok(())
+) -> io::Result<FbxNode> {
+    let mut children = Vec::new();
+    for mesh_data in meshes {
+        children.push(geometry_node(mesh_data));
+    }
+    for model_data in models {
+        children.push(model_node(model_data)?);
+    }
+    for model_data in models.iter().filter(|model| model.class == "LimbNode") {
+        children.push(limb_node_attribute_node(model_data));
+    }
+    for material_data in materials {
+        children.push(material_node(material_data));
+    }
+    for texture_data in textures {
+        children.push(texture_node(texture_data));
+        children.push(video_node(texture_data));
+    }
+    for stack in anim {
+        children.extend(animation_stack_nodes(stack));
+    }
+    for skin in skins {
+        children.extend(skin_nodes(skin, models));
+    }
+    for morph in morphs {
+        children.extend(morph_nodes(morph));
+    }
+
+    Ok(FbxNode {
+        name: "Objects".to_string(),
+        properties: Vec::new(),
+        children,
     })
 }
 
@@ -2583,6 +2566,79 @@ mod tests {
         mesh.set_face(FaceIndex(0), [PointIndex(0), PointIndex(1), PointIndex(2)]);
 
         mesh
+    }
+
+    /// Finds the first child with this name.
+    fn child<'a>(node: &'a FbxNode, name: &str) -> Option<&'a FbxNode> {
+        node.children.iter().find(|child| child.name == name)
+    }
+
+    /// The document says what it contains, and that can be asserted directly.
+    ///
+    /// Every other writer test goes through the reader, which means it can
+    /// only see what the reader happens to look at: it never inspects
+    /// `Definitions`, the declared type strings on a `P` record, or a class
+    /// suffix, so none of those are covered by a round trip. Asserting on the
+    /// tree needs no reader at all.
+    #[test]
+    fn the_document_declares_the_objects_it_writes() {
+        let mut writer = FbxWriter::new();
+        writer
+            .add_mesh(&create_triangle_mesh(), Some("Tri"))
+            .unwrap();
+        let document = writer.build_document().unwrap();
+
+        let names: Vec<&str> = document.iter().map(|node| node.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "FBXHeaderExtension",
+                "GlobalSettings",
+                "Documents",
+                "Definitions",
+                "Objects",
+                "Connections",
+            ]
+        );
+
+        // Definitions must agree with what Objects actually holds, which is
+        // the invariant the hand-maintained Count used to depend on.
+        let definitions = &document[3];
+        let objects = &document[4];
+        let declared: Vec<(String, i32)> = definitions
+            .children
+            .iter()
+            .filter(|node| node.name == "ObjectType")
+            .map(|node| {
+                let FbxProperty::String(type_name) = &node.properties[0] else {
+                    panic!("ObjectType names itself with a string");
+                };
+                let count = child(node, "Count").expect("every ObjectType declares a Count");
+                let FbxProperty::I32(count) = count.properties[0] else {
+                    panic!("Count is an i32");
+                };
+                (type_name.clone(), count)
+            })
+            .collect();
+        assert!(declared.contains(&("Geometry".to_string(), 1)));
+        assert!(declared.contains(&("Model".to_string(), 1)));
+        assert_eq!(
+            child(definitions, "Count").map(|node| format!("{:?}", node.properties)),
+            Some(format!(
+                "{:?}",
+                vec![FbxProperty::I32(declared.len() as i32)]
+            )),
+            "the Count node must be the number of ObjectType blocks"
+        );
+
+        let geometry = child(objects, "Geometry").expect("the mesh writes a Geometry");
+        assert!(
+            matches!(&geometry.properties[2], FbxProperty::String(class) if class == "Mesh"),
+            "a Geometry's class suffix is Mesh: {:?}",
+            geometry.properties
+        );
+        assert!(child(geometry, "Vertices").is_some());
+        assert!(child(geometry, "PolygonVertexIndex").is_some());
     }
 
     #[test]

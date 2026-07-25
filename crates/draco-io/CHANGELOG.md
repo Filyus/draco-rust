@@ -57,8 +57,24 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   empty scene rather than failing, so the notice is how a caller tells that
   apart from a file with no meshes.
 
+### Changed
+
+- The FBX writer assembles the whole document as a tree of `FbxNode` -- the
+  same type the readers produce -- and encodes that tree in one place, instead
+  of spelling document structure directly in byte calls. Written bytes are
+  unchanged over the whole corpus. `FbxWriter::write_to` accordingly takes
+  `W: Write` rather than `W: Write + Seek`; the backpatched node header still
+  seeks, but inside a buffer of its own. Relaxing the bound accepts everything
+  it accepted before.
+- The `Definitions/Count` node is now the number of `ObjectType` blocks rather
+  than a hand-maintained literal that had to be kept in step with them by eye.
+
 ### Fixed
 
+- Animation key times, values, flags and tangents were written uncompressed
+  whatever the document's options said, because every curve writer passed a
+  freshly defaulted `WriterOptions` instead of the document's. Uncompressed
+  output is unaffected.
 - A document whose Model connections form a cycle, or a chain deeper than 256,
   recursed until the stack was exhausted. Reaching it required an ASCII-only
   corpus file, so the binary path had never exercised it.

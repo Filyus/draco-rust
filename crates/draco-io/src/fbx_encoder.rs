@@ -99,7 +99,7 @@ pub(crate) fn encode_node<W: Write + Seek>(
 }
 
 /// Helper struct for writing FBX nodes.
-pub(crate) struct NodeWriter<'a, W: Write + Seek> {
+struct NodeWriter<'a, W: Write + Seek> {
     writer: &'a mut W,
     start_pos: u64,
     properties_start: u64,
@@ -108,7 +108,7 @@ pub(crate) struct NodeWriter<'a, W: Write + Seek> {
 }
 
 impl<'a, W: Write + Seek> NodeWriter<'a, W> {
-    pub(crate) fn start(writer: &'a mut W, name: &str, is_64: bool) -> io::Result<Self> {
+    fn start(writer: &'a mut W, name: &str, is_64: bool) -> io::Result<Self> {
         let start_pos = writer.stream_position()?;
 
         // Write placeholder for end offset, num properties, property list len
@@ -133,56 +133,56 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
     /// `C`, the one-byte boolean. Written as `b'T'`/`b'Y'` for true and
     /// `b'F'`/`b'N'` for false by different exporters; this uses 1 and 0,
     /// which every reader including ours accepts.
-    pub(crate) fn write_property_bool(&mut self, value: bool) -> io::Result<()> {
+    fn write_property_bool(&mut self, value: bool) -> io::Result<()> {
         self.writer.write_all(b"C")?;
         self.writer.write_all(&[u8::from(value)])?;
         self.num_properties += 1;
         Ok(())
     }
 
-    pub(crate) fn write_property_u8(&mut self, value: u8) -> io::Result<()> {
+    fn write_property_u8(&mut self, value: u8) -> io::Result<()> {
         self.writer.write_all(b"Z")?;
         self.writer.write_all(&[value])?;
         self.num_properties += 1;
         Ok(())
     }
 
-    pub(crate) fn write_property_i16(&mut self, value: i16) -> io::Result<()> {
+    fn write_property_i16(&mut self, value: i16) -> io::Result<()> {
         self.writer.write_all(b"Y")?;
         self.writer.write_all(&value.to_le_bytes())?;
         self.num_properties += 1;
         Ok(())
     }
 
-    pub(crate) fn write_property_i32(&mut self, value: i32) -> io::Result<()> {
+    fn write_property_i32(&mut self, value: i32) -> io::Result<()> {
         self.writer.write_all(b"I")?;
         self.writer.write_all(&value.to_le_bytes())?;
         self.num_properties += 1;
         Ok(())
     }
 
-    pub(crate) fn write_property_i64(&mut self, value: i64) -> io::Result<()> {
+    fn write_property_i64(&mut self, value: i64) -> io::Result<()> {
         self.writer.write_all(b"L")?;
         self.writer.write_all(&value.to_le_bytes())?;
         self.num_properties += 1;
         Ok(())
     }
 
-    pub(crate) fn write_property_f32(&mut self, value: f32) -> io::Result<()> {
+    fn write_property_f32(&mut self, value: f32) -> io::Result<()> {
         self.writer.write_all(b"F")?;
         self.writer.write_all(&value.to_le_bytes())?;
         self.num_properties += 1;
         Ok(())
     }
 
-    pub(crate) fn write_property_f64(&mut self, value: f64) -> io::Result<()> {
+    fn write_property_f64(&mut self, value: f64) -> io::Result<()> {
         self.writer.write_all(b"D")?;
         self.writer.write_all(&value.to_le_bytes())?;
         self.num_properties += 1;
         Ok(())
     }
 
-    pub(crate) fn write_property_string(&mut self, value: &str) -> io::Result<()> {
+    fn write_property_string(&mut self, value: &str) -> io::Result<()> {
         self.writer.write_all(b"S")?;
         self.writer.write_all(&(value.len() as u32).to_le_bytes())?;
         self.writer.write_all(value.as_bytes())?;
@@ -190,7 +190,7 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         Ok(())
     }
 
-    pub(crate) fn write_property_bool_array(
+    fn write_property_bool_array(
         &mut self,
         values: &[bool],
         options: &WriterOptions,
@@ -198,7 +198,7 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         self.write_array_property(b'b', values, options, |v| vec![u8::from(*v)])
     }
 
-    pub(crate) fn write_property_f64_array(
+    fn write_property_f64_array(
         &mut self,
         values: &[f64],
         options: &WriterOptions,
@@ -206,7 +206,7 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         self.write_array_property(b'd', values, options, |v| v.to_le_bytes().to_vec())
     }
 
-    pub(crate) fn write_property_i32_array(
+    fn write_property_i32_array(
         &mut self,
         values: &[i32],
         options: &WriterOptions,
@@ -214,7 +214,7 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         self.write_array_property(b'i', values, options, |v| v.to_le_bytes().to_vec())
     }
 
-    pub(crate) fn write_property_i64_array(
+    fn write_property_i64_array(
         &mut self,
         values: &[i64],
         options: &WriterOptions,
@@ -222,7 +222,7 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         self.write_array_property(b'l', values, options, |v| v.to_le_bytes().to_vec())
     }
 
-    pub(crate) fn write_property_f32_array(
+    fn write_property_f32_array(
         &mut self,
         values: &[f32],
         options: &WriterOptions,
@@ -230,7 +230,7 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         self.write_array_property(b'f', values, options, |v| v.to_le_bytes().to_vec())
     }
 
-    pub(crate) fn write_property_raw(&mut self, data: &[u8]) -> io::Result<()> {
+    fn write_property_raw(&mut self, data: &[u8]) -> io::Result<()> {
         self.writer.write_all(b"R")?;
         self.writer.write_all(&(data.len() as u32).to_le_bytes())?;
         self.writer.write_all(data)?;
@@ -286,13 +286,13 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         Ok(())
     }
 
-    pub(crate) fn finish(self) -> io::Result<()> {
+    fn finish(self) -> io::Result<()> {
         // Write null record to end children section
         write_null_record(self.writer, self.is_64)?;
         self.finalize_header()
     }
 
-    pub(crate) fn finish_with_children<F>(self, write_children: F) -> io::Result<()>
+    fn finish_with_children<F>(self, write_children: F) -> io::Result<()>
     where
         F: FnOnce(&mut W) -> io::Result<()>,
     {
