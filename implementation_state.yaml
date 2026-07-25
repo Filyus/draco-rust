@@ -1868,6 +1868,12 @@ files:
         type: "struct"
         progress: "fully implemented"
         note: "Implemented."
+  - path: "crates/draco-io/src/fbx_ascii.rs"
+    structures:
+      - name: "parse_ascii_nodes / is_ascii_fbx"
+        type: "functions"
+        progress: "fully implemented"
+        note: "Recursive-descent reader for the ASCII FBX container, producing the same FbxNode tree as the binary reader so every entry point above it accepts either container unchanged. Normalizes the two differences that are not syntax: object names are written Class::Name where binary writes the reverse order with a different separator, and values carry no type tag, so an array's element type is recovered from the node's schema rather than from how the numbers happen to be written. Honours FbxDecodeLimits for file size, nesting depth, node count, string bytes and total array bytes. Rejects pre-7000, which uses the name-keyed object model in either container. Verified by decoding 109 corpus documents identically to their binary twin."
   - path: "crates/draco-io/src/fbx_options.rs"
     structures:
       - name: "FbxByteOrder"
@@ -1931,7 +1937,7 @@ files:
       - name: "FbxWriter"
         type: "struct"
         progress: "fully implemented"
-        note: "Writes binary FBX 7.5 little-endian: geometry, Edges, UV/normal/colour layer sets, per-polygon material assignment, materials, textures, node hierarchy and transforms, skins with bind poses, blend shapes, and one AnimationLayer per FbxAnimation, plus the conventional binary footer. Accepts Position, Normal, TexCoord and Color attributes; other attribute types are rejected rather than dropped. Tangents and ByEdge layers are not written."
+        note: "Writes binary FBX 7.5 little-endian: geometry, Edges, UV/normal/colour layer sets, tangent and binormal sets, smoothing flags and edge/vertex crease weights, per-polygon material assignment, materials, textures, node hierarchy and transforms, skins with bind poses, blend shapes, and one AnimationLayer per FbxAnimation, plus the conventional binary footer. Tangent handedness is split back into the TangentsW sibling array only for sets that carried one, so a pre-7500 document does not acquire one by being rewritten. Accepts Position, Normal, TexCoord and Color attributes; other attribute types are rejected rather than dropped. NodeAttribute objects are not written, so cameras and lights are read but lost by an FBX-to-FBX rewrite."
     functions:
       - name: "write_fbx_mesh"
         progress: "fully implemented"

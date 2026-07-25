@@ -9,17 +9,19 @@
 #   behavior still belongs in implementation_state.yaml.
 
 version: 1
-last_reviewed: "2026-07-16"
+last_reviewed: "2026-07-25"
 
 scope:
   crate: "draco-core"
   surface: "Rust DRC decode of mesh and point-cloud streams"
   secondary_surface: "draco-gltf lossless document parsing and document-preserving Draco transforms for untrusted glTF/GLB bytes."
+  tertiary_surface: "draco-io FBX reading: two hand-written parsers for untrusted input -- a length-prefixed binary container with a zlib path, and an ASCII container parsed as text."
   compatibility_floor: "Draco 1.0.0+ for supported compatibility claims"
   threat_model:
     controlled_assets: "Known-good generated/fixture streams from trusted pipelines."
     untrusted_assets: "Externally supplied .drc bytes that may be truncated, corrupted, inconsistent, oversized, or adversarial."
     untrusted_gltf: "Externally supplied glTF/GLB bytes passed to draco-gltf; may reference out-of-range/oversized accessors, malformed GLB chunks, or hostile external resource URIs."
+    untrusted_fbx: "Externally supplied FBX bytes passed to draco-io; node records carry file-controlled lengths that feed allocations, arrays may be zlib-compressed, and the ASCII container is unbounded text."
 
 readiness:
   controlled_assets: "good"
@@ -436,6 +438,16 @@ completed:
       - path: "FUZZING.md"
     note: "The git-ignored libFuzzer corpus is reproducibly seeded from the 98 committed .drc fixtures via fuzz/seed_corpus.{ps1,sh}, and FUZZING.md documents the install/seed/run/minimize/triage routine, the Windows sanitizer-runtime nuance, and the requirement to pin any new crash as a deterministic regression test. Bounded campaigns have been run locally; corpus-persisted CI runs remain the open follow-up."
 
+  - id: fbx-binary-reader-hardening
+    status: covered
+    evidence:
+      - path: "crates/draco-io/src/fbx_options.rs"
+      - path: "crates/draco-io/src/fbx_reader.rs"
+      - path: "crates/draco-io/tests/fbx_corpus.rs"
+      - path: "fuzz/fuzz_targets/fbx_read_scene.rs"
+      - path: "fuzz/fuzz_targets/fbx_roundtrip.rs"
+    note: "FbxDecodeLimits bounds file size, node count, nesting depth, per-node property count, string/blob payloads, and per-array and total array bytes, with defaults calibrated against the 308-file ufbx binary corpus rather than guessed. Limit violations fail with OutOfMemory and structural violations with InvalidData so a caller can tell them apart. Backwards end offsets, oversized records, zip bombs and array-length overflow are refused; strict mode additionally validates the container layout. A cycle in the Model hierarchy no longer recurses until the stack is exhausted. The opt-in corpus test asserts no panic, no hang and bounded output over every file, and two libFuzzer targets cover reading and the read/write round trip."
+
   - id: caller-resource-policy-documented
     status: covered
     evidence:
@@ -443,6 +455,15 @@ completed:
     note: "SECURITY.md documents the decode threat model and recommended caller limits for untrusted input (input byte-size cap, memory budget, timeout/cancellation, process/WASM isolation, minimal decoder feature surface), making explicit that the crate avoids artificial geometry caps by design and that bounding cost is a caller responsibility."
 
 open_risks:
+  - id: fbx-ascii-parser-unfuzzed
+    priority: medium
+    summary: "The ASCII FBX parser added in fbx_ascii.rs is a hand-written recursive-descent parser over untrusted text, and the fuzz corpus contains no ASCII seeds."
+    why_it_matters: "The libFuzzer targets call FbxScene::from_bytes_with_options, which auto-detects the container, so the ASCII path is reachable -- but every seed produced by crates/draco-io/examples/fbx_make_seeds.rs begins with the binary magic, and a mutation engine will essentially never synthesize a `; FBX` or `FBXHeaderExtension:` prefix from them. The parser is therefore reachable in principle and unexercised in practice. It does honour FbxDecodeLimits for file size, depth, node count and array bytes, and its depth limit has a regression test, so this is missing coverage rather than a known hazard."
+    next_steps:
+      - "Add ASCII seeds to fbx_make_seeds.rs: a minimal valid document, one with a deep block nest, one with a huge declared array length, and one with an unterminated string or block."
+      - "Re-run seed_corpus.{sh,ps1} and confirm the ASCII branch is reached, for example by checking coverage or by asserting a seed decodes."
+      - "Run a bounded campaign over the widened corpus before claiming the ASCII path is hardened."
+
   - id: fuzzing-ci-soak-time
     priority: low
     summary: "Fuzzing runs in CI on Linux/ASan, release semantics (Level 1 bounded smoke on every PR/push with cache-persisted corpus in fuzz.yml; Level 2 ClusterFuzzLite PR fuzzing in cflite_pr.yml). Deeper runs (fuzz.yml soak, ClusterFuzzLite batch/prune) are manual dispatch — there are no scheduled runs. Confidence still grows with cumulative soak time and corpus depth."

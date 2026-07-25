@@ -96,13 +96,22 @@ load, clip selection, and capability/warning reports beside import/export
 controls. Verified controls are `mixamo.fbx`, `Samba Dancing.fbx`, and the
 Fox glTF fixture, including FBX → GLB → reload and typed-FBX round trips.
 
-Current limitations are explicit: FBX tangents are retained in
-SceneDocument/glTF but are warned as unsupported by the current typed FBX
-writer; arbitrary FBX camera/light/non-TRS semantics are outside the portable
-subset; and non-default `RotationOrder`/`InheritType` transform-stack behavior
-remains unvalidated beyond the verified fixtures. FBX vertex colours now
-travel the whole path, arriving as `COLOR_0` and written back as
-`LayerElementColor`; every FBX UV layer reaches `TEXCOORD_0`..`TEXCOORD_7`.
+Both FBX containers load through the same WASM reader: an ASCII document takes
+the same path as a binary one and arrives with its transforms, materials, skins
+and animation, where the previous regex fallback recovered geometry only.
+
+Vertex colours travel the whole path, arriving as `COLOR_0` and written back as
+`LayerElementColor`; every UV layer reaches `TEXCOORD_0`..`TEXCOORD_7`; and
+tangents arrive as `TANGENT`, with the handedness sign in `w`, and are written
+back split across `Tangents` and `TangentsW`.
+
+Current limitations are explicit. Binormals, hard edges and crease weights have
+no glTF equivalent, so they survive only on the FBX provenance path and are
+dropped when a document is lowered through the portable form. Cameras, lights
+and non-TRS FBX semantics are outside the portable subset entirely: `draco-io`
+reads cameras and lights, but SceneDocument has no node payload for them.
+Non-default `RotationOrder`/`InheritType` transform-stack behaviour remains
+unvalidated beyond the verified fixtures.
 
 ## Build and test
 

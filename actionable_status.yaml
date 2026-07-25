@@ -26,6 +26,52 @@
 # hardening_status.yaml; keep only concrete implementation actions here.
 
 version: 1
-last_reviewed: "2026-04-24"
+last_reviewed: "2026-07-25"
 
-items: []
+items:
+  - id: fbx-ascii-binary-decode-divergence
+    area: draco-io/fbx
+    priority: medium
+    status: open
+    summary: "Four ASCII documents decode differently from their binary twin, for reasons not yet established."
+    evidence:
+      - path: "crates/draco-io/tests/fbx_corpus.rs"
+        note: "an_ascii_document_decodes_like_its_binary_twin passes on 109 pairs and excludes six by name. Two exclusions are not defects and are explained there. The other four -- maya_auto_clamp, maya_human_ik, maya_resampled, maya_transform_animation -- are unexplained."
+      - path: "crates/draco-io/src/fbx_reader.rs"
+        note: "For maya_auto_clamp the ASCII read is the one that finds the node Lcl Translation, which the binary file also contains, so the divergence points at the binary path rather than the ASCII one."
+    impact: "One of the four may be a sixth instance of the width-matching class of defect the differential already found five of, each of which silently produced a smaller scene rather than an error."
+    next_steps:
+      - "Take maya_auto_clamp first: dump its Model Properties70 from both containers and find why the binary read yields no transform."
+      - "Check whether maya_human_ik is only f32 text precision (the values differ at ~1e-5) and, if so, say so in the test rather than excluding it."
+      - "Establish whether maya_resampled and maya_transform_animation are genuinely different exports, as motionbuilder_actor is; if they are, move them to the not-a-defect group with that reason."
+
+  - id: fbx-pre-7000-object-model
+    area: draco-io/fbx
+    priority: low
+    status: open
+    summary: "FBX 6100 and earlier decode to an empty scene: 81 of the 308 binary corpus files, plus 118 ASCII ones."
+    evidence:
+      - path: "crates/draco-io/src/fbx_reader.rs"
+        note: "FbxObjectIndex::build indexes objects by i64 id. Pre-7000 identifies them by a name string ending in a class marker and connects them by that string, so nothing is indexed; the reader reports FbxWarningCode::NameKeyedObjectModel rather than failing."
+      - path: "crates/draco-io/README.md"
+        note: "The container/content split is documented: the container is read for 6000-8000, scene content only for 7000 and later."
+    impact: "A quarter of the corpus, and any older asset, decodes to nothing. Deliberately deferred: this is a parallel object-identity layer, comparable in size to the ASCII container work, not a patch."
+    next_steps:
+      - "Synthesize stable ids from the name+class strings and resolve Connect records against them."
+      - "Treat Objects/Model as its own geometry source, since pre-7000 has no separate Geometry object."
+      - "Add a scalar-property fallback wherever an array property is read: 6100 stores arrays as repeated scalar properties."
+
+  - id: fbx-camera-light-write
+    area: draco-io/fbx
+    priority: low
+    status: open
+    summary: "Cameras and lights are read but never written, so they are lost by an FBX-to-FBX rewrite."
+    evidence:
+      - path: "crates/draco-io/src/fbx_writer.rs"
+        note: "The writer emits no NodeAttribute objects other than the skeleton attribute for limb nodes."
+      - path: "crates/draco-io/tests/fbx_corpus.rs"
+        note: "cameras_and_lights_are_read_but_not_written_back asserts the loss from both sides, so implementing the write makes that test fail and name the summary that must start comparing attributes."
+    impact: "58 attributes across 20 corpus files. Read-only was the agreed scope, so this is a known boundary rather than a regression."
+    next_steps:
+      - "Emit Objects/NodeAttribute with the camera or light Properties70 and connect it to its Model."
+      - "Add attribute comparison to SceneSummary and delete the characterization test."
