@@ -102,7 +102,8 @@ bpy.ops.wm.read_factory_settings(use_empty=True)
 ${importer}
 scene=bpy.context.scene
 armature=[obj for obj in scene.objects if obj.type=='ARMATURE'][0]
-mesh=[obj for obj in scene.objects if obj.type=='MESH'][0]
+meshes=[obj for obj in scene.objects if obj.type=='MESH' and obj.find_armature()==armature]
+if not meshes: meshes=[obj for obj in scene.objects if obj.type=='MESH']
 bones=${JSON.stringify(bones)}
 times=${JSON.stringify(times)}
 frame_offset=${format === 'fbx' ? 1 : 0}
@@ -113,17 +114,18 @@ def matrix(value): return [entry for row in value for entry in row]
 scene.frame_set(1)
 bpy.context.view_layer.update()
 samples=[]
-bounds=[]
+bounds={mesh.name:[] for mesh in meshes}
 for seconds in times:
     frame=seconds*scene.render.fps/scene.render.fps_base+frame_offset
     scene.frame_set(int(math.floor(frame)), subframe=frame-math.floor(frame))
     bpy.context.view_layer.update()
     samples.append([matrix(armature.pose.bones[name].matrix) for name in bones])
-    evaluated=mesh.evaluated_get(bpy.context.evaluated_depsgraph_get())
-    evaluated_mesh=evaluated.to_mesh()
-    points=[evaluated.matrix_world @ vertex.co for vertex in evaluated_mesh.vertices]
-    bounds.append([[min(point[axis] for point in points) for axis in range(3)],[max(point[axis] for point in points) for axis in range(3)]])
-    evaluated.to_mesh_clear()
+    for mesh in meshes:
+        evaluated=mesh.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        evaluated_mesh=evaluated.to_mesh()
+        points=[evaluated.matrix_world @ vertex.co for vertex in evaluated_mesh.vertices]
+        bounds[mesh.name].append([[min(point[axis] for point in points) for axis in range(3)],[max(point[axis] for point in points) for axis in range(3)]])
+        evaluated.to_mesh_clear()
 rest={name:matrix(armature.pose.bones[name].bone.matrix_local) for name in bones}
 print('DRACO_BLENDER_JSON='+json.dumps({'samples':samples,'rest':rest,'bounds':bounds},separators=(',',':')))
 `;
@@ -166,19 +168,32 @@ function maxBlenderDrift(expected, actual) {
 }
 
 function maxBlenderBoundsDrift(expected, actual) {
-    // Blender's FBX importer applies a fixed source-axis placement to the
-    // whole scene. Compare the authored root motion after that one constant
-    // basis offset, just as the established Mixamo FBX differential probe.
-    const rootOffset = expected.bounds[0][0].map((value, component) => actual.bounds[0][0][component] - value);
+    // Blender's FBX importer applies one fixed source-axis placement to the
+    // imported scene. Keep that established basis correction, but derive it
+    // from a stable named mesh instead of whichever mesh a HashMap happened
+    // to expose first.
     let worst = 0;
-    for (let sample = 0; sample < expected.bounds.length; sample += 1) {
-        for (let extreme = 0; extreme < 2; extreme += 1) {
-            for (let component = 0; component < 3; component += 1) {
-                worst = Math.max(worst, Math.abs(expected.bounds[sample][extreme][component] + rootOffset[component] - actual.bounds[sample][extreme][component]));
+    let worstCase = { mesh: '', sample: 0, extreme: 0, component: 0 };
+    const expectedMeshes = Object.keys(expected.bounds).sort();
+    const actualMeshes = Object.keys(actual.bounds).sort();
+    assert.deepEqual(actualMeshes, expectedMeshes, 'Blender evaluated mesh identity');
+    const basisMesh = expectedMeshes.find((name) => name.endsWith('_Surface') || name.endsWith('Surface')) ?? expectedMeshes[0];
+    const rootOffset = expected.bounds[basisMesh][0][0].map((value, component) =>
+        actual.bounds[basisMesh][0][0][component] - value);
+    for (const mesh of expectedMeshes) {
+        for (let sample = 0; sample < expected.bounds[mesh].length; sample += 1) {
+            for (let extreme = 0; extreme < 2; extreme += 1) {
+                for (let component = 0; component < 3; component += 1) {
+                    const error = Math.abs(expected.bounds[mesh][sample][extreme][component] + rootOffset[component] - actual.bounds[mesh][sample][extreme][component]);
+                    if (error > worst) {
+                        worst = error;
+                        worstCase = { mesh, sample, extreme, component };
+                    }
+                }
             }
         }
     }
-    return { worst, rootOffset };
+    return { worst, rootOffset, ...worstCase };
 }
 
 async function assertValidGlb(bytes, name) {
@@ -278,8 +293,8 @@ for (const [label, path] of [['Mixamo', mixamoFbx], ['Samba', sambaFbx]]) {
             const actualBlender = blenderSamples(glbPath, 'glb', blenderTimes);
             const blenderDrift = maxBlenderDrift(expectedBlender, actualBlender);
             const blenderBounds = maxBlenderBoundsDrift(expectedBlender, actualBlender);
-            assert.ok(blenderBounds.worst < 5e-4, `${label} Blender evaluated mesh bounds GLB drift ${blenderBounds.worst}; root offset=${blenderBounds.rootOffset}; imported armature pose basis differs by world=${blenderDrift.world}, skin=${blenderDrift.skin}`);
-            console.log(`PASS ${label} Blender FBX -> GLB evaluated mesh: bounds=${blenderBounds.worst.toExponential(2)}, root offset=${blenderBounds.rootOffset.map((value) => value.toExponential(2))} (armature-basis diagnostic world=${blenderDrift.world.toExponential(2)}, skin=${blenderDrift.skin.toExponential(2)})`);
+            assert.ok(blenderBounds.worst < 5e-4, `${label} Blender evaluated mesh bounds GLB drift ${blenderBounds.worst} on ${blenderBounds.mesh} sample ${blenderBounds.sample}; root offset=${blenderBounds.rootOffset}; imported armature pose basis differs by world=${blenderDrift.world}, skin=${blenderDrift.skin}`);
+            console.log(`PASS ${label} Blender FBX -> GLB evaluated mesh: bounds=${blenderBounds.worst.toExponential(2)} on ${blenderBounds.mesh} sample ${blenderBounds.sample}, root offset=${blenderBounds.rootOffset.map((value) => value.toExponential(2))} (armature-basis diagnostic world=${blenderDrift.world.toExponential(2)}, skin=${blenderDrift.skin.toExponential(2)})`);
         } finally {
             await rm(temp, { recursive: true, force: true });
         }

@@ -95,6 +95,8 @@ pub struct FbxWriter {
     /// Skin objects and their clusters.
     skins: Vec<SkinData>,
     morphs: Vec<MorphData>,
+    /// Source-only settings used for semantic FBX re-export.
+    global_settings: Option<crate::fbx_scene::FbxGlobalSettings>,
     /// Scene node ids that must be emitted as FBX LimbNode models.
     joint_scene_ids: HashSet<crate::fbx_scene::FbxNodeId>,
     /// Pending object-property connections emitted after `write_objects`.
@@ -133,6 +135,7 @@ struct ModelData {
     scene_node_id: Option<crate::fbx_scene::FbxNodeId>,
     parent_id: Option<i64>,
     transform: Option<crate::fbx_scene::FbxTransform>,
+    transform_stack: Option<crate::fbx_scene::FbxTransformStack>,
     /// Material ids connected to this model via `OO`.
     material_ids: Vec<i64>,
     class: &'static str,
@@ -221,6 +224,7 @@ impl FbxWriter {
             anim: Vec::new(),
             skins: Vec::new(),
             morphs: Vec::new(),
+            global_settings: None,
             joint_scene_ids: HashSet::new(),
             connections: Vec::new(),
             next_id: 1000, // Start at 1000 to avoid reserved IDs (0 = root)
@@ -259,7 +263,7 @@ impl FbxWriter {
         transform: Option<crate::fbx_scene::FbxTransform>,
         material_ids: Vec<i64>,
     ) -> i64 {
-        self.add_model_with_scene_id(name, parent_id, transform, material_ids, None)
+        self.add_model_with_scene_id(name, parent_id, transform, None, material_ids, None)
     }
 
     fn add_model_with_scene_id(
@@ -267,6 +271,7 @@ impl FbxWriter {
         name: String,
         parent_id: Option<i64>,
         transform: Option<crate::fbx_scene::FbxTransform>,
+        transform_stack: Option<crate::fbx_scene::FbxTransformStack>,
         material_ids: Vec<i64>,
         scene_node_id: Option<crate::fbx_scene::FbxNodeId>,
     ) -> i64 {
@@ -277,6 +282,7 @@ impl FbxWriter {
             scene_node_id,
             parent_id,
             transform,
+            transform_stack,
             material_ids,
             class: if scene_node_id
                 .map(|id| self.joint_scene_ids.contains(&id))
@@ -382,6 +388,7 @@ impl FbxWriter {
     /// rules are not represented by [`crate::FbxTransform`] and are therefore
     /// not emitted.
     pub fn add_scene(&mut self, scene: &crate::FbxScene) -> io::Result<()> {
+        self.global_settings = scene.global_settings.clone();
         fn collect_joint_ids(
             node: &crate::fbx_scene::FbxSceneNode,
             ids: &mut HashSet<crate::fbx_scene::FbxNodeId>,
@@ -497,6 +504,7 @@ impl FbxWriter {
             node.name.clone().unwrap_or_else(|| "Node".to_string()),
             parent_id,
             node.transform,
+            node.transform_stack.clone(),
             referenced_material_ids.clone(),
             Some(node.id),
         );
@@ -569,7 +577,7 @@ impl FbxWriter {
 
         // Write standard FBX sections
         write_header_extension(writer, is_64)?;
-        write_global_settings(writer, is_64)?;
+        write_global_settings(writer, is_64, self.global_settings.as_ref())?;
         write_documents(writer, is_64)?;
         write_definitions(
             writer,
@@ -973,7 +981,12 @@ fn write_header_extension<W: Write + Seek>(writer: &mut W, is_64: bool) -> io::R
     })
 }
 
-fn write_global_settings<W: Write + Seek>(writer: &mut W, is_64: bool) -> io::Result<()> {
+fn write_global_settings<W: Write + Seek>(
+    writer: &mut W,
+    is_64: bool,
+    source: Option<&crate::fbx_scene::FbxGlobalSettings>,
+) -> io::Result<()> {
+    let source = source.cloned().unwrap_or_default();
     let node = NodeWriter::start(writer, "GlobalSettings", is_64)?;
     node.finish_with_children(|w| {
         // Version
@@ -984,12 +997,60 @@ fn write_global_settings<W: Write + Seek>(writer: &mut W, is_64: bool) -> io::Re
         // Properties70 - proper FBX property format
         let props = NodeWriter::start(w, "Properties70", is_64)?;
         props.finish_with_children(|pw| {
-            write_property_node(pw, is_64, "UpAxis", "int", "Integer", "", 2i32)?;
-            write_property_node(pw, is_64, "UpAxisSign", "int", "Integer", "", 1i32)?;
-            write_property_node(pw, is_64, "FrontAxis", "int", "Integer", "", 1i32)?;
-            write_property_node(pw, is_64, "FrontAxisSign", "int", "Integer", "", -1i32)?;
-            write_property_node(pw, is_64, "CoordAxis", "int", "Integer", "", 0i32)?;
-            write_property_node(pw, is_64, "CoordAxisSign", "int", "Integer", "", 1i32)?;
+            write_property_node(
+                pw,
+                is_64,
+                "UpAxis",
+                "int",
+                "Integer",
+                "",
+                source.up_axis.unwrap_or(2),
+            )?;
+            write_property_node(
+                pw,
+                is_64,
+                "UpAxisSign",
+                "int",
+                "Integer",
+                "",
+                source.up_axis_sign.unwrap_or(1),
+            )?;
+            write_property_node(
+                pw,
+                is_64,
+                "FrontAxis",
+                "int",
+                "Integer",
+                "",
+                source.front_axis.unwrap_or(1),
+            )?;
+            write_property_node(
+                pw,
+                is_64,
+                "FrontAxisSign",
+                "int",
+                "Integer",
+                "",
+                source.front_axis_sign.unwrap_or(-1),
+            )?;
+            write_property_node(
+                pw,
+                is_64,
+                "CoordAxis",
+                "int",
+                "Integer",
+                "",
+                source.coord_axis.unwrap_or(0),
+            )?;
+            write_property_node(
+                pw,
+                is_64,
+                "CoordAxisSign",
+                "int",
+                "Integer",
+                "",
+                source.coord_axis_sign.unwrap_or(1),
+            )?;
             // FBX `UnitScaleFactor = 1.0` is documented to mean *centimeters*
             // (Blender io_scene_fbx comment: "FBX default base unit seems to be
             // the centimeter"). Most authoring tools therefore write the
@@ -998,7 +1059,15 @@ fn write_global_settings<W: Write + Seek>(writer: &mut W, is_64: bool) -> io::Re
             // 100 makes the file round-trip at its true (meter) scale; the
             // legacy value of 1.0 caused every imported scene to come in
             // 100x too small.
-            write_property_node_f64(pw, is_64, "UnitScaleFactor", "double", "Number", "", 100.0)?;
+            write_property_node_f64(
+                pw,
+                is_64,
+                "UnitScaleFactor",
+                "double",
+                "Number",
+                "",
+                source.unit_scale_factor.unwrap_or(100.0),
+            )?;
             write_property_node_f64(
                 pw,
                 is_64,
@@ -1006,8 +1075,11 @@ fn write_global_settings<W: Write + Seek>(writer: &mut W, is_64: bool) -> io::Re
                 "double",
                 "Number",
                 "",
-                100.0,
+                source.original_unit_scale_factor.unwrap_or(100.0),
             )?;
+            if let Some(time_mode) = source.time_mode {
+                write_property_node(pw, is_64, "TimeMode", "enum", "", "", time_mode)?;
+            }
             Ok(())
         })
     })
@@ -1028,6 +1100,23 @@ fn write_property_node<W: Write + Seek>(
     p.write_property_string(type2)?;
     p.write_property_string(flags)?;
     p.write_property_i32(value)?;
+    p.finish()
+}
+
+fn write_property_node_bool<W: Write + Seek>(
+    writer: &mut W,
+    is_64: bool,
+    name: &str,
+    value: bool,
+) -> io::Result<()> {
+    let mut p = NodeWriter::start(writer, "P", is_64)?;
+    p.write_property_string(name)?;
+    p.write_property_string("bool")?;
+    p.write_property_string("")?;
+    p.write_property_string("")?;
+    // Blender's FBX property helper expects `RotationActive` to carry an
+    // INT32 scalar even though its declared property type is `bool`.
+    p.write_property_i32(i32::from(value))?;
     p.finish()
 }
 
@@ -1335,10 +1424,51 @@ fn write_model<W: Write + Seek>(
         let props = NodeWriter::start(w, "Properties70", is_64)?;
         props.finish_with_children(|w| {
             if let Some(transform) = model_data.transform {
-                let (translation, rotation, scaling) = decompose_transform(transform)?;
-                write_property_node_vec3(w, is_64, "Lcl Translation", translation)?;
-                write_property_node_vec3(w, is_64, "Lcl Rotation", rotation)?;
-                write_property_node_vec3(w, is_64, "Lcl Scaling", scaling)?;
+                let (matrix_translation, matrix_rotation, matrix_scaling) =
+                    decompose_transform(transform)?;
+                let stack = model_data.transform_stack.as_ref();
+                let as_f64 = |value: [f32; 3]| value.map(f64::from);
+                if let Some(stack) = stack {
+                    // A source stack deliberately retains property presence:
+                    // an omitted Lcl property is an authored FBX default, not
+                    // an invitation to synthesize a decomposition from the
+                    // semantic local matrix (which may already include pre/
+                    // post rotation).
+                    for (name, value) in [
+                        ("Lcl Translation", stack.translation),
+                        ("Lcl Rotation", stack.rotation),
+                        ("Lcl Scaling", stack.scaling),
+                    ] {
+                        if let Some(value) = value {
+                            write_property_node_vec3(w, is_64, name, as_f64(value))?;
+                        }
+                    }
+                    if let Some(value) = stack.rotation_order {
+                        write_property_node(w, is_64, "RotationOrder", "enum", "", "", value)?;
+                    }
+                    if let Some(value) = stack.rotation_active {
+                        write_property_node_bool(w, is_64, "RotationActive", value)?;
+                    }
+                    for (name, value) in [
+                        ("PreRotation", stack.pre_rotation),
+                        ("PostRotation", stack.post_rotation),
+                        ("RotationOffset", stack.rotation_offset),
+                        ("RotationPivot", stack.rotation_pivot),
+                        ("ScalingOffset", stack.scaling_offset),
+                        ("ScalingPivot", stack.scaling_pivot),
+                    ] {
+                        if let Some(value) = value {
+                            write_property_node_vec3(w, is_64, name, as_f64(value))?;
+                        }
+                    }
+                    if let Some(value) = stack.inherit_type {
+                        write_property_node(w, is_64, "InheritType", "enum", "", "", value)?;
+                    }
+                } else {
+                    write_property_node_vec3(w, is_64, "Lcl Translation", matrix_translation)?;
+                    write_property_node_vec3(w, is_64, "Lcl Rotation", matrix_rotation)?;
+                    write_property_node_vec3(w, is_64, "Lcl Scaling", matrix_scaling)?;
+                }
             }
             Ok(())
         })?;
@@ -2599,7 +2729,9 @@ fn extract_uvs(mesh: &Mesh) -> Option<Vec<f64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fbx_scene::{FbxAnimation, FbxMeshInstance, FbxScene, FbxSceneNode};
+    use crate::fbx_scene::{
+        FbxAnimation, FbxMeshInstance, FbxScene, FbxSceneNode, FbxTransform, FbxTransformStack,
+    };
     use draco_core::draco_types::DataType;
     use draco_core::geometry_attribute::PointAttribute;
     use draco_core::geometry_indices::PointIndex;
@@ -2718,16 +2850,19 @@ mod tests {
             ],
         };
         let scene = FbxScene {
+            global_settings: None,
             root_nodes: vec![FbxSceneNode {
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Root".to_string()),
                 transform: None,
+                transform_stack: None,
                 has_complex_transform_stack: false,
                 mesh_instances: Vec::new(),
                 children: vec![FbxSceneNode {
                     id: crate::fbx_scene::FbxNodeId(2),
                     name: Some("Child".to_string()),
                     transform: Some(child_transform),
+                    transform_stack: None,
                     has_complex_transform_stack: false,
                     mesh_instances: vec![FbxMeshInstance {
                         name: Some("Triangle".to_string()),
@@ -2772,6 +2907,56 @@ mod tests {
     }
 
     #[test]
+    fn scene_roundtrip_preserves_model_transform_stack_properties() {
+        // These are authored Model properties rather than a portable local
+        // matrix. A source-provenance FBX export must retain them verbatim so
+        // an FBX consumer can evaluate the original transform stack.
+        let transform_stack = FbxTransformStack {
+            translation: Some([1.25, -2.5, 3.75]),
+            rotation: Some([12.0, -34.0, 56.0]),
+            scaling: Some([1.0, 0.75, 1.25]),
+            rotation_order: Some(1),
+            rotation_active: Some(true),
+            pre_rotation: Some([10.0, 20.0, -30.0]),
+            post_rotation: Some([-5.0, 15.0, 25.0]),
+            rotation_offset: Some([0.5, 1.0, -1.5]),
+            rotation_pivot: Some([2.0, -3.0, 4.0]),
+            scaling_offset: Some([-0.25, 0.5, 0.75]),
+            scaling_pivot: Some([1.5, -2.5, 3.5]),
+            inherit_type: Some(2),
+        };
+        let scene = FbxScene {
+            global_settings: None,
+            root_nodes: vec![FbxSceneNode {
+                id: crate::fbx_scene::FbxNodeId(1),
+                name: Some("StackedNode".to_string()),
+                transform: Some(FbxTransform {
+                    matrix: [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [1.25, -2.5, 3.75, 1.0],
+                    ],
+                }),
+                transform_stack: Some(transform_stack.clone()),
+                has_complex_transform_stack: true,
+                mesh_instances: Vec::new(),
+                children: Vec::new(),
+            }],
+            materials: Vec::new(),
+            textures: Vec::new(),
+            animations: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        let output = FbxScene::from_bytes(&scene.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            output.root_nodes[0].transform_stack.as_ref(),
+            Some(&transform_stack)
+        );
+    }
+
+    #[test]
     fn fbx_matrix_arrays_use_column_major_layout() {
         // Real authoring tools (Maya/Blender/MotionBuilder) read FBX matrices
         // as column-major — Blender transposes on read via `array_to_matrix4`.
@@ -2809,10 +2994,12 @@ mod tests {
             ],
         };
         let scene = FbxScene {
+            global_settings: None,
             root_nodes: vec![FbxSceneNode {
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Armature".to_string()),
                 transform: None,
+                transform_stack: None,
                 has_complex_transform_stack: false,
                 mesh_instances: Vec::new(),
                 children: vec![
@@ -2820,6 +3007,7 @@ mod tests {
                         id: crate::fbx_scene::FbxNodeId(2),
                         name: Some("Bone".to_string()),
                         transform: Some(identity),
+                        transform_stack: None,
                         has_complex_transform_stack: false,
                         mesh_instances: Vec::new(),
                         children: Vec::new(),
@@ -2828,6 +3016,7 @@ mod tests {
                         id: crate::fbx_scene::FbxNodeId(3),
                         name: Some("Mesh".to_string()),
                         transform: Some(identity),
+                        transform_stack: None,
                         has_complex_transform_stack: false,
                         mesh_instances: vec![FbxMeshInstance {
                             name: Some("Triangle".to_string()),
@@ -2891,10 +3080,13 @@ mod tests {
     #[test]
     fn scene_roundtrip_preserves_cubic_tangents() {
         let scene = FbxScene {
+            global_settings: None,
             root_nodes: vec![FbxSceneNode {
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Root".to_string()),
                 transform: None,
+                transform_stack: None,
+                has_complex_transform_stack: false,
                 mesh_instances: Vec::new(),
                 children: Vec::new(),
             }],

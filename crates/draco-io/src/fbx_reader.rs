@@ -175,10 +175,16 @@ impl<R: Read + Seek> FbxReader<R> {
     /// ```
     pub fn read_scene(&mut self) -> io::Result<FbxScene> {
         let nodes = self.read_nodes()?;
+        let global_settings = parse_global_settings(&nodes);
 
         // Build object id -> node maps for every object type we care about.
         use std::collections::HashMap;
         let mut model_map: HashMap<i64, &FbxNode> = HashMap::new();
+        // Keep the authored Objects order separately from the lookup map. A
+        // HashMap is intentionally used for id lookups, but iterating it would
+        // make node ids and root order process-randomized, which in turn can
+        // make otherwise identical scene comparisons pair different meshes.
+        let mut model_order: Vec<i64> = Vec::new();
         let mut geometry_map: HashMap<i64, &FbxNode> = HashMap::new();
         let mut material_map: HashMap<i64, &FbxNode> = HashMap::new();
         let mut texture_map: HashMap<i64, &FbxNode> = HashMap::new();
@@ -201,7 +207,9 @@ impl<R: Read + Seek> FbxReader<R> {
                     };
                     match child.name.as_str() {
                         "Model" => {
-                            model_map.insert(*id, child);
+                            if model_map.insert(*id, child).is_none() {
+                                model_order.push(*id);
+                            }
                         }
                         "Geometry" => {
                             geometry_map.insert(*id, child);
@@ -453,7 +461,9 @@ impl<R: Read + Seek> FbxReader<R> {
         }
 
         // Helper to parse transform from Model node's Properties70
-        fn parse_transform(node: &FbxNode) -> Option<(FbxTransform, bool)> {
+        fn parse_transform(
+            node: &FbxNode,
+        ) -> Option<(FbxTransform, crate::fbx_scene::FbxTransformStack, bool)> {
             let mut translation = None;
             let mut rotation = None;
             let mut scaling = None;
@@ -463,6 +473,9 @@ impl<R: Read + Seek> FbxReader<R> {
             let mut rotation_pivot = None;
             let mut scaling_offset = None;
             let mut scaling_pivot = None;
+            let mut rotation_order = None;
+            let mut rotation_active = None;
+            let mut inherit_type = None;
 
             fn property_vec3(property: &FbxNode) -> Option<[f32; 3]> {
                 for value in &property.properties {
@@ -484,6 +497,25 @@ impl<R: Read + Seek> FbxReader<R> {
                     .take(3)
                     .collect();
                 (values.len() == 3).then(|| [values[0], values[1], values[2]])
+            }
+
+            fn property_i32(property: &FbxNode) -> Option<i32> {
+                property.properties.iter().find_map(|value| match value {
+                    crate::fbx_reader::FbxProperty::I32(value) => Some(*value),
+                    crate::fbx_reader::FbxProperty::I16(value) => Some(*value as i32),
+                    crate::fbx_reader::FbxProperty::I64(value) => i32::try_from(*value).ok(),
+                    _ => None,
+                })
+            }
+
+            fn property_bool(property: &FbxNode) -> Option<bool> {
+                property.properties.iter().find_map(|value| match value {
+                    crate::fbx_reader::FbxProperty::Bool(value) => Some(*value),
+                    crate::fbx_reader::FbxProperty::I32(value) => Some(*value != 0),
+                    crate::fbx_reader::FbxProperty::I16(value) => Some(*value != 0),
+                    crate::fbx_reader::FbxProperty::I64(value) => Some(*value != 0),
+                    _ => None,
+                })
             }
 
             for child in &node.children {
@@ -509,6 +541,9 @@ impl<R: Read + Seek> FbxReader<R> {
                                 "RotationPivot" => rotation_pivot = property_vec3(prop),
                                 "ScalingOffset" => scaling_offset = property_vec3(prop),
                                 "ScalingPivot" => scaling_pivot = property_vec3(prop),
+                                "RotationOrder" => rotation_order = property_i32(prop),
+                                "RotationActive" => rotation_active = property_bool(prop),
+                                "InheritType" => inherit_type = property_i32(prop),
                                 _ => {}
                             }
                         }
@@ -570,12 +605,7 @@ impl<R: Read + Seek> FbxReader<R> {
                 let (sin_z, cos_z) = values[2].to_radians().sin_cos();
                 // Rz * Ry * Rx, packed by column for FBX/WebGL.
                 [
-                    [
-                        cos_z * cos_y,
-                        sin_z * cos_y,
-                        -sin_y,
-                        0.0,
-                    ],
+                    [cos_z * cos_y, sin_z * cos_y, -sin_y, 0.0],
                     [
                         cos_z * sin_y * sin_x - sin_z * cos_x,
                         sin_z * sin_y * sin_x + cos_z * cos_x,
@@ -642,14 +672,34 @@ impl<R: Read + Seek> FbxReader<R> {
             let non_zero = |values: Option<[f32; 3]>| {
                 values.is_some_and(|values| values.iter().any(|value| value.abs() > f32::EPSILON))
             };
+            let transform_stack = crate::fbx_scene::FbxTransformStack {
+                translation,
+                rotation,
+                scaling,
+                rotation_order,
+                rotation_active,
+                pre_rotation,
+                post_rotation,
+                rotation_offset,
+                rotation_pivot,
+                scaling_offset,
+                scaling_pivot,
+                inherit_type,
+            };
             let has_complex_transform_stack = non_zero(pre_rotation)
                 || non_zero(post_rotation)
                 || non_zero(rotation_offset)
                 || non_zero(rotation_pivot)
                 || non_zero(scaling_offset)
-                || non_zero(scaling_pivot);
+                || non_zero(scaling_pivot)
+                || rotation_order.unwrap_or(0) != 0
+                || inherit_type.unwrap_or(0) != 0;
 
-            Some((FbxTransform { matrix: mat }, has_complex_transform_stack))
+            Some((
+                FbxTransform { matrix: mat },
+                transform_stack,
+                has_complex_transform_stack,
+            ))
         }
 
         // Build nodes recursively
@@ -664,10 +714,10 @@ impl<R: Read + Seek> FbxReader<R> {
             }
         }
 
-        let mut ordered_model_ids: Vec<i64> = model_map.keys().copied().collect();
-        ordered_model_ids.sort_unstable();
+        let ordered_model_ids = model_order;
         let model_node_ids: HashMap<i64, FbxNodeId> = ordered_model_ids
-            .into_iter()
+            .iter()
+            .copied()
             .enumerate()
             .map(|(index, id)| (id, FbxNodeId((index + 1) as u32)))
             .collect();
@@ -682,8 +732,11 @@ impl<R: Read + Seek> FbxReader<R> {
             let node_src = model_map.get(&id).unwrap();
             let mut node = FbxSceneNode::new(object_name(node_src));
             node.id = model_node_ids[&id];
-            if let Some((transform, has_complex_transform_stack)) = parse_transform(node_src) {
+            if let Some((transform, transform_stack, has_complex_transform_stack)) =
+                parse_transform(node_src)
+            {
                 node.transform = Some(transform);
+                node.transform_stack = Some(transform_stack);
                 node.has_complex_transform_stack = has_complex_transform_stack;
             }
             if let Some(mesh_instances) = model_mesh_instances.get(&id) {
@@ -798,9 +851,9 @@ impl<R: Read + Seek> FbxReader<R> {
         // Build root nodes: any model with parent 0 (or with no parent present)
         let mut root_nodes = Vec::new();
         // find top-level model ids
-        let top_level: Vec<i64> = model_map
-            .keys()
-            .cloned()
+        let top_level: Vec<i64> = ordered_model_ids
+            .iter()
+            .copied()
             .filter(|id| {
                 !connections
                     .iter()
@@ -819,6 +872,7 @@ impl<R: Read + Seek> FbxReader<R> {
         }
 
         Ok(FbxScene {
+            global_settings,
             root_nodes,
             materials,
             textures,
@@ -826,6 +880,49 @@ impl<R: Read + Seek> FbxReader<R> {
             warnings,
         })
     }
+}
+
+fn parse_global_settings(nodes: &[FbxNode]) -> Option<crate::fbx_scene::FbxGlobalSettings> {
+    let properties = nodes
+        .iter()
+        .find(|node| node.name == "GlobalSettings")?
+        .children
+        .iter()
+        .find(|node| node.name == "Properties70")?;
+    let integer = |property: &FbxNode| {
+        property.properties.iter().find_map(|value| match value {
+            FbxProperty::I16(value) => Some(*value as i32),
+            FbxProperty::I32(value) => Some(*value),
+            FbxProperty::I64(value) => i32::try_from(*value).ok(),
+            _ => None,
+        })
+    };
+    let number = |property: &FbxNode| {
+        property.properties.iter().find_map(|value| match value {
+            FbxProperty::F32(value) => Some(f64::from(*value)),
+            FbxProperty::F64(value) => Some(*value),
+            _ => None,
+        })
+    };
+    let mut result = crate::fbx_scene::FbxGlobalSettings::default();
+    for property in &properties.children {
+        let Some(FbxProperty::String(name)) = property.properties.first() else {
+            continue;
+        };
+        match name.as_str() {
+            "UpAxis" => result.up_axis = integer(property),
+            "UpAxisSign" => result.up_axis_sign = integer(property),
+            "FrontAxis" => result.front_axis = integer(property),
+            "FrontAxisSign" => result.front_axis_sign = integer(property),
+            "CoordAxis" => result.coord_axis = integer(property),
+            "CoordAxisSign" => result.coord_axis_sign = integer(property),
+            "UnitScaleFactor" => result.unit_scale_factor = number(property),
+            "OriginalUnitScaleFactor" => result.original_unit_scale_factor = number(property),
+            "TimeMode" => result.time_mode = integer(property),
+            _ => {}
+        }
+    }
+    (result != crate::fbx_scene::FbxGlobalSettings::default()).then_some(result)
 }
 
 fn identity_transform() -> FbxTransform {
@@ -1485,7 +1582,7 @@ impl<R: Read + Seek> FbxReader<R> {
         self.reader.read_exact(&mut type_code)?;
 
         match type_code[0] {
-            b'C' => {
+            b'B' | b'C' => {
                 let mut v = [0u8; 1];
                 self.reader.read_exact(&mut v)?;
                 Ok(FbxProperty::Bool(v[0] != 0))

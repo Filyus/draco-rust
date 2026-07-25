@@ -43,7 +43,7 @@ use draco_core::geometry_indices::FaceIndex;
 #[cfg(any(feature = "read", feature = "write"))]
 use draco_core::mesh::Mesh;
 #[cfg(any(feature = "read", feature = "write"))]
-use draco_io::{FbxNodeId, FbxScene, FbxSceneNode};
+use draco_io::{FbxGlobalSettings, FbxNodeId, FbxScene, FbxSceneNode, FbxTransformStack};
 
 /// Mesh data produced by the FBX reader, for JavaScript interop.
 #[cfg(feature = "read")]
@@ -364,6 +364,8 @@ pub struct ParseResult {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneOutput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_settings: Option<GlobalSettingsOutput>,
     pub root_nodes: Vec<SceneNodeOutput>,
     #[serde(default)]
     pub materials: Vec<MaterialOutput>,
@@ -371,6 +373,22 @@ pub struct SceneOutput {
     pub textures: Vec<TextureOutput>,
     #[serde(default)]
     pub animations: Vec<AnimationOutput>,
+}
+
+/// Source-only FBX coordinate/unit/time metadata for provenance exports.
+#[cfg(feature = "read")]
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalSettingsOutput {
+    pub up_axis: Option<i32>,
+    pub up_axis_sign: Option<i32>,
+    pub front_axis: Option<i32>,
+    pub front_axis_sign: Option<i32>,
+    pub coord_axis: Option<i32>,
+    pub coord_axis_sign: Option<i32>,
+    pub unit_scale_factor: Option<f64>,
+    pub original_unit_scale_factor: Option<f64>,
+    pub time_mode: Option<i32>,
 }
 
 /// One FBX model node returned to JavaScript.
@@ -382,6 +400,8 @@ pub struct SceneNodeOutput {
     pub name: Option<String>,
     /// Column-major local transform used by WebGL.
     pub matrix: Option<Vec<f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform_stack: Option<TransformStackOutput>,
     /// True when the source Model used pre/post rotation or pivot terms.
     /// The JS FBX adapter uses the skin bind pose as the baked local basis
     /// for these nodes; plain Model TRS remains authored animation data.
@@ -389,6 +409,25 @@ pub struct SceneNodeOutput {
     pub has_complex_transform_stack: bool,
     pub meshes: Vec<MeshData>,
     pub children: Vec<SceneNodeOutput>,
+}
+
+/// Raw FBX Model transform-stack values preserved for source-provenance export.
+#[cfg(feature = "read")]
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TransformStackOutput {
+    pub translation: Option<[f32; 3]>,
+    pub rotation: Option<[f32; 3]>,
+    pub scaling: Option<[f32; 3]>,
+    pub rotation_order: Option<i32>,
+    pub rotation_active: Option<bool>,
+    pub pre_rotation: Option<[f32; 3]>,
+    pub post_rotation: Option<[f32; 3]>,
+    pub rotation_offset: Option<[f32; 3]>,
+    pub rotation_pivot: Option<[f32; 3]>,
+    pub scaling_offset: Option<[f32; 3]>,
+    pub scaling_pivot: Option<[f32; 3]>,
+    pub inherit_type: Option<i32>,
 }
 
 /// Parse FBX binary file content.
@@ -414,6 +453,7 @@ fn parse_fbx_scene(data: &[u8]) -> ParseResult {
             let animations: Vec<AnimationOutput> =
                 scene.animations.iter().map(animation_to_output).collect();
             let scene_out = SceneOutput {
+                global_settings: scene.global_settings.as_ref().map(global_settings_to_output),
                 root_nodes: scene.root_nodes.iter().map(scene_node_to_output).collect(),
                 materials: materials.clone(),
                 textures: textures.clone(),
@@ -448,6 +488,21 @@ fn parse_fbx_scene(data: &[u8]) -> ParseResult {
 }
 
 #[cfg(feature = "read")]
+fn global_settings_to_output(settings: &FbxGlobalSettings) -> GlobalSettingsOutput {
+    GlobalSettingsOutput {
+        up_axis: settings.up_axis,
+        up_axis_sign: settings.up_axis_sign,
+        front_axis: settings.front_axis,
+        front_axis_sign: settings.front_axis_sign,
+        coord_axis: settings.coord_axis,
+        coord_axis_sign: settings.coord_axis_sign,
+        unit_scale_factor: settings.unit_scale_factor,
+        original_unit_scale_factor: settings.original_unit_scale_factor,
+        time_mode: settings.time_mode,
+    }
+}
+
+#[cfg(feature = "read")]
 fn scene_node_to_output(node: &FbxSceneNode) -> SceneNodeOutput {
     SceneNodeOutput {
         id: node.id.0,
@@ -455,6 +510,7 @@ fn scene_node_to_output(node: &FbxSceneNode) -> SceneNodeOutput {
         matrix: node
             .transform
             .map(|transform| transform.matrix.into_iter().flatten().collect()),
+        transform_stack: node.transform_stack.as_ref().map(transform_stack_to_output),
         has_complex_transform_stack: node.has_complex_transform_stack,
         meshes: node
             .mesh_instances
@@ -462,6 +518,24 @@ fn scene_node_to_output(node: &FbxSceneNode) -> SceneNodeOutput {
             .map(mesh_instance_to_data)
             .collect(),
         children: node.children.iter().map(scene_node_to_output).collect(),
+    }
+}
+
+#[cfg(feature = "read")]
+fn transform_stack_to_output(stack: &FbxTransformStack) -> TransformStackOutput {
+    TransformStackOutput {
+        translation: stack.translation,
+        rotation: stack.rotation,
+        scaling: stack.scaling,
+        rotation_order: stack.rotation_order,
+        rotation_active: stack.rotation_active,
+        pre_rotation: stack.pre_rotation,
+        post_rotation: stack.post_rotation,
+        rotation_offset: stack.rotation_offset,
+        rotation_pivot: stack.rotation_pivot,
+        scaling_offset: stack.scaling_offset,
+        scaling_pivot: stack.scaling_pivot,
+        inherit_type: stack.inherit_type,
     }
 }
 
@@ -1038,6 +1112,8 @@ pub struct SkinInput {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneInput {
+    #[serde(default)]
+    pub global_settings: Option<GlobalSettingsInput>,
     pub root_nodes: Vec<SceneNodeInput>,
     #[serde(default)]
     pub materials: Vec<MaterialInput>,
@@ -1045,6 +1121,38 @@ pub struct SceneInput {
     pub textures: Vec<TextureInput>,
     #[serde(default)]
     pub animations: Vec<AnimationInput>,
+}
+
+#[cfg(feature = "write")]
+#[derive(Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalSettingsInput {
+    pub up_axis: Option<i32>,
+    pub up_axis_sign: Option<i32>,
+    pub front_axis: Option<i32>,
+    pub front_axis_sign: Option<i32>,
+    pub coord_axis: Option<i32>,
+    pub coord_axis_sign: Option<i32>,
+    pub unit_scale_factor: Option<f64>,
+    pub original_unit_scale_factor: Option<f64>,
+    pub time_mode: Option<i32>,
+}
+
+#[cfg(feature = "write")]
+impl From<GlobalSettingsInput> for FbxGlobalSettings {
+    fn from(value: GlobalSettingsInput) -> Self {
+        Self {
+            up_axis: value.up_axis,
+            up_axis_sign: value.up_axis_sign,
+            front_axis: value.front_axis,
+            front_axis_sign: value.front_axis_sign,
+            coord_axis: value.coord_axis,
+            coord_axis_sign: value.coord_axis_sign,
+            unit_scale_factor: value.unit_scale_factor,
+            original_unit_scale_factor: value.original_unit_scale_factor,
+            time_mode: value.time_mode,
+        }
+    }
 }
 
 /// One FBX model node supplied by JavaScript.
@@ -1059,10 +1167,51 @@ pub struct SceneNodeInput {
     /// Row-major local affine transform, as used by `FbxTransform`.
     pub matrix: Option<Vec<f32>>,
     #[serde(default)]
+    pub transform_stack: Option<TransformStackInput>,
+    #[serde(default)]
     pub meshes: Vec<MeshInput>,
     /// Per-mesh material index list, mirroring `FbxMeshInstance::material_indices`.
     #[serde(default)]
     pub children: Vec<SceneNodeInput>,
+}
+
+/// Raw supported FBX Model stack supplied to the typed writer.
+#[cfg(feature = "write")]
+#[derive(Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TransformStackInput {
+    pub translation: Option<[f32; 3]>,
+    pub rotation: Option<[f32; 3]>,
+    pub scaling: Option<[f32; 3]>,
+    pub rotation_order: Option<i32>,
+    pub rotation_active: Option<bool>,
+    pub pre_rotation: Option<[f32; 3]>,
+    pub post_rotation: Option<[f32; 3]>,
+    pub rotation_offset: Option<[f32; 3]>,
+    pub rotation_pivot: Option<[f32; 3]>,
+    pub scaling_offset: Option<[f32; 3]>,
+    pub scaling_pivot: Option<[f32; 3]>,
+    pub inherit_type: Option<i32>,
+}
+
+#[cfg(feature = "write")]
+impl From<TransformStackInput> for FbxTransformStack {
+    fn from(value: TransformStackInput) -> Self {
+        Self {
+            translation: value.translation,
+            rotation: value.rotation,
+            scaling: value.scaling,
+            rotation_order: value.rotation_order,
+            rotation_active: value.rotation_active,
+            pre_rotation: value.pre_rotation,
+            post_rotation: value.post_rotation,
+            rotation_offset: value.rotation_offset,
+            rotation_pivot: value.rotation_pivot,
+            scaling_offset: value.scaling_offset,
+            scaling_pivot: value.scaling_pivot,
+            inherit_type: value.inherit_type,
+        }
+    }
 }
 
 /// Material input supplied by JavaScript for the FBX writer.
@@ -1280,6 +1429,7 @@ pub fn create_fbx_scene(scene_js: JsValue, _options_js: JsValue) -> JsValue {
 #[cfg(feature = "write")]
 fn scene_input_to_fbx_scene(input: SceneInput) -> Result<FbxScene, String> {
     Ok(FbxScene {
+        global_settings: input.global_settings.map(Into::into),
         root_nodes: input
             .root_nodes
             .into_iter()
@@ -1323,6 +1473,7 @@ fn scene_node_to_fbx(input: SceneNodeInput) -> Result<FbxSceneNode, String> {
         id: FbxNodeId(input.id),
         name: input.name,
         transform,
+        transform_stack: input.transform_stack.map(Into::into),
         has_complex_transform_stack: false,
         mesh_instances: input
             .meshes
@@ -2095,10 +2246,12 @@ mod reader_tests {
         // Build a minimal scene (one triangle) via the writer, then parse it
         // back through the shared reader to verify the WASM glue.
         let scene = FbxScene {
+            global_settings: None,
             root_nodes: vec![FbxSceneNode {
                 id: FbxNodeId(1),
                 name: Some("Root".to_string()),
                 transform: None,
+                transform_stack: None,
                 has_complex_transform_stack: false,
                 mesh_instances: vec![FbxMeshInstance {
                     name: Some("Triangle".to_string()),
@@ -2130,10 +2283,12 @@ mod reader_tests {
     #[test]
     fn parse_fbx_exposes_material_and_animation_outputs() {
         let scene = FbxScene {
+            global_settings: None,
             root_nodes: vec![FbxSceneNode {
                 id: FbxNodeId(1),
                 name: Some("Root".to_string()),
                 transform: None,
+                transform_stack: None,
                 has_complex_transform_stack: false,
                 mesh_instances: Vec::new(),
                 children: Vec::new(),

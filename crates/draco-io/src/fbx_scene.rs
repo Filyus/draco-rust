@@ -25,6 +25,62 @@ pub struct FbxTransform {
     pub matrix: [[f32; 4]; 4],
 }
 
+/// Source Model transform-stack properties required to reproduce FBX local
+/// animation semantics. Values remain in authored FBX units and degrees.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FbxTransformStack {
+    /// `Lcl Translation` in source units.
+    pub translation: Option<[f32; 3]>,
+    /// `Lcl Rotation` in degrees.
+    pub rotation: Option<[f32; 3]>,
+    /// `Lcl Scaling`.
+    pub scaling: Option<[f32; 3]>,
+    /// FBX `RotationOrder` enum value.
+    pub rotation_order: Option<i32>,
+    /// FBX `RotationActive` flag. Its absence is distinct from `false` in a
+    /// source-provenance export because the Model template supplies defaults.
+    pub rotation_active: Option<bool>,
+    /// `PreRotation` in degrees.
+    pub pre_rotation: Option<[f32; 3]>,
+    /// `PostRotation` in degrees.
+    pub post_rotation: Option<[f32; 3]>,
+    /// `RotationOffset` in source units.
+    pub rotation_offset: Option<[f32; 3]>,
+    /// `RotationPivot` in source units.
+    pub rotation_pivot: Option<[f32; 3]>,
+    /// `ScalingOffset` in source units.
+    pub scaling_offset: Option<[f32; 3]>,
+    /// `ScalingPivot` in source units.
+    pub scaling_pivot: Option<[f32; 3]>,
+    /// FBX `InheritType` enum value.
+    pub inherit_type: Option<i32>,
+}
+
+/// Source FBX global coordinate, unit, and display-time settings retained for
+/// FBX-to-FBX provenance exports. This is intentionally not part of the
+/// portable SceneDocument contract.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FbxGlobalSettings {
+    /// FBX `UpAxis` enum value.
+    pub up_axis: Option<i32>,
+    /// FBX `UpAxisSign` value.
+    pub up_axis_sign: Option<i32>,
+    /// FBX `FrontAxis` enum value.
+    pub front_axis: Option<i32>,
+    /// FBX `FrontAxisSign` value.
+    pub front_axis_sign: Option<i32>,
+    /// FBX `CoordAxis` enum value.
+    pub coord_axis: Option<i32>,
+    /// FBX `CoordAxisSign` value.
+    pub coord_axis_sign: Option<i32>,
+    /// FBX `UnitScaleFactor` value.
+    pub unit_scale_factor: Option<f64>,
+    /// FBX `OriginalUnitScaleFactor` value.
+    pub original_unit_scale_factor: Option<f64>,
+    /// FBX `TimeMode` enum value.
+    pub time_mode: Option<i32>,
+}
+
 /// Geometry attached to one [`FbxSceneNode`].
 ///
 /// This is materialized Draco geometry, not a lossless FBX geometry object.
@@ -132,8 +188,8 @@ pub struct FbxMorphTarget {
 
 /// A node in a hierarchy extracted from or written to FBX Model connections.
 ///
-/// Pivot transforms and unsupported layer data are intentionally not
-/// represented here. Skin and blend-shape data lives on mesh instances.
+/// The supported raw Model transform stack is retained for source-provenance
+/// FBX exports. Skin and blend-shape data lives on mesh instances.
 #[derive(Debug, Clone)]
 pub struct FbxSceneNode {
     /// Stable id used by skin clusters and animation channels.
@@ -142,6 +198,8 @@ pub struct FbxSceneNode {
     pub name: Option<String>,
     /// Supported local transform properties synthesized into a matrix.
     pub transform: Option<FbxTransform>,
+    /// Optional authored FBX stack behind `transform`.
+    pub transform_stack: Option<FbxTransformStack>,
     /// Whether the node's static local transform uses FBX rotation/pivot
     /// terms beyond plain local TRS. Consumers that only receive the lossy
     /// matrix can use the skin bind pose as the baked local basis for these
@@ -160,6 +218,7 @@ impl FbxSceneNode {
             id: FbxNodeId(0),
             name,
             transform: None,
+            transform_stack: None,
             has_complex_transform_stack: false,
             mesh_instances: Vec::new(),
             children: Vec::new(),
@@ -404,6 +463,8 @@ pub struct FbxAnimation {
 /// view. Use `FbxReader::read_nodes` when callers need the parsed FBX nodes.
 #[derive(Debug, Clone, Default)]
 pub struct FbxScene {
+    /// Source-only global settings used by compatible FBX re-export.
+    pub global_settings: Option<FbxGlobalSettings>,
     /// Top-level FBX model nodes.
     pub root_nodes: Vec<FbxSceneNode>,
     /// Material objects, referenced by index from `mesh_instances` via

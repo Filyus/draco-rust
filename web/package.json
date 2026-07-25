@@ -9,6 +9,8 @@
     "test:gltf-scene-document": "node tests/gltf-scene-document-parity.mjs",
     "test:fbx-scene-document": "node tests/fbx-scene-document-parity.mjs",
     "test:fbx-scene-provenance": "node tests/fbx-scene-provenance.mjs",
+    "test:fbx-source-provenance": "node tests/fbx-source-provenance-roundtrip.mjs",
+    "test:fbx-source-provenance-blender": "node tests/fbx-source-provenance-blender-roundtrip.mjs",
     "test:scene-document-glb": "node tests/scene-document-glb-roundtrip.mjs",
     "test:fbx-mixamo": "node tests/fbx-matrix-probe.mjs",
     "test:fbx-morph": "node tests/fbx-morph-probe.mjs",
