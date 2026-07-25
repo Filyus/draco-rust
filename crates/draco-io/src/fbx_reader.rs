@@ -31,6 +31,7 @@ use std::fs::{self, File};
 use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
+use crate::fbx_options::{FbxByteOrder, FbxReadOptions};
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::{FaceIndex, PointIndex};
@@ -58,10 +59,48 @@ pub use crate::fbx_scene::{
 /// FBX file magic: "Kaydara FBX Binary  \0"
 const FBX_MAGIC: &[u8; 21] = b"Kaydara FBX Binary  \0";
 
+/// Byte 21 of the fixed magic, immediately after the NUL terminator.
+const FBX_MAGIC_TAIL: u8 = 0x1A;
+
+/// `FixedMagic[22]`, `EndianMarker[1]`, `Version[4]`.
+///
+/// The layout is fixed, so this offset does not depend on byte order.
+const FBX_HEADER_LEN: u64 = 27;
+
+/// Oldest supported version.
+///
+/// FBX 3000-era files reuse the same magic but lay out `Objects` differently,
+/// with pre-7000 multi-value arrays. This reader has never understood them: it
+/// used to return an empty scene, which reads as "the file had no meshes"
+/// rather than "this file is not supported". Rejecting them says so outright.
+const FBX_MIN_VERSION: u32 = 6000;
+
+/// Newest supported version. Beyond this the node record layout is unknown, and
+/// guessing a record width from a garbage version corrupts the whole parse.
+const FBX_MAX_VERSION: u32 = 8000;
+
 /// FBX reader for binary FBX files.
 pub struct FbxReader<R: Read + Seek = BufReader<File>> {
     reader: R,
     version: u32,
+    byte_order: FbxByteOrder,
+    options: FbxReadOptions,
+    /// Total input length, captured once so record offsets can be bounds
+    /// checked without trusting the file's own claims.
+    file_len: u64,
+    budget: DecodeBudget,
+}
+
+/// Running totals for the limits that apply to a whole document.
+///
+/// Reset at the start of every [`FbxReader::read_nodes`] call: that method is
+/// re-entrant (both `read_scene` and `read_meshes` call it), and carrying
+/// totals across calls would fail the second read of a file the first read
+/// accepted.
+#[derive(Debug, Clone, Copy, Default)]
+struct DecodeBudget {
+    nodes: u64,
+    array_raw_bytes: u64,
 }
 
 /// FBX reader backed by in-memory bytes.
@@ -83,6 +122,12 @@ pub struct FbxNode {
 pub enum FbxProperty {
     /// Boolean property.
     Bool(bool),
+    /// Single-byte `Z` property, kept unsigned.
+    ///
+    /// The reverse-engineered specification calls `Z` a signed `i8`, while
+    /// `ufbx` -- the de-facto compatibility oracle, and what Blender ships --
+    /// reads all of `B`, `C` and `Z` as unsigned bytes. This follows `ufbx`.
+    U8(u8),
     /// 16-bit signed integer property.
     I16(i16),
     /// 32-bit signed integer property.
@@ -110,18 +155,31 @@ pub enum FbxProperty {
 }
 
 impl FbxReader<BufReader<File>> {
-    /// Open an FBX file from a path.
+    /// Open an FBX file from a path, using default read options.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        Self::open_with_options(path, FbxReadOptions::default())
+    }
+
+    /// Open an FBX file from a path with explicit read options.
+    pub fn open_with_options<P: AsRef<Path>>(path: P, options: FbxReadOptions) -> io::Result<Self> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-        Self::new(reader)
+        Self::new_with_options(reader, options)
     }
 }
 
 impl FbxReader<Cursor<Vec<u8>>> {
-    /// Create an FBX reader from in-memory bytes.
+    /// Create an FBX reader from in-memory bytes, using default read options.
     pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> io::Result<Self> {
         Self::new(Cursor::new(bytes.into()))
+    }
+
+    /// Create an FBX reader from in-memory bytes with explicit read options.
+    pub fn from_bytes_with_options(
+        bytes: impl Into<Vec<u8>>,
+        options: FbxReadOptions,
+    ) -> io::Result<Self> {
+        Self::new_with_options(Cursor::new(bytes.into()), options)
     }
 
     /// Read all meshes directly from in-memory bytes.
@@ -1483,32 +1541,131 @@ impl ReadFromBytes for FbxReader<Cursor<Vec<u8>>> {
 }
 
 impl<R: Read + Seek> FbxReader<R> {
-    /// Create a new FBX reader from a reader.
-    pub fn new(mut reader: R) -> io::Result<Self> {
-        // Read and verify magic
-        let mut magic = [0u8; 21];
-        reader.read_exact(&mut magic)?;
-        if &magic != FBX_MAGIC {
+    /// Create a new FBX reader from a reader, using default read options.
+    pub fn new(reader: R) -> io::Result<Self> {
+        Self::new_with_options(reader, FbxReadOptions::default())
+    }
+
+    /// Create a new FBX reader from a reader with explicit read options.
+    ///
+    /// The header itself is parsed under `options`, so the options cannot be
+    /// changed after construction.
+    pub fn new_with_options(mut reader: R, options: FbxReadOptions) -> io::Result<Self> {
+        let file_len = reader.seek(SeekFrom::End(0))?;
+        reader.rewind()?;
+
+        if file_len > options.limits.max_file_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                format!(
+                    "FBX: input is {file_len} bytes, over the {} byte limit",
+                    options.limits.max_file_bytes
+                ),
+            ));
+        }
+        if file_len < FBX_HEADER_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("FBX: input is {file_len} bytes, shorter than the 27-byte header"),
+            ));
+        }
+
+        // `FixedMagic[22] EndianMarker[1] Version[4]`, read in one go.
+        let mut header = [0u8; FBX_HEADER_LEN as usize];
+        reader.read_exact(&mut header)?;
+
+        if &header[..21] != FBX_MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Not a valid binary FBX file",
             ));
         }
+        if header[21] != FBX_MAGIC_TAIL {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "FBX: fixed magic ends with {:#04x}, expected {FBX_MAGIC_TAIL:#04x}",
+                    header[21]
+                ),
+            ));
+        }
 
-        // Skip 2 unknown bytes
-        reader.seek(SeekFrom::Current(2))?;
+        // ufbx treats any non-zero marker as big-endian; strict mode accepts
+        // only the two documented values.
+        let marker = header[22];
+        if options.strict && marker > 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("FBX: endian marker {marker:#04x} is neither 0 nor 1"),
+            ));
+        }
+        let byte_order = if marker == 0 {
+            FbxByteOrder::Little
+        } else {
+            FbxByteOrder::Big
+        };
 
-        // Read version
-        let mut version_bytes = [0u8; 4];
-        reader.read_exact(&mut version_bytes)?;
-        let version = u32::from_le_bytes(version_bytes);
+        let version = byte_order.u32([header[23], header[24], header[25], header[26]]);
+        if !(FBX_MIN_VERSION..=FBX_MAX_VERSION).contains(&version) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "FBX: version {version} is outside the supported \
+                     {FBX_MIN_VERSION}..={FBX_MAX_VERSION} range \
+                     (pre-6000 files use a layout this reader does not implement)"
+                ),
+            ));
+        }
 
-        Ok(Self { reader, version })
+        Ok(Self {
+            reader,
+            version,
+            byte_order,
+            options,
+            file_len,
+            budget: DecodeBudget::default(),
+        })
+    }
+
+    /// Fails when `requested` bytes cannot possibly be in the file.
+    ///
+    /// Checked before every length-prefixed allocation so a hostile header
+    /// cannot make us reserve gigabytes for data that is not there.
+    fn check_available(&mut self, requested: u64, what: &str) -> io::Result<()> {
+        let position = self.reader.stream_position()?;
+        let remaining = self.file_len.saturating_sub(position);
+        if requested > remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "FBX: {what} at offset {position} claims {requested} bytes, \
+                     but only {remaining} remain in the file"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn limit_exceeded(what: &str, value: u64, limit: u64) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::OutOfMemory,
+            format!("FBX: {what} is {value}, over the {limit} limit"),
+        )
     }
 
     /// Get the FBX file version.
     pub fn version(&self) -> u32 {
         self.version
+    }
+
+    /// Byte order selected by this file's header endian marker.
+    pub fn byte_order(&self) -> FbxByteOrder {
+        self.byte_order
+    }
+
+    /// Read options this reader was constructed with.
+    pub fn options(&self) -> &FbxReadOptions {
+        &self.options
     }
 
     /// Check if this is FBX 7.5+ (uses 64-bit offsets).
@@ -1517,17 +1674,25 @@ impl<R: Read + Seek> FbxReader<R> {
     }
 
     /// Read a node record.
-    fn read_node(&mut self) -> io::Result<Option<FbxNode>> {
+    fn read_node(&mut self, depth: u32) -> io::Result<Option<FbxNode>> {
+        if depth > self.options.limits.max_depth {
+            return Err(Self::limit_exceeded(
+                "node nesting depth",
+                depth.into(),
+                self.options.limits.max_depth.into(),
+            ));
+        }
+        let order = self.byte_order;
         let (end_offset, num_properties, _property_list_len, name_len) = if self.is_64bit() {
             let mut buf = [0u8; 25];
             self.reader.read_exact(&mut buf)?;
-            let end_offset = u64::from_le_bytes([
+            let end_offset = order.u64([
                 buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
             ]);
-            let num_properties = u64::from_le_bytes([
+            let num_properties = order.u64([
                 buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
             ]);
-            let property_list_len = u64::from_le_bytes([
+            let property_list_len = order.u64([
                 buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
             ]);
             let name_len = buf[24];
@@ -1540,9 +1705,9 @@ impl<R: Read + Seek> FbxReader<R> {
         } else {
             let mut buf = [0u8; 13];
             self.reader.read_exact(&mut buf)?;
-            let end_offset = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as u64;
-            let num_properties = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-            let _property_list_len = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]) as u64;
+            let end_offset = order.u32([buf[0], buf[1], buf[2], buf[3]]) as u64;
+            let num_properties = order.u32([buf[4], buf[5], buf[6], buf[7]]);
+            let _property_list_len = order.u32([buf[8], buf[9], buf[10], buf[11]]) as u64;
             let name_len = buf[12];
             (end_offset, num_properties, _property_list_len, name_len)
         };
@@ -1552,12 +1717,57 @@ impl<R: Read + Seek> FbxReader<R> {
             return Ok(None);
         }
 
-        // Read name
+        // A record must end after it starts and inside the file. Without the
+        // first check a backwards `end_offset` makes the seek below rewind,
+        // and the caller re-reads the same record forever.
+        let record_end = self.reader.stream_position()?;
+        if end_offset < record_end {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "FBX: node record at {} claims it ends at {end_offset}, before its own header",
+                    record_end
+                ),
+            ));
+        }
+        if end_offset > self.file_len {
+            if self.options.strict {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "FBX: node record claims it ends at {end_offset}, past the {} byte file",
+                        self.file_len
+                    ),
+                ));
+            }
+            // Some exporters emit a bogus trailing offset. Treat it as the end
+            // of this sibling list rather than failing an otherwise good file.
+            return Ok(None);
+        }
+
+        self.budget.nodes += 1;
+        if self.budget.nodes > self.options.limits.max_nodes {
+            return Err(Self::limit_exceeded(
+                "node count",
+                self.budget.nodes,
+                self.options.limits.max_nodes,
+            ));
+        }
+
+        // `name_len` is a u8, so it needs no limit of its own.
         let mut name_bytes = vec![0u8; name_len as usize];
         self.reader.read_exact(&mut name_bytes)?;
         let name = String::from_utf8_lossy(&name_bytes).to_string();
 
-        // Read properties
+        // Bound the count before reserving for it: `num_properties` comes
+        // straight from the file and feeds `Vec::with_capacity`.
+        if u64::from(num_properties) > self.options.limits.max_properties_per_node {
+            return Err(Self::limit_exceeded(
+                "property count on one node",
+                num_properties.into(),
+                self.options.limits.max_properties_per_node,
+            ));
+        }
         let mut properties = Vec::with_capacity(num_properties as usize);
         for _ in 0..num_properties {
             properties.push(self.read_property()?);
@@ -1567,7 +1777,7 @@ impl<R: Read + Seek> FbxReader<R> {
         let mut children = Vec::new();
         let current_pos = self.reader.stream_position()?;
         if current_pos < end_offset {
-            while let Some(child) = self.read_node()? {
+            while let Some(child) = self.read_node(depth + 1)? {
                 children.push(child);
             }
         }
@@ -1584,47 +1794,66 @@ impl<R: Read + Seek> FbxReader<R> {
 
     /// Read a property.
     fn read_property(&mut self) -> io::Result<FbxProperty> {
+        let order = self.byte_order;
         let mut type_code = [0u8; 1];
         self.reader.read_exact(&mut type_code)?;
 
         match type_code[0] {
+            // Single-byte scalars are never byte-swapped.
             b'B' | b'C' => {
                 let mut v = [0u8; 1];
                 self.reader.read_exact(&mut v)?;
                 Ok(FbxProperty::Bool(v[0] != 0))
             }
+            b'Z' => {
+                let mut v = [0u8; 1];
+                self.reader.read_exact(&mut v)?;
+                Ok(FbxProperty::U8(v[0]))
+            }
             b'Y' => {
                 let mut v = [0u8; 2];
                 self.reader.read_exact(&mut v)?;
-                Ok(FbxProperty::I16(i16::from_le_bytes(v)))
+                Ok(FbxProperty::I16(order.i16(v)))
             }
             b'I' => {
                 let mut v = [0u8; 4];
                 self.reader.read_exact(&mut v)?;
-                Ok(FbxProperty::I32(i32::from_le_bytes(v)))
+                Ok(FbxProperty::I32(order.i32(v)))
             }
             b'L' => {
                 let mut v = [0u8; 8];
                 self.reader.read_exact(&mut v)?;
-                Ok(FbxProperty::I64(i64::from_le_bytes(v)))
+                Ok(FbxProperty::I64(order.i64(v)))
             }
             b'F' => {
                 let mut v = [0u8; 4];
                 self.reader.read_exact(&mut v)?;
-                Ok(FbxProperty::F32(f32::from_le_bytes(v)))
+                Ok(FbxProperty::F32(order.f32(v)))
             }
             b'D' => {
                 let mut v = [0u8; 8];
                 self.reader.read_exact(&mut v)?;
-                Ok(FbxProperty::F64(f64::from_le_bytes(v)))
+                Ok(FbxProperty::F64(order.f64(v)))
             }
+            // The length is byte-swapped; the payload bytes never are.
             b'S' | b'R' => {
                 let mut len_bytes = [0u8; 4];
                 self.reader.read_exact(&mut len_bytes)?;
-                let len = u32::from_le_bytes(len_bytes) as usize;
-                let mut data = vec![0u8; len];
+                let len = u64::from(order.u32(len_bytes));
+                let is_string = type_code[0] == b'S';
+                let (limit, what) = if is_string {
+                    (self.options.limits.max_string_bytes, "string property")
+                } else {
+                    // Embedded textures land here through `Video.Content`.
+                    (self.options.limits.max_blob_bytes, "raw property")
+                };
+                if len > limit {
+                    return Err(Self::limit_exceeded(what, len, limit));
+                }
+                self.check_available(len, what)?;
+                let mut data = vec![0u8; len as usize];
                 self.reader.read_exact(&mut data)?;
-                if type_code[0] == b'S' {
+                if is_string {
                     Ok(FbxProperty::String(
                         String::from_utf8_lossy(&data).to_string(),
                     ))
@@ -1632,7 +1861,9 @@ impl<R: Read + Seek> FbxReader<R> {
                     Ok(FbxProperty::Raw(data))
                 }
             }
-            b'b' => Ok(FbxProperty::BoolArray(self.read_array_bool()?)),
+            // `b` is a bool array and `c` a byte array; both are one byte per
+            // element, so neither is ever byte-swapped.
+            b'b' | b'c' => Ok(FbxProperty::BoolArray(self.read_array_bool()?)),
             b'i' => Ok(FbxProperty::I32Array(self.read_array_i32()?)),
             b'l' => Ok(FbxProperty::I64Array(self.read_array_i64()?)),
             b'f' => Ok(FbxProperty::F32Array(self.read_array_f32()?)),
@@ -1646,39 +1877,118 @@ impl<R: Read + Seek> FbxReader<R> {
 
     /// Read array header and return (length, encoding, compressed_length).
     fn read_array_header(&mut self) -> io::Result<(u32, u32, u32)> {
+        let order = self.byte_order;
         let mut buf = [0u8; 12];
         self.reader.read_exact(&mut buf)?;
-        let array_len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        let encoding = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-        let compressed_len = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        let array_len = order.u32([buf[0], buf[1], buf[2], buf[3]]);
+        let encoding = order.u32([buf[4], buf[5], buf[6], buf[7]]);
+        let compressed_len = order.u32([buf[8], buf[9], buf[10], buf[11]]);
         Ok((array_len, encoding, compressed_len))
     }
 
-    /// Read array data (handles compression).
+    /// Read array data, decompressing and byte-swapping as needed.
+    ///
+    /// `element_size` drives the big-endian conversion, which happens once in
+    /// bulk here so the little-endian path stays a plain `from_le_bytes`
+    /// decode in the callers.
     fn read_array_data(
+        &mut self,
+        len: u32,
+        encoding: u32,
+        compressed_len: u32,
+        element_size: usize,
+    ) -> io::Result<Vec<u8>> {
+        let limits = self.options.limits;
+        let element_count = u64::from(len);
+        if element_count > limits.max_array_elements {
+            return Err(Self::limit_exceeded(
+                "array element count",
+                element_count,
+                limits.max_array_elements,
+            ));
+        }
+        // `usize` is 32-bit on wasm32, so this product genuinely overflows
+        // there rather than merely in theory.
+        let uncompressed_size =
+            element_count
+                .checked_mul(element_size as u64)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("FBX: array of {element_count} x {element_size} bytes overflows"),
+                    )
+                })?;
+        if uncompressed_size > limits.max_array_raw_bytes {
+            return Err(Self::limit_exceeded(
+                "array size",
+                uncompressed_size,
+                limits.max_array_raw_bytes,
+            ));
+        }
+        self.budget.array_raw_bytes = self
+            .budget
+            .array_raw_bytes
+            .saturating_add(uncompressed_size);
+        if self.budget.array_raw_bytes > limits.max_total_array_raw_bytes {
+            return Err(Self::limit_exceeded(
+                "total decoded array bytes",
+                self.budget.array_raw_bytes,
+                limits.max_total_array_raw_bytes,
+            ));
+        }
+        let uncompressed_size = usize::try_from(uncompressed_size).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                format!("FBX: array of {uncompressed_size} bytes does not fit in memory"),
+            )
+        })?;
+
+        let order = self.byte_order;
+        let mut data = self.read_array_payload(encoding, compressed_len, uncompressed_size)?;
+        order.swap_elements_in_place(&mut data, element_size);
+        Ok(data)
+    }
+
+    fn read_array_payload(
         &mut self,
         encoding: u32,
         compressed_len: u32,
         uncompressed_size: usize,
     ) -> io::Result<Vec<u8>> {
         if encoding == 0 {
+            self.check_available(uncompressed_size as u64, "uncompressed array")?;
             let mut data = vec![0u8; uncompressed_size];
             self.reader.read_exact(&mut data)?;
             Ok(data)
         } else if encoding == 1 {
             // Deflate/zlib compressed
+            self.check_available(compressed_len.into(), "compressed array")?;
             let mut compressed = vec![0u8; compressed_len as usize];
             self.reader.read_exact(&mut compressed)?;
 
             #[cfg(feature = "compression")]
             {
-                use miniz_oxide::inflate::decompress_to_vec_zlib;
-                decompress_to_vec_zlib(&compressed).map_err(|e| {
-                    io::Error::new(
+                use miniz_oxide::inflate::decompress_to_vec_zlib_with_limit;
+                // Bounding the output makes a zip bomb an error instead of an
+                // out-of-memory abort; the exact-size check then rejects a
+                // stream that does not describe this array.
+                let data = decompress_to_vec_zlib_with_limit(&compressed, uncompressed_size)
+                    .map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Decompression error: {:?}", e),
+                        )
+                    })?;
+                if data.len() != uncompressed_size {
+                    return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Decompression error: {:?}", e),
-                    )
-                })
+                        format!(
+                            "FBX: compressed array decoded to {} bytes, expected {uncompressed_size}",
+                            data.len()
+                        ),
+                    ));
+                }
+                Ok(data)
             }
 
             #[cfg(not(feature = "compression"))]
@@ -1696,15 +2006,16 @@ impl<R: Read + Seek> FbxReader<R> {
         }
     }
 
+    /// Byte-array payload (`b`/`c`); single bytes are never byte-swapped.
     fn read_array_bool(&mut self) -> io::Result<Vec<bool>> {
         let (len, encoding, compressed_len) = self.read_array_header()?;
-        let data = self.read_array_data(encoding, compressed_len, len as usize)?;
+        let data = self.read_array_data(len, encoding, compressed_len, 1)?;
         Ok(data.into_iter().map(|b| b != 0).collect())
     }
 
     fn read_array_i32(&mut self) -> io::Result<Vec<i32>> {
         let (len, encoding, compressed_len) = self.read_array_header()?;
-        let data = self.read_array_data(encoding, compressed_len, len as usize * 4)?;
+        let data = self.read_array_data(len, encoding, compressed_len, 4)?;
         Ok(data
             .chunks_exact(4)
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -1713,7 +2024,7 @@ impl<R: Read + Seek> FbxReader<R> {
 
     fn read_array_i64(&mut self) -> io::Result<Vec<i64>> {
         let (len, encoding, compressed_len) = self.read_array_header()?;
-        let data = self.read_array_data(encoding, compressed_len, len as usize * 8)?;
+        let data = self.read_array_data(len, encoding, compressed_len, 8)?;
         Ok(data
             .chunks_exact(8)
             .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
@@ -1722,7 +2033,7 @@ impl<R: Read + Seek> FbxReader<R> {
 
     fn read_array_f32(&mut self) -> io::Result<Vec<f32>> {
         let (len, encoding, compressed_len) = self.read_array_header()?;
-        let data = self.read_array_data(encoding, compressed_len, len as usize * 4)?;
+        let data = self.read_array_data(len, encoding, compressed_len, 4)?;
         Ok(data
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -1731,7 +2042,7 @@ impl<R: Read + Seek> FbxReader<R> {
 
     fn read_array_f64(&mut self) -> io::Result<Vec<f64>> {
         let (len, encoding, compressed_len) = self.read_array_header()?;
-        let data = self.read_array_data(encoding, compressed_len, len as usize * 8)?;
+        let data = self.read_array_data(len, encoding, compressed_len, 8)?;
         Ok(data
             .chunks_exact(8)
             .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
@@ -1739,12 +2050,16 @@ impl<R: Read + Seek> FbxReader<R> {
     }
 
     /// Read all top-level nodes.
+    ///
+    /// Safe to call more than once: per-document budgets restart here, so a
+    /// second read of the same file behaves exactly like the first.
     pub fn read_nodes(&mut self) -> io::Result<Vec<FbxNode>> {
-        // Seek to start of nodes (after header)
-        self.reader.seek(SeekFrom::Start(27))?;
+        // Seek to start of nodes (after the fixed-size header).
+        self.reader.seek(SeekFrom::Start(FBX_HEADER_LEN))?;
+        self.budget = DecodeBudget::default();
 
         let mut nodes = Vec::new();
-        while let Some(node) = self.read_node()? {
+        while let Some(node) = self.read_node(0)? {
             nodes.push(node);
         }
         Ok(nodes)
@@ -2603,17 +2918,22 @@ fn resolve_layer_values(
     // Helper: pick the value tuple at a logical position.
     let tuple_at = |pos: usize| -> Vec<f32> {
         let resolved_pos = if reference == "IndexToDirect" {
-            index
-                .and_then(|idx| idx.get(pos).map(|v| *v as usize))
-                .unwrap_or(pos)
+            // A negative index is corrupt data. Casting it to `usize` would
+            // produce a huge value and overflow the offset below.
+            match index.and_then(|idx| idx.get(pos).copied()) {
+                Some(value) if value < 0 => return vec![0.0; stride],
+                Some(value) => value as usize,
+                None => pos,
+            }
         } else {
             pos
         };
-        let start = resolved_pos * stride;
-        if start + stride <= values.len() {
-            values[start..start + stride].to_vec()
-        } else {
-            vec![0.0; stride]
+        let end = resolved_pos
+            .checked_mul(stride)
+            .and_then(|start| start.checked_add(stride));
+        match end {
+            Some(end) if end <= values.len() => values[end - stride..end].to_vec(),
+            _ => vec![0.0; stride],
         }
     };
 
@@ -2651,6 +2971,7 @@ fn resolve_layer_values(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fbx_options::FbxDecodeLimits;
     use std::io::Cursor;
 
     #[test]
@@ -2685,5 +3006,122 @@ mod tests {
         let mut reader = FbxReader::new(Cursor::new(data)).unwrap();
         let scene = reader.read_scene().unwrap();
         assert!(scene.root_nodes.is_empty());
+    }
+
+    /// Builds a header plus `body`, using the given endian marker.
+    fn header_with(marker: u8, version: u32, body: &[u8]) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(FBX_MAGIC);
+        data.push(FBX_MAGIC_TAIL);
+        data.push(marker);
+        if marker == 0 {
+            data.extend_from_slice(&version.to_le_bytes());
+        } else {
+            data.extend_from_slice(&version.to_be_bytes());
+        }
+        data.extend_from_slice(body);
+        data
+    }
+
+    #[test]
+    fn endian_marker_selects_big_endian_and_its_version() {
+        let data = header_with(1, 7500, &[0u8; 25]);
+        let reader = FbxReader::new(Cursor::new(data)).unwrap();
+        assert_eq!(reader.byte_order(), FbxByteOrder::Big);
+        assert_eq!(reader.version(), 7500);
+    }
+
+    #[test]
+    fn strict_mode_rejects_an_undocumented_endian_marker() {
+        let data = header_with(2, 7500, &[0u8; 25]);
+        // Lenient follows ufbx: any non-zero marker means big-endian.
+        assert!(FbxReader::new(Cursor::new(data.clone())).is_ok());
+        assert!(
+            FbxReader::new_with_options(Cursor::new(data), FbxReadOptions::strict()).is_err(),
+            "strict mode should reject a marker that is neither 0 nor 1"
+        );
+    }
+
+    #[test]
+    fn truncated_magic_tail_is_rejected() {
+        let mut data = Vec::new();
+        data.extend_from_slice(FBX_MAGIC);
+        data.push(0x00); // should be 0x1A
+        data.push(0x00);
+        data.extend_from_slice(&7500u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 25]);
+        assert!(FbxReader::new(Cursor::new(data)).is_err());
+    }
+
+    #[test]
+    fn pre_6000_versions_are_rejected_rather_than_read_as_empty() {
+        // These used to yield a scene with no nodes, which reads as "the file
+        // had no meshes" instead of "this layout is unsupported".
+        let data = header_with(0, 3000, &[0u8; 13]);
+        let error = FbxReader::new(Cursor::new(data))
+            .err()
+            .expect("expected rejection");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("3000"), "{error}");
+    }
+
+    #[test]
+    fn a_backwards_end_offset_is_rejected_instead_of_looping() {
+        // `end_offset` points back into the header. Before the bounds check
+        // the reader seeked backwards and re-read this record forever.
+        let mut body = Vec::new();
+        body.extend_from_slice(&1u32.to_le_bytes()); // end_offset = 1
+        body.extend_from_slice(&0u32.to_le_bytes()); // num_properties
+        body.extend_from_slice(&0u32.to_le_bytes()); // property_list_len
+        body.push(0); // name_len
+        let data = header_with(0, 7400, &body);
+
+        let mut reader = FbxReader::new(Cursor::new(data)).unwrap();
+        let error = reader.read_nodes().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn an_oversized_array_is_refused_without_allocating() {
+        // A 12-byte array header claiming ~4G elements: the old reader
+        // multiplied it out and asked the allocator for 34 GB.
+        let mut body = Vec::new();
+        let node_start = 27u32;
+        let node_len = 13 + 1 + 1 + 12;
+        body.extend_from_slice(&(node_start + node_len).to_le_bytes());
+        body.extend_from_slice(&1u32.to_le_bytes()); // one property
+        body.extend_from_slice(&13u32.to_le_bytes()); // property_list_len
+        body.push(1); // name_len
+        body.push(b'X');
+        body.push(b'd'); // f64 array
+        body.extend_from_slice(&u32::MAX.to_le_bytes()); // element count
+        body.extend_from_slice(&0u32.to_le_bytes()); // encoding: raw
+        body.extend_from_slice(&0u32.to_le_bytes()); // compressed length
+        let data = header_with(0, 7400, &body);
+
+        let mut reader = FbxReader::new(Cursor::new(data)).unwrap();
+        let error = reader.read_nodes().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+    }
+
+    #[test]
+    fn reading_the_same_document_twice_succeeds() {
+        // `read_nodes` is re-entrant; a per-document budget that accumulated
+        // across calls would fail the second read of an accepted file.
+        let data = header_with(0, 7400, &[0u8; 13]);
+        let mut reader = FbxReader::new(Cursor::new(data)).unwrap();
+        assert!(reader.read_nodes().is_ok());
+        assert!(reader.read_nodes().is_ok());
+    }
+
+    #[test]
+    fn a_file_over_the_size_limit_is_refused() {
+        let data = header_with(0, 7400, &[0u8; 13]);
+        let options = FbxReadOptions::default()
+            .with_limits(FbxDecodeLimits::default().with_max_file_bytes(8));
+        let error = FbxReader::new_with_options(Cursor::new(data), options)
+            .err()
+            .expect("expected rejection");
+        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
     }
 }

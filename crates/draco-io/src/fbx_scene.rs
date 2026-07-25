@@ -487,6 +487,20 @@ impl FbxScene {
         reader.read_scene()
     }
 
+    /// Reads a supported FBX scene from binary bytes with explicit options.
+    ///
+    /// Use this to tighten [`crate::FbxDecodeLimits`] for untrusted input, or
+    /// to enable strict container validation.
+    #[cfg(feature = "fbx-reader")]
+    pub fn from_bytes_with_options(
+        bytes: &[u8],
+        options: crate::fbx_options::FbxReadOptions,
+    ) -> io::Result<Self> {
+        let mut reader =
+            crate::fbx_reader::FbxMemoryReader::from_bytes_with_options(bytes, options)?;
+        reader.read_scene()
+    }
+
     /// Writes this scene as binary FBX bytes.
     ///
     /// This method is available with the `fbx-writer` feature. It preserves

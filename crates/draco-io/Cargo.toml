@@ -91,6 +91,11 @@ path = "tests/fbx_real_test.rs"
 required-features = ["test"]
 
 [[test]]
+name = "fbx_corpus"
+path = "tests/fbx_corpus.rs"
+required-features = ["test", "fbx-reader", "compression"]
+
+[[test]]
 name = "cpp_decode_test"
 path = "tests/cpp_decode_test.rs"
 required-features = ["test", "point_cloud_decode"]
@@ -100,3 +105,11 @@ name = "ply_bunny_test"
 path = "tests/ply_bunny_test.rs"
 required-features = ["test", "ply-reader"]
 
+
+[[example]]
+name = "fbx_endian_diff"
+required-features = ["fbx-reader", "compression"]
+
+[[example]]
+name = "fbx_sweep"
+required-features = ["fbx-reader", "compression"]

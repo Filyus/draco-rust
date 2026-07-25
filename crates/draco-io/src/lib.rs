@@ -8,6 +8,9 @@
 #![deny(missing_docs)]
 
 #[cfg(feature = "fbx-reader")]
+/// Byte order, resource limits, and read options for the FBX reader.
+pub mod fbx_options;
+#[cfg(feature = "fbx-reader")]
 /// FBX binary reader.
 pub mod fbx_reader;
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
@@ -40,6 +43,8 @@ pub mod ply_writer;
 /// Shared reader and writer traits.
 pub mod traits;
 
+#[cfg(feature = "fbx-reader")]
+pub use fbx_options::{FbxByteOrder, FbxDecodeLimits, FbxReadOptions};
 #[cfg(feature = "fbx-reader")]
 pub use fbx_reader::{FbxMemoryReader, FbxReader};
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
