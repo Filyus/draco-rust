@@ -49,6 +49,15 @@ either byte order — a non-zero endian marker selects big-endian, as `ufbx` doe
 — and ASCII for 7000 and later. Output is always binary FBX 7500
 little-endian.
 
+That sharing is structural, not a convention. `fbx_container` decodes the
+binary container and `fbx_ascii` the text one; both produce a tree of
+`FbxNode`, and `fbx_reader` reads only that tree, so it is unaware of which
+container it was given. `fbx_ascii_syntax` holds what the two containers
+disagree about — the name/class separator, the array element-type schema, the
+`Properties70` type table — in one place the writer shares, and records what an
+ASCII writer would owe the reader. `fbx_transform` composes the FBX transform
+stack into a local matrix.
+
 The ASCII reader produces the same node tree as the binary one, so everything
 above it is shared and the two containers cannot drift apart semantically. Two
 differences are normalized rather than left for consumers: object names are

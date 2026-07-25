@@ -1,4 +1,4 @@
-//! FBX binary container decoder: bytes in, a tree of [`FbxNode`] out.
+//! FBX binary container decoder: bytes in, a tree of [`FbxNode`](crate::fbx_container::FbxNode) out.
 //!
 //! This layer knows the container and nothing about what the document means.
 //! It validates the header, walks node records, decodes property records and

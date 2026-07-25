@@ -1,7 +1,7 @@
 //! Reader for the ASCII FBX container.
 //!
 //! ASCII FBX carries the same node tree as the binary container, so this
-//! module's only job is to produce [`FbxNode`]s indistinguishable from the ones
+//! module's only job is to produce [`FbxNode`](crate::fbx_container::FbxNode)s indistinguishable from the ones
 //! [`crate::fbx_container`] decodes. Everything above that -- objects,
 //! connections, materials, skins, animation, layer elements -- is then shared,
 //! which is what keeps the two containers from drifting apart semantically.

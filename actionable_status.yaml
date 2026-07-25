@@ -26,7 +26,7 @@
 # hardening_status.yaml; keep only concrete implementation actions here.
 
 version: 1
-last_reviewed: "2026-07-25"
+last_reviewed: "2026-07-26"
 
 items:
   - id: fbx-ascii-binary-decode-divergence
@@ -75,3 +75,20 @@ items:
     next_steps:
       - "Emit Objects/NodeAttribute with the camera or light Properties70 and connect it to its Model."
       - "Add attribute comparison to SceneSummary and delete the characterization test."
+
+  - id: fbx-ascii-writer-needs-a-node-tree
+    area: draco-io/fbx
+    priority: low
+    status: open
+    summary: "An ASCII FBX writer is blocked by the binary writer having no FbxNode-tree intermediate to share."
+    evidence:
+      - path: "crates/draco-io/src/fbx_writer.rs"
+        note: "The writer never builds an FbxNode. Document-structure knowledge -- which objects exist, in what order, with which Properties70 and connections -- is fused into ~35 write_* free functions that each call the byte-level NodeWriter inline. There is no write_node(&FbxNode) to swap a backend under."
+      - path: "crates/draco-io/src/fbx_ascii.rs"
+        note: "The reader made the symmetric commitment and it held: it emits Vec<FbxNode> and the whole scene layer consumed it unchanged. The writer never made that commitment."
+      - path: "crates/draco-io/src/fbx_ascii_syntax.rs"
+        note: "The direction-independent conventions are already extracted and their writer-side obligations documented, so the remaining cost is entirely the intermediate representation."
+    impact: "Without it an ASCII writer must duplicate the document structure, which is exactly the drift the shared node tree was adopted to prevent."
+    next_steps:
+      - "Preferred: rewrite the write_* family to build Vec<FbxNode>, then make binary encoding one backend over that tree and ASCII a second. Also gives the binary writer a far cheaper assertion surface than byte comparison."
+      - "Cheaper but worse: abstract NodeWriter behind a trait. Blocked by finish_with_children needing Seek to backpatch offsets, and by the `*N { a: ... }` array shape being structural rather than per-property."
