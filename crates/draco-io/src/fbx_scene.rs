@@ -110,6 +110,32 @@ impl FbxWarning {
     }
 }
 
+/// Appends a warning, collapsing repeats of the same `(code, subject)` pair
+/// into a single entry with a count.
+///
+/// Without this, a malformed pattern repeated across every node in a large
+/// file produces thousands of identical strings and buries anything else.
+///
+/// Lives beside [`FbxWarning`] rather than in either reader half because both
+/// the container decoder and the scene layer raise notices.
+pub(crate) fn push_warning(
+    warnings: &mut Vec<FbxWarning>,
+    code: FbxWarningCode,
+    message: String,
+    subject: Option<&str>,
+) {
+    if let Some(existing) = warnings
+        .iter_mut()
+        .find(|warning| warning.code == code && warning.subject.as_deref() == subject)
+    {
+        existing.count = existing.count.saturating_add(1);
+        return;
+    }
+    let mut warning = FbxWarning::new(code, message);
+    warning.subject = subject.map(str::to_owned);
+    warnings.push(warning);
+}
+
 impl fmt::Display for FbxWarning {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}", self.message)?;

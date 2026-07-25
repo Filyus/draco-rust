@@ -11,6 +11,9 @@
 /// FBX ASCII container reader.
 pub mod fbx_ascii;
 #[cfg(feature = "fbx-reader")]
+/// FBX binary container decoder.
+pub mod fbx_container;
+#[cfg(feature = "fbx-reader")]
 /// Byte order, resource limits, and read options for the FBX reader.
 pub mod fbx_options;
 #[cfg(feature = "fbx-reader")]

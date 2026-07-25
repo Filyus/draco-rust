@@ -2,9 +2,9 @@
 //!
 //! ASCII FBX carries the same node tree as the binary container, so this
 //! module's only job is to produce [`FbxNode`]s indistinguishable from the ones
-//! [`crate::FbxReader`] decodes. Everything above that -- objects, connections,
-//! materials, skins, animation, layer elements -- is then shared, which is what
-//! keeps the two containers from drifting apart semantically.
+//! [`crate::fbx_container`] decodes. Everything above that -- objects,
+//! connections, materials, skins, animation, layer elements -- is then shared,
+//! which is what keeps the two containers from drifting apart semantically.
 //!
 //! Two differences from the binary form are not merely syntactic and are
 //! normalized here rather than left for consumers to discover:
@@ -19,8 +19,8 @@
 
 use std::io;
 
+use crate::fbx_container::{FbxNode, FbxProperty};
 use crate::fbx_options::FbxReadOptions;
-use crate::fbx_reader::{FbxNode, FbxProperty};
 
 /// Separator the binary container puts between an object's name and its class.
 const NAME_CLASS_SEPARATOR: [u8; 2] = [0x00, 0x01];
