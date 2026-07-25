@@ -2591,14 +2591,17 @@ impl<R: Read + Seek> FbxReader<R> {
                     .map(str::to_string),
                 _ => None,
             });
-            // Flatten all layers into one animation. Blender does the same:
-            // each layer produces an independent action, but most files have a
-            // single layer per stack.
-            let mut channels = Vec::new();
-            let mut max_time = 0.0f32;
+            // One clip per layer, which is what Blender's importer does: it
+            // "does not mix layers, each layer results in an independent set
+            // of actions". Merging them instead produced several channels
+            // driving the same node and path, and any consumer applying them
+            // in order silently kept only the last.
             let mut layer_ids_sorted: Vec<i64> = layers.keys().copied().collect();
             layer_ids_sorted.sort_unstable();
-            for layer_id in layer_ids_sorted {
+            let multiple_layers = layer_ids_sorted.len() > 1;
+            for (layer_index, layer_id) in layer_ids_sorted.iter().copied().enumerate() {
+                let mut channels = Vec::new();
+                let mut max_time = 0.0f32;
                 let entries = &layers[&layer_id];
                 // Group curve nodes by (model, path) before flattening.
                 let mut groups: std::collections::HashMap<
@@ -2649,15 +2652,36 @@ impl<R: Read + Seek> FbxReader<R> {
                         });
                     }
                 }
+                if channels.is_empty() {
+                    continue;
+                }
+                // Name extra layers so they stay distinguishable; a
+                // single-layer stack keeps the stack name unchanged.
+                let clip_name = if multiple_layers {
+                    let layer_name = alayer_map
+                        .get(&layer_id)
+                        .and_then(|node| match node.properties.get(1) {
+                            Some(FbxProperty::String(raw)) => raw
+                                .split(' ')
+                                .next()
+                                .filter(|part| !part.is_empty())
+                                .map(str::to_string),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| format!("Layer{layer_index}"));
+                    Some(match &name {
+                        Some(stack) => format!("{stack}|{layer_name}"),
+                        None => layer_name,
+                    })
+                } else {
+                    name.clone()
+                };
+                animations.push(FbxAnimation {
+                    name: clip_name,
+                    duration: max_time,
+                    channels,
+                });
             }
-            if channels.is_empty() {
-                continue;
-            }
-            animations.push(FbxAnimation {
-                name,
-                duration: max_time,
-                channels,
-            });
         }
         animations
     }

@@ -219,11 +219,13 @@ fn scenes_survive_a_write_and_read_cycle() {
 
         let before = summarize(&original);
         let after = summarize(&roundtrip);
-        if before != after {
-            mismatches.push(format!(
-                "{}:\n     before {before:?}\n     after  {after:?}",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            ));
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        for field in before.differing_fields(&after) {
+            mismatches.push(format!("{name}: {field}"));
         }
     }
 
@@ -231,7 +233,7 @@ fn scenes_survive_a_write_and_read_cycle() {
         "round-tripped {compared} files, {} mismatched",
         mismatches.len()
     );
-    for line in mismatches.iter().take(10) {
+    for line in mismatches.iter().take(20) {
         println!("  {line}");
     }
     assert!(
@@ -241,13 +243,28 @@ fn scenes_survive_a_write_and_read_cycle() {
     );
 }
 
-/// Per-mesh counts that a lossless-enough round-trip must preserve.
+/// Everything a round-trip must preserve, rendered as comparable strings.
+///
+/// Kept as text so a mismatch report names the field that moved instead of
+/// dumping two large structs.
 #[derive(Debug, PartialEq, Eq)]
 struct SceneSummary {
     materials: usize,
     textures: usize,
     animations: usize,
     meshes: Vec<(usize, usize, usize, usize, Vec<i32>)>,
+    /// `(name, cluster count, total weights, first bind matrix)` per skin.
+    skins: Vec<String>,
+    /// `(name, affected points, delta count, weights)` per blend-shape target.
+    morphs: Vec<String>,
+    /// `(node, path, key count, first and last key)` per animation channel.
+    channels: Vec<String>,
+    /// Node transforms, flattened.
+    transforms: Vec<String>,
+    /// Material scalar and colour properties.
+    material_values: Vec<String>,
+    /// Texture filenames and embedded payload sizes.
+    texture_values: Vec<String>,
 }
 
 fn summarize(scene: &FbxScene) -> SceneSummary {
@@ -277,11 +294,233 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
         visit(root, &mut meshes);
     }
     meshes.sort();
+
+    let mut skins = Vec::new();
+    let mut morphs = Vec::new();
+    let mut transforms = Vec::new();
+    collect_deformers(scene, &mut skins, &mut morphs, &mut transforms);
+    skins.sort();
+    morphs.sort();
+    transforms.sort();
+
+    let mut channels: Vec<String> = scene
+        .animations
+        .iter()
+        .flat_map(|clip| {
+            clip.channels.iter().map(move |channel| {
+                let output = &channel.sampler.output;
+                format!(
+                    "{}|{:?}|{:?}|keys={}|first={:?}|last={:?}|interp={:?}",
+                    channel.node_name,
+                    channel.path,
+                    channel.morph_target_index,
+                    channel.sampler.input.len(),
+                    output.first().copied().map(round6),
+                    output.last().copied().map(round6),
+                    channel.sampler.interpolation,
+                )
+            })
+        })
+        .collect();
+    channels.sort();
+
+    let material_values = scene
+        .materials
+        .iter()
+        .map(|material| {
+            format!(
+                "{:?}|{:?}|diffuse={:?}|specular={:?}|emissive={:?}|shininess={:?}|opacity={:?}|textures={:?}",
+                material.name,
+                material.shading_model,
+                material.diffuse.map(round3),
+                material.specular.map(round3),
+                material.emissive.map(round3),
+                material.shininess.map(round6),
+                material.opacity.map(round6),
+                material.textures,
+            )
+        })
+        .collect();
+
+    let texture_values = scene
+        .textures
+        .iter()
+        .map(|texture| {
+            format!(
+                "{:?}|{:?}|content={}",
+                texture.name,
+                texture.filename,
+                texture.content.as_ref().map_or(0, Vec::len)
+            )
+        })
+        .collect();
+
     SceneSummary {
         materials: scene.materials.len(),
         textures: scene.textures.len(),
         animations: scene.animations.len(),
         meshes,
+        skins,
+        morphs,
+        channels,
+        transforms,
+        material_values,
+        texture_values,
+    }
+}
+
+impl SceneSummary {
+    /// Names each field that differs, with a short sample, so a report points
+    /// at the defect instead of dumping two whole scenes.
+    fn differing_fields(&self, other: &Self) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut scalar = |label: &str, a: usize, b: usize| {
+            if a != b {
+                out.push(format!("{label}: {a} -> {b}"));
+            }
+        };
+        scalar("materials", self.materials, other.materials);
+        scalar("textures", self.textures, other.textures);
+        scalar("animations", self.animations, other.animations);
+
+        if self.meshes != other.meshes {
+            out.push(format!(
+                "meshes: {} -> {} entries",
+                self.meshes.len(),
+                other.meshes.len()
+            ));
+        }
+        for (label, a, b) in [
+            ("skins", &self.skins, &other.skins),
+            ("morphs", &self.morphs, &other.morphs),
+            ("channels", &self.channels, &other.channels),
+            ("transforms", &self.transforms, &other.transforms),
+            (
+                "material_values",
+                &self.material_values,
+                &other.material_values,
+            ),
+            (
+                "texture_values",
+                &self.texture_values,
+                &other.texture_values,
+            ),
+        ] {
+            if a == b {
+                continue;
+            }
+            let sample = a
+                .iter()
+                .zip(b.iter())
+                .find(|(x, y)| x != y)
+                .map(|(x, y)| {
+                    format!(
+                        "
+       before {x}
+       after  {y}"
+                    )
+                })
+                .unwrap_or_else(|| format!(" ({} -> {} entries)", a.len(), b.len()));
+            out.push(format!("{label}:{sample}"));
+        }
+        out
+    }
+}
+
+/// Rounds to a tolerance that survives an f32 write/read cycle.
+fn round6(value: f32) -> i64 {
+    (value as f64 * 1e3).round() as i64
+}
+
+fn round3(values: [f32; 3]) -> [i64; 3] {
+    values.map(|v| (v as f64 * 1e3).round() as i64)
+}
+
+fn matrix_digest(matrix: &[[f32; 4]; 4]) -> Vec<i64> {
+    matrix
+        .iter()
+        .flatten()
+        .map(|v| (*v as f64 * 1e4).round() as i64)
+        .collect()
+}
+
+/// Maps every node id to its name, so skin joints can be compared by identity
+/// rather than by the document-local id the writer reassigns.
+fn node_names(scene: &FbxScene) -> std::collections::HashMap<u32, String> {
+    fn visit(node: &draco_io::FbxSceneNode, out: &mut std::collections::HashMap<u32, String>) {
+        out.insert(node.id.0, node.name.clone().unwrap_or_default());
+        for child in &node.children {
+            visit(child, out);
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    for root in &scene.root_nodes {
+        visit(root, &mut out);
+    }
+    out
+}
+
+fn collect_deformers(
+    scene: &FbxScene,
+    skins: &mut Vec<String>,
+    morphs: &mut Vec<String>,
+    transforms: &mut Vec<String>,
+) {
+    let names = node_names(scene);
+    fn visit(
+        node: &draco_io::FbxSceneNode,
+        names: &std::collections::HashMap<u32, String>,
+        skins: &mut Vec<String>,
+        morphs: &mut Vec<String>,
+        transforms: &mut Vec<String>,
+    ) {
+        transforms.push(format!(
+            "{:?}|{:?}|complex={}",
+            node.name,
+            node.transform.as_ref().map(|t| matrix_digest(&t.matrix)),
+            node.has_complex_transform_stack,
+        ));
+        for mesh in &node.mesh_instances {
+            if let Some(skin) = &mesh.skin {
+                let weights: usize = skin.clusters.iter().map(|c| c.weights.len()).sum();
+                let joints: Vec<&str> = skin
+                    .clusters
+                    .iter()
+                    .map(|c| {
+                        names
+                            .get(&c.joint_node_id.0)
+                            .map_or("<unknown>", String::as_str)
+                    })
+                    .collect();
+                skins.push(format!(
+                    "{:?}|clusters={}|weights={weights}|joints={joints:?}|bind={}|first_link={:?}",
+                    mesh.name,
+                    skin.clusters.len(),
+                    skin.bind_pose.len(),
+                    skin.clusters
+                        .first()
+                        .map(|c| matrix_digest(&c.joint_bind_transform.matrix)),
+                ));
+            }
+            for target in &mesh.morph_targets {
+                morphs.push(format!(
+                    "{:?}|{:?}|points={}|deltas={}|normals={:?}|default={}|full={}",
+                    mesh.name,
+                    target.name,
+                    target.control_point_indices.len(),
+                    target.position_deltas.len(),
+                    target.normal_deltas.as_ref().map(Vec::len),
+                    round6(target.default_weight),
+                    round6(target.full_weight),
+                ));
+            }
+        }
+        for child in &node.children {
+            visit(child, names, skins, morphs, transforms);
+        }
+    }
+    for root in &scene.root_nodes {
+        visit(root, &names, skins, morphs, transforms);
     }
 }
 

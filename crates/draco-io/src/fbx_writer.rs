@@ -519,11 +519,10 @@ impl FbxWriter {
         // borrows self mutably too; collect geometry first.
         let mesh_count = node.mesh_instances.len();
         for mesh_instance in &node.mesh_instances {
-            let name = mesh_instance
-                .name
-                .as_deref()
-                .or(node.name.as_deref())
-                .unwrap_or("Mesh");
+            // This names the `Geometry` object only; the `Model` keeps its own
+            // name. An unnamed Geometry stays unnamed rather than borrowing
+            // the model's, which a read/write cycle would otherwise invent.
+            let name = mesh_instance.name.as_deref().unwrap_or("");
             // `material_indices` addresses the scene material list; the
             // written layer addresses the slots connected to this Model.
             //
@@ -2124,18 +2123,20 @@ fn write_material<W: Write + Seek>(
     node.write_property_string("")?;
 
     node.finish_with_children(|w| {
-        let shading = material_data
-            .source
-            .shading_model
-            .as_deref()
-            .unwrap_or("Phong");
+        // The object-level node below needs a value, but the property is only
+        // written when the source actually had one: inventing "Phong" made a
+        // read/write cycle add a shading model the file never declared.
+        let declared_shading = material_data.source.shading_model.as_deref();
+        let shading = declared_shading.unwrap_or("Phong");
         let mut version = NodeWriter::start(w, "Version", is_64)?;
         version.write_property_i32(102)?;
         version.finish()?;
 
         let props = NodeWriter::start(w, "Properties70", is_64)?;
         props.finish_with_children(|pw| {
-            write_property_string_value(pw, is_64, "ShadingModel", shading)?;
+            if let Some(shading) = declared_shading {
+                write_property_string_value(pw, is_64, "ShadingModel", shading)?;
+            }
 
             // Only emit the fields that are present so round-trips stay clean.
             if let Some(diffuse) = material_data.source.diffuse {
