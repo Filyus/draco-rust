@@ -8,7 +8,11 @@
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-/// FBX file magic: "Kaydara FBX Binary  \0". Shared by reader and writer.
+/// FBX file magic: "Kaydara FBX Binary  \0".
+///
+/// Serialization lives in `draco-io`; this copy only lets the tests below
+/// assert that what we hand back to JavaScript really is an FBX file.
+#[cfg(test)]
 const FBX_MAGIC: &[u8; 21] = b"Kaydara FBX Binary  \0";
 
 /// Initialize panic hook for better error messages in browser console.
@@ -460,7 +464,10 @@ fn parse_fbx_scene(data: &[u8]) -> ParseResult {
             let animations: Vec<AnimationOutput> =
                 scene.animations.iter().map(animation_to_output).collect();
             let scene_out = SceneOutput {
-                global_settings: scene.global_settings.as_ref().map(global_settings_to_output),
+                global_settings: scene
+                    .global_settings
+                    .as_ref()
+                    .map(global_settings_to_output),
                 root_nodes: scene.root_nodes.iter().map(scene_node_to_output).collect(),
                 materials: materials.clone(),
                 textures: textures.clone(),
@@ -854,7 +861,6 @@ fn expand_render_mesh(instance: &draco_io::FbxMeshInstance, mesh: &mut MeshData)
     let mut uvs = Vec::new();
     let mut render_to_control = Vec::new();
     let mut polygon: Vec<(u32, usize)> = Vec::new();
-    let mut corner = 0usize;
 
     let mut emit_corner = |control_point: u32, corner_index: usize| {
         let point = instance
@@ -888,14 +894,13 @@ fn expand_render_mesh(instance: &draco_io::FbxMeshInstance, mesh: &mut MeshData)
         }
     };
 
-    for encoded in &instance.polygon_vertex_indices {
+    for (corner, encoded) in instance.polygon_vertex_indices.iter().enumerate() {
         let control_point = if *encoded < 0 {
             (!*encoded) as u32
         } else {
             *encoded as u32
         };
         polygon.push((control_point, corner));
-        corner += 1;
         if *encoded < 0 {
             for index in 1..polygon.len().saturating_sub(1) {
                 for &(point, corner_index) in
@@ -1040,8 +1045,6 @@ use draco_io::{
 };
 #[cfg(feature = "write")]
 use draco_io::{FbxAnimChannelPath, FbxAnimation};
-#[cfg(feature = "write")]
-use std::io::Write;
 
 /// Input mesh data consumed by the FBX writer, from JavaScript.
 #[cfg(feature = "write")]
@@ -1498,65 +1501,71 @@ fn scene_node_to_fbx(input: SceneNodeInput) -> Result<FbxSceneNode, String> {
         has_complex_transform_stack: false,
         mesh_instances: input
             .meshes
-            .into_iter()
+            .iter()
             .enumerate()
-            .map(|(index, mesh)| {
-                let name = mesh.name.clone().or_else(|| Some(format!("mesh_{index}")));
-                Ok(FbxMeshInstance {
-                    name,
-                    mesh: mesh_input_to_core_mesh(&mesh)?,
-                    control_points: mesh
-                        .control_points
-                        .as_deref()
-                        .unwrap_or(&[])
-                        .chunks_exact(3)
-                        .map(|value| [value[0], value[1], value[2]])
-                        .collect(),
-                    polygon_vertex_indices: mesh.polygon_vertex_indices.clone().unwrap_or_default(),
-                    uv_sets: mesh
-                        .uv_sets
-                        .iter()
-                        .map(|set| draco_io::FbxUvSet {
-                            name: set.name.clone(),
-                            mapping: set.mapping.clone(),
-                            reference: set.reference.clone(),
-                            values: set
-                                .values
-                                .chunks_exact(2)
-                                .map(|value| [value[0], value[1]])
-                                .collect(),
-                            indices: set.indices.clone(),
-                        })
-                        .collect(),
-                    normal_sets: mesh
-                        .normal_sets
-                        .iter()
-                        .map(|set| draco_io::FbxNormalSet {
-                            name: set.name.clone(),
-                            mapping: set.mapping.clone(),
-                            reference: set.reference.clone(),
-                            values: set
-                                .values
-                                .chunks_exact(3)
-                                .map(|value| [value[0], value[1], value[2]])
-                                .collect(),
-                            indices: set.indices.clone(),
-                        })
-                        .collect(),
-                    material_indices: mesh.material_indices.clone(),
-                    skin: mesh.skin.as_ref().map(skin_input_to_fbx).transpose()?,
-                    morph_targets: mesh
-                        .morph_targets
-                        .iter()
-                        .map(morph_target_input_to_fbx)
-                        .collect::<Result<_, _>>()?,
-                })
-            })
+            .map(|(index, mesh)| mesh_input_to_instance(mesh, index))
             .collect::<Result<_, String>>()?,
         children: input
             .children
             .into_iter()
             .map(scene_node_to_fbx)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+/// Converts one JS mesh payload into the shared `draco-io` mesh instance.
+///
+/// Both the scene writer and the flat `create_fbx` entry point go through
+/// this, so the two paths cannot drift apart.
+#[cfg(feature = "write")]
+fn mesh_input_to_instance(mesh: &MeshInput, index: usize) -> Result<FbxMeshInstance, String> {
+    Ok(FbxMeshInstance {
+        name: mesh.name.clone().or_else(|| Some(format!("mesh_{index}"))),
+        mesh: mesh_input_to_core_mesh(mesh)?,
+        control_points: mesh
+            .control_points
+            .as_deref()
+            .unwrap_or(&[])
+            .chunks_exact(3)
+            .map(|value| [value[0], value[1], value[2]])
+            .collect(),
+        polygon_vertex_indices: mesh.polygon_vertex_indices.clone().unwrap_or_default(),
+        uv_sets: mesh
+            .uv_sets
+            .iter()
+            .map(|set| draco_io::FbxUvSet {
+                name: set.name.clone(),
+                mapping: set.mapping.clone(),
+                reference: set.reference.clone(),
+                values: set
+                    .values
+                    .chunks_exact(2)
+                    .map(|value| [value[0], value[1]])
+                    .collect(),
+                indices: set.indices.clone(),
+            })
+            .collect(),
+        normal_sets: mesh
+            .normal_sets
+            .iter()
+            .map(|set| draco_io::FbxNormalSet {
+                name: set.name.clone(),
+                mapping: set.mapping.clone(),
+                reference: set.reference.clone(),
+                values: set
+                    .values
+                    .chunks_exact(3)
+                    .map(|value| [value[0], value[1], value[2]])
+                    .collect(),
+                indices: set.indices.clone(),
+            })
+            .collect(),
+        material_indices: mesh.material_indices.clone(),
+        skin: mesh.skin.as_ref().map(skin_input_to_fbx).transpose()?,
+        morph_targets: mesh
+            .morph_targets
+            .iter()
+            .map(morph_target_input_to_fbx)
             .collect::<Result<_, _>>()?,
     })
 }
@@ -1787,471 +1796,58 @@ fn mesh_input_to_core_mesh(input: &MeshInput) -> Result<Mesh, String> {
     Ok(mesh)
 }
 
-/// Size of null node record for 64-bit FBX
-#[cfg(feature = "write")]
-const NULL_RECORD_SIZE: usize = 25;
-
 #[cfg(feature = "write")]
 fn create_fbx_internal(meshes: &[MeshInput]) -> ExportResult {
-    // Fall back to a minimal hand-written FBX when there is no scene hierarchy
-    // (the legacy `create_fbx` entry point). Materials, textures, and
-    // animation are not expressible without a scene, so this path emits a
-    // flat mesh list only.
-    let version = 7500u32;
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut cursor = Cursor::new(&mut buffer);
-
-    if cursor.write_all(FBX_MAGIC).is_err() {
-        return ExportResult {
+    // The legacy `create_fbx` entry point receives a flat mesh list with no
+    // hierarchy, so every mesh becomes its own root Model. Materials,
+    // textures and animation are not expressible here; callers that need them
+    // go through `create_fbx_scene`. Serialization itself is shared with that
+    // path so the two cannot emit divergent FBX.
+    let scene = match flat_meshes_to_scene(meshes) {
+        Ok(scene) => scene,
+        Err(error) => {
+            return ExportResult {
+                success: false,
+                binary_data: None,
+                error: Some(error),
+            }
+        }
+    };
+    match scene.to_bytes() {
+        Ok(binary_data) => ExportResult {
+            success: true,
+            binary_data: Some(binary_data),
+            error: None,
+        },
+        Err(error) => ExportResult {
             success: false,
             binary_data: None,
-            error: Some("Failed to write FBX magic".to_string()),
-        };
-    }
-    let _ = cursor.write_all(&[0x1A, 0x00]);
-    let _ = cursor.write_all(&version.to_le_bytes());
-
-    let mut next_id: i64 = 1_000_000;
-    let mut geometry_ids: Vec<i64> = Vec::new();
-    let mut model_ids: Vec<i64> = Vec::new();
-    for _ in meshes {
-        geometry_ids.push(next_id);
-        next_id += 1;
-        model_ids.push(next_id);
-        next_id += 1;
-    }
-
-    write_header_extension(&mut cursor, version);
-    write_global_settings(&mut cursor);
-    write_documents(&mut cursor);
-    write_node(&mut cursor, "References", &[], &[]);
-    write_definitions(&mut cursor, meshes.len());
-
-    let mut objects_children: Vec<Vec<u8>> = Vec::new();
-    for (i, mesh) in meshes.iter().enumerate() {
-        let mut geom_buf: Vec<u8> = Vec::new();
-        write_geometry(&mut Cursor::new(&mut geom_buf), mesh, geometry_ids[i]);
-        objects_children.push(geom_buf);
-        let mut model_buf: Vec<u8> = Vec::new();
-        write_model(&mut Cursor::new(&mut model_buf), mesh, model_ids[i]);
-        objects_children.push(model_buf);
-    }
-    write_node_with_children(&mut cursor, "Objects", &[], &objects_children);
-
-    let mut connections_children: Vec<Vec<u8>> = Vec::new();
-    for i in 0..meshes.len() {
-        let mut conn_buf: Vec<u8> = Vec::new();
-        write_connection(&mut Cursor::new(&mut conn_buf), model_ids[i], 0);
-        connections_children.push(conn_buf);
-        let mut conn_buf2: Vec<u8> = Vec::new();
-        write_connection(
-            &mut Cursor::new(&mut conn_buf2),
-            geometry_ids[i],
-            model_ids[i],
-        );
-        connections_children.push(conn_buf2);
-    }
-    write_node_with_children(&mut cursor, "Connections", &[], &connections_children);
-
-    let null_record = vec![0u8; NULL_RECORD_SIZE];
-    let _ = cursor.write_all(&null_record);
-    write_footer(&mut cursor, version);
-
-    ExportResult {
-        success: true,
-        binary_data: Some(buffer),
-        error: None,
-    }
-}
-
-use std::io::{Cursor, Seek, SeekFrom};
-
-#[cfg(feature = "write")]
-fn write_node<W: Write + Seek>(
-    writer: &mut W,
-    name: &str,
-    properties: &[FbxProp],
-    _children: &[Vec<u8>],
-) {
-    write_node_with_children(writer, name, properties, &[]);
-}
-
-#[cfg(feature = "write")]
-fn write_node_with_children<W: Write + Seek>(
-    writer: &mut W,
-    name: &str,
-    properties: &[FbxProp],
-    children: &[Vec<u8>],
-) {
-    let start_pos = writer.stream_position().unwrap();
-    let _ = writer.write_all(&[0u8; 24]);
-    let _ = writer.write_all(&[name.len() as u8]);
-    let _ = writer.write_all(name.as_bytes());
-    let props_start = writer.stream_position().unwrap();
-    for prop in properties {
-        write_property(writer, prop);
-    }
-    let props_end = writer.stream_position().unwrap();
-    let props_len = props_end - props_start;
-    for child in children {
-        let child_start = writer.stream_position().unwrap();
-        let mut relocated = child.clone();
-        rebase_node_offsets(&mut relocated, child_start);
-        let _ = writer.write_all(&relocated);
-    }
-    if !children.is_empty() {
-        let _ = writer.write_all(&[0u8; NULL_RECORD_SIZE]);
-    }
-    let end_pos = writer.stream_position().unwrap();
-    let _ = writer.seek(SeekFrom::Start(start_pos));
-    let _ = writer.write_all(&end_pos.to_le_bytes());
-    let _ = writer.write_all(&(properties.len() as u64).to_le_bytes());
-    let _ = writer.write_all(&props_len.to_le_bytes());
-    let _ = writer.write_all(&[name.len() as u8]);
-    let _ = writer.seek(SeekFrom::Start(end_pos));
-}
-
-/// Rebase every node end offset in a temporary node buffer before that buffer
-/// is copied into its final position in the FBX stream.
-#[cfg(feature = "write")]
-fn rebase_node_offsets(data: &mut [u8], base_offset: u64) {
-    fn visit(data: &mut [u8], node_start: usize, base_offset: u64) -> Option<usize> {
-        if node_start.checked_add(25)? > data.len() {
-            return None;
-        }
-        let local_end = u64::from_le_bytes(data[node_start..node_start + 8].try_into().ok()?);
-        let local_end = usize::try_from(local_end).ok()?;
-        if local_end <= node_start || local_end > data.len() {
-            return None;
-        }
-        let property_len =
-            u64::from_le_bytes(data[node_start + 16..node_start + 24].try_into().ok()?);
-        let property_len = usize::try_from(property_len).ok()?;
-        let name_len = data[node_start + 24] as usize;
-        let mut child_start = node_start
-            .checked_add(25)?
-            .checked_add(name_len)?
-            .checked_add(property_len)?;
-        data[node_start..node_start + 8]
-            .copy_from_slice(&(base_offset + local_end as u64).to_le_bytes());
-        while child_start.checked_add(25)? <= local_end {
-            if data[child_start..child_start + 25]
-                .iter()
-                .all(|byte| *byte == 0)
-            {
-                break;
-            }
-            child_start = visit(data, child_start, base_offset)?;
-        }
-        Some(local_end)
-    }
-    let _ = visit(data, 0, base_offset);
-}
-
-#[cfg(feature = "write")]
-#[derive(Clone)]
-#[allow(dead_code)]
-enum FbxProp {
-    I32(i32),
-    I64(i64),
-    F64(f64),
-    String(String),
-    F64Array(Vec<f64>),
-    I32Array(Vec<i32>),
-}
-
-#[cfg(feature = "write")]
-fn write_property<W: Write>(writer: &mut W, prop: &FbxProp) {
-    match prop {
-        FbxProp::I32(v) => {
-            let _ = writer.write_all(b"I");
-            let _ = writer.write_all(&v.to_le_bytes());
-        }
-        FbxProp::I64(v) => {
-            let _ = writer.write_all(b"L");
-            let _ = writer.write_all(&v.to_le_bytes());
-        }
-        FbxProp::F64(v) => {
-            let _ = writer.write_all(b"D");
-            let _ = writer.write_all(&v.to_le_bytes());
-        }
-        FbxProp::String(s) => {
-            let _ = writer.write_all(b"S");
-            let _ = writer.write_all(&(s.len() as u32).to_le_bytes());
-            let _ = writer.write_all(s.as_bytes());
-        }
-        FbxProp::F64Array(arr) => {
-            let _ = writer.write_all(b"d");
-            let _ = writer.write_all(&(arr.len() as u32).to_le_bytes());
-            let _ = writer.write_all(&0u32.to_le_bytes());
-            let _ = writer.write_all(&((arr.len() * 8) as u32).to_le_bytes());
-            for v in arr {
-                let _ = writer.write_all(&v.to_le_bytes());
-            }
-        }
-        FbxProp::I32Array(arr) => {
-            let _ = writer.write_all(b"i");
-            let _ = writer.write_all(&(arr.len() as u32).to_le_bytes());
-            let _ = writer.write_all(&0u32.to_le_bytes());
-            let _ = writer.write_all(&((arr.len() * 4) as u32).to_le_bytes());
-            for v in arr {
-                let _ = writer.write_all(&v.to_le_bytes());
-            }
-        }
+            error: Some(error.to_string()),
+        },
     }
 }
 
 #[cfg(feature = "write")]
-fn write_header_extension<W: Write + Seek>(writer: &mut W, version: u32) {
-    let mut children: Vec<Vec<u8>> = Vec::new();
-    let mut buf = Vec::new();
-    write_node(
-        &mut Cursor::new(&mut buf),
-        "FBXHeaderVersion",
-        &[FbxProp::I32(1003)],
-        &[],
-    );
-    children.push(buf);
-    let mut buf = Vec::new();
-    write_node(
-        &mut Cursor::new(&mut buf),
-        "FBXVersion",
-        &[FbxProp::I32(version as i32)],
-        &[],
-    );
-    children.push(buf);
-    let mut buf = Vec::new();
-    write_node(
-        &mut Cursor::new(&mut buf),
-        "Creator",
-        &[FbxProp::String("draco-io WASM".to_string())],
-        &[],
-    );
-    children.push(buf);
-    write_node_with_children(writer, "FBXHeaderExtension", &[], &children);
-}
-
-#[cfg(feature = "write")]
-fn write_global_settings<W: Write + Seek>(writer: &mut W) {
-    let mut children = Vec::new();
-    let mut version = Vec::new();
-    write_node(
-        &mut Cursor::new(&mut version),
-        "Version",
-        &[FbxProp::I32(1000)],
-        &[],
-    );
-    children.push(version);
-    let mut properties = Vec::new();
-    let mut property_children = Vec::new();
-    for (name, value) in [
-        ("UpAxis", 1),
-        ("UpAxisSign", 1),
-        ("FrontAxis", 2),
-        ("FrontAxisSign", 1),
-        ("CoordAxis", 0),
-        ("CoordAxisSign", 1),
-    ] {
-        let mut property = Vec::new();
-        write_node(
-            &mut Cursor::new(&mut property),
-            "P",
-            &[
-                FbxProp::String(name.to_string()),
-                FbxProp::String("int".to_string()),
-                FbxProp::String("Integer".to_string()),
-                FbxProp::String(String::new()),
-                FbxProp::I32(value),
-            ],
-            &[],
-        );
-        property_children.push(property);
-    }
-    // FBX documents its base unit as the centimeter; Blender's importer
-    // applies a `UnitScaleFactor / 100` multiplier. 100.0 makes the file
-    // round-trip at its true (meter) scale; the legacy value 1.0 caused
-    // every exported scene to come in 100x too small.
-    for name in ["UnitScaleFactor", "OriginalUnitScaleFactor"] {
-        let mut property = Vec::new();
-        write_node(
-            &mut Cursor::new(&mut property),
-            "P",
-            &[
-                FbxProp::String(name.to_string()),
-                FbxProp::String("double".to_string()),
-                FbxProp::String("Number".to_string()),
-                FbxProp::String(String::new()),
-                FbxProp::F64(100.0),
-            ],
-            &[],
-        );
-        property_children.push(property);
-    }
-    write_node_with_children(
-        &mut Cursor::new(&mut properties),
-        "Properties70",
-        &[],
-        &property_children,
-    );
-    children.push(properties);
-    write_node_with_children(writer, "GlobalSettings", &[], &children);
-}
-
-#[cfg(feature = "write")]
-fn write_documents<W: Write + Seek>(writer: &mut W) {
-    let mut children: Vec<Vec<u8>> = Vec::new();
-    let mut buf = Vec::new();
-    write_node(&mut Cursor::new(&mut buf), "Count", &[FbxProp::I64(1)], &[]);
-    children.push(buf);
-    let mut buf = Vec::new();
-    write_node(
-        &mut Cursor::new(&mut buf),
-        "Document",
-        &[
-            FbxProp::I64(1),
-            FbxProp::String("Scene".to_string()),
-            FbxProp::String("Scene".to_string()),
-        ],
-        &[],
-    );
-    children.push(buf);
-    write_node_with_children(writer, "Documents", &[], &children);
-}
-
-#[cfg(feature = "write")]
-fn write_definitions<W: Write + Seek>(writer: &mut W, mesh_count: usize) {
-    let mut children: Vec<Vec<u8>> = Vec::new();
-    let mut buf = Vec::new();
-    write_node(
-        &mut Cursor::new(&mut buf),
-        "Version",
-        &[FbxProp::I64(100)],
-        &[],
-    );
-    children.push(buf);
-    let mut buf = Vec::new();
-    write_node(
-        &mut Cursor::new(&mut buf),
-        "Count",
-        &[FbxProp::I64((mesh_count * 2) as i64)],
-        &[],
-    );
-    children.push(buf);
-    let mut buf = Vec::new();
-    write_node(
-        &mut Cursor::new(&mut buf),
-        "ObjectType",
-        &[FbxProp::String("Geometry".to_string())],
-        &[],
-    );
-    children.push(buf);
-    let mut buf = Vec::new();
-    write_node(
-        &mut Cursor::new(&mut buf),
-        "ObjectType",
-        &[FbxProp::String("Model".to_string())],
-        &[],
-    );
-    children.push(buf);
-    write_node_with_children(writer, "Definitions", &[], &children);
-}
-
-#[cfg(feature = "write")]
-fn write_geometry<W: Write + Seek>(writer: &mut W, mesh: &MeshInput, id: i64) {
-    let name = mesh.name.as_deref().unwrap_or("Mesh");
-    let full_name = format!("{}\0\x01Geometry", name);
-    let mut children: Vec<Vec<u8>> = Vec::new();
-    let vertices: Vec<f64> = mesh.positions.iter().map(|&v| v as f64).collect();
-    let mut buf = Vec::new();
-    write_node(
-        &mut Cursor::new(&mut buf),
-        "Vertices",
-        &[FbxProp::F64Array(vertices)],
-        &[],
-    );
-    children.push(buf);
-    let mut polygon_indices: Vec<i32> = Vec::new();
-    for chunk in mesh.indices.chunks(3) {
-        if chunk.len() == 3 {
-            polygon_indices.push(chunk[0] as i32);
-            polygon_indices.push(chunk[1] as i32);
-            polygon_indices.push(!(chunk[2] as i32));
-        }
-    }
-    let mut buf = Vec::new();
-    write_node(
-        &mut Cursor::new(&mut buf),
-        "PolygonVertexIndex",
-        &[FbxProp::I32Array(polygon_indices)],
-        &[],
-    );
-    children.push(buf);
-    write_node_with_children(
-        writer,
-        "Geometry",
-        &[
-            FbxProp::I64(id),
-            FbxProp::String(full_name),
-            FbxProp::String("Mesh".to_string()),
-        ],
-        &children,
-    );
-}
-
-#[cfg(feature = "write")]
-fn write_model<W: Write + Seek>(writer: &mut W, mesh: &MeshInput, id: i64) {
-    let name = mesh.name.as_deref().unwrap_or("Model");
-    let full_name = format!("{}\0\x01Model", name);
-    let mut children = Vec::new();
-    for (node_name, property) in [
-        ("Version", FbxProp::I32(232)),
-        ("Shading", FbxProp::I32(1)),
-        ("Culling", FbxProp::String("CullingOff".to_string())),
-    ] {
-        let mut child = Vec::new();
-        write_node(&mut Cursor::new(&mut child), node_name, &[property], &[]);
-        children.push(child);
-    }
-    let mut properties = Vec::new();
-    write_node(&mut Cursor::new(&mut properties), "Properties70", &[], &[]);
-    children.insert(1, properties);
-    write_node_with_children(
-        writer,
-        "Model",
-        &[
-            FbxProp::I64(id),
-            FbxProp::String(full_name),
-            FbxProp::String("Mesh".to_string()),
-        ],
-        &children,
-    );
-}
-
-#[cfg(feature = "write")]
-fn write_connection<W: Write + Seek>(writer: &mut W, child_id: i64, parent_id: i64) {
-    write_node(
-        writer,
-        "C",
-        &[
-            FbxProp::String("OO".to_string()),
-            FbxProp::I64(child_id),
-            FbxProp::I64(parent_id),
-        ],
-        &[],
-    );
-}
-
-#[cfg(feature = "write")]
-fn write_footer<W: Write>(writer: &mut W, version: u32) {
-    let footer_id = [
-        0xF8, 0x5A, 0x8C, 0x6A, 0xDE, 0xF5, 0xD9, 0x7E, 0xEC, 0xE9, 0x0C, 0xE3, 0x75, 0x8F, 0x29,
-        0x0B,
-    ];
-    let _ = writer.write_all(&[0u8; 4]);
-    let _ = writer.write_all(&footer_id);
-    let _ = writer.write_all(&[0u8; 4]);
-    let _ = writer.write_all(&version.to_le_bytes());
-    let _ = writer.write_all(&[0u8; 120]);
+fn flat_meshes_to_scene(meshes: &[MeshInput]) -> Result<FbxScene, String> {
+    let root_nodes = meshes
+        .iter()
+        .enumerate()
+        .map(|(index, mesh)| {
+            Ok(FbxSceneNode {
+                id: FbxNodeId(index as u32),
+                name: mesh.name.clone().or_else(|| Some(format!("mesh_{index}"))),
+                transform: None,
+                transform_stack: None,
+                has_complex_transform_stack: false,
+                mesh_instances: vec![mesh_input_to_instance(mesh, index)?],
+                children: Vec::new(),
+            })
+        })
+        .collect::<Result<_, String>>()?;
+    Ok(FbxScene {
+        root_nodes,
+        ..FbxScene::default()
+    })
 }
 
 // ===========================================================================
