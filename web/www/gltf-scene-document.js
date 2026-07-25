@@ -1,0 +1,334 @@
+/**
+ * glTF/GLB -> SceneDocument import boundary.
+ *
+ * This adapter owns glTF accessor/resource interpretation and deliberately
+ * returns only the portable byte-backed contract. It neither creates browser
+ * images nor imports any FBX compatibility policy.
+ */
+
+import { assertValidSceneDocument, createSceneDocument } from './scene-document.js';
+
+const SUPPORTED_EXTENSIONS = new Set(['KHR_materials_unlit', 'KHR_texture_transform']);
+
+/** Extract a portable SceneDocument from an existing GltfAsset-capable module. */
+export function buildSceneDocumentFromGltf(sourceData, resources, gltfModule) {
+    const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
+    try {
+        const manifest = JSON.parse(new TextDecoder().decode(asset.json()));
+        const document = createSceneDocument({ warnings: extensionWarnings(manifest) });
+        const accessorBySource = new Map();
+        const imageResources = collectImageResources(asset, manifest.images || [], resources, document);
+        const textureBySource = collectTextures(manifest.textures || [], manifest.samplers || [], imageResources, document);
+        collectMaterials(manifest.materials || [], textureBySource, document);
+        collectMeshes(asset, manifest.meshes || [], document, accessorBySource);
+        collectNodes(manifest, document);
+        collectSkins(asset, manifest.skins || [], document, accessorBySource);
+        collectAnimations(asset, manifest.animations || [], document, accessorBySource);
+        assertValidSceneDocument(document);
+        return document;
+    } finally {
+        asset.free();
+    }
+}
+
+function collectImageResources(asset, images, resources, document) {
+    return images.map((image, imageIndex) => {
+        let bytes = null;
+        if (typeof image.bufferView === 'number') bytes = new Uint8Array(asset.bufferViewBytes(image.bufferView));
+        else if (typeof image.uri === 'string') bytes = resolveResource(image.uri, resources);
+        if (!bytes) {
+            document.warnings.push(`glTF image ${imageIndex} could not be resolved and was omitted`);
+            return -1;
+        }
+        const resourceIndex = document.resources.length;
+        document.resources.push({
+            name: image.name || resourceName(image.uri, `image_${imageIndex}`),
+            mimeType: image.mimeType || sniffMime(bytes) || mimeFromUri(image.uri) || 'application/octet-stream',
+            bytes: new Uint8Array(bytes),
+        });
+        return resourceIndex;
+    });
+}
+
+function collectTextures(textures, samplers, imageResources, document) {
+    return textures.map((texture, textureIndex) => {
+        const resource = imageResources[texture.source];
+        if (!Number.isInteger(resource) || resource < 0) {
+            document.warnings.push(`glTF texture ${textureIndex} has no supported image source and was omitted`);
+            return -1;
+        }
+        const sourceSampler = Number.isInteger(texture.sampler) ? samplers[texture.sampler] : null;
+        const textureIndexInDocument = document.textures.length;
+        document.textures.push({
+            name: texture.name || `texture_${textureIndex}`,
+            resource,
+            sampler: {
+                wrapS: sourceSampler?.wrapS ?? 10497,
+                wrapT: sourceSampler?.wrapT ?? 10497,
+                minFilter: sourceSampler?.minFilter ?? 9987,
+                magFilter: sourceSampler?.magFilter ?? 9729,
+            },
+        });
+        return textureIndexInDocument;
+    });
+}
+
+function collectMaterials(materials, textureBySource, document) {
+    document.materials.push(...materials.map((material, materialIndex) => {
+        const pbr = material.pbrMetallicRoughness || {};
+        const baseColor = textureInfo(pbr.baseColorTexture, textureBySource, true);
+        const transform = pbr.baseColorTexture?.extensions?.KHR_texture_transform;
+        if (baseColor && transform) {
+            baseColor.texCoord = transform.texCoord ?? baseColor.texCoord;
+            baseColor.transform = {
+                offset: transform.offset || [0, 0],
+                scale: transform.scale || [1, 1],
+                rotation: transform.rotation ?? 0,
+            };
+        }
+        return {
+            name: material.name || `material_${materialIndex}`,
+            baseColorFactor: Array.from(pbr.baseColorFactor || [1, 1, 1, 1]),
+            metallicFactor: pbr.metallicFactor ?? 1,
+            roughnessFactor: pbr.roughnessFactor ?? 1,
+            emissiveFactor: Array.from(material.emissiveFactor || [0, 0, 0]),
+            ...(baseColor ? { baseColorTexture: baseColor } : {}),
+            ...(textureInfo(pbr.metallicRoughnessTexture, textureBySource) ? { metallicRoughnessTexture: textureInfo(pbr.metallicRoughnessTexture, textureBySource) } : {}),
+            ...(textureInfo(material.normalTexture, textureBySource) ? { normalTexture: textureInfo(material.normalTexture, textureBySource) } : {}),
+            ...(textureInfo(material.emissiveTexture, textureBySource) ? { emissiveTexture: textureInfo(material.emissiveTexture, textureBySource) } : {}),
+            ...(textureInfo(material.occlusionTexture, textureBySource) ? { occlusionTexture: textureInfo(material.occlusionTexture, textureBySource) } : {}),
+            doubleSided: Boolean(material.doubleSided),
+            alphaMode: material.alphaMode || 'OPAQUE',
+            alphaCutoff: material.alphaCutoff ?? 0.5,
+            unlit: Boolean(material.extensions?.KHR_materials_unlit),
+        };
+    }));
+}
+
+function collectMeshes(asset, meshes, document, accessorBySource) {
+    document.meshes.push(...meshes.map((mesh, meshIndex) => ({
+        name: mesh.name || `mesh_${meshIndex}`,
+        weights: Array.from(mesh.weights || []),
+        primitives: (mesh.primitives || []).map((primitive, primitiveIndex) => {
+            const packed = asset.readPrimitive(meshIndex, primitiveIndex);
+            try {
+                const attributes = {};
+                for (let index = 0; index < packed.attributeCount(); index += 1) {
+                    attributes[packed.attributeSemantic(index)] = appendAccessor(document, {
+                        bytes: new Uint8Array(packed.attributeBytes(index)),
+                        componentType: packed.attributeComponentType(index),
+                        components: packed.attributeComponents(index),
+                        count: packed.attributeElementCount(index),
+                        normalized: packed.attributeNormalized(index),
+                    });
+                }
+                const targets = (primitive.targets || []).map((target) => {
+                    const converted = {};
+                    for (const semantic of ['POSITION', 'NORMAL', 'TANGENT']) {
+                        if (typeof target[semantic] === 'number') converted[semantic] = sourceAccessor(asset, target[semantic], document, accessorBySource);
+                    }
+                    return converted;
+                });
+                const result = {
+                    attributes,
+                    mode: packed.mode(),
+                    ...(typeof primitive.material === 'number' ? { material: primitive.material } : {}),
+                    ...(targets.length > 0 ? { targets } : {}),
+                };
+                if (packed.hasIndices()) {
+                    result.indices = appendAccessor(document, {
+                        bytes: new Uint8Array(packed.indexBytes()),
+                        componentType: packed.indexComponentType(),
+                        components: 1,
+                        count: packed.indexCount(),
+                        normalized: false,
+                    });
+                }
+                return result;
+            } finally {
+                packed.free();
+            }
+        }),
+    })));
+}
+
+function collectNodes(manifest, document) {
+    const meshes = manifest.meshes || [];
+    document.nodes.push(...(manifest.nodes || []).map((node, nodeIndex) => {
+        const output = {
+            name: node.name || `node_${nodeIndex}`,
+            children: Array.from(node.children || []),
+            ...(typeof node.mesh === 'number' ? { mesh: node.mesh } : {}),
+            ...(typeof node.skin === 'number' ? { skin: node.skin } : {}),
+        };
+        if (Array.isArray(node.matrix) && node.matrix.length === 16) output.matrix = Array.from(node.matrix);
+        else {
+            output.translation = Array.from(node.translation || [0, 0, 0]);
+            output.rotation = Array.from(node.rotation || [0, 0, 0, 1]);
+            output.scale = Array.from(node.scale || [1, 1, 1]);
+        }
+        const targetCount = typeof node.mesh === 'number'
+            ? Math.max(0, ...(meshes[node.mesh]?.primitives || []).map((primitive) => primitive.targets?.length || 0))
+            : 0;
+        if (targetCount > 0) {
+            const source = node.weights || meshes[node.mesh]?.weights || [];
+            output.weights = Array.from({ length: targetCount }, (_, index) => Number(source[index]) || 0);
+        }
+        return output;
+    }));
+    const sceneIndex = typeof manifest.scene === 'number' ? manifest.scene : 0;
+    const configured = manifest.scenes?.[sceneIndex]?.nodes || manifest.scenes?.[0]?.nodes;
+    document.rootNodes.push(...(configured || rootNodes(document.nodes)));
+}
+
+function collectSkins(asset, skins, document, accessorBySource) {
+    document.skins.push(...skins.map((skin, skinIndex) => ({
+        name: skin.name || `skin_${skinIndex}`,
+        joints: Array.from(skin.joints || []),
+        ...(typeof skin.inverseBindMatrices === 'number'
+            ? { inverseBindMatrices: sourceAccessor(asset, skin.inverseBindMatrices, document, accessorBySource) }
+            : {}),
+        ...(typeof skin.skeleton === 'number' ? { skeleton: skin.skeleton } : {}),
+    })));
+}
+
+function collectAnimations(asset, animations, document, accessorBySource) {
+    document.animations.push(...animations.map((animation, animationIndex) => {
+        const samplers = [];
+        const samplerBySource = new Map();
+        const channels = [];
+        for (const channel of animation.channels || []) {
+            const target = channel.target || {};
+            if (!['translation', 'rotation', 'scale', 'weights'].includes(target.path) || !Number.isInteger(target.node)) {
+                document.warnings.push(`glTF animation ${animation.name || animationIndex} has an unsupported channel and it was omitted`);
+                continue;
+            }
+            const source = animation.samplers?.[channel.sampler];
+            if (!source || !Number.isInteger(source.input) || !Number.isInteger(source.output)) {
+                document.warnings.push(`glTF animation ${animation.name || animationIndex} has an invalid sampler and it was omitted`);
+                continue;
+            }
+            let samplerIndex = samplerBySource.get(channel.sampler);
+            if (samplerIndex === undefined) {
+                const input = sourceAccessor(asset, source.input, document, accessorBySource);
+                let output = sourceAccessor(asset, source.output, document, accessorBySource);
+                if (target.path === 'weights') {
+                    const targetCount = document.nodes[target.node]?.weights?.length || 0;
+                    const sourceOutput = document.accessors[output];
+                    if (targetCount === 0 || sourceOutput.count % targetCount !== 0) {
+                        document.warnings.push(`glTF animation ${animation.name || animationIndex} has an unrepresentable weight sampler and it was omitted`);
+                        continue;
+                    }
+                    output = appendAccessor(document, {
+                        ...sourceOutput,
+                        bytes: new Uint8Array(sourceOutput.bytes),
+                        components: targetCount,
+                        count: sourceOutput.count / targetCount,
+                    });
+                }
+                samplerIndex = samplers.length;
+                samplers.push({ input, output, interpolation: source.interpolation || 'LINEAR' });
+                samplerBySource.set(channel.sampler, samplerIndex);
+            }
+            channels.push({ sampler: samplerIndex, node: target.node, path: target.path });
+        }
+        const duration = Math.max(0, ...samplers.map((sampler) => lastTime(document.accessors[sampler.input])));
+        return { name: animation.name || `animation_${animationIndex}`, duration, samplers, channels };
+    }).filter((animation) => animation.channels.length > 0));
+}
+
+function sourceAccessor(asset, sourceIndex, document, cache) {
+    const cached = cache.get(sourceIndex);
+    if (cached !== undefined) return cached;
+    const packed = asset.readAccessor(sourceIndex);
+    try {
+        const index = appendAccessor(document, {
+            bytes: new Uint8Array(packed.bytes()),
+            componentType: packed.componentType(),
+            components: packed.components(),
+            count: packed.count(),
+            normalized: packed.normalized(),
+        });
+        cache.set(sourceIndex, index);
+        return index;
+    } finally {
+        packed.free();
+    }
+}
+
+function appendAccessor(document, accessor) {
+    const index = document.accessors.length;
+    document.accessors.push(accessor);
+    return index;
+}
+
+function textureInfo(info, textureBySource, includeTransform = false) {
+    if (!info || !Number.isInteger(info.index)) return null;
+    const texture = textureBySource[info.index];
+    if (!Number.isInteger(texture) || texture < 0) return null;
+    const result = { texture, texCoord: info.texCoord ?? 0 };
+    if (includeTransform) result.transform = { offset: [0, 0], scale: [1, 1], rotation: 0 };
+    return result;
+}
+
+function lastTime(accessor) {
+    if (!accessor || accessor.componentType !== 5126 || accessor.components !== 1 || accessor.count === 0) return 0;
+    const view = new DataView(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength);
+    return view.getFloat32((accessor.count - 1) * 4, true);
+}
+
+function extensionWarnings(manifest) {
+    const warnings = [];
+    const unsupported = (manifest.extensionsUsed || []).filter((extension) => !SUPPORTED_EXTENSIONS.has(extension));
+    if (unsupported.length > 0) warnings.push(`Unsupported glTF extensions omitted from SceneDocument: ${unsupported.join(', ')}`);
+    if ((manifest.extensionsRequired || []).some((extension) => !SUPPORTED_EXTENSIONS.has(extension))) warnings.push('glTF requires extensions outside the portable SceneDocument subset');
+    return warnings;
+}
+
+function rootNodes(nodes) {
+    const children = new Set(nodes.flatMap((node) => node.children || []));
+    return nodes.map((_, index) => index).filter((index) => !children.has(index));
+}
+
+function resolveResource(uri, resources) {
+    if (uri.startsWith('data:')) return decodeDataUri(uri);
+    const value = resources?.[uri] || resources?.[resourceName(uri, uri)];
+    if (value instanceof Uint8Array) return value;
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    return null;
+}
+
+function decodeDataUri(uri) {
+    const comma = uri.indexOf(',');
+    if (comma < 0) return null;
+    const meta = uri.substring(0, comma);
+    const payload = uri.substring(comma + 1);
+    try {
+        if (meta.includes(';base64')) {
+            const decoded = atob(payload);
+            return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+        }
+        return new TextEncoder().encode(decodeURIComponent(payload));
+    } catch {
+        return null;
+    }
+}
+
+function resourceName(uri, fallback) {
+    if (!uri) return fallback;
+    const slash = Math.max(uri.lastIndexOf('/'), uri.lastIndexOf('\\'));
+    return slash < 0 ? uri : uri.slice(slash + 1);
+}
+
+function mimeFromUri(uri) {
+    const extension = resourceName(uri || '', '').split('.').pop()?.toLowerCase();
+    return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', ktx2: 'image/ktx2' }[extension] || null;
+}
+
+function sniffMime(bytes) {
+    if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+    if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8) return 'image/jpeg';
+    if (bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) return 'image/webp';
+    if (bytes.length >= 4 && bytes[0] === 0xab && bytes[1] === 0x4b && bytes[2] === 0x54 && bytes[3] === 0x58) return 'image/ktx2';
+    return null;
+}

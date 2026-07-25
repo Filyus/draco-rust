@@ -103,6 +103,35 @@ test('glTF asset API reads document, geometry, accessors, GLB, and resources', a
   expect(result.resolved.success).toBe(true);
 });
 
+test('glTF can build a portable SceneDocument without browser image handles', async ({ page }) => {
+  await page.goto('/index.html');
+  const result = await page.evaluate(async ({ animated }) => {
+    const [api, sceneDocument, viewerAdapter] = await Promise.all([
+      import('/pkg/gltf.js'),
+      import('/gltf-scene-document.js'),
+      import('/scene-document-viewer.js'),
+    ]);
+    await api.default();
+    const document = sceneDocument.buildSceneDocumentFromGltf(
+      new TextEncoder().encode(animated), {}, api,
+    );
+    const scene = viewerAdapter.buildViewerSceneFromDocument(document);
+    return {
+      nodes: document.nodes.length,
+      accessors: document.accessors.length,
+      clips: scene.animations.length,
+      firstPath: scene.animations[0]?.channels[0]?.path,
+      textureHasImage: Object.hasOwn(scene.textures[0] || {}, 'image'),
+    };
+  }, { animated: animatedTranslation() });
+
+  expect(result.nodes).toBeGreaterThan(0);
+  expect(result.accessors).toBeGreaterThan(0);
+  expect(result.clips).toBe(1);
+  expect(result.firstPath).toBe('translation');
+  expect(result.textureHasImage).toBe(false);
+});
+
 test('glTF CUBICSPLINE scales tangents by keyframe duration', async ({ page }) => {
   await page.goto('/index.html');
   const values = await page.evaluate(async () => {

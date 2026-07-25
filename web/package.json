@@ -6,6 +6,7 @@
     "test:node": "node tests/node-smoke.mjs",
     "test:scene-document": "node tests/scene-document-contract.mjs",
     "test:scene-document-viewer": "node tests/scene-document-viewer-parity.mjs",
+    "test:gltf-scene-document": "node tests/gltf-scene-document-parity.mjs",
     "test:fbx-mixamo": "node tests/fbx-matrix-probe.mjs",
     "test:fbx-morph": "node tests/fbx-morph-probe.mjs",
     "test:fbx-samba": "node tests/fbx-samba-blender-motion-probe.mjs",
