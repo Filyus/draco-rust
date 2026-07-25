@@ -66,9 +66,6 @@ const useDraco = document.getElementById('use-draco');
 const useDracoLabel = document.getElementById('use-draco-label');
 const dracoOptions = document.getElementById('draco-options');
 const dracoSettings = document.getElementById('draco-settings');
-const exportCapabilityReport = document.getElementById('export-capability-report');
-const exportCapabilitySummary = document.getElementById('export-capability-summary');
-const exportCapabilityWarnings = document.getElementById('export-capability-warnings');
 const encodingSpeed = document.getElementById('encoding-speed');
 const encodingMethod = document.getElementById('encoding-method');
 const positionBits = document.getElementById('position-bits');
@@ -142,16 +139,16 @@ sceneTreeCollapseButton?.addEventListener('click', () => setSceneTreeExpanded(fa
 if (sidebar && sceneSection && sceneSection.parentElement !== sidebar) {
     sidebar.append(sceneSection);
 }
-// Contents and warnings are their own cards below the scene card, so neither can
-// squeeze the tree or overflow the scene layout.
+// Contents is its own card below the scene card, so it cannot squeeze the tree.
 if (sidebar && sceneInfo && sceneInfo.parentElement !== sidebar) {
     sidebar.append(sceneInfo);
 }
-if (sidebar && sceneWarningsSection && sceneWarningsSection.parentElement !== sidebar) {
-    sidebar.append(sceneWarningsSection);
-}
 if (exportSidebar && exportSection && exportSection.parentElement !== exportSidebar) {
     exportSidebar.append(exportSection);
+}
+// Every warning the app produces lands in this one card, directly under Export.
+if (exportSidebar && sceneWarningsSection && sceneWarningsSection.parentElement !== exportSidebar) {
+    exportSidebar.append(sceneWarningsSection);
 }
 
 function setViewerControlsEnabled(enabled) {
@@ -482,6 +479,7 @@ async function handleFile(file, companionFiles = []) {
         currentSourceResources = Object.create(null);
         currentSceneDocument = null;
         currentFbxProvenance = null;
+        clearWarningPanel();
         for (const companion of companionFiles) {
             if (Object.prototype.hasOwnProperty.call(currentSourceResources, companion.name)) {
                 throw new Error(`Duplicate companion resource name: ${companion.name}`);
@@ -527,7 +525,7 @@ async function handleFile(file, companionFiles = []) {
             exportSection.style.display = 'flex';
             exportSidebar.style.display = 'flex';
             workspace.classList.add('export-loaded');
-            renderExportCapabilityReport(currentSceneDocument);
+            setWarningSource('export', []);
             log(`Successfully parsed ${file.name}`, 'success');
             await loadPreview(extension);
         } else {
@@ -711,7 +709,7 @@ function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
     if (!sceneDocument) {
         scenePanel.hidden = true;
         sceneInfo.hidden = true;
-        setWarningPanel([]);
+        setWarningSource('scene', []);
         sceneSection.style.display = 'none';
         workspace.classList.remove('scene-loaded');
         return;
@@ -733,35 +731,18 @@ function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
         sceneSection.style.display = 'flex';
         workspace.classList.add('scene-loaded');
         sceneCapabilitySummary.textContent = describeSceneCapabilities(validation.capabilities);
-        setWarningPanel([...sceneDocument.warnings, ...validation.warnings, ...extraWarnings]);
+        setWarningSource('scene', [...sceneDocument.warnings, ...validation.warnings, ...extraWarnings]);
         scenePanel.hidden = false;
         sceneInfo.hidden = false;
     } catch (error) {
         scenePanel.hidden = true;
         sceneInfo.hidden = true;
-        setWarningPanel([]);
+        setWarningSource('scene', []);
         sceneSection.style.display = 'none';
         exportSidebar.style.display = 'none';
         workspace.classList.remove('scene-loaded');
         workspace.classList.remove('export-loaded');
         log(`Scene details unavailable: ${errorMessage(error)}`, 'warning');
-    }
-}
-
-function renderExportCapabilityReport(sceneDocument, extraWarnings = []) {
-    if (!sceneDocument) {
-        exportCapabilityReport.hidden = true;
-        return;
-    }
-    try {
-        const validation = assertValidSceneDocument(sceneDocument);
-        exportCapabilitySummary.textContent = describeSceneCapabilities(validation.capabilities);
-        setWarningList(exportCapabilityWarnings, [...sceneDocument.warnings, ...validation.warnings, ...extraWarnings]);
-        exportCapabilityReport.hidden = false;
-    } catch (error) {
-        exportCapabilityReport.hidden = false;
-        exportCapabilitySummary.textContent = `Conversion report unavailable: ${errorMessage(error)}`;
-        exportCapabilityWarnings.replaceChildren();
     }
 }
 
@@ -816,6 +797,25 @@ function setWarningList(list, warnings, limit = WARNING_PREVIEW_COUNT) {
 
 function uniqueWarnings(warnings) {
     return [...new Set(warnings.filter((warning) => typeof warning === 'string' && warning.trim()))];
+}
+
+// Warnings arrive from independent stages, so each stage owns one slot and the
+// panel always shows their union — no stage can wipe another's warnings.
+const warningSources = { scene: [], mesh: [], preview: [], export: [] };
+
+function setWarningSource(source, warnings) {
+    warningSources[source] = uniqueWarnings(warnings || []);
+    setWarningPanel([
+        ...warningSources.scene,
+        ...warningSources.mesh,
+        ...warningSources.preview,
+        ...warningSources.export,
+    ]);
+}
+
+function clearWarningPanel() {
+    for (const source of Object.keys(warningSources)) warningSources[source] = [];
+    setWarningPanel([]);
 }
 
 // The warnings live in their own collapsible panel so the scene tree stays readable.
@@ -924,7 +924,7 @@ function displayMeshInfo(result) {
         document.getElementById('triangle-count').textContent = result.triangleCount.toLocaleString();
         document.getElementById('has-normals').textContent = result.hasNormals ? 'Yes' : 'No';
         document.getElementById('has-uvs').textContent = result.hasUvs ? 'Yes' : 'No';
-        document.getElementById('warnings-container').style.display = 'none';
+        setWarningSource('mesh', result.warnings || []);
         return;
     }
     const meshes = result.meshes || [];
@@ -946,22 +946,8 @@ function displayMeshInfo(result) {
     document.getElementById('triangle-count').textContent = totalTriangles.toLocaleString();
     document.getElementById('has-normals').textContent = hasNormals ? 'Yes' : 'No';
     document.getElementById('has-uvs').textContent = hasUvs ? 'Yes' : 'No';
-    
-    // Show warnings
-    const warningsContainer = document.getElementById('warnings-container');
-    const warningsList = document.getElementById('warnings-list');
-    warningsList.innerHTML = '';
-    
-    if (result.warnings?.length > 0) {
-        for (const warning of result.warnings) {
-            const li = document.createElement('li');
-            li.textContent = warning;
-            warningsList.appendChild(li);
-        }
-        warningsContainer.style.display = 'block';
-    } else {
-        warningsContainer.style.display = 'none';
-    }
+
+    setWarningSource('mesh', result.warnings || []);
 }
 
 // Update export options based on format
@@ -992,7 +978,7 @@ async function exportFile() {
             result = exportSceneDocumentToGlb(currentSceneDocument);
             for (const warning of result.warnings || []) log(warning, 'warning');
             logSceneDocumentCapabilities(result.capabilities);
-            renderExportCapabilityReport(currentSceneDocument, result.warnings || []);
+            setWarningSource('export', result.warnings || []);
             downloadResult(result, format);
             log(result.message, 'success');
             return;
@@ -1469,8 +1455,8 @@ async function loadPreview(extension) {
         }
 
         viewer.setScene(scene);
-        renderSceneDocumentSummary(currentSceneDocument, scene.warnings || []);
-        renderExportCapabilityReport(currentSceneDocument, scene.warnings || []);
+        renderSceneDocumentSummary(currentSceneDocument);
+        setWarningSource('preview', scene.warnings || []);
         setViewerControlsEnabled(true);
         syncViewerToolbar();
         log('Preview ready', 'success');
@@ -1651,12 +1637,11 @@ function clearFile() {
     resetAnimationUi();
     scenePanel.hidden = true;
     sceneInfo.hidden = true;
-    setWarningPanel([]);
+    clearWarningPanel();
     sceneSection.style.display = 'none';
     exportSidebar.style.display = 'none';
     workspace.classList.remove('export-loaded');
     workspace.classList.remove('scene-loaded');
-    exportCapabilityReport.hidden = true;
 
     fileInput.value = '';
 

@@ -217,8 +217,10 @@ test('FBX SceneDocument exports through the typed FBX writer', async ({ page }) 
   await expect(page.locator('#scene-summary-compact')).toHaveCount(0);
   await expect(page.locator('#scene-panel')).toBeVisible();
   expect(await page.locator('#scene-panel').evaluate((element) => Boolean(element.closest('#scene-section')))).toBe(true);
-  await expect(page.locator('#export-capability-report')).toBeVisible();
   expect(await page.locator('#export-section').evaluate((element) => Boolean(element.closest('#export-sidebar')))).toBe(true);
+  // Warnings have a single home, directly under the Export panel.
+  await expect(page.locator('#warnings-container')).toHaveCount(0);
+  expect(await page.locator('#scene-warnings-section').evaluate((element) => Boolean(element.closest('#export-sidebar')))).toBe(true);
   await page.locator('[data-choice-for="export-format"] [data-value="fbx"]').click();
   const downloadPromise = page.waitForEvent('download');
   await page.locator('#export-btn').click();

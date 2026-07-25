@@ -178,12 +178,6 @@
                         <span>⬇</span> Convert &amp; Download
                     </button>
 
-                    <div id="export-capability-report" class="capability-box" hidden>
-                        <strong>Scene conversion</strong>
-                        <p id="export-capability-summary"></p>
-                        <ul id="export-capability-warnings"></ul>
-                    </div>
-
                     <div id="compression-stats" class="stats-box" style="display: none; margin-top: 1rem; padding: 1rem; background: #1e3a5f; border-radius: 8px; border: 1px solid #3b82f6; color: #f8fafc;">
                         <strong style="color: #60a5fa;">✅ Compression Statistics:</strong>
                         <div style="margin-top: 0.5rem; font-size: 0.9rem; color: #e2e8f0;">
@@ -287,11 +281,6 @@
                                     <span id="scene-clip-stat" class="stat-value">0</span>
                                 </div>
                             </div>
-
-                            <div id="warnings-container" class="warnings-box" style="display: none;">
-                                <strong>⚠️ Warning:</strong>
-                                <ul id="warnings-list"></ul>
-                            </div>
                         </section>
                     </div>
                 </section>
@@ -326,6 +315,9 @@
                 </details>
             </aside>
 
+            <aside id="export-sidebar" class="sidebar export-sidebar" style="display: none;"></aside>
+
+            <!-- The single warnings panel; app.js moves it under the Export panel. -->
             <aside id="scene-warnings-section" class="card scene-warnings-section" hidden>
                 <details id="scene-warnings" class="scene-warnings">
                     <summary class="scene-warnings-title">
@@ -336,8 +328,6 @@
                     <ul id="scene-warning-list" class="scene-warning-list"></ul>
                 </details>
             </aside>
-
-            <aside id="export-sidebar" class="sidebar export-sidebar" style="display: none;"></aside>
 
         </div>
 
