@@ -45,6 +45,7 @@ use draco_core::mesh::Mesh;
 use crate::fbx_ascii_syntax::{name_class, FBX_VERSION};
 use crate::fbx_encoder::{encode_node, write_footer, write_null_record, WriterOptions, FBX_MAGIC};
 use crate::fbx_node::{FbxNode, FbxProperty};
+use crate::fbx_scene::FbxNodeAttribute;
 use crate::traits::{WriteToBytes, Writer};
 
 /// FBX binary format writer.
@@ -135,7 +136,20 @@ struct ModelData {
     transform_stack: Option<crate::fbx_scene::FbxTransformStack>,
     /// Material ids connected to this model via `OO`.
     material_ids: Vec<i64>,
+    /// Camera or light this model carries, written as its `NodeAttribute`.
+    attribute: Option<FbxNodeAttribute>,
     class: &'static str,
+}
+
+impl ModelData {
+    /// Whether this model writes a `NodeAttribute` object.
+    ///
+    /// The skeleton attribute is synthesized from the class rather than
+    /// carried on `attribute`, so both have to be asked about. `Definitions`
+    /// and `Connections` must agree with `Objects` on this exactly.
+    fn has_attribute(&self) -> bool {
+        self.attribute.is_some() || self.class == "LimbNode"
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -260,19 +274,37 @@ impl FbxWriter {
         transform: Option<crate::fbx_scene::FbxTransform>,
         material_ids: Vec<i64>,
     ) -> i64 {
-        self.add_model_with_scene_id(name, parent_id, transform, None, material_ids, None)
+        self.add_model_for_node(name, parent_id, transform, None, material_ids, None)
     }
 
-    fn add_model_with_scene_id(
+    /// Adds a Model, taking its identity and node attribute from `source` when
+    /// this model came from a scene node rather than from a bare mesh.
+    fn add_model_for_node(
         &mut self,
         name: String,
         parent_id: Option<i64>,
         transform: Option<crate::fbx_scene::FbxTransform>,
         transform_stack: Option<crate::fbx_scene::FbxTransformStack>,
         material_ids: Vec<i64>,
-        scene_node_id: Option<crate::fbx_scene::FbxNodeId>,
+        source: Option<&crate::fbx_scene::FbxSceneNode>,
     ) -> i64 {
+        let scene_node_id = source.map(|node| node.id);
+        let attribute = source.and_then(|node| node.attribute.clone());
         let model_id = self.allocate_id();
+        // Importers key off the Model's own class, not only off the attribute
+        // hanging from it: a camera written as Model::Mesh loads as an empty
+        // mesh in Blender however correct its NodeAttribute is.
+        let class = match &attribute {
+            Some(FbxNodeAttribute::Camera(_)) => "Camera",
+            Some(FbxNodeAttribute::Light(_)) => "Light",
+            None if scene_node_id
+                .map(|id| self.joint_scene_ids.contains(&id))
+                .unwrap_or(false) =>
+            {
+                "LimbNode"
+            }
+            _ => "Mesh",
+        };
         self.models.push(ModelData {
             name,
             model_id,
@@ -281,14 +313,8 @@ impl FbxWriter {
             transform,
             transform_stack,
             material_ids,
-            class: if scene_node_id
-                .map(|id| self.joint_scene_ids.contains(&id))
-                .unwrap_or(false)
-            {
-                "LimbNode"
-            } else {
-                "Mesh"
-            },
+            attribute,
+            class,
         });
         model_id
     }
@@ -513,13 +539,13 @@ impl FbxWriter {
             .iter()
             .map(|&idx| material_ids[idx])
             .collect();
-        let model_id = self.add_model_with_scene_id(
+        let model_id = self.add_model_for_node(
             node.name.clone().unwrap_or_else(|| "Node".to_string()),
             parent_id,
             node.transform,
             node.transform_stack.clone(),
             referenced_material_ids.clone(),
-            Some(node.id),
+            Some(node),
         );
         // We need a mutable borrow of self.connections but add_mesh_to_model
         // borrows self mutably too; collect geometry first.
@@ -879,6 +905,25 @@ fn f64_property_node(name: &str, type1: &str, type2: &str, flags: &str, value: f
     property_node(name, type1, type2, flags, vec![FbxProperty::F64(value)])
 }
 
+/// A three-component property of FBX type `Vector`, which is what a camera's
+/// `Position`, `UpVector` and `InterestPosition` are declared as.
+fn vector_property_node(name: &str, values: [f32; 3]) -> FbxNode {
+    property_node(
+        name,
+        "Vector",
+        "",
+        "A",
+        values
+            .into_iter()
+            .map(|value| FbxProperty::F64(f64::from(value)))
+            .collect(),
+    )
+}
+
+fn enum_property_node(name: &str, value: i32) -> FbxNode {
+    int_property_node(name, "enum", "", "", value)
+}
+
 /// A three-component property, whose declared type is its own name.
 ///
 /// That is right for `Lcl Translation` and the rest of the transform stack,
@@ -1017,10 +1062,11 @@ fn definitions_node(
     skins: &[SkinData],
     morphs: &[MorphData],
 ) -> FbxNode {
-    let limb_nodes = models
-        .iter()
-        .filter(|model| model.class == "LimbNode")
-        .count();
+    // Every Model that carries a NodeAttribute declares one here. Counting
+    // only skeletons left a scene with a camera and no joints emitting
+    // NodeAttribute objects with no ObjectType declaration at all -- which
+    // this crate's reader does not notice and a stricter importer does.
+    let node_attributes = models.iter().filter(|model| model.has_attribute()).count();
     let shape_count = morphs
         .iter()
         .map(|morph| morph.targets.len())
@@ -1037,10 +1083,8 @@ fn definitions_node(
         object_type_node("Geometry", (meshes.len() + shape_count) as i32),
         object_type_node("Model", models.len() as i32),
     ];
-    if limb_nodes > 0 {
-        // Blender 5's native importer uses this explicit companion to
-        // identify a Model::LimbNode as a skeleton bone.
-        object_types.push(object_type_node("NodeAttribute", limb_nodes as i32));
+    if node_attributes > 0 {
+        object_types.push(object_type_node("NodeAttribute", node_attributes as i32));
     }
     object_types.push(object_type_node("Material", materials.len() as i32));
     object_types.push(object_type_node("Texture", textures.len() as i32));
@@ -1100,9 +1144,7 @@ fn objects_node(
     for model_data in models {
         children.push(model_node(model_data)?);
     }
-    for model_data in models.iter().filter(|model| model.class == "LimbNode") {
-        children.push(limb_node_attribute_node(model_data));
-    }
+    children.extend(models.iter().filter_map(node_attribute_node));
     for material_data in materials {
         children.push(material_node(material_data));
     }
@@ -1199,25 +1241,137 @@ fn model_node(model_data: &ModelData) -> io::Result<FbxNode> {
 /// FBX separates a limb's Model transform from its Skeleton node attribute.
 /// Without this object Blender 5 imports animated joints as plain empties and
 /// cannot create an armature modifier for their skin clusters.
-fn limb_node_attribute_node(model_data: &ModelData) -> FbxNode {
-    FbxNode {
+/// Builds the `NodeAttribute` a Model carries, if it carries one.
+///
+/// A Model has at most one attribute, which is why they can all share the id
+/// range below: skeleton, camera and light are mutually exclusive.
+///
+/// The declared type strings on each `P` record are the ones Autodesk and
+/// Blender write. This crate's reader ignores them entirely -- it matches on
+/// the property name alone -- so nothing here is checked by reading the file
+/// back; they are for the importers that do type-check.
+fn node_attribute_node(model_data: &ModelData) -> Option<FbxNode> {
+    let id = node_attribute_id(model_data.model_id);
+    let name = name_class(&model_data.name, "NodeAttribute");
+
+    let (class, children) = match &model_data.attribute {
+        Some(FbxNodeAttribute::Camera(camera)) => {
+            let mut properties = Vec::new();
+            for (property_name, value) in [
+                ("Position", camera.position),
+                ("UpVector", camera.up_vector),
+                ("InterestPosition", camera.interest_position),
+            ] {
+                if let Some(value) = value {
+                    properties.push(vector_property_node(property_name, value));
+                }
+            }
+            if let Some(value) = camera.projection_type {
+                properties.push(enum_property_node("CameraProjectionType", value));
+            }
+            for (property_name, value) in [
+                ("FieldOfView", camera.field_of_view),
+                ("FieldOfViewX", camera.field_of_view_x),
+                ("FieldOfViewY", camera.field_of_view_y),
+                ("FocalLength", camera.focal_length),
+                ("OrthoZoom", camera.ortho_zoom),
+            ] {
+                if let Some(value) = value {
+                    properties.push(scalar_property_node(property_name, f64::from(value)));
+                }
+            }
+            for (property_name, value) in [
+                ("NearPlane", camera.near_plane),
+                ("FarPlane", camera.far_plane),
+                ("AspectWidth", camera.aspect_width),
+                ("AspectHeight", camera.aspect_height),
+            ] {
+                if let Some(value) = value {
+                    properties.push(f64_property_node(
+                        property_name,
+                        "double",
+                        "Number",
+                        "",
+                        f64::from(value),
+                    ));
+                }
+            }
+            (
+                "Camera",
+                vec![
+                    properties70_node(properties),
+                    value_node("TypeFlags", FbxProperty::String("Camera".to_string())),
+                    value_node("GeometryVersion", FbxProperty::I32(124)),
+                ],
+            )
+        }
+        Some(FbxNodeAttribute::Light(light)) => {
+            let mut properties = Vec::new();
+            if let Some(value) = light.light_type {
+                properties.push(enum_property_node("LightType", value));
+            }
+            if let Some(value) = light.cast_light {
+                properties.push(bool_property_node("CastLight", value));
+            }
+            if let Some(value) = light.color {
+                properties.push(color_property_node("Color", value));
+            }
+            if let Some(value) = light.intensity {
+                properties.push(scalar_property_node("Intensity", f64::from(value)));
+            }
+            if let Some(value) = light.cast_shadows {
+                properties.push(bool_property_node("CastShadows", value));
+            }
+            if let Some(value) = light.decay_type {
+                properties.push(enum_property_node("DecayType", value));
+            }
+            if let Some(value) = light.decay_start {
+                properties.push(f64_property_node(
+                    "DecayStart",
+                    "double",
+                    "Number",
+                    "",
+                    f64::from(value),
+                ));
+            }
+            (
+                "Light",
+                vec![
+                    value_node("GeometryVersion", FbxProperty::I32(124)),
+                    properties70_node(properties),
+                    value_node("TypeFlags", FbxProperty::String("Light".to_string())),
+                ],
+            )
+        }
+        // FBX separates a limb's Model transform from its Skeleton node
+        // attribute. Without this object Blender 5 imports animated joints as
+        // plain empties and cannot create an armature modifier for their skin
+        // clusters.
+        None if model_data.class == "LimbNode" => (
+            "LimbNode",
+            vec![value_node(
+                "TypeFlags",
+                FbxProperty::String("Skeleton".to_string()),
+            )],
+        ),
+        None => return None,
+    };
+
+    Some(FbxNode {
         name: "NodeAttribute".to_string(),
         properties: vec![
-            FbxProperty::I64(limb_node_attribute_id(model_data.model_id)),
-            FbxProperty::String(name_class(&model_data.name, "NodeAttribute")),
-            FbxProperty::String("LimbNode".to_string()),
+            FbxProperty::I64(id),
+            FbxProperty::String(name),
+            FbxProperty::String(class.to_string()),
         ],
-        children: vec![value_node(
-            "TypeFlags",
-            FbxProperty::String("Skeleton".to_string()),
-        )],
-    }
+        children,
+    })
 }
 
-fn limb_node_attribute_id(model_id: i64) -> i64 {
+fn node_attribute_id(model_id: i64) -> i64 {
     // Writer-allocated object ids are small positive integers; animation ids
     // use a separate 2-million-plus hash range. Reserve a distinct stable
-    // range for synthetic skeleton attributes.
+    // range for synthetic node attributes.
     1_000_000_000i64.saturating_add(model_id)
 }
 
@@ -2214,10 +2368,10 @@ fn connections_node(
                 model_data.parent_id.unwrap_or(0),
                 None,
             ));
-            if model_data.class == "LimbNode" {
+            if model_data.has_attribute() {
                 edges.push(connection_node(
                     "OO",
-                    limb_node_attribute_id(model_data.model_id),
+                    node_attribute_id(model_data.model_id),
                     model_data.model_id,
                     None,
                 ));
@@ -2638,6 +2792,7 @@ mod tests {
         );
 
         let geometry = child(objects, "Geometry").expect("the mesh writes a Geometry");
+
         assert!(
             matches!(&geometry.properties[2], FbxProperty::String(class) if class == "Mesh"),
             "a Geometry's class suffix is Mesh: {:?}",
@@ -2645,6 +2800,107 @@ mod tests {
         );
         assert!(child(geometry, "Vertices").is_some());
         assert!(child(geometry, "PolygonVertexIndex").is_some());
+    }
+
+    /// A camera is announced in every place an importer looks for one.
+    ///
+    /// None of these is visible to a write-and-read cycle: this crate's reader
+    /// finds an attribute through the `OO` connection and reads its properties
+    /// by name, so it never consults the `Model`'s class, `TypeFlags`, the
+    /// `Definitions` count, or the declared type on a `P` record. Blender and
+    /// the FBX SDK consult all four, and a file that satisfies our reader
+    /// while failing theirs is exactly the failure this guards against.
+    #[cfg(feature = "fbx-reader")]
+    #[test]
+    fn a_camera_is_declared_the_way_importers_expect() {
+        let scene = FbxScene {
+            root_nodes: vec![FbxSceneNode {
+                id: crate::fbx_scene::FbxNodeId(1),
+                name: Some("Cam".to_string()),
+                attribute: Some(crate::fbx_scene::FbxNodeAttribute::Camera(
+                    crate::fbx_scene::FbxCamera {
+                        position: Some([1.0, 2.0, 3.0]),
+                        focal_length: Some(35.0),
+                        projection_type: Some(0),
+                        near_plane: Some(0.1),
+                        ..Default::default()
+                    },
+                )),
+                transform: None,
+                transform_stack: None,
+                has_complex_transform_stack: false,
+                mesh_instances: Vec::new(),
+                children: Vec::new(),
+            }],
+            ..FbxScene::default()
+        };
+        let mut writer = FbxWriter::new();
+        writer.add_scene(&scene).unwrap();
+        let document = writer.build_document().unwrap();
+
+        let objects = document
+            .iter()
+            .find(|node| node.name == "Objects")
+            .expect("Objects");
+        let model = child(objects, "Model").expect("the node writes a Model");
+        assert!(
+            matches!(&model.properties[2], FbxProperty::String(class) if class == "Camera"),
+            "a camera's Model is classed Camera, not Mesh: {:?}",
+            model.properties
+        );
+
+        let attribute = child(objects, "NodeAttribute").expect("the camera writes a NodeAttribute");
+        assert!(
+            matches!(&attribute.properties[2], FbxProperty::String(class) if class == "Camera")
+        );
+        assert_eq!(
+            child(attribute, "TypeFlags").map(|node| format!("{:?}", node.properties)),
+            Some(format!(
+                "{:?}",
+                vec![FbxProperty::String("Camera".to_string())]
+            ))
+        );
+
+        // Each P record declares the FBX type Autodesk writes for it.
+        let declared: Vec<(String, String)> = child(attribute, "Properties70")
+            .expect("Properties70")
+            .children
+            .iter()
+            .map(|node| match (&node.properties[0], &node.properties[1]) {
+                (FbxProperty::String(name), FbxProperty::String(kind)) => {
+                    (name.clone(), kind.clone())
+                }
+                other => panic!("a P record names itself with strings: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            declared,
+            [
+                ("Position".to_string(), "Vector".to_string()),
+                ("CameraProjectionType".to_string(), "enum".to_string()),
+                ("FocalLength".to_string(), "Number".to_string()),
+                ("NearPlane".to_string(), "double".to_string()),
+            ]
+        );
+
+        // A NodeAttribute object with no ObjectType declaration is the classic
+        // file that loads in one importer and not another.
+        let definitions = document
+            .iter()
+            .find(|node| node.name == "Definitions")
+            .expect("Definitions");
+        let declared_attributes = definitions
+            .children
+            .iter()
+            .filter(|node| node.name == "ObjectType")
+            .find(|node| matches!(&node.properties[0], FbxProperty::String(n) if n == "NodeAttribute"))
+            .and_then(|node| child(node, "Count"))
+            .map(|node| format!("{:?}", node.properties));
+        assert_eq!(
+            declared_attributes,
+            Some(format!("{:?}", vec![FbxProperty::I32(1)])),
+            "Definitions must declare the one NodeAttribute that Objects holds"
+        );
     }
 
     #[test]

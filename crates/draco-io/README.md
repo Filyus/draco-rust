@@ -103,7 +103,7 @@ version 6100 and fall in this category.
 | Node-TRS animation | Yes | Yes |
 | Multiple animation layers | Yes | Yes |
 | Animation layer blending | No | No |
-| Cameras and lights (`NodeAttribute`) | Yes | No |
+| Cameras and lights (`NodeAttribute`) | Yes | Yes |
 | Skins, bind poses, and influences | Yes | Yes |
 | Blend shapes / morph targets | Yes | Yes |
 | `Definitions` property templates | No | n/a |
@@ -164,10 +164,13 @@ Blender's importer makes. Layers are not blended.
 `FbxSceneNode::attribute`. Every field is optional, because FBX omits any
 property left at its class default, and the field sets are limited to what the
 corpus actually contains -- no file carries `InnerAngle` or `OuterAngle`, so
-spot cone angles are not represented. The writer does not emit
-`NodeAttribute` objects, so cameras and lights do not survive an FBX-to-FBX
-rewrite; that is a scope boundary rather than an oversight, and the corpus
-test asserts it directly so it cannot drift unnoticed. Other attribute classes
+spot cone angles are not represented. They are written back too: 58 attributes
+across 20 corpus files survive a rewrite. That takes more than mirroring the
+reader, because the reader is blind to most of what an importer checks -- it
+finds an attribute through its `OO` connection and reads properties by name,
+never consulting the `Model`'s class, `TypeFlags`, the `Definitions` count or
+a `P` record's declared type. All four are written and asserted on the
+document tree, since no write-and-read cycle can see them. Other attribute classes
 -- `LodGroup`, `CameraSwitcher`, `CameraStereo`, IK and FK effectors -- raise
 `FbxWarningCode::DroppedNodeAttribute`. `LimbNode` and `Null` do not, since a
 skeleton attribute is consumed by the skin path and a null carries nothing but

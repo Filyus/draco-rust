@@ -45,34 +45,17 @@ items:
       - "Treat Objects/Model as its own geometry source, since pre-7000 has no separate Geometry object."
       - "Add a scalar-property fallback wherever an array property is read: 6100 stores arrays as repeated scalar properties."
 
-  - id: fbx-camera-light-write
+  - id: fbx-ascii-writer
     area: draco-io/fbx
     priority: low
     status: open
-    summary: "Cameras and lights are read but never written, so they are lost by an FBX-to-FBX rewrite."
+    summary: "ASCII FBX is read but not written. The blocker is gone; what remains is a printer, and a decision about whether it is wanted."
     evidence:
       - path: "crates/draco-io/src/fbx_writer.rs"
-        note: "The writer emits no NodeAttribute objects other than the skeleton attribute for limb nodes."
-      - path: "crates/draco-io/tests/fbx_corpus.rs"
-        note: "cameras_and_lights_are_read_but_not_written_back asserts the loss from both sides, so implementing the write makes that test fail and name the summary that must start comparing attributes."
-    impact: "58 attributes across 20 corpus files. Read-only was the agreed scope, so this is a known boundary rather than a regression."
-    next_steps:
-      - "Emit Objects/NodeAttribute with the camera or light Properties70 and connect it to its Model."
-      - "Add attribute comparison to SceneSummary and delete the characterization test."
-
-  - id: fbx-ascii-writer-needs-a-node-tree
-    area: draco-io/fbx
-    priority: low
-    status: open
-    summary: "An ASCII FBX writer is blocked by the binary writer having no FbxNode-tree intermediate to share."
-    evidence:
-      - path: "crates/draco-io/src/fbx_writer.rs"
-        note: "The writer never builds an FbxNode. Document-structure knowledge -- which objects exist, in what order, with which Properties70 and connections -- is fused into ~35 write_* free functions that each call the byte-level NodeWriter inline. There is no write_node(&FbxNode) to swap a backend under."
-      - path: "crates/draco-io/src/fbx_ascii.rs"
-        note: "The reader made the symmetric commitment and it held: it emits Vec<FbxNode> and the whole scene layer consumed it unchanged. The writer never made that commitment."
+        note: "FbxWriter::build_document returns Vec<FbxNode> and knows nothing about bytes. fbx_encoder::encode_node is the only thing that spells a record, so a second backend is a second printer over the same tree rather than a second document builder."
       - path: "crates/draco-io/src/fbx_ascii_syntax.rs"
-        note: "The direction-independent conventions are already extracted and their writer-side obligations documented, so the remaining cost is entirely the intermediate representation."
-    impact: "Without it an ASCII writer must duplicate the document structure, which is exactly the drift the shared node tree was adopted to prevent."
+        note: "The direction-independent conventions are extracted and the writer's obligations are enumerated in the module doc, including the one that cannot be met: the &quot; escape is not reversible, so a document with an object named `\"` cannot survive an ASCII round trip in either direction."
+    impact: "Low. Round-tripping our own output is a weaker check than the 110 externally-authored ascii/binary pairs the reader is already validated against, and it cannot be exact. The real argument for ASCII output is diffability, not testing."
     next_steps:
-      - "Preferred: rewrite the write_* family to build Vec<FbxNode>, then make binary encoding one backend over that tree and ASCII a second. Also gives the binary writer a far cheaper assertion surface than byte comparison."
-      - "Cheaper but worse: abstract NodeWriter behind a trait. Blocked by finish_with_children needing Seek to backpatch offsets, and by the `*N { a: ... }` array shape being structural rather than per-property."
+      - "Decide whether readable FBX output is wanted at all before writing it; nothing currently needs it."
+      - "If so: an ASCII printer over Vec<FbxNode>, honouring the obligations listed in fbx_ascii_syntax -- F64 printed with a decimal point or exponent, -0.0 kept signed, KeyAttrDataFloat printed as integer bit patterns, arrays shaped `Name: *N { a: v,v,v }`, Content as base64."

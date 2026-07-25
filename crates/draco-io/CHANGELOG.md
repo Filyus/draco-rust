@@ -26,9 +26,11 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   since it addresses edges this crate does not reconstruct.
 - **Breaking.** FBX `Camera` and `Light` node attributes are read onto the new
   `FbxSceneNode::attribute` field, as `FbxNodeAttribute::Camera(FbxCamera)` or
-  `::Light(FbxLight)`. Read only -- the writer emits no `NodeAttribute`
-  objects, so these do not survive a rewrite. Other attribute classes raise
-  `FbxWarningCode::DroppedNodeAttribute`.
+  `::Light(FbxLight)`, and written back. The writer emits the `NodeAttribute`
+  object with the `TypeFlags` and declared property types importers expect,
+  classes the owning `Model` as `Camera` or `Light` rather than `Mesh`, and
+  declares the attribute in `Definitions`. Other attribute classes raise
+  `FbxWarningCode::DroppedNodeAttribute` on read and are not written.
 - The ASCII FBX container is read, for versions 7000 and later, through the
   new `fbx_ascii` module. It produces the same node tree as the binary reader,
   so `FbxReader`, `FbxScene::from_bytes` and the `Reader` traits all accept it
@@ -71,6 +73,10 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A `Model` whose local matrix could not be decomposed -- a zero scale, which
+  Maya writes for a collapsed pivot -- failed the whole document, even when it
+  carried an authored transform stack that made the decomposition unnecessary.
+  It is now computed only where it is used.
 - Animation key times, values, flags and tangents were written uncompressed
   whatever the document's options said, because every curve writer passed a
   freshly defaulted `WriterOptions` instead of the document's. Uncompressed

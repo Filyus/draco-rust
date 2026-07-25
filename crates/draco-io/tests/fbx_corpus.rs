@@ -299,6 +299,8 @@ struct SceneSummary {
     /// Cubic tangent payloads, which no external importer can verify for us:
     /// Blender downgrades cubic keys to linear on import.
     tangents: Vec<String>,
+    /// Camera and light attributes, per node.
+    attributes: Vec<String>,
 }
 
 fn summarize(scene: &FbxScene) -> SceneSummary {
@@ -369,17 +371,20 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
     let mut morphs = Vec::new();
     let mut transforms = Vec::new();
     let mut transform_stacks = Vec::new();
+    let mut attributes = Vec::new();
     collect_deformers(
         scene,
         &mut skins,
         &mut morphs,
         &mut transforms,
         &mut transform_stacks,
+        &mut attributes,
     );
     skins.sort();
     morphs.sort();
     transforms.sort();
     transform_stacks.sort();
+    attributes.sort();
 
     let mut channels: Vec<String> = scene
         .animations
@@ -472,6 +477,7 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
         global_settings: format!("{:?}", scene.global_settings),
         transform_stacks,
         tangents,
+        attributes,
     }
 }
 
@@ -531,6 +537,7 @@ impl SceneSummary {
                 &other.transform_stacks,
             ),
             ("tangents", &self.tangents, &other.tangents),
+            ("attributes", &self.attributes, &other.attributes),
         ] {
             if a == b {
                 continue;
@@ -598,6 +605,7 @@ fn collect_deformers(
     morphs: &mut Vec<String>,
     transforms: &mut Vec<String>,
     transform_stacks: &mut Vec<String>,
+    attributes: &mut Vec<String>,
 ) {
     let names = node_names(scene);
     fn visit(
@@ -607,7 +615,11 @@ fn collect_deformers(
         morphs: &mut Vec<String>,
         transforms: &mut Vec<String>,
         transform_stacks: &mut Vec<String>,
+        attributes: &mut Vec<String>,
     ) {
+        if let Some(attribute) = &node.attribute {
+            attributes.push(describe_attribute(node.name.as_deref(), attribute));
+        }
         transform_stacks.push(format!("{:?}|{:?}", node.name, node.transform_stack));
         transforms.push(format!(
             "{:?}|{:?}|complex={}",
@@ -651,11 +663,65 @@ fn collect_deformers(
             }
         }
         for child in &node.children {
-            visit(child, names, skins, morphs, transforms, transform_stacks);
+            visit(
+                child,
+                names,
+                skins,
+                morphs,
+                transforms,
+                transform_stacks,
+                attributes,
+            );
         }
     }
     for root in &scene.root_nodes {
-        visit(root, &names, skins, morphs, transforms, transform_stacks);
+        visit(
+            root,
+            &names,
+            skins,
+            morphs,
+            transforms,
+            transform_stacks,
+            attributes,
+        );
+    }
+}
+
+/// Renders one camera or light for comparison.
+///
+/// Written out field by field with the same quantization the other float
+/// comparisons use. A `{:?}` of the struct would compare raw `f32`s and report
+/// a difference for values like `field_of_view = 49.134342` that survive a
+/// write and read perfectly well.
+fn describe_attribute(node: Option<&str>, attribute: &draco_io::FbxNodeAttribute) -> String {
+    match attribute {
+        draco_io::FbxNodeAttribute::Camera(camera) => format!(
+            "{node:?}|camera|position={:?}|interest={:?}|up={:?}|projection={:?}|fov={:?},{:?},{:?}             |focal={:?}|near={:?}|far={:?}|aspect={:?},{:?}|zoom={:?}",
+            camera.position.map(milli3),
+            camera.interest_position.map(milli3),
+            camera.up_vector.map(milli3),
+            camera.projection_type,
+            camera.field_of_view.map(milli),
+            camera.field_of_view_x.map(milli),
+            camera.field_of_view_y.map(milli),
+            camera.focal_length.map(milli),
+            camera.near_plane.map(milli),
+            camera.far_plane.map(milli),
+            camera.aspect_width.map(milli),
+            camera.aspect_height.map(milli),
+            camera.ortho_zoom.map(milli),
+        ),
+        draco_io::FbxNodeAttribute::Light(light) => format!(
+            "{node:?}|light|type={:?}|colour={:?}|intensity={:?}|cast={:?},{:?}|decay={:?},{:?}",
+            light.light_type,
+            light.color.map(milli3),
+            light.intensity.map(milli),
+            light.cast_light,
+            light.cast_shadows,
+            light.decay_type,
+            light.decay_start.map(milli),
+        ),
+        other => format!("{node:?}|{other:?}"),
     }
 }
 
@@ -730,17 +796,14 @@ fn a_pre_7000_document_says_why_it_decoded_to_nothing() {
     println!("{warned} pre-7000 documents each explained why they are empty");
 }
 
-/// Cameras and lights are read but not written, and the round-trip check must
-/// show that rather than quietly omit it.
+/// Every camera and light in the corpus survives a rewrite.
 ///
-/// `SceneSummary` deliberately does not compare node attributes: doing so would
-/// fail every file that has one, for a loss that is a documented scope
-/// boundary rather than a defect. This asserts the boundary directly instead --
-/// the source has attributes, the rewrite has none -- so if the writer ever
-/// learns to emit them, this test fails and points at the summary that needs
-/// to start comparing them.
+/// `scenes_survive_a_write_and_read_cycle` compares attribute values through
+/// `SceneSummary` already. This asserts the cruder thing that summary cannot:
+/// that the count does not drop. A writer that emitted an attribute with every
+/// property missing would satisfy a value comparison over an empty set.
 #[test]
-fn cameras_and_lights_are_read_but_not_written_back() {
+fn cameras_and_lights_survive_a_rewrite() {
     let Some(dir) = corpus_dir() else {
         eprintln!("skipping: set DRACO_FBX_CORPUS to a directory of .fbx files");
         return;
@@ -775,15 +838,14 @@ fn cameras_and_lights_are_read_but_not_written_back() {
         with_attributes += 1;
         attributes += read;
 
-        let Ok(rewritten) = scene.to_bytes() else {
-            continue;
-        };
+        let rewritten = scene
+            .to_bytes()
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
         let reread = FbxScene::from_bytes(&rewritten).expect("rewrite must still parse");
         assert_eq!(
             total(&reread),
-            0,
-            "{} kept node attributes through a rewrite; the writer now emits them, so \
-             SceneSummary must start comparing them",
+            read,
+            "{} lost node attributes through a rewrite",
             path.display()
         );
     }
@@ -792,7 +854,9 @@ fn cameras_and_lights_are_read_but_not_written_back() {
         with_attributes > 0,
         "no camera or light attributes in the corpus to check"
     );
-    println!("{attributes} camera/light attributes read across {with_attributes} files, none written back");
+    println!(
+        "{attributes} camera/light attributes survived a rewrite across {with_attributes} files"
+    );
 }
 
 /// The Blender 2.79 default scene has one camera and one light with values a

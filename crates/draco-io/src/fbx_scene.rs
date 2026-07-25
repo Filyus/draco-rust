@@ -532,9 +532,6 @@ pub struct FbxSceneNode {
     /// Geometry attached directly to this model node.
     pub mesh_instances: Vec<FbxMeshInstance>,
     /// Camera or light attached to this model node, when it carries one.
-    ///
-    /// Read only: the writer does not emit `NodeAttribute` objects, so this is
-    /// absent from a rewritten document.
     pub attribute: Option<FbxNodeAttribute>,
     /// Child model nodes.
     pub children: Vec<FbxSceneNode>,
