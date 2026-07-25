@@ -42,13 +42,11 @@ use draco_core::geometry_attribute::GeometryAttributeType;
 use draco_core::geometry_indices::FaceIndex;
 use draco_core::mesh::Mesh;
 
+use crate::fbx_ascii_syntax::{name_class, FBX_VERSION};
 use crate::traits::{WriteToBytes, Writer};
 
 /// FBX file magic: "Kaydara FBX Binary  \0"
 const FBX_MAGIC: &[u8; 21] = b"Kaydara FBX Binary  \0";
-
-/// FBX version 7.5 (7500) - uses 64-bit node headers
-const FBX_VERSION: u32 = 7500;
 
 /// Size of a null record for 64-bit FBX
 const NULL_RECORD_SIZE_64: usize = 25;
@@ -1457,8 +1455,8 @@ fn write_model<W: Write + Seek>(
     let mut node = NodeWriter::start(writer, "Model", is_64)?;
     node.write_property_i64(model_data.model_id)?;
     // Name::Class separator format
-    let name_class = format!("{}\x00\x01Model", model_data.name);
-    node.write_property_string(&name_class)?;
+    let object_name = name_class(&model_data.name, "Model");
+    node.write_property_string(&object_name)?;
     node.write_property_string(model_data.class)?;
 
     node.finish_with_children(|w| {
@@ -1542,7 +1540,7 @@ fn write_limb_node_attribute<W: Write + Seek>(
 ) -> io::Result<()> {
     let mut node = NodeWriter::start(writer, "NodeAttribute", is_64)?;
     node.write_property_i64(limb_node_attribute_id(model_data.model_id))?;
-    node.write_property_string(&format!("{}\x00\x01NodeAttribute", model_data.name))?;
+    node.write_property_string(&name_class(&model_data.name, "NodeAttribute"))?;
     node.write_property_string("LimbNode")?;
     node.finish_with_children(|w| {
         let mut type_flags = NodeWriter::start(w, "TypeFlags", is_64)?;
@@ -1584,7 +1582,7 @@ fn write_skin<W: Write + Seek>(
 ) -> io::Result<()> {
     let mut deformer = NodeWriter::start(writer, "Deformer", is_64)?;
     deformer.write_property_i64(skin.skin_id)?;
-    deformer.write_property_string("Skin\x00\x01Deformer")?;
+    deformer.write_property_string(&name_class("Skin", "Deformer"))?;
     deformer.write_property_string("Skin")?;
     deformer.finish_with_children(|w| {
         let mut version = NodeWriter::start(w, "Version", is_64)?;
@@ -1598,7 +1596,7 @@ fn write_skin<W: Write + Seek>(
     for cluster in &skin.clusters {
         let mut node = NodeWriter::start(writer, "Deformer", is_64)?;
         node.write_property_i64(cluster.cluster_id)?;
-        node.write_property_string("Cluster\x00\x01SubDeformer")?;
+        node.write_property_string(&name_class("Cluster", "SubDeformer"))?;
         node.write_property_string("Cluster")?;
         node.finish_with_children(|w| {
             let mut version = NodeWriter::start(w, "Version", is_64)?;
@@ -1654,7 +1652,7 @@ fn write_skin<W: Write + Seek>(
 
     let mut pose = NodeWriter::start(writer, "Pose", is_64)?;
     pose.write_property_i64(skin.pose_id)?;
-    pose.write_property_string("BindPose\x00\x01Pose")?;
+    pose.write_property_string(&name_class("BindPose", "Pose"))?;
     pose.write_property_string("BindPose")?;
     pose.finish_with_children(|w| {
         let mut pose_type = NodeWriter::start(w, "Type", is_64)?;
@@ -1692,7 +1690,7 @@ fn write_morph<W: Write + Seek>(
 ) -> io::Result<()> {
     let mut blend_shape = NodeWriter::start(writer, "Deformer", is_64)?;
     blend_shape.write_property_i64(morph.blend_shape_id)?;
-    blend_shape.write_property_string("BlendShape\x00\x01Deformer")?;
+    blend_shape.write_property_string(&name_class("BlendShape", "Deformer"))?;
     blend_shape.write_property_string("BlendShape")?;
     blend_shape.finish()?;
 
@@ -1700,7 +1698,7 @@ fn write_morph<W: Write + Seek>(
         let name = target.source.name.as_deref().unwrap_or("MorphTarget");
         let mut channel = NodeWriter::start(writer, "Deformer", is_64)?;
         channel.write_property_i64(target.channel_id)?;
-        channel.write_property_string(&format!("{name}\x00\x01SubDeformer"))?;
+        channel.write_property_string(&name_class(name, "SubDeformer"))?;
         channel.write_property_string("BlendShapeChannel")?;
         channel.finish_with_children(|w| {
             let mut percent = NodeWriter::start(w, "DeformPercent", is_64)?;
@@ -1713,7 +1711,7 @@ fn write_morph<W: Write + Seek>(
 
         let mut shape = NodeWriter::start(writer, "Geometry", is_64)?;
         shape.write_property_i64(target.shape_geometry_id)?;
-        shape.write_property_string(&format!("{name}\x00\x01Geometry"))?;
+        shape.write_property_string(&name_class(name, "Geometry"))?;
         shape.write_property_string("Shape")?;
         shape.finish_with_children(|w| {
             let mut indexes = NodeWriter::start(w, "Indexes", is_64)?;
@@ -1749,8 +1747,8 @@ fn write_geometry<W: Write + Seek>(
     let mut node = NodeWriter::start(writer, "Geometry", is_64)?;
     node.write_property_i64(mesh_data.geometry_id)?;
     // Name::Class separator format
-    let name_class = format!("{}\x00\x01Geometry", mesh_data.name);
-    node.write_property_string(&name_class)?;
+    let object_name = name_class(&mesh_data.name, "Geometry");
+    node.write_property_string(&object_name)?;
     node.write_property_string("Mesh")?;
 
     node.finish_with_children(|w| {
@@ -2294,8 +2292,8 @@ fn write_material<W: Write + Seek>(
         .name
         .clone()
         .unwrap_or_else(|| "Material".to_string());
-    let name_class = format!("{}\x00\x01Material", name);
-    node.write_property_string(&name_class)?;
+    let object_name = name_class(&name, "Material");
+    node.write_property_string(&object_name)?;
     node.write_property_string("")?;
 
     node.finish_with_children(|w| {
@@ -2374,8 +2372,8 @@ fn write_texture<W: Write + Seek>(
     // rewritten -- the same fabrication as naming an unnamed Geometry after
     // its Model.
     let name = texture_data.source.name.clone().unwrap_or_default();
-    let name_class = format!("{}\x00\x01Texture", name);
-    node.write_property_string(&name_class)?;
+    let object_name = name_class(&name, "Texture");
+    node.write_property_string(&object_name)?;
     node.write_property_string("")?;
 
     node.finish_with_children(|w| {
@@ -2401,8 +2399,8 @@ fn write_video<W: Write + Seek>(
     node.write_property_i64(texture_data.video_id)?;
     // Unnamed stays unnamed, as for the `Texture` above.
     let name = texture_data.source.name.clone().unwrap_or_default();
-    let name_class = format!("{}\x00\x01Video", name);
-    node.write_property_string(&name_class)?;
+    let object_name = name_class(&name, "Video");
+    node.write_property_string(&object_name)?;
     node.write_property_string("Clip")?;
 
     node.finish_with_children(|w| {
@@ -2436,8 +2434,8 @@ fn write_animation_stack<W: Write + Seek>(
         .name
         .clone()
         .unwrap_or_else(|| "AnimStack".to_string());
-    let name_class = format!("{}\x00\x01AnimStack", name);
-    astack.write_property_string(&name_class)?;
+    let object_name = name_class(&name, "AnimStack");
+    astack.write_property_string(&object_name)?;
     astack.write_property_string("")?;
     astack.finish_with_children(|w| {
         let props = NodeWriter::start(w, "Properties70", is_64)?;
@@ -2450,7 +2448,7 @@ fn write_animation_stack<W: Write + Seek>(
 
     let mut alayer = NodeWriter::start(writer, "AnimationLayer", is_64)?;
     alayer.write_property_i64(stack.layer_id)?;
-    let layer_name = format!("{}\x00\x01AnimLayer", name);
+    let layer_name = name_class(&name, "AnimLayer");
     alayer.write_property_string(&layer_name)?;
     alayer.write_property_string("")?;
     alayer.finish()?;
@@ -2478,7 +2476,7 @@ fn write_animation_curve_node<W: Write + Seek>(
     );
     let mut node = NodeWriter::start(writer, "AnimationCurveNode", is_64)?;
     node.write_property_i64(id)?;
-    node.write_property_string("\x00\x01AnimCurveNode")?;
+    node.write_property_string(&name_class("", "AnimCurveNode"))?;
     node.write_property_string("")?;
     node.finish_with_children(|w| {
         let props = NodeWriter::start(w, "Properties70", is_64)?;
@@ -2507,7 +2505,7 @@ fn write_animation_curve_node<W: Write + Seek>(
         let curve_id = anim_curve_id(id, component);
         let mut curve = NodeWriter::start(writer, "AnimationCurve", is_64)?;
         curve.write_property_i64(curve_id)?;
-        curve.write_property_string("\x00\x01AnimCurve")?;
+        curve.write_property_string(&name_class("", "AnimCurve"))?;
         curve.write_property_string("")?;
         curve.finish_with_children(|w| {
             let mut default = NodeWriter::start(w, "Default", is_64)?;

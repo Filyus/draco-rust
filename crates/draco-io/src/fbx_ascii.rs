@@ -19,11 +19,12 @@
 
 use std::io;
 
+use crate::fbx_ascii_syntax::{
+    array_element_type, decode_base64, is_base64_node, normalize_object_name, number_property,
+    parse_ascii_bool, properties70_type_is_integral, ArrayElement,
+};
 use crate::fbx_container::{FbxNode, FbxProperty};
 use crate::fbx_options::FbxReadOptions;
-
-/// Separator the binary container puts between an object's name and its class.
-const NAME_CLASS_SEPARATOR: [u8; 2] = [0x00, 0x01];
 
 /// Returns whether the input looks like an ASCII FBX document.
 ///
@@ -203,11 +204,7 @@ impl<'a> Parser<'a> {
                 }
                 b'"' => {
                     let text = self.parse_string()?;
-                    // Embedded media is written as base64 where the binary
-                    // container has a raw blob. Decoding it here is what makes
-                    // an embedded texture reach `FbxTexture::content` from
-                    // either container.
-                    if node.name == "Content" {
+                    if is_base64_node(&node.name) {
                         if let Some(bytes) = decode_base64(&text) {
                             node.properties.push(FbxProperty::Raw(bytes));
                             continue;
@@ -222,11 +219,9 @@ impl<'a> Parser<'a> {
                     let text = self.parse_number_text()?;
                     node.properties.push(number_property(&text));
                 }
-                // A bare word is either a boolean -- ASCII writes those as a
-                // lone `T`/`Y` or `F`/`N`, where the binary container has a
-                // typed byte -- or the name of the next node, in which case
-                // this property list ended at the newline. Only a following
-                // ':' distinguishes them.
+                // A bare word is either a boolean or the name of the next node,
+                // in which case this property list ended at the newline. Only a
+                // following ':' distinguishes them.
                 byte if byte.is_ascii_alphabetic() => {
                     let save = self.pos;
                     let word = self.parse_identifier()?;
@@ -240,12 +235,9 @@ impl<'a> Parser<'a> {
                         self.pos = save;
                         return Ok(declared_array_len);
                     }
-                    node.properties.push(match word.as_str() {
-                        "T" | "Y" => FbxProperty::Bool(true),
-                        "F" | "N" => FbxProperty::Bool(false),
-                        // Other bare words are enum tokens, as in the
-                        // `Type: A` of an extrapolation block.
-                        _ => FbxProperty::String(word),
+                    node.properties.push(match parse_ascii_bool(&word) {
+                        Some(value) => FbxProperty::Bool(value),
+                        None => FbxProperty::String(word),
                     });
                 }
                 _ => return Ok(declared_array_len),
@@ -404,117 +396,6 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Decodes the base64 ASCII FBX uses for embedded media.
-///
-/// Returns `None` for anything that is not valid base64, so a `Content` that
-/// holds an ordinary string is left as one rather than silently emptied.
-fn decode_base64(text: &str) -> Option<Vec<u8>> {
-    fn sextet(byte: u8) -> Option<u32> {
-        match byte {
-            b'A'..=b'Z' => Some(u32::from(byte - b'A')),
-            b'a'..=b'z' => Some(u32::from(byte - b'a') + 26),
-            b'0'..=b'9' => Some(u32::from(byte - b'0') + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    }
-    let body: Vec<u8> = text
-        .bytes()
-        .filter(|byte| !byte.is_ascii_whitespace())
-        .collect();
-    if body.is_empty() || !body.len().is_multiple_of(4) {
-        return None;
-    }
-    let mut out = Vec::with_capacity(body.len() / 4 * 3);
-    for chunk in body.chunks_exact(4) {
-        let padding = chunk.iter().filter(|byte| **byte == b'=').count();
-        if padding > 2 {
-            return None;
-        }
-        let mut packed = 0u32;
-        for &byte in chunk {
-            let value = if byte == b'=' { 0 } else { sextet(byte)? };
-            packed = (packed << 6) | value;
-        }
-        let bytes = packed.to_be_bytes();
-        out.push(bytes[1]);
-        if padding < 2 {
-            out.push(bytes[2]);
-        }
-        if padding < 1 {
-            out.push(bytes[3]);
-        }
-    }
-    Some(out)
-}
-
-/// Retypes a `Properties70` entry's values from the type it declares.
-///
-/// A `P` record names its own FBX type in the second field, so unlike a bare
-/// array this needs no guessing: `P: "Lcl Scaling", "Lcl Scaling", "", "A",1,1,1`
-/// is three doubles that merely happen to be written without a decimal point.
-/// Left as integers they are invisible to every consumer that matches on
-/// `F64`, which is how a scale of exactly 1 came to read as no scale at all.
-fn coerce_typed_property(node: &mut FbxNode) {
-    let Some(FbxProperty::String(type_name)) = node.properties.get(1) else {
-        return;
-    };
-    // `Lcl Translation`, `FieldOfView`, `Vector3D` and friends are all
-    // floating point; the integral set is short and closed.
-    let integral = matches!(
-        type_name.as_str(),
-        "int" | "Integer" | "enum" | "bool" | "Bool" | "Visibility"
-    );
-    let time = type_name == "KTime";
-    for value in node.properties.iter_mut().skip(4) {
-        if integral || time {
-            continue;
-        }
-        if let FbxProperty::I32(number) = value {
-            *value = FbxProperty::F64(f64::from(*number));
-        } else if let FbxProperty::I64(number) = value {
-            *value = FbxProperty::F64(*number as f64);
-        }
-    }
-}
-
-/// Element type of an array node's payload.
-enum ArrayElement {
-    I32,
-    I64,
-    F64,
-    /// Single-precision floats whose integer spellings are bit patterns.
-    F32Bits,
-}
-
-/// Recovers the element type ASCII does not record.
-///
-/// In FBX the type is fixed by the node's schema, not by how the values happen
-/// to be written, so the node name is what recovers it. Inferring from the text
-/// instead would type a mesh whose coordinates are all whole numbers as an
-/// integer array -- 27 of the 369 `Vertices` arrays in the ufbx ASCII corpus --
-/// and the geometry reader, which looks for floats, would find nothing.
-///
-/// The integer names are exactly those this crate reads as integers; anything
-/// else is floating point, which is the safe default because a float array with
-/// whole values still reads correctly while the reverse does not.
-fn array_element_type(owner: &str) -> ArrayElement {
-    match owner {
-        "PolygonVertexIndex" | "Edges" | "Indexes" | "Materials" | "Smoothing" | "UVIndex"
-        | "NormalsIndex" | "NormalIndex" | "ColorIndex" | "TangentIndex" | "BinormalIndex"
-        | "KeyAttrFlags" | "KeyAttrRefCount" => ArrayElement::I32,
-        "KeyTime" => ArrayElement::I64,
-        // FBX packs a cubic key's two weights into the bits of one float and
-        // ASCII prints that float's integer bit pattern, where the binary
-        // container stores the four bytes directly. Converting the number
-        // instead of reinterpreting it yields a value off by many orders of
-        // magnitude -- `218434821` rather than the weights it encodes.
-        "KeyAttrDataFloat" => ArrayElement::F32Bits,
-        _ => ArrayElement::F64,
-    }
-}
-
 fn as_i64_value(value: &FbxProperty) -> i64 {
     match value {
         FbxProperty::I32(v) => i64::from(*v),
@@ -535,59 +416,27 @@ fn as_f64_value(value: &FbxProperty) -> f64 {
     }
 }
 
-/// Rewrites an ASCII `"Class::Name"` into the binary `"Name\0\x01Class"`.
+/// Retypes a `Properties70` entry's values from the type it declares.
 ///
-/// Everything above the node tree reads an object's name as the text before the
-/// separator, so leaving the ASCII spelling in place would name every object
-/// after its class. `ufbx` applies the same rule; a string with no `::` is
-/// returned unchanged.
-fn normalize_object_name(raw: &[u8]) -> String {
-    // A quoted string cannot hold a bare quote, so ASCII writes `&quot;` where
-    // the binary container stores the character itself.
-    //
-    // The escape is not reversible: `max_quote_7500_binary.fbx` contains one
-    // object named `"` and another named literally `&quot;`, and ASCII spells
-    // both the same way. Decoding is still the better reading -- it recovers
-    // the common case -- but that one file cannot round-trip through the ASCII
-    // container no matter what this does.
-    let unescaped;
-    let raw = if raw.windows(6).any(|window| window == b"&quot;") {
-        unescaped = String::from_utf8_lossy(raw)
-            .replace("&quot;", "\"")
-            .into_bytes();
-        unescaped.as_slice()
-    } else {
-        raw
+/// A `P` record names its own FBX type in the second field, so unlike a bare
+/// array this needs no guessing: `P: "Lcl Scaling", "Lcl Scaling", "", "A",1,1,1`
+/// is three doubles that merely happen to be written without a decimal point.
+/// Left as integers they are invisible to every consumer that matches on
+/// `F64`, which is how a scale of exactly 1 came to read as no scale at all.
+fn coerce_typed_property(node: &mut FbxNode) {
+    let Some(FbxProperty::String(type_name)) = node.properties.get(1) else {
+        return;
     };
-    let Some(split) = raw.windows(2).position(|pair| pair == b"::") else {
-        return String::from_utf8_lossy(raw).into_owned();
-    };
-    let class = &raw[..split];
-    let name = &raw[split + 2..];
-    let mut out = Vec::with_capacity(raw.len());
-    out.extend_from_slice(name);
-    out.extend_from_slice(&NAME_CLASS_SEPARATOR);
-    out.extend_from_slice(class);
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Types a bare number by how it is written, which is all ASCII FBX offers.
-fn number_property(text: &str) -> FbxProperty {
-    let integral = !text.contains(['.', 'e', 'E']);
-    // `-0` is written without a decimal point but is not the integer zero:
-    // parsing it as one drops the sign, and the binary container preserves it.
-    if integral && text.starts_with('-') && text.trim_start_matches(['-', '0']).is_empty() {
-        return FbxProperty::F64(-0.0);
+    if properties70_type_is_integral(type_name) {
+        return;
     }
-    if integral {
-        if let Ok(value) = text.parse::<i32>() {
-            return FbxProperty::I32(value);
-        }
-        if let Ok(value) = text.parse::<i64>() {
-            return FbxProperty::I64(value);
+    for value in node.properties.iter_mut().skip(4) {
+        if let FbxProperty::I32(number) = value {
+            *value = FbxProperty::F64(f64::from(*number));
+        } else if let FbxProperty::I64(number) = value {
+            *value = FbxProperty::F64(*number as f64);
         }
     }
-    FbxProperty::F64(text.parse::<f64>().unwrap_or(0.0))
 }
 
 #[cfg(test)]

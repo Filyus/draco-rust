@@ -10,6 +10,8 @@
 #[cfg(feature = "fbx-reader")]
 /// FBX ASCII container reader.
 pub mod fbx_ascii;
+#[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
+mod fbx_ascii_syntax;
 #[cfg(feature = "fbx-reader")]
 /// FBX binary container decoder.
 pub mod fbx_container;
