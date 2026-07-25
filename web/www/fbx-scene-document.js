@@ -10,6 +10,7 @@ import { identityMat4, invertMat4, multiplyMat4 } from './mat4.js';
 import { adaptFbxAnimation } from './fbx-animation-adapter.js';
 import { adaptFbxMaterial } from './fbx-material-adapter.js';
 import { assertValidSceneDocument, createSceneDocument } from './scene-document.js';
+import { createFbxSceneProvenance } from './fbx-scene-provenance.js';
 
 // The semantic decoder currently exposes the common FBX centimeter-space
 // values. SceneDocument is canonical glTF-meter space; normalize only here so
@@ -33,6 +34,20 @@ export function buildSceneDocumentFromFbx(parsed, resources = Object.create(null
     appendFbxAnimations(parsed?.scene?.animations || parsed?.animations || [], state, document);
     assertValidSceneDocument(document);
     return document;
+}
+
+/**
+ * Build the normal portable document plus an optional FBX-only sidecar.
+ *
+ * The sidecar is intentionally returned separately: viewer and GLB paths
+ * receive only SceneDocument, while a future FBX export boundary can retain
+ * raw unit/axis/curve provenance without contaminating shared scene data.
+ */
+export function buildSceneDocumentWithFbxProvenance(parsed, resources = Object.create(null)) {
+    return {
+        document: buildSceneDocumentFromFbx(parsed, resources),
+        provenance: createFbxSceneProvenance(parsed),
+    };
 }
 
 function collectFbxMaterials(parsed, resources, document) {

@@ -8,6 +8,7 @@
     "test:scene-document-viewer": "node tests/scene-document-viewer-parity.mjs",
     "test:gltf-scene-document": "node tests/gltf-scene-document-parity.mjs",
     "test:fbx-scene-document": "node tests/fbx-scene-document-parity.mjs",
+    "test:fbx-scene-provenance": "node tests/fbx-scene-provenance.mjs",
     "test:scene-document-glb": "node tests/scene-document-glb-roundtrip.mjs",
     "test:fbx-mixamo": "node tests/fbx-matrix-probe.mjs",
     "test:fbx-morph": "node tests/fbx-morph-probe.mjs",
