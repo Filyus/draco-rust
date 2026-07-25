@@ -62,6 +62,14 @@ assert.match(viewerScene.warnings.join('\n'), /first four influences/);
 const fbxScene = buildFbxSceneFromDocument(document);
 const weightsPreserved = fbxScene.rootNodes[0].meshes[0].skin.clusters.reduce((total, cluster) => total + cluster.weights.length, 0);
 assert.equal(weightsPreserved, 24);
-assert.match(fbxScene.warnings.join('\n'), /does not yet emit this layer/);
+// COLOR_0 and TANGENT used to be warned about instead of exported. They now
+// travel as LayerElementColor and LayerElementTangent, so the check is that
+// they arrive -- and that nothing warns about them any more.
+const exported = fbxScene.rootNodes[0].meshes[0];
+assert.equal(exported.colorSets?.length, 1, 'COLOR_0 becomes one LayerElementColor');
+assert.equal(exported.colorSets[0].values.length, 3 * 4, 'RGBA per corner');
+assert.equal(exported.tangentSets?.length, 1, 'TANGENT becomes one LayerElementTangent');
+assert.equal(exported.tangentSets[0].hasHandedness, true, 'the glTF w component is real handedness');
+assert.doesNotMatch(fbxScene.warnings.join('\n'), /COLOR_0|TANGENT/);
 
 console.log('SceneDocument portable attributes and eight-influence preservation passed');
