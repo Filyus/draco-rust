@@ -29,6 +29,11 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `::Light(FbxLight)`. Read only -- the writer emits no `NodeAttribute`
   objects, so these do not survive a rewrite. Other attribute classes raise
   `FbxWarningCode::DroppedNodeAttribute`.
+- The ASCII FBX container is read, for versions 7000 and later, through the
+  new `fbx_ascii` module. It produces the same node tree as the binary reader,
+  so `FbxReader`, `FbxScene::from_bytes` and the `Reader` traits all accept it
+  without a separate entry point. The web app's regex ASCII fallback, which
+  recovered geometry only, is removed.
 - **Breaking.** `expand_to_render_mesh` takes an `FbxGeometryLayers` borrow
   struct instead of five positional slices.
 - `FbxUvSet`, `FbxNormalSet` and `FbxColorSet` are now aliases of a shared
@@ -42,6 +47,17 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A document whose Model connections form a cycle, or a chain deeper than 256,
+  recursed until the stack was exhausted. Reaching it required an ASCII-only
+  corpus file, so the binary path had never exercised it.
+- `collect_transform_warnings` indexed a vector before checking its length,
+  because `bool::then_some` evaluates its argument eagerly. Any `Lcl Scaling`
+  with fewer than three numeric values panicked.
+- Object ids, float arrays and scalar doubles were matched at one width only,
+  so a document that stored them at another read as absent rather than as
+  present. This is invisible in the binary container, which tags every width.
+- The writer named an unnamed `Texture` and `Video` after its class, so a
+  document without texture names acquired them by being rewritten.
 - Layer elements mapped `ByPolygon` were resolved on the control-point domain,
   returning an unrelated polygon's value. Five corpus files carry
   `LayerElementNormal` with that mapping.

@@ -35,7 +35,7 @@ draco-io = { version = "0.3", default-features = false, features = ["obj-reader"
 | --- | :---: | :---: | --- |
 | OBJ | Yes | Yes | Meshes, normals, texture coordinates, named groups, and point clouds. |
 | PLY | Yes | Yes | ASCII and binary geometry, normals, colors, and point clouds. |
-| FBX | Yes | Yes | Binary FBX 7.x scene data. See the FBX matrix below. |
+| FBX | Yes | Yes | Binary and ASCII FBX 7.x scene data. See the FBX matrix below. |
 | glTF / GLB | Containers and geometry contracts | Containers | GLB inspection, JSON/bin extraction, resource resolution, accessors, and optional `KHR_draco_mesh_compression` geometry decode. Full-document operations belong to `draco-gltf`. |
 
 All mesh formats use the `draco-core` geometry model. `Position` is required;
@@ -44,9 +44,24 @@ Writers do not claim to preserve data that their target cannot represent.
 
 ### FBX support
 
-Binary FBX only; the ASCII container is rejected. The container is read for
-versions 6000 through 8000, in either byte order — a non-zero endian marker
-selects big-endian, as `ufbx` does. Output is FBX 7500 little-endian.
+Both containers are read. Binary is accepted for versions 6000 through 8000 in
+either byte order — a non-zero endian marker selects big-endian, as `ufbx` does
+— and ASCII for 7000 and later. Output is always binary FBX 7500
+little-endian.
+
+The ASCII reader produces the same node tree as the binary one, so everything
+above it is shared and the two containers cannot drift apart semantically. Two
+differences are normalized rather than left for consumers: object names are
+written `Class::Name` where binary uses the reverse order with a different
+separator, and values carry no type tag, so a whole number is indistinguishable
+from an integer. The element type is recovered from the node's schema instead
+of from how the number happens to be written -- guessing would type a mesh with
+integer coordinates as an integer array, and 27 of the 369 `Vertices` arrays in
+the corpus are exactly that.
+
+109 of the corpus's ASCII documents decode identically to their binary twin,
+compared across geometry, layers, skins, morphs, transforms and animation. Six
+pairs are excluded by name in the corpus test with the reason stated there.
 
 Scene content, however, is read only from **FBX 7000 and later**. Earlier
 versions use a different object model: objects are identified by a

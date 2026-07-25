@@ -13,7 +13,6 @@ import { buildSceneDocumentWithFbxProvenance } from './fbx-scene-document.js';
 import { buildFbxSceneFromDocument } from './fbx-scene-document-writer.js';
 import { serializeSceneDocumentToGlb } from './scene-document-gltf.js';
 import { assertValidSceneDocument } from './scene-document.js';
-import { isAsciiFbx, parseAsciiFbx } from './ascii-fbx-loader.js';
 import { basename } from './scene-resources.js';
 
 // Module state
@@ -697,7 +696,10 @@ function triangleCountForMode(mode, elementCount) {
 
 // Parse FBX file
 async function parseFbxFile(data) {
-    if (isAsciiFbx(data)) return parseAsciiFbx(data);
+    // ASCII and binary both go through the WASM reader now; it produces the
+    // same node tree from either container, so the regex fallback that used to
+    // scrape ASCII geometry -- without transforms, materials, skins or
+    // animation -- is gone.
     if (!modules.fbx.loaded) {
         return { success: false, error: 'FBX module not loaded' };
     }

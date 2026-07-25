@@ -111,6 +111,12 @@ pub struct FbxReader<R: Read + Seek = BufReader<File>> {
     /// that are tolerated in lenient mode are reported here rather than
     /// silently accepted.
     warnings: Vec<FbxWarning>,
+    /// Nodes parsed from an ASCII document, which has no binary layout to walk.
+    ///
+    /// Present only for the ASCII container; `read_nodes` serves these instead
+    /// of decoding records, so every entry point above it is unaware of which
+    /// container it was given.
+    ascii_nodes: Option<Vec<FbxNode>>,
 }
 
 /// Running totals for the limits that apply to a whole document.
@@ -605,6 +611,7 @@ impl<R: Read + Seek> FbxReader<R> {
             model_mesh_instances: &std::collections::HashMap<i64, Vec<FbxMeshInstance>>,
             model_node_ids: &std::collections::HashMap<i64, FbxNodeId>,
             node_attributes: &std::collections::HashMap<i64, FbxNodeAttribute>,
+            ancestors: &mut Vec<i64>,
         ) -> FbxSceneNode {
             let node_src = model_map.get(&id).unwrap();
             let mut node = FbxSceneNode::new(object_name(node_src));
@@ -621,9 +628,21 @@ impl<R: Read + Seek> FbxReader<R> {
                 node.mesh_instances.extend(mesh_instances.clone());
             }
 
+            // The ancestor check below stops a plain cycle. This bounds the
+            // rest: a document can chain models far deeper than any scene
+            // graph needs, and the depth is the file's to choose.
+            const MAX_MODEL_DEPTH: usize = 256;
+            if ancestors.len() >= MAX_MODEL_DEPTH {
+                return node;
+            }
             if let Some(children) = model_children.get(&id) {
+                ancestors.push(id);
                 for &cid in children {
-                    if model_map.contains_key(&cid) {
+                    // A document may connect a Model to one of its own
+                    // ancestors -- `synthetic_id_collision_7500` in the ufbx
+                    // corpus does -- and following that cycle recurses until
+                    // the stack is gone. The scene simply stops there.
+                    if model_map.contains_key(&cid) && !ancestors.contains(&cid) {
                         node.children.push(build_model_node(
                             cid,
                             model_map,
@@ -631,9 +650,11 @@ impl<R: Read + Seek> FbxReader<R> {
                             model_mesh_instances,
                             model_node_ids,
                             node_attributes,
+                            ancestors,
                         ));
                     }
                 }
+                ancestors.pop();
             }
             node
         }
@@ -749,6 +770,7 @@ impl<R: Read + Seek> FbxReader<R> {
                 &model_mesh_instances,
                 &model_node_ids,
                 &node_attributes,
+                &mut Vec::new(),
             ));
         }
 
@@ -1004,6 +1026,11 @@ fn child_f64(node: &FbxNode, name: &str) -> Option<f64> {
         .and_then(|value| match value {
             FbxProperty::F64(value) => Some(*value),
             FbxProperty::F32(value) => Some(*value as f64),
+            // ASCII writes a whole-valued double without a decimal point, so a
+            // `DeformPercent: 100` arrives as an integer and would otherwise
+            // read as a missing weight.
+            FbxProperty::I32(value) => Some(f64::from(*value)),
+            FbxProperty::I64(value) => Some(*value as f64),
             _ => None,
         })
 }
@@ -1200,12 +1227,13 @@ impl<'a> FbxObjectIndex<'a> {
         for node in nodes {
             if node.name == "Objects" {
                 for child in &node.children {
-                    let Some(FbxProperty::I64(id)) = child.properties.first() else {
+                    let Some(id) = child.properties.first().and_then(object_id) else {
                         if matches!(child.properties.first(), Some(FbxProperty::String(_))) {
                             index.name_keyed_objects += 1;
                         }
                         continue;
                     };
+                    let id = &id;
                     match child.name.as_str() {
                         "Model" => {
                             // Keep the authored order only for ids seen first.
@@ -1238,6 +1266,34 @@ impl<'a> FbxObjectIndex<'a> {
     }
 }
 
+/// Reads a float array, whatever precision it was stored at.
+///
+/// The binary container tags single and double precision separately, but ASCII
+/// writes a bare number and cannot. A consumer that matched only one width
+/// found nothing in an ASCII document, which is how animation curves came back
+/// empty from files whose objects and connections had parsed perfectly.
+fn float_array(property: &FbxProperty) -> Option<Vec<f32>> {
+    match property {
+        FbxProperty::F32Array(values) => Some(values.clone()),
+        FbxProperty::F64Array(values) => Some(values.iter().map(|v| *v as f32).collect()),
+        _ => None,
+    }
+}
+
+/// Reads an FBX object id, whatever width it was stored at.
+///
+/// The binary container always writes these as `i64`. ASCII writes a bare
+/// number, so an id small enough to fit in `i32` arrives as one -- matching
+/// only `I64` skipped every object in such a document, and the scene came back
+/// empty with nothing to explain it.
+fn object_id(property: &FbxProperty) -> Option<i64> {
+    match property {
+        FbxProperty::I64(value) => Some(*value),
+        FbxProperty::I32(value) => Some(i64::from(*value)),
+        _ => None,
+    }
+}
+
 /// A parsed FBX connection entry.
 #[derive(Debug, Clone)]
 struct FbxConnection {
@@ -1255,20 +1311,16 @@ impl FbxConnection {
             Some(FbxProperty::String(code)) if code == "OP" => ConnectionKind::Op,
             _ => return None,
         };
-        let Some(FbxProperty::I64(child)) = node.properties.get(1) else {
-            return None;
-        };
-        let Some(FbxProperty::I64(parent)) = node.properties.get(2) else {
-            return None;
-        };
+        let child = node.properties.get(1).and_then(object_id)?;
+        let parent = node.properties.get(2).and_then(object_id)?;
         let property = match node.properties.get(3) {
             Some(FbxProperty::String(name)) => Some(name.clone()),
             _ => None,
         };
         Some(Self {
             kind,
-            child: *child,
-            parent: *parent,
+            child,
+            parent,
             property,
         })
     }
@@ -1320,7 +1372,10 @@ fn collect_transform_warnings(
                         })
                         .take(3)
                         .collect();
-                    (values.len() == 3).then_some([values[0], values[1], values[2]])
+                    // `then_some` evaluates its argument eagerly, so indexing
+                    // here panicked whenever the property carried fewer than
+                    // three numbers.
+                    (values.len() == 3).then(|| [values[0], values[1], values[2]])
                 });
                 // A non-uniform scale is what makes the unsupported inherit
                 // modes observable; uniform scale behaves the same either way.
@@ -1735,6 +1790,31 @@ impl<R: Read + Seek> FbxReader<R> {
         let mut header = [0u8; FBX_HEADER_LEN as usize];
         reader.read_exact(&mut header)?;
 
+        // The ASCII container has no header to validate, so it is parsed whole
+        // here and served from `read_nodes` like any other document. Doing it
+        // at construction rather than at each entry point is what lets
+        // `read_scene`, `read_meshes` and the `Reader` traits all accept ASCII
+        // without knowing it exists.
+        if crate::fbx_ascii::is_ascii_fbx(&header) {
+            reader.rewind()?;
+            let mut text = Vec::with_capacity(file_len as usize);
+            reader.read_to_end(&mut text)?;
+            let nodes = crate::fbx_ascii::parse_ascii_nodes(&text, &options)?;
+            return Ok(Self {
+                reader,
+                // The ASCII container records its version inside the node
+                // tree rather than in a header, and `check_version` has
+                // already rejected anything pre-7000.
+                version: 7000,
+                byte_order: FbxByteOrder::Little,
+                options,
+                file_len,
+                budget: DecodeBudget::default(),
+                warnings: Vec::new(),
+                ascii_nodes: Some(nodes),
+            });
+        }
+
         if &header[..21] != FBX_MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1781,6 +1861,7 @@ impl<R: Read + Seek> FbxReader<R> {
         Ok(Self {
             reader,
             version,
+            ascii_nodes: None,
             byte_order,
             options,
             file_len,
@@ -2310,6 +2391,11 @@ impl<R: Read + Seek> FbxReader<R> {
     /// Safe to call more than once: per-document budgets restart here, so a
     /// second read of the same file behaves exactly like the first.
     pub fn read_nodes(&mut self) -> io::Result<Vec<FbxNode>> {
+        // An ASCII document was parsed whole at construction; hand back a copy
+        // so this stays re-entrant like the binary path.
+        if let Some(nodes) = &self.ascii_nodes {
+            return Ok(nodes.clone());
+        }
         // Seek to start of nodes (after the fixed-size header).
         self.reader.seek(SeekFrom::Start(FBX_HEADER_LEN))?;
         self.budget = DecodeBudget::default();
@@ -2983,9 +3069,7 @@ fn parse_curve(node: &FbxNode) -> Option<FbxAnimCurveData> {
                 }
             }
             "KeyValueFloat" => {
-                if let Some(FbxProperty::F32Array(arr)) = child.properties.first() {
-                    key_values = Some(arr.clone());
-                }
+                key_values = child.properties.first().and_then(float_array);
             }
             "KeyAttrFlags" => {
                 if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
@@ -2993,9 +3077,7 @@ fn parse_curve(node: &FbxNode) -> Option<FbxAnimCurveData> {
                 }
             }
             "KeyAttrDataFloat" => {
-                if let Some(FbxProperty::F32Array(arr)) = child.properties.first() {
-                    key_attr_data = Some(arr.clone());
-                }
+                key_attr_data = child.properties.first().and_then(float_array);
             }
             "KeyAttrRefCount" => {
                 if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {

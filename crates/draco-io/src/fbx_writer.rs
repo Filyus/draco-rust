@@ -2373,11 +2373,11 @@ fn write_texture<W: Write + Seek>(
 ) -> io::Result<()> {
     let mut node = NodeWriter::start(writer, "Texture", is_64)?;
     node.write_property_i64(texture_data.texture_id)?;
-    let name = texture_data
-        .source
-        .name
-        .clone()
-        .unwrap_or_else(|| "Texture".to_string());
+    // An unnamed texture stays unnamed. Substituting the class name here gave
+    // it one, so a document that had no texture names acquired them by being
+    // rewritten -- the same fabrication as naming an unnamed Geometry after
+    // its Model.
+    let name = texture_data.source.name.clone().unwrap_or_default();
     let name_class = format!("{}\x00\x01Texture", name);
     node.write_property_string(&name_class)?;
     node.write_property_string("")?;
@@ -2403,11 +2403,8 @@ fn write_video<W: Write + Seek>(
 ) -> io::Result<()> {
     let mut node = NodeWriter::start(writer, "Video", is_64)?;
     node.write_property_i64(texture_data.video_id)?;
-    let name = texture_data
-        .source
-        .name
-        .clone()
-        .unwrap_or_else(|| "Video".to_string());
+    // Unnamed stays unnamed, as for the `Texture` above.
+    let name = texture_data.source.name.clone().unwrap_or_default();
     let name_class = format!("{}\x00\x01Video", name);
     node.write_property_string(&name_class)?;
     node.write_property_string("Clip")?;
