@@ -1062,6 +1062,10 @@ fn parse_camera(node: &FbxNode) -> crate::fbx_scene::FbxCamera {
         far_plane: scalar("FarPlane"),
         aspect_width: scalar("AspectWidth"),
         aspect_height: scalar("AspectHeight"),
+        film_width: scalar("FilmWidth"),
+        film_height: scalar("FilmHeight"),
+        film_aspect_ratio: scalar("FilmAspectRatio"),
+        aperture_mode: scalar("ApertureMode").map(|v| v as i32),
         ortho_zoom: scalar("OrthoZoom"),
     }
 }

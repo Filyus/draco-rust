@@ -29,8 +29,13 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `::Light(FbxLight)`, and written back. The writer emits the `NodeAttribute`
   object with the `TypeFlags` and declared property types importers expect,
   classes the owning `Model` as `Camera` or `Light` rather than `Mesh`, and
-  declares the attribute in `Definitions`. Other attribute classes raise
-  `FbxWarningCode::DroppedNodeAttribute` on read and are not written.
+  declares the attribute in `Definitions`. `FbxCamera` also carries the film
+  back -- `film_width`, `film_height`, `film_aspect_ratio` and `aperture_mode`
+  -- because a consumer needs it with `focal_length` to reach a field of view:
+  Blender derives `sensor_width` from `FilmWidth` and falls back to its own
+  32 mm default without it, silently reframing every camera. Other attribute
+  classes raise `FbxWarningCode::DroppedNodeAttribute` on read and are not
+  written.
 - The ASCII FBX container is read, for versions 7000 and later, through the
   new `fbx_ascii` module. It produces the same node tree as the binary reader,
   so `FbxReader`, `FbxScene::from_bytes` and the `Reader` traits all accept it

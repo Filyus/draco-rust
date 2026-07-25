@@ -696,7 +696,7 @@ fn collect_deformers(
 fn describe_attribute(node: Option<&str>, attribute: &draco_io::FbxNodeAttribute) -> String {
     match attribute {
         draco_io::FbxNodeAttribute::Camera(camera) => format!(
-            "{node:?}|camera|position={:?}|interest={:?}|up={:?}|projection={:?}|fov={:?},{:?},{:?}             |focal={:?}|near={:?}|far={:?}|aspect={:?},{:?}|zoom={:?}",
+            "{node:?}|camera|position={:?}|interest={:?}|up={:?}|projection={:?}|fov={:?},{:?},{:?}             |focal={:?}|near={:?}|far={:?}|aspect={:?},{:?}|zoom={:?}|film={:?},{:?},{:?}|aperture={:?}",
             camera.position.map(milli3),
             camera.interest_position.map(milli3),
             camera.up_vector.map(milli3),
@@ -710,6 +710,10 @@ fn describe_attribute(node: Option<&str>, attribute: &draco_io::FbxNodeAttribute
             camera.aspect_width.map(milli),
             camera.aspect_height.map(milli),
             camera.ortho_zoom.map(milli),
+            camera.film_width.map(milli),
+            camera.film_height.map(milli),
+            camera.film_aspect_ratio.map(milli),
+            camera.aperture_mode,
         ),
         draco_io::FbxNodeAttribute::Light(light) => format!(
             "{node:?}|light|type={:?}|colour={:?}|intensity={:?}|cast={:?},{:?}|decay={:?},{:?}",

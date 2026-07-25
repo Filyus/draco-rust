@@ -403,6 +403,21 @@ pub struct FbxCamera {
     pub aspect_width: Option<f32>,
     /// Render aperture height in pixels.
     pub aspect_height: Option<f32>,
+    /// Film-back width in **inches**, not millimetres.
+    ///
+    /// This is the sensor size, and a consumer needs it with
+    /// [`Self::focal_length`] to reach a field of view: Blender computes
+    /// `sensor_width = film_width * 25.4` and falls back to its own 32 mm
+    /// default when the property is absent, which silently changes the framing
+    /// of every camera in the document.
+    pub film_width: Option<f32>,
+    /// Film-back height in inches.
+    pub film_height: Option<f32>,
+    /// Film-back aspect ratio, `film_width / film_height`.
+    pub film_aspect_ratio: Option<f32>,
+    /// `ApertureMode`: which of the aperture and field-of-view properties the
+    /// authoring tool treats as authoritative when they disagree.
+    pub aperture_mode: Option<i32>,
     /// Orthographic zoom, meaningful when [`Self::projection_type`] is 1.
     pub ortho_zoom: Option<f32>,
 }

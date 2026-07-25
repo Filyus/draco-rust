@@ -1275,16 +1275,25 @@ fn node_attribute_node(model_data: &ModelData) -> Option<FbxNode> {
                 ("FieldOfViewY", camera.field_of_view_y),
                 ("FocalLength", camera.focal_length),
                 ("OrthoZoom", camera.ortho_zoom),
+                // The film back is what turns a focal length into a field of
+                // view. Autodesk declares these two as Number and the ratio
+                // beside them as double/Number.
+                ("FilmWidth", camera.film_width),
+                ("FilmHeight", camera.film_height),
             ] {
                 if let Some(value) = value {
                     properties.push(scalar_property_node(property_name, f64::from(value)));
                 }
+            }
+            if let Some(value) = camera.aperture_mode {
+                properties.push(enum_property_node("ApertureMode", value));
             }
             for (property_name, value) in [
                 ("NearPlane", camera.near_plane),
                 ("FarPlane", camera.far_plane),
                 ("AspectWidth", camera.aspect_width),
                 ("AspectHeight", camera.aspect_height),
+                ("FilmAspectRatio", camera.film_aspect_ratio),
             ] {
                 if let Some(value) = value {
                     properties.push(f64_property_node(

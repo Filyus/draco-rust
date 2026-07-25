@@ -164,7 +164,13 @@ Blender's importer makes. Layers are not blended.
 `FbxSceneNode::attribute`. Every field is optional, because FBX omits any
 property left at its class default, and the field sets are limited to what the
 corpus actually contains -- no file carries `InnerAngle` or `OuterAngle`, so
-spot cone angles are not represented. They are written back too: 58 attributes
+spot cone angles are not represented. The film back (`FilmWidth`,
+`FilmHeight`, `FilmAspectRatio`, `ApertureMode`) is represented, because a
+focal length alone does not give a field of view: Blender computes
+`sensor_width = FilmWidth * 25.4` and substitutes its own 32 mm default when
+the property is missing, which reframes the shot. The viewport decoration
+around it -- `DisplayTurnTableIcon`, `ShowManipulators`, `BackgroundColor`,
+`GateFit` -- is not represented. They are written back too: 58 attributes
 across 20 corpus files survive a rewrite. That takes more than mirroring the
 reader, because the reader is blind to most of what an importer checks -- it
 finds an attribute through its `OO` connection and reads properties by name,

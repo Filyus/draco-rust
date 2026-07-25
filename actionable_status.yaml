@@ -45,6 +45,36 @@ items:
       - "Treat Objects/Model as its own geometry source, since pre-7000 has no separate Geometry object."
       - "Add a scalar-property fallback wherever an array property is read: 6100 stores arrays as repeated scalar properties."
 
+  - id: fbx-unconnected-models-become-scene-objects
+    area: draco-io/fbx
+    priority: low
+    status: open
+    summary: "A Model with no OO connection to the root is read as a root node, so objects the source kept out of the scene graph reappear in a rewrite."
+    evidence:
+      - path: "crates/draco-io/src/fbx_reader.rs"
+        note: "MotionBuilder's seven Producer viewport cameras are connected only by OP ... CurrentCamera, never OO ... 0. Blender skips them; this reader roots them, and the writer then emits them as real scene objects. Four corpus files: motionbuilder_cube, _sausage_rrss, _smoothing, _thumbnail each gain seven cameras plus a Camera Switcher."
+      - path: "crates/draco-io/tests/fbx_corpus.rs"
+        note: "Invisible to the round-trip check, which compares our own read of both files and so agrees with itself. Found by importing before and after into Blender 4.5."
+    impact: "Cosmetic today -- the objects were already emitted as empties before cameras were written, so this is not a regression -- but a rewrite of a MotionBuilder file gains eight objects its author excluded."
+    next_steps:
+      - "Establish why unconnected Models are rooted: if it is to recover geometry from files with sloppy connections, find one and keep it working before changing anything."
+      - "If nothing depends on it, drop Models that reach neither the root nor a rooted parent, and report the count as a warning rather than silently."
+
+  - id: fbx-definitions-property-templates
+    area: draco-io/fbx
+    priority: low
+    status: open
+    summary: "Definitions/PropertyTemplate defaults are neither read nor written, so a property an importer would have inherited from the template is lost."
+    evidence:
+      - path: "crates/draco-io/src/fbx_writer.rs"
+        note: "definitions_node emits ObjectType and Count but no PropertyTemplate. In revit_empty_7400 the FbxCamera template supplies FocalLength = 34.893 and the camera object itself carries none, so Blender reads 34.893 from the original and its own 35.0 default from the rewrite."
+      - path: "crates/draco-io/README.md"
+        note: "The capability table already records `Definitions` property templates as not supported; this is the concrete consequence."
+    impact: "Three corpus files change focal length by 0.1 mm through a rewrite. Any property an exporter left to its template is affected the same way."
+    next_steps:
+      - "Read PropertyTemplate defaults into the object they apply to, so a value the file states once is not lost by being stated in the template."
+      - "Writing templates back is separate and probably unnecessary once the values are inlined on each object."
+
   - id: fbx-ascii-writer
     area: draco-io/fbx
     priority: low
