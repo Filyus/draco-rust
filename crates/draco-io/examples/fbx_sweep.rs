@@ -62,8 +62,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         match FbxScene::from_bytes_with_options(&bytes, options.clone()) {
             Ok(scene) if digest => {
+                // Derived `Debug` prints each struct's declared name, which a
+                // type alias does not preserve. Those names are not semantics,
+                // so normalize them out; otherwise renaming a type looks
+                // exactly like changing every decoded value.
+                let text = format!("{scene:?}")
+                    .replace("FbxUvSet", "LayerSet")
+                    .replace("FbxNormalSet", "LayerSet")
+                    .replace("FbxColorSet", "LayerSet")
+                    .replace("FbxLayerSet", "LayerSet");
                 let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-                for byte in format!("{scene:?}").bytes() {
+                for byte in text.bytes() {
                     hash ^= u64::from(byte);
                     hash = hash.wrapping_mul(0x0100_0000_01b3);
                 }

@@ -16,7 +16,7 @@ use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 
-use crate::fbx_scene::{FbxColorSet, FbxMeshInstance, FbxNormalSet, FbxUvSet};
+use crate::fbx_scene::{FbxColorSet, FbxLayerSet, FbxMeshInstance, FbxNormalSet, FbxUvSet};
 
 /// One layer element resolved onto the polygon-corner domain.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -64,6 +64,18 @@ impl FbxRenderMesh {
     }
 }
 
+/// One emitted polygon corner, carrying every domain a layer element can be
+/// addressed in.
+#[derive(Debug, Clone, Copy)]
+struct EmittedCorner {
+    /// Control point this corner references.
+    control_point: u32,
+    /// Position in the source `PolygonVertexIndex` stream.
+    source_corner: usize,
+    /// Polygon this corner belongs to.
+    polygon: u32,
+}
+
 /// Resolves one layer-element value for a corner.
 ///
 /// `mapping` selects the domain the layer is addressed in and `reference`
@@ -73,15 +85,17 @@ fn resolve_layer_value<const N: usize>(
     reference: Option<&str>,
     indices: &[i32],
     values: &[[f32; N]],
-    control_point: usize,
-    corner: usize,
+    corner: EmittedCorner,
 ) -> [f32; N] {
     let logical = match mapping {
-        Some("ByPolygonVertex") => corner,
+        Some("ByPolygonVertex") => corner.source_corner,
+        // One value per polygon -- flat shading, typically. Reading this on
+        // the control-point domain returned an unrelated value.
+        Some("ByPolygon") => corner.polygon as usize,
         Some("AllSame") | Some("AllSameOrPolygon") => 0,
         // `ByVertice`, `ByVertex`, `ByControlPoint` and anything unrecognized
         // address the control point.
-        _ => control_point,
+        _ => corner.control_point as usize,
     };
     let value_index = if reference == Some("IndexToDirect") {
         match indices.get(logical).copied() {
@@ -96,56 +110,25 @@ fn resolve_layer_value<const N: usize>(
     values.get(value_index).copied().unwrap_or([0.0; N])
 }
 
-fn uv_layer(set: &FbxUvSet, corners: &[(u32, usize)]) -> FbxRenderLayer<[f32; 2]> {
+/// Resolves one preserved layer element onto every polygon corner.
+///
+/// Component count is the only thing that differs between UV, normal, colour
+/// and tangent layers, and it is a const parameter, so one function covers all
+/// of them.
+fn resolve_layer<const N: usize>(
+    set: &FbxLayerSet<N>,
+    corners: &[EmittedCorner],
+) -> FbxRenderLayer<[f32; N]> {
     FbxRenderLayer {
         name: set.name.clone(),
         values: corners
             .iter()
-            .map(|&(control_point, corner)| {
+            .map(|&corner| {
                 resolve_layer_value(
                     set.mapping.as_deref(),
                     set.reference.as_deref(),
                     &set.indices,
                     &set.values,
-                    control_point as usize,
-                    corner,
-                )
-            })
-            .collect(),
-    }
-}
-
-fn color_layer(set: &FbxColorSet, corners: &[(u32, usize)]) -> FbxRenderLayer<[f32; 4]> {
-    FbxRenderLayer {
-        name: set.name.clone(),
-        values: corners
-            .iter()
-            .map(|&(control_point, corner)| {
-                resolve_layer_value(
-                    set.mapping.as_deref(),
-                    set.reference.as_deref(),
-                    &set.indices,
-                    &set.values,
-                    control_point as usize,
-                    corner,
-                )
-            })
-            .collect(),
-    }
-}
-
-fn normal_layer(set: &FbxNormalSet, corners: &[(u32, usize)]) -> FbxRenderLayer<[f32; 3]> {
-    FbxRenderLayer {
-        name: set.name.clone(),
-        values: corners
-            .iter()
-            .map(|&(control_point, corner)| {
-                resolve_layer_value(
-                    set.mapping.as_deref(),
-                    set.reference.as_deref(),
-                    &set.indices,
-                    &set.values,
-                    control_point as usize,
                     corner,
                 )
             })
@@ -175,8 +158,8 @@ pub fn expand_to_render_mesh(
     // Walk the polygon-corner stream once, fan-triangulating as we go and
     // recording which source corner each emitted vertex came from. Layer
     // resolution then happens per emitted corner.
-    let mut emitted: Vec<(u32, usize)> = Vec::new();
-    let mut polygon: Vec<(u32, usize)> = Vec::new();
+    let mut emitted: Vec<EmittedCorner> = Vec::new();
+    let mut polygon: Vec<EmittedCorner> = Vec::new();
     let mut polygon_index = 0u32;
 
     for (corner, encoded) in polygon_vertex_indices.iter().enumerate() {
@@ -185,7 +168,11 @@ pub fn expand_to_render_mesh(
         } else {
             *encoded as u32
         };
-        polygon.push((control_point, corner));
+        polygon.push(EmittedCorner {
+            control_point,
+            source_corner: corner,
+            polygon: polygon_index,
+        });
 
         // A negative index terminates the polygon.
         if *encoded < 0 {
@@ -203,23 +190,23 @@ pub fn expand_to_render_mesh(
 
     render.positions = emitted
         .iter()
-        .map(|&(control_point, _)| {
+        .map(|corner| {
             control_points
-                .get(control_point as usize)
+                .get(corner.control_point as usize)
                 .copied()
                 .unwrap_or([0.0; 3])
         })
         .collect();
-    render.corner_to_control_point = emitted.iter().map(|&(point, _)| point).collect();
+    render.corner_to_control_point = emitted.iter().map(|c| c.control_point).collect();
     render.indices = (0..emitted.len() as u32).collect();
-    render.uvs = uv_sets.iter().map(|set| uv_layer(set, &emitted)).collect();
+    render.uvs = uv_sets.iter().map(|s| resolve_layer(s, &emitted)).collect();
     render.normals = normal_sets
         .iter()
-        .map(|set| normal_layer(set, &emitted))
+        .map(|s| resolve_layer(s, &emitted))
         .collect();
     render.colors = color_sets
         .iter()
-        .map(|set| color_layer(set, &emitted))
+        .map(|s| resolve_layer(s, &emitted))
         .collect();
     render
 }
@@ -446,6 +433,15 @@ mod tests {
         assert_eq!(mesh.num_faces(), 2);
     }
 
+    /// Corner 5 of polygon 2, sitting on control point 1.
+    fn probe_corner() -> EmittedCorner {
+        EmittedCorner {
+            control_point: 1,
+            source_corner: 5,
+            polygon: 2,
+        }
+    }
+
     #[test]
     fn a_negative_index_to_direct_entry_yields_a_default_rather_than_panicking() {
         let value: [f32; 2] = resolve_layer_value(
@@ -453,10 +449,28 @@ mod tests {
             Some("IndexToDirect"),
             &[-31],
             &[[1.0, 2.0]],
-            0,
-            0,
+            EmittedCorner {
+                control_point: 0,
+                source_corner: 0,
+                polygon: 0,
+            },
         );
         assert_eq!(value, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn each_mapping_addresses_its_own_domain() {
+        // Distinct per index, so a wrong domain cannot coincidentally match.
+        let values: Vec<[f32; 1]> = (0..8).map(|i| [i as f32]).collect();
+        let resolve = |mapping| {
+            resolve_layer_value(Some(mapping), Some("Direct"), &[], &values, probe_corner())
+        };
+        assert_eq!(resolve("ByPolygonVertex"), [5.0]);
+        assert_eq!(resolve("ByVertice"), [1.0]);
+        assert_eq!(resolve("AllSame"), [0.0]);
+        // Regression: `ByPolygon` used to fall through to the control point,
+        // silently returning the value of an unrelated polygon.
+        assert_eq!(resolve("ByPolygon"), [2.0]);
     }
 
     #[test]

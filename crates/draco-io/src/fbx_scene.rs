@@ -26,6 +26,9 @@ pub enum FbxWarningCode {
     /// A layer element used a mapping or reference mode that could not be
     /// resolved, so default values were substituted.
     UnsupportedLayerMapping,
+    /// A geometry carried a `LayerElement*` this crate does not import, so
+    /// that layer's data is absent from the decoded scene.
+    DroppedLayerElement,
 }
 
 impl FbxWarningCode {
@@ -41,7 +44,8 @@ impl FbxWarningCode {
             | FbxWarningCode::NodeEndPastEndOfFile => false,
             FbxWarningCode::MissingNodeEndOffset
             | FbxWarningCode::UnsupportedTransformInherit
-            | FbxWarningCode::UnsupportedLayerMapping => true,
+            | FbxWarningCode::UnsupportedLayerMapping
+            | FbxWarningCode::DroppedLayerElement => true,
         }
     }
 
@@ -54,6 +58,7 @@ impl FbxWarningCode {
             FbxWarningCode::NodeEndPastEndOfFile => "node-end-past-end-of-file",
             FbxWarningCode::UnsupportedTransformInherit => "unsupported-transform-inherit",
             FbxWarningCode::UnsupportedLayerMapping => "unsupported-layer-mapping",
+            FbxWarningCode::DroppedLayerElement => "dropped-layer-element",
         }
     }
 }
@@ -222,53 +227,37 @@ pub struct FbxMeshInstance {
     pub morph_targets: Vec<FbxMorphTarget>,
 }
 
-/// A preserved FBX `LayerElementUV`.
-#[derive(Debug, Clone, Default)]
-pub struct FbxUvSet {
-    /// FBX UV set name.
+/// A preserved FBX layer element carrying `N` float components per value.
+///
+/// Every float-valued FBX layer element has this shape -- a name, a mapping
+/// and reference mode, a value array, and an optional index array -- and
+/// differs only in its component count and the node names it is read from.
+/// The per-family aliases below name the ones this crate understands.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FbxLayerSet<const N: usize> {
+    /// FBX layer set name.
     pub name: Option<String>,
-    /// FBX mapping information type.
+    /// FBX mapping information type, e.g. `ByPolygonVertex` or `ByVertice`.
     pub mapping: Option<String>,
-    /// FBX reference information type.
+    /// FBX reference information type, e.g. `Direct` or `IndexToDirect`.
     pub reference: Option<String>,
-    /// Direct UV values.
-    pub values: Vec<[f32; 2]>,
-    /// Optional direct-value indices.
+    /// Direct values.
+    pub values: Vec<[f32; N]>,
+    /// Optional direct-value indices, used when `reference` is `IndexToDirect`.
     pub indices: Vec<i32>,
 }
+
+/// A preserved FBX `LayerElementUV`.
+pub type FbxUvSet = FbxLayerSet<2>;
 
 /// A preserved FBX `LayerElementNormal`.
-#[derive(Debug, Clone, Default)]
-pub struct FbxNormalSet {
-    /// FBX normal set name.
-    pub name: Option<String>,
-    /// FBX mapping information type.
-    pub mapping: Option<String>,
-    /// FBX reference information type.
-    pub reference: Option<String>,
-    /// Direct normal values.
-    pub values: Vec<[f32; 3]>,
-    /// Optional direct-value indices.
-    pub indices: Vec<i32>,
-}
+pub type FbxNormalSet = FbxLayerSet<3>;
 
 /// A preserved FBX `LayerElementColor`.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct FbxColorSet {
-    /// FBX colour set name.
-    pub name: Option<String>,
-    /// FBX mapping information type.
-    pub mapping: Option<String>,
-    /// FBX reference information type.
-    pub reference: Option<String>,
-    /// Linear RGBA values.
-    ///
-    /// FBX normally stores four components; a three-component source is
-    /// padded with an opaque alpha.
-    pub values: Vec<[f32; 4]>,
-    /// Optional direct-value indices.
-    pub indices: Vec<i32>,
-}
+///
+/// FBX normally stores four components; a three-component source is padded
+/// with an opaque alpha when read.
+pub type FbxColorSet = FbxLayerSet<4>;
 
 /// All influences from one joint onto a mesh's control points.
 #[derive(Debug, Clone)]

@@ -52,8 +52,9 @@ struct FbxGeometrySource {
 #[doc(hidden)]
 pub use crate::fbx_scene::{
     FbxAnimChannel, FbxAnimChannelPath, FbxAnimInterpolation, FbxAnimSampler, FbxAnimation,
-    FbxColorSet, FbxMeshInstance, FbxNodeId, FbxScene, FbxSceneNode, FbxTexture, FbxTextureBinding,
-    FbxTextureSlot, FbxTransform, FbxWarning, FbxWarningCode,
+    FbxColorSet, FbxLayerSet, FbxMeshInstance, FbxNodeId, FbxNormalSet, FbxScene, FbxSceneNode,
+    FbxTexture, FbxTextureBinding, FbxTextureSlot, FbxTransform, FbxUvSet, FbxWarning,
+    FbxWarningCode,
 };
 
 /// FBX file magic: "Kaydara FBX Binary  \0"
@@ -615,7 +616,7 @@ impl<R: Read + Seek> FbxReader<R> {
         geometry_ids.sort_unstable();
         for geom_id in geometry_ids {
             let geom_node = geometry_map[&geom_id];
-            if let Some(source) = self.geometry_to_mesh(geom_node)? {
+            if let Some(source) = self.geometry_to_mesh(geom_node, &mut warnings)? {
                 let mesh = &source.mesh;
                 let material_indices = source.material_indices.clone();
                 // find connection mapping geometry -> model
@@ -2266,13 +2267,17 @@ impl<R: Read + Seek> FbxReader<R> {
     pub fn read_meshes(&mut self) -> io::Result<Vec<Mesh>> {
         let nodes = self.read_nodes()?;
         let mut meshes = Vec::new();
+        // Collected separately because `geometry_to_mesh` borrows `self`
+        // immutably; merged back afterwards so this path reports the same
+        // geometry notices `read_scene` does.
+        let mut warnings = Vec::new();
 
         // Find Objects node
         for node in &nodes {
             if node.name == "Objects" {
                 for child in &node.children {
                     if child.name == "Geometry" {
-                        if let Some(source) = self.geometry_to_mesh(child)? {
+                        if let Some(source) = self.geometry_to_mesh(child, &mut warnings)? {
                             meshes.push(source.mesh);
                         }
                     }
@@ -2280,6 +2285,7 @@ impl<R: Read + Seek> FbxReader<R> {
             }
         }
 
+        self.warnings.extend(warnings);
         Ok(meshes)
     }
 
@@ -2288,7 +2294,11 @@ impl<R: Read + Seek> FbxReader<R> {
     /// The returned `material_indices` align with the fan-triangulated face
     /// order of the Draco `Mesh` (one entry per triangle). The list is empty
     /// when the geometry does not carry a `LayerElementMaterial` layer.
-    fn geometry_to_mesh(&self, geometry: &FbxNode) -> io::Result<Option<FbxGeometrySource>> {
+    fn geometry_to_mesh(
+        &self,
+        geometry: &FbxNode,
+        warnings: &mut Vec<FbxWarning>,
+    ) -> io::Result<Option<FbxGeometrySource>> {
         let mut vertices: Option<Vec<f64>> = None;
         let mut polygon_indices: Option<Vec<i32>> = None;
         let mut edges: Vec<i32> = Vec::new();
@@ -2320,6 +2330,15 @@ impl<R: Read + Seek> FbxReader<R> {
                 "LayerElementMaterial" if material_layer.is_none() => {
                     material_layer = Some(child);
                 }
+                // Tangents, binormals, smoothing and creases land here. They
+                // used to vanish without a trace; naming them makes the gap
+                // visible to a caller instead of only to the source code.
+                other if other.starts_with("LayerElement") => push_warning(
+                    warnings,
+                    FbxWarningCode::DroppedLayerElement,
+                    format!("FBX {other} is not imported, so its data is absent from the scene"),
+                    Some(other),
+                ),
                 _ => {}
             }
         }
@@ -2370,64 +2389,46 @@ impl<R: Read + Seek> FbxReader<R> {
             })
             .unwrap_or_default();
 
-        let uv_sets: Vec<crate::fbx_scene::FbxUvSet> = uv_layers
+        let uv_sets: Vec<FbxUvSet> = uv_layers
             .into_iter()
             .filter_map(|layer| {
-                let values = read_layer_floats(layer, "UV")?
-                    .chunks_exact(2)
-                    .map(|value| [value[0], value[1]])
-                    .collect();
-                Some(crate::fbx_scene::FbxUvSet {
-                    name: layer_string(layer, "Name"),
-                    mapping: layer_string(layer, "MappingInformationType"),
-                    reference: layer_string(layer, "ReferenceInformationType"),
-                    values,
-                    indices: layer_int_array(layer, "UVIndex").unwrap_or_default(),
-                })
+                let values = chunk_layer_values(&read_layer_floats(layer, "UV")?);
+                Some(layer_set(layer, values, &["UVIndex"]))
             })
             .collect();
-        let normal_sets: Vec<crate::fbx_scene::FbxNormalSet> = normals_layers
+        let normal_sets: Vec<FbxNormalSet> = normals_layers
             .into_iter()
             .filter_map(|layer| {
-                let values = read_layer_floats(layer, "Normals")?
-                    .chunks_exact(3)
-                    .map(|value| [value[0], value[1], value[2]])
-                    .collect();
-                Some(crate::fbx_scene::FbxNormalSet {
-                    name: layer_string(layer, "Name"),
-                    mapping: layer_string(layer, "MappingInformationType"),
-                    reference: layer_string(layer, "ReferenceInformationType"),
-                    values,
-                    indices: layer_int_array(layer, "NormalsIndex")
-                        .or_else(|| layer_int_array(layer, "NormalIndex"))
-                        .unwrap_or_default(),
-                })
+                let values = chunk_layer_values(&read_layer_floats(layer, "Normals")?);
+                // Exporters disagree on the index node's name.
+                Some(layer_set(layer, values, &["NormalsIndex", "NormalIndex"]))
             })
             .collect();
-        let color_sets: Vec<crate::fbx_scene::FbxColorSet> = color_layers
+        for set in &uv_sets {
+            warn_unsupported_layer_mapping("LayerElementUV", set, warnings);
+        }
+        for set in &normal_sets {
+            warn_unsupported_layer_mapping("LayerElementNormal", set, warnings);
+        }
+        let color_sets: Vec<FbxColorSet> = color_layers
             .into_iter()
             .filter_map(|layer| {
                 let raw = read_layer_floats(layer, "Colors")?;
                 // FBX writes RGBA here, but a three-component source is legal
                 // in the wild; pad it opaque rather than dropping the layer.
                 let values = if raw.len() % 4 == 0 {
-                    raw.chunks_exact(4)
-                        .map(|value| [value[0], value[1], value[2], value[3]])
-                        .collect()
+                    chunk_layer_values(&raw)
                 } else {
                     raw.chunks_exact(3)
                         .map(|value| [value[0], value[1], value[2], 1.0])
                         .collect()
                 };
-                Some(crate::fbx_scene::FbxColorSet {
-                    name: layer_string(layer, "Name"),
-                    mapping: layer_string(layer, "MappingInformationType"),
-                    reference: layer_string(layer, "ReferenceInformationType"),
-                    values,
-                    indices: layer_int_array(layer, "ColorIndex").unwrap_or_default(),
-                })
+                Some(layer_set(layer, values, &["ColorIndex"]))
             })
             .collect();
+        for set in &color_sets {
+            warn_unsupported_layer_mapping("LayerElementColor", set, warnings);
+        }
 
         // Build the Draco mesh on the polygon-corner domain. Resolving layer
         // elements onto control points cannot represent a UV or hard-normal
@@ -2671,7 +2672,7 @@ impl<R: Read + Seek> FbxReader<R> {
                         .get(&layer_id)
                         .and_then(|node| match node.properties.get(1) {
                             Some(FbxProperty::String(raw)) => raw
-                                .split(' ')
+                                .split('\0')
                                 .next()
                                 .filter(|part| !part.is_empty())
                                 .map(str::to_string),
@@ -2964,6 +2965,83 @@ fn layer_int_array(layer: &FbxNode, name: &str) -> Option<Vec<i32>> {
         }
     }
     None
+}
+
+/// Reports a layer element whose mapping or reference mode this crate does not
+/// recognize.
+///
+/// The value is still resolved on the control-point domain, which is the most
+/// likely intent and what the reader has always done. The warning exists so a
+/// caller learns the substitution happened rather than inferring it from
+/// unexpected geometry.
+fn warn_unsupported_layer_mapping<const N: usize>(
+    element: &str,
+    set: &FbxLayerSet<N>,
+    warnings: &mut Vec<FbxWarning>,
+) {
+    const KNOWN_MAPPINGS: [&str; 7] = [
+        "ByPolygonVertex",
+        "ByPolygon",
+        "ByVertice",
+        "ByVertex",
+        "ByControlPoint",
+        "AllSame",
+        "AllSameOrPolygon",
+    ];
+    if let Some(mapping) = set.mapping.as_deref() {
+        if !KNOWN_MAPPINGS.contains(&mapping) {
+            let subject = format!("{element}/{mapping}");
+            push_warning(
+                warnings,
+                FbxWarningCode::UnsupportedLayerMapping,
+                format!(
+                    "FBX {element} uses mapping {mapping}, which was resolved on the \
+                     control-point domain"
+                ),
+                Some(&subject),
+            );
+        }
+    }
+    if let Some(reference) = set.reference.as_deref() {
+        if reference != "Direct" && reference != "IndexToDirect" {
+            let subject = format!("{element}/{reference}");
+            push_warning(
+                warnings,
+                FbxWarningCode::UnsupportedLayerMapping,
+                format!("FBX {element} uses reference mode {reference}, which was read as Direct"),
+                Some(&subject),
+            );
+        }
+    }
+}
+
+/// Reads the parts every float layer element shares.
+///
+/// `index_nodes` lists the names the index array may appear under, tried in
+/// order: exporters disagree on some of them.
+fn layer_set<const N: usize>(
+    layer: &FbxNode,
+    values: Vec<[f32; N]>,
+    index_nodes: &[&str],
+) -> FbxLayerSet<N> {
+    FbxLayerSet {
+        name: layer_string(layer, "Name"),
+        mapping: layer_string(layer, "MappingInformationType"),
+        reference: layer_string(layer, "ReferenceInformationType"),
+        values,
+        indices: index_nodes
+            .iter()
+            .find_map(|name| layer_int_array(layer, name))
+            .unwrap_or_default(),
+    }
+}
+
+/// Groups a flat float payload into `N`-component values, dropping a trailing
+/// partial value.
+fn chunk_layer_values<const N: usize>(raw: &[f32]) -> Vec<[f32; N]> {
+    raw.chunks_exact(N)
+        .map(|value| std::array::from_fn(|i| value[i]))
+        .collect()
 }
 
 /// Reads a layer element's flat float payload, whatever its component count.

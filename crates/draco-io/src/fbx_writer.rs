@@ -1826,10 +1826,14 @@ fn write_geometry<W: Write + Seek>(
         }
 
         // Layer aggregation node (FBX requires a Layer entry per used element).
+        // Every element written above must be listed here, or an importer will
+        // not find it -- a colours-only geometry used to emit an orphaned
+        // `LayerElementColor` because this condition did not mention them.
         if mesh_data.normals.is_some()
             || !mesh_data.normal_sets.is_empty()
             || mesh_data.uvs.is_some()
             || !mesh_data.uv_sets.is_empty()
+            || !mesh_data.color_sets.is_empty()
             || !mesh_data.material_indices.is_empty()
         {
             let layer = NodeWriter::start(w, "Layer", is_64)?;
@@ -3362,6 +3366,79 @@ mod tests {
         assert_eq!(
             collapse_material_indices_to_polygons(&[1, 2, 3], None),
             vec![1, 2, 3]
+        );
+    }
+
+    /// A colours-only geometry must still emit a `Layer` node listing
+    /// `LayerElementColor`.
+    ///
+    /// Our own reader finds the element without it, so a round-trip check
+    /// cannot see this; a strict importer walks `Layer` and would show an
+    /// uncoloured mesh. The assertion is therefore on the written node tree.
+    #[test]
+    #[cfg(feature = "fbx-reader")]
+    fn a_colour_only_geometry_lists_its_layer_element() {
+        let scene = FbxScene {
+            root_nodes: vec![FbxSceneNode {
+                id: crate::fbx_scene::FbxNodeId(1),
+                name: Some("Colored".to_string()),
+                transform: None,
+                transform_stack: None,
+                has_complex_transform_stack: false,
+                mesh_instances: vec![FbxMeshInstance {
+                    name: Some("Tri".to_string()),
+                    mesh: create_triangle_mesh(),
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    polygon_vertex_indices: vec![0, 1, !2],
+                    uv_sets: Vec::new(),
+                    normal_sets: Vec::new(),
+                    color_sets: vec![crate::fbx_scene::FbxColorSet {
+                        name: Some("Col".to_string()),
+                        mapping: Some("ByPolygonVertex".to_string()),
+                        reference: Some("Direct".to_string()),
+                        values: vec![[1.0, 0.0, 0.0, 1.0]; 3],
+                        indices: Vec::new(),
+                    }],
+                    edges: Vec::new(),
+                    material_indices: Vec::new(),
+                    skin: None,
+                    morph_targets: Vec::new(),
+                }],
+                children: Vec::new(),
+            }],
+            ..FbxScene::default()
+        };
+
+        let bytes = scene.to_bytes().unwrap();
+        let nodes = crate::FbxReader::from_bytes(bytes)
+            .unwrap()
+            .read_nodes()
+            .unwrap();
+
+        fn find<'a>(
+            nodes: &'a [crate::fbx_reader::FbxNode],
+            name: &str,
+        ) -> Option<&'a crate::fbx_reader::FbxNode> {
+            nodes
+                .iter()
+                .find(|n| n.name == name)
+                .or_else(|| nodes.iter().find_map(|n| find(&n.children, name)))
+        }
+
+        let layer = find(&nodes, "Layer").expect("colours alone must still produce a Layer node");
+        let listed: Vec<&str> = layer
+            .children
+            .iter()
+            .filter(|c| c.name == "LayerElement")
+            .filter_map(|c| c.children.iter().find(|g| g.name == "Type"))
+            .filter_map(|t| match t.properties.first() {
+                Some(crate::fbx_reader::FbxProperty::String(s)) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            listed.contains(&"LayerElementColor"),
+            "Layer must reference the colour element, listed: {listed:?}"
         );
     }
 
