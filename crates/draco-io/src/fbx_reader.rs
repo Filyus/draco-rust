@@ -181,266 +181,6 @@ impl<R: Read + Seek> FbxReader<R> {
             }
         }
 
-        // Helper to parse transform from Model node's Properties70
-        fn parse_transform(
-            node: &FbxNode,
-        ) -> Option<(FbxTransform, crate::fbx_scene::FbxTransformStack, bool)> {
-            let mut translation = None;
-            let mut rotation = None;
-            let mut scaling = None;
-            let mut pre_rotation = None;
-            let mut post_rotation = None;
-            let mut rotation_offset = None;
-            let mut rotation_pivot = None;
-            let mut scaling_offset = None;
-            let mut scaling_pivot = None;
-            let mut rotation_order = None;
-            let mut rotation_active = None;
-            let mut inherit_type = None;
-
-            fn property_vec3(property: &FbxNode) -> Option<[f32; 3]> {
-                for value in &property.properties {
-                    if let crate::fbx_reader::FbxProperty::F64Array(values) = value {
-                        if values.len() >= 3 {
-                            return Some([values[0] as f32, values[1] as f32, values[2] as f32]);
-                        }
-                    }
-                }
-
-                let values: Vec<f32> = property
-                    .properties
-                    .iter()
-                    .filter_map(|value| match value {
-                        crate::fbx_reader::FbxProperty::F64(value) => Some(*value as f32),
-                        crate::fbx_reader::FbxProperty::F32(value) => Some(*value),
-                        _ => None,
-                    })
-                    .take(3)
-                    .collect();
-                (values.len() == 3).then(|| [values[0], values[1], values[2]])
-            }
-
-            fn property_i32(property: &FbxNode) -> Option<i32> {
-                property.properties.iter().find_map(|value| match value {
-                    crate::fbx_reader::FbxProperty::I32(value) => Some(*value),
-                    crate::fbx_reader::FbxProperty::I16(value) => Some(*value as i32),
-                    crate::fbx_reader::FbxProperty::I64(value) => i32::try_from(*value).ok(),
-                    _ => None,
-                })
-            }
-
-            fn property_bool(property: &FbxNode) -> Option<bool> {
-                property.properties.iter().find_map(|value| match value {
-                    crate::fbx_reader::FbxProperty::Bool(value) => Some(*value),
-                    crate::fbx_reader::FbxProperty::I32(value) => Some(*value != 0),
-                    crate::fbx_reader::FbxProperty::I16(value) => Some(*value != 0),
-                    crate::fbx_reader::FbxProperty::I64(value) => Some(*value != 0),
-                    _ => None,
-                })
-            }
-
-            for child in &node.children {
-                if child.name == "Properties70" {
-                    for prop in &child.children {
-                        // property nodes often have first property as name string
-                        if let Some(crate::fbx_reader::FbxProperty::String(name)) =
-                            prop.properties.first()
-                        {
-                            if name.contains("Lcl Translation") {
-                                translation = property_vec3(prop);
-                            }
-                            if name.contains("Lcl Rotation") {
-                                rotation = property_vec3(prop);
-                            }
-                            if name.contains("Lcl Scaling") {
-                                scaling = property_vec3(prop);
-                            }
-                            match name.as_str() {
-                                "PreRotation" => pre_rotation = property_vec3(prop),
-                                "PostRotation" => post_rotation = property_vec3(prop),
-                                "RotationOffset" => rotation_offset = property_vec3(prop),
-                                "RotationPivot" => rotation_pivot = property_vec3(prop),
-                                "ScalingOffset" => scaling_offset = property_vec3(prop),
-                                "ScalingPivot" => scaling_pivot = property_vec3(prop),
-                                "RotationOrder" => rotation_order = property_i32(prop),
-                                "RotationActive" => rotation_active = property_bool(prop),
-                                "InheritType" => inherit_type = property_i32(prop),
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-
-            if translation.is_none() && rotation.is_none() && scaling.is_none() {
-                return None;
-            }
-
-            // FBX local transform stack (without the parent-dependent
-            // InheritType rule):
-            // T * Roff * Rp * PreR * R * PostR^-1 * Rp^-1 * Soff * Sp * S * Sp^-1.
-            // The packed scene layout is also the WebGL column-major layout.
-            let t = translation.unwrap_or([0.0, 0.0, 0.0]);
-            let r_deg = rotation.unwrap_or([0.0, 0.0, 0.0]);
-            let s = scaling.unwrap_or([1.0, 1.0, 1.0]);
-
-            fn identity() -> [[f32; 4]; 4] {
-                [
-                    [1.0, 0.0, 0.0, 0.0],
-                    [0.0, 1.0, 0.0, 0.0],
-                    [0.0, 0.0, 1.0, 0.0],
-                    [0.0, 0.0, 0.0, 1.0],
-                ]
-            }
-            // FbxTransform is packed column-major: its outer index is the
-            // column and its inner index is the row. Evaluate the local stack
-            // in that layout so the result can go straight to WebGL.
-            fn multiply(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
-                let mut result = [[0.0; 4]; 4];
-                for column in 0..4 {
-                    for row in 0..4 {
-                        result[column][row] =
-                            (0..4).map(|index| a[index][row] * b[column][index]).sum();
-                    }
-                }
-                result
-            }
-            fn translation_matrix(values: [f32; 3]) -> [[f32; 4]; 4] {
-                let mut matrix = identity();
-                matrix[3][0] = values[0];
-                matrix[3][1] = values[1];
-                matrix[3][2] = values[2];
-                matrix
-            }
-            fn scale(values: [f32; 3]) -> [[f32; 4]; 4] {
-                [
-                    [values[0], 0.0, 0.0, 0.0],
-                    [0.0, values[1], 0.0, 0.0],
-                    [0.0, 0.0, values[2], 0.0],
-                    [0.0, 0.0, 0.0, 1.0],
-                ]
-            }
-            fn rotation_matrix(values: [f32; 3]) -> [[f32; 4]; 4] {
-                let (sin_x, cos_x) = values[0].to_radians().sin_cos();
-                let (sin_y, cos_y) = values[1].to_radians().sin_cos();
-                let (sin_z, cos_z) = values[2].to_radians().sin_cos();
-                // Rz * Ry * Rx, packed by column for FBX/WebGL.
-                [
-                    [cos_z * cos_y, sin_z * cos_y, -sin_y, 0.0],
-                    [
-                        cos_z * sin_y * sin_x - sin_z * cos_x,
-                        sin_z * sin_y * sin_x + cos_z * cos_x,
-                        cos_y * sin_x,
-                        0.0,
-                    ],
-                    [
-                        cos_z * sin_y * cos_x + sin_z * sin_x,
-                        sin_z * sin_y * cos_x - cos_z * sin_x,
-                        cos_y * cos_x,
-                        0.0,
-                    ],
-                    [0.0, 0.0, 0.0, 1.0],
-                ]
-            }
-            let inverse_translation =
-                |values: [f32; 3]| translation_matrix([-values[0], -values[1], -values[2]]);
-            let inverse_rotation = |values: [f32; 3]| {
-                let rotation = rotation_matrix(values);
-                let mut inverse = [[0.0; 4]; 4];
-                for column in 0..4 {
-                    for row in 0..4 {
-                        inverse[column][row] = rotation[row][column];
-                    }
-                }
-                inverse
-            };
-            // Blender's FBX bind matrices encode the pre-rotation with the
-            // opposite handedness from the local Euler property.  Applying
-            // its inverse here keeps Mixamo-style armatures aligned while
-            // leaving ordinary TRS-only files unchanged.
-            let inverse_pre_rotation = pre_rotation
-                .map(|values| [-values[0], -values[1], -values[2]])
-                .unwrap_or([0.0; 3]);
-            // The scene matrix uses the same packed layout as the writer:
-            // translation occupies the final packed column.  Do not multiply
-            // the local translation through the rotation stack here; doing so
-            // rotates a node's origin (and breaks ordinary TRS-only FBX
-            // written by us).  The pivot terms below only shape the linear
-            // part and their translation compensation.
-            let mut mat = identity();
-            for term in [
-                translation_matrix(rotation_offset.unwrap_or([0.0; 3])),
-                translation_matrix(rotation_pivot.unwrap_or([0.0; 3])),
-                rotation_matrix(inverse_pre_rotation),
-                rotation_matrix(r_deg),
-                inverse_rotation(post_rotation.unwrap_or([0.0; 3])),
-                inverse_translation(rotation_pivot.unwrap_or([0.0; 3])),
-                translation_matrix(scaling_offset.unwrap_or([0.0; 3])),
-                translation_matrix(scaling_pivot.unwrap_or([0.0; 3])),
-                scale(s),
-                inverse_translation(scaling_pivot.unwrap_or([0.0; 3])),
-            ] {
-                mat = multiply(mat, term);
-            }
-            mat[3][0] += t[0];
-            mat[3][1] += t[1];
-            mat[3][2] += t[2];
-
-            // A bind pose contains the exporter-evaluated local orientation
-            // for nodes that use FBX's pre/post rotation or pivot terms. The
-            // semantic preview keeps that baked basis for animation, while
-            // ordinary Model TRS nodes keep their authored local values.
-            let non_zero = |values: Option<[f32; 3]>| {
-                values.is_some_and(|values| values.iter().any(|value| value.abs() > f32::EPSILON))
-            };
-            let transform_stack = crate::fbx_scene::FbxTransformStack {
-                translation,
-                rotation,
-                scaling,
-                rotation_order,
-                rotation_active,
-                pre_rotation,
-                post_rotation,
-                rotation_offset,
-                rotation_pivot,
-                scaling_offset,
-                scaling_pivot,
-                inherit_type,
-            };
-            // RotationOrder and InheritType are source-provenance metadata;
-            // their ordinary/default values do not mean that the static
-            // Model TRS has been baked into the skin BindPose. Keep the
-            // runtime flag limited to actual pivot/offset/pre/post terms so
-            // plain TRS clips (including Samba Dancing) retain authored
-            // animation composition while the metadata is still re-emitted.
-            // Non-default rotation-order/inheritance evaluation remains an
-            // explicit compatibility caveat at the animation boundary.
-            let has_complex_transform_stack = non_zero(pre_rotation)
-                || non_zero(post_rotation)
-                || non_zero(rotation_offset)
-                || non_zero(rotation_pivot)
-                || non_zero(scaling_offset)
-                || non_zero(scaling_pivot);
-
-            Some((
-                FbxTransform { matrix: mat },
-                transform_stack,
-                has_complex_transform_stack,
-            ))
-        }
-
-        // Build nodes recursively
-        fn object_name(node: &FbxNode) -> Option<String> {
-            match node.properties.get(1) {
-                Some(FbxProperty::String(name)) => name
-                    .split('\0')
-                    .next()
-                    .filter(|name| !name.is_empty())
-                    .map(str::to_string),
-                _ => None,
-            }
-        }
-
         let ordered_model_ids = model_order;
         let model_node_ids: HashMap<i64, FbxNodeId> = ordered_model_ids
             .iter()
@@ -449,61 +189,6 @@ impl<R: Read + Seek> FbxReader<R> {
             .map(|(index, id)| (id, FbxNodeId((index + 1) as u32)))
             .collect();
 
-        fn build_model_node(
-            id: i64,
-            model_map: &std::collections::HashMap<i64, &FbxNode>,
-            model_children: &std::collections::HashMap<i64, Vec<i64>>,
-            model_mesh_instances: &std::collections::HashMap<i64, Vec<FbxMeshInstance>>,
-            model_node_ids: &std::collections::HashMap<i64, FbxNodeId>,
-            node_attributes: &std::collections::HashMap<i64, FbxNodeAttribute>,
-            ancestors: &mut Vec<i64>,
-        ) -> FbxSceneNode {
-            let node_src = model_map.get(&id).unwrap();
-            let mut node = FbxSceneNode::new(object_name(node_src));
-            node.id = model_node_ids[&id];
-            if let Some((transform, transform_stack, has_complex_transform_stack)) =
-                parse_transform(node_src)
-            {
-                node.transform = Some(transform);
-                node.transform_stack = Some(transform_stack);
-                node.has_complex_transform_stack = has_complex_transform_stack;
-            }
-            node.attribute = node_attributes.get(&id).cloned();
-            if let Some(mesh_instances) = model_mesh_instances.get(&id) {
-                node.mesh_instances.extend(mesh_instances.clone());
-            }
-
-            // The ancestor check below stops a plain cycle. This bounds the
-            // rest: a document can chain models far deeper than any scene
-            // graph needs, and the depth is the file's to choose.
-            const MAX_MODEL_DEPTH: usize = 256;
-            if ancestors.len() >= MAX_MODEL_DEPTH {
-                return node;
-            }
-            if let Some(children) = model_children.get(&id) {
-                ancestors.push(id);
-                for &cid in children {
-                    // A document may connect a Model to one of its own
-                    // ancestors -- `synthetic_id_collision_7500` in the ufbx
-                    // corpus does -- and following that cycle recurses until
-                    // the stack is gone. The scene simply stops there.
-                    if model_map.contains_key(&cid) && !ancestors.contains(&cid) {
-                        node.children.push(build_model_node(
-                            cid,
-                            model_map,
-                            model_children,
-                            model_mesh_instances,
-                            model_node_ids,
-                            node_attributes,
-                            ancestors,
-                        ));
-                    }
-                }
-                ancestors.pop();
-            }
-            node
-        }
-
         // Map geometries to models and create mesh instances.
         let mut model_mesh_instances: std::collections::HashMap<i64, Vec<FbxMeshInstance>> =
             std::collections::HashMap::new();
@@ -511,7 +196,7 @@ impl<R: Read + Seek> FbxReader<R> {
         geometry_ids.sort_unstable();
         for geom_id in geometry_ids {
             let geom_node = geometry_map[&geom_id];
-            if let Some(source) = self.geometry_to_mesh(geom_node, &mut warnings)? {
+            if let Some(source) = geometry_to_mesh(geom_node, &mut warnings)? {
                 let mesh = &source.mesh;
                 let material_indices = source.material_indices.clone();
                 // find connection mapping geometry -> model
@@ -622,6 +307,319 @@ impl<R: Read + Seek> FbxReader<R> {
             warnings,
         })
     }
+}
+
+// Helper to parse transform from Model node's Properties70
+fn parse_transform(
+    node: &FbxNode,
+) -> Option<(FbxTransform, crate::fbx_scene::FbxTransformStack, bool)> {
+    let mut translation = None;
+    let mut rotation = None;
+    let mut scaling = None;
+    let mut pre_rotation = None;
+    let mut post_rotation = None;
+    let mut rotation_offset = None;
+    let mut rotation_pivot = None;
+    let mut scaling_offset = None;
+    let mut scaling_pivot = None;
+    let mut rotation_order = None;
+    let mut rotation_active = None;
+    let mut inherit_type = None;
+
+    fn property_vec3(property: &FbxNode) -> Option<[f32; 3]> {
+        for value in &property.properties {
+            if let crate::fbx_reader::FbxProperty::F64Array(values) = value {
+                if values.len() >= 3 {
+                    return Some([values[0] as f32, values[1] as f32, values[2] as f32]);
+                }
+            }
+        }
+
+        let values: Vec<f32> = property
+            .properties
+            .iter()
+            .filter_map(|value| match value {
+                crate::fbx_reader::FbxProperty::F64(value) => Some(*value as f32),
+                crate::fbx_reader::FbxProperty::F32(value) => Some(*value),
+                _ => None,
+            })
+            .take(3)
+            .collect();
+        (values.len() == 3).then(|| [values[0], values[1], values[2]])
+    }
+
+    fn property_i32(property: &FbxNode) -> Option<i32> {
+        property.properties.iter().find_map(|value| match value {
+            crate::fbx_reader::FbxProperty::I32(value) => Some(*value),
+            crate::fbx_reader::FbxProperty::I16(value) => Some(*value as i32),
+            crate::fbx_reader::FbxProperty::I64(value) => i32::try_from(*value).ok(),
+            _ => None,
+        })
+    }
+
+    fn property_bool(property: &FbxNode) -> Option<bool> {
+        property.properties.iter().find_map(|value| match value {
+            crate::fbx_reader::FbxProperty::Bool(value) => Some(*value),
+            crate::fbx_reader::FbxProperty::I32(value) => Some(*value != 0),
+            crate::fbx_reader::FbxProperty::I16(value) => Some(*value != 0),
+            crate::fbx_reader::FbxProperty::I64(value) => Some(*value != 0),
+            _ => None,
+        })
+    }
+
+    for child in &node.children {
+        if child.name == "Properties70" {
+            for prop in &child.children {
+                // property nodes often have first property as name string
+                if let Some(crate::fbx_reader::FbxProperty::String(name)) = prop.properties.first()
+                {
+                    if name.contains("Lcl Translation") {
+                        translation = property_vec3(prop);
+                    }
+                    if name.contains("Lcl Rotation") {
+                        rotation = property_vec3(prop);
+                    }
+                    if name.contains("Lcl Scaling") {
+                        scaling = property_vec3(prop);
+                    }
+                    match name.as_str() {
+                        "PreRotation" => pre_rotation = property_vec3(prop),
+                        "PostRotation" => post_rotation = property_vec3(prop),
+                        "RotationOffset" => rotation_offset = property_vec3(prop),
+                        "RotationPivot" => rotation_pivot = property_vec3(prop),
+                        "ScalingOffset" => scaling_offset = property_vec3(prop),
+                        "ScalingPivot" => scaling_pivot = property_vec3(prop),
+                        "RotationOrder" => rotation_order = property_i32(prop),
+                        "RotationActive" => rotation_active = property_bool(prop),
+                        "InheritType" => inherit_type = property_i32(prop),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    if translation.is_none() && rotation.is_none() && scaling.is_none() {
+        return None;
+    }
+
+    // FBX local transform stack (without the parent-dependent
+    // InheritType rule):
+    // T * Roff * Rp * PreR * R * PostR^-1 * Rp^-1 * Soff * Sp * S * Sp^-1.
+    // The packed scene layout is also the WebGL column-major layout.
+    let t = translation.unwrap_or([0.0, 0.0, 0.0]);
+    let r_deg = rotation.unwrap_or([0.0, 0.0, 0.0]);
+    let s = scaling.unwrap_or([1.0, 1.0, 1.0]);
+
+    fn identity() -> [[f32; 4]; 4] {
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    }
+    // FbxTransform is packed column-major: its outer index is the
+    // column and its inner index is the row. Evaluate the local stack
+    // in that layout so the result can go straight to WebGL.
+    fn multiply(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+        let mut result = [[0.0; 4]; 4];
+        for column in 0..4 {
+            for row in 0..4 {
+                result[column][row] = (0..4).map(|index| a[index][row] * b[column][index]).sum();
+            }
+        }
+        result
+    }
+    fn translation_matrix(values: [f32; 3]) -> [[f32; 4]; 4] {
+        let mut matrix = identity();
+        matrix[3][0] = values[0];
+        matrix[3][1] = values[1];
+        matrix[3][2] = values[2];
+        matrix
+    }
+    fn scale(values: [f32; 3]) -> [[f32; 4]; 4] {
+        [
+            [values[0], 0.0, 0.0, 0.0],
+            [0.0, values[1], 0.0, 0.0],
+            [0.0, 0.0, values[2], 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    }
+    fn rotation_matrix(values: [f32; 3]) -> [[f32; 4]; 4] {
+        let (sin_x, cos_x) = values[0].to_radians().sin_cos();
+        let (sin_y, cos_y) = values[1].to_radians().sin_cos();
+        let (sin_z, cos_z) = values[2].to_radians().sin_cos();
+        // Rz * Ry * Rx, packed by column for FBX/WebGL.
+        [
+            [cos_z * cos_y, sin_z * cos_y, -sin_y, 0.0],
+            [
+                cos_z * sin_y * sin_x - sin_z * cos_x,
+                sin_z * sin_y * sin_x + cos_z * cos_x,
+                cos_y * sin_x,
+                0.0,
+            ],
+            [
+                cos_z * sin_y * cos_x + sin_z * sin_x,
+                sin_z * sin_y * cos_x - cos_z * sin_x,
+                cos_y * cos_x,
+                0.0,
+            ],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    }
+    let inverse_translation =
+        |values: [f32; 3]| translation_matrix([-values[0], -values[1], -values[2]]);
+    let inverse_rotation = |values: [f32; 3]| {
+        let rotation = rotation_matrix(values);
+        let mut inverse = [[0.0; 4]; 4];
+        for column in 0..4 {
+            for row in 0..4 {
+                inverse[column][row] = rotation[row][column];
+            }
+        }
+        inverse
+    };
+    // Blender's FBX bind matrices encode the pre-rotation with the
+    // opposite handedness from the local Euler property.  Applying
+    // its inverse here keeps Mixamo-style armatures aligned while
+    // leaving ordinary TRS-only files unchanged.
+    let inverse_pre_rotation = pre_rotation
+        .map(|values| [-values[0], -values[1], -values[2]])
+        .unwrap_or([0.0; 3]);
+    // The scene matrix uses the same packed layout as the writer:
+    // translation occupies the final packed column.  Do not multiply
+    // the local translation through the rotation stack here; doing so
+    // rotates a node's origin (and breaks ordinary TRS-only FBX
+    // written by us).  The pivot terms below only shape the linear
+    // part and their translation compensation.
+    let mut mat = identity();
+    for term in [
+        translation_matrix(rotation_offset.unwrap_or([0.0; 3])),
+        translation_matrix(rotation_pivot.unwrap_or([0.0; 3])),
+        rotation_matrix(inverse_pre_rotation),
+        rotation_matrix(r_deg),
+        inverse_rotation(post_rotation.unwrap_or([0.0; 3])),
+        inverse_translation(rotation_pivot.unwrap_or([0.0; 3])),
+        translation_matrix(scaling_offset.unwrap_or([0.0; 3])),
+        translation_matrix(scaling_pivot.unwrap_or([0.0; 3])),
+        scale(s),
+        inverse_translation(scaling_pivot.unwrap_or([0.0; 3])),
+    ] {
+        mat = multiply(mat, term);
+    }
+    mat[3][0] += t[0];
+    mat[3][1] += t[1];
+    mat[3][2] += t[2];
+
+    // A bind pose contains the exporter-evaluated local orientation
+    // for nodes that use FBX's pre/post rotation or pivot terms. The
+    // semantic preview keeps that baked basis for animation, while
+    // ordinary Model TRS nodes keep their authored local values.
+    let non_zero = |values: Option<[f32; 3]>| {
+        values.is_some_and(|values| values.iter().any(|value| value.abs() > f32::EPSILON))
+    };
+    let transform_stack = crate::fbx_scene::FbxTransformStack {
+        translation,
+        rotation,
+        scaling,
+        rotation_order,
+        rotation_active,
+        pre_rotation,
+        post_rotation,
+        rotation_offset,
+        rotation_pivot,
+        scaling_offset,
+        scaling_pivot,
+        inherit_type,
+    };
+    // RotationOrder and InheritType are source-provenance metadata;
+    // their ordinary/default values do not mean that the static
+    // Model TRS has been baked into the skin BindPose. Keep the
+    // runtime flag limited to actual pivot/offset/pre/post terms so
+    // plain TRS clips (including Samba Dancing) retain authored
+    // animation composition while the metadata is still re-emitted.
+    // Non-default rotation-order/inheritance evaluation remains an
+    // explicit compatibility caveat at the animation boundary.
+    let has_complex_transform_stack = non_zero(pre_rotation)
+        || non_zero(post_rotation)
+        || non_zero(rotation_offset)
+        || non_zero(rotation_pivot)
+        || non_zero(scaling_offset)
+        || non_zero(scaling_pivot);
+
+    Some((
+        FbxTransform { matrix: mat },
+        transform_stack,
+        has_complex_transform_stack,
+    ))
+}
+
+// Build nodes recursively
+fn object_name(node: &FbxNode) -> Option<String> {
+    match node.properties.get(1) {
+        Some(FbxProperty::String(name)) => name
+            .split('\0')
+            .next()
+            .filter(|name| !name.is_empty())
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+fn build_model_node(
+    id: i64,
+    model_map: &std::collections::HashMap<i64, &FbxNode>,
+    model_children: &std::collections::HashMap<i64, Vec<i64>>,
+    model_mesh_instances: &std::collections::HashMap<i64, Vec<FbxMeshInstance>>,
+    model_node_ids: &std::collections::HashMap<i64, FbxNodeId>,
+    node_attributes: &std::collections::HashMap<i64, FbxNodeAttribute>,
+    ancestors: &mut Vec<i64>,
+) -> FbxSceneNode {
+    let node_src = model_map.get(&id).unwrap();
+    let mut node = FbxSceneNode::new(object_name(node_src));
+    node.id = model_node_ids[&id];
+    if let Some((transform, transform_stack, has_complex_transform_stack)) =
+        parse_transform(node_src)
+    {
+        node.transform = Some(transform);
+        node.transform_stack = Some(transform_stack);
+        node.has_complex_transform_stack = has_complex_transform_stack;
+    }
+    node.attribute = node_attributes.get(&id).cloned();
+    if let Some(mesh_instances) = model_mesh_instances.get(&id) {
+        node.mesh_instances.extend(mesh_instances.clone());
+    }
+
+    // The ancestor check below stops a plain cycle. This bounds the
+    // rest: a document can chain models far deeper than any scene
+    // graph needs, and the depth is the file's to choose.
+    const MAX_MODEL_DEPTH: usize = 256;
+    if ancestors.len() >= MAX_MODEL_DEPTH {
+        return node;
+    }
+    if let Some(children) = model_children.get(&id) {
+        ancestors.push(id);
+        for &cid in children {
+            // A document may connect a Model to one of its own
+            // ancestors -- `synthetic_id_collision_7500` in the ufbx
+            // corpus does -- and following that cycle recurses until
+            // the stack is gone. The scene simply stops there.
+            if model_map.contains_key(&cid) && !ancestors.contains(&cid) {
+                node.children.push(build_model_node(
+                    cid,
+                    model_map,
+                    model_children,
+                    model_mesh_instances,
+                    model_node_ids,
+                    node_attributes,
+                    ancestors,
+                ));
+            }
+        }
+        ancestors.pop();
+    }
+    node
 }
 
 fn parse_global_settings(nodes: &[FbxNode]) -> Option<crate::fbx_scene::FbxGlobalSettings> {
@@ -1603,7 +1601,7 @@ impl<R: Read + Seek> FbxReader<R> {
             if node.name == "Objects" {
                 for child in &node.children {
                     if child.name == "Geometry" {
-                        if let Some(source) = self.geometry_to_mesh(child, &mut warnings)? {
+                        if let Some(source) = geometry_to_mesh(child, &mut warnings)? {
                             meshes.push(source.mesh);
                         }
                     }
@@ -1614,268 +1612,308 @@ impl<R: Read + Seek> FbxReader<R> {
         self.extend_warnings(warnings);
         Ok(meshes)
     }
+}
 
-    /// Convert a Geometry node to a Mesh, plus per-triangle material indices.
+/// The `LayerElement*` children of one geometry node, bucketed by family.
+///
+/// Collecting them before parsing keeps the dispatch over node names -- which
+/// has to be exhaustive so an unknown family raises a warning rather than
+/// vanishing -- separate from the per-family decoding.
+#[derive(Default)]
+struct RawLayerNodes<'a> {
+    normals: Vec<&'a FbxNode>,
+    uvs: Vec<&'a FbxNode>,
+    colors: Vec<&'a FbxNode>,
+    tangents: Vec<&'a FbxNode>,
+    binormals: Vec<&'a FbxNode>,
+    smoothing: Vec<&'a FbxNode>,
+    creases: Vec<(FbxCreaseKind, &'a FbxNode)>,
+    material: Option<&'a FbxNode>,
+}
+
+/// The element counts a non-corner layer's length has to agree with.
+#[derive(Clone, Copy)]
+struct LayerDomains {
+    edges: Option<usize>,
+    polygons: usize,
+    control_points: usize,
+}
+
+impl LayerDomains {
+    /// Resolves what a mapping name claims about a layer's length.
     ///
-    /// The returned `material_indices` align with the fan-triangulated face
-    /// order of the Draco `Mesh` (one entry per triangle). The list is empty
-    /// when the geometry does not carry a `LayerElementMaterial` layer.
-    fn geometry_to_mesh(
-        &self,
-        geometry: &FbxNode,
-        warnings: &mut Vec<FbxWarning>,
-    ) -> io::Result<Option<FbxGeometrySource>> {
-        let mut vertices: Option<Vec<f64>> = None;
-        let mut polygon_indices: Option<Vec<i32>> = None;
-        let mut edges: Vec<i32> = Vec::new();
-        let mut normals_layers: Vec<&FbxNode> = Vec::new();
-        let mut uv_layers: Vec<&FbxNode> = Vec::new();
-        let mut color_layers: Vec<&FbxNode> = Vec::new();
-        let mut tangent_layers: Vec<&FbxNode> = Vec::new();
-        let mut binormal_layers: Vec<&FbxNode> = Vec::new();
-        let mut material_layer: Option<&FbxNode> = None;
-        let mut smoothing_layers_raw: Vec<&FbxNode> = Vec::new();
-        let mut crease_layers_raw: Vec<(FbxCreaseKind, &FbxNode)> = Vec::new();
-
-        for child in &geometry.children {
-            match child.name.as_str() {
-                "Vertices" => {
-                    if let Some(FbxProperty::F64Array(arr)) = child.properties.first() {
-                        vertices = Some(arr.clone());
-                    }
-                }
-                "Edges" => {
-                    if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
-                        edges = arr.clone();
-                    }
-                }
-                "PolygonVertexIndex" => {
-                    if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
-                        polygon_indices = Some(arr.clone());
-                    }
-                }
-                "LayerElementNormal" => normals_layers.push(child),
-                "LayerElementColor" => color_layers.push(child),
-                "LayerElementUV" => uv_layers.push(child),
-                "LayerElementTangent" => tangent_layers.push(child),
-                "LayerElementBinormal" => binormal_layers.push(child),
-                "LayerElementSmoothing" => smoothing_layers_raw.push(child),
-                "LayerElementEdgeCrease" => crease_layers_raw.push((FbxCreaseKind::Edge, child)),
-                "LayerElementVertexCrease" => {
-                    crease_layers_raw.push((FbxCreaseKind::Vertex, child))
-                }
-                "LayerElementMaterial" if material_layer.is_none() => {
-                    material_layer = Some(child);
-                }
-                // Tangents, binormals, smoothing and creases land here. They
-                // used to vanish without a trace; naming them makes the gap
-                // visible to a caller instead of only to the source code.
-                other if other.starts_with("LayerElement") => push_warning(
-                    warnings,
-                    FbxWarningCode::DroppedLayerElement,
-                    format!("FBX {other} is not imported, so its data is absent from the scene"),
-                    Some(other),
-                ),
-                _ => {}
+    /// `ByEdge` with no `Edges` array is deliberately unverifiable rather than
+    /// wrong: FBX does not require the array, and the layer then addresses the
+    /// edges an importer would reconstruct from the faces. This crate does not
+    /// reconstruct them, so it cannot check the length -- but it must not
+    /// destroy the data either, since preserving it verbatim is what makes a
+    /// rewrite lossless.
+    fn check(self, mapping: Option<&str>) -> DomainCheck {
+        match mapping {
+            Some("ByEdge") => match self.edges {
+                Some(count) => DomainCheck::Expect(count),
+                None => DomainCheck::Unverifiable,
+            },
+            Some("ByPolygon") => DomainCheck::Expect(self.polygons),
+            Some("ByVertice") | Some("ByVertex") | Some("ByControlPoint") => {
+                DomainCheck::Expect(self.control_points)
             }
+            _ => DomainCheck::Unknown,
         }
+    }
+}
 
-        let vertices = match vertices {
-            Some(v) => v,
-            None => return Ok(None),
-        };
-        let polygon_indices = match polygon_indices {
-            Some(p) => p,
-            None => return Ok(None),
-        };
+/// Convert a Geometry node to a Mesh, plus per-triangle material indices.
+///
+/// The returned `material_indices` align with the fan-triangulated face
+/// order of the Draco `Mesh` (one entry per triangle). The list is empty
+/// when the geometry does not carry a `LayerElementMaterial` layer.
+fn geometry_to_mesh(
+    geometry: &FbxNode,
+    warnings: &mut Vec<FbxWarning>,
+) -> io::Result<Option<FbxGeometrySource>> {
+    let mut vertices: Option<Vec<f64>> = None;
+    let mut polygon_indices: Option<Vec<i32>> = None;
+    let mut edges: Vec<i32> = Vec::new();
+    let mut raw = RawLayerNodes::default();
 
-        let control_points = vertices
-            .chunks_exact(3)
-            .map(|value| [value[0] as f32, value[1] as f32, value[2] as f32])
-            .collect::<Vec<_>>();
-
-        // Track the polygon each fan triangle came from, so `ByPolygon`
-        // material indices can be remapped onto triangle order.
-        let mut tri_polygon_index: Vec<usize> = Vec::new();
-        let mut polygon_count = 0usize;
-        let mut corners_in_polygon = 0usize;
-        for &idx in &polygon_indices {
-            corners_in_polygon += 1;
-            if idx < 0 {
-                for _ in 0..corners_in_polygon.saturating_sub(2) {
-                    tri_polygon_index.push(polygon_count);
+    for child in &geometry.children {
+        match child.name.as_str() {
+            "Vertices" => {
+                if let Some(FbxProperty::F64Array(arr)) = child.properties.first() {
+                    vertices = Some(arr.clone());
                 }
-                corners_in_polygon = 0;
-                polygon_count += 1;
             }
-        }
-
-        // Per-triangle material indices.
-        let material_indices = material_layer
-            .and_then(|layer| {
-                let mapping = layer_string(layer, "MappingInformationType");
-                let reference = layer_string(layer, "ReferenceInformationType");
-                let data = layer_int_array(layer, "Materials");
-                expand_material_indices(
-                    mapping.as_deref(),
-                    reference.as_deref(),
-                    data.as_deref(),
-                    polygon_count,
-                    &tri_polygon_index,
-                )
-            })
-            .unwrap_or_default();
-
-        let uv_sets: Vec<FbxUvSet> = uv_layers
-            .into_iter()
-            .filter_map(|layer| {
-                let values = chunk_layer_values(&read_layer_floats(layer, "UV")?);
-                Some(layer_set(layer, values, &["UVIndex"]))
-            })
-            .collect();
-        let normal_sets: Vec<FbxNormalSet> = normals_layers
-            .into_iter()
-            .filter_map(|layer| {
-                let values = chunk_layer_values(&read_layer_floats(layer, "Normals")?);
-                // Exporters disagree on the index node's name.
-                Some(layer_set(layer, values, &["NormalsIndex", "NormalIndex"]))
-            })
-            .collect();
-        for set in &uv_sets {
-            warn_unsupported_layer_mapping("LayerElementUV", set, warnings);
-        }
-        for set in &normal_sets {
-            warn_unsupported_layer_mapping("LayerElementNormal", set, warnings);
-        }
-        let color_sets: Vec<FbxColorSet> = color_layers
-            .into_iter()
-            .filter_map(|layer| {
-                let raw = read_layer_floats(layer, "Colors")?;
-                // FBX writes RGBA here, but a three-component source is legal
-                // in the wild; pad it opaque rather than dropping the layer.
-                let values = if raw.len() % 4 == 0 {
-                    chunk_layer_values(&raw)
-                } else {
-                    raw.chunks_exact(3)
-                        .map(|value| [value[0], value[1], value[2], 1.0])
-                        .collect()
-                };
-                Some(layer_set(layer, values, &["ColorIndex"]))
-            })
-            .collect();
-        for set in &color_sets {
-            warn_unsupported_layer_mapping("LayerElementColor", set, warnings);
-        }
-        let tangent_sets: Vec<FbxTangentSet> = tangent_layers
-            .into_iter()
-            .filter_map(|layer| parse_tangent_like(layer, "Tangents", "TangentsW", "TangentIndex"))
-            .collect();
-        let binormal_sets: Vec<FbxBinormalSet> = binormal_layers
-            .into_iter()
-            .filter_map(|layer| {
-                parse_tangent_like(layer, "Binormals", "BinormalsW", "BinormalIndex")
-            })
-            .collect();
-        for set in &tangent_sets {
-            warn_unsupported_layer_mapping("LayerElementTangent", &set.layer, warnings);
-        }
-        for set in &binormal_sets {
-            warn_unsupported_layer_mapping("LayerElementBinormal", &set.layer, warnings);
-        }
-
-        // Smoothing and crease layers address edges, polygons or control
-        // points -- never polygon corners -- so they are kept raw beside
-        // `edges` rather than resolved onto the render mesh. A layer whose
-        // length disagrees with the domain its mapping names is misaligned
-        // data, and keeping it would silently sharpen the wrong edges.
-        //
-        // `ByEdge` with no `Edges` array is a third case: FBX does not require
-        // the array, and the layer then addresses the edges an importer would
-        // reconstruct from the faces. This crate does not reconstruct them, so
-        // it cannot check the length -- but it also must not destroy the data,
-        // since preserving it verbatim is what makes a rewrite lossless.
-        let check = |mapping: Option<&str>| -> DomainCheck {
-            match mapping {
-                Some("ByEdge") if edges.is_empty() => DomainCheck::Unverifiable,
-                Some("ByEdge") => DomainCheck::Expect(edges.len()),
-                Some("ByPolygon") => DomainCheck::Expect(polygon_count),
-                Some("ByVertice") | Some("ByVertex") | Some("ByControlPoint") => {
-                    DomainCheck::Expect(control_points.len())
+            "Edges" => {
+                if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
+                    edges = arr.clone();
                 }
-                _ => DomainCheck::Unknown,
             }
-        };
-        let mut smoothing_layers = Vec::new();
-        for layer in smoothing_layers_raw {
-            let mapping = layer_string(layer, "MappingInformationType");
-            let Some(values) = layer_int_array(layer, "Smoothing") else {
-                continue;
-            };
-            if check(mapping.as_deref()).accepts(values.len()) {
-                smoothing_layers.push(FbxSmoothingLayer { mapping, values });
-            } else {
-                warn_misaligned_layer(
-                    "LayerElementSmoothing",
-                    mapping.as_deref(),
-                    values.len(),
-                    warnings,
-                );
-            }
-        }
-        let mut crease_layers = Vec::new();
-        for (kind, layer) in crease_layers_raw {
-            let element = match kind {
-                FbxCreaseKind::Edge => "LayerElementEdgeCrease",
-                FbxCreaseKind::Vertex => "LayerElementVertexCrease",
-            };
-            let mapping = layer_string(layer, "MappingInformationType");
-            let Some(values) = layer_f64_array(layer, element.trim_start_matches("LayerElement"))
-            else {
-                continue;
-            };
-            match check(mapping.as_deref()) {
-                domain if domain.accepts(values.len()) => {
-                    crease_layers.push(FbxCreaseLayer {
-                        kind,
-                        mapping,
-                        values,
-                    });
+            "PolygonVertexIndex" => {
+                if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
+                    polygon_indices = Some(arr.clone());
                 }
-                _ => warn_misaligned_layer(element, mapping.as_deref(), values.len(), warnings),
             }
-        }
-
-        // Build the Draco mesh on the polygon-corner domain. Resolving layer
-        // elements onto control points cannot represent a UV or hard-normal
-        // seam, and silently averaged them away.
-        let layers = FbxMeshLayers {
-            uv_sets,
-            normal_sets,
-            color_sets,
-            tangent_sets,
-            binormal_sets,
-            smoothing_layers,
-            crease_layers,
-        };
-        let render = crate::fbx_render_mesh::expand_to_render_mesh(
-            crate::fbx_render_mesh::FbxGeometryLayers::new(
-                &control_points,
-                &polygon_indices,
-                &layers,
+            "LayerElementNormal" => raw.normals.push(child),
+            "LayerElementColor" => raw.colors.push(child),
+            "LayerElementUV" => raw.uvs.push(child),
+            "LayerElementTangent" => raw.tangents.push(child),
+            "LayerElementBinormal" => raw.binormals.push(child),
+            "LayerElementSmoothing" => raw.smoothing.push(child),
+            "LayerElementEdgeCrease" => raw.creases.push((FbxCreaseKind::Edge, child)),
+            "LayerElementVertexCrease" => raw.creases.push((FbxCreaseKind::Vertex, child)),
+            "LayerElementMaterial" if raw.material.is_none() => {
+                raw.material = Some(child);
+            }
+            // Any layer family this crate does not import lands here. They
+            // used to vanish without a trace; naming them makes the gap
+            // visible to a caller instead of only to the source code.
+            other if other.starts_with("LayerElement") => push_warning(
+                warnings,
+                FbxWarningCode::DroppedLayerElement,
+                format!("FBX {other} is not imported, so its data is absent from the scene"),
+                Some(other),
             ),
-        );
-        let mesh = crate::fbx_render_mesh::build_draco_mesh(&render);
-
-        Ok(Some(FbxGeometrySource {
-            mesh,
-            material_indices,
-            control_points,
-            polygon_vertex_indices: polygon_indices,
-            layers,
-            edges,
-        }))
+            _ => {}
+        }
     }
 
+    let vertices = match vertices {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    let polygon_indices = match polygon_indices {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+
+    let control_points = vertices
+        .chunks_exact(3)
+        .map(|value| [value[0] as f32, value[1] as f32, value[2] as f32])
+        .collect::<Vec<_>>();
+
+    // Track the polygon each fan triangle came from, so `ByPolygon`
+    // material indices can be remapped onto triangle order.
+    let mut tri_polygon_index: Vec<usize> = Vec::new();
+    let mut polygon_count = 0usize;
+    let mut corners_in_polygon = 0usize;
+    for &idx in &polygon_indices {
+        corners_in_polygon += 1;
+        if idx < 0 {
+            for _ in 0..corners_in_polygon.saturating_sub(2) {
+                tri_polygon_index.push(polygon_count);
+            }
+            corners_in_polygon = 0;
+            polygon_count += 1;
+        }
+    }
+
+    // Per-triangle material indices.
+    let material_indices = raw
+        .material
+        .and_then(|layer| {
+            let mapping = layer_string(layer, "MappingInformationType");
+            let reference = layer_string(layer, "ReferenceInformationType");
+            let data = layer_int_array(layer, "Materials");
+            expand_material_indices(
+                mapping.as_deref(),
+                reference.as_deref(),
+                data.as_deref(),
+                polygon_count,
+                &tri_polygon_index,
+            )
+        })
+        .unwrap_or_default();
+
+    let domains = LayerDomains {
+        edges: (!edges.is_empty()).then_some(edges.len()),
+        polygons: polygon_count,
+        control_points: control_points.len(),
+    };
+    let layers = parse_geometry_layers(raw, domains, warnings);
+
+    // Build the Draco mesh on the polygon-corner domain. Resolving layer
+    // elements onto control points cannot represent a UV or hard-normal
+    // seam, and silently averaged them away.
+    let render = crate::fbx_render_mesh::expand_to_render_mesh(
+        crate::fbx_render_mesh::FbxGeometryLayers::new(&control_points, &polygon_indices, &layers),
+    );
+    let mesh = crate::fbx_render_mesh::build_draco_mesh(&render);
+
+    Ok(Some(FbxGeometrySource {
+        mesh,
+        material_indices,
+        control_points,
+        polygon_vertex_indices: polygon_indices,
+        layers,
+        edges,
+    }))
+}
+
+/// Decodes each layer-element family into the form the scene retains.
+fn parse_geometry_layers(
+    raw: RawLayerNodes<'_>,
+    domains: LayerDomains,
+    warnings: &mut Vec<FbxWarning>,
+) -> FbxMeshLayers {
+    let uv_sets: Vec<FbxUvSet> = raw
+        .uvs
+        .into_iter()
+        .filter_map(|layer| {
+            let values = chunk_layer_values(&read_layer_floats(layer, "UV")?);
+            Some(layer_set(layer, values, &["UVIndex"]))
+        })
+        .collect();
+    let normal_sets: Vec<FbxNormalSet> = raw
+        .normals
+        .into_iter()
+        .filter_map(|layer| {
+            let values = chunk_layer_values(&read_layer_floats(layer, "Normals")?);
+            // Exporters disagree on the index node's name.
+            Some(layer_set(layer, values, &["NormalsIndex", "NormalIndex"]))
+        })
+        .collect();
+    for set in &uv_sets {
+        warn_unsupported_layer_mapping("LayerElementUV", set, warnings);
+    }
+    for set in &normal_sets {
+        warn_unsupported_layer_mapping("LayerElementNormal", set, warnings);
+    }
+    let color_sets: Vec<FbxColorSet> = raw
+        .colors
+        .into_iter()
+        .filter_map(|layer| {
+            let floats = read_layer_floats(layer, "Colors")?;
+            // FBX writes RGBA here, but a three-component source is legal
+            // in the wild; pad it opaque rather than dropping the layer.
+            let values = if floats.len() % 4 == 0 {
+                chunk_layer_values(&floats)
+            } else {
+                floats
+                    .chunks_exact(3)
+                    .map(|value| [value[0], value[1], value[2], 1.0])
+                    .collect()
+            };
+            Some(layer_set(layer, values, &["ColorIndex"]))
+        })
+        .collect();
+    for set in &color_sets {
+        warn_unsupported_layer_mapping("LayerElementColor", set, warnings);
+    }
+    let tangent_sets: Vec<FbxTangentSet> = raw
+        .tangents
+        .into_iter()
+        .filter_map(|layer| parse_tangent_like(layer, "Tangents", "TangentsW", "TangentIndex"))
+        .collect();
+    let binormal_sets: Vec<FbxBinormalSet> = raw
+        .binormals
+        .into_iter()
+        .filter_map(|layer| parse_tangent_like(layer, "Binormals", "BinormalsW", "BinormalIndex"))
+        .collect();
+    for set in &tangent_sets {
+        warn_unsupported_layer_mapping("LayerElementTangent", &set.layer, warnings);
+    }
+    for set in &binormal_sets {
+        warn_unsupported_layer_mapping("LayerElementBinormal", &set.layer, warnings);
+    }
+
+    // Smoothing and crease layers address edges, polygons or control points --
+    // never polygon corners -- so they are kept raw beside `edges` rather than
+    // resolved onto the render mesh. A layer whose length disagrees with the
+    // domain its mapping names is misaligned data, and keeping it would
+    // silently sharpen the wrong edges.
+    let mut smoothing_layers = Vec::new();
+    for layer in raw.smoothing {
+        let mapping = layer_string(layer, "MappingInformationType");
+        let Some(values) = layer_int_array(layer, "Smoothing") else {
+            continue;
+        };
+        if domains.check(mapping.as_deref()).accepts(values.len()) {
+            smoothing_layers.push(FbxSmoothingLayer { mapping, values });
+        } else {
+            warn_misaligned_layer(
+                "LayerElementSmoothing",
+                mapping.as_deref(),
+                values.len(),
+                warnings,
+            );
+        }
+    }
+    let mut crease_layers = Vec::new();
+    for (kind, layer) in raw.creases {
+        let element = match kind {
+            FbxCreaseKind::Edge => "LayerElementEdgeCrease",
+            FbxCreaseKind::Vertex => "LayerElementVertexCrease",
+        };
+        let mapping = layer_string(layer, "MappingInformationType");
+        let Some(values) = layer_f64_array(layer, element.trim_start_matches("LayerElement"))
+        else {
+            continue;
+        };
+        match domains.check(mapping.as_deref()) {
+            domain if domain.accepts(values.len()) => {
+                crease_layers.push(FbxCreaseLayer {
+                    kind,
+                    mapping,
+                    values,
+                });
+            }
+            _ => warn_misaligned_layer(element, mapping.as_deref(), values.len(), warnings),
+        }
+    }
+
+    FbxMeshLayers {
+        uv_sets,
+        normal_sets,
+        color_sets,
+        tangent_sets,
+        binormal_sets,
+        smoothing_layers,
+        crease_layers,
+    }
+}
+
+impl<R: Read + Seek> FbxReader<R> {
     /// Flatten the FBX animation graph into one [`FbxAnimation`] per
     /// `AnimationStack` + first connected `AnimationLayer`.
     fn parse_animations(
