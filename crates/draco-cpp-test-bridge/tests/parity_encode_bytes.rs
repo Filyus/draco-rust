@@ -9,7 +9,6 @@ use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::EncoderOptions;
-use draco_cpp_test_bridge;
 use std::sync::Mutex;
 
 static OUTPUT_LOCK: Mutex<()> = Mutex::new(());
@@ -165,11 +164,11 @@ fn print_bytes_around(data: &[u8], center: usize, context: usize, label: &str) {
     let end = (center + context + 1).min(data.len());
 
     print!("{}: ", label);
-    for i in start..end {
-        if i == center {
-            print!("[{:02x}] ", data[i]);
+    for (offset, byte) in data[start..end].iter().enumerate() {
+        if start + offset == center {
+            print!("[{byte:02x}] ");
         } else {
-            print!("{:02x} ", data[i]);
+            print!("{byte:02x} ");
         }
     }
     println!();

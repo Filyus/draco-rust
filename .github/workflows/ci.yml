@@ -118,8 +118,8 @@ jobs:
       - name: Test web workspace
         run: cargo test --manifest-path web/Cargo.toml --workspace
 
-      - name: Clippy glTF crates
-        run: cargo clippy --manifest-path crates/Cargo.toml -p draco-io -p draco-gltf --all-targets --all-features -- -D warnings
+      - name: Clippy Rust crates
+        run: cargo clippy --manifest-path crates/Cargo.toml --workspace --all-targets --all-features -- -D warnings
 
       - name: Clippy web workspace
         run: cargo clippy --manifest-path web/Cargo.toml --workspace --all-targets -- -D warnings

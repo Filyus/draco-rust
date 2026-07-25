@@ -618,198 +618,6 @@ fn vec2_wrapping_sub_div_u64(a: &[i64; 2], b: &[i64; 2], divisor: u64) -> [i64; 
     ]
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn integer_vector_helpers_wrap_instead_of_panicking_on_extreme_values() {
-        // Malformed streams can yield out-of-range i64 positions. These helpers
-        // must wrap (matching C++ int64 intermediate math) rather than panic
-        // under overflow checks. The values here would overflow plain `*`/`+`/`-`.
-        let big = [i64::MAX, i64::MIN, i64::MAX];
-        let _ = vec3_squared_norm(&big);
-        let _ = vec3_dot(&big, &big);
-        let _ = vec3_sub(&big, &[i64::MIN, i64::MAX, i64::MIN]);
-        let _ = vec3_div_scalar(&[i64::MIN, i64::MAX, 1], -1);
-        let _ = vec2_sub(&[i64::MAX, i64::MIN], &[i64::MIN, i64::MAX]);
-    }
-
-    #[cfg(feature = "decoder")]
-    use crate::corner_table::CornerTable;
-    use crate::draco_types::DataType;
-    #[cfg(feature = "decoder")]
-    use crate::geometry_indices::VertexIndex;
-    #[cfg(feature = "decoder")]
-    use crate::prediction_scheme_wrap::PredictionSchemeWrapDecodingTransform;
-
-    #[test]
-    fn test_read_component_as_i64_rejects_nan() {
-        let mut att = PointAttribute::new();
-        att.init(
-            GeometryAttributeType::Position,
-            3,
-            DataType::Float32,
-            false,
-            1,
-        );
-        att.buffer_mut().write(0, &f32::NAN.to_le_bytes());
-        att.buffer_mut().write(4, &0.0f32.to_le_bytes());
-        att.buffer_mut().write(8, &0.0f32.to_le_bytes());
-
-        assert_eq!(read_component_as_i64(&att, 0, 0), None);
-    }
-
-    #[test]
-    fn test_read_component_as_i64_accepts_integer_positions() {
-        let mut att = PointAttribute::new();
-        att.init(
-            GeometryAttributeType::Position,
-            3,
-            DataType::Int32,
-            false,
-            1,
-        );
-        att.buffer_mut().write(0, &123i32.to_le_bytes());
-        att.buffer_mut().write(4, &(-7i32).to_le_bytes());
-        att.buffer_mut().write(8, &99i32.to_le_bytes());
-
-        let mut out = [0i64; 3];
-        assert!(read_vector3(&att, 0, &mut out));
-        assert_eq!(out, [123, -7, 99]);
-    }
-
-    #[test]
-    fn test_read_component_as_i64_rejects_truncated_buffer() {
-        let mut att = PointAttribute::new();
-        att.init(
-            GeometryAttributeType::Position,
-            3,
-            DataType::Int32,
-            false,
-            1,
-        );
-        att.buffer_mut().write(0, &123i32.to_le_bytes());
-        att.buffer_mut().write(4, &(-7i32).to_le_bytes());
-        att.buffer_mut().resize(8);
-
-        let mut out = [0i64; 3];
-        assert_eq!(read_component_as_i64(&att, 0, 2), None);
-        assert!(!read_vector3(&att, 0, &mut out));
-    }
-
-    #[cfg(feature = "decoder")]
-    fn make_triangle_corner_table() -> CornerTable {
-        let mut corner_table = CornerTable::new(1);
-        corner_table.init(&[[VertexIndex(0), VertexIndex(1), VertexIndex(2)]]);
-        corner_table.compute_vertex_corners(3);
-        corner_table
-    }
-
-    #[cfg(feature = "decoder")]
-    fn make_position_attribute(values: &[[i32; 3]]) -> PointAttribute {
-        let mut att = PointAttribute::new();
-        att.init(
-            GeometryAttributeType::Position,
-            3,
-            DataType::Int32,
-            false,
-            values.len(),
-        );
-        att.set_identity_mapping();
-        for (i, value) in values.iter().enumerate() {
-            let offset = i * 12;
-            att.buffer_mut().write(offset, &value[0].to_le_bytes());
-            att.buffer_mut().write(offset + 4, &value[1].to_le_bytes());
-            att.buffer_mut().write(offset + 8, &value[2].to_le_bytes());
-        }
-        att
-    }
-
-    #[cfg(feature = "decoder")]
-    fn predicted_for_triangle(
-        vertex_to_data_map: Vec<i32>,
-        data_id: i32,
-        data: &[i32],
-    ) -> Option<[i32; 2]> {
-        let corner_table = make_triangle_corner_table();
-        let data_to_corner_map = vec![0, 1, 2];
-        let mut mesh_data = MeshPredictionSchemeData::new();
-        mesh_data.set(&corner_table, &data_to_corner_map, &vertex_to_data_map);
-
-        let transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
-        let mut decoder = MeshPredictionSchemeTexCoordsPortableDecoder::new(transform);
-        assert!(decoder.init(&mesh_data));
-
-        let mut predicted = [i32::MIN; 2];
-        if decoder.compute_predicted_value(
-            CornerIndex(0),
-            data,
-            data_id,
-            crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(&[0, 1, 2]),
-            &mut predicted,
-        ) {
-            Some(predicted)
-        } else {
-            None
-        }
-    }
-
-    #[test]
-    #[cfg(feature = "decoder")]
-    fn test_tex_coords_portable_fallback_predicts_zero_for_first_value() {
-        let predicted = predicted_for_triangle(vec![0, 1, 2], 0, &[7, 8, 9, 10, 11, 12]);
-        assert_eq!(predicted, Some([0, 0]));
-    }
-
-    #[test]
-    #[cfg(feature = "decoder")]
-    fn test_tex_coords_portable_fallback_uses_next_when_available() {
-        let predicted = predicted_for_triangle(vec![1, 0, 2], 1, &[7, 8, 9, 10, 11, 12]);
-        assert_eq!(predicted, Some([7, 8]));
-    }
-
-    #[test]
-    #[cfg(feature = "decoder")]
-    fn test_tex_coords_portable_fallback_uses_previous_entry_when_prev_only_available() {
-        let predicted = predicted_for_triangle(vec![2, 9, 0], 2, &[7, 8, 9, 10, 11, 12]);
-        assert_eq!(predicted, Some([9, 10]));
-    }
-
-    #[test]
-    #[cfg(feature = "decoder")]
-    fn test_tex_coords_portable_fallback_uses_previous_entry_when_no_neighbor_available() {
-        let predicted = predicted_for_triangle(vec![2, 3, 4], 2, &[7, 8, 9, 10, 11, 12]);
-        assert_eq!(predicted, Some([9, 10]));
-    }
-
-    #[test]
-    #[cfg(feature = "decoder")]
-    fn test_tex_coords_portable_overflow_risk_returns_false() {
-        let corner_table = make_triangle_corner_table();
-        let data_to_corner_map = vec![0, 1, 2];
-        let vertex_to_data_map = vec![2, 0, 1];
-        let mut mesh_data = MeshPredictionSchemeData::new();
-        mesh_data.set(&corner_table, &data_to_corner_map, &vertex_to_data_map);
-
-        let pos_att = make_position_attribute(&[[0, 1, 0], [0, 0, 0], [100_000, 0, 0]]);
-        let transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
-        let mut decoder = MeshPredictionSchemeTexCoordsPortableDecoder::new(transform);
-        assert!(decoder.set_parent_attribute(&pos_att));
-        assert!(decoder.init(&mesh_data));
-
-        let data = [i32::MAX, i32::MAX, 0, 0, 1, 1];
-        let mut predicted = [0; 2];
-        assert!(!decoder.compute_predicted_value(
-            CornerIndex(0),
-            &data,
-            2,
-            crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(&[0, 1, 2]),
-            &mut predicted,
-        ));
-    }
-}
-
 #[cfg(feature = "encoder")]
 pub struct PredictionSchemeTexCoordsPortableEncodingTransform {
     inner: PredictionSchemeWrapEncodingTransform<i32>,
@@ -1119,5 +927,197 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32>
             );
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integer_vector_helpers_wrap_instead_of_panicking_on_extreme_values() {
+        // Malformed streams can yield out-of-range i64 positions. These helpers
+        // must wrap (matching C++ int64 intermediate math) rather than panic
+        // under overflow checks. The values here would overflow plain `*`/`+`/`-`.
+        let big = [i64::MAX, i64::MIN, i64::MAX];
+        let _ = vec3_squared_norm(&big);
+        let _ = vec3_dot(&big, &big);
+        let _ = vec3_sub(&big, &[i64::MIN, i64::MAX, i64::MIN]);
+        let _ = vec3_div_scalar(&[i64::MIN, i64::MAX, 1], -1);
+        let _ = vec2_sub(&[i64::MAX, i64::MIN], &[i64::MIN, i64::MAX]);
+    }
+
+    #[cfg(feature = "decoder")]
+    use crate::corner_table::CornerTable;
+    use crate::draco_types::DataType;
+    #[cfg(feature = "decoder")]
+    use crate::geometry_indices::VertexIndex;
+    #[cfg(feature = "decoder")]
+    use crate::prediction_scheme_wrap::PredictionSchemeWrapDecodingTransform;
+
+    #[test]
+    fn test_read_component_as_i64_rejects_nan() {
+        let mut att = PointAttribute::new();
+        att.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            1,
+        );
+        att.buffer_mut().write(0, &f32::NAN.to_le_bytes());
+        att.buffer_mut().write(4, &0.0f32.to_le_bytes());
+        att.buffer_mut().write(8, &0.0f32.to_le_bytes());
+
+        assert_eq!(read_component_as_i64(&att, 0, 0), None);
+    }
+
+    #[test]
+    fn test_read_component_as_i64_accepts_integer_positions() {
+        let mut att = PointAttribute::new();
+        att.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Int32,
+            false,
+            1,
+        );
+        att.buffer_mut().write(0, &123i32.to_le_bytes());
+        att.buffer_mut().write(4, &(-7i32).to_le_bytes());
+        att.buffer_mut().write(8, &99i32.to_le_bytes());
+
+        let mut out = [0i64; 3];
+        assert!(read_vector3(&att, 0, &mut out));
+        assert_eq!(out, [123, -7, 99]);
+    }
+
+    #[test]
+    fn test_read_component_as_i64_rejects_truncated_buffer() {
+        let mut att = PointAttribute::new();
+        att.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Int32,
+            false,
+            1,
+        );
+        att.buffer_mut().write(0, &123i32.to_le_bytes());
+        att.buffer_mut().write(4, &(-7i32).to_le_bytes());
+        att.buffer_mut().resize(8);
+
+        let mut out = [0i64; 3];
+        assert_eq!(read_component_as_i64(&att, 0, 2), None);
+        assert!(!read_vector3(&att, 0, &mut out));
+    }
+
+    #[cfg(feature = "decoder")]
+    fn make_triangle_corner_table() -> CornerTable {
+        let mut corner_table = CornerTable::new(1);
+        corner_table.init(&[[VertexIndex(0), VertexIndex(1), VertexIndex(2)]]);
+        corner_table.compute_vertex_corners(3);
+        corner_table
+    }
+
+    #[cfg(feature = "decoder")]
+    fn make_position_attribute(values: &[[i32; 3]]) -> PointAttribute {
+        let mut att = PointAttribute::new();
+        att.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Int32,
+            false,
+            values.len(),
+        );
+        att.set_identity_mapping();
+        for (i, value) in values.iter().enumerate() {
+            let offset = i * 12;
+            att.buffer_mut().write(offset, &value[0].to_le_bytes());
+            att.buffer_mut().write(offset + 4, &value[1].to_le_bytes());
+            att.buffer_mut().write(offset + 8, &value[2].to_le_bytes());
+        }
+        att
+    }
+
+    #[cfg(feature = "decoder")]
+    fn predicted_for_triangle(
+        vertex_to_data_map: Vec<i32>,
+        data_id: i32,
+        data: &[i32],
+    ) -> Option<[i32; 2]> {
+        let corner_table = make_triangle_corner_table();
+        let data_to_corner_map = vec![0, 1, 2];
+        let mut mesh_data = MeshPredictionSchemeData::new();
+        mesh_data.set(&corner_table, &data_to_corner_map, &vertex_to_data_map);
+
+        let transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
+        let mut decoder = MeshPredictionSchemeTexCoordsPortableDecoder::new(transform);
+        assert!(decoder.init(&mesh_data));
+
+        let mut predicted = [i32::MIN; 2];
+        if decoder.compute_predicted_value(
+            CornerIndex(0),
+            data,
+            data_id,
+            crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(&[0, 1, 2]),
+            &mut predicted,
+        ) {
+            Some(predicted)
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "decoder")]
+    fn test_tex_coords_portable_fallback_predicts_zero_for_first_value() {
+        let predicted = predicted_for_triangle(vec![0, 1, 2], 0, &[7, 8, 9, 10, 11, 12]);
+        assert_eq!(predicted, Some([0, 0]));
+    }
+
+    #[test]
+    #[cfg(feature = "decoder")]
+    fn test_tex_coords_portable_fallback_uses_next_when_available() {
+        let predicted = predicted_for_triangle(vec![1, 0, 2], 1, &[7, 8, 9, 10, 11, 12]);
+        assert_eq!(predicted, Some([7, 8]));
+    }
+
+    #[test]
+    #[cfg(feature = "decoder")]
+    fn test_tex_coords_portable_fallback_uses_previous_entry_when_prev_only_available() {
+        let predicted = predicted_for_triangle(vec![2, 9, 0], 2, &[7, 8, 9, 10, 11, 12]);
+        assert_eq!(predicted, Some([9, 10]));
+    }
+
+    #[test]
+    #[cfg(feature = "decoder")]
+    fn test_tex_coords_portable_fallback_uses_previous_entry_when_no_neighbor_available() {
+        let predicted = predicted_for_triangle(vec![2, 3, 4], 2, &[7, 8, 9, 10, 11, 12]);
+        assert_eq!(predicted, Some([9, 10]));
+    }
+
+    #[test]
+    #[cfg(feature = "decoder")]
+    fn test_tex_coords_portable_overflow_risk_returns_false() {
+        let corner_table = make_triangle_corner_table();
+        let data_to_corner_map = vec![0, 1, 2];
+        let vertex_to_data_map = vec![2, 0, 1];
+        let mut mesh_data = MeshPredictionSchemeData::new();
+        mesh_data.set(&corner_table, &data_to_corner_map, &vertex_to_data_map);
+
+        let pos_att = make_position_attribute(&[[0, 1, 0], [0, 0, 0], [100_000, 0, 0]]);
+        let transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
+        let mut decoder = MeshPredictionSchemeTexCoordsPortableDecoder::new(transform);
+        assert!(decoder.set_parent_attribute(&pos_att));
+        assert!(decoder.init(&mesh_data));
+
+        let data = [i32::MAX, i32::MAX, 0, 0, 1, 1];
+        let mut predicted = [0; 2];
+        assert!(!decoder.compute_predicted_value(
+            CornerIndex(0),
+            &data,
+            2,
+            crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(&[0, 1, 2]),
+            &mut predicted,
+        ));
     }
 }

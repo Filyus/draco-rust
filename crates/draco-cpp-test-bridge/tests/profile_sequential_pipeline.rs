@@ -1715,7 +1715,7 @@ fn profile_full_encode_breakdown() {
             10,
             10,
             10,
-            iterations as u32,
+            iterations,
             &mut output_size as *mut usize,
         ) as f64
     };

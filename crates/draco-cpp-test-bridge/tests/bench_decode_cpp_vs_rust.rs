@@ -157,7 +157,7 @@ fn bench_decode_cpp_vs_rust() {
                 median_rust_decode_ns(&encoded_data, iterations).expect("Rust decode failed");
 
             let (cpp_ns_raw, cpp_points, cpp_faces) =
-                draco_cpp_test_bridge::benchmark_cpp_decode(&encoded_data, iterations as u32)
+                draco_cpp_test_bridge::benchmark_cpp_decode(&encoded_data, iterations)
                     .expect("C++ benchmark decode failed");
             assert_eq!(rust_points as u32, cpp_points);
             assert_eq!(rust_faces as u32, cpp_faces);

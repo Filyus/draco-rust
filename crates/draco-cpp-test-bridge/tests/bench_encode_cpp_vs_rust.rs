@@ -10,7 +10,6 @@ use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::EncoderOptions;
-use draco_cpp_test_bridge;
 use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -276,7 +275,6 @@ fn test_encoding_correctness() {
             let status = if rust_size == cpp_size {
                 "PASS"
             } else {
-                "FAIL";
                 all_pass = false;
                 "FAIL"
             };

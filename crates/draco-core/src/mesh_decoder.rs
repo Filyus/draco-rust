@@ -2013,6 +2013,32 @@ impl MeshDecoder {
     }
 }
 
+fn validate_mesh_index_count(num_faces: usize) -> Result<usize, DracoError> {
+    num_faces
+        .checked_mul(3)
+        .ok_or_else(|| DracoError::DracoError("Mesh face index count overflow".to_string()))
+}
+
+fn make_zeroed_indices(num_indices: usize) -> Result<Vec<u32>, DracoError> {
+    let mut indices = Vec::new();
+    indices
+        .try_reserve_exact(num_indices)
+        .map_err(|_| DracoError::DracoError("Failed to allocate mesh indices".to_string()))?;
+    indices.resize(num_indices, 0);
+    Ok(indices)
+}
+
+fn make_point_ids(num_points: usize) -> Result<Vec<PointIndex>, DracoError> {
+    let mut point_ids = Vec::new();
+    point_ids
+        .try_reserve_exact(num_points)
+        .map_err(|_| DracoError::DracoError("Failed to allocate point ids".to_string()))?;
+    for i in 0..num_points {
+        point_ids.push(PointIndex(i as u32));
+    }
+    Ok(point_ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2038,30 +2064,4 @@ mod tests {
 
         assert!(status.is_err());
     }
-}
-
-fn validate_mesh_index_count(num_faces: usize) -> Result<usize, DracoError> {
-    num_faces
-        .checked_mul(3)
-        .ok_or_else(|| DracoError::DracoError("Mesh face index count overflow".to_string()))
-}
-
-fn make_zeroed_indices(num_indices: usize) -> Result<Vec<u32>, DracoError> {
-    let mut indices = Vec::new();
-    indices
-        .try_reserve_exact(num_indices)
-        .map_err(|_| DracoError::DracoError("Failed to allocate mesh indices".to_string()))?;
-    indices.resize(num_indices, 0);
-    Ok(indices)
-}
-
-fn make_point_ids(num_points: usize) -> Result<Vec<PointIndex>, DracoError> {
-    let mut point_ids = Vec::new();
-    point_ids
-        .try_reserve_exact(num_points)
-        .map_err(|_| DracoError::DracoError("Failed to allocate point ids".to_string()))?;
-    for i in 0..num_points {
-        point_ids.push(PointIndex(i as u32));
-    }
-    Ok(point_ids)
 }

@@ -11,7 +11,6 @@ use draco_core::mesh::Mesh;
 use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::EncoderOptions;
-use draco_cpp_test_bridge;
 use std::time::{Duration, Instant};
 
 fn create_grid_mesh_data(grid_size: usize) -> (Vec<f32>, Vec<u32>) {

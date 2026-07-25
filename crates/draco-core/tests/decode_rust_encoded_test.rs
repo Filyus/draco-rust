@@ -46,7 +46,7 @@ fn test_decode_rust_encoded() {
     println!("File size: {} bytes", data.len());
     println!("First 30 bytes: {:?}", &data[..30.min(data.len())]);
 
-    let mut buffer = DecoderBuffer::new(&data);
+    let mut buffer = DecoderBuffer::new(data);
     let mut decoder = MeshDecoder::new();
     let mut mesh = Mesh::new();
 

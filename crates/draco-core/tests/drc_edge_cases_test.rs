@@ -784,10 +784,10 @@ fn legacy_constrained_multi_parallelogram_decodes_to_reference_geometry() {
         for i in 0..att.size() {
             let off = i * stride;
             let mut v = [0u32; 3];
-            for k in 0..3 {
+            for (k, component) in v.iter_mut().enumerate() {
                 let mut b = [0u8; 4];
                 buffer.read(off + k * 4, &mut b);
-                v[k] = u32::from_le_bytes(b);
+                *component = u32::from_le_bytes(b);
             }
             out.push(v);
         }
@@ -973,10 +973,10 @@ fn legacy_predictive_edgebreaker_decodes_to_reference_geometry() {
         for i in 0..att.size() {
             let off = i * stride;
             let mut v = [0u32; 3];
-            for k in 0..3 {
+            for (k, component) in v.iter_mut().enumerate() {
                 let mut b = [0u8; 4];
                 buffer.read(off + k * 4, &mut b);
-                v[k] = u32::from_le_bytes(b);
+                *component = u32::from_le_bytes(b);
             }
             out.push(v);
         }

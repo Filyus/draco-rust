@@ -62,7 +62,7 @@ fn create_mesh_with_attributes() -> Mesh {
         3,
         DataType::Float32,
         false,
-        num_points as usize,
+        num_points,
     );
 
     for y in 0..grid_size {
@@ -73,7 +73,7 @@ fn create_mesh_with_attributes() -> Mesh {
             // Use same sinusoidal variation as compat_encoding_speed.rs (0.2 not 0.3)
             let pz = (x as f32 * 0.2).sin() * (y as f32 * 0.2).cos() * 2.0;
 
-            let offset = index as usize * 3 * 4;
+            let offset = index * 3 * 4;
             pos_attr
                 .buffer_mut()
                 .update(&px.to_le_bytes(), Some(offset));

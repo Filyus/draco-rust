@@ -305,7 +305,16 @@ pub fn benchmark_cpp_encode(
     None
 }
 
+/// Stub for builds without the C++ Draco library, returning `-1`.
+///
+/// # Safety
+///
+/// This body dereferences nothing, but the signature mirrors the `extern "C"`
+/// declaration it stands in for, so callers must still uphold that contract:
+/// the pointers must be valid for the given counts. The argument count is the
+/// C function's, not a choice made here.
 #[cfg(cpp_test_bridge_disabled)]
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn draco_benchmark_encode_mesh(
     _num_points: u32,
     _positions: *const f32,

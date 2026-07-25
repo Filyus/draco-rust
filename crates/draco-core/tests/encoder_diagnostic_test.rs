@@ -35,7 +35,7 @@ fn create_grid_mesh(grid_size: usize, z_variation: f32) -> Mesh {
         3,
         DataType::Float32,
         false,
-        num_points as usize,
+        num_points,
     );
 
     for y in 0..grid_size {

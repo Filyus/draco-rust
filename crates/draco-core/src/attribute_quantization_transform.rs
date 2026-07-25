@@ -262,7 +262,7 @@ impl AttributeQuantizationTransform {
                             if let Ok(mut f) = std::fs::OpenOptions::new()
                                 .create(true)
                                 .append(true)
-                                .open(&fname)
+                                .open(fname)
                             {
                                 let _ =
                                     writeln!(f, "RUST QT orig_pt={} P{}: {:?}", orig_pt, i, qvals);

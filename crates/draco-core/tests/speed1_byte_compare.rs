@@ -34,7 +34,7 @@ fn create_grid_mesh(grid_size: usize, z_variation: f32) -> Mesh {
         3,
         DataType::Float32,
         false,
-        num_points as usize,
+        num_points,
     );
 
     for y in 0..grid_size {
@@ -89,7 +89,7 @@ fn dump_bytes(data: &[u8], start: usize, end: usize, label: &str) {
         if i < data.len() - 1 {
             print!("  ");
         }
-        if (i - start + 1) % 8 == 0 {
+        if (i - start + 1).is_multiple_of(8) {
             println!();
         }
     }
@@ -109,7 +109,7 @@ fn compare_bytes(rust: &[u8], cpp: &[u8]) {
             println!("C++:  0x{:02X} ({})", cpp[i], cpp[i]);
 
             // Show context
-            let start = if i >= 10 { i - 10 } else { 0 };
+            let start = i.saturating_sub(10);
             let end = i + 20;
             println!("\n=== CONTEXT AROUND DIFFERENCE ===");
             dump_bytes(rust, start, end, "Rust");

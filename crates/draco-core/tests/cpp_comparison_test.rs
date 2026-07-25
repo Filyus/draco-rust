@@ -264,13 +264,13 @@ fn binary_compare_cpp_vs_rust_encoded() {
                     let start = pos.saturating_sub(4);
                     let end = (pos + 8).min(min_len);
                     print!("  C++ bytes [{}-{}]: ", start, end);
-                    for i in start..end {
-                        print!("{:02x} ", cpp_encoded[i]);
+                    for byte in &cpp_encoded[start..end] {
+                        print!("{byte:02x} ");
                     }
                     println!();
                     print!("  Rust bytes [{}-{}]: ", start, end);
-                    for i in start..end {
-                        print!("{:02x} ", rust_encoded[i]);
+                    for byte in &rust_encoded[start..end] {
+                        print!("{byte:02x} ");
                     }
                     println!();
                 } else if cpp_encoded.len() == rust_encoded.len() {

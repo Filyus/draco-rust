@@ -43,7 +43,7 @@ fn create_complex_mesh() -> Mesh {
         3,
         DataType::Float32,
         false,
-        num_points as usize,
+        num_points,
     );
 
     for y in 0..grid_size {
@@ -54,7 +54,7 @@ fn create_complex_mesh() -> Mesh {
             // Add sinusoidal variation to Z to make it non-planar and interesting for quantization
             let pz = (x as f32 * 0.2).sin() * (y as f32 * 0.2).cos() * 2.0;
 
-            let offset = index as usize * 3 * 4;
+            let offset = index * 3 * 4;
             pos_attr
                 .buffer_mut()
                 .update(&px.to_le_bytes(), Some(offset));

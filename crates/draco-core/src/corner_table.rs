@@ -745,10 +745,12 @@ mod tests {
     #[test]
     fn is_index_consistent_accepts_valid_and_rejects_malformed() {
         // A single triangle: 3 corners, 3 vertices, no opposites.
-        let mut ct = CornerTable::default();
-        ct.corner_to_vertex_map = vec![VertexIndex(0), VertexIndex(1), VertexIndex(2)];
-        ct.opposite_corners = vec![INVALID_CORNER_INDEX; 3];
-        ct.vertex_corners = vec![CornerIndex(0), CornerIndex(1), CornerIndex(2)];
+        let ct = CornerTable {
+            corner_to_vertex_map: vec![VertexIndex(0), VertexIndex(1), VertexIndex(2)],
+            opposite_corners: vec![INVALID_CORNER_INDEX; 3],
+            vertex_corners: vec![CornerIndex(0), CornerIndex(1), CornerIndex(2)],
+            ..Default::default()
+        };
         assert!(ct.is_index_consistent());
 
         // Vertex index beyond num_vertices (vertex_corners.len()).

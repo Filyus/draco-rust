@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 use draco_core::decoder_buffer::DecoderBuffer;
 use draco_core::mesh::Mesh;
 use draco_core::mesh_decoder::MeshDecoder;
-use draco_cpp_test_bridge;
 
 fn testdata_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
