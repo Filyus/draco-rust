@@ -58,9 +58,21 @@ jobs:
       - name: Check draco-io feature combinations
         run: |
           cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --doc
-          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf
+          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-container
           cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-geometry
           cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features draco-decode
+
+      # FBX is the only hand-rolled untrusted binary parser in the workspace,
+      # so every feature slice of it needs to keep compiling on its own. The
+      # reader without `compression` must still build and report a precise
+      # error rather than fail to compile.
+      - name: Check draco-io FBX feature combinations
+        run: |
+          cargo build --manifest-path crates/Cargo.toml -p draco-io --no-default-features
+          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features fbx-reader
+          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features fbx-reader,compression
+          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features fbx-writer
+          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features fbx-reader,fbx-writer,compression
 
       - name: Test draco-gltf
         run: cargo test --manifest-path crates/Cargo.toml -p draco-gltf --features test

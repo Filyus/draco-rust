@@ -12,7 +12,6 @@ exclude = [
     "tests/cpp_decode_test.rs",
     "tests/fbx_real_test.rs",
     "tests/ply_bunny_test.rs",
-    "tests/roundtrip.rs",
     "tools/blender_roundtrip.py",
 ]
 autotests = false
@@ -60,6 +59,9 @@ test = []
 
 [dev-dependencies]
 tempfile = "3.24.0"
+# `ply_bunny_test` encodes a mesh to verify the reader's output round-trips.
+# The library itself never needs the Draco encoder, so it stays test-only.
+draco-core = { version = "1.0.4", path = "../draco-core", features = ["encoder"] }
 
 [[example]]
 name = "decode_drc"
@@ -81,8 +83,20 @@ required-features = ["fbx-reader"]
 name = "unified_readers"
 required-features = ["all-writers", "all-readers"]
 
+# `autotests = false` above means every integration test needs its own stanza.
+# Without one the file is silently never compiled.
 [[test]]
 name = "fbx_real_test"
 path = "tests/fbx_real_test.rs"
 required-features = ["test"]
+
+[[test]]
+name = "cpp_decode_test"
+path = "tests/cpp_decode_test.rs"
+required-features = ["test", "point_cloud_decode"]
+
+[[test]]
+name = "ply_bunny_test"
+path = "tests/ply_bunny_test.rs"
+required-features = ["test", "ply-reader"]
 

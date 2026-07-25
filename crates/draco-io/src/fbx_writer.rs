@@ -296,6 +296,10 @@ impl FbxWriter {
         model_id
     }
 
+    // Every FBX layer family arrives as its own slice. Grouping them into a
+    // geometry-source struct is planned alongside the shared corner-domain
+    // render mesh, which will also add colour sets here.
+    #[allow(clippy::too_many_arguments)]
     fn add_mesh_to_model(
         &mut self,
         mesh: &Mesh,
@@ -1258,6 +1262,8 @@ fn write_documents<W: Write + Seek>(writer: &mut W, is_64: bool) -> io::Result<(
     })
 }
 
+// Takes one slice per FBX object type so it can emit an accurate `Count`.
+#[allow(clippy::too_many_arguments)]
 fn write_definitions<W: Write + Seek>(
     writer: &mut W,
     is_64: bool,
@@ -1361,6 +1367,8 @@ fn write_object_type<W: Write + Seek>(
     })
 }
 
+// Takes one slice per FBX object type; see `write_definitions`.
+#[allow(clippy::too_many_arguments)]
 fn write_objects<W: Write + Seek>(
     writer: &mut W,
     meshes: &[MeshData],
@@ -2182,8 +2190,7 @@ fn write_animation_curve_node<W: Write + Seek>(
     );
     let mut node = NodeWriter::start(writer, "AnimationCurveNode", is_64)?;
     node.write_property_i64(id)?;
-    let name_class = format!("\x00\x01AnimCurveNode");
-    node.write_property_string(&name_class)?;
+    node.write_property_string("\x00\x01AnimCurveNode")?;
     node.write_property_string("")?;
     node.finish_with_children(|w| {
         let props = NodeWriter::start(w, "Properties70", is_64)?;
@@ -2337,6 +2344,8 @@ fn anim_curve_id(curve_node_id: i64, component: u32) -> i64 {
         .wrapping_add((component as i64) + 1_000_000)
 }
 
+// Wires every object type together, so it needs every object table.
+#[allow(clippy::too_many_arguments)]
 fn write_connections<W: Write + Seek>(
     writer: &mut W,
     models: &[ModelData],
@@ -2729,6 +2738,8 @@ fn extract_uvs(mesh: &Mesh) -> Option<Vec<f64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the round-trip tests below build scenes, and those need the reader.
+    #[cfg(feature = "fbx-reader")]
     use crate::fbx_scene::{
         FbxAnimation, FbxMeshInstance, FbxScene, FbxSceneNode, FbxTransform, FbxTransformStack,
     };
@@ -2832,7 +2843,9 @@ mod tests {
         assert!(!data.is_empty());
     }
 
+    // Round-trip tests read back what they wrote, so they need the reader.
     #[test]
+    #[cfg(feature = "fbx-reader")]
     fn scene_roundtrip_preserves_hierarchy_and_local_transforms() {
         use crate::{FbxMeshInstance, FbxScene, FbxSceneNode, FbxTransform};
 
@@ -2907,6 +2920,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "fbx-reader")]
     fn scene_roundtrip_preserves_model_transform_stack_properties() {
         // These are authored Model properties rather than a portable local
         // matrix. A source-provenance FBX export must retain them verbatim so
@@ -2984,6 +2998,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "fbx-reader")]
     fn scene_roundtrip_preserves_skin_clusters_and_bind_pose() {
         let identity = crate::fbx_scene::FbxTransform {
             matrix: [
@@ -3078,6 +3093,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "fbx-reader")]
     fn scene_roundtrip_preserves_cubic_tangents() {
         let scene = FbxScene {
             global_settings: None,

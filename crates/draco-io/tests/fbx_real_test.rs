@@ -41,10 +41,7 @@ fn morph_test_exposes_four_materials_and_indices() {
             .unwrap_or(false)),
         "expected at least one Phong material"
     );
-    let has_indices = scene
-        .root_nodes
-        .iter()
-        .any(|node| has_mesh_with_material_indices(node));
+    let has_indices = scene.root_nodes.iter().any(has_mesh_with_material_indices);
     assert!(
         has_indices,
         "expected at least one mesh instance with material indices"

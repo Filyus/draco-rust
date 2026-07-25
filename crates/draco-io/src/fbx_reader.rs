@@ -207,7 +207,9 @@ impl<R: Read + Seek> FbxReader<R> {
                     };
                     match child.name.as_str() {
                         "Model" => {
-                            if model_map.insert(*id, child).is_none() {
+                            // Keep the authored order only for ids seen first.
+                            let first_occurrence = model_map.insert(*id, child).is_none();
+                            if first_occurrence {
                                 model_order.push(*id);
                             }
                         }
@@ -1450,12 +1452,10 @@ fn parse_texture(node: &FbxNode) -> crate::fbx_scene::FbxTexture {
     let mut content = None;
     for child in &node.children {
         match child.name.as_str() {
-            "RelativeFilename" | "FileName" | "Filename" => {
-                if filename.is_none() {
-                    if let Some(FbxProperty::String(s)) = child.properties.first() {
-                        if !s.is_empty() {
-                            filename = Some(s.clone());
-                        }
+            "RelativeFilename" | "FileName" | "Filename" if filename.is_none() => {
+                if let Some(FbxProperty::String(s)) = child.properties.first() {
+                    if !s.is_empty() {
+                        filename = Some(s.clone());
                     }
                 }
             }
@@ -1981,6 +1981,10 @@ impl<R: Read + Seek> FbxReader<R> {
 
     /// Flatten the FBX animation graph into one [`FbxAnimation`] per
     /// `AnimationStack` + first connected `AnimationLayer`.
+    // The object-id maps are threaded in individually because `read_scene`
+    // owns them. Collapsing them into an object-index struct is the point of
+    // the planned `read_scene` decomposition; until then the list stays long.
+    #[allow(clippy::too_many_arguments)]
     fn parse_animations(
         &self,
         nodes: &[FbxNode],
@@ -2077,10 +2081,7 @@ impl<R: Read + Seek> FbxReader<R> {
         }
 
         // Group curve nodes by (stack, layer, model, path).
-        let mut stacks_layers: std::collections::HashMap<
-            i64,
-            std::collections::HashMap<i64, Vec<(i64, i64, FbxAnimChannelPath, Option<u32>)>>,
-        > = std::collections::HashMap::new();
+        let mut stacks_layers: StacksLayers = std::collections::HashMap::new();
         for (acnode_id, (layer_id, model_id, path, morph_target_index)) in &acnode_targets {
             // Find stacks owning this layer.
             let mut stack_ids = Vec::new();
@@ -2175,6 +2176,14 @@ impl<R: Read + Seek> FbxReader<R> {
         animations
     }
 }
+
+/// Curve nodes grouped by `AnimationStack` id, then by `AnimationLayer` id.
+///
+/// Each entry is `(curve_node_id, model_id, path, morph_target_index)`.
+type StacksLayers = std::collections::HashMap<
+    i64,
+    std::collections::HashMap<i64, Vec<(i64, i64, FbxAnimChannelPath, Option<u32>)>>,
+>;
 
 #[derive(Debug, Clone)]
 struct FbxAnimCurveData {
@@ -2623,18 +2632,15 @@ fn resolve_layer_values(
             // pick the last value seen per control point (common DCC behavior
             // for hard normals).
             let mut per_point = vec![0f32; num_points * stride];
-            let mut vertex_pos = 0usize;
-            for &idx in polygon_indices {
+            for (vertex_pos, &idx) in polygon_indices.iter().enumerate() {
                 let actual = if idx < 0 { !idx } else { idx };
                 if let Some(point) =
                     per_point.get_mut(actual as usize * stride..actual as usize * stride + stride)
                 {
                     let tuple = tuple_at(vertex_pos);
-                    for c in 0..stride.min(point.len()) {
-                        point[c] = tuple[c];
-                    }
+                    let copied = stride.min(point.len()).min(tuple.len());
+                    point[..copied].copy_from_slice(&tuple[..copied]);
                 }
-                vertex_pos += 1;
             }
             per_point
         }
