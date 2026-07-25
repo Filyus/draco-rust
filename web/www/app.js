@@ -8,6 +8,8 @@
 import { Viewer } from './viewer.js';
 import { buildFbxSceneFromGltf, buildFlatMeshesFromGltf, buildSceneFromGltf } from './gltf-loader.js';
 import { buildSceneFromFbx, buildSceneFromMeshes } from './mesh-loader.js';
+import { buildSceneDocumentWithFbxProvenance } from './fbx-scene-document.js';
+import { serializeSceneDocumentToGlb } from './scene-document-gltf.js';
 import { isAsciiFbx, parseAsciiFbx } from './ascii-fbx-loader.js';
 
 // Module state
@@ -23,6 +25,10 @@ let currentMeshData = null;
 let currentFileType = null;
 let currentSourceData = null;
 let currentSourceResources = Object.create(null);
+// FBX uses the source-neutral SceneDocument for cross-format GLB export.
+// Direct glTF/GLB inputs continue to use their lossless source-byte route.
+let currentSceneDocument = null;
+let currentFbxProvenance = null;
 
 // 3D preview viewer (lazily created on first use)
 let viewer = null;
@@ -419,6 +425,8 @@ async function handleFile(file, companionFiles = []) {
         const data = new Uint8Array(arrayBuffer);
         currentSourceData = new Uint8Array(data);
         currentSourceResources = Object.create(null);
+        currentSceneDocument = null;
+        currentFbxProvenance = null;
         for (const companion of companionFiles) {
             if (Object.prototype.hasOwnProperty.call(currentSourceResources, companion.name)) {
                 throw new Error(`Duplicate companion resource name: ${companion.name}`);
@@ -441,6 +449,11 @@ async function handleFile(file, companionFiles = []) {
                 break;
             case 'fbx':
                 result = await parseFbxFile(data);
+                if (result?.success && result.scene) {
+                    const adapted = buildSceneDocumentWithFbxProvenance(result, currentSourceResources);
+                    currentSceneDocument = adapted.document;
+                    currentFbxProvenance = adapted.provenance;
+                }
                 break;
         }
         
@@ -705,6 +718,14 @@ async function exportFile() {
     
     try {
         let result;
+        if (format === 'glb' && currentFileType === 'fbx' && currentSceneDocument) {
+            result = exportSceneDocumentToGlb(currentSceneDocument);
+            for (const warning of result.warnings || []) log(warning, 'warning');
+            logSceneDocumentCapabilities(result.capabilities);
+            downloadResult(result, format);
+            log(result.message, 'success');
+            return;
+        }
         if (currentMeshData.document && (format === 'gltf' || format === 'glb')) {
             result = exportGltfDocument(format);
             downloadResult(result, format);
@@ -779,6 +800,25 @@ async function exportFile() {
     } catch (error) {
         log(`Export error: ${errorMessage(error)}`, 'error');
     }
+}
+
+function exportSceneDocumentToGlb(document) {
+    if (!modules.gltf.loaded) throw new Error('glTF module not loaded');
+    const output = serializeSceneDocumentToGlb(document, modules.gltf.module);
+    return {
+        success: true,
+        binary_data: output.binary,
+        warnings: output.warnings,
+        capabilities: output.capabilities,
+        message: 'FBX SceneDocument exported as GLB',
+    };
+}
+
+function logSceneDocumentCapabilities(capabilities = {}) {
+    const supported = Object.entries(capabilities)
+        .filter(([, value]) => value === true)
+        .map(([key]) => key);
+    if (supported.length > 0) log(`SceneDocument capabilities: ${supported.join(', ')}`, 'info');
 }
 
 function exportGltfDocument(format) {
@@ -1313,6 +1353,8 @@ function clearFile() {
     currentFileType = null;
     currentSourceData = null;
     currentSourceResources = Object.create(null);
+    currentSceneDocument = null;
+    currentFbxProvenance = null;
     
     fileInfo.style.display = 'none';
     dropZone.style.display = 'grid';

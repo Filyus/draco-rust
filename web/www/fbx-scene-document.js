@@ -26,7 +26,7 @@ export function buildSceneDocumentFromFbx(parsed, resources = Object.create(null
     const document = createSceneDocument({ warnings: [
         ...(parsed.warnings || []),
         'FBX centimeter-space geometry and transforms were normalized to meters for SceneDocument',
-        'FBX UnitScaleFactor is not yet exposed by the semantic decoder; SceneDocument assumes the common centimeter source unit',
+        'FBX source unit/axis settings remain in the optional FBX provenance sidecar; SceneDocument uses canonical glTF meter/Y-up space',
     ] });
     const { materialMap } = collectFbxMaterials(parsed, resources, document);
     const state = buildFbxNodeState(roots, document);

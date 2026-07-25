@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,8 @@ import {
 import { decodeFirstDracoPrimitive } from './draco-interop.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const mixamoFbx = process.env.MIXAMO_FBX || 'D:/Projects/Three.ts/examples/models/fbx/mixamo.fbx';
+const sambaFbx = process.env.SAMBA_FBX || 'D:/Projects/Three.ts/examples/models/fbx/Samba Dancing.fbx';
 
 async function waitForConverterReady(page) {
   await expect(page.locator('#console')).toContainText('Ready to convert 3D files!');
@@ -162,6 +165,38 @@ test('portable SceneDocument serializes through typed glTF WASM to GLB', async (
   expect(result.capabilities.gltf20).toBe(true);
   expect(result.capabilities.glb).toBe(true);
   expect(result.warnings).toBeGreaterThanOrEqual(0);
+});
+
+test('FBX SceneDocument exports to GLB and reloads without flattening', async ({ page }) => {
+  test.skip(!existsSync(mixamoFbx) || !existsSync(sambaFbx), 'local Mixamo/Samba FBX fixtures are unavailable');
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  for (const fixture of [mixamoFbx, sambaFbx]) {
+    await page.locator('#file-input').setInputFiles(fixture);
+    await expect(page.locator('#console')).toContainText('Preview ready');
+    await page.locator('[data-choice-for="export-format"] [data-value="glb"]').click();
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#export-btn').click();
+    const download = await downloadPromise;
+    await expect(page.locator('#console')).toContainText('SceneDocument capabilities:');
+    const downloadedPath = await download.path();
+    expect(downloadedPath).not.toBeNull();
+    const bytes = await readFile(downloadedPath);
+    expect(bytes.subarray(0, 4).toString('binary')).toBe('glTF');
+    expect(bytes.length).toBeGreaterThan(20);
+
+    await page.locator('#file-input').setInputFiles({
+      name: 'fbx-scene-roundtrip.glb',
+      mimeType: 'model/gltf-binary',
+      buffer: bytes,
+    });
+    await expect(page.locator('#console')).toContainText('Successfully parsed fbx-scene-roundtrip.glb');
+    await expect(page.locator('#console')).toContainText('Preview ready');
+    await expect(page.locator('#console')).not.toContainText('Preview failed');
+    await page.locator('#clear-file').click();
+    await expect(page.locator('#drop-zone')).toBeVisible();
+  }
 });
 
 test('glTF CUBICSPLINE scales tangents by keyframe duration', async ({ page }) => {
