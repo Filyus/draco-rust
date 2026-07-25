@@ -33,6 +33,9 @@ pub enum FbxWarningCode {
     /// and connections by name instead of by id, so nothing was imported from
     /// its `Objects` block.
     NameKeyedObjectModel,
+    /// A node carried a `NodeAttribute` class this crate does not represent,
+    /// so the attribute's own properties are absent from the scene.
+    DroppedNodeAttribute,
 }
 
 impl FbxWarningCode {
@@ -50,7 +53,8 @@ impl FbxWarningCode {
             | FbxWarningCode::UnsupportedTransformInherit
             | FbxWarningCode::UnsupportedLayerMapping
             | FbxWarningCode::DroppedLayerElement
-            | FbxWarningCode::NameKeyedObjectModel => true,
+            | FbxWarningCode::NameKeyedObjectModel
+            | FbxWarningCode::DroppedNodeAttribute => true,
         }
     }
 
@@ -65,6 +69,7 @@ impl FbxWarningCode {
             FbxWarningCode::UnsupportedLayerMapping => "unsupported-layer-mapping",
             FbxWarningCode::DroppedLayerElement => "dropped-layer-element",
             FbxWarningCode::NameKeyedObjectModel => "name-keyed-object-model",
+            FbxWarningCode::DroppedNodeAttribute => "dropped-node-attribute",
         }
     }
 }
@@ -310,6 +315,80 @@ pub struct FbxTangentSet {
 /// no corpus file carries either alone.
 pub type FbxBinormalSet = FbxTangentSet;
 
+/// What a `NodeAttribute` attached to a scene node describes.
+///
+/// Only the two classes this crate represents appear here. Others are reported
+/// through [`FbxWarningCode::DroppedNodeAttribute`] rather than given a variant
+/// that would carry nothing.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum FbxNodeAttribute {
+    /// A `Camera` attribute.
+    Camera(FbxCamera),
+    /// A `Light` attribute.
+    Light(FbxLight),
+}
+
+/// An FBX `Camera` node attribute.
+///
+/// Every field is optional because FBX omits any property left at its class
+/// default. Fields are limited to those that actually occur across the `ufbx`
+/// corpus; angles are in degrees and distances in the document's own units.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct FbxCamera {
+    /// Eye position, in world space rather than relative to the node.
+    pub position: Option<[f32; 3]>,
+    /// Point the camera looks at, in the same space as [`Self::position`].
+    pub interest_position: Option<[f32; 3]>,
+    /// Up vector.
+    pub up_vector: Option<[f32; 3]>,
+    /// `CameraProjectionType`: 0 perspective, 1 orthographic.
+    pub projection_type: Option<i32>,
+    /// Diagonal field of view, in degrees.
+    pub field_of_view: Option<f32>,
+    /// Horizontal field of view, in degrees.
+    pub field_of_view_x: Option<f32>,
+    /// Vertical field of view, in degrees.
+    pub field_of_view_y: Option<f32>,
+    /// Focal length in millimetres.
+    pub focal_length: Option<f32>,
+    /// Near clip distance.
+    pub near_plane: Option<f32>,
+    /// Far clip distance.
+    pub far_plane: Option<f32>,
+    /// Render aperture width in pixels.
+    pub aspect_width: Option<f32>,
+    /// Render aperture height in pixels.
+    pub aspect_height: Option<f32>,
+    /// Orthographic zoom, meaningful when [`Self::projection_type`] is 1.
+    pub ortho_zoom: Option<f32>,
+}
+
+/// An FBX `Light` node attribute.
+///
+/// As with [`FbxCamera`], every field is optional and the set is limited to
+/// what the corpus contains. Notably no file carries `InnerAngle` or
+/// `OuterAngle`, so spot cone angles are not represented.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct FbxLight {
+    /// `LightType`: 0 point, 1 directional, 2 spot, 3 area, 4 volume.
+    pub light_type: Option<i32>,
+    /// Linear RGB colour.
+    pub color: Option<[f32; 3]>,
+    /// Intensity, where 100 is FBX's unit brightness.
+    pub intensity: Option<f32>,
+    /// Whether the light contributes at all.
+    pub cast_light: Option<bool>,
+    /// Whether the light casts shadows.
+    pub cast_shadows: Option<bool>,
+    /// `DecayType`: 0 none, 1 linear, 2 quadratic, 3 cubic.
+    pub decay_type: Option<i32>,
+    /// Distance at which decay begins.
+    pub decay_start: Option<f32>,
+}
+
 /// A preserved FBX `LayerElementSmoothing`.
 ///
 /// Smoothing is an integer flag per edge or per polygon -- whether the edge is
@@ -410,6 +489,11 @@ pub struct FbxSceneNode {
     pub has_complex_transform_stack: bool,
     /// Geometry attached directly to this model node.
     pub mesh_instances: Vec<FbxMeshInstance>,
+    /// Camera or light attached to this model node, when it carries one.
+    ///
+    /// Read only: the writer does not emit `NodeAttribute` objects, so this is
+    /// absent from a rewritten document.
+    pub attribute: Option<FbxNodeAttribute>,
     /// Child model nodes.
     pub children: Vec<FbxSceneNode>,
 }
@@ -424,6 +508,7 @@ impl FbxSceneNode {
             transform_stack: None,
             has_complex_transform_stack: false,
             mesh_instances: Vec::new(),
+            attribute: None,
             children: Vec::new(),
         }
     }

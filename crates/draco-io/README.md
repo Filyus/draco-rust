@@ -74,6 +74,7 @@ version 6100 and fall in this category.
 | Node-TRS animation | Yes | Yes |
 | Multiple animation layers | Yes | Yes |
 | Animation layer blending | No | No |
+| Cameras and lights (`NodeAttribute`) | Yes | No |
 | Skins, bind poses, and influences | Yes | Yes |
 | Blend shapes / morph targets | Yes | Yes |
 | `Definitions` property templates | No | n/a |
@@ -128,10 +129,22 @@ normal, and emissive textures (embedded `Content` or external filename), and
 per-polygon material indices. Animation resolves the
 `AnimationStack → AnimationLayer → AnimationCurveNode → AnimationCurve` graph
 into per-node TRS channels in seconds, one clip per layer — the same choice
-Blender's importer makes. Layers are not blended. Cameras, lights and other
-`NodeAttribute` objects are not read at all: a node carrying one keeps its
-transform and hierarchy, but the attribute itself is absent from the scene and
-is not currently reported. Scene export preserves
+Blender's importer makes. Layers are not blended.
+
+`Camera` and `Light` node attributes are read onto
+`FbxSceneNode::attribute`. Every field is optional, because FBX omits any
+property left at its class default, and the field sets are limited to what the
+corpus actually contains -- no file carries `InnerAngle` or `OuterAngle`, so
+spot cone angles are not represented. The writer does not emit
+`NodeAttribute` objects, so cameras and lights do not survive an FBX-to-FBX
+rewrite; that is a scope boundary rather than an oversight, and the corpus
+test asserts it directly so it cannot drift unnoticed. Other attribute classes
+-- `LodGroup`, `CameraSwitcher`, `CameraStereo`, IK and FK effectors -- raise
+`FbxWarningCode::DroppedNodeAttribute`. `LimbNode` and `Null` do not, since a
+skeleton attribute is consumed by the skin path and a null carries nothing but
+its transform.
+
+Scene export preserves
 local affine translation, rotation, scale, skins, bind poses, morph targets,
 and authored animation channels. FBX pivot settings and inheritance rules are
 not represented by `FbxTransform`.

@@ -57,8 +57,9 @@ struct FbxGeometrySource {
 pub use crate::fbx_scene::{
     FbxAnimChannel, FbxAnimChannelPath, FbxAnimInterpolation, FbxAnimSampler, FbxAnimation,
     FbxBinormalSet, FbxColorSet, FbxCreaseKind, FbxCreaseLayer, FbxLayerSet, FbxMeshInstance,
-    FbxNodeId, FbxNormalSet, FbxScene, FbxSceneNode, FbxSmoothingLayer, FbxTangentSet, FbxTexture,
-    FbxTextureBinding, FbxTextureSlot, FbxTransform, FbxUvSet, FbxWarning, FbxWarningCode,
+    FbxNodeAttribute, FbxNodeId, FbxNormalSet, FbxScene, FbxSceneNode, FbxSmoothingLayer,
+    FbxTangentSet, FbxTexture, FbxTextureBinding, FbxTextureSlot, FbxTransform, FbxUvSet,
+    FbxWarning, FbxWarningCode,
 };
 
 /// FBX file magic: "Kaydara FBX Binary  \0"
@@ -263,6 +264,7 @@ impl<R: Read + Seek> FbxReader<R> {
             model_map,
             model_order,
             geometry_map,
+            attribute_map,
             material_map,
             texture_map,
             video_map,
@@ -294,6 +296,8 @@ impl<R: Read + Seek> FbxReader<R> {
             );
         }
         collect_transform_warnings(model_map, model_order, &mut warnings);
+        let node_attributes =
+            parse_node_attributes(attribute_map, model_map, connections, &mut warnings);
 
         // ---- Materials and textures ---------------------------------------
         let (materials, material_index_by_id, textures) =
@@ -600,6 +604,7 @@ impl<R: Read + Seek> FbxReader<R> {
             model_children: &std::collections::HashMap<i64, Vec<i64>>,
             model_mesh_instances: &std::collections::HashMap<i64, Vec<FbxMeshInstance>>,
             model_node_ids: &std::collections::HashMap<i64, FbxNodeId>,
+            node_attributes: &std::collections::HashMap<i64, FbxNodeAttribute>,
         ) -> FbxSceneNode {
             let node_src = model_map.get(&id).unwrap();
             let mut node = FbxSceneNode::new(object_name(node_src));
@@ -611,6 +616,7 @@ impl<R: Read + Seek> FbxReader<R> {
                 node.transform_stack = Some(transform_stack);
                 node.has_complex_transform_stack = has_complex_transform_stack;
             }
+            node.attribute = node_attributes.get(&id).cloned();
             if let Some(mesh_instances) = model_mesh_instances.get(&id) {
                 node.mesh_instances.extend(mesh_instances.clone());
             }
@@ -624,6 +630,7 @@ impl<R: Read + Seek> FbxReader<R> {
                             model_children,
                             model_mesh_instances,
                             model_node_ids,
+                            node_attributes,
                         ));
                     }
                 }
@@ -741,6 +748,7 @@ impl<R: Read + Seek> FbxReader<R> {
                 &model_children,
                 &model_mesh_instances,
                 &model_node_ids,
+                &node_attributes,
             ));
         }
 
@@ -1158,6 +1166,7 @@ struct FbxObjectIndex<'a> {
     acurve_map: HashMap<i64, &'a FbxNode>,
     deformer_map: HashMap<i64, &'a FbxNode>,
     pose_map: HashMap<i64, &'a FbxNode>,
+    attribute_map: HashMap<i64, &'a FbxNode>,
     connections: Vec<FbxConnection>,
     /// `Objects` children skipped because they are keyed by name, not by id.
     ///
@@ -1183,6 +1192,7 @@ impl<'a> FbxObjectIndex<'a> {
             acurve_map: HashMap::new(),
             deformer_map: HashMap::new(),
             pose_map: HashMap::new(),
+            attribute_map: HashMap::new(),
             connections: Vec::new(),
             name_keyed_objects: 0,
         };
@@ -1213,6 +1223,7 @@ impl<'a> FbxObjectIndex<'a> {
                         "AnimationCurveNode" => drop(index.acnode_map.insert(*id, child)),
                         "AnimationCurve" => drop(index.acurve_map.insert(*id, child)),
                         "Pose" => drop(index.pose_map.insert(*id, child)),
+                        "NodeAttribute" => drop(index.attribute_map.insert(*id, child)),
                         "Deformer" => drop(index.deformer_map.insert(*id, child)),
                         _ => {}
                     }
@@ -1443,6 +1454,93 @@ fn collect_material_texture_bindings(
         });
     }
     bindings
+}
+
+/// Resolves each Model's `NodeAttribute`, keeping the classes this crate
+/// represents and reporting the rest.
+///
+/// Attributes are attached to their Model by an ordinary object connection, so
+/// this walks the connection list once rather than searching per node. Ids are
+/// visited in sorted order so a document always produces the same warnings in
+/// the same order.
+fn parse_node_attributes(
+    attribute_map: &HashMap<i64, &FbxNode>,
+    model_map: &HashMap<i64, &FbxNode>,
+    connections: &[FbxConnection],
+    warnings: &mut Vec<FbxWarning>,
+) -> HashMap<i64, FbxNodeAttribute> {
+    let mut by_model: Vec<(i64, i64)> = connections
+        .iter()
+        .filter(|conn| {
+            attribute_map.contains_key(&conn.child) && model_map.contains_key(&conn.parent)
+        })
+        .map(|conn| (conn.parent, conn.child))
+        .collect();
+    by_model.sort_unstable();
+
+    let mut resolved = HashMap::new();
+    for (model_id, attribute_id) in by_model {
+        let node = attribute_map[&attribute_id];
+        let class = match node.properties.get(2) {
+            Some(FbxProperty::String(class)) => class.as_str(),
+            _ => continue,
+        };
+        match class {
+            "Camera" => {
+                resolved.insert(model_id, FbxNodeAttribute::Camera(parse_camera(node)));
+            }
+            "Light" => {
+                resolved.insert(model_id, FbxNodeAttribute::Light(parse_light(node)));
+            }
+            // A skeleton attribute is consumed by the skin path and a `Null`
+            // carries nothing but a transform, so neither is a loss worth
+            // reporting. The rest describe something the scene will not have.
+            "LimbNode" | "Limb" | "Null" | "Root" => {}
+            other => push_warning(
+                warnings,
+                FbxWarningCode::DroppedNodeAttribute,
+                format!(
+                    "FBX NodeAttribute of class {other} is not represented, so its properties \
+                     are absent from the scene"
+                ),
+                Some(other),
+            ),
+        }
+    }
+    resolved
+}
+
+fn parse_camera(node: &FbxNode) -> crate::fbx_scene::FbxCamera {
+    let scalar = |name: &str| properties70_lookup(node, name).and_then(property_scalar);
+    let vector = |name: &str| properties70_lookup(node, name).and_then(property_vec3);
+    crate::fbx_scene::FbxCamera {
+        position: vector("Position"),
+        interest_position: vector("InterestPosition"),
+        up_vector: vector("UpVector"),
+        projection_type: scalar("CameraProjectionType").map(|v| v as i32),
+        field_of_view: scalar("FieldOfView"),
+        field_of_view_x: scalar("FieldOfViewX"),
+        field_of_view_y: scalar("FieldOfViewY"),
+        focal_length: scalar("FocalLength"),
+        near_plane: scalar("NearPlane"),
+        far_plane: scalar("FarPlane"),
+        aspect_width: scalar("AspectWidth"),
+        aspect_height: scalar("AspectHeight"),
+        ortho_zoom: scalar("OrthoZoom"),
+    }
+}
+
+fn parse_light(node: &FbxNode) -> crate::fbx_scene::FbxLight {
+    let scalar = |name: &str| properties70_lookup(node, name).and_then(property_scalar);
+    crate::fbx_scene::FbxLight {
+        light_type: scalar("LightType").map(|v| v as i32),
+        color: properties70_lookup(node, "Color").and_then(property_vec3),
+        intensity: scalar("Intensity"),
+        cast_light: scalar("CastLight").map(|v| v != 0.0),
+        cast_shadows: scalar("CastShadows").map(|v| v != 0.0),
+        decay_type: scalar("DecayType").map(|v| v as i32),
+        decay_start: scalar("DecayStart"),
+    }
 }
 
 /// Extracts a named scalar/`Color`/`Vector`/`Vector3D` property from a

@@ -713,3 +713,126 @@ fn a_pre_7000_document_says_why_it_decoded_to_nothing() {
     assert!(warned > 0, "no pre-7000 documents in the corpus to check");
     println!("{warned} pre-7000 documents each explained why they are empty");
 }
+
+/// Cameras and lights are read but not written, and the round-trip check must
+/// show that rather than quietly omit it.
+///
+/// `SceneSummary` deliberately does not compare node attributes: doing so would
+/// fail every file that has one, for a loss that is a documented scope
+/// boundary rather than a defect. This asserts the boundary directly instead --
+/// the source has attributes, the rewrite has none -- so if the writer ever
+/// learns to emit them, this test fails and points at the summary that needs
+/// to start comparing them.
+#[test]
+fn cameras_and_lights_are_read_but_not_written_back() {
+    let Some(dir) = corpus_dir() else {
+        eprintln!("skipping: set DRACO_FBX_CORPUS to a directory of .fbx files");
+        return;
+    };
+    let mut files = Vec::new();
+    collect_fbx(&dir, &mut files);
+    files.sort();
+
+    fn count(node: &draco_io::FbxSceneNode) -> usize {
+        usize::from(node.attribute.is_some()) + node.children.iter().map(count).sum::<usize>()
+    }
+    fn total(scene: &FbxScene) -> usize {
+        scene.root_nodes.iter().map(count).sum()
+    }
+
+    let mut with_attributes = 0usize;
+    let mut attributes = 0usize;
+    for path in &files {
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        if !bytes.starts_with(b"Kaydara FBX Binary") {
+            continue;
+        }
+        let Ok(scene) = FbxScene::from_bytes(&bytes) else {
+            continue;
+        };
+        let read = total(&scene);
+        if read == 0 {
+            continue;
+        }
+        with_attributes += 1;
+        attributes += read;
+
+        let Ok(rewritten) = scene.to_bytes() else {
+            continue;
+        };
+        let reread = FbxScene::from_bytes(&rewritten).expect("rewrite must still parse");
+        assert_eq!(
+            total(&reread),
+            0,
+            "{} kept node attributes through a rewrite; the writer now emits them, so \
+             SceneSummary must start comparing them",
+            path.display()
+        );
+    }
+
+    assert!(
+        with_attributes > 0,
+        "no camera or light attributes in the corpus to check"
+    );
+    println!("{attributes} camera/light attributes read across {with_attributes} files, none written back");
+}
+
+/// The Blender 2.79 default scene has one camera and one light with values a
+/// person can check by eye, which the aggregate counts above cannot.
+///
+/// Camera and light properties are all optional and read by name, so a typo in
+/// a property name yields `None` rather than a failure. Asserting concrete
+/// values is the only thing that catches that.
+#[test]
+fn the_blender_default_scene_camera_and_light_read_their_authored_values() {
+    let Some(dir) = corpus_dir() else {
+        eprintln!("skipping: set DRACO_FBX_CORPUS to a directory of .fbx files");
+        return;
+    };
+    let path = dir.join("blender_279_default_7400_binary.fbx");
+    if !path.exists() {
+        eprintln!("skipping: {} is not in this corpus", path.display());
+        return;
+    }
+    let scene = FbxScene::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+
+    let mut camera = None;
+    let mut light = None;
+    fn visit(
+        node: &draco_io::FbxSceneNode,
+        camera: &mut Option<draco_io::FbxCamera>,
+        light: &mut Option<draco_io::FbxLight>,
+    ) {
+        match &node.attribute {
+            Some(draco_io::FbxNodeAttribute::Camera(value)) => *camera = Some(value.clone()),
+            Some(draco_io::FbxNodeAttribute::Light(value)) => *light = Some(value.clone()),
+            _ => {}
+        }
+        for child in &node.children {
+            visit(child, camera, light);
+        }
+    }
+    for root in &scene.root_nodes {
+        visit(root, &mut camera, &mut light);
+    }
+
+    let camera = camera.expect("the default scene has a camera");
+    assert_eq!(camera.focal_length, Some(35.0));
+    assert_eq!(camera.aspect_width, Some(1920.0));
+    assert_eq!(camera.aspect_height, Some(1080.0));
+    assert!((camera.field_of_view.unwrap() - 49.134_342).abs() < 1e-3);
+    assert!((camera.near_plane.unwrap() - 0.1).abs() < 1e-3);
+    assert!((camera.far_plane.unwrap() - 100.0).abs() < 1e-2);
+    let position = camera.position.expect("camera position");
+    assert!((position[0] - 7.481_131).abs() < 1e-3, "{position:?}");
+
+    let light = light.expect("the default scene has a light");
+    // 0 is a point light, 2 quadratic decay.
+    assert_eq!(light.light_type, Some(0));
+    assert_eq!(light.decay_type, Some(2));
+    assert_eq!(light.intensity, Some(100.0));
+    assert_eq!(light.color, Some([1.0, 1.0, 1.0]));
+    assert_eq!(light.cast_shadows, Some(true));
+}

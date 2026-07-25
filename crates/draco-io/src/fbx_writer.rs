@@ -3184,6 +3184,7 @@ mod tests {
                 transform_stack: None,
                 has_complex_transform_stack: false,
                 mesh_instances: Vec::new(),
+                attribute: None,
                 children: vec![FbxSceneNode {
                     id: crate::fbx_scene::FbxNodeId(2),
                     name: Some("Child".to_string()),
@@ -3207,6 +3208,7 @@ mod tests {
                         skin: None,
                         morph_targets: Vec::new(),
                     }],
+                    attribute: None,
                     children: Vec::new(),
                 }],
             }],
@@ -3274,6 +3276,7 @@ mod tests {
                 transform_stack: Some(transform_stack.clone()),
                 has_complex_transform_stack: true,
                 mesh_instances: Vec::new(),
+                attribute: None,
                 children: Vec::new(),
             }],
             materials: Vec::new(),
@@ -3336,6 +3339,7 @@ mod tests {
                 transform_stack: None,
                 has_complex_transform_stack: false,
                 mesh_instances: Vec::new(),
+                attribute: None,
                 children: vec![
                     FbxSceneNode {
                         id: crate::fbx_scene::FbxNodeId(2),
@@ -3344,6 +3348,7 @@ mod tests {
                         transform_stack: None,
                         has_complex_transform_stack: false,
                         mesh_instances: Vec::new(),
+                        attribute: None,
                         children: Vec::new(),
                     },
                     FbxSceneNode {
@@ -3389,6 +3394,7 @@ mod tests {
                                 full_weight: 100.0,
                             }],
                         }],
+                        attribute: None,
                         children: Vec::new(),
                     },
                 ],
@@ -3429,6 +3435,7 @@ mod tests {
                 transform_stack: None,
                 has_complex_transform_stack: false,
                 mesh_instances: Vec::new(),
+                attribute: None,
                 children: Vec::new(),
             }],
             materials: Vec::new(),
@@ -3516,6 +3523,7 @@ mod tests {
                 transform_stack: None,
                 has_complex_transform_stack: false,
                 mesh_instances: vec![instance],
+                attribute: None,
                 children: Vec::new(),
             }],
             materials: vec![named("Red"), named("Blue")],
@@ -3584,6 +3592,7 @@ mod tests {
                     skin: None,
                     morph_targets: Vec::new(),
                 }],
+                attribute: None,
                 children: Vec::new(),
             }],
             ..FbxScene::default()
@@ -3685,6 +3694,7 @@ mod tests {
                 transform_stack: None,
                 has_complex_transform_stack: false,
                 mesh_instances: vec![instance.clone()],
+                attribute: None,
                 children: Vec::new(),
             }],
             ..FbxScene::default()
@@ -3731,6 +3741,7 @@ mod tests {
                     skin: None,
                     morph_targets: Vec::new(),
                 }],
+                attribute: None,
                 children: Vec::new(),
             }],
             ..FbxScene::default()
@@ -3781,6 +3792,7 @@ mod tests {
                     skin: None,
                     morph_targets: Vec::new(),
                 }],
+                attribute: None,
                 children: Vec::new(),
             }],
             ..FbxScene::default()
@@ -3857,6 +3869,7 @@ mod tests {
                     skin: None,
                     morph_targets: Vec::new(),
                 }],
+                attribute: None,
                 children: Vec::new(),
             }],
             ..FbxScene::default()

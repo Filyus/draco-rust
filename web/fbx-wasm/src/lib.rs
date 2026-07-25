@@ -1591,6 +1591,7 @@ fn scene_node_to_fbx(input: SceneNodeInput) -> Result<FbxSceneNode, String> {
             .enumerate()
             .map(|(index, mesh)| mesh_input_to_instance(mesh, index))
             .collect::<Result<_, String>>()?,
+        attribute: None,
         children: input
             .children
             .into_iter()
@@ -1987,6 +1988,7 @@ fn flat_meshes_to_scene(meshes: &[MeshInput]) -> Result<FbxScene, String> {
                 transform_stack: None,
                 has_complex_transform_stack: false,
                 mesh_instances: vec![mesh_input_to_instance(mesh, index)?],
+                attribute: None,
                 children: Vec::new(),
             })
         })
@@ -2034,6 +2036,7 @@ mod reader_tests {
                     skin: None,
                     morph_targets: Vec::new(),
                 }],
+                attribute: None,
                 children: Vec::new(),
             }],
             materials: Vec::new(),
@@ -2061,6 +2064,7 @@ mod reader_tests {
                 transform_stack: None,
                 has_complex_transform_stack: false,
                 mesh_instances: Vec::new(),
+                attribute: None,
                 children: Vec::new(),
             }],
             materials: vec![draco_io::FbxMaterial {

@@ -24,6 +24,11 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   disagrees with the domain its mapping names is dropped with a warning; a
   `ByEdge` layer in a geometry with no `Edges` array is preserved unchecked,
   since it addresses edges this crate does not reconstruct.
+- **Breaking.** FBX `Camera` and `Light` node attributes are read onto the new
+  `FbxSceneNode::attribute` field, as `FbxNodeAttribute::Camera(FbxCamera)` or
+  `::Light(FbxLight)`. Read only -- the writer emits no `NodeAttribute`
+  objects, so these do not survive a rewrite. Other attribute classes raise
+  `FbxWarningCode::DroppedNodeAttribute`.
 - **Breaking.** `expand_to_render_mesh` takes an `FbxGeometryLayers` borrow
   struct instead of five positional slices.
 - `FbxUvSet`, `FbxNormalSet` and `FbxColorSet` are now aliases of a shared
