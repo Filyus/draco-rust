@@ -206,6 +206,12 @@ function appendMesh(source, materialMap, document) {
     const attributes = { POSITION: appendFloatAccessor(document, scaleVector3(source.positions || []), 3) };
     if (source.normals?.length === vertexCount * 3) attributes.NORMAL = appendFloatAccessor(document, source.normals, 3);
     if (source.uvs?.length === vertexCount * 2) attributes.TEXCOORD_0 = appendFloatAccessor(document, source.uvs, 2);
+    // Extra FBX UV layers become TEXCOORD_1.. so a second set -- a lightmap,
+    // typically -- survives into glTF instead of being dropped at import.
+    for (let set = 1; set < Math.min(source.uvLayers?.length ?? 0, 8); set += 1) {
+        const values = source.uvLayers[set];
+        if (values?.length === vertexCount * 2) attributes[`TEXCOORD_${set}`] = appendFloatAccessor(document, values, 2);
+    }
     // FBX LayerElementColor is linear RGBA on the polygon-corner domain, which
     // is already what the render mesh hands us.
     if (source.colors?.length === vertexCount * 4) attributes.COLOR_0 = appendFloatAccessor(document, source.colors, 4);

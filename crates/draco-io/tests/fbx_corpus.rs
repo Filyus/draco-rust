@@ -247,12 +247,23 @@ fn scenes_survive_a_write_and_read_cycle() {
 ///
 /// Kept as text so a mismatch report names the field that moved instead of
 /// dumping two large structs.
+/// The per-mesh counts a round-trip must preserve.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct MeshSummary {
+    control_points: usize,
+    polygon_corners: usize,
+    uv_sets: usize,
+    color_sets: usize,
+    edges: usize,
+    material_indices: Vec<i32>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct SceneSummary {
     materials: usize,
     textures: usize,
     animations: usize,
-    meshes: Vec<(usize, usize, usize, usize, Vec<i32>)>,
+    meshes: Vec<MeshSummary>,
     /// `(name, cluster count, total weights, first bind matrix)` per skin.
     skins: Vec<String>,
     /// `(name, affected points, delta count, weights)` per blend-shape target.
@@ -275,7 +286,7 @@ struct SceneSummary {
 }
 
 fn summarize(scene: &FbxScene) -> SceneSummary {
-    fn visit(node: &draco_io::FbxSceneNode, out: &mut Vec<(usize, usize, usize, usize, Vec<i32>)>) {
+    fn visit(node: &draco_io::FbxSceneNode, out: &mut Vec<MeshSummary>) {
         for mesh in &node.mesh_instances {
             // A Geometry with neither vertices nor polygons carries nothing
             // but a name. The writer emits no geometry nodes for it, so it
@@ -284,13 +295,14 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
             if mesh.control_points.is_empty() && mesh.polygon_vertex_indices.is_empty() {
                 continue;
             }
-            out.push((
-                mesh.control_points.len(),
-                mesh.polygon_vertex_indices.len(),
-                mesh.uv_sets.len(),
-                mesh.color_sets.len(),
-                mesh.material_indices.clone(),
-            ));
+            out.push(MeshSummary {
+                control_points: mesh.control_points.len(),
+                polygon_corners: mesh.polygon_vertex_indices.len(),
+                uv_sets: mesh.uv_sets.len(),
+                color_sets: mesh.color_sets.len(),
+                edges: mesh.edges.len(),
+                material_indices: mesh.material_indices.clone(),
+            });
         }
         for child in &node.children {
             visit(child, out);

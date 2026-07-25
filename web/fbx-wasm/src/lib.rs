@@ -67,6 +67,11 @@ pub struct MeshData {
     /// Per-render-vertex linear RGBA, from the first colour layer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub colors: Vec<f32>,
+    /// Every UV layer resolved onto render vertices, in source order.
+    ///
+    /// `uvs` is the first of these; the rest become `TEXCOORD_1`..
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uv_layers: Vec<Vec<f32>>,
     /// Per-triangle indices into the scene material list.
     ///
     /// This retains FBX `LayerElementMaterial` assignments for a later
@@ -661,9 +666,9 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
                     .collect()
             })
             .unwrap_or_default();
-        mesh.uvs = render
+        mesh.uv_layers = render
             .uvs
-            .first()
+            .iter()
             .map(|layer| {
                 layer
                     .values
@@ -671,7 +676,8 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
                     .flat_map(|value| value.iter().copied())
                     .collect()
             })
-            .unwrap_or_default();
+            .collect();
+        mesh.uvs = mesh.uv_layers.first().cloned().unwrap_or_default();
         render.corner_to_control_point.clone()
     };
     let mut render_points_by_control = std::collections::HashMap::<u32, Vec<u32>>::new();
@@ -913,6 +919,7 @@ fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
         normals,
         uvs,
         colors,
+        uv_layers: Vec::new(),
         material_indices: Vec::new(),
         material: None,
         skin: None,
@@ -1018,6 +1025,8 @@ pub struct MeshInput {
     pub normal_sets: Vec<NormalSetOutput>,
     #[serde(default)]
     pub color_sets: Vec<ColorSetOutput>,
+    #[serde(default)]
+    pub edges: Vec<i32>,
     /// Per-triangle indices into `SceneInput::materials`.
     #[serde(default)]
     pub material_indices: Vec<i32>,
@@ -1493,6 +1502,7 @@ fn mesh_input_to_instance(mesh: &MeshInput, index: usize) -> Result<FbxMeshInsta
                 indices: set.indices.clone(),
             })
             .collect(),
+        edges: mesh.edges.clone(),
         color_sets: mesh
             .color_sets
             .iter()
@@ -1841,6 +1851,7 @@ mod reader_tests {
                     uv_sets: Vec::new(),
                     normal_sets: Vec::new(),
                     color_sets: Vec::new(),
+                    edges: Vec::new(),
                     material_indices: Vec::new(),
                     skin: None,
                     morph_targets: Vec::new(),
@@ -1967,6 +1978,7 @@ mod writer_tests {
             uv_sets: Vec::new(),
             normal_sets: Vec::new(),
             color_sets: Vec::new(),
+            edges: Vec::new(),
             material_indices: Vec::new(),
             skin: None,
             morph_targets: Vec::new(),

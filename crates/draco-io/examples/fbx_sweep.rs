@@ -73,9 +73,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let points: usize = count_points(&scene);
                 let (welded, corners) = count_mesh_points(&scene);
                 println!(
-                    "OK {display} roots={} points={points} welded={welded} corners={corners} colors={} warnings={}",
+                    "OK {display} roots={} points={points} welded={welded} corners={corners} colors={} uvsets={} edges={} warnings={}",
                     scene.root_nodes.len(),
                     count_color_sets(&scene),
+                    max_uv_sets(&scene),
+                    total_edges(&scene),
                     scene.warnings.len()
                 );
             }
@@ -94,6 +96,29 @@ fn count_points(scene: &FbxScene) -> usize {
             + node.children.iter().map(visit).sum::<usize>()
     }
     scene.root_nodes.iter().map(visit).sum()
+}
+
+fn total_edges(scene: &FbxScene) -> usize {
+    fn visit(node: &draco_io::FbxSceneNode) -> usize {
+        node.mesh_instances
+            .iter()
+            .map(|m| m.edges.len())
+            .sum::<usize>()
+            + node.children.iter().map(visit).sum::<usize>()
+    }
+    scene.root_nodes.iter().map(visit).sum()
+}
+
+fn max_uv_sets(scene: &FbxScene) -> usize {
+    fn visit(node: &draco_io::FbxSceneNode) -> usize {
+        node.mesh_instances
+            .iter()
+            .map(|m| m.uv_sets.len())
+            .chain(node.children.iter().map(visit))
+            .max()
+            .unwrap_or(0)
+    }
+    scene.root_nodes.iter().map(visit).max().unwrap_or(0)
 }
 
 fn count_color_sets(scene: &FbxScene) -> usize {

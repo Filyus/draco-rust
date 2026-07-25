@@ -409,6 +409,7 @@ mod tests {
             }],
             normal_sets: Vec::new(),
             color_sets: Vec::new(),
+            edges: Vec::new(),
             material_indices: Vec::new(),
             skin: None,
             morph_targets: Vec::new(),

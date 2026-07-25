@@ -46,6 +46,7 @@ struct FbxGeometrySource {
     uv_sets: Vec<crate::fbx_scene::FbxUvSet>,
     normal_sets: Vec<crate::fbx_scene::FbxNormalSet>,
     color_sets: Vec<crate::fbx_scene::FbxColorSet>,
+    edges: Vec<i32>,
 }
 
 #[doc(hidden)]
@@ -654,6 +655,7 @@ impl<R: Read + Seek> FbxReader<R> {
                             uv_sets: source.uv_sets.clone(),
                             normal_sets: source.normal_sets.clone(),
                             color_sets: source.color_sets.clone(),
+                            edges: source.edges.clone(),
                             material_indices: indices,
                             skin: parse_skin_for_geometry(
                                 geom_id,
@@ -2289,6 +2291,7 @@ impl<R: Read + Seek> FbxReader<R> {
     fn geometry_to_mesh(&self, geometry: &FbxNode) -> io::Result<Option<FbxGeometrySource>> {
         let mut vertices: Option<Vec<f64>> = None;
         let mut polygon_indices: Option<Vec<i32>> = None;
+        let mut edges: Vec<i32> = Vec::new();
         let mut normals_layers: Vec<&FbxNode> = Vec::new();
         let mut uv_layers: Vec<&FbxNode> = Vec::new();
         let mut color_layers: Vec<&FbxNode> = Vec::new();
@@ -2299,6 +2302,11 @@ impl<R: Read + Seek> FbxReader<R> {
                 "Vertices" => {
                     if let Some(FbxProperty::F64Array(arr)) = child.properties.first() {
                         vertices = Some(arr.clone());
+                    }
+                }
+                "Edges" => {
+                    if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
+                        edges = arr.clone();
                     }
                 }
                 "PolygonVertexIndex" => {
@@ -2441,6 +2449,7 @@ impl<R: Read + Seek> FbxReader<R> {
             uv_sets,
             normal_sets,
             color_sets,
+            edges,
         }))
     }
 

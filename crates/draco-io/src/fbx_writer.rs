@@ -125,6 +125,7 @@ struct MeshData {
     uv_sets: Vec<crate::fbx_scene::FbxUvSet>,
     normal_sets: Vec<crate::fbx_scene::FbxNormalSet>,
     color_sets: Vec<crate::fbx_scene::FbxColorSet>,
+    edges: Vec<i32>,
 }
 
 /// Internal FBX Model data.
@@ -314,6 +315,7 @@ impl FbxWriter {
         uv_sets: &[crate::fbx_scene::FbxUvSet],
         normal_sets: &[crate::fbx_scene::FbxNormalSet],
         color_sets: &[crate::fbx_scene::FbxColorSet],
+        edges: &[i32],
     ) -> io::Result<()> {
         validate_supported_fbx_attributes(mesh)?;
         let geometry_id = self.allocate_id();
@@ -344,6 +346,7 @@ impl FbxWriter {
             uv_sets: uv_sets.to_vec(),
             normal_sets: normal_sets.to_vec(),
             color_sets: color_sets.to_vec(),
+            edges: edges.to_vec(),
         });
         if let Some(skin) = skin {
             let skin_id = self.allocate_id();
@@ -561,6 +564,7 @@ impl FbxWriter {
                 &mesh_instance.uv_sets,
                 &mesh_instance.normal_sets,
                 &mesh_instance.color_sets,
+                &mesh_instance.edges,
             )?;
         }
         let _ = mesh_count;
@@ -692,6 +696,7 @@ impl Writer for FbxWriter {
             model_id,
             &[],
             None,
+            &[],
             &[],
             &[],
             &[],
@@ -1783,6 +1788,14 @@ fn write_geometry<W: Write + Seek>(
             for (index, normal_set) in mesh_data.normal_sets.iter().enumerate() {
                 write_layer_element_normal_set(w, is_64, normal_set, index, options)?;
             }
+        }
+
+        // `Edges` addresses polygon corners and is what `ByEdge` layer
+        // elements index, so it is written back verbatim when present.
+        if !mesh_data.edges.is_empty() {
+            let mut edge_node = NodeWriter::start(w, "Edges", is_64)?;
+            edge_node.write_property_i32_array(&mesh_data.edges, options)?;
+            edge_node.finish()?;
         }
 
         // Vertex colours, when the source carried any.
@@ -3018,6 +3031,7 @@ mod tests {
                         uv_sets: Vec::new(),
                         normal_sets: Vec::new(),
                         color_sets: Vec::new(),
+                        edges: Vec::new(),
                         material_indices: Vec::new(),
                         skin: None,
                         morph_targets: Vec::new(),
@@ -3175,6 +3189,7 @@ mod tests {
                             uv_sets: Vec::new(),
                             normal_sets: Vec::new(),
                             color_sets: Vec::new(),
+                            edges: Vec::new(),
                             material_indices: Vec::new(),
                             skin: Some(crate::fbx_scene::FbxSkin {
                                 clusters: vec![crate::fbx_scene::FbxSkinCluster {
@@ -3303,6 +3318,7 @@ mod tests {
             uv_sets: Vec::new(),
             normal_sets: Vec::new(),
             color_sets: Vec::new(),
+            edges: Vec::new(),
             material_indices: vec![0, 0, 1, 1],
             skin: None,
             morph_targets: Vec::new(),
@@ -3378,6 +3394,7 @@ mod tests {
                     uv_sets: Vec::new(),
                     normal_sets: Vec::new(),
                     color_sets: vec![colors.clone()],
+                    edges: Vec::new(),
                     material_indices: Vec::new(),
                     skin: None,
                     morph_targets: Vec::new(),

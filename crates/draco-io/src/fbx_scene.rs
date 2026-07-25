@@ -201,6 +201,14 @@ pub struct FbxMeshInstance {
     pub normal_sets: Vec<FbxNormalSet>,
     /// Original colour layer elements, including mapping/reference information.
     pub color_sets: Vec<FbxColorSet>,
+    /// Original FBX `Edges` array, verbatim.
+    ///
+    /// Each entry indexes [`Self::polygon_vertex_indices`], naming the polygon
+    /// corner an edge starts at. FBX does not require this to list every
+    /// topological edge -- importers reconstruct the missing ones from faces --
+    /// so it is kept raw rather than normalized. It is also the domain
+    /// `ByEdge` layer elements address.
+    pub edges: Vec<i32>,
     /// Per-polygon material index from `LayerElementMaterial`, when present.
     ///
     /// Each entry corresponds to one triangle in fan-triangulation order
