@@ -599,19 +599,27 @@ impl FbxWriter {
         let is_64 = FBX_VERSION >= 7500;
 
         // Write standard FBX sections
-        write_header_extension(writer, is_64)?;
-        write_global_settings(writer, is_64, self.global_settings.as_ref())?;
-        write_documents(writer, is_64)?;
-        write_definitions(
+        encode_node(writer, &header_extension_node(), is_64, &options)?;
+        encode_node(
             writer,
+            &global_settings_node(self.global_settings.as_ref()),
             is_64,
-            &self.meshes,
-            &self.models,
-            &self.materials,
-            &self.textures,
-            &self.anim,
-            &self.skins,
-            &self.morphs,
+            &options,
+        )?;
+        encode_node(writer, &documents_node(), is_64, &options)?;
+        encode_node(
+            writer,
+            &definitions_node(
+                &self.meshes,
+                &self.models,
+                &self.materials,
+                &self.textures,
+                &self.anim,
+                &self.skins,
+                &self.morphs,
+            ),
+            is_64,
+            &options,
         )?;
         write_objects(
             writer,
@@ -625,16 +633,19 @@ impl FbxWriter {
             is_64,
             &options,
         )?;
-        write_connections(
+        encode_node(
             writer,
-            &self.models,
-            &self.meshes,
-            &self.textures,
-            &self.anim,
-            &self.connections,
-            &self.skins,
-            &self.morphs,
+            &connections_node(
+                &self.models,
+                &self.meshes,
+                &self.textures,
+                &self.anim,
+                &self.connections,
+                &self.skins,
+                &self.morphs,
+            ),
             is_64,
+            &options,
         )?;
 
         // Write NULL record to mark end of top-level nodes
@@ -736,130 +747,101 @@ pub fn write_fbx_mesh_compressed<P: AsRef<Path>>(path: P, mesh: &Mesh) -> io::Re
 // FBX Section Writers
 // ============================================================================
 
-fn write_header_extension<W: Write + Seek>(writer: &mut W, is_64: bool) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "FBXHeaderExtension", is_64)?;
-    node.finish_with_children(|w| {
-        // FBXHeaderVersion
-        let mut ver = NodeWriter::start(w, "FBXHeaderVersion", is_64)?;
-        ver.write_property_i32(1003)?;
-        ver.finish()?;
-
-        // FBXVersion
-        let mut ver = NodeWriter::start(w, "FBXVersion", is_64)?;
-        ver.write_property_i32(FBX_VERSION as i32)?;
-        ver.finish()?;
-
-        // Creator
-        let mut creator = NodeWriter::start(w, "Creator", is_64)?;
-        creator.write_property_string("draco-io-rs")?;
-        creator.finish()?;
-
-        Ok(())
-    })
+fn header_extension_node() -> FbxNode {
+    FbxNode {
+        name: "FBXHeaderExtension".to_string(),
+        properties: Vec::new(),
+        children: vec![
+            value_node("FBXHeaderVersion", FbxProperty::I32(1003)),
+            value_node("FBXVersion", FbxProperty::I32(FBX_VERSION as i32)),
+            value_node("Creator", FbxProperty::String("draco-io-rs".to_string())),
+        ],
+    }
 }
 
-fn write_global_settings<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    source: Option<&crate::fbx_scene::FbxGlobalSettings>,
-) -> io::Result<()> {
+fn global_settings_node(source: Option<&crate::fbx_scene::FbxGlobalSettings>) -> FbxNode {
     let source = source.cloned().unwrap_or_default();
-    let node = NodeWriter::start(writer, "GlobalSettings", is_64)?;
-    node.finish_with_children(|w| {
-        // Version
-        let mut ver = NodeWriter::start(w, "Version", is_64)?;
-        ver.write_property_i32(1000)?;
-        ver.finish()?;
+    let mut properties = vec![
+        int_property_node("UpAxis", "int", "Integer", "", source.up_axis.unwrap_or(2)),
+        int_property_node(
+            "UpAxisSign",
+            "int",
+            "Integer",
+            "",
+            source.up_axis_sign.unwrap_or(1),
+        ),
+        int_property_node(
+            "FrontAxis",
+            "int",
+            "Integer",
+            "",
+            source.front_axis.unwrap_or(1),
+        ),
+        int_property_node(
+            "FrontAxisSign",
+            "int",
+            "Integer",
+            "",
+            source.front_axis_sign.unwrap_or(-1),
+        ),
+        int_property_node(
+            "CoordAxis",
+            "int",
+            "Integer",
+            "",
+            source.coord_axis.unwrap_or(0),
+        ),
+        int_property_node(
+            "CoordAxisSign",
+            "int",
+            "Integer",
+            "",
+            source.coord_axis_sign.unwrap_or(1),
+        ),
+        // FBX `UnitScaleFactor = 1.0` is documented to mean *centimeters*
+        // (Blender io_scene_fbx comment: "FBX default base unit seems to be
+        // the centimeter"). Most authoring tools therefore write the
+        // number of centimeters-per-meter (100) here, and Blender reads
+        // the file with `multiplier = UnitScaleFactor / 100`. A value of
+        // 100 makes the file round-trip at its true (meter) scale; the
+        // legacy value of 1.0 caused every imported scene to come in
+        // 100x too small.
+        f64_property_node(
+            "UnitScaleFactor",
+            "double",
+            "Number",
+            "",
+            source.unit_scale_factor.unwrap_or(100.0),
+        ),
+        f64_property_node(
+            "OriginalUnitScaleFactor",
+            "double",
+            "Number",
+            "",
+            source.original_unit_scale_factor.unwrap_or(100.0),
+        ),
+    ];
+    if let Some(time_mode) = source.time_mode {
+        properties.push(int_property_node("TimeMode", "enum", "", "", time_mode));
+    }
 
-        // Properties70 - proper FBX property format
-        let props = NodeWriter::start(w, "Properties70", is_64)?;
-        props.finish_with_children(|pw| {
-            write_property_node(
-                pw,
-                is_64,
-                "UpAxis",
-                "int",
-                "Integer",
-                "",
-                source.up_axis.unwrap_or(2),
-            )?;
-            write_property_node(
-                pw,
-                is_64,
-                "UpAxisSign",
-                "int",
-                "Integer",
-                "",
-                source.up_axis_sign.unwrap_or(1),
-            )?;
-            write_property_node(
-                pw,
-                is_64,
-                "FrontAxis",
-                "int",
-                "Integer",
-                "",
-                source.front_axis.unwrap_or(1),
-            )?;
-            write_property_node(
-                pw,
-                is_64,
-                "FrontAxisSign",
-                "int",
-                "Integer",
-                "",
-                source.front_axis_sign.unwrap_or(-1),
-            )?;
-            write_property_node(
-                pw,
-                is_64,
-                "CoordAxis",
-                "int",
-                "Integer",
-                "",
-                source.coord_axis.unwrap_or(0),
-            )?;
-            write_property_node(
-                pw,
-                is_64,
-                "CoordAxisSign",
-                "int",
-                "Integer",
-                "",
-                source.coord_axis_sign.unwrap_or(1),
-            )?;
-            // FBX `UnitScaleFactor = 1.0` is documented to mean *centimeters*
-            // (Blender io_scene_fbx comment: "FBX default base unit seems to be
-            // the centimeter"). Most authoring tools therefore write the
-            // number of centimeters-per-meter (100) here, and Blender reads
-            // the file with `multiplier = UnitScaleFactor / 100`. A value of
-            // 100 makes the file round-trip at its true (meter) scale; the
-            // legacy value of 1.0 caused every imported scene to come in
-            // 100x too small.
-            write_property_node_f64(
-                pw,
-                is_64,
-                "UnitScaleFactor",
-                "double",
-                "Number",
-                "",
-                source.unit_scale_factor.unwrap_or(100.0),
-            )?;
-            write_property_node_f64(
-                pw,
-                is_64,
-                "OriginalUnitScaleFactor",
-                "double",
-                "Number",
-                "",
-                source.original_unit_scale_factor.unwrap_or(100.0),
-            )?;
-            if let Some(time_mode) = source.time_mode {
-                write_property_node(pw, is_64, "TimeMode", "enum", "", "", time_mode)?;
-            }
-            Ok(())
-        })
-    })
+    FbxNode {
+        name: "GlobalSettings".to_string(),
+        properties: Vec::new(),
+        children: vec![
+            value_node("Version", FbxProperty::I32(1000)),
+            properties70_node(properties),
+        ],
+    }
+}
+
+/// Wraps `P` records in the `Properties70` node that holds them.
+fn properties70_node(properties: Vec<FbxNode>) -> FbxNode {
+    FbxNode {
+        name: "Properties70".to_string(),
+        properties: Vec::new(),
+        children: properties,
+    }
 }
 
 /// Builds one `Properties70` `P` record.
@@ -888,81 +870,39 @@ fn property_node(
     }
 }
 
-/// Encodes a node that carries no array property, so no encoding options
-/// apply to it.
-///
-/// A scaffold: once the whole document is assembled as a tree there is one
-/// encode call at the top with the document's real options, and this goes
-/// away with the last caller.
-fn encode_scalar_node<W: Write + Seek>(
-    writer: &mut W,
-    node: &FbxNode,
-    is_64: bool,
-) -> io::Result<()> {
-    encode_node(writer, node, is_64, &WriterOptions::default())
+fn int_property_node(name: &str, type1: &str, type2: &str, flags: &str, value: i32) -> FbxNode {
+    property_node(name, type1, type2, flags, vec![FbxProperty::I32(value)])
 }
 
-fn write_property_node<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    name: &str,
-    type1: &str,
-    type2: &str,
-    flags: &str,
-    value: i32,
-) -> io::Result<()> {
-    let node = property_node(name, type1, type2, flags, vec![FbxProperty::I32(value)]);
-    encode_scalar_node(writer, &node, is_64)
-}
-
-fn write_property_node_bool<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    name: &str,
-    value: bool,
-) -> io::Result<()> {
+fn bool_property_node(name: &str, value: bool) -> FbxNode {
     // Blender's FBX property helper expects `RotationActive` to carry an
     // INT32 scalar even though its declared property type is `bool`.
-    let node = property_node(
+    property_node(
         name,
         "bool",
         "",
         "",
         vec![FbxProperty::I32(i32::from(value))],
-    );
-    encode_scalar_node(writer, &node, is_64)
+    )
 }
 
-fn write_property_node_f64<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    name: &str,
-    type1: &str,
-    type2: &str,
-    flags: &str,
-    value: f64,
-) -> io::Result<()> {
-    let node = property_node(name, type1, type2, flags, vec![FbxProperty::F64(value)]);
-    encode_scalar_node(writer, &node, is_64)
+fn f64_property_node(name: &str, type1: &str, type2: &str, flags: &str, value: f64) -> FbxNode {
+    property_node(name, type1, type2, flags, vec![FbxProperty::F64(value)])
 }
 
-fn write_property_node_vec3<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    name: &str,
-    values: [f64; 3],
-) -> io::Result<()> {
-    // The declared type of a vector property is its own name, which is right
-    // for `Lcl Translation` and friends and wrong for anything else. Nothing
-    // but transform properties goes through here today.
-    let node = property_node(
+/// A three-component property, whose declared type is its own name.
+///
+/// That is right for `Lcl Translation` and the rest of the transform stack,
+/// and wrong for anything else -- a real `Vector3D` property would say so.
+/// Nothing but transform properties goes through here today.
+fn vec3_property_node(name: &str, values: [f64; 3]) -> FbxNode {
+    property_node(
         name,
         name,
         "",
         "A",
         values.into_iter().map(FbxProperty::F64).collect(),
-    );
-    encode_scalar_node(writer, &node, is_64)
+    )
 }
 
 fn decompose_transform(
@@ -1053,26 +993,33 @@ fn decompose_transform(
     ))
 }
 
-fn write_documents<W: Write + Seek>(writer: &mut W, is_64: bool) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "Documents", is_64)?;
-    node.finish_with_children(|w| {
-        let mut count = NodeWriter::start(w, "Count", is_64)?;
-        count.write_property_i32(1)?;
-        count.finish()?;
-
-        let mut doc = NodeWriter::start(w, "Document", is_64)?;
-        doc.write_property_i64(0)?; // Document ID (0 for root)
-        doc.write_property_string("")?;
-        doc.write_property_string("Scene")?;
-        doc.finish()
-    })
+fn documents_node() -> FbxNode {
+    FbxNode {
+        name: "Documents".to_string(),
+        properties: Vec::new(),
+        children: vec![
+            value_node("Count", FbxProperty::I32(1)),
+            FbxNode {
+                name: "Document".to_string(),
+                properties: vec![
+                    FbxProperty::I64(0), // Document ID (0 for root)
+                    FbxProperty::String(String::new()),
+                    FbxProperty::String("Scene".to_string()),
+                ],
+                children: Vec::new(),
+            },
+        ],
+    }
 }
 
+/// Declares how many objects of each type the document holds.
+///
+/// The `Count` node is the number of `ObjectType` blocks, which used to be a
+/// hand-maintained literal that had to be kept in step with the block list by
+/// eye. Building the list first makes it the list's length.
 // Takes one slice per FBX object type so it can emit an accurate `Count`.
 #[allow(clippy::too_many_arguments)]
-fn write_definitions<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
+fn definitions_node(
     meshes: &[MeshData],
     models: &[ModelData],
     materials: &[MaterialData],
@@ -1080,97 +1027,70 @@ fn write_definitions<W: Write + Seek>(
     anim: &[AnimStackData],
     skins: &[SkinData],
     morphs: &[MorphData],
-) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "Definitions", is_64)?;
-    node.finish_with_children(|w| {
-        // Version
-        let mut ver = NodeWriter::start(w, "Version", is_64)?;
-        ver.write_property_i32(100)?;
-        ver.finish()?;
+) -> FbxNode {
+    let limb_nodes = models
+        .iter()
+        .filter(|model| model.class == "LimbNode")
+        .count();
+    let shape_count = morphs
+        .iter()
+        .map(|morph| morph.targets.len())
+        .sum::<usize>();
+    let curve_nodes: usize = anim.iter().map(|stack| stack.channels.len()).sum();
+    // Each channel produces one curve node and its path's component curves.
+    let curve_count: usize = anim
+        .iter()
+        .flat_map(|stack| &stack.channels)
+        .map(|channel| channel.path.component_count())
+        .sum();
 
-        // Count of distinct object types we declare.
-        let mut count = NodeWriter::start(w, "Count", is_64)?;
-        let limb_nodes = models
-            .iter()
-            .filter(|model| model.class == "LimbNode")
-            .count();
-        count.write_property_i32(
-            if skins.is_empty() && morphs.is_empty() {
-                9
-            } else {
-                11
-            } + i32::from(limb_nodes > 0),
-        )?;
-        count.finish()?;
+    let mut object_types = vec![
+        object_type_node("Geometry", (meshes.len() + shape_count) as i32),
+        object_type_node("Model", models.len() as i32),
+    ];
+    if limb_nodes > 0 {
+        // Blender 5's native importer uses this explicit companion to
+        // identify a Model::LimbNode as a skeleton bone.
+        object_types.push(object_type_node("NodeAttribute", limb_nodes as i32));
+    }
+    object_types.push(object_type_node("Material", materials.len() as i32));
+    object_types.push(object_type_node("Texture", textures.len() as i32));
+    object_types.push(object_type_node("Video", textures.len() as i32));
+    object_types.push(object_type_node("AnimationStack", anim.len() as i32));
+    // One layer per stack.
+    object_types.push(object_type_node("AnimationLayer", anim.len() as i32));
+    object_types.push(object_type_node("AnimationCurveNode", curve_nodes as i32));
+    object_types.push(object_type_node("AnimationCurve", curve_count as i32));
+    if !skins.is_empty() || !morphs.is_empty() {
+        let deformer_count = skins.len()
+            + skins.iter().map(|skin| skin.clusters.len()).sum::<usize>()
+            + morphs.len()
+            + morphs
+                .iter()
+                .map(|morph| morph.targets.len())
+                .sum::<usize>();
+        object_types.push(object_type_node("Deformer", deformer_count as i32));
+        object_types.push(object_type_node("Pose", skins.len() as i32));
+    }
 
-        // ObjectType: Geometry
-        let shape_count = morphs
-            .iter()
-            .map(|morph| morph.targets.len())
-            .sum::<usize>();
-        write_object_type(w, is_64, "Geometry", (meshes.len() + shape_count) as i32)?;
-
-        // ObjectType: Model
-        write_object_type(w, is_64, "Model", models.len() as i32)?;
-        if limb_nodes > 0 {
-            // Blender 5's native importer uses this explicit companion to
-            // identify a Model::LimbNode as a skeleton bone.
-            write_object_type(w, is_64, "NodeAttribute", limb_nodes as i32)?;
-        }
-
-        // ObjectType: Material
-        write_object_type(w, is_64, "Material", materials.len() as i32)?;
-
-        // ObjectType: Texture
-        write_object_type(w, is_64, "Texture", textures.len() as i32)?;
-
-        // ObjectType: Video
-        write_object_type(w, is_64, "Video", textures.len() as i32)?;
-
-        // ObjectType: AnimationStack
-        write_object_type(w, is_64, "AnimationStack", anim.len() as i32)?;
-
-        // ObjectType: AnimationLayer (matches stack count; one layer per stack).
-        write_object_type(w, is_64, "AnimationLayer", anim.len() as i32)?;
-
-        let curve_nodes: usize = anim.iter().map(|stack| stack.channels.len()).sum();
-        // Each channel produces one curve node and its path's component curves.
-        write_object_type(w, is_64, "AnimationCurveNode", curve_nodes as i32)?;
-        let curve_count: usize = anim
-            .iter()
-            .flat_map(|stack| &stack.channels)
-            .map(|channel| channel.path.component_count())
-            .sum();
-        write_object_type(w, is_64, "AnimationCurve", curve_count as i32)?;
-        if !skins.is_empty() || !morphs.is_empty() {
-            let deformer_count = skins.len()
-                + skins.iter().map(|skin| skin.clusters.len()).sum::<usize>()
-                + morphs.len()
-                + morphs
-                    .iter()
-                    .map(|morph| morph.targets.len())
-                    .sum::<usize>();
-            write_object_type(w, is_64, "Deformer", deformer_count as i32)?;
-            write_object_type(w, is_64, "Pose", skins.len() as i32)?;
-        }
-
-        Ok(())
-    })
+    let mut children = vec![
+        value_node("Version", FbxProperty::I32(100)),
+        value_node("Count", FbxProperty::I32(object_types.len() as i32)),
+    ];
+    children.extend(object_types);
+    FbxNode {
+        name: "Definitions".to_string(),
+        properties: Vec::new(),
+        children,
+    }
 }
 
-fn write_object_type<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    type_name: &str,
-    count: i32,
-) -> io::Result<()> {
-    let mut ot = NodeWriter::start(writer, "ObjectType", is_64)?;
-    ot.write_property_string(type_name)?;
-    ot.finish_with_children(|w| {
-        let mut c = NodeWriter::start(w, "Count", is_64)?;
-        c.write_property_i32(count)?;
-        c.finish()
-    })
+fn object_type_node(type_name: &str, count: i32) -> FbxNode {
+    FbxNode {
+        name: "ObjectType".to_string(),
+        properties: vec![FbxProperty::String(type_name.to_string())],
+        children: vec![value_node("Count", FbxProperty::I32(count))],
+    }
 }
 
 // Takes one slice per FBX object type; see `write_definitions`.
@@ -1193,131 +1113,120 @@ fn write_objects<W: Write + Seek>(
             encode_node(w, &geometry_node(mesh_data), is_64, options)?;
         }
         for model_data in models {
-            write_model(w, model_data, is_64)?;
+            encode_node(w, &model_node(model_data)?, is_64, options)?;
         }
         for model_data in models.iter().filter(|model| model.class == "LimbNode") {
-            write_limb_node_attribute(w, model_data, is_64)?;
+            encode_node(w, &limb_node_attribute_node(model_data), is_64, options)?;
         }
         for material_data in materials {
-            write_material(w, material_data, is_64)?;
+            encode_node(w, &material_node(material_data), is_64, options)?;
         }
         for texture_data in textures {
-            write_texture(w, texture_data, is_64)?;
-            write_video(w, texture_data, is_64)?;
+            encode_node(w, &texture_node(texture_data), is_64, options)?;
+            encode_node(w, &video_node(texture_data), is_64, options)?;
         }
         for stack in anim {
-            write_animation_stack(w, stack, is_64)?;
+            for node in animation_stack_nodes(stack) {
+                // Animation arrays have always been written uncompressed,
+                // whatever the document's options say -- every curve writer
+                // passed a fresh default. Preserved verbatim here; whether
+                // that is deliberate is a separate question from this move.
+                encode_node(w, &node, is_64, &WriterOptions::default())?;
+            }
         }
         for skin in skins {
-            write_skin(w, skin, models, is_64, options)?;
+            for node in skin_nodes(skin, models) {
+                encode_node(w, &node, is_64, options)?;
+            }
         }
         for morph in morphs {
-            write_morph(w, morph, is_64, options)?;
+            for node in morph_nodes(morph) {
+                encode_node(w, &node, is_64, options)?;
+            }
         }
         Ok(())
     })
 }
 
-fn write_model<W: Write + Seek>(
-    writer: &mut W,
-    model_data: &ModelData,
-    is_64: bool,
-) -> io::Result<()> {
-    let mut node = NodeWriter::start(writer, "Model", is_64)?;
-    node.write_property_i64(model_data.model_id)?;
-    // Name::Class separator format
-    let object_name = name_class(&model_data.name, "Model");
-    node.write_property_string(&object_name)?;
-    node.write_property_string(model_data.class)?;
-
-    node.finish_with_children(|w| {
-        let mut ver = NodeWriter::start(w, "Version", is_64)?;
-        ver.write_property_i32(232)?;
-        ver.finish()?;
-
-        let props = NodeWriter::start(w, "Properties70", is_64)?;
-        props.finish_with_children(|w| {
-            if let Some(transform) = model_data.transform {
-                let (matrix_translation, matrix_rotation, matrix_scaling) =
-                    decompose_transform(transform)?;
-                let stack = model_data.transform_stack.as_ref();
-                let as_f64 = |value: [f32; 3]| value.map(f64::from);
-                if let Some(stack) = stack {
-                    // A source stack deliberately retains property presence:
-                    // an omitted Lcl property is an authored FBX default, not
-                    // an invitation to synthesize a decomposition from the
-                    // semantic local matrix (which may already include pre/
-                    // post rotation).
-                    for (name, value) in [
-                        ("Lcl Translation", stack.translation),
-                        ("Lcl Rotation", stack.rotation),
-                        ("Lcl Scaling", stack.scaling),
-                    ] {
-                        if let Some(value) = value {
-                            write_property_node_vec3(w, is_64, name, as_f64(value))?;
-                        }
-                    }
-                    if let Some(value) = stack.rotation_order {
-                        write_property_node(w, is_64, "RotationOrder", "enum", "", "", value)?;
-                    }
-                    if let Some(value) = stack.rotation_active {
-                        write_property_node_bool(w, is_64, "RotationActive", value)?;
-                    }
-                    for (name, value) in [
-                        ("PreRotation", stack.pre_rotation),
-                        ("PostRotation", stack.post_rotation),
-                        ("RotationOffset", stack.rotation_offset),
-                        ("RotationPivot", stack.rotation_pivot),
-                        ("ScalingOffset", stack.scaling_offset),
-                        ("ScalingPivot", stack.scaling_pivot),
-                    ] {
-                        if let Some(value) = value {
-                            write_property_node_vec3(w, is_64, name, as_f64(value))?;
-                        }
-                    }
-                    if let Some(value) = stack.inherit_type {
-                        write_property_node(w, is_64, "InheritType", "enum", "", "", value)?;
-                    }
-                } else {
-                    write_property_node_vec3(w, is_64, "Lcl Translation", matrix_translation)?;
-                    write_property_node_vec3(w, is_64, "Lcl Rotation", matrix_rotation)?;
-                    write_property_node_vec3(w, is_64, "Lcl Scaling", matrix_scaling)?;
+fn model_node(model_data: &ModelData) -> io::Result<FbxNode> {
+    let mut properties = Vec::new();
+    if let Some(transform) = model_data.transform {
+        let (matrix_translation, matrix_rotation, matrix_scaling) = decompose_transform(transform)?;
+        let as_f64 = |value: [f32; 3]| value.map(f64::from);
+        if let Some(stack) = model_data.transform_stack.as_ref() {
+            // A source stack deliberately retains property presence: an
+            // omitted Lcl property is an authored FBX default, not an
+            // invitation to synthesize a decomposition from the semantic local
+            // matrix (which may already include pre/post rotation).
+            for (name, value) in [
+                ("Lcl Translation", stack.translation),
+                ("Lcl Rotation", stack.rotation),
+                ("Lcl Scaling", stack.scaling),
+            ] {
+                if let Some(value) = value {
+                    properties.push(vec3_property_node(name, as_f64(value)));
                 }
             }
-            Ok(())
-        })?;
+            if let Some(value) = stack.rotation_order {
+                properties.push(int_property_node("RotationOrder", "enum", "", "", value));
+            }
+            if let Some(value) = stack.rotation_active {
+                properties.push(bool_property_node("RotationActive", value));
+            }
+            for (name, value) in [
+                ("PreRotation", stack.pre_rotation),
+                ("PostRotation", stack.post_rotation),
+                ("RotationOffset", stack.rotation_offset),
+                ("RotationPivot", stack.rotation_pivot),
+                ("ScalingOffset", stack.scaling_offset),
+                ("ScalingPivot", stack.scaling_pivot),
+            ] {
+                if let Some(value) = value {
+                    properties.push(vec3_property_node(name, as_f64(value)));
+                }
+            }
+            if let Some(value) = stack.inherit_type {
+                properties.push(int_property_node("InheritType", "enum", "", "", value));
+            }
+        } else {
+            properties.push(vec3_property_node("Lcl Translation", matrix_translation));
+            properties.push(vec3_property_node("Lcl Rotation", matrix_rotation));
+            properties.push(vec3_property_node("Lcl Scaling", matrix_scaling));
+        }
+    }
 
-        // Shading
-        let mut shading = NodeWriter::start(w, "Shading", is_64)?;
-        shading.write_property_i16(1)?;
-        shading.finish()?;
-
-        // Culling
-        let mut culling = NodeWriter::start(w, "Culling", is_64)?;
-        culling.write_property_string("CullingOff")?;
-        culling.finish()?;
-
-        Ok(())
+    Ok(FbxNode {
+        name: "Model".to_string(),
+        properties: vec![
+            FbxProperty::I64(model_data.model_id),
+            FbxProperty::String(name_class(&model_data.name, "Model")),
+            FbxProperty::String(model_data.class.to_string()),
+        ],
+        children: vec![
+            value_node("Version", FbxProperty::I32(232)),
+            properties70_node(properties),
+            value_node("Shading", FbxProperty::I16(1)),
+            value_node("Culling", FbxProperty::String("CullingOff".to_string())),
+        ],
     })
 }
 
 /// FBX separates a limb's Model transform from its Skeleton node attribute.
 /// Without this object Blender 5 imports animated joints as plain empties and
 /// cannot create an armature modifier for their skin clusters.
-fn write_limb_node_attribute<W: Write + Seek>(
-    writer: &mut W,
-    model_data: &ModelData,
-    is_64: bool,
-) -> io::Result<()> {
-    let mut node = NodeWriter::start(writer, "NodeAttribute", is_64)?;
-    node.write_property_i64(limb_node_attribute_id(model_data.model_id))?;
-    node.write_property_string(&name_class(&model_data.name, "NodeAttribute"))?;
-    node.write_property_string("LimbNode")?;
-    node.finish_with_children(|w| {
-        let mut type_flags = NodeWriter::start(w, "TypeFlags", is_64)?;
-        type_flags.write_property_string("Skeleton")?;
-        type_flags.finish()
-    })
+fn limb_node_attribute_node(model_data: &ModelData) -> FbxNode {
+    FbxNode {
+        name: "NodeAttribute".to_string(),
+        properties: vec![
+            FbxProperty::I64(limb_node_attribute_id(model_data.model_id)),
+            FbxProperty::String(name_class(&model_data.name, "NodeAttribute")),
+            FbxProperty::String("LimbNode".to_string()),
+        ],
+        children: vec![value_node(
+            "TypeFlags",
+            FbxProperty::String("Skeleton".to_string()),
+        )],
+    }
 }
 
 fn limb_node_attribute_id(model_id: i64) -> i64 {
@@ -1339,174 +1248,182 @@ fn flatten_fbx_transform(transform: crate::fbx_scene::FbxTransform) -> Vec<f64> 
         .collect()
 }
 
-/// Write a Skin/Cluster set and its explicit BindPose.
+/// Builds a Skin, its Clusters and an explicit BindPose -- siblings, not one
+/// node.
 ///
 /// Blender's native importer resolves clusters through the geometry and joint
 /// Model connections. BindPose is emitted independently so rest transforms do
 /// not depend on a frame-zero animation sample.
-fn write_skin<W: Write + Seek>(
-    writer: &mut W,
-    skin: &SkinData,
-    models: &[ModelData],
-    is_64: bool,
-    options: &WriterOptions,
-) -> io::Result<()> {
-    let mut deformer = NodeWriter::start(writer, "Deformer", is_64)?;
-    deformer.write_property_i64(skin.skin_id)?;
-    deformer.write_property_string(&name_class("Skin", "Deformer"))?;
-    deformer.write_property_string("Skin")?;
-    deformer.finish_with_children(|w| {
-        let mut version = NodeWriter::start(w, "Version", is_64)?;
-        version.write_property_i32(101)?;
-        version.finish()?;
-        let mut accuracy = NodeWriter::start(w, "Link_DeformAcuracy", is_64)?;
-        accuracy.write_property_f64(50.0)?;
-        accuracy.finish()
-    })?;
+fn skin_nodes(skin: &SkinData, models: &[ModelData]) -> Vec<FbxNode> {
+    let mut nodes = vec![FbxNode {
+        name: "Deformer".to_string(),
+        properties: vec![
+            FbxProperty::I64(skin.skin_id),
+            FbxProperty::String(name_class("Skin", "Deformer")),
+            FbxProperty::String("Skin".to_string()),
+        ],
+        children: vec![
+            value_node("Version", FbxProperty::I32(101)),
+            value_node("Link_DeformAcuracy", FbxProperty::F64(50.0)),
+        ],
+    }];
 
     for cluster in &skin.clusters {
-        let mut node = NodeWriter::start(writer, "Deformer", is_64)?;
-        node.write_property_i64(cluster.cluster_id)?;
-        node.write_property_string(&name_class("Cluster", "SubDeformer"))?;
-        node.write_property_string("Cluster")?;
-        node.finish_with_children(|w| {
-            let mut version = NodeWriter::start(w, "Version", is_64)?;
-            version.write_property_i32(100)?;
-            version.finish()?;
-            let mut user_data = NodeWriter::start(w, "UserData", is_64)?;
-            user_data.write_property_string("")?;
-            user_data.write_property_string("")?;
-            user_data.finish()?;
-            let mut indexes = NodeWriter::start(w, "Indexes", is_64)?;
-            let values: Vec<i32> = cluster
-                .source
-                .control_point_indices
-                .iter()
-                .map(|&index| index as i32)
-                .collect();
-            indexes.write_property_i32_array(&values, options)?;
-            indexes.finish()?;
-            let mut weights = NodeWriter::start(w, "Weights", is_64)?;
-            let values: Vec<f64> = cluster
-                .source
-                .weights
-                .iter()
-                .copied()
-                .map(f64::from)
-                .collect();
-            weights.write_property_f64_array(&values, options)?;
-            weights.finish()?;
-            let mut transform = NodeWriter::start(w, "Transform", is_64)?;
-            transform.write_property_f64_array(
-                &flatten_fbx_transform(cluster.source.mesh_bind_transform),
-                options,
-            )?;
-            transform.finish()?;
-            let mut transform_link = NodeWriter::start(w, "TransformLink", is_64)?;
-            transform_link.write_property_f64_array(
-                &flatten_fbx_transform(cluster.source.joint_bind_transform),
-                options,
-            )?;
-            transform_link.finish()?;
-            if let Some(armature_bind_transform) = cluster.source.armature_bind_transform {
-                let mut transform_associate =
-                    NodeWriter::start(w, "TransformAssociateModel", is_64)?;
-                transform_associate.write_property_f64_array(
-                    &flatten_fbx_transform(armature_bind_transform),
-                    options,
-                )?;
-                transform_associate.finish()?;
-            }
-            Ok(())
-        })?;
+        let source = &cluster.source;
+        let mut children = vec![
+            value_node("Version", FbxProperty::I32(100)),
+            FbxNode {
+                name: "UserData".to_string(),
+                properties: vec![
+                    FbxProperty::String(String::new()),
+                    FbxProperty::String(String::new()),
+                ],
+                children: Vec::new(),
+            },
+            value_node(
+                "Indexes",
+                FbxProperty::I32Array(
+                    source
+                        .control_point_indices
+                        .iter()
+                        .map(|&index| index as i32)
+                        .collect(),
+                ),
+            ),
+            value_node(
+                "Weights",
+                FbxProperty::F64Array(source.weights.iter().copied().map(f64::from).collect()),
+            ),
+            value_node(
+                "Transform",
+                FbxProperty::F64Array(flatten_fbx_transform(source.mesh_bind_transform)),
+            ),
+            value_node(
+                "TransformLink",
+                FbxProperty::F64Array(flatten_fbx_transform(source.joint_bind_transform)),
+            ),
+        ];
+        if let Some(armature_bind_transform) = source.armature_bind_transform {
+            children.push(value_node(
+                "TransformAssociateModel",
+                FbxProperty::F64Array(flatten_fbx_transform(armature_bind_transform)),
+            ));
+        }
+        nodes.push(FbxNode {
+            name: "Deformer".to_string(),
+            properties: vec![
+                FbxProperty::I64(cluster.cluster_id),
+                FbxProperty::String(name_class("Cluster", "SubDeformer")),
+                FbxProperty::String("Cluster".to_string()),
+            ],
+            children,
+        });
     }
 
-    let mut pose = NodeWriter::start(writer, "Pose", is_64)?;
-    pose.write_property_i64(skin.pose_id)?;
-    pose.write_property_string(&name_class("BindPose", "Pose"))?;
-    pose.write_property_string("BindPose")?;
-    pose.finish_with_children(|w| {
-        let mut pose_type = NodeWriter::start(w, "Type", is_64)?;
-        pose_type.write_property_string("BindPose")?;
-        pose_type.finish()?;
-        let mut version = NodeWriter::start(w, "Version", is_64)?;
-        version.write_property_i32(100)?;
-        version.finish()?;
-        for (node_id, transform) in &skin.bind_pose {
-            let Some(model) = models
-                .iter()
-                .find(|model| model.scene_node_id == Some(*node_id))
-            else {
-                continue;
-            };
-            let pose_node = NodeWriter::start(w, "PoseNode", is_64)?;
-            pose_node.finish_with_children(|pw| {
-                let mut id = NodeWriter::start(pw, "Node", is_64)?;
-                id.write_property_i64(model.model_id)?;
-                id.finish()?;
-                let mut matrix = NodeWriter::start(pw, "Matrix", is_64)?;
-                matrix.write_property_f64_array(&flatten_fbx_transform(*transform), options)?;
-                matrix.finish()
-            })?;
-        }
-        Ok(())
-    })
+    let mut pose_children = vec![
+        value_node("Type", FbxProperty::String("BindPose".to_string())),
+        value_node("Version", FbxProperty::I32(100)),
+    ];
+    for (node_id, transform) in &skin.bind_pose {
+        let Some(model) = models
+            .iter()
+            .find(|model| model.scene_node_id == Some(*node_id))
+        else {
+            continue;
+        };
+        pose_children.push(FbxNode {
+            name: "PoseNode".to_string(),
+            properties: Vec::new(),
+            children: vec![
+                value_node("Node", FbxProperty::I64(model.model_id)),
+                value_node(
+                    "Matrix",
+                    FbxProperty::F64Array(flatten_fbx_transform(*transform)),
+                ),
+            ],
+        });
+    }
+    nodes.push(FbxNode {
+        name: "Pose".to_string(),
+        properties: vec![
+            FbxProperty::I64(skin.pose_id),
+            FbxProperty::String(name_class("BindPose", "Pose")),
+            FbxProperty::String("BindPose".to_string()),
+        ],
+        children: pose_children,
+    });
+
+    nodes
 }
 
-fn write_morph<W: Write + Seek>(
-    writer: &mut W,
-    morph: &MorphData,
-    is_64: bool,
-    options: &WriterOptions,
-) -> io::Result<()> {
-    let mut blend_shape = NodeWriter::start(writer, "Deformer", is_64)?;
-    blend_shape.write_property_i64(morph.blend_shape_id)?;
-    blend_shape.write_property_string(&name_class("BlendShape", "Deformer"))?;
-    blend_shape.write_property_string("BlendShape")?;
-    blend_shape.finish()?;
+/// Builds a BlendShape deformer, one channel per target and the shape
+/// geometry each channel drives -- siblings, not one node.
+fn morph_nodes(morph: &MorphData) -> Vec<FbxNode> {
+    let mut nodes = vec![FbxNode {
+        name: "Deformer".to_string(),
+        properties: vec![
+            FbxProperty::I64(morph.blend_shape_id),
+            FbxProperty::String(name_class("BlendShape", "Deformer")),
+            FbxProperty::String("BlendShape".to_string()),
+        ],
+        children: Vec::new(),
+    }];
 
     for target in &morph.targets {
-        let name = target.source.name.as_deref().unwrap_or("MorphTarget");
-        let mut channel = NodeWriter::start(writer, "Deformer", is_64)?;
-        channel.write_property_i64(target.channel_id)?;
-        channel.write_property_string(&name_class(name, "SubDeformer"))?;
-        channel.write_property_string("BlendShapeChannel")?;
-        channel.finish_with_children(|w| {
-            let mut percent = NodeWriter::start(w, "DeformPercent", is_64)?;
-            percent.write_property_f64(target.source.default_weight as f64)?;
-            percent.finish()?;
-            let mut weights = NodeWriter::start(w, "FullWeights", is_64)?;
-            weights.write_property_f64_array(&[target.source.full_weight as f64], options)?;
-            weights.finish()
-        })?;
-
-        let mut shape = NodeWriter::start(writer, "Geometry", is_64)?;
-        shape.write_property_i64(target.shape_geometry_id)?;
-        shape.write_property_string(&name_class(name, "Geometry"))?;
-        shape.write_property_string("Shape")?;
-        shape.finish_with_children(|w| {
-            let mut indexes = NodeWriter::start(w, "Indexes", is_64)?;
-            let values: Vec<i32> = target
-                .source
-                .control_point_indices
-                .iter()
-                .map(|&index| index as i32)
-                .collect();
-            indexes.write_property_i32_array(&values, options)?;
-            indexes.finish()?;
-            let mut vertices = NodeWriter::start(w, "Vertices", is_64)?;
-            let deltas: Vec<f64> = target
-                .source
-                .position_deltas
-                .iter()
-                .flat_map(|delta| delta.iter().copied())
-                .map(f64::from)
-                .collect();
-            vertices.write_property_f64_array(&deltas, options)?;
-            vertices.finish()
-        })?;
+        let source = &target.source;
+        let name = source.name.as_deref().unwrap_or("MorphTarget");
+        nodes.push(FbxNode {
+            name: "Deformer".to_string(),
+            properties: vec![
+                FbxProperty::I64(target.channel_id),
+                FbxProperty::String(name_class(name, "SubDeformer")),
+                FbxProperty::String("BlendShapeChannel".to_string()),
+            ],
+            children: vec![
+                value_node(
+                    "DeformPercent",
+                    FbxProperty::F64(source.default_weight as f64),
+                ),
+                value_node(
+                    "FullWeights",
+                    FbxProperty::F64Array(vec![source.full_weight as f64]),
+                ),
+            ],
+        });
+        nodes.push(FbxNode {
+            name: "Geometry".to_string(),
+            properties: vec![
+                FbxProperty::I64(target.shape_geometry_id),
+                FbxProperty::String(name_class(name, "Geometry")),
+                FbxProperty::String("Shape".to_string()),
+            ],
+            children: vec![
+                value_node(
+                    "Indexes",
+                    FbxProperty::I32Array(
+                        source
+                            .control_point_indices
+                            .iter()
+                            .map(|&index| index as i32)
+                            .collect(),
+                    ),
+                ),
+                value_node(
+                    "Vertices",
+                    FbxProperty::F64Array(
+                        source
+                            .position_deltas
+                            .iter()
+                            .flat_map(|delta| delta.iter().copied())
+                            .map(f64::from)
+                            .collect(),
+                    ),
+                ),
+            ],
+        });
     }
-    Ok(())
+
+    nodes
 }
 
 fn geometry_node(mesh_data: &MeshData) -> FbxNode {
@@ -1974,191 +1891,170 @@ fn layer_element_material_node(material_indices: &[i32]) -> FbxNode {
     }
 }
 
-fn write_material<W: Write + Seek>(
-    writer: &mut W,
-    material_data: &MaterialData,
-    is_64: bool,
-) -> io::Result<()> {
-    let mut node = NodeWriter::start(writer, "Material", is_64)?;
-    node.write_property_i64(material_data.material_id)?;
-    let name = material_data
-        .source
+fn material_node(material_data: &MaterialData) -> FbxNode {
+    // The object-level node below needs a value, but the property is only
+    // written when the source actually had one: inventing "Phong" made a
+    // read/write cycle add a shading model the file never declared.
+    let declared_shading = material_data.source.shading_model.as_deref();
+    let shading = declared_shading.unwrap_or("Phong");
+
+    let mut properties = Vec::new();
+    if let Some(shading) = declared_shading {
+        properties.push(string_property_node("ShadingModel", shading));
+    }
+    // Only emit the fields that are present so round-trips stay clean. The
+    // order is the one Autodesk writes -- each colour followed by its factor.
+    let source = &material_data.source;
+    for property in [
+        source
+            .diffuse
+            .map(|v| color_property_node("DiffuseColor", v)),
+        source
+            .diffuse_factor
+            .map(|v| scalar_property_node("DiffuseFactor", v as f64)),
+        source
+            .specular
+            .map(|v| color_property_node("SpecularColor", v)),
+        source
+            .specular_factor
+            .map(|v| scalar_property_node("SpecularFactor", v as f64)),
+        source
+            .shininess
+            .map(|v| scalar_property_node("Shininess", v as f64)),
+        source
+            .emissive
+            .map(|v| color_property_node("EmissiveColor", v)),
+        source
+            .emissive_factor
+            .map(|v| scalar_property_node("EmissiveFactor", v as f64)),
+        source
+            .ambient
+            .map(|v| color_property_node("AmbientColor", v)),
+        source
+            .reflection_factor
+            .map(|v| scalar_property_node("ReflectionFactor", v as f64)),
+        source
+            .transparency_factor
+            .map(|v| scalar_property_node("TransparencyFactor", v as f64)),
+        source
+            .opacity
+            .map(|v| scalar_property_node("Opacity", v as f64)),
+        source
+            .bump_factor
+            .map(|v| scalar_property_node("BumpFactor", v as f64)),
+    ] {
+        properties.extend(property);
+    }
+
+    let name = source
         .name
         .clone()
         .unwrap_or_else(|| "Material".to_string());
-    let object_name = name_class(&name, "Material");
-    node.write_property_string(&object_name)?;
-    node.write_property_string("")?;
-
-    node.finish_with_children(|w| {
-        // The object-level node below needs a value, but the property is only
-        // written when the source actually had one: inventing "Phong" made a
-        // read/write cycle add a shading model the file never declared.
-        let declared_shading = material_data.source.shading_model.as_deref();
-        let shading = declared_shading.unwrap_or("Phong");
-        let mut version = NodeWriter::start(w, "Version", is_64)?;
-        version.write_property_i32(102)?;
-        version.finish()?;
-
-        let props = NodeWriter::start(w, "Properties70", is_64)?;
-        props.finish_with_children(|pw| {
-            if let Some(shading) = declared_shading {
-                write_property_string_value(pw, is_64, "ShadingModel", shading)?;
-            }
-
-            // Only emit the fields that are present so round-trips stay clean.
-            if let Some(diffuse) = material_data.source.diffuse {
-                write_property_color(pw, is_64, "DiffuseColor", diffuse)?;
-            }
-            if let Some(diffuse_factor) = material_data.source.diffuse_factor {
-                write_property_scalar_value(pw, is_64, "DiffuseFactor", diffuse_factor as f64)?;
-            }
-            if let Some(specular) = material_data.source.specular {
-                write_property_color(pw, is_64, "SpecularColor", specular)?;
-            }
-            if let Some(specular_factor) = material_data.source.specular_factor {
-                write_property_scalar_value(pw, is_64, "SpecularFactor", specular_factor as f64)?;
-            }
-            if let Some(shininess) = material_data.source.shininess {
-                write_property_scalar_value(pw, is_64, "Shininess", shininess as f64)?;
-            }
-            if let Some(emissive) = material_data.source.emissive {
-                write_property_color(pw, is_64, "EmissiveColor", emissive)?;
-            }
-            if let Some(emissive_factor) = material_data.source.emissive_factor {
-                write_property_scalar_value(pw, is_64, "EmissiveFactor", emissive_factor as f64)?;
-            }
-            if let Some(ambient) = material_data.source.ambient {
-                write_property_color(pw, is_64, "AmbientColor", ambient)?;
-            }
-            if let Some(reflection) = material_data.source.reflection_factor {
-                write_property_scalar_value(pw, is_64, "ReflectionFactor", reflection as f64)?;
-            }
-            if let Some(transparency) = material_data.source.transparency_factor {
-                write_property_scalar_value(pw, is_64, "TransparencyFactor", transparency as f64)?;
-            }
-            if let Some(opacity) = material_data.source.opacity {
-                write_property_scalar_value(pw, is_64, "Opacity", opacity as f64)?;
-            }
-            if let Some(bump) = material_data.source.bump_factor {
-                write_property_scalar_value(pw, is_64, "BumpFactor", bump as f64)?;
-            }
-            Ok(())
-        })?;
-
-        // ShadingModel at the object level mirrors Blender's output.
-        let mut child = NodeWriter::start(w, "ShadingModel", is_64)?;
-        child.write_property_string(shading)?;
-        child.finish()?;
-        Ok(())
-    })
+    FbxNode {
+        name: "Material".to_string(),
+        properties: vec![
+            FbxProperty::I64(material_data.material_id),
+            FbxProperty::String(name_class(&name, "Material")),
+            FbxProperty::String(String::new()),
+        ],
+        children: vec![
+            value_node("Version", FbxProperty::I32(102)),
+            properties70_node(properties),
+            // ShadingModel at the object level mirrors Blender's output.
+            value_node("ShadingModel", FbxProperty::String(shading.to_string())),
+        ],
+    }
 }
 
-fn write_texture<W: Write + Seek>(
-    writer: &mut W,
-    texture_data: &TextureData,
-    is_64: bool,
-) -> io::Result<()> {
-    let mut node = NodeWriter::start(writer, "Texture", is_64)?;
-    node.write_property_i64(texture_data.texture_id)?;
+fn texture_node(texture_data: &TextureData) -> FbxNode {
     // An unnamed texture stays unnamed. Substituting the class name here gave
     // it one, so a document that had no texture names acquired them by being
     // rewritten -- the same fabrication as naming an unnamed Geometry after
     // its Model.
     let name = texture_data.source.name.clone().unwrap_or_default();
-    let object_name = name_class(&name, "Texture");
-    node.write_property_string(&object_name)?;
-    node.write_property_string("")?;
-
-    node.finish_with_children(|w| {
-        let mut m = NodeWriter::start(w, "Media", is_64)?;
-        m.write_property_string(&name)?;
-        m.finish()?;
-        let mut f = NodeWriter::start(w, "FileName", is_64)?;
-        f.write_property_string(texture_data.source.filename.as_deref().unwrap_or(""))?;
-        f.finish()?;
-        let mut rf = NodeWriter::start(w, "RelativeFilename", is_64)?;
-        rf.write_property_string(texture_data.source.filename.as_deref().unwrap_or(""))?;
-        rf.finish()?;
-        Ok(())
-    })
+    let filename = texture_data.source.filename.clone().unwrap_or_default();
+    FbxNode {
+        name: "Texture".to_string(),
+        properties: vec![
+            FbxProperty::I64(texture_data.texture_id),
+            FbxProperty::String(name_class(&name, "Texture")),
+            FbxProperty::String(String::new()),
+        ],
+        children: vec![
+            value_node("Media", FbxProperty::String(name)),
+            value_node("FileName", FbxProperty::String(filename.clone())),
+            value_node("RelativeFilename", FbxProperty::String(filename)),
+        ],
+    }
 }
 
-fn write_video<W: Write + Seek>(
-    writer: &mut W,
-    texture_data: &TextureData,
-    is_64: bool,
-) -> io::Result<()> {
-    let mut node = NodeWriter::start(writer, "Video", is_64)?;
-    node.write_property_i64(texture_data.video_id)?;
+fn video_node(texture_data: &TextureData) -> FbxNode {
     // Unnamed stays unnamed, as for the `Texture` above.
     let name = texture_data.source.name.clone().unwrap_or_default();
-    let object_name = name_class(&name, "Video");
-    node.write_property_string(&object_name)?;
-    node.write_property_string("Clip")?;
-
-    node.finish_with_children(|w| {
-        let mut f = NodeWriter::start(w, "Filename", is_64)?;
-        f.write_property_string(texture_data.source.filename.as_deref().unwrap_or(""))?;
-        f.finish()?;
-        let mut rf = NodeWriter::start(w, "RelativeFilename", is_64)?;
-        rf.write_property_string(texture_data.source.filename.as_deref().unwrap_or(""))?;
-        rf.finish()?;
-        if let Some(content) = &texture_data.source.content {
-            let mut content_node = NodeWriter::start(w, "Content", is_64)?;
-            content_node.write_property_raw(content)?;
-            content_node.finish()?;
-        }
-        Ok(())
-    })
+    let filename = texture_data.source.filename.clone().unwrap_or_default();
+    let mut children = vec![
+        value_node("Filename", FbxProperty::String(filename.clone())),
+        value_node("RelativeFilename", FbxProperty::String(filename)),
+    ];
+    if let Some(content) = &texture_data.source.content {
+        children.push(value_node("Content", FbxProperty::Raw(content.clone())));
+    }
+    FbxNode {
+        name: "Video".to_string(),
+        properties: vec![
+            FbxProperty::I64(texture_data.video_id),
+            FbxProperty::String(name_class(&name, "Video")),
+            FbxProperty::String("Clip".to_string()),
+        ],
+        children,
+    }
 }
 
-fn write_animation_stack<W: Write + Seek>(
-    writer: &mut W,
-    stack: &AnimStackData,
-    is_64: bool,
-) -> io::Result<()> {
+/// Builds an `AnimationStack`, its single `AnimationLayer`, and the curve
+/// nodes and curves of every channel -- siblings, not one node.
+fn animation_stack_nodes(stack: &AnimStackData) -> Vec<FbxNode> {
     // KTime ticks-per-second used on the writer side. FBX < 8000 default is V7.
     const KTIME: i64 = 46_186_158_000;
     let stop = (stack.duration.max(0.0) as f64 * KTIME as f64) as i64;
-
-    let mut astack = NodeWriter::start(writer, "AnimationStack", is_64)?;
-    astack.write_property_i64(stack.stack_id)?;
     let name = stack
         .name
         .clone()
         .unwrap_or_else(|| "AnimStack".to_string());
-    let object_name = name_class(&name, "AnimStack");
-    astack.write_property_string(&object_name)?;
-    astack.write_property_string("")?;
-    astack.finish_with_children(|w| {
-        let props = NodeWriter::start(w, "Properties70", is_64)?;
-        props.finish_with_children(|pw| {
-            write_property_timestamp(pw, is_64, "LocalStop", stop)?;
-            Ok(())
-        })?;
-        Ok(())
-    })?;
 
-    let mut alayer = NodeWriter::start(writer, "AnimationLayer", is_64)?;
-    alayer.write_property_i64(stack.layer_id)?;
-    let layer_name = name_class(&name, "AnimLayer");
-    alayer.write_property_string(&layer_name)?;
-    alayer.write_property_string("")?;
-    alayer.finish()?;
-
+    let mut nodes = vec![
+        FbxNode {
+            name: "AnimationStack".to_string(),
+            properties: vec![
+                FbxProperty::I64(stack.stack_id),
+                FbxProperty::String(name_class(&name, "AnimStack")),
+                FbxProperty::String(String::new()),
+            ],
+            children: vec![properties70_node(vec![timestamp_property_node(
+                "LocalStop",
+                stop,
+            )])],
+        },
+        FbxNode {
+            name: "AnimationLayer".to_string(),
+            properties: vec![
+                FbxProperty::I64(stack.layer_id),
+                FbxProperty::String(name_class(&name, "AnimLayer")),
+                FbxProperty::String(String::new()),
+            ],
+            children: Vec::new(),
+        },
+    ];
     for channel in &stack.channels {
-        write_animation_curve_node(writer, stack.stack_id, channel, is_64)?;
+        nodes.extend(animation_curve_nodes(stack.stack_id, channel));
     }
-    Ok(())
+    nodes
 }
 
-fn write_animation_curve_node<W: Write + Seek>(
-    writer: &mut W,
+/// Builds one channel's `AnimationCurveNode` and its component curves.
+fn animation_curve_nodes(
     stack_id: i64,
     channel: &crate::fbx_scene::FbxAnimChannel,
-    is_64: bool,
-) -> io::Result<()> {
+) -> Vec<FbxNode> {
     // Allocate a stable id by hashing node + path. The Connections section
     // reuses this id when wiring the curve node to its model and curves.
     let id = anim_object_id(
@@ -2168,131 +2064,119 @@ fn write_animation_curve_node<W: Write + Seek>(
         channel.morph_target_index,
         "node",
     );
-    let mut node = NodeWriter::start(writer, "AnimationCurveNode", is_64)?;
-    node.write_property_i64(id)?;
-    node.write_property_string(&name_class("", "AnimCurveNode"))?;
-    node.write_property_string("")?;
-    node.finish_with_children(|w| {
-        let props = NodeWriter::start(w, "Properties70", is_64)?;
-        props.finish_with_children(|pw| {
-            // Emit default values for each component so consumers can resolve
-            // the curve node even when a component curve is missing.
-            for (suffix, default) in [("d|X", 0.0f64), ("d|Y", 0.0f64), ("d|Z", 0.0f64)]
-                .into_iter()
-                .take(channel.path.component_count())
-            {
-                let mut p = NodeWriter::start(pw, "P", is_64)?;
-                p.write_property_string(suffix)?;
-                p.write_property_string("Number")?;
-                p.write_property_string("")?;
-                p.write_property_string("A")?;
-                p.write_property_f64(default)?;
-                p.finish()?;
-            }
-            Ok(())
-        })?;
-        Ok(())
-    })?;
+
+    // Emit default values for each component so consumers can resolve the
+    // curve node even when a component curve is missing.
+    let defaults: Vec<FbxNode> = ["d|X", "d|Y", "d|Z"]
+        .into_iter()
+        .take(channel.path.component_count())
+        .map(|suffix| scalar_property_node(suffix, 0.0))
+        .collect();
+
+    let mut nodes = vec![FbxNode {
+        name: "AnimationCurveNode".to_string(),
+        properties: vec![
+            FbxProperty::I64(id),
+            FbxProperty::String(name_class("", "AnimCurveNode")),
+            FbxProperty::String(String::new()),
+        ],
+        children: vec![properties70_node(defaults)],
+    }];
 
     // Emit one AnimationCurve per component, connected OP via d|X/d|Y/d|Z.
     for component in 0u32..channel.path.component_count() as u32 {
-        let curve_id = anim_curve_id(id, component);
-        let mut curve = NodeWriter::start(writer, "AnimationCurve", is_64)?;
-        curve.write_property_i64(curve_id)?;
-        curve.write_property_string(&name_class("", "AnimCurve"))?;
-        curve.write_property_string("")?;
-        curve.finish_with_children(|w| {
-            let mut default = NodeWriter::start(w, "Default", is_64)?;
-            default.write_property_f64(0.0)?;
-            default.finish()?;
-            let mut keyver = NodeWriter::start(w, "KeyVer", is_64)?;
-            keyver.write_property_i32(4009)?;
-            keyver.finish()?;
-
-            // Build key times + values for this component.
-            const KTIME: f64 = 46_186_158_000.0;
-            let n = channel.sampler.input.len();
-            let mut key_times = Vec::with_capacity(n);
-            let mut key_values = Vec::with_capacity(n);
-            for i in 0..n {
-                key_times.push((channel.sampler.input[i] as f64 * KTIME) as i64);
-                let value_index = i * channel.path.component_count() + (component as usize);
-                key_values.push(
-                    channel
-                        .sampler
-                        .output
-                        .get(value_index)
-                        .copied()
-                        .unwrap_or(0.0),
-                );
-            }
-            // FBX stores Euler rotations in degrees; the reader converted them
-            // to radians, so convert back here.
-            let scale = if channel.path == crate::fbx_scene::FbxAnimChannelPath::Rotation {
-                180.0 / std::f32::consts::PI
-            } else {
-                1.0
-            };
-
-            let mut times_node = NodeWriter::start(w, "KeyTime", is_64)?;
-            times_node.write_property_i64_array(&key_times, &WriterOptions::default())?;
-            times_node.finish()?;
-
-            let values: Vec<f32> = key_values.iter().map(|v| v * scale).collect();
-            let mut values_node = NodeWriter::start(w, "KeyValueFloat", is_64)?;
-            values_node.write_property_f32_array(&values, &WriterOptions::default())?;
-            values_node.finish()?;
-
-            // KeyAttr* is run-length encoded. Cubic keys carry their explicit
-            // right slope and the next key's left slope in four-float records,
-            // matching Blender 5 / ufbx's native FBX contract.
-            let flags_value = channel.sampler.interpolation.to_key_attr_flags();
-            let cubic =
-                channel.sampler.interpolation == crate::fbx_scene::FbxAnimInterpolation::Cubic;
-            let flags = if cubic {
-                vec![flags_value; n]
-            } else {
-                vec![flags_value]
-            };
-            let mut flags_node = NodeWriter::start(w, "KeyAttrFlags", is_64)?;
-            flags_node.write_property_i32_array(&flags, &WriterOptions::default())?;
-            flags_node.finish()?;
-
-            let mut datafloat = Vec::with_capacity(if cubic { n * 4 } else { 4 });
-            let in_tangents = channel.sampler.in_tangents.as_deref();
-            let out_tangents = channel.sampler.out_tangents.as_deref();
-            for key in 0..if cubic { n } else { 1 } {
-                let component_index = key * channel.path.component_count() + component as usize;
-                let slope_scale = if channel.path == crate::fbx_scene::FbxAnimChannelPath::Rotation
-                {
-                    180.0 / std::f32::consts::PI
-                } else {
-                    1.0
-                };
-                let right = out_tangents
-                    .and_then(|values| values.get(component_index))
-                    .copied()
-                    .unwrap_or(0.0)
-                    * slope_scale;
-                let next_left = in_tangents
-                    .and_then(|values| values.get(component_index + channel.path.component_count()))
-                    .copied()
-                    .unwrap_or(0.0)
-                    * slope_scale;
-                datafloat.extend([right, next_left, 0.0, 0.0]);
-            }
-            let mut datafloat_node = NodeWriter::start(w, "KeyAttrDataFloat", is_64)?;
-            datafloat_node.write_property_f32_array(&datafloat, &WriterOptions::default())?;
-            datafloat_node.finish()?;
-
-            let refcount = if cubic { vec![1; n] } else { vec![n as i32] };
-            let mut refcount_node = NodeWriter::start(w, "KeyAttrRefCount", is_64)?;
-            refcount_node.write_property_i32_array(&refcount, &WriterOptions::default())?;
-            refcount_node.finish()?;
-            Ok(())
-        })?;
+        nodes.push(animation_curve_node(id, component, channel));
     }
-    Ok(())
+    nodes
+}
+
+fn animation_curve_node(
+    curve_node_id: i64,
+    component: u32,
+    channel: &crate::fbx_scene::FbxAnimChannel,
+) -> FbxNode {
+    const KTIME: f64 = 46_186_158_000.0;
+    let components = channel.path.component_count();
+    let keys = channel.sampler.input.len();
+
+    let mut key_times = Vec::with_capacity(keys);
+    let mut key_values = Vec::with_capacity(keys);
+    for key in 0..keys {
+        key_times.push((channel.sampler.input[key] as f64 * KTIME) as i64);
+        let value_index = key * components + component as usize;
+        key_values.push(
+            channel
+                .sampler
+                .output
+                .get(value_index)
+                .copied()
+                .unwrap_or(0.0),
+        );
+    }
+
+    // FBX stores Euler rotations in degrees; the reader converted them to
+    // radians, so convert back here. The same factor applies to key slopes.
+    let scale = if channel.path == crate::fbx_scene::FbxAnimChannelPath::Rotation {
+        180.0 / std::f32::consts::PI
+    } else {
+        1.0
+    };
+
+    // KeyAttr* is run-length encoded. Cubic keys carry their explicit right
+    // slope and the next key's left slope in four-float records, matching
+    // Blender 5 / ufbx's native FBX contract.
+    let flags_value = channel.sampler.interpolation.to_key_attr_flags();
+    let cubic = channel.sampler.interpolation == crate::fbx_scene::FbxAnimInterpolation::Cubic;
+    let flags = if cubic {
+        vec![flags_value; keys]
+    } else {
+        vec![flags_value]
+    };
+
+    let in_tangents = channel.sampler.in_tangents.as_deref();
+    let out_tangents = channel.sampler.out_tangents.as_deref();
+    let mut datafloat = Vec::with_capacity(if cubic { keys * 4 } else { 4 });
+    for key in 0..if cubic { keys } else { 1 } {
+        let component_index = key * components + component as usize;
+        let right = out_tangents
+            .and_then(|values| values.get(component_index))
+            .copied()
+            .unwrap_or(0.0)
+            * scale;
+        let next_left = in_tangents
+            .and_then(|values| values.get(component_index + components))
+            .copied()
+            .unwrap_or(0.0)
+            * scale;
+        datafloat.extend([right, next_left, 0.0, 0.0]);
+    }
+
+    let refcount = if cubic {
+        vec![1; keys]
+    } else {
+        vec![keys as i32]
+    };
+
+    FbxNode {
+        name: "AnimationCurve".to_string(),
+        properties: vec![
+            FbxProperty::I64(anim_curve_id(curve_node_id, component)),
+            FbxProperty::String(name_class("", "AnimCurve")),
+            FbxProperty::String(String::new()),
+        ],
+        children: vec![
+            value_node("Default", FbxProperty::F64(0.0)),
+            value_node("KeyVer", FbxProperty::I32(4009)),
+            value_node("KeyTime", FbxProperty::I64Array(key_times)),
+            value_node(
+                "KeyValueFloat",
+                FbxProperty::F32Array(key_values.iter().map(|value| value * scale).collect()),
+            ),
+            value_node("KeyAttrFlags", FbxProperty::I32Array(flags)),
+            value_node("KeyAttrDataFloat", FbxProperty::F32Array(datafloat)),
+            value_node("KeyAttrRefCount", FbxProperty::I32Array(refcount)),
+        ],
+    }
 }
 
 /// Stable non-colliding id for an animation curve node.
@@ -2326,8 +2210,7 @@ fn anim_curve_id(curve_node_id: i64, component: u32) -> i64 {
 
 // Wires every object type together, so it needs every object table.
 #[allow(clippy::too_many_arguments)]
-fn write_connections<W: Write + Seek>(
-    writer: &mut W,
+fn connections_node(
     models: &[ModelData],
     meshes: &[MeshData],
     textures: &[TextureData],
@@ -2335,110 +2218,108 @@ fn write_connections<W: Write + Seek>(
     pending: &[PendingConnection],
     skins: &[SkinData],
     morphs: &[MorphData],
-    is_64: bool,
-) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "Connections", is_64)?;
-    node.finish_with_children(|w| {
+) -> FbxNode {
+    let mut edges = Vec::new();
+    {
         // Model -> parent (OO).
         for model_data in models {
-            write_connection(
-                w,
-                is_64,
+            edges.push(connection_node(
                 "OO",
                 model_data.model_id,
                 model_data.parent_id.unwrap_or(0),
                 None,
-            )?;
+            ));
             if model_data.class == "LimbNode" {
-                write_connection(
-                    w,
-                    is_64,
+                edges.push(connection_node(
                     "OO",
                     limb_node_attribute_id(model_data.model_id),
                     model_data.model_id,
                     None,
-                )?;
+                ));
             }
         }
         // Geometry -> Model (OO).
         for mesh_data in meshes {
-            write_connection(
-                w,
-                is_64,
+            edges.push(connection_node(
                 "OO",
                 mesh_data.geometry_id,
                 mesh_data.model_id,
                 None,
-            )?;
+            ));
         }
         // Material -> Model (OO). Materials are connected once per model so
         // the reader maps them back via the model's material list.
         for model_data in models {
             for &material_id in &model_data.material_ids {
-                write_connection(w, is_64, "OO", material_id, model_data.model_id, None)?;
+                edges.push(connection_node(
+                    "OO",
+                    material_id,
+                    model_data.model_id,
+                    None,
+                ));
             }
         }
         for morph in morphs {
-            write_connection(
-                w,
-                is_64,
+            edges.push(connection_node(
                 "OO",
                 morph.blend_shape_id,
                 morph.geometry_id,
                 None,
-            )?;
+            ));
             for target in &morph.targets {
-                write_connection(
-                    w,
-                    is_64,
+                edges.push(connection_node(
                     "OO",
                     target.channel_id,
                     morph.blend_shape_id,
                     None,
-                )?;
-                write_connection(
-                    w,
-                    is_64,
+                ));
+                edges.push(connection_node(
                     "OO",
                     target.shape_geometry_id,
                     target.channel_id,
                     None,
-                )?;
+                ));
             }
         }
         // Video -> Texture (OO), Texture -> Material (OP, by slot).
         for texture_data in textures {
-            write_connection(
-                w,
-                is_64,
+            edges.push(connection_node(
                 "OO",
                 texture_data.video_id,
                 texture_data.texture_id,
                 None,
-            )?;
+            ));
         }
         for conn in pending {
-            write_connection(
-                w,
-                is_64,
+            edges.push(connection_node(
                 conn.kind,
                 conn.child,
                 conn.parent,
                 conn.property.as_deref(),
-            )?;
+            ));
         }
         // Geometry -> Skin and Cluster -> Skin; each Cluster also points to
         // its joint Model. This is the connection topology used by Blender's
         // native FBX importer for an armature modifier and vertex groups.
         for skin in skins {
-            write_connection(w, is_64, "OO", skin.skin_id, skin.geometry_id, None)?;
+            edges.push(connection_node("OO", skin.skin_id, skin.geometry_id, None));
             for cluster in &skin.clusters {
-                write_connection(w, is_64, "OO", cluster.cluster_id, skin.skin_id, None)?;
+                edges.push(connection_node(
+                    "OO",
+                    cluster.cluster_id,
+                    skin.skin_id,
+                    None,
+                ));
                 if let Some(joint) = models
                     .iter()
                     .find(|model| model.scene_node_id == Some(cluster.source.joint_node_id))
                 {
-                    write_connection(w, is_64, "OO", joint.model_id, cluster.cluster_id, None)?;
+                    edges.push(connection_node(
+                        "OO",
+                        joint.model_id,
+                        cluster.cluster_id,
+                        None,
+                    ));
                 }
             }
         }
@@ -2446,8 +2327,8 @@ fn write_connections<W: Write + Seek>(
         // CurveNode -> Layer (OO), CurveNode -> Model or BlendShapeChannel (OP),
         // Curve -> CurveNode (OP, by component).
         for stack in anim {
-            write_connection(w, is_64, "OO", stack.stack_id, 0, None)?;
-            write_connection(w, is_64, "OO", stack.layer_id, stack.stack_id, None)?;
+            edges.push(connection_node("OO", stack.stack_id, 0, None));
+            edges.push(connection_node("OO", stack.layer_id, stack.stack_id, None));
             for channel in &stack.channels {
                 let acnode_id = anim_object_id(
                     stack.stack_id,
@@ -2456,7 +2337,7 @@ fn write_connections<W: Write + Seek>(
                     channel.morph_target_index,
                     "node",
                 );
-                write_connection(w, is_64, "OO", acnode_id, stack.layer_id, None)?;
+                edges.push(connection_node("OO", acnode_id, stack.layer_id, None));
                 // Resolve target by stable node id, never by non-unique name.
                 let scene_model_id = models
                     .iter()
@@ -2478,14 +2359,12 @@ fn write_connections<W: Write + Seek>(
                     scene_model_id.map(|model_id| (model_id, false))
                 };
                 if let Some((target_id, _is_morph)) = target {
-                    write_connection(
-                        w,
-                        is_64,
+                    edges.push(connection_node(
                         "OP",
                         acnode_id,
                         target_id,
                         Some(channel.path.property_name()),
-                    )?;
+                    ));
                 }
                 for component in 0u32..channel.path.component_count() as u32 {
                     let curve_id = anim_curve_id(acnode_id, component);
@@ -2494,39 +2373,38 @@ fn write_connections<W: Write + Seek>(
                         1 => "d|Y",
                         _ => "d|Z",
                     };
-                    write_connection(w, is_64, "OP", curve_id, acnode_id, Some(suffix))?;
+                    edges.push(connection_node("OP", curve_id, acnode_id, Some(suffix)));
                 }
             }
         }
-        Ok(())
-    })
-}
-
-fn write_connection<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    kind: &str,
-    child: i64,
-    parent: i64,
-    property: Option<&str>,
-) -> io::Result<()> {
-    let mut c = NodeWriter::start(writer, "C", is_64)?;
-    c.write_property_string(kind)?;
-    c.write_property_i64(child)?;
-    c.write_property_i64(parent)?;
-    if let Some(property) = property {
-        c.write_property_string(property)?;
     }
-    c.finish()
+
+    FbxNode {
+        name: "Connections".to_string(),
+        properties: Vec::new(),
+        children: edges,
+    }
 }
 
-fn write_property_color<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    name: &str,
-    values: [f32; 3],
-) -> io::Result<()> {
-    let node = property_node(
+/// One `C` record: a typed edge from `child` to `parent`.
+fn connection_node(kind: &str, child: i64, parent: i64, property: Option<&str>) -> FbxNode {
+    let mut properties = vec![
+        FbxProperty::String(kind.to_string()),
+        FbxProperty::I64(child),
+        FbxProperty::I64(parent),
+    ];
+    if let Some(property) = property {
+        properties.push(FbxProperty::String(property.to_string()));
+    }
+    FbxNode {
+        name: "C".to_string(),
+        properties,
+        children: Vec::new(),
+    }
+}
+
+fn color_property_node(name: &str, values: [f32; 3]) -> FbxNode {
+    property_node(
         name,
         "Color",
         "",
@@ -2535,44 +2413,25 @@ fn write_property_color<W: Write + Seek>(
             .into_iter()
             .map(|value| FbxProperty::F64(value as f64))
             .collect(),
-    );
-    encode_scalar_node(writer, &node, is_64)
+    )
 }
 
-fn write_property_scalar_value<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    name: &str,
-    value: f64,
-) -> io::Result<()> {
-    let node = property_node(name, "Number", "", "A", vec![FbxProperty::F64(value)]);
-    encode_scalar_node(writer, &node, is_64)
+fn scalar_property_node(name: &str, value: f64) -> FbxNode {
+    property_node(name, "Number", "", "A", vec![FbxProperty::F64(value)])
 }
 
-fn write_property_string_value<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    name: &str,
-    value: &str,
-) -> io::Result<()> {
-    let node = property_node(
+fn string_property_node(name: &str, value: &str) -> FbxNode {
+    property_node(
         name,
         "KString",
         "",
         "A",
         vec![FbxProperty::String(value.to_string())],
-    );
-    encode_scalar_node(writer, &node, is_64)
+    )
 }
 
-fn write_property_timestamp<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    name: &str,
-    value: i64,
-) -> io::Result<()> {
-    let node = property_node(name, "KTime", "Time", "", vec![FbxProperty::I64(value)]);
-    encode_scalar_node(writer, &node, is_64)
+fn timestamp_property_node(name: &str, value: i64) -> FbxNode {
+    property_node(name, "KTime", "Time", "", vec![FbxProperty::I64(value)])
 }
 
 // ============================================================================
