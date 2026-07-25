@@ -595,7 +595,42 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
             indices: set.indices.clone(),
         })
         .collect();
-    let render_control_points = expand_render_mesh(instance, &mut mesh);
+    // Corner-domain expansion lives in draco-io so the Rust and WASM paths
+    // cannot resolve layer elements differently.
+    let render = instance.to_render_mesh();
+    let render_control_points: Vec<u32> = if render.positions.is_empty() {
+        (0..mesh.positions.len() as u32 / 3).collect()
+    } else {
+        mesh.positions = render
+            .positions
+            .iter()
+            .flat_map(|point| point.iter().copied())
+            .collect();
+        mesh.indices = render.indices.clone();
+        mesh.normals = render
+            .normals
+            .first()
+            .map(|layer| {
+                layer
+                    .values
+                    .iter()
+                    .flat_map(|value| value.iter().copied())
+                    .collect()
+            })
+            .unwrap_or_default();
+        mesh.uvs = render
+            .uvs
+            .first()
+            .map(|layer| {
+                layer
+                    .values
+                    .iter()
+                    .flat_map(|value| value.iter().copied())
+                    .collect()
+            })
+            .unwrap_or_default();
+        render.corner_to_control_point.clone()
+    };
     let mut render_points_by_control = std::collections::HashMap::<u32, Vec<u32>>::new();
     for (render, control) in render_control_points.iter().copied().enumerate() {
         render_points_by_control
@@ -846,143 +881,6 @@ fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
         uv_sets: Vec::new(),
         normal_sets: Vec::new(),
     }
-}
-
-#[cfg(feature = "read")]
-fn expand_render_mesh(instance: &draco_io::FbxMeshInstance, mesh: &mut MeshData) -> Vec<u32> {
-    if instance.control_points.is_empty() || instance.polygon_vertex_indices.is_empty() {
-        return (0..mesh.positions.len() / 3)
-            .map(|index| index as u32)
-            .collect();
-    }
-
-    let uv = instance.uv_sets.first();
-    let normal = instance.normal_sets.first();
-    let mut positions = Vec::new();
-    let mut normals = Vec::new();
-    let mut uvs = Vec::new();
-    let mut render_to_control = Vec::new();
-    let mut polygon: Vec<(u32, usize)> = Vec::new();
-
-    let mut emit_corner = |control_point: u32, corner_index: usize| {
-        let point = instance
-            .control_points
-            .get(control_point as usize)
-            .copied()
-            .unwrap_or([0.0; 3]);
-        positions.extend(point);
-        render_to_control.push(control_point);
-        if let Some(layer) = normal {
-            let value = resolve_layer_value_3(
-                &layer.mapping,
-                &layer.reference,
-                &layer.indices,
-                &layer.values,
-                control_point as usize,
-                corner_index,
-            );
-            normals.extend(value);
-        }
-        if let Some(layer) = uv {
-            let value = resolve_layer_value_2(
-                &layer.mapping,
-                &layer.reference,
-                &layer.indices,
-                &layer.values,
-                control_point as usize,
-                corner_index,
-            );
-            uvs.extend(value);
-        }
-    };
-
-    for (corner, encoded) in instance.polygon_vertex_indices.iter().enumerate() {
-        let control_point = if *encoded < 0 {
-            (!*encoded) as u32
-        } else {
-            *encoded as u32
-        };
-        polygon.push((control_point, corner));
-        if *encoded < 0 {
-            for index in 1..polygon.len().saturating_sub(1) {
-                for &(point, corner_index) in
-                    [polygon[0], polygon[index], polygon[index + 1]].iter()
-                {
-                    emit_corner(point, corner_index);
-                }
-            }
-            polygon.clear();
-        }
-    }
-
-    if positions.is_empty() {
-        return (0..mesh.positions.len() / 3)
-            .map(|index| index as u32)
-            .collect();
-    }
-    mesh.positions = positions;
-    mesh.indices = (0..mesh.positions.len() / 3)
-        .map(|index| index as u32)
-        .collect();
-    mesh.normals = if normal.is_some() {
-        normals
-    } else {
-        Vec::new()
-    };
-    mesh.uvs = if uv.is_some() { uvs } else { Vec::new() };
-    render_to_control
-}
-
-#[cfg(feature = "read")]
-fn resolve_layer_value_2(
-    mapping: &Option<String>,
-    reference: &Option<String>,
-    indices: &[i32],
-    values: &[[f32; 2]],
-    control_point: usize,
-    corner: usize,
-) -> [f32; 2] {
-    let logical = match mapping.as_deref() {
-        Some("ByPolygonVertex") => corner,
-        Some("AllSame") => 0,
-        _ => control_point,
-    };
-    let value_index = if reference.as_deref() == Some("IndexToDirect") {
-        indices
-            .get(logical)
-            .copied()
-            .unwrap_or(logical as i32)
-            .max(0) as usize
-    } else {
-        logical
-    };
-    values.get(value_index).copied().unwrap_or([0.0; 2])
-}
-
-#[cfg(feature = "read")]
-fn resolve_layer_value_3(
-    mapping: &Option<String>,
-    reference: &Option<String>,
-    indices: &[i32],
-    values: &[[f32; 3]],
-    control_point: usize,
-    corner: usize,
-) -> [f32; 3] {
-    let logical = match mapping.as_deref() {
-        Some("ByPolygonVertex") => corner,
-        Some("AllSame") => 0,
-        _ => control_point,
-    };
-    let value_index = if reference.as_deref() == Some("IndexToDirect") {
-        indices
-            .get(logical)
-            .copied()
-            .unwrap_or(logical as i32)
-            .max(0) as usize
-    } else {
-        logical
-    };
-    values.get(value_index).copied().unwrap_or([0.0; 3])
 }
 
 #[cfg(feature = "read")]

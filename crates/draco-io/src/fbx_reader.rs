@@ -32,9 +32,6 @@ use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::fbx_options::{FbxByteOrder, FbxReadOptions};
-use draco_core::draco_types::DataType;
-use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
-use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 
 use crate::traits::ReadFromBytes;
@@ -2287,103 +2284,19 @@ impl<R: Read + Seek> FbxReader<R> {
             .map(|value| [value[0] as f32, value[1] as f32, value[2] as f32])
             .collect::<Vec<_>>();
 
-        // Build mesh
-        let mut mesh = Mesh::new();
-
-        // Add positions
-        let num_vertices = vertices.len() / 3;
-        let mut pos_att = PointAttribute::new();
-        pos_att.init(
-            GeometryAttributeType::Position,
-            3,
-            DataType::Float32,
-            false,
-            num_vertices,
-        );
-        let buffer = pos_att.buffer_mut();
-        for i in 0..num_vertices {
-            let x = vertices[i * 3] as f32;
-            let y = vertices[i * 3 + 1] as f32;
-            let z = vertices[i * 3 + 2] as f32;
-            let bytes: Vec<u8> = [x, y, z].iter().flat_map(|v| v.to_le_bytes()).collect();
-            buffer.write(i * 12, &bytes);
-        }
-        mesh.add_attribute(pos_att);
-
-        // Parse polygon indices (FBX uses negative index to mark end of polygon)
-        let mut faces: Vec<[u32; 3]> = Vec::new();
-        let mut current_polygon: Vec<i32> = Vec::new();
-        // Track the original polygon index per generated triangle so we can
-        // remap ByPolygon material indices to fan-triangulated face order.
+        // Track the polygon each fan triangle came from, so `ByPolygon`
+        // material indices can be remapped onto triangle order.
         let mut tri_polygon_index: Vec<usize> = Vec::new();
         let mut polygon_count = 0usize;
-
+        let mut corners_in_polygon = 0usize;
         for &idx in &polygon_indices {
+            corners_in_polygon += 1;
             if idx < 0 {
-                // End of polygon (index is bitwise NOT of actual index)
-                let actual_idx = !idx;
-                current_polygon.push(actual_idx);
-
-                // Triangulate polygon (simple fan triangulation)
-                if current_polygon.len() >= 3 {
-                    let v0 = current_polygon[0] as u32;
-                    for i in 1..current_polygon.len() - 1 {
-                        let v1 = current_polygon[i] as u32;
-                        let v2 = current_polygon[i + 1] as u32;
-                        faces.push([v0, v1, v2]);
-                        tri_polygon_index.push(polygon_count);
-                    }
+                for _ in 0..corners_in_polygon.saturating_sub(2) {
+                    tri_polygon_index.push(polygon_count);
                 }
-                current_polygon.clear();
+                corners_in_polygon = 0;
                 polygon_count += 1;
-            } else {
-                current_polygon.push(idx);
-            }
-        }
-
-        // Set faces
-        mesh.set_num_faces(faces.len());
-        for (i, face) in faces.iter().enumerate() {
-            mesh.set_face(
-                FaceIndex(i as u32),
-                [
-                    PointIndex(face[0]),
-                    PointIndex(face[1]),
-                    PointIndex(face[2]),
-                ],
-            );
-        }
-
-        // Match C++ Draco behavior: deduplicate point IDs in face-traversal order.
-        // This ensures binary compatibility when encoding.
-        mesh.deduplicate_point_ids();
-
-        // Attach normals (ByVertice / Direct, the same convention the FBX
-        // writer emits). FBX stores one normal per control point under
-        // `ByVertice`, or per polygon-vertex under `ByPolygonVertex`; we
-        // expand both to per-point storage so Draco can compress them.
-        if let Some(layer) = normals_layers.first().copied() {
-            if let Some(values) = read_layer_float3(layer, "Normals") {
-                add_per_point_attribute(
-                    &mut mesh,
-                    GeometryAttributeType::Normal,
-                    num_vertices,
-                    polygon_indices.as_ref(),
-                    layer,
-                    &values,
-                );
-            }
-        }
-        if let Some(layer) = uv_layers.first().copied() {
-            if let Some(values) = read_layer_float2(layer, "UV") {
-                add_per_point_attribute_2(
-                    &mut mesh,
-                    GeometryAttributeType::TexCoord,
-                    num_vertices,
-                    polygon_indices.as_ref(),
-                    layer,
-                    &values,
-                );
             }
         }
 
@@ -2403,7 +2316,7 @@ impl<R: Read + Seek> FbxReader<R> {
             })
             .unwrap_or_default();
 
-        let uv_sets = uv_layers
+        let uv_sets: Vec<crate::fbx_scene::FbxUvSet> = uv_layers
             .into_iter()
             .filter_map(|layer| {
                 let values = read_layer_float2(layer, "UV")?
@@ -2419,7 +2332,7 @@ impl<R: Read + Seek> FbxReader<R> {
                 })
             })
             .collect();
-        let normal_sets = normals_layers
+        let normal_sets: Vec<crate::fbx_scene::FbxNormalSet> = normals_layers
             .into_iter()
             .filter_map(|layer| {
                 let values = read_layer_float3(layer, "Normals")?
@@ -2437,6 +2350,17 @@ impl<R: Read + Seek> FbxReader<R> {
                 })
             })
             .collect();
+
+        // Build the Draco mesh on the polygon-corner domain. Resolving layer
+        // elements onto control points cannot represent a UV or hard-normal
+        // seam, and silently averaged them away.
+        let render = crate::fbx_render_mesh::expand_to_render_mesh(
+            &control_points,
+            &polygon_indices,
+            &uv_sets,
+            &normal_sets,
+        );
+        let mesh = crate::fbx_render_mesh::build_draco_mesh(&render);
 
         Ok(Some(FbxGeometrySource {
             mesh,
@@ -3008,162 +2932,6 @@ fn expand_material_indices(
         out.push(value);
     }
     Some(out)
-}
-
-fn add_per_point_attribute(
-    mesh: &mut Mesh,
-    attribute_type: GeometryAttributeType,
-    num_points: usize,
-    polygon_indices: &[i32],
-    layer: &FbxNode,
-    values: &[f32],
-) {
-    let mapping = layer_string(layer, "MappingInformationType").unwrap_or_default();
-    let reference = layer_string(layer, "ReferenceInformationType").unwrap_or_default();
-    let index = if reference == "IndexToDirect" {
-        layer_int_array(layer, "NormalsIndex").or_else(|| layer_int_array(layer, "NormalIndex"))
-    } else {
-        None
-    };
-    let stride = 3;
-    let resolved = resolve_layer_values(
-        &mapping,
-        &reference,
-        index.as_deref(),
-        values,
-        stride,
-        num_points,
-        polygon_indices,
-    );
-    let count = resolved.len() / stride;
-    let mut att = PointAttribute::new();
-    att.init(
-        attribute_type,
-        3,
-        DataType::Float32,
-        false,
-        count.max(num_points),
-    );
-    let buffer = att.buffer_mut();
-    for i in 0..count {
-        let bytes: Vec<u8> = (0..stride)
-            .flat_map(|c| resolved[i * stride + c].to_le_bytes())
-            .collect();
-        buffer.write(i * 12, &bytes);
-    }
-    mesh.add_attribute(att);
-}
-
-fn add_per_point_attribute_2(
-    mesh: &mut Mesh,
-    attribute_type: GeometryAttributeType,
-    num_points: usize,
-    polygon_indices: &[i32],
-    layer: &FbxNode,
-    values: &[f32],
-) {
-    let mapping = layer_string(layer, "MappingInformationType").unwrap_or_default();
-    let reference = layer_string(layer, "ReferenceInformationType").unwrap_or_default();
-    let index = if reference == "IndexToDirect" {
-        layer_int_array(layer, "UVIndex")
-    } else {
-        None
-    };
-    let stride = 2;
-    let resolved = resolve_layer_values(
-        &mapping,
-        &reference,
-        index.as_deref(),
-        values,
-        stride,
-        num_points,
-        polygon_indices,
-    );
-    let count = resolved.len() / stride;
-    let mut att = PointAttribute::new();
-    att.init(
-        attribute_type,
-        2,
-        DataType::Float32,
-        false,
-        count.max(num_points),
-    );
-    let buffer = att.buffer_mut();
-    for i in 0..count {
-        let bytes: Vec<u8> = (0..stride)
-            .flat_map(|c| resolved[i * stride + c].to_le_bytes())
-            .collect();
-        buffer.write(i * 8, &bytes);
-    }
-    mesh.add_attribute(att);
-}
-
-/// Resolve a `LayerElement*` data array to per-point values.
-///
-/// FBX supports `ByVertice`/`ByPolygonVertex`/`AllSame` mapping and
-/// `Direct`/`IndexToDirect` reference modes. We always emit one value per
-/// control point so the writer can re-serialize under `ByVertice`/`Direct`,
-/// matching the existing FBX writer convention.
-fn resolve_layer_values(
-    mapping: &str,
-    reference: &str,
-    index: Option<&[i32]>,
-    values: &[f32],
-    stride: usize,
-    num_points: usize,
-    polygon_indices: &[i32],
-) -> Vec<f32> {
-    // Helper: pick the value tuple at a logical position.
-    let tuple_at = |pos: usize| -> Vec<f32> {
-        let resolved_pos = if reference == "IndexToDirect" {
-            // A negative index is corrupt data. Casting it to `usize` would
-            // produce a huge value and overflow the offset below.
-            match index.and_then(|idx| idx.get(pos).copied()) {
-                Some(value) if value < 0 => return vec![0.0; stride],
-                Some(value) => value as usize,
-                None => pos,
-            }
-        } else {
-            pos
-        };
-        let end = resolved_pos
-            .checked_mul(stride)
-            .and_then(|start| start.checked_add(stride));
-        match end {
-            Some(end) if end <= values.len() => values[end - stride..end].to_vec(),
-            _ => vec![0.0; stride],
-        }
-    };
-
-    match mapping {
-        "ByVertice" | "ByVertex" | "ByVerticeOrPolygon" => {
-            (0..num_points).flat_map(tuple_at).collect()
-        }
-        "AllSame" => {
-            let first = tuple_at(0);
-            (0..num_points)
-                .flat_map(|_| first.iter().copied())
-                .collect()
-        }
-        "ByPolygonVertex" => {
-            // Spread per-polygon-vertex values back to control points. We
-            // pick the last value seen per control point (common DCC behavior
-            // for hard normals).
-            let mut per_point = vec![0f32; num_points * stride];
-            for (vertex_pos, &idx) in polygon_indices.iter().enumerate() {
-                let actual = if idx < 0 { !idx } else { idx };
-                if let Some(point) =
-                    per_point.get_mut(actual as usize * stride..actual as usize * stride + stride)
-                {
-                    let tuple = tuple_at(vertex_pos);
-                    let copied = stride.min(point.len()).min(tuple.len());
-                    point[..copied].copy_from_slice(&tuple[..copied]);
-                }
-            }
-            per_point
-        }
-        _ => (0..num_points).flat_map(tuple_at).collect(),
-    }
 }
 
 #[cfg(test)]

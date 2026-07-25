@@ -60,8 +60,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match FbxScene::from_bytes_with_options(&bytes, options.clone()) {
             Ok(scene) => {
                 let points: usize = count_points(&scene);
+                let (welded, corners) = count_mesh_points(&scene);
                 println!(
-                    "OK {display} roots={} points={points} warnings={}",
+                    "OK {display} roots={} points={points} welded={welded} corners={corners} warnings={}",
                     scene.root_nodes.len(),
                     scene.warnings.len()
                 );
@@ -81,4 +82,30 @@ fn count_points(scene: &FbxScene) -> usize {
             + node.children.iter().map(visit).sum::<usize>()
     }
     scene.root_nodes.iter().map(visit).sum()
+}
+
+/// Draco mesh points and corner count, to show the cost of seam preservation.
+fn count_mesh_points(scene: &FbxScene) -> (usize, usize) {
+    fn visit(node: &draco_io::FbxSceneNode) -> (usize, usize) {
+        let mut welded = 0;
+        let mut corners = 0;
+        for mesh in &node.mesh_instances {
+            welded += mesh.mesh.num_points();
+            corners += mesh.to_render_mesh().corner_count();
+        }
+        for child in &node.children {
+            let (w, c) = visit(child);
+            welded += w;
+            corners += c;
+        }
+        (welded, corners)
+    }
+    let mut welded = 0;
+    let mut corners = 0;
+    for root in &scene.root_nodes {
+        let (w, c) = visit(root);
+        welded += w;
+        corners += c;
+    }
+    (welded, corners)
 }

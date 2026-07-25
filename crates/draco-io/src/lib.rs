@@ -14,6 +14,9 @@ pub mod fbx_options;
 /// FBX binary reader.
 pub mod fbx_reader;
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
+/// Polygon-corner-domain expansion of FBX geometry.
+pub mod fbx_render_mesh;
+#[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
 mod fbx_scene;
 #[cfg(feature = "fbx-writer")]
 /// FBX binary writer.
@@ -47,6 +50,8 @@ pub mod traits;
 pub use fbx_options::{FbxByteOrder, FbxDecodeLimits, FbxReadOptions};
 #[cfg(feature = "fbx-reader")]
 pub use fbx_reader::{FbxMemoryReader, FbxReader};
+#[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
+pub use fbx_render_mesh::{FbxRenderLayer, FbxRenderMesh};
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
 pub use fbx_scene::{
     FbxAnimChannel, FbxAnimChannelPath, FbxAnimInterpolation, FbxAnimSampler, FbxAnimation,
