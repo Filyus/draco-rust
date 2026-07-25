@@ -31,6 +31,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(args.get(1).ok_or("usage: fbx_sweep <dir>")?);
     let skip_fuzz = args.iter().any(|a| a == "--skip-fuzz");
     let strict = args.iter().any(|a| a == "--strict");
+    // `--digest` prints a hash of the whole decoded scene, so a refactor can
+    // be proven to change nothing.
+    let digest = args.iter().any(|a| a == "--digest");
     let options = if strict {
         FbxReadOptions::strict()
     } else {
@@ -58,6 +61,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue; // ASCII container, not this reader's job.
         }
         match FbxScene::from_bytes_with_options(&bytes, options.clone()) {
+            Ok(scene) if digest => {
+                let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+                for byte in format!("{scene:?}").bytes() {
+                    hash ^= u64::from(byte);
+                    hash = hash.wrapping_mul(0x0100_0000_01b3);
+                }
+                println!("DIGEST {display} {hash:016x}");
+            }
             Ok(scene) => {
                 let points: usize = count_points(&scene);
                 let (welded, corners) = count_mesh_points(&scene);

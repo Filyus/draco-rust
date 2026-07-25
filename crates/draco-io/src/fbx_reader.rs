@@ -27,6 +27,7 @@
 //! # Ok::<(), std::io::Error>(())
 //! ```
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -249,242 +250,35 @@ impl<R: Read + Seek> FbxReader<R> {
         let nodes = self.read_nodes()?;
         let global_settings = parse_global_settings(&nodes);
 
-        // Build object id -> node maps for every object type we care about.
-        use std::collections::HashMap;
-        let mut model_map: HashMap<i64, &FbxNode> = HashMap::new();
-        // Keep the authored Objects order separately from the lookup map. A
-        // HashMap is intentionally used for id lookups, but iterating it would
-        // make node ids and root order process-randomized, which in turn can
-        // make otherwise identical scene comparisons pair different meshes.
-        let mut model_order: Vec<i64> = Vec::new();
-        let mut geometry_map: HashMap<i64, &FbxNode> = HashMap::new();
-        let mut material_map: HashMap<i64, &FbxNode> = HashMap::new();
-        let mut texture_map: HashMap<i64, &FbxNode> = HashMap::new();
-        let mut video_map: HashMap<i64, &FbxNode> = HashMap::new();
-        let mut astack_map: HashMap<i64, &FbxNode> = HashMap::new();
-        let mut alayer_map: HashMap<i64, &FbxNode> = HashMap::new();
-        let mut acnode_map: HashMap<i64, &FbxNode> = HashMap::new();
-        let mut acurve_map: HashMap<i64, &FbxNode> = HashMap::new();
-        let mut deformer_map: HashMap<i64, &FbxNode> = HashMap::new();
-        let mut pose_map: HashMap<i64, &FbxNode> = HashMap::new();
-        let mut connections: Vec<FbxConnection> = Vec::new();
-
-        for n in &nodes {
-            if n.name == "Objects" {
-                for child in &n.children {
-                    let Some(FbxProperty::I64(id)) = child.properties.first() else {
-                        continue;
-                    };
-                    match child.name.as_str() {
-                        "Model" => {
-                            // Keep the authored order only for ids seen first.
-                            let first_occurrence = model_map.insert(*id, child).is_none();
-                            if first_occurrence {
-                                model_order.push(*id);
-                            }
-                        }
-                        "Geometry" => {
-                            geometry_map.insert(*id, child);
-                        }
-                        "Material" => {
-                            material_map.insert(*id, child);
-                        }
-                        "Texture" => {
-                            texture_map.insert(*id, child);
-                        }
-                        "Video" => {
-                            video_map.insert(*id, child);
-                        }
-                        "AnimationStack" => {
-                            astack_map.insert(*id, child);
-                        }
-                        "AnimationLayer" => {
-                            alayer_map.insert(*id, child);
-                        }
-                        "AnimationCurveNode" => {
-                            acnode_map.insert(*id, child);
-                        }
-                        "AnimationCurve" => {
-                            acurve_map.insert(*id, child);
-                        }
-                        "Pose" => {
-                            pose_map.insert(*id, child);
-                        }
-                        "Deformer" => {
-                            deformer_map.insert(*id, child);
-                        }
-                        _ => {}
-                    }
-                }
-            } else if n.name == "Connections" {
-                for c in &n.children {
-                    let kind = match c.properties.first() {
-                        Some(FbxProperty::String(s)) if s == "OO" => ConnectionKind::Oo,
-                        Some(FbxProperty::String(s)) if s == "OP" => ConnectionKind::Op,
-                        _ => continue,
-                    };
-                    let Some(FbxProperty::I64(child)) = c.properties.get(1) else {
-                        continue;
-                    };
-                    let Some(FbxProperty::I64(parent)) = c.properties.get(2) else {
-                        continue;
-                    };
-                    let property = match c.properties.get(3) {
-                        Some(FbxProperty::String(s)) => Some(s.clone()),
-                        _ => None,
-                    };
-                    connections.push(FbxConnection {
-                        kind,
-                        child: *child,
-                        parent: *parent,
-                        property,
-                    });
-                }
-            }
-        }
+        let index = FbxObjectIndex::build(&nodes);
+        // Borrow the fields the rest of this function reads. `index` stays
+        // whole so it can be handed to the animation pass as one argument.
+        let FbxObjectIndex {
+            model_map,
+            model_order,
+            geometry_map,
+            material_map,
+            texture_map,
+            video_map,
+            deformer_map,
+            pose_map,
+            connections,
+            ..
+        } = &index;
 
         // Container-layout notices raised by `read_nodes` above ride along
         // with the semantic ones, so a caller sees every tolerated deviation.
         let mut warnings = self.warnings.clone();
-        let mut warned_inherit_type = false;
-        for model in model_map.values() {
-            for property in model
-                .children
-                .iter()
-                .filter(|child| child.name == "Properties70")
-            {
-                for entry in &property.children {
-                    let Some(FbxProperty::String(name)) = entry.properties.first() else {
-                        continue;
-                    };
-                    if name != "InheritType" || warned_inherit_type {
-                        continue;
-                    }
-                    let inherit_type = entry.properties.iter().find_map(|value| match value {
-                        FbxProperty::I32(value) => Some(*value),
-                        FbxProperty::I64(value) => i32::try_from(*value).ok(),
-                        _ => None,
-                    });
-                    let local_scale = model
-                        .children
-                        .iter()
-                        .find(|child| child.name == "Properties70")
-                        .and_then(|properties| {
-                            properties.children.iter().find_map(|property| {
-                                let Some(FbxProperty::String(name)) = property.properties.first()
-                                else {
-                                    return None;
-                                };
-                                if !name.contains("Lcl Scaling") {
-                                    return None;
-                                }
-                                let values: Vec<f32> = property
-                                    .properties
-                                    .iter()
-                                    .filter_map(|value| match value {
-                                        FbxProperty::F64(value) => Some(*value as f32),
-                                        FbxProperty::F32(value) => Some(*value),
-                                        _ => None,
-                                    })
-                                    .take(3)
-                                    .collect();
-                                (values.len() == 3).then_some([values[0], values[1], values[2]])
-                            })
-                        });
-                    let uniform_scale = local_scale
-                        .map(|scale| {
-                            (scale[0] - scale[1]).abs() <= 1e-5
-                                && (scale[1] - scale[2]).abs() <= 1e-5
-                        })
-                        .unwrap_or(true);
-                    let known_type = matches!(inherit_type, Some(0..=2));
-                    if !(known_type && uniform_scale) {
-                        push_warning(
-                            &mut warnings,
-                            FbxWarningCode::UnsupportedTransformInherit,
-                            format!(
-                                "FBX model uses unsupported {name}; local TRS was imported \
-                                 without that FBX transform rule"
-                            ),
-                            None,
-                        );
-                        warned_inherit_type = true;
-                    }
-                }
-            }
-        }
+        collect_transform_warnings(model_map, model_order, &mut warnings);
 
-        // ---- Materials ----------------------------------------------------
-        let mut materials: Vec<crate::fbx_scene::FbxMaterial> = Vec::new();
-        let mut material_index_by_id: HashMap<i64, usize> = HashMap::new();
-        let mut material_ids: Vec<i64> = material_map.keys().copied().collect();
-        material_ids.sort_unstable();
-        for id in material_ids {
-            let node = material_map[&id];
-            let mut material = parse_material(node);
-            material.textures = collect_material_texture_bindings(id, &texture_map, &connections);
-            material_index_by_id.insert(id, materials.len());
-            materials.push(material);
-        }
-
-        // ---- Textures -----------------------------------------------------
-        let mut textures: Vec<crate::fbx_scene::FbxTexture> = Vec::new();
-        let mut texture_index_by_id: HashMap<i64, usize> = HashMap::new();
-        // Build texture -> video connection map first so each Texture knows
-        // where to pull its embedded bytes from.
-        let mut texture_video: HashMap<i64, i64> = HashMap::new();
-        for conn in &connections {
-            if conn.kind == ConnectionKind::Oo
-                && texture_map.contains_key(&conn.child)
-                && video_map.contains_key(&conn.parent)
-            {
-                texture_video.entry(conn.child).or_insert(conn.parent);
-            }
-            // Video -> Texture (media -> clip) is also common.
-            if conn.kind == ConnectionKind::Oo
-                && video_map.contains_key(&conn.child)
-                && texture_map.contains_key(&conn.parent)
-            {
-                texture_video.entry(conn.parent).or_insert(conn.child);
-            }
-        }
-        let mut texture_ids: Vec<i64> = texture_map.keys().copied().collect();
-        texture_ids.sort_unstable();
-        for id in texture_ids {
-            let node = texture_map[&id];
-            let mut texture = parse_texture(node);
-            if let Some(&video_id) = texture_video.get(&id) {
-                if let Some(video) = video_map.get(&video_id) {
-                    let v = parse_texture(video);
-                    if texture.content.is_none() {
-                        texture.content = v.content;
-                    }
-                    if texture.filename.is_none() {
-                        texture.filename = v.filename;
-                    }
-                    if texture.name.is_none() {
-                        texture.name = v.name;
-                    }
-                }
-            }
-            texture_index_by_id.insert(id, textures.len());
-            textures.push(texture);
-        }
-
-        // Remap material texture bindings from FBX texture ids to scene indices.
-        for material in &mut materials {
-            for binding in &mut material.textures {
-                let fbx_id = binding.texture_index as i64;
-                if let Some(&resolved) = texture_index_by_id.get(&fbx_id) {
-                    binding.texture_index = resolved;
-                }
-            }
-        }
+        // ---- Materials and textures ---------------------------------------
+        let (materials, material_index_by_id, textures) =
+            parse_materials_and_textures(material_map, texture_map, video_map, connections);
 
         // ---- Model hierarchy + per-model materials -----------------------
         // Map each model id to the list of material indices connected to it.
         let mut model_material_ids: HashMap<i64, Vec<i32>> = HashMap::new();
-        for conn in &connections {
+        for conn in connections {
             if conn.kind == ConnectionKind::Oo
                 && material_map.contains_key(&conn.child)
                 && model_map.contains_key(&conn.parent)
@@ -863,16 +657,16 @@ impl<R: Read + Seek> FbxReader<R> {
                             material_indices: indices,
                             skin: parse_skin_for_geometry(
                                 geom_id,
-                                &deformer_map,
-                                &pose_map,
-                                &connections,
+                                deformer_map,
+                                pose_map,
+                                connections,
                                 &model_node_ids,
                             ),
                             morph_targets: parse_morph_targets_for_geometry(
                                 geom_id,
-                                &geometry_map,
-                                &deformer_map,
-                                &connections,
+                                geometry_map,
+                                deformer_map,
+                                connections,
                             ),
                         };
                         model_mesh_instances
@@ -892,15 +686,10 @@ impl<R: Read + Seek> FbxReader<R> {
 
         let animations = self.parse_animations(
             &nodes,
-            &connections,
-            &astack_map,
-            &alayer_map,
-            &acnode_map,
-            &acurve_map,
-            &model_map,
+            &index,
             &model_name_map,
             &model_node_ids,
-            &morph_animation_targets(&geometry_map, &deformer_map, &connections, &model_map),
+            &morph_animation_targets(geometry_map, deformer_map, connections, model_map),
         );
 
         // Build root nodes: any model with parent 0 (or with no parent present)
@@ -919,7 +708,7 @@ impl<R: Read + Seek> FbxReader<R> {
         for id in top_level {
             root_nodes.push(build_model_node(
                 id,
-                &model_map,
+                model_map,
                 &model_children,
                 &model_mesh_instances,
                 &model_node_ids,
@@ -1120,7 +909,12 @@ fn parse_skin_for_geometry(
     }
 
     let mut bind_pose = Vec::new();
-    for pose in poses.values() {
+    // Walk poses in id order. The dedup below is first-wins, so hash order
+    // would decide which `Pose` supplies a node's matrix when a file has more
+    // than one, and two reads of the same bytes could disagree.
+    let mut pose_ids: Vec<i64> = poses.keys().copied().collect();
+    pose_ids.sort_unstable();
+    for pose in pose_ids.iter().map(|id| poses[id]) {
         let is_bind_pose = pose
             .children
             .iter()
@@ -1315,6 +1109,84 @@ enum ConnectionKind {
     Op,
 }
 
+/// Every `Objects` entry indexed by id, plus the `Connections` graph.
+///
+/// Built once per document. The maps are for lookup only: iterating a
+/// `HashMap` would make node ids, root order and channel order depend on the
+/// process rather than the file, so anything order-sensitive walks
+/// [`Self::model_order`] or a sorted key list instead.
+struct FbxObjectIndex<'a> {
+    model_map: HashMap<i64, &'a FbxNode>,
+    /// Authored `Model` order, which `model_map` cannot preserve.
+    model_order: Vec<i64>,
+    geometry_map: HashMap<i64, &'a FbxNode>,
+    material_map: HashMap<i64, &'a FbxNode>,
+    texture_map: HashMap<i64, &'a FbxNode>,
+    video_map: HashMap<i64, &'a FbxNode>,
+    astack_map: HashMap<i64, &'a FbxNode>,
+    alayer_map: HashMap<i64, &'a FbxNode>,
+    acnode_map: HashMap<i64, &'a FbxNode>,
+    acurve_map: HashMap<i64, &'a FbxNode>,
+    deformer_map: HashMap<i64, &'a FbxNode>,
+    pose_map: HashMap<i64, &'a FbxNode>,
+    connections: Vec<FbxConnection>,
+}
+
+impl<'a> FbxObjectIndex<'a> {
+    fn build(nodes: &'a [FbxNode]) -> Self {
+        let mut index = Self {
+            model_map: HashMap::new(),
+            model_order: Vec::new(),
+            geometry_map: HashMap::new(),
+            material_map: HashMap::new(),
+            texture_map: HashMap::new(),
+            video_map: HashMap::new(),
+            astack_map: HashMap::new(),
+            alayer_map: HashMap::new(),
+            acnode_map: HashMap::new(),
+            acurve_map: HashMap::new(),
+            deformer_map: HashMap::new(),
+            pose_map: HashMap::new(),
+            connections: Vec::new(),
+        };
+
+        for node in nodes {
+            if node.name == "Objects" {
+                for child in &node.children {
+                    let Some(FbxProperty::I64(id)) = child.properties.first() else {
+                        continue;
+                    };
+                    match child.name.as_str() {
+                        "Model" => {
+                            // Keep the authored order only for ids seen first.
+                            let first_occurrence = index.model_map.insert(*id, child).is_none();
+                            if first_occurrence {
+                                index.model_order.push(*id);
+                            }
+                        }
+                        "Geometry" => drop(index.geometry_map.insert(*id, child)),
+                        "Material" => drop(index.material_map.insert(*id, child)),
+                        "Texture" => drop(index.texture_map.insert(*id, child)),
+                        "Video" => drop(index.video_map.insert(*id, child)),
+                        "AnimationStack" => drop(index.astack_map.insert(*id, child)),
+                        "AnimationLayer" => drop(index.alayer_map.insert(*id, child)),
+                        "AnimationCurveNode" => drop(index.acnode_map.insert(*id, child)),
+                        "AnimationCurve" => drop(index.acurve_map.insert(*id, child)),
+                        "Pose" => drop(index.pose_map.insert(*id, child)),
+                        "Deformer" => drop(index.deformer_map.insert(*id, child)),
+                        _ => {}
+                    }
+                }
+            } else if node.name == "Connections" {
+                index
+                    .connections
+                    .extend(node.children.iter().filter_map(FbxConnection::from_node));
+            }
+        }
+        index
+    }
+}
+
 /// A parsed FBX connection entry.
 #[derive(Debug, Clone)]
 struct FbxConnection {
@@ -1322,6 +1194,176 @@ struct FbxConnection {
     child: i64,
     parent: i64,
     property: Option<String>,
+}
+
+impl FbxConnection {
+    /// Parses one `C` entry, skipping relation codes this reader ignores.
+    fn from_node(node: &FbxNode) -> Option<Self> {
+        let kind = match node.properties.first() {
+            Some(FbxProperty::String(code)) if code == "OO" => ConnectionKind::Oo,
+            Some(FbxProperty::String(code)) if code == "OP" => ConnectionKind::Op,
+            _ => return None,
+        };
+        let Some(FbxProperty::I64(child)) = node.properties.get(1) else {
+            return None;
+        };
+        let Some(FbxProperty::I64(parent)) = node.properties.get(2) else {
+            return None;
+        };
+        let property = match node.properties.get(3) {
+            Some(FbxProperty::String(name)) => Some(name.clone()),
+            _ => None,
+        };
+        Some(Self {
+            kind,
+            child: *child,
+            parent: *parent,
+            property,
+        })
+    }
+}
+
+/// Reports Models whose FBX inheritance rule the imported transform cannot
+/// express.
+///
+/// Only the first such Model is reported: the notice describes a property of
+/// the file, and repeating it per Model would bury everything else. Models are
+/// visited in authored order so the scan does not depend on hash iteration.
+fn collect_transform_warnings(
+    model_map: &HashMap<i64, &FbxNode>,
+    model_order: &[i64],
+    warnings: &mut Vec<FbxWarning>,
+) {
+    for model in model_order.iter().filter_map(|id| model_map.get(id)) {
+        for properties in model
+            .children
+            .iter()
+            .filter(|child| child.name == "Properties70")
+        {
+            for entry in &properties.children {
+                let Some(FbxProperty::String(name)) = entry.properties.first() else {
+                    continue;
+                };
+                if name != "InheritType" {
+                    continue;
+                }
+                let inherit_type = entry.properties.iter().find_map(|value| match value {
+                    FbxProperty::I32(value) => Some(*value),
+                    FbxProperty::I64(value) => i32::try_from(*value).ok(),
+                    _ => None,
+                });
+                let local_scale = properties.children.iter().find_map(|property| {
+                    let Some(FbxProperty::String(name)) = property.properties.first() else {
+                        return None;
+                    };
+                    if !name.contains("Lcl Scaling") {
+                        return None;
+                    }
+                    let values: Vec<f32> = property
+                        .properties
+                        .iter()
+                        .filter_map(|value| match value {
+                            FbxProperty::F64(value) => Some(*value as f32),
+                            FbxProperty::F32(value) => Some(*value),
+                            _ => None,
+                        })
+                        .take(3)
+                        .collect();
+                    (values.len() == 3).then_some([values[0], values[1], values[2]])
+                });
+                // A non-uniform scale is what makes the unsupported inherit
+                // modes observable; uniform scale behaves the same either way.
+                let uniform_scale = local_scale
+                    .map(|scale| {
+                        (scale[0] - scale[1]).abs() <= 1e-5 && (scale[1] - scale[2]).abs() <= 1e-5
+                    })
+                    .unwrap_or(true);
+                if matches!(inherit_type, Some(0..=2)) && uniform_scale {
+                    continue;
+                }
+                push_warning(
+                    warnings,
+                    FbxWarningCode::UnsupportedTransformInherit,
+                    format!(
+                        "FBX model uses unsupported {name}; local TRS was imported \
+                         without that FBX transform rule"
+                    ),
+                    None,
+                );
+                return;
+            }
+        }
+    }
+}
+
+/// Decodes every `Material` and `Texture` object, resolving each material's
+/// texture bindings to indices into the returned texture list.
+///
+/// Both lists are ordered by FBX object id rather than hash order, so a
+/// document always decodes to the same material and texture indices.
+fn parse_materials_and_textures(
+    material_map: &HashMap<i64, &FbxNode>,
+    texture_map: &HashMap<i64, &FbxNode>,
+    video_map: &HashMap<i64, &FbxNode>,
+    connections: &[FbxConnection],
+) -> (
+    Vec<crate::fbx_scene::FbxMaterial>,
+    HashMap<i64, usize>,
+    Vec<crate::fbx_scene::FbxTexture>,
+) {
+    let mut materials: Vec<crate::fbx_scene::FbxMaterial> = Vec::new();
+    let mut material_index_by_id: HashMap<i64, usize> = HashMap::new();
+    let mut material_ids: Vec<i64> = material_map.keys().copied().collect();
+    material_ids.sort_unstable();
+    for id in material_ids {
+        let mut material = parse_material(material_map[&id]);
+        material.textures = collect_material_texture_bindings(id, texture_map, connections);
+        material_index_by_id.insert(id, materials.len());
+        materials.push(material);
+    }
+
+    // Map each Texture to the Video that carries its bytes. FBX writes the
+    // connection in either direction, so accept both.
+    let mut texture_video: HashMap<i64, i64> = HashMap::new();
+    for conn in connections {
+        if conn.kind != ConnectionKind::Oo {
+            continue;
+        }
+        if texture_map.contains_key(&conn.child) && video_map.contains_key(&conn.parent) {
+            texture_video.entry(conn.child).or_insert(conn.parent);
+        }
+        if video_map.contains_key(&conn.child) && texture_map.contains_key(&conn.parent) {
+            texture_video.entry(conn.parent).or_insert(conn.child);
+        }
+    }
+
+    let mut textures: Vec<crate::fbx_scene::FbxTexture> = Vec::new();
+    let mut texture_index_by_id: HashMap<i64, usize> = HashMap::new();
+    let mut texture_ids: Vec<i64> = texture_map.keys().copied().collect();
+    texture_ids.sort_unstable();
+    for id in texture_ids {
+        let mut texture = parse_texture(texture_map[&id]);
+        if let Some(video) = texture_video.get(&id).and_then(|id| video_map.get(id)) {
+            let from_video = parse_texture(video);
+            texture.content = texture.content.or(from_video.content);
+            texture.filename = texture.filename.or(from_video.filename);
+            texture.name = texture.name.or(from_video.name);
+        }
+        texture_index_by_id.insert(id, textures.len());
+        textures.push(texture);
+    }
+
+    // Bindings carry FBX texture ids until now; rewrite them as scene indices.
+    for material in &mut materials {
+        for binding in &mut material.textures {
+            let fbx_id = binding.texture_index as i64;
+            if let Some(&resolved) = texture_index_by_id.get(&fbx_id) {
+                binding.texture_index = resolved;
+            }
+        }
+    }
+
+    (materials, material_index_by_id, textures)
 }
 
 /// FBX Deformer objects carry their effective kind in the third object
@@ -2404,23 +2446,23 @@ impl<R: Read + Seek> FbxReader<R> {
 
     /// Flatten the FBX animation graph into one [`FbxAnimation`] per
     /// `AnimationStack` + first connected `AnimationLayer`.
-    // The object-id maps are threaded in individually because `read_scene`
-    // owns them. Collapsing them into an object-index struct is the point of
-    // the planned `read_scene` decomposition; until then the list stays long.
-    #[allow(clippy::too_many_arguments)]
     fn parse_animations(
         &self,
         nodes: &[FbxNode],
-        connections: &[FbxConnection],
-        astack_map: &std::collections::HashMap<i64, &FbxNode>,
-        alayer_map: &std::collections::HashMap<i64, &FbxNode>,
-        acnode_map: &std::collections::HashMap<i64, &FbxNode>,
-        acurve_map: &std::collections::HashMap<i64, &FbxNode>,
-        model_map: &std::collections::HashMap<i64, &FbxNode>,
-        model_name_map: &std::collections::HashMap<i64, String>,
-        model_node_ids: &std::collections::HashMap<i64, FbxNodeId>,
-        morph_targets: &std::collections::HashMap<i64, (i64, u32)>,
+        index: &FbxObjectIndex<'_>,
+        model_name_map: &HashMap<i64, String>,
+        model_node_ids: &HashMap<i64, FbxNodeId>,
+        morph_targets: &HashMap<i64, (i64, u32)>,
     ) -> Vec<FbxAnimation> {
+        let FbxObjectIndex {
+            connections,
+            astack_map,
+            alayer_map,
+            acnode_map,
+            acurve_map,
+            model_map,
+            ..
+        } = index;
         let fbx_ktime = fbx_ktime_for(nodes, self.version);
         let ktime_f = match fbx_ktime {
             0 => 1.0,

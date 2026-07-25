@@ -211,6 +211,32 @@ fn reading_the_same_file_twice_is_deterministic() {
     let first = FbxScene::from_bytes(&bytes).expect("first parse");
     let second = FbxScene::from_bytes(&bytes).expect("second parse");
 
+    // Bind poses had the same problem as animation channels: a file with more
+    // than one `Pose` resolved a node's matrix from whichever pose hash order
+    // reached it first. mixamo.fbx has two.
+    let bind_poses = |scene: &FbxScene| -> Vec<String> {
+        fn visit(node: &draco_io::FbxSceneNode, out: &mut Vec<String>) {
+            for mesh in &node.mesh_instances {
+                for (id, transform) in mesh.skin.iter().flat_map(|skin| &skin.bind_pose) {
+                    out.push(format!("{id:?}|{:?}", transform.matrix));
+                }
+            }
+            for child in &node.children {
+                visit(child, out);
+            }
+        }
+        let mut out = Vec::new();
+        for root in &scene.root_nodes {
+            visit(root, &mut out);
+        }
+        out
+    };
+    assert_eq!(
+        bind_poses(&first),
+        bind_poses(&second),
+        "bind pose resolution must not depend on hash iteration"
+    );
+
     let channel_order = |scene: &FbxScene| -> Vec<String> {
         scene
             .animations
