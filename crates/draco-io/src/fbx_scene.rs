@@ -206,6 +206,17 @@ pub struct FbxMeshInstance {
     pub normal_sets: Vec<FbxNormalSet>,
     /// Original colour layer elements, including mapping/reference information.
     pub color_sets: Vec<FbxColorSet>,
+    /// Original tangent layer elements, with handedness merged into `w`.
+    ///
+    /// Draco has no tangent attribute, so these never reach
+    /// [`Self::mesh`]; they travel on the instance and through
+    /// [`crate::FbxRenderMesh`] instead, the same way extra UV sets do.
+    pub tangent_sets: Vec<FbxTangentSet>,
+    /// Original binormal layer elements.
+    ///
+    /// Derivable from the normal and tangent, and absent from glTF, so these
+    /// exist only so an FBX document survives a rewrite unchanged.
+    pub binormal_sets: Vec<FbxBinormalSet>,
     /// Original FBX `Edges` array, verbatim.
     ///
     /// Each entry indexes [`Self::polygon_vertex_indices`], naming the polygon
@@ -258,6 +269,31 @@ pub type FbxNormalSet = FbxLayerSet<3>;
 /// FBX normally stores four components; a three-component source is padded
 /// with an opaque alpha when read.
 pub type FbxColorSet = FbxLayerSet<4>;
+
+/// A preserved FBX `LayerElementTangent` or `LayerElementBinormal`.
+///
+/// FBX splits these across two sibling arrays: `Tangents` holds three
+/// components and the handedness sign lives in a separate `TangentsW`, which
+/// only FBX 7500 and later write. They are merged into one four-component
+/// value here because that is the form glTF's `TANGENT` needs, and split again
+/// on write.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FbxTangentSet {
+    /// Tangent vectors, with the handedness sign in `w`.
+    pub layer: FbxLayerSet<4>,
+    /// Whether the source carried an explicit handedness array.
+    ///
+    /// When it did not, `w` was defaulted to `+1.0`. The writer emits the
+    /// sibling array only when this is set, so a document that had no
+    /// handedness does not gain one by being rewritten.
+    pub has_handedness: bool,
+}
+
+/// A preserved FBX `LayerElementBinormal`.
+///
+/// Structurally identical to a tangent set, and always written alongside one:
+/// no corpus file carries either alone.
+pub type FbxBinormalSet = FbxTangentSet;
 
 /// All influences from one joint onto a mesh's control points.
 #[derive(Debug, Clone)]

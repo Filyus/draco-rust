@@ -67,6 +67,10 @@ pub struct MeshData {
     /// Per-render-vertex linear RGBA, from the first colour layer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub colors: Vec<f32>,
+    /// Per-render-vertex tangents from the first tangent layer, `xyzw` with
+    /// the handedness sign in `w` -- exactly glTF's `TANGENT` layout.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tangents: Vec<f32>,
     /// Every UV layer resolved onto render vertices, in source order.
     ///
     /// `uvs` is the first of these; the rest become `TEXCOORD_1`..
@@ -114,6 +118,28 @@ pub struct MeshData {
     /// Original `LayerElementColor` layers, including mapping metadata.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub color_sets: Vec<ColorSetOutput>,
+    /// Original `LayerElementTangent` layers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tangent_sets: Vec<TangentSetOutput>,
+    /// Original `LayerElementBinormal` layers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binormal_sets: Vec<TangentSetOutput>,
+}
+
+/// A `LayerElementTangent` or `LayerElementBinormal` crossing the WASM
+/// boundary, in both directions.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TangentSetOutput {
+    pub name: Option<String>,
+    pub mapping: Option<String>,
+    pub reference: Option<String>,
+    /// Flat `xyzw`; `w` is the handedness sign.
+    pub values: Vec<f32>,
+    pub indices: Vec<i32>,
+    /// Whether `w` came from the file rather than being defaulted to `+1`.
+    #[serde(default)]
+    pub has_handedness: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -578,6 +604,23 @@ fn transform_stack_to_output(stack: &FbxTransformStack) -> TransformStackOutput 
 }
 
 #[cfg(feature = "read")]
+fn tangent_set_to_output(set: &draco_io::FbxTangentSet) -> TangentSetOutput {
+    TangentSetOutput {
+        name: set.layer.name.clone(),
+        mapping: set.layer.mapping.clone(),
+        reference: set.layer.reference.clone(),
+        values: set
+            .layer
+            .values
+            .iter()
+            .flat_map(|value| value.iter().copied())
+            .collect(),
+        indices: set.layer.indices.clone(),
+        has_handedness: set.has_handedness,
+    }
+}
+
+#[cfg(feature = "read")]
 fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
     let mut mesh = mesh_to_js_data(&instance.mesh);
     mesh.name = instance.name.clone();
@@ -601,6 +644,16 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
                 .collect(),
             indices: set.indices.clone(),
         })
+        .collect();
+    mesh.tangent_sets = instance
+        .tangent_sets
+        .iter()
+        .map(tangent_set_to_output)
+        .collect();
+    mesh.binormal_sets = instance
+        .binormal_sets
+        .iter()
+        .map(tangent_set_to_output)
         .collect();
     mesh.color_sets = instance
         .color_sets
@@ -657,6 +710,17 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
             .unwrap_or_default();
         mesh.colors = render
             .colors
+            .first()
+            .map(|layer| {
+                layer
+                    .values
+                    .iter()
+                    .flat_map(|value| value.iter().copied())
+                    .collect()
+            })
+            .unwrap_or_default();
+        mesh.tangents = render
+            .tangents
             .first()
             .map(|layer| {
                 layer
@@ -919,6 +983,7 @@ fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
         normals,
         uvs,
         colors,
+        tangents: Vec::new(),
         uv_layers: Vec::new(),
         material_indices: Vec::new(),
         material: None,
@@ -933,6 +998,8 @@ fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
         uv_sets: Vec::new(),
         normal_sets: Vec::new(),
         color_sets: Vec::new(),
+        tangent_sets: Vec::new(),
+        binormal_sets: Vec::new(),
     }
 }
 
@@ -1023,6 +1090,12 @@ pub struct MeshInput {
     pub uv_sets: Vec<UvSetOutput>,
     #[serde(default)]
     pub normal_sets: Vec<NormalSetOutput>,
+    /// Tangent layers to write, `xyzw` per value.
+    #[serde(default)]
+    pub tangent_sets: Vec<TangentSetOutput>,
+    /// Binormal layers to write.
+    #[serde(default)]
+    pub binormal_sets: Vec<TangentSetOutput>,
     #[serde(default)]
     pub color_sets: Vec<ColorSetOutput>,
     #[serde(default)]
@@ -1475,6 +1548,24 @@ fn scene_node_to_fbx(input: SceneNodeInput) -> Result<FbxSceneNode, String> {
 /// Both the scene writer and the flat `create_fbx` entry point go through
 /// this, so the two paths cannot drift apart.
 #[cfg(feature = "write")]
+fn tangent_output_to_fbx(set: &TangentSetOutput) -> draco_io::FbxTangentSet {
+    draco_io::FbxTangentSet {
+        layer: draco_io::FbxLayerSet {
+            name: set.name.clone(),
+            mapping: set.mapping.clone(),
+            reference: set.reference.clone(),
+            values: set
+                .values
+                .chunks_exact(4)
+                .map(|v| [v[0], v[1], v[2], v[3]])
+                .collect(),
+            indices: set.indices.clone(),
+        },
+        has_handedness: set.has_handedness,
+    }
+}
+
+#[cfg(feature = "write")]
 fn mesh_input_to_instance(mesh: &MeshInput, index: usize) -> Result<FbxMeshInstance, String> {
     Ok(FbxMeshInstance {
         name: mesh.name.clone().or_else(|| Some(format!("mesh_{index}"))),
@@ -1487,6 +1578,12 @@ fn mesh_input_to_instance(mesh: &MeshInput, index: usize) -> Result<FbxMeshInsta
             .map(|value| [value[0], value[1], value[2]])
             .collect(),
         polygon_vertex_indices: mesh.polygon_vertex_indices.clone().unwrap_or_default(),
+        tangent_sets: mesh.tangent_sets.iter().map(tangent_output_to_fbx).collect(),
+        binormal_sets: mesh
+            .binormal_sets
+            .iter()
+            .map(tangent_output_to_fbx)
+            .collect(),
         uv_sets: mesh
             .uv_sets
             .iter()
@@ -1851,6 +1948,8 @@ mod reader_tests {
                     uv_sets: Vec::new(),
                     normal_sets: Vec::new(),
                     color_sets: Vec::new(),
+                    tangent_sets: Vec::new(),
+                    binormal_sets: Vec::new(),
                     edges: Vec::new(),
                     material_indices: Vec::new(),
                     skin: None,
@@ -1978,6 +2077,8 @@ mod writer_tests {
             uv_sets: Vec::new(),
             normal_sets: Vec::new(),
             color_sets: Vec::new(),
+            tangent_sets: Vec::new(),
+            binormal_sets: Vec::new(),
             edges: Vec::new(),
             material_indices: Vec::new(),
             skin: None,

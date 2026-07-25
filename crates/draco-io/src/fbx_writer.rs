@@ -125,6 +125,8 @@ struct MeshData {
     uv_sets: Vec<crate::fbx_scene::FbxUvSet>,
     normal_sets: Vec<crate::fbx_scene::FbxNormalSet>,
     color_sets: Vec<crate::fbx_scene::FbxColorSet>,
+    tangent_sets: Vec<crate::fbx_scene::FbxTangentSet>,
+    binormal_sets: Vec<crate::fbx_scene::FbxBinormalSet>,
     edges: Vec<i32>,
 }
 
@@ -298,9 +300,6 @@ impl FbxWriter {
         model_id
     }
 
-    // Every FBX layer family arrives as its own slice. Grouping them into a
-    // geometry-source struct is planned alongside the shared corner-domain
-    // render mesh, which will also add colour sets here.
     #[allow(clippy::too_many_arguments)]
     fn add_mesh_to_model(
         &mut self,
@@ -310,13 +309,18 @@ impl FbxWriter {
         material_indices: &[i32],
         skin: Option<crate::fbx_scene::FbxSkin>,
         morph_targets: &[crate::fbx_scene::FbxMorphTarget],
-        control_points: &[[f32; 3]],
-        polygon_vertex_indices: &[i32],
-        uv_sets: &[crate::fbx_scene::FbxUvSet],
-        normal_sets: &[crate::fbx_scene::FbxNormalSet],
-        color_sets: &[crate::fbx_scene::FbxColorSet],
+        layers: crate::fbx_render_mesh::FbxGeometryLayers<'_>,
         edges: &[i32],
     ) -> io::Result<()> {
+        let crate::fbx_render_mesh::FbxGeometryLayers {
+            control_points,
+            polygon_vertex_indices,
+            uv_sets,
+            normal_sets,
+            color_sets,
+            tangent_sets,
+            binormal_sets,
+        } = layers;
         validate_supported_fbx_attributes(mesh)?;
         let geometry_id = self.allocate_id();
         // `LayerElementMaterial` indexes polygons. This writer emits one
@@ -346,6 +350,8 @@ impl FbxWriter {
             uv_sets: uv_sets.to_vec(),
             normal_sets: normal_sets.to_vec(),
             color_sets: color_sets.to_vec(),
+            tangent_sets: tangent_sets.to_vec(),
+            binormal_sets: binormal_sets.to_vec(),
             edges: edges.to_vec(),
         });
         if let Some(skin) = skin {
@@ -559,11 +565,7 @@ impl FbxWriter {
                 &local_material_indices,
                 mesh_instance.skin.clone(),
                 &mesh_instance.morph_targets,
-                &mesh_instance.control_points,
-                &mesh_instance.polygon_vertex_indices,
-                &mesh_instance.uv_sets,
-                &mesh_instance.normal_sets,
-                &mesh_instance.color_sets,
+                crate::fbx_render_mesh::FbxGeometryLayers::from_instance(mesh_instance),
                 &mesh_instance.edges,
             )?;
         }
@@ -697,11 +699,9 @@ impl Writer for FbxWriter {
             &[],
             None,
             &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
+            // A flat Draco mesh carries no FBX layer elements of its own; the
+            // writer derives normals and UVs from its attributes instead.
+            crate::fbx_render_mesh::FbxGeometryLayers::default(),
             &[],
         )
     }
@@ -1803,6 +1803,15 @@ fn write_geometry<W: Write + Seek>(
             write_layer_element_color_set(w, is_64, color_set, options)?;
         }
 
+        // Tangents and their handedness, then binormals; FBX always writes the
+        // pair together and no corpus file carries one without the other.
+        for set in &mesh_data.tangent_sets {
+            write_layer_element_tangent_set(w, is_64, "LayerElementTangent", set, options)?;
+        }
+        for set in &mesh_data.binormal_sets {
+            write_layer_element_tangent_set(w, is_64, "LayerElementBinormal", set, options)?;
+        }
+
         // UVs (LayerElementUV, ByVertice/Direct).
         if mesh_data.uv_sets.is_empty() {
             if let Some(uvs) = &mesh_data.uvs {
@@ -1834,6 +1843,8 @@ fn write_geometry<W: Write + Seek>(
             || mesh_data.uvs.is_some()
             || !mesh_data.uv_sets.is_empty()
             || !mesh_data.color_sets.is_empty()
+            || !mesh_data.tangent_sets.is_empty()
+            || !mesh_data.binormal_sets.is_empty()
             || !mesh_data.material_indices.is_empty()
         {
             let layer = NodeWriter::start(w, "Layer", is_64)?;
@@ -1857,6 +1868,12 @@ fn write_geometry<W: Write + Seek>(
                 }
                 for index in 0..mesh_data.color_sets.len() {
                     write_layer_element_index(lw, is_64, "LayerElementColor", index as i32)?;
+                }
+                for index in 0..mesh_data.tangent_sets.len() {
+                    write_layer_element_index(lw, is_64, "LayerElementTangent", index as i32)?;
+                }
+                for index in 0..mesh_data.binormal_sets.len() {
+                    write_layer_element_index(lw, is_64, "LayerElementBinormal", index as i32)?;
                 }
                 if !mesh_data.material_indices.is_empty() {
                     write_layer_element(lw, is_64, "LayerElementMaterial")?;
@@ -2025,6 +2042,62 @@ fn write_layer_element_color_set<W: Write + Seek>(
         if set.reference.as_deref() == Some("IndexToDirect") && !set.indices.is_empty() {
             let mut indices = NodeWriter::start(w, "ColorIndex", is_64)?;
             indices.write_property_i32_array(&set.indices, options)?;
+            indices.finish()?;
+        }
+        Ok(())
+    })
+}
+
+/// Writes a `LayerElementTangent` or `LayerElementBinormal`.
+///
+/// The four-component value is split back into the two sibling arrays FBX
+/// uses. The handedness array is emitted only when the source had one, so a
+/// pre-7500 document does not acquire a field it never carried.
+fn write_layer_element_tangent_set<W: Write + Seek>(
+    writer: &mut W,
+    is_64: bool,
+    element: &str,
+    set: &crate::fbx_scene::FbxTangentSet,
+    options: &WriterOptions,
+) -> io::Result<()> {
+    let (values_node, handedness_node, index_node) = if element == "LayerElementBinormal" {
+        ("Binormals", "BinormalsW", "BinormalIndex")
+    } else {
+        ("Tangents", "TangentsW", "TangentIndex")
+    };
+    let node = NodeWriter::start(writer, element, is_64)?;
+    node.finish_with_children(|w| {
+        write_layer_header_with_name(
+            w,
+            is_64,
+            set.layer.name.as_deref().unwrap_or(""),
+            set.layer.mapping.as_deref().unwrap_or("ByPolygonVertex"),
+            set.layer.reference.as_deref().unwrap_or("Direct"),
+        )?;
+        let vectors: Vec<f64> = set
+            .layer
+            .values
+            .iter()
+            .flat_map(|value| value[..3].iter().map(|component| f64::from(*component)))
+            .collect();
+        let mut data = NodeWriter::start(w, values_node, is_64)?;
+        data.write_property_f64_array(&vectors, options)?;
+        data.finish()?;
+        if set.has_handedness {
+            let signs: Vec<f64> = set
+                .layer
+                .values
+                .iter()
+                .map(|value| f64::from(value[3]))
+                .collect();
+            let mut data = NodeWriter::start(w, handedness_node, is_64)?;
+            data.write_property_f64_array(&signs, options)?;
+            data.finish()?;
+        }
+        if set.layer.reference.as_deref() == Some("IndexToDirect") && !set.layer.indices.is_empty()
+        {
+            let mut indices = NodeWriter::start(w, index_node, is_64)?;
+            indices.write_property_i32_array(&set.layer.indices, options)?;
             indices.finish()?;
         }
         Ok(())
@@ -3035,6 +3108,8 @@ mod tests {
                         uv_sets: Vec::new(),
                         normal_sets: Vec::new(),
                         color_sets: Vec::new(),
+                        tangent_sets: Vec::new(),
+                        binormal_sets: Vec::new(),
                         edges: Vec::new(),
                         material_indices: Vec::new(),
                         skin: None,
@@ -3193,6 +3268,8 @@ mod tests {
                             uv_sets: Vec::new(),
                             normal_sets: Vec::new(),
                             color_sets: Vec::new(),
+                            tangent_sets: Vec::new(),
+                            binormal_sets: Vec::new(),
                             edges: Vec::new(),
                             material_indices: Vec::new(),
                             skin: Some(crate::fbx_scene::FbxSkin {
@@ -3322,6 +3399,8 @@ mod tests {
             uv_sets: Vec::new(),
             normal_sets: Vec::new(),
             color_sets: Vec::new(),
+            tangent_sets: Vec::new(),
+            binormal_sets: Vec::new(),
             edges: Vec::new(),
             material_indices: vec![0, 0, 1, 1],
             skin: None,
@@ -3369,6 +3448,92 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "fbx-reader")]
+    fn scene_with_tangents(has_handedness: bool) -> FbxScene {
+        let set = crate::fbx_scene::FbxTangentSet {
+            layer: crate::fbx_scene::FbxLayerSet {
+                name: None,
+                mapping: Some("ByPolygonVertex".to_string()),
+                reference: Some("Direct".to_string()),
+                values: vec![
+                    [1.0, 0.0, 0.0, -1.0],
+                    [0.0, 1.0, 0.0, -1.0],
+                    [0.0, 0.0, 1.0, -1.0],
+                ],
+                indices: Vec::new(),
+            },
+            has_handedness,
+        };
+        FbxScene {
+            root_nodes: vec![FbxSceneNode {
+                id: crate::fbx_scene::FbxNodeId(1),
+                name: Some("Tangential".to_string()),
+                transform: None,
+                transform_stack: None,
+                has_complex_transform_stack: false,
+                mesh_instances: vec![FbxMeshInstance {
+                    name: Some("Tri".to_string()),
+                    mesh: create_triangle_mesh(),
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    polygon_vertex_indices: vec![0, 1, !2],
+                    uv_sets: Vec::new(),
+                    normal_sets: Vec::new(),
+                    color_sets: Vec::new(),
+                    tangent_sets: vec![set.clone()],
+                    binormal_sets: vec![set],
+                    edges: Vec::new(),
+                    material_indices: Vec::new(),
+                    skin: None,
+                    morph_targets: Vec::new(),
+                }],
+                children: Vec::new(),
+            }],
+            ..FbxScene::default()
+        }
+    }
+
+    /// FBX keeps the handedness sign in a sibling array that only 7500 and
+    /// later write. Merging it into `w` on read and splitting it again on write
+    /// is an asymmetry that is easy to implement in one direction only, so
+    /// both directions are asserted -- including that a document without the
+    /// array does not acquire one, which would change its meaning for a reader
+    /// that trusts the sign.
+    #[test]
+    #[cfg(feature = "fbx-reader")]
+    fn handedness_survives_a_round_trip_and_is_not_invented() {
+        for has_handedness in [true, false] {
+            let bytes = scene_with_tangents(has_handedness).to_bytes().unwrap();
+            let output = crate::FbxScene::from_bytes(&bytes).unwrap();
+            let instance = &output.root_nodes[0].mesh_instances[0];
+
+            assert_eq!(instance.tangent_sets.len(), 1);
+            assert_eq!(instance.binormal_sets.len(), 1);
+            let tangents = &instance.tangent_sets[0];
+            assert_eq!(tangents.has_handedness, has_handedness);
+
+            let expected_w = if has_handedness { -1.0 } else { 1.0 };
+            assert_eq!(
+                tangents.layer.values[0],
+                [1.0, 0.0, 0.0, expected_w],
+                "handedness {has_handedness}: xyz must survive and w must \
+                 {} ",
+                if has_handedness {
+                    "be read back"
+                } else {
+                    "default to +1"
+                }
+            );
+
+            // The absence must be visible in the bytes, not merely in the
+            // decoded flag: a reader other than ours looks for the node.
+            let has_w_node = String::from_utf8_lossy(&bytes).contains("TangentsW");
+            assert_eq!(
+                has_w_node, has_handedness,
+                "TangentsW node presence must match the source"
+            );
+        }
+    }
+
     /// A colours-only geometry must still emit a `Layer` node listing
     /// `LayerElementColor`.
     ///
@@ -3399,6 +3564,8 @@ mod tests {
                         values: vec![[1.0, 0.0, 0.0, 1.0]; 3],
                         indices: Vec::new(),
                     }],
+                    tangent_sets: Vec::new(),
+                    binormal_sets: Vec::new(),
                     edges: Vec::new(),
                     material_indices: Vec::new(),
                     skin: None,
@@ -3471,6 +3638,8 @@ mod tests {
                     uv_sets: Vec::new(),
                     normal_sets: Vec::new(),
                     color_sets: vec![colors.clone()],
+                    tangent_sets: Vec::new(),
+                    binormal_sets: Vec::new(),
                     edges: Vec::new(),
                     material_indices: Vec::new(),
                     skin: None,

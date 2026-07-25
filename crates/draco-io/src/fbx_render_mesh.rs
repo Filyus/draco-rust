@@ -16,7 +16,10 @@ use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 
-use crate::fbx_scene::{FbxColorSet, FbxLayerSet, FbxMeshInstance, FbxNormalSet, FbxUvSet};
+use crate::fbx_scene::{
+    FbxBinormalSet, FbxColorSet, FbxLayerSet, FbxMeshInstance, FbxNormalSet, FbxTangentSet,
+    FbxUvSet,
+};
 
 /// One layer element resolved onto the polygon-corner domain.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -41,6 +44,11 @@ pub struct FbxRenderMesh {
     pub uvs: Vec<FbxRenderLayer<[f32; 2]>>,
     /// Every `LayerElementColor`, in source order. Linear RGBA.
     pub colors: Vec<FbxRenderLayer<[f32; 4]>>,
+    /// Every `LayerElementTangent`, in source order, with the handedness sign
+    /// in `w` -- the layout glTF's `TANGENT` expects.
+    pub tangents: Vec<FbxRenderLayer<[f32; 4]>>,
+    /// Every `LayerElementBinormal`, in source order.
+    pub binormals: Vec<FbxRenderLayer<[f32; 4]>>,
     /// Triangle-fan indices into the corner arrays.
     pub indices: Vec<u32>,
     /// Corner count of each source polygon, in order.
@@ -61,6 +69,44 @@ impl FbxRenderMesh {
     /// Number of polygon corners, and therefore of per-corner values.
     pub fn corner_count(&self) -> usize {
         self.positions.len()
+    }
+}
+
+/// Borrowed FBX geometry, as [`expand_to_render_mesh`] consumes it.
+///
+/// A struct rather than a positional argument list because the list grows with
+/// every layer family the crate learns to read, and seven adjacent slices of
+/// nearly interchangeable types are easy to transpose silently.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FbxGeometryLayers<'a> {
+    /// FBX control-point positions.
+    pub control_points: &'a [[f32; 3]],
+    /// Polygon-corner indices; a negative value terminates a polygon.
+    pub polygon_vertex_indices: &'a [i32],
+    /// UV layer elements.
+    pub uv_sets: &'a [FbxUvSet],
+    /// Normal layer elements.
+    pub normal_sets: &'a [FbxNormalSet],
+    /// Colour layer elements.
+    pub color_sets: &'a [FbxColorSet],
+    /// Tangent layer elements.
+    pub tangent_sets: &'a [FbxTangentSet],
+    /// Binormal layer elements.
+    pub binormal_sets: &'a [FbxBinormalSet],
+}
+
+impl<'a> FbxGeometryLayers<'a> {
+    /// Borrows every layer family from a decoded mesh instance.
+    pub fn from_instance(instance: &'a FbxMeshInstance) -> Self {
+        Self {
+            control_points: &instance.control_points,
+            polygon_vertex_indices: &instance.polygon_vertex_indices,
+            uv_sets: &instance.uv_sets,
+            normal_sets: &instance.normal_sets,
+            color_sets: &instance.color_sets,
+            tangent_sets: &instance.tangent_sets,
+            binormal_sets: &instance.binormal_sets,
+        }
     }
 }
 
@@ -143,13 +189,16 @@ fn resolve_layer<const N: usize>(
 ///
 /// Returns an empty mesh when there is no raw geometry, which is the case for
 /// scenes synthesized in memory rather than read from a file.
-pub fn expand_to_render_mesh(
-    control_points: &[[f32; 3]],
-    polygon_vertex_indices: &[i32],
-    uv_sets: &[FbxUvSet],
-    normal_sets: &[FbxNormalSet],
-    color_sets: &[FbxColorSet],
-) -> FbxRenderMesh {
+pub fn expand_to_render_mesh(source: FbxGeometryLayers<'_>) -> FbxRenderMesh {
+    let FbxGeometryLayers {
+        control_points,
+        polygon_vertex_indices,
+        uv_sets,
+        normal_sets,
+        color_sets,
+        tangent_sets,
+        binormal_sets,
+    } = source;
     let mut render = FbxRenderMesh::default();
     if control_points.is_empty() || polygon_vertex_indices.is_empty() {
         return render;
@@ -207,6 +256,14 @@ pub fn expand_to_render_mesh(
     render.colors = color_sets
         .iter()
         .map(|s| resolve_layer(s, &emitted))
+        .collect();
+    render.tangents = tangent_sets
+        .iter()
+        .map(|s| resolve_layer(&s.layer, &emitted))
+        .collect();
+    render.binormals = binormal_sets
+        .iter()
+        .map(|s| resolve_layer(&s.layer, &emitted))
         .collect();
     render
 }
@@ -346,13 +403,7 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
 impl FbxMeshInstance {
     /// Expands this instance onto the polygon-corner domain.
     pub fn to_render_mesh(&self) -> FbxRenderMesh {
-        expand_to_render_mesh(
-            &self.control_points,
-            &self.polygon_vertex_indices,
-            &self.uv_sets,
-            &self.normal_sets,
-            &self.color_sets,
-        )
+        expand_to_render_mesh(FbxGeometryLayers::from_instance(self))
     }
 
     /// Corner-domain Draco mesh for this instance, welded by attribute tuple.
@@ -396,6 +447,8 @@ mod tests {
             }],
             normal_sets: Vec::new(),
             color_sets: Vec::new(),
+            tangent_sets: Vec::new(),
+            binormal_sets: Vec::new(),
             edges: Vec::new(),
             material_indices: Vec::new(),
             skin: None,

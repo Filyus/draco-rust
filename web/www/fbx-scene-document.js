@@ -215,6 +215,10 @@ function appendMesh(source, materialMap, document) {
     // FBX LayerElementColor is linear RGBA on the polygon-corner domain, which
     // is already what the render mesh hands us.
     if (source.colors?.length === vertexCount * 4) attributes.COLOR_0 = appendFloatAccessor(document, source.colors, 4);
+    // FBX splits tangents across Tangents and TangentsW; the reader merges them
+    // into xyzw, which is already glTF's TANGENT layout. Files older than 7500
+    // have no handedness array, so w was defaulted to +1 there.
+    if (source.tangents?.length === vertexCount * 4) attributes.TANGENT = appendFloatAccessor(document, source.tangents, 4);
     for (let set = 1; set < (source.uvSets?.length || 0) && set < 8; set += 1) {
         const expanded = expandFbxLayer(source, source.uvSets[set], 2, vertexCount);
         if (expanded) attributes[`TEXCOORD_${set}`] = appendFloatAccessor(document, expanded, 2);

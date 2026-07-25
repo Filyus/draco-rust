@@ -46,15 +46,17 @@ struct FbxGeometrySource {
     uv_sets: Vec<crate::fbx_scene::FbxUvSet>,
     normal_sets: Vec<crate::fbx_scene::FbxNormalSet>,
     color_sets: Vec<crate::fbx_scene::FbxColorSet>,
+    tangent_sets: Vec<FbxTangentSet>,
+    binormal_sets: Vec<FbxBinormalSet>,
     edges: Vec<i32>,
 }
 
 #[doc(hidden)]
 pub use crate::fbx_scene::{
     FbxAnimChannel, FbxAnimChannelPath, FbxAnimInterpolation, FbxAnimSampler, FbxAnimation,
-    FbxColorSet, FbxLayerSet, FbxMeshInstance, FbxNodeId, FbxNormalSet, FbxScene, FbxSceneNode,
-    FbxTexture, FbxTextureBinding, FbxTextureSlot, FbxTransform, FbxUvSet, FbxWarning,
-    FbxWarningCode,
+    FbxBinormalSet, FbxColorSet, FbxLayerSet, FbxMeshInstance, FbxNodeId, FbxNormalSet, FbxScene,
+    FbxSceneNode, FbxTangentSet, FbxTexture, FbxTextureBinding, FbxTextureSlot, FbxTransform,
+    FbxUvSet, FbxWarning, FbxWarningCode,
 };
 
 /// FBX file magic: "Kaydara FBX Binary  \0"
@@ -656,6 +658,8 @@ impl<R: Read + Seek> FbxReader<R> {
                             uv_sets: source.uv_sets.clone(),
                             normal_sets: source.normal_sets.clone(),
                             color_sets: source.color_sets.clone(),
+                            tangent_sets: source.tangent_sets.clone(),
+                            binormal_sets: source.binormal_sets.clone(),
                             edges: source.edges.clone(),
                             material_indices: indices,
                             skin: parse_skin_for_geometry(
@@ -2305,6 +2309,8 @@ impl<R: Read + Seek> FbxReader<R> {
         let mut normals_layers: Vec<&FbxNode> = Vec::new();
         let mut uv_layers: Vec<&FbxNode> = Vec::new();
         let mut color_layers: Vec<&FbxNode> = Vec::new();
+        let mut tangent_layers: Vec<&FbxNode> = Vec::new();
+        let mut binormal_layers: Vec<&FbxNode> = Vec::new();
         let mut material_layer: Option<&FbxNode> = None;
 
         for child in &geometry.children {
@@ -2327,6 +2333,8 @@ impl<R: Read + Seek> FbxReader<R> {
                 "LayerElementNormal" => normals_layers.push(child),
                 "LayerElementColor" => color_layers.push(child),
                 "LayerElementUV" => uv_layers.push(child),
+                "LayerElementTangent" => tangent_layers.push(child),
+                "LayerElementBinormal" => binormal_layers.push(child),
                 "LayerElementMaterial" if material_layer.is_none() => {
                     material_layer = Some(child);
                 }
@@ -2429,16 +2437,36 @@ impl<R: Read + Seek> FbxReader<R> {
         for set in &color_sets {
             warn_unsupported_layer_mapping("LayerElementColor", set, warnings);
         }
+        let tangent_sets: Vec<FbxTangentSet> = tangent_layers
+            .into_iter()
+            .filter_map(|layer| parse_tangent_like(layer, "Tangents", "TangentsW", "TangentIndex"))
+            .collect();
+        let binormal_sets: Vec<FbxBinormalSet> = binormal_layers
+            .into_iter()
+            .filter_map(|layer| {
+                parse_tangent_like(layer, "Binormals", "BinormalsW", "BinormalIndex")
+            })
+            .collect();
+        for set in &tangent_sets {
+            warn_unsupported_layer_mapping("LayerElementTangent", &set.layer, warnings);
+        }
+        for set in &binormal_sets {
+            warn_unsupported_layer_mapping("LayerElementBinormal", &set.layer, warnings);
+        }
 
         // Build the Draco mesh on the polygon-corner domain. Resolving layer
         // elements onto control points cannot represent a UV or hard-normal
         // seam, and silently averaged them away.
         let render = crate::fbx_render_mesh::expand_to_render_mesh(
-            &control_points,
-            &polygon_indices,
-            &uv_sets,
-            &normal_sets,
-            &color_sets,
+            crate::fbx_render_mesh::FbxGeometryLayers {
+                control_points: &control_points,
+                polygon_vertex_indices: &polygon_indices,
+                uv_sets: &uv_sets,
+                normal_sets: &normal_sets,
+                color_sets: &color_sets,
+                tangent_sets: &tangent_sets,
+                binormal_sets: &binormal_sets,
+            },
         );
         let mesh = crate::fbx_render_mesh::build_draco_mesh(&render);
 
@@ -2450,6 +2478,8 @@ impl<R: Read + Seek> FbxReader<R> {
             uv_sets,
             normal_sets,
             color_sets,
+            tangent_sets,
+            binormal_sets,
             edges,
         }))
     }
@@ -3013,6 +3043,36 @@ fn warn_unsupported_layer_mapping<const N: usize>(
             );
         }
     }
+}
+
+/// Reads a `LayerElementTangent` or `LayerElementBinormal`.
+///
+/// The handedness sign is a separate sibling array present only from FBX 7500
+/// on; when it is missing, or disagrees with the vector count, `w` defaults to
+/// `+1.0` and the set records that it was synthesized.
+fn parse_tangent_like(
+    layer: &FbxNode,
+    values_node: &str,
+    handedness_node: &str,
+    index_node: &str,
+) -> Option<FbxTangentSet> {
+    let vectors: Vec<[f32; 3]> = chunk_layer_values(&read_layer_floats(layer, values_node)?);
+    let handedness = read_layer_floats(layer, handedness_node)
+        .filter(|signs| signs.len() == vectors.len())
+        .unwrap_or_default();
+    let has_handedness = !handedness.is_empty();
+    let values = vectors
+        .iter()
+        .enumerate()
+        .map(|(index, v)| {
+            let sign = handedness.get(index).copied().unwrap_or(1.0);
+            [v[0], v[1], v[2], sign]
+        })
+        .collect();
+    Some(FbxTangentSet {
+        layer: layer_set(layer, values, &[index_node]),
+        has_handedness,
+    })
 }
 
 /// Reads the parts every float layer element shares.

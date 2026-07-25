@@ -51,13 +51,14 @@ pub use fbx_options::{FbxByteOrder, FbxDecodeLimits, FbxReadOptions};
 #[cfg(feature = "fbx-reader")]
 pub use fbx_reader::{FbxMemoryReader, FbxReader};
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
-pub use fbx_render_mesh::{FbxRenderLayer, FbxRenderMesh};
+pub use fbx_render_mesh::{FbxGeometryLayers, FbxRenderLayer, FbxRenderMesh};
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
 pub use fbx_scene::{
     FbxAnimChannel, FbxAnimChannelPath, FbxAnimInterpolation, FbxAnimSampler, FbxAnimation,
-    FbxColorSet, FbxGlobalSettings, FbxMaterial, FbxMeshInstance, FbxMorphTarget, FbxNodeId,
-    FbxNormalSet, FbxScene, FbxSceneNode, FbxSkin, FbxSkinCluster, FbxTexture, FbxTextureBinding,
-    FbxTextureSlot, FbxTransform, FbxTransformStack, FbxUvSet, FbxWarning, FbxWarningCode,
+    FbxBinormalSet, FbxColorSet, FbxGlobalSettings, FbxLayerSet, FbxMaterial, FbxMeshInstance,
+    FbxMorphTarget, FbxNodeId, FbxNormalSet, FbxScene, FbxSceneNode, FbxSkin, FbxSkinCluster,
+    FbxTangentSet, FbxTexture, FbxTextureBinding, FbxTextureSlot, FbxTransform, FbxTransformStack,
+    FbxUvSet, FbxWarning, FbxWarningCode,
 };
 #[cfg(feature = "fbx-writer")]
 pub use fbx_writer::FbxWriter;

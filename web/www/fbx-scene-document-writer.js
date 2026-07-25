@@ -137,8 +137,34 @@ function buildNodeMeshes(document, node, meshIndex, nodeIndex, sourceMeshes, wor
                 }];
             }
         }
-        if (primitive.attributes?.TANGENT !== undefined) {
-            warnings.push('FBX export preserves TANGENT in SceneDocument/glTF but the typed FBX writer does not yet emit this layer');
+        if (sourceUnits && sourceMesh?.tangentSets?.length) {
+            meshInput.tangentSets = structuredClone(sourceMesh.tangentSets);
+            if (sourceMesh.binormalSets?.length) meshInput.binormalSets = structuredClone(sourceMesh.binormalSets);
+        } else {
+            // glTF TANGENT is xyzw with the handedness sign in w, which is what
+            // the writer splits back into Tangents and TangentsW.
+            const tangents = optionalAttribute(document, primitive, 'TANGENT', null);
+            if (tangents?.length === (positions.length / 3) * 4) {
+                // Same Y-up to Z-up swap the normals get, applied to xyz only.
+                // It is a rotation, so the handedness in w is unaffected.
+                const values = Array.from(tangents);
+                if (!sourceUnits) {
+                    for (let offset = 0; offset + 3 < values.length; offset += 4) {
+                        const y = values[offset + 1];
+                        values[offset + 1] = values[offset + 2];
+                        values[offset + 2] = -y;
+                    }
+                }
+                meshInput.tangentSets = [{
+                    name: '', mapping: 'ByPolygonVertex', reference: 'Direct',
+                    // The sign came from glTF, so it is real data rather than
+                    // the reader's default and is written out as TangentsW.
+                    values, indices: [], hasHandedness: true,
+                }];
+                if (sourceMesh?.binormalSets?.length) {
+                    warnings.push('FBX binormals were dropped: the portable document carries glTF TANGENT, which has no binormal, so only tangents were re-exported');
+                }
+            }
         }
         const skinIndex = node.skin;
         if (Number.isInteger(skinIndex) && document.skins[skinIndex]) {

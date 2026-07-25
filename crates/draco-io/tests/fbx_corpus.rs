@@ -256,6 +256,11 @@ struct MeshSummary {
     color_sets: usize,
     edges: usize,
     material_indices: Vec<i32>,
+    /// `(component values, handedness present)` per tangent layer. The flag is
+    /// checked because the writer must not invent a `TangentsW` array for a
+    /// pre-7500 document that never had one, nor drop one that did.
+    tangent_sets: Vec<(usize, bool)>,
+    binormal_sets: Vec<(usize, bool)>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -302,6 +307,16 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
                 color_sets: mesh.color_sets.len(),
                 edges: mesh.edges.len(),
                 material_indices: mesh.material_indices.clone(),
+                tangent_sets: mesh
+                    .tangent_sets
+                    .iter()
+                    .map(|set| (set.layer.values.len(), set.has_handedness))
+                    .collect(),
+                binormal_sets: mesh
+                    .binormal_sets
+                    .iter()
+                    .map(|set| (set.layer.values.len(), set.has_handedness))
+                    .collect(),
             });
         }
         for child in &node.children {
