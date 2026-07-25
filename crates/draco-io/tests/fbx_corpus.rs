@@ -627,3 +627,63 @@ fn control_point_total(scene: &FbxScene) -> usize {
     }
     scene.root_nodes.iter().map(visit).sum()
 }
+
+/// A document that decodes to nothing must say why.
+///
+/// Pre-7000 FBX keys its objects and connections by name rather than by id and
+/// puts geometry on the `Model`, none of which this reader understands. It
+/// still returns a structurally valid scene, so without a warning the result is
+/// indistinguishable from a file that genuinely has no meshes. Every such file
+/// in the corpus is checked to raise the notice, and every file that raises it
+/// is checked to really be empty -- otherwise the warning is the thing that is
+/// wrong.
+#[test]
+fn a_pre_7000_document_says_why_it_decoded_to_nothing() {
+    let Some(dir) = corpus_dir() else {
+        eprintln!("skipping: set DRACO_FBX_CORPUS to a directory of .fbx files");
+        return;
+    };
+    let mut files = Vec::new();
+    collect_fbx(&dir, &mut files);
+    files.sort();
+
+    let mut warned = 0usize;
+    let mut silent_and_empty = Vec::new();
+    for path in &files {
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        if !bytes.starts_with(b"Kaydara FBX Binary") {
+            continue;
+        }
+        let Ok(scene) = FbxScene::from_bytes(&bytes) else {
+            continue;
+        };
+        let says_why = scene
+            .warnings
+            .iter()
+            .any(|w| w.code == draco_io::FbxWarningCode::NameKeyedObjectModel);
+        // Byte 23 holds the version in the little-endian profile.
+        let version = u32::from_le_bytes([bytes[23], bytes[24], bytes[25], bytes[26]]);
+        let pre_7000 = version < 7000;
+
+        if says_why {
+            warned += 1;
+            assert_eq!(
+                control_point_total(&scene),
+                0,
+                "{} warns that nothing was imported yet decoded geometry",
+                path.display()
+            );
+        } else if pre_7000 {
+            silent_and_empty.push(path.clone());
+        }
+    }
+
+    assert!(
+        silent_and_empty.is_empty(),
+        "pre-7000 documents decoded without explanation: {silent_and_empty:?}"
+    );
+    assert!(warned > 0, "no pre-7000 documents in the corpus to check");
+    println!("{warned} pre-7000 documents each explained why they are empty");
+}

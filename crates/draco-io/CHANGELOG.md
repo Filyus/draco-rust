@@ -11,6 +11,31 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Breaking.** FBX `LayerElementTangent` and `LayerElementBinormal` are read
+  and written. `FbxMeshInstance` gains `tangent_sets` and `binormal_sets`, and
+  `FbxRenderMesh` gains `tangents` and `binormals`. Handedness is merged into a
+  fourth component on read and split back into the `TangentsW` sibling array on
+  write, only for sets that had one. Draco has no tangent attribute, so these
+  never reach the Draco mesh.
+- **Breaking.** `expand_to_render_mesh` takes an `FbxGeometryLayers` borrow
+  struct instead of five positional slices.
+- `FbxUvSet`, `FbxNormalSet` and `FbxColorSet` are now aliases of a shared
+  `FbxLayerSet<N>`. Field names and public paths are unchanged.
+- `FbxWarningCode::DroppedLayerElement` names each `LayerElement*` the reader
+  does not import, instead of discarding it silently.
+- `FbxWarningCode::NameKeyedObjectModel` reports a pre-7000 document, whose
+  name-keyed object model this crate does not read; such a file decodes to an
+  empty scene rather than failing, so the notice is how a caller tells that
+  apart from a file with no meshes.
+
+### Fixed
+
+- Layer elements mapped `ByPolygon` were resolved on the control-point domain,
+  returning an unrelated polygon's value. Five corpus files carry
+  `LayerElementNormal` with that mapping.
+- A geometry carrying only colour layers wrote a `LayerElementColor` that no
+  `Layer` node referenced, so a strict importer did not find it.
+
 - FBX scene round-tripping now retains skin clusters/bind poses, morph targets,
   authored node-TRS animation, and all decoded UV layers through the typed
   scene writer. Tangents and non-default transform inheritance remain explicit

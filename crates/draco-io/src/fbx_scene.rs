@@ -29,6 +29,10 @@ pub enum FbxWarningCode {
     /// A geometry carried a `LayerElement*` this crate does not import, so
     /// that layer's data is absent from the decoded scene.
     DroppedLayerElement,
+    /// The document uses the pre-7000 object model, which identifies objects
+    /// and connections by name instead of by id, so nothing was imported from
+    /// its `Objects` block.
+    NameKeyedObjectModel,
 }
 
 impl FbxWarningCode {
@@ -45,7 +49,8 @@ impl FbxWarningCode {
             FbxWarningCode::MissingNodeEndOffset
             | FbxWarningCode::UnsupportedTransformInherit
             | FbxWarningCode::UnsupportedLayerMapping
-            | FbxWarningCode::DroppedLayerElement => true,
+            | FbxWarningCode::DroppedLayerElement
+            | FbxWarningCode::NameKeyedObjectModel => true,
         }
     }
 
@@ -59,6 +64,7 @@ impl FbxWarningCode {
             FbxWarningCode::UnsupportedTransformInherit => "unsupported-transform-inherit",
             FbxWarningCode::UnsupportedLayerMapping => "unsupported-layer-mapping",
             FbxWarningCode::DroppedLayerElement => "dropped-layer-element",
+            FbxWarningCode::NameKeyedObjectModel => "name-keyed-object-model",
         }
     }
 }

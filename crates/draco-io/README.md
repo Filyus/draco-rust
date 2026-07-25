@@ -44,16 +44,26 @@ Writers do not claim to preserve data that their target cannot represent.
 
 ### FBX support
 
-Binary FBX only; the ASCII container is rejected. Versions 6000 through 8000
-are read, in either byte order — a non-zero endian marker selects big-endian,
-as `ufbx` does. Output is FBX 7500 little-endian.
+Binary FBX only; the ASCII container is rejected. The container is read for
+versions 6000 through 8000, in either byte order — a non-zero endian marker
+selects big-endian, as `ufbx` does. Output is FBX 7500 little-endian.
+
+Scene content, however, is read only from **FBX 7000 and later**. Earlier
+versions use a different object model: objects are identified by a
+`"name\0\x01Class"` string instead of an `i64` id, connections reference those
+strings, geometry lives on the `Model` rather than on a separate `Geometry`,
+and array payloads are stored as repeated scalar properties. A pre-7000
+document therefore decodes to a structurally valid but empty scene, and says so
+through `FbxWarningCode::NameKeyedObjectModel` rather than looking like a file
+that simply has no meshes. 81 of the 308 binary files in the `ufbx` corpus are
+version 6100 and fall in this category.
 
 | Data | Read | Write |
 | --- | :---: | :---: |
 | Mesh geometry | Yes | Yes |
 | Normals and UV layers | Yes | Yes |
 | Vertex colors | Yes | Yes |
-| Tangents | No | No |
+| Tangents and binormals | Yes | Yes |
 | `Edges` array | Yes | Yes |
 | Edge smoothing / creases (`ByEdge` layers) | No | No |
 | Mesh and model names | Yes | Yes |
@@ -70,9 +80,22 @@ as `ufbx` does. Output is FBX 7500 little-endian.
 Layer elements are resolved on the polygon-corner domain, so a UV or hard-normal
 seam survives instead of being averaged onto its control point. The Draco mesh
 welds corners that agree on every attribute, which keeps seams while collapsing
-interior duplicates. Every UV, normal and colour set is preserved on
+interior duplicates. Every UV, normal, colour and tangent set is preserved on
 `FbxMeshInstance`; only the first of each reaches the Draco mesh, since Draco
 has no concept of multiple sets.
+
+Tangents are stored as four components, with the handedness sign in `w` -- the
+layout glTF's `TANGENT` uses. FBX itself splits them across two sibling arrays,
+`Tangents` and a `TangentsW` that only 7500 and later write, so a set records
+whether its handedness was authored or defaulted to `+1`; the writer emits the
+sibling array only when it was. Binormals are read and written for the same
+reason `Edges` is kept raw -- they are the only carrier of tangent sign in files
+that have no `TangentsW` -- but they stop at `FbxMeshInstance`, since glTF has
+no binormal to lower them onto.
+
+Draco's `GeometryAttributeType` has no tangent, so tangents never enter the
+Draco mesh or its weld key; they travel on `FbxMeshInstance` and
+`FbxRenderMesh`, the same route extra UV sets take.
 
 `Edges` is kept verbatim rather than normalized: FBX does not require it to list
 every topological edge, and importers reconstruct the rest from faces, so
@@ -91,8 +114,10 @@ normal, and emissive textures (embedded `Content` or external filename), and
 per-polygon material indices. Animation resolves the
 `AnimationStack → AnimationLayer → AnimationCurveNode → AnimationCurve` graph
 into per-node TRS channels in seconds, one clip per layer — the same choice
-Blender's importer makes. Layers are not blended. Cameras and non-TRS animation
-are skipped safely and recorded in `FbxScene::warnings`. Scene export preserves
+Blender's importer makes. Layers are not blended. Cameras, lights and other
+`NodeAttribute` objects are not read at all: a node carrying one keeps its
+transform and hierarchy, but the attribute itself is absent from the scene and
+is not currently reported. Scene export preserves
 local affine translation, rotation, scale, skins, bind poses, morph targets,
 and authored animation channels. FBX pivot settings and inheritance rules are
 not represented by `FbxTransform`.

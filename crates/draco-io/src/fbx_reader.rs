@@ -273,6 +273,24 @@ impl<R: Read + Seek> FbxReader<R> {
         // Container-layout notices raised by `read_nodes` above ride along
         // with the semantic ones, so a caller sees every tolerated deviation.
         let mut warnings = self.warnings.clone();
+        // A pre-7000 document keys its objects and connections by name rather
+        // than by id, and puts geometry on the `Model` itself. None of that is
+        // read, so the scene comes back structurally valid but empty. Saying so
+        // is the difference between "this file has no meshes" and "this reader
+        // did not look for them".
+        if index.name_keyed_objects > 0 {
+            let count = index.name_keyed_objects;
+            push_warning(
+                &mut warnings,
+                FbxWarningCode::NameKeyedObjectModel,
+                format!(
+                    "FBX document identifies its {count} objects by name rather than by id, \
+                     which is the pre-7000 layout; no geometry, materials or animation were \
+                     imported from it"
+                ),
+                None,
+            );
+        }
         collect_transform_warnings(model_map, model_order, &mut warnings);
 
         // ---- Materials and textures ---------------------------------------
@@ -1137,6 +1155,13 @@ struct FbxObjectIndex<'a> {
     deformer_map: HashMap<i64, &'a FbxNode>,
     pose_map: HashMap<i64, &'a FbxNode>,
     connections: Vec<FbxConnection>,
+    /// `Objects` children skipped because they are keyed by name, not by id.
+    ///
+    /// FBX 6100 and earlier identify objects by a name string ending in a
+    /// class marker, and connect them by that string rather than by the `i64`
+    /// id 7.x uses. Nothing in this index can hold them, so counting them is
+    /// how the reader notices it decoded a document it does not understand.
+    name_keyed_objects: usize,
 }
 
 impl<'a> FbxObjectIndex<'a> {
@@ -1155,12 +1180,16 @@ impl<'a> FbxObjectIndex<'a> {
             deformer_map: HashMap::new(),
             pose_map: HashMap::new(),
             connections: Vec::new(),
+            name_keyed_objects: 0,
         };
 
         for node in nodes {
             if node.name == "Objects" {
                 for child in &node.children {
                     let Some(FbxProperty::I64(id)) = child.properties.first() else {
+                        if matches!(child.properties.first(), Some(FbxProperty::String(_))) {
+                            index.name_keyed_objects += 1;
+                        }
                         continue;
                     };
                     match child.name.as_str() {
