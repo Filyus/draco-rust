@@ -12,18 +12,21 @@ export const FBX_SCENE_PROVENANCE_VERSION = 1;
 /** Build a serializable sidecar for an FBX semantic parse result. */
 export function createFbxSceneProvenance(parsed) {
     if (!parsed?.scene?.rootNodes?.length) throw new Error('FBX provenance requires a semantic scene');
+    const settings = parsed.scene.globalSettings || null;
     return {
         version: FBX_SCENE_PROVENANCE_VERSION,
         format: 'fbx',
         coordinateSpace: {
-            // fbx-wasm currently materializes Model/Cluster values in their
-            // authored semantic FBX axes. It does not yet expose
-            // GlobalSettings axis or UnitScaleFactor, so do not fabricate it.
-            axes: 'semantic-fbx-native',
-            unitScaleFactor: null,
-            sourceUnit: 'unexposed',
+            // fbx-wasm materializes Model/Cluster values in authored semantic
+            // FBX axes; retain decoded GlobalSettings without applying a
+            // guessed conversion to the portable document.
+            axes: settings ? 'fbx-global-settings' : 'semantic-fbx-native',
+            unitScaleFactor: settings?.unitScaleFactor ?? null,
+            sourceUnit: settings?.unitScaleFactor === 1 || settings?.unitScaleFactor === 100
+                ? 'centimeter' : 'decoded',
             sceneDocumentMetersPerSourceUnit: 0.01,
         },
+        ...(settings ? { globalSettings: structuredClone(settings) } : {}),
         animation: {
             // The source scene contains raw Lcl curves. The active FBX
             // evaluator additionally applies bind/rest and pre/post policies

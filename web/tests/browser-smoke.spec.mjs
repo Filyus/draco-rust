@@ -199,6 +199,30 @@ test('FBX SceneDocument exports to GLB and reloads without flattening', async ({
   }
 });
 
+test('FBX SceneDocument exports through the typed FBX writer', async ({ page }) => {
+  test.skip(!existsSync(mixamoFbx), 'local Mixamo FBX fixture is unavailable');
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles(mixamoFbx);
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await page.locator('[data-choice-for="export-format"] [data-value="fbx"]').click();
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('#export-btn').click();
+  const download = await downloadPromise;
+  const downloadedPath = await download.path();
+  expect(downloadedPath).not.toBeNull();
+  const bytes = await readFile(downloadedPath);
+  expect(bytes.subarray(0, 21).toString('binary')).toBe('Kaydara FBX Binary  \u0000');
+  await page.locator('#file-input').setInputFiles({
+    name: 'scene-document-roundtrip.fbx',
+    mimeType: 'application/octet-stream',
+    buffer: bytes,
+  });
+  await expect(page.locator('#console')).toContainText('Successfully parsed scene-document-roundtrip.fbx');
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).not.toContainText('Preview failed');
+});
+
 test('glTF CUBICSPLINE scales tangents by keyframe duration', async ({ page }) => {
   await page.goto('/index.html');
   const values = await page.evaluate(async () => {

@@ -12,8 +12,9 @@ for (const [label, path] of [['Mixamo', mixamoFbx], ['Samba', sambaFbx]]) {
     assert.equal(document.nodes.length > 0, true, `${label} portable document`);
     assert.equal('sourceScene' in document, false, `${label} portable document must not retain FBX scene data`);
     assert.equal(provenance.format, 'fbx');
-    assert.equal(provenance.coordinateSpace.axes, 'semantic-fbx-native');
-    assert.equal(provenance.coordinateSpace.unitScaleFactor, null, `${label} must expose that source UnitScaleFactor is not decoded`);
+    assert.equal(provenance.coordinateSpace.axes, 'fbx-global-settings');
+    assert.equal(provenance.coordinateSpace.unitScaleFactor, parsed.scene.globalSettings.unitScaleFactor, `${label} source UnitScaleFactor`);
+    assert.deepEqual(provenance.globalSettings, parsed.scene.globalSettings, `${label} global settings sidecar`);
     assert.equal(provenance.animation.evaluator, 'fbx-viewer-bind-rest-v1');
     const clone = cloneFbxSemanticScene(provenance);
     assert.notEqual(clone, provenance.sourceScene, `${label} provenance export scene must detach`);

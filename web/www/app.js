@@ -9,6 +9,7 @@ import { Viewer } from './viewer.js';
 import { buildFbxSceneFromGltf, buildFlatMeshesFromGltf, buildSceneFromGltf } from './gltf-loader.js';
 import { buildSceneFromFbx, buildSceneFromMeshes } from './mesh-loader.js';
 import { buildSceneDocumentWithFbxProvenance } from './fbx-scene-document.js';
+import { buildFbxSceneFromDocument } from './fbx-scene-document-writer.js';
 import { serializeSceneDocumentToGlb } from './scene-document-gltf.js';
 import { isAsciiFbx, parseAsciiFbx } from './ascii-fbx-loader.js';
 
@@ -733,7 +734,10 @@ async function exportFile() {
             return;
         }
         const legacyFbx = format === 'fbx-legacy';
-        if ((format === 'fbx' || legacyFbx) && currentMeshData.scene) {
+        if ((format === 'fbx' || legacyFbx) && currentFileType === 'fbx' && currentSceneDocument) {
+            const scene = buildFbxSceneFromDocument(currentSceneDocument, { provenance: currentFbxProvenance });
+            result = await exportToFbxScene(scene, legacyFbx);
+        } else if ((format === 'fbx' || legacyFbx) && currentMeshData.scene) {
             result = await exportToFbxScene(
                 prepareFbxSceneForExport(currentMeshData.scene, legacyFbx),
                 legacyFbx,
