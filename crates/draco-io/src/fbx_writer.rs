@@ -1190,7 +1190,7 @@ fn write_objects<W: Write + Seek>(
     let node = NodeWriter::start(writer, "Objects", is_64)?;
     node.finish_with_children(|w| {
         for mesh_data in meshes {
-            write_geometry(w, mesh_data, is_64, options)?;
+            encode_node(w, &geometry_node(mesh_data), is_64, options)?;
         }
         for model_data in models {
             write_model(w, model_data, is_64)?;
@@ -1509,454 +1509,419 @@ fn write_morph<W: Write + Seek>(
     Ok(())
 }
 
-fn write_geometry<W: Write + Seek>(
-    writer: &mut W,
-    mesh_data: &MeshData,
-    is_64: bool,
-    options: &WriterOptions,
-) -> io::Result<()> {
-    let mut node = NodeWriter::start(writer, "Geometry", is_64)?;
-    node.write_property_i64(mesh_data.geometry_id)?;
-    // Name::Class separator format
-    let object_name = name_class(&mesh_data.name, "Geometry");
-    node.write_property_string(&object_name)?;
-    node.write_property_string("Mesh")?;
+fn geometry_node(mesh_data: &MeshData) -> FbxNode {
+    let mut children = vec![value_node("GeometryVersion", FbxProperty::I32(124))];
 
-    node.finish_with_children(|w| {
-        // GeometryVersion
-        let mut gver = NodeWriter::start(w, "GeometryVersion", is_64)?;
-        gver.write_property_i32(124)?;
-        gver.finish()?;
+    let vertices = mesh_data
+        .control_points
+        .as_deref()
+        .unwrap_or(&mesh_data.vertices);
+    if !vertices.is_empty() {
+        children.push(value_node(
+            "Vertices",
+            FbxProperty::F64Array(vertices.to_vec()),
+        ));
+    }
 
-        // Write Vertices
-        let vertices = mesh_data
-            .control_points
-            .as_deref()
-            .unwrap_or(&mesh_data.vertices);
-        if !vertices.is_empty() {
-            let mut vert_node = NodeWriter::start(w, "Vertices", is_64)?;
-            vert_node.write_property_f64_array(vertices, options)?;
-            vert_node.finish()?;
-        }
+    let polygon_indices = mesh_data
+        .polygon_vertex_indices
+        .as_deref()
+        .unwrap_or(&mesh_data.indices);
+    // Emit the node even when empty, as long as the geometry has vertices.
+    // A vertices-only Geometry is legal -- Blender writes one for a curve
+    // with no faces -- and the reader treats a missing PolygonVertexIndex
+    // as "not a mesh", so skipping it dropped the object entirely.
+    if !polygon_indices.is_empty() || !vertices.is_empty() {
+        children.push(value_node(
+            "PolygonVertexIndex",
+            FbxProperty::I32Array(polygon_indices.to_vec()),
+        ));
+    }
 
-        // Write PolygonVertexIndex
-        let polygon_indices = mesh_data
-            .polygon_vertex_indices
-            .as_deref()
-            .unwrap_or(&mesh_data.indices);
-        // Emit the node even when empty, as long as the geometry has vertices.
-        // A vertices-only Geometry is legal -- Blender writes one for a curve
-        // with no faces -- and the reader treats a missing PolygonVertexIndex
-        // as "not a mesh", so skipping it dropped the object entirely.
-        if !polygon_indices.is_empty() || !vertices.is_empty() {
-            let mut poly_node = NodeWriter::start(w, "PolygonVertexIndex", is_64)?;
-            poly_node.write_property_i32_array(polygon_indices, options)?;
-            poly_node.finish()?;
+    // Normals (preserve original layer mappings when available).
+    if mesh_data.normal_sets.is_empty() {
+        if let Some(normals) = &mesh_data.normals {
+            children.push(layer_element_normal_node(normals));
         }
+    } else {
+        for normal_set in &mesh_data.normal_sets {
+            children.push(layer_element_normal_set_node(normal_set));
+        }
+    }
 
-        // Normals (preserve original layer mappings when available).
-        if mesh_data.normal_sets.is_empty() {
-            if let Some(normals) = &mesh_data.normals {
-                write_layer_element_normal(w, is_64, normals, options)?;
-            }
-        } else {
-            for (index, normal_set) in mesh_data.normal_sets.iter().enumerate() {
-                write_layer_element_normal_set(w, is_64, normal_set, index, options)?;
-            }
-        }
+    // `Edges` addresses polygon corners and is what `ByEdge` layer
+    // elements index, so it is written back verbatim when present.
+    if !mesh_data.edges.is_empty() {
+        children.push(value_node(
+            "Edges",
+            FbxProperty::I32Array(mesh_data.edges.clone()),
+        ));
+    }
 
-        // `Edges` addresses polygon corners and is what `ByEdge` layer
-        // elements index, so it is written back verbatim when present.
-        if !mesh_data.edges.is_empty() {
-            let mut edge_node = NodeWriter::start(w, "Edges", is_64)?;
-            edge_node.write_property_i32_array(&mesh_data.edges, options)?;
-            edge_node.finish()?;
-        }
+    // Vertex colours, when the source carried any.
+    for color_set in &mesh_data.color_sets {
+        children.push(layer_element_color_set_node(color_set));
+    }
 
-        // Vertex colours, when the source carried any.
-        for color_set in &mesh_data.color_sets {
-            write_layer_element_color_set(w, is_64, color_set, options)?;
-        }
+    // Tangents and their handedness, then binormals; FBX always writes the
+    // pair together and no corpus file carries one without the other.
+    for set in &mesh_data.tangent_sets {
+        children.push(layer_element_tangent_set_node("LayerElementTangent", set));
+    }
+    for set in &mesh_data.binormal_sets {
+        children.push(layer_element_tangent_set_node("LayerElementBinormal", set));
+    }
 
-        // Tangents and their handedness, then binormals; FBX always writes the
-        // pair together and no corpus file carries one without the other.
-        for set in &mesh_data.tangent_sets {
-            write_layer_element_tangent_set(w, is_64, "LayerElementTangent", set, options)?;
-        }
-        for set in &mesh_data.binormal_sets {
-            write_layer_element_tangent_set(w, is_64, "LayerElementBinormal", set, options)?;
-        }
+    // Hard edges and creases, written back on whichever domain they were
+    // authored on.
+    for layer in &mesh_data.smoothing_layers {
+        children.push(layer_element_smoothing_node(layer));
+    }
+    for layer in &mesh_data.crease_layers {
+        children.push(layer_element_crease_node(layer));
+    }
 
-        // Hard edges and creases, written back on whichever domain they were
-        // authored on.
-        for layer in &mesh_data.smoothing_layers {
-            write_layer_element_smoothing(w, is_64, layer, options)?;
+    // UVs (LayerElementUV, ByVertice/Direct).
+    if mesh_data.uv_sets.is_empty() {
+        if let Some(uvs) = &mesh_data.uvs {
+            children.push(layer_element_uv_node(uvs));
         }
-        for layer in &mesh_data.crease_layers {
-            write_layer_element_crease(w, is_64, layer, options)?;
+    } else {
+        for uv_set in &mesh_data.uv_sets {
+            children.push(layer_element_uv_set_node(uv_set));
         }
+    }
 
-        // UVs (LayerElementUV, ByVertice/Direct).
-        if mesh_data.uv_sets.is_empty() {
-            if let Some(uvs) = &mesh_data.uvs {
-                write_layer_element_uv(w, is_64, uvs, options)?;
-            }
-        } else {
-            for (index, uv_set) in mesh_data.uv_sets.iter().enumerate() {
-                write_layer_element_uv_set(w, is_64, uv_set, index, options)?;
-            }
-        }
+    if !mesh_data.material_indices.is_empty() {
+        // `LayerElementMaterial` is ByPolygon, but `material_indices` is
+        // per triangle. When the original n-gon stream is being written
+        // those counts differ, so collapse back to one entry per polygon.
+        let per_polygon = collapse_material_indices_to_polygons(
+            &mesh_data.material_indices,
+            mesh_data.polygon_vertex_indices.as_deref(),
+        );
+        children.push(layer_element_material_node(&per_polygon));
+    }
 
-        if !mesh_data.material_indices.is_empty() {
-            // `LayerElementMaterial` is ByPolygon, but `material_indices` is
-            // per triangle. When the original n-gon stream is being written
-            // those counts differ, so collapse back to one entry per polygon.
-            let per_polygon = collapse_material_indices_to_polygons(
-                &mesh_data.material_indices,
-                mesh_data.polygon_vertex_indices.as_deref(),
-            );
-            write_layer_element_material(w, is_64, &per_polygon, options)?;
-        }
+    if let Some(layer) = layer_node(mesh_data) {
+        children.push(layer);
+    }
 
-        // Layer aggregation node (FBX requires a Layer entry per used element).
-        // Every element written above must be listed here, or an importer will
-        // not find it -- a colours-only geometry used to emit an orphaned
-        // `LayerElementColor` because this condition did not mention them.
-        if mesh_data.normals.is_some()
-            || !mesh_data.normal_sets.is_empty()
-            || mesh_data.uvs.is_some()
-            || !mesh_data.uv_sets.is_empty()
-            || !mesh_data.color_sets.is_empty()
-            || !mesh_data.tangent_sets.is_empty()
-            || !mesh_data.binormal_sets.is_empty()
-            || !mesh_data.smoothing_layers.is_empty()
-            || !mesh_data.crease_layers.is_empty()
-            || !mesh_data.material_indices.is_empty()
-        {
-            let layer = NodeWriter::start(w, "Layer", is_64)?;
-            layer.finish_with_children(|lw| {
-                let mut version = NodeWriter::start(lw, "Version", is_64)?;
-                version.write_property_i32(100)?;
-                version.finish()?;
-                if mesh_data.normal_sets.is_empty() && mesh_data.normals.is_some() {
-                    write_layer_element(lw, is_64, "LayerElementNormal")?;
-                } else {
-                    for index in 0..mesh_data.normal_sets.len() {
-                        write_layer_element_index(lw, is_64, "LayerElementNormal", index as i32)?;
-                    }
-                }
-                if mesh_data.uv_sets.is_empty() && mesh_data.uvs.is_some() {
-                    write_layer_element(lw, is_64, "LayerElementUV")?;
-                } else {
-                    for index in 0..mesh_data.uv_sets.len() {
-                        write_layer_element_index(lw, is_64, "LayerElementUV", index as i32)?;
-                    }
-                }
-                for index in 0..mesh_data.color_sets.len() {
-                    write_layer_element_index(lw, is_64, "LayerElementColor", index as i32)?;
-                }
-                for index in 0..mesh_data.tangent_sets.len() {
-                    write_layer_element_index(lw, is_64, "LayerElementTangent", index as i32)?;
-                }
-                for index in 0..mesh_data.binormal_sets.len() {
-                    write_layer_element_index(lw, is_64, "LayerElementBinormal", index as i32)?;
-                }
-                for index in 0..mesh_data.smoothing_layers.len() {
-                    write_layer_element_index(lw, is_64, "LayerElementSmoothing", index as i32)?;
-                }
-                for (index, layer) in mesh_data.crease_layers.iter().enumerate() {
-                    let element = match layer.kind {
-                        crate::fbx_scene::FbxCreaseKind::Edge => "LayerElementEdgeCrease",
-                        crate::fbx_scene::FbxCreaseKind::Vertex => "LayerElementVertexCrease",
-                    };
-                    write_layer_element_index(lw, is_64, element, index as i32)?;
-                }
-                if !mesh_data.material_indices.is_empty() {
-                    write_layer_element(lw, is_64, "LayerElementMaterial")?;
-                }
-                Ok(())
-            })?;
-        }
+    FbxNode {
+        name: "Geometry".to_string(),
+        properties: vec![
+            FbxProperty::I64(mesh_data.geometry_id),
+            FbxProperty::String(name_class(&mesh_data.name, "Geometry")),
+            FbxProperty::String("Mesh".to_string()),
+        ],
+        children,
+    }
+}
 
-        Ok(())
+/// The `Layer` aggregation node, which lists every element the geometry wrote.
+///
+/// FBX requires an entry per used element, or an importer will not find it --
+/// a colours-only geometry used to emit an orphaned `LayerElementColor`
+/// because this condition did not mention them. `None` when the geometry has
+/// no layer elements at all.
+fn layer_node(mesh_data: &MeshData) -> Option<FbxNode> {
+    let uses_layers = mesh_data.normals.is_some()
+        || !mesh_data.normal_sets.is_empty()
+        || mesh_data.uvs.is_some()
+        || !mesh_data.uv_sets.is_empty()
+        || !mesh_data.color_sets.is_empty()
+        || !mesh_data.tangent_sets.is_empty()
+        || !mesh_data.binormal_sets.is_empty()
+        || !mesh_data.smoothing_layers.is_empty()
+        || !mesh_data.crease_layers.is_empty()
+        || !mesh_data.material_indices.is_empty();
+    if !uses_layers {
+        return None;
+    }
+
+    let mut children = vec![value_node("Version", FbxProperty::I32(100))];
+    if mesh_data.normal_sets.is_empty() && mesh_data.normals.is_some() {
+        children.push(layer_element_node("LayerElementNormal", 0));
+    } else {
+        for index in 0..mesh_data.normal_sets.len() {
+            children.push(layer_element_node("LayerElementNormal", index as i32));
+        }
+    }
+    if mesh_data.uv_sets.is_empty() && mesh_data.uvs.is_some() {
+        children.push(layer_element_node("LayerElementUV", 0));
+    } else {
+        for index in 0..mesh_data.uv_sets.len() {
+            children.push(layer_element_node("LayerElementUV", index as i32));
+        }
+    }
+    for index in 0..mesh_data.color_sets.len() {
+        children.push(layer_element_node("LayerElementColor", index as i32));
+    }
+    for index in 0..mesh_data.tangent_sets.len() {
+        children.push(layer_element_node("LayerElementTangent", index as i32));
+    }
+    for index in 0..mesh_data.binormal_sets.len() {
+        children.push(layer_element_node("LayerElementBinormal", index as i32));
+    }
+    for index in 0..mesh_data.smoothing_layers.len() {
+        children.push(layer_element_node("LayerElementSmoothing", index as i32));
+    }
+    for (index, layer) in mesh_data.crease_layers.iter().enumerate() {
+        let element = match layer.kind {
+            crate::fbx_scene::FbxCreaseKind::Edge => "LayerElementEdgeCrease",
+            crate::fbx_scene::FbxCreaseKind::Vertex => "LayerElementVertexCrease",
+        };
+        children.push(layer_element_node(element, index as i32));
+    }
+    if !mesh_data.material_indices.is_empty() {
+        children.push(layer_element_node("LayerElementMaterial", 0));
+    }
+
+    Some(FbxNode {
+        name: "Layer".to_string(),
+        properties: Vec::new(),
+        children,
     })
 }
 
-fn write_layer_element<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    type_name: &str,
-) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "LayerElement", is_64)?;
-    node.finish_with_children(|w| {
-        let mut t = NodeWriter::start(w, "Type", is_64)?;
-        t.write_property_string(type_name)?;
-        t.finish()?;
-        let mut i = NodeWriter::start(w, "TypedIndex", is_64)?;
-        i.write_property_i32(0)?;
-        i.finish()
-    })
+/// A node holding one value and no children.
+fn value_node(name: &str, value: FbxProperty) -> FbxNode {
+    FbxNode {
+        name: name.to_string(),
+        properties: vec![value],
+        children: Vec::new(),
+    }
 }
 
-fn write_layer_element_index<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    type_name: &str,
-    index: i32,
-) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "LayerElement", is_64)?;
-    node.finish_with_children(|w| {
-        let mut t = NodeWriter::start(w, "Type", is_64)?;
-        t.write_property_string(type_name)?;
-        t.finish()?;
-        let mut i = NodeWriter::start(w, "TypedIndex", is_64)?;
-        i.write_property_i32(index)?;
-        i.finish()
-    })
+/// A `LayerElement` entry in a `Layer`, naming an element type and which of
+/// its instances this layer uses.
+fn layer_element_node(type_name: &str, index: i32) -> FbxNode {
+    FbxNode {
+        name: "LayerElement".to_string(),
+        properties: Vec::new(),
+        children: vec![
+            value_node("Type", FbxProperty::String(type_name.to_string())),
+            value_node("TypedIndex", FbxProperty::I32(index)),
+        ],
+    }
 }
 
-fn write_layer_element_normal<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    normals: &[f64],
-    options: &WriterOptions,
-) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "LayerElementNormal", is_64)?;
-    node.finish_with_children(|w| {
-        write_layer_header(w, is_64, "ByVertice", "Direct")?;
-        let mut data = NodeWriter::start(w, "Normals", is_64)?;
-        data.write_property_f64_array(normals, options)?;
-        data.finish()
-    })
+/// The four nodes every layer element opens with.
+///
+/// Version 101 is what every element except smoothing carries; smoothing
+/// writes 102, as Autodesk does, and so builds its own header.
+fn layer_header(layer_name: &str, mapping: &str, reference: &str) -> Vec<FbxNode> {
+    vec![
+        value_node("Version", FbxProperty::I32(101)),
+        value_node("Name", FbxProperty::String(layer_name.to_string())),
+        value_node(
+            "MappingInformationType",
+            FbxProperty::String(mapping.to_string()),
+        ),
+        value_node(
+            "ReferenceInformationType",
+            FbxProperty::String(reference.to_string()),
+        ),
+    ]
 }
 
-fn write_layer_element_normal_set<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    set: &crate::fbx_scene::FbxNormalSet,
-    _index: usize,
-    options: &WriterOptions,
-) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "LayerElementNormal", is_64)?;
-    node.finish_with_children(|w| {
-        write_layer_header_with_name(
-            w,
-            is_64,
-            set.name.as_deref().unwrap_or("NormalSet0"),
-            set.mapping.as_deref().unwrap_or("ByPolygonVertex"),
-            set.reference.as_deref().unwrap_or("Direct"),
-        )?;
-        let values: Vec<f64> = set
-            .values
-            .iter()
-            .flat_map(|value| value.iter().map(|component| f64::from(*component)))
-            .collect();
-        let mut data = NodeWriter::start(w, "Normals", is_64)?;
-        data.write_property_f64_array(&values, options)?;
-        data.finish()?;
-        if set.reference.as_deref() == Some("IndexToDirect") && !set.indices.is_empty() {
-            let mut indices = NodeWriter::start(w, "NormalIndex", is_64)?;
-            indices.write_property_i32_array(&set.indices, options)?;
-            indices.finish()?;
-        }
-        Ok(())
-    })
+/// Flattens `[f32; N]` values into the single `f64` array FBX stores.
+fn flatten_f64<const N: usize>(values: &[[f32; N]], components: usize) -> Vec<f64> {
+    values
+        .iter()
+        .flat_map(|value| value[..components].iter().map(|c| f64::from(*c)))
+        .collect()
 }
 
-fn write_layer_element_uv<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    uvs: &[f64],
-    options: &WriterOptions,
-) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "LayerElementUV", is_64)?;
-    node.finish_with_children(|w| {
-        write_layer_header(w, is_64, "ByVertice", "Direct")?;
-        let mut data = NodeWriter::start(w, "UV", is_64)?;
-        data.write_property_f64_array(uvs, options)?;
-        data.finish()
-    })
+/// The `IndexToDirect` companion array, present only when the source declared
+/// that reference mode and actually carried indices.
+fn index_array_node(name: &str, reference: Option<&str>, indices: &[i32]) -> Option<FbxNode> {
+    (reference == Some("IndexToDirect") && !indices.is_empty())
+        .then(|| value_node(name, FbxProperty::I32Array(indices.to_vec())))
 }
 
-fn write_layer_element_uv_set<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    set: &crate::fbx_scene::FbxUvSet,
-    index: usize,
-    options: &WriterOptions,
-) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "LayerElementUV", is_64)?;
-    node.finish_with_children(|w| {
-        write_layer_header_with_name(
-            w,
-            is_64,
-            set.name.as_deref().unwrap_or("UVSet0"),
-            set.mapping.as_deref().unwrap_or("ByPolygonVertex"),
-            set.reference.as_deref().unwrap_or("IndexToDirect"),
-        )?;
-        let values: Vec<f64> = set
-            .values
-            .iter()
-            .flat_map(|value| value.iter().map(|component| f64::from(*component)))
-            .collect();
-        let mut data = NodeWriter::start(w, "UV", is_64)?;
-        data.write_property_f64_array(&values, options)?;
-        data.finish()?;
-        if set.reference.as_deref() == Some("IndexToDirect") && !set.indices.is_empty() {
-            let mut indices = NodeWriter::start(w, "UVIndex", is_64)?;
-            indices.write_property_i32_array(&set.indices, options)?;
-            indices.finish()?;
-        }
-        let _ = index;
-        Ok(())
-    })
+fn layer_element_normal_node(normals: &[f64]) -> FbxNode {
+    let mut children = layer_header("", "ByVertice", "Direct");
+    children.push(value_node(
+        "Normals",
+        FbxProperty::F64Array(normals.to_vec()),
+    ));
+    FbxNode {
+        name: "LayerElementNormal".to_string(),
+        properties: Vec::new(),
+        children,
+    }
 }
 
-fn write_layer_element_color_set<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    set: &crate::fbx_scene::FbxColorSet,
-    options: &WriterOptions,
-) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "LayerElementColor", is_64)?;
-    node.finish_with_children(|w| {
-        write_layer_header_with_name(
-            w,
-            is_64,
-            set.name.as_deref().unwrap_or("Col"),
-            set.mapping.as_deref().unwrap_or("ByPolygonVertex"),
-            set.reference.as_deref().unwrap_or("Direct"),
-        )?;
-        let values: Vec<f64> = set
-            .values
-            .iter()
-            .flat_map(|value| value.iter().map(|component| f64::from(*component)))
-            .collect();
-        let mut data = NodeWriter::start(w, "Colors", is_64)?;
-        data.write_property_f64_array(&values, options)?;
-        data.finish()?;
-        if set.reference.as_deref() == Some("IndexToDirect") && !set.indices.is_empty() {
-            let mut indices = NodeWriter::start(w, "ColorIndex", is_64)?;
-            indices.write_property_i32_array(&set.indices, options)?;
-            indices.finish()?;
-        }
-        Ok(())
-    })
+fn layer_element_normal_set_node(set: &crate::fbx_scene::FbxNormalSet) -> FbxNode {
+    let mut children = layer_header(
+        set.name.as_deref().unwrap_or("NormalSet0"),
+        set.mapping.as_deref().unwrap_or("ByPolygonVertex"),
+        set.reference.as_deref().unwrap_or("Direct"),
+    );
+    children.push(value_node(
+        "Normals",
+        FbxProperty::F64Array(flatten_f64(&set.values, 3)),
+    ));
+    children.extend(index_array_node(
+        "NormalIndex",
+        set.reference.as_deref(),
+        &set.indices,
+    ));
+    FbxNode {
+        name: "LayerElementNormal".to_string(),
+        properties: Vec::new(),
+        children,
+    }
 }
 
-/// Writes a `LayerElementTangent` or `LayerElementBinormal`.
+fn layer_element_uv_node(uvs: &[f64]) -> FbxNode {
+    let mut children = layer_header("", "ByVertice", "Direct");
+    children.push(value_node("UV", FbxProperty::F64Array(uvs.to_vec())));
+    FbxNode {
+        name: "LayerElementUV".to_string(),
+        properties: Vec::new(),
+        children,
+    }
+}
+
+fn layer_element_uv_set_node(set: &crate::fbx_scene::FbxUvSet) -> FbxNode {
+    let mut children = layer_header(
+        set.name.as_deref().unwrap_or("UVSet0"),
+        set.mapping.as_deref().unwrap_or("ByPolygonVertex"),
+        set.reference.as_deref().unwrap_or("IndexToDirect"),
+    );
+    children.push(value_node(
+        "UV",
+        FbxProperty::F64Array(flatten_f64(&set.values, 2)),
+    ));
+    children.extend(index_array_node(
+        "UVIndex",
+        set.reference.as_deref(),
+        &set.indices,
+    ));
+    FbxNode {
+        name: "LayerElementUV".to_string(),
+        properties: Vec::new(),
+        children,
+    }
+}
+
+fn layer_element_color_set_node(set: &crate::fbx_scene::FbxColorSet) -> FbxNode {
+    let mut children = layer_header(
+        set.name.as_deref().unwrap_or("Col"),
+        set.mapping.as_deref().unwrap_or("ByPolygonVertex"),
+        set.reference.as_deref().unwrap_or("Direct"),
+    );
+    children.push(value_node(
+        "Colors",
+        FbxProperty::F64Array(flatten_f64(&set.values, 4)),
+    ));
+    children.extend(index_array_node(
+        "ColorIndex",
+        set.reference.as_deref(),
+        &set.indices,
+    ));
+    FbxNode {
+        name: "LayerElementColor".to_string(),
+        properties: Vec::new(),
+        children,
+    }
+}
+
+/// Builds a `LayerElementTangent` or `LayerElementBinormal`.
 ///
 /// The four-component value is split back into the two sibling arrays FBX
 /// uses. The handedness array is emitted only when the source had one, so a
 /// pre-7500 document does not acquire a field it never carried.
-fn write_layer_element_tangent_set<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    element: &str,
-    set: &crate::fbx_scene::FbxTangentSet,
-    options: &WriterOptions,
-) -> io::Result<()> {
+fn layer_element_tangent_set_node(element: &str, set: &crate::fbx_scene::FbxTangentSet) -> FbxNode {
     let (values_node, handedness_node, index_node) = if element == "LayerElementBinormal" {
         ("Binormals", "BinormalsW", "BinormalIndex")
     } else {
         ("Tangents", "TangentsW", "TangentIndex")
     };
-    let node = NodeWriter::start(writer, element, is_64)?;
-    node.finish_with_children(|w| {
-        write_layer_header_with_name(
-            w,
-            is_64,
-            set.layer.name.as_deref().unwrap_or(""),
-            set.layer.mapping.as_deref().unwrap_or("ByPolygonVertex"),
-            set.layer.reference.as_deref().unwrap_or("Direct"),
-        )?;
-        let vectors: Vec<f64> = set
+    let mut children = layer_header(
+        set.layer.name.as_deref().unwrap_or(""),
+        set.layer.mapping.as_deref().unwrap_or("ByPolygonVertex"),
+        set.layer.reference.as_deref().unwrap_or("Direct"),
+    );
+    children.push(value_node(
+        values_node,
+        FbxProperty::F64Array(flatten_f64(&set.layer.values, 3)),
+    ));
+    if set.has_handedness {
+        let signs: Vec<f64> = set
             .layer
             .values
             .iter()
-            .flat_map(|value| value[..3].iter().map(|component| f64::from(*component)))
+            .map(|value| f64::from(value[3]))
             .collect();
-        let mut data = NodeWriter::start(w, values_node, is_64)?;
-        data.write_property_f64_array(&vectors, options)?;
-        data.finish()?;
-        if set.has_handedness {
-            let signs: Vec<f64> = set
-                .layer
-                .values
-                .iter()
-                .map(|value| f64::from(value[3]))
-                .collect();
-            let mut data = NodeWriter::start(w, handedness_node, is_64)?;
-            data.write_property_f64_array(&signs, options)?;
-            data.finish()?;
-        }
-        if set.layer.reference.as_deref() == Some("IndexToDirect") && !set.layer.indices.is_empty()
-        {
-            let mut indices = NodeWriter::start(w, index_node, is_64)?;
-            indices.write_property_i32_array(&set.layer.indices, options)?;
-            indices.finish()?;
-        }
-        Ok(())
-    })
+        children.push(value_node(handedness_node, FbxProperty::F64Array(signs)));
+    }
+    children.extend(index_array_node(
+        index_node,
+        set.layer.reference.as_deref(),
+        &set.layer.indices,
+    ));
+    FbxNode {
+        name: element.to_string(),
+        properties: Vec::new(),
+        children,
+    }
 }
 
-/// Writes a `LayerElementSmoothing`, whose payload is integer flags.
+/// Builds a `LayerElementSmoothing`, whose payload is integer flags.
 ///
 /// Smoothing carries layer version 102 rather than the 101 every other element
 /// uses, which is what Autodesk writes.
-fn write_layer_element_smoothing<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    layer: &crate::fbx_scene::FbxSmoothingLayer,
-    options: &WriterOptions,
-) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "LayerElementSmoothing", is_64)?;
-    node.finish_with_children(|w| {
-        let mut version = NodeWriter::start(w, "Version", is_64)?;
-        version.write_property_i32(102)?;
-        version.finish()?;
-        let mut name = NodeWriter::start(w, "Name", is_64)?;
-        name.write_property_string("")?;
-        name.finish()?;
-        let mut mapping = NodeWriter::start(w, "MappingInformationType", is_64)?;
-        mapping.write_property_string(layer.mapping.as_deref().unwrap_or("ByEdge"))?;
-        mapping.finish()?;
-        let mut reference = NodeWriter::start(w, "ReferenceInformationType", is_64)?;
-        reference.write_property_string("Direct")?;
-        reference.finish()?;
-        let mut data = NodeWriter::start(w, "Smoothing", is_64)?;
-        data.write_property_i32_array(&layer.values, options)?;
-        data.finish()
-    })
+fn layer_element_smoothing_node(layer: &crate::fbx_scene::FbxSmoothingLayer) -> FbxNode {
+    FbxNode {
+        name: "LayerElementSmoothing".to_string(),
+        properties: Vec::new(),
+        children: vec![
+            value_node("Version", FbxProperty::I32(102)),
+            value_node("Name", FbxProperty::String(String::new())),
+            value_node(
+                "MappingInformationType",
+                FbxProperty::String(
+                    layer
+                        .mapping
+                        .clone()
+                        .unwrap_or_else(|| "ByEdge".to_string()),
+                ),
+            ),
+            value_node(
+                "ReferenceInformationType",
+                FbxProperty::String("Direct".to_string()),
+            ),
+            value_node("Smoothing", FbxProperty::I32Array(layer.values.clone())),
+        ],
+    }
 }
 
-/// Writes a `LayerElementEdgeCrease` or `LayerElementVertexCrease`, whose
+/// Builds a `LayerElementEdgeCrease` or `LayerElementVertexCrease`, whose
 /// payload is floating-point weights.
-fn write_layer_element_crease<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    layer: &crate::fbx_scene::FbxCreaseLayer,
-    options: &WriterOptions,
-) -> io::Result<()> {
+fn layer_element_crease_node(layer: &crate::fbx_scene::FbxCreaseLayer) -> FbxNode {
     let (element, data_node, default_mapping) = match layer.kind {
         crate::fbx_scene::FbxCreaseKind::Edge => ("LayerElementEdgeCrease", "EdgeCrease", "ByEdge"),
         crate::fbx_scene::FbxCreaseKind::Vertex => {
             ("LayerElementVertexCrease", "VertexCrease", "ByVertice")
         }
     };
-    let node = NodeWriter::start(writer, element, is_64)?;
-    node.finish_with_children(|w| {
-        write_layer_header_with_name(
-            w,
-            is_64,
-            "",
-            layer.mapping.as_deref().unwrap_or(default_mapping),
-            "Direct",
-        )?;
-        let mut data = NodeWriter::start(w, data_node, is_64)?;
-        data.write_property_f64_array(&layer.values, options)?;
-        data.finish()
-    })
+    let mut children = layer_header(
+        "",
+        layer.mapping.as_deref().unwrap_or(default_mapping),
+        "Direct",
+    );
+    children.push(value_node(
+        data_node,
+        FbxProperty::F64Array(layer.values.clone()),
+    ));
+    FbxNode {
+        name: element.to_string(),
+        properties: Vec::new(),
+        children,
+    }
 }
 
 /// Collapses per-triangle material indices to one entry per source polygon.
@@ -1995,60 +1960,18 @@ fn collapse_material_indices_to_polygons(
     per_polygon
 }
 
-fn write_layer_element_material<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    material_indices: &[i32],
-    options: &WriterOptions,
-) -> io::Result<()> {
-    let node = NodeWriter::start(writer, "LayerElementMaterial", is_64)?;
-    node.finish_with_children(|w| {
-        write_layer_header(w, is_64, "ByPolygon", "IndexToDirect")?;
-        let mut data = NodeWriter::start(w, "Materials", is_64)?;
-        data.write_property_i32_array(material_indices, options)?;
-        data.finish()
-    })
-}
-
-fn write_layer_header<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    mapping: &str,
-    reference: &str,
-) -> io::Result<()> {
-    let mut version = NodeWriter::start(writer, "Version", is_64)?;
-    version.write_property_i32(101)?;
-    version.finish()?;
-    let mut name = NodeWriter::start(writer, "Name", is_64)?;
-    name.write_property_string("")?;
-    name.finish()?;
-    let mut m = NodeWriter::start(writer, "MappingInformationType", is_64)?;
-    m.write_property_string(mapping)?;
-    m.finish()?;
-    let mut r = NodeWriter::start(writer, "ReferenceInformationType", is_64)?;
-    r.write_property_string(reference)?;
-    r.finish()
-}
-
-fn write_layer_header_with_name<W: Write + Seek>(
-    writer: &mut W,
-    is_64: bool,
-    layer_name: &str,
-    mapping: &str,
-    reference: &str,
-) -> io::Result<()> {
-    let mut version = NodeWriter::start(writer, "Version", is_64)?;
-    version.write_property_i32(101)?;
-    version.finish()?;
-    let mut name = NodeWriter::start(writer, "Name", is_64)?;
-    name.write_property_string(layer_name)?;
-    name.finish()?;
-    let mut m = NodeWriter::start(writer, "MappingInformationType", is_64)?;
-    m.write_property_string(mapping)?;
-    m.finish()?;
-    let mut r = NodeWriter::start(writer, "ReferenceInformationType", is_64)?;
-    r.write_property_string(reference)?;
-    r.finish()
+/// Builds the `LayerElementMaterial`, whose indices are ByPolygon.
+fn layer_element_material_node(material_indices: &[i32]) -> FbxNode {
+    let mut children = layer_header("", "ByPolygon", "IndexToDirect");
+    children.push(value_node(
+        "Materials",
+        FbxProperty::I32Array(material_indices.to_vec()),
+    ));
+    FbxNode {
+        name: "LayerElementMaterial".to_string(),
+        properties: Vec::new(),
+        children,
+    }
 }
 
 fn write_material<W: Write + Seek>(
