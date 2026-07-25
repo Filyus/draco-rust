@@ -205,8 +205,14 @@ fn scenes_survive_a_write_and_read_cycle() {
         let Ok(original) = FbxScene::from_bytes(&bytes) else {
             continue;
         };
-        let Ok(written) = original.to_bytes() else {
-            continue;
+        // A write that fails used to be skipped in silence, which meant a
+        // writer that refused a whole class of file looked like a clean pass.
+        let written = match original.to_bytes() {
+            Ok(written) => written,
+            Err(error) => {
+                mismatches.push(format!("{}: write failed: {error}", path.display()));
+                continue;
+            }
         };
         let Ok(roundtrip) = FbxScene::from_bytes(&written) else {
             mismatches.push(format!(

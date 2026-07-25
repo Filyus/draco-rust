@@ -1130,7 +1130,6 @@ fn objects_node(
 fn model_node(model_data: &ModelData) -> io::Result<FbxNode> {
     let mut properties = Vec::new();
     if let Some(transform) = model_data.transform {
-        let (matrix_translation, matrix_rotation, matrix_scaling) = decompose_transform(transform)?;
         let as_f64 = |value: [f32; 3]| value.map(f64::from);
         if let Some(stack) = model_data.transform_stack.as_ref() {
             // A source stack deliberately retains property presence: an
@@ -1168,9 +1167,16 @@ fn model_node(model_data: &ModelData) -> io::Result<FbxNode> {
                 properties.push(int_property_node("InheritType", "enum", "", "", value));
             }
         } else {
-            properties.push(vec3_property_node("Lcl Translation", matrix_translation));
-            properties.push(vec3_property_node("Lcl Rotation", matrix_rotation));
-            properties.push(vec3_property_node("Lcl Scaling", matrix_scaling));
+            // Only reachable without a source stack: decomposition is how the
+            // Lcl properties are recovered from a bare matrix. Decomposing
+            // eagerly, above, made a matrix this cannot handle -- a zero
+            // scale, which Maya writes for a collapsed pivot -- reject the
+            // whole document even when the authored stack made the result
+            // unnecessary.
+            let (translation, rotation, scaling) = decompose_transform(transform)?;
+            properties.push(vec3_property_node("Lcl Translation", translation));
+            properties.push(vec3_property_node("Lcl Rotation", rotation));
+            properties.push(vec3_property_node("Lcl Scaling", scaling));
         }
     }
 
