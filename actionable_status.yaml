@@ -29,22 +29,6 @@ version: 1
 last_reviewed: "2026-07-26"
 
 items:
-  - id: fbx-ascii-binary-decode-divergence
-    area: draco-io/fbx
-    priority: medium
-    status: open
-    summary: "Four ASCII documents decode differently from their binary twin, for reasons not yet established."
-    evidence:
-      - path: "crates/draco-io/tests/fbx_corpus.rs"
-        note: "an_ascii_document_decodes_like_its_binary_twin passes on 109 pairs and excludes six by name. Two exclusions are not defects and are explained there. The other four -- maya_auto_clamp, maya_human_ik, maya_resampled, maya_transform_animation -- are unexplained."
-      - path: "crates/draco-io/src/fbx_reader.rs"
-        note: "For maya_auto_clamp the ASCII read is the one that finds the node Lcl Translation, which the binary file also contains, so the divergence points at the binary path rather than the ASCII one."
-    impact: "One of the four may be a sixth instance of the width-matching class of defect the differential already found five of, each of which silently produced a smaller scene rather than an error."
-    next_steps:
-      - "Take maya_auto_clamp first: dump its Model Properties70 from both containers and find why the binary read yields no transform."
-      - "Check whether maya_human_ik is only f32 text precision (the values differ at ~1e-5) and, if so, say so in the test rather than excluding it."
-      - "Establish whether maya_resampled and maya_transform_animation are genuinely different exports, as motionbuilder_actor is; if they are, move them to the not-a-defect group with that reason."
-
   - id: fbx-pre-7000-object-model
     area: draco-io/fbx
     priority: low

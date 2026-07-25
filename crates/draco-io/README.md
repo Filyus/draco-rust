@@ -68,9 +68,14 @@ of from how the number happens to be written -- guessing would type a mesh with
 integer coordinates as an integer array, and 27 of the 369 `Vertices` arrays in
 the corpus are exactly that.
 
-109 of the corpus's ASCII documents decode identically to their binary twin,
+110 of the corpus's ASCII documents decode identically to their binary twin,
 compared across geometry, layers, skins, morphs, transforms and animation. Six
-pairs are excluded by name in the corpus test with the reason stated there.
+documents are excluded by exact name in the corpus test, each with its observed
+difference stated there: one relies on an escape ASCII cannot reverse, four are
+not pairs at all -- the two exports were taken at different points on the
+timeline -- and one prints `f64` too coarsely to survive narrowing to `f32`.
+`cargo run --example fbx_twin_diff -- <ascii.fbx>` prints the same field-by-field
+comparison for a single pair, which is how those were established.
 
 Scene content, however, is read only from **FBX 7000 and later**. Earlier
 versions use a different object model: objects are identified by a

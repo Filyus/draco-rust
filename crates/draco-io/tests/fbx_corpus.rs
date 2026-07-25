@@ -387,8 +387,8 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
                     channel.path,
                     channel.morph_target_index,
                     channel.sampler.input.len(),
-                    output.first().copied().map(round6),
-                    output.last().copied().map(round6),
+                    output.first().copied().map(milli),
+                    output.last().copied().map(milli),
                     channel.sampler.interpolation,
                 )
             })
@@ -404,11 +404,11 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
                 "{:?}|{:?}|diffuse={:?}|specular={:?}|emissive={:?}|shininess={:?}|opacity={:?}|textures={:?}",
                 material.name,
                 material.shading_model,
-                material.diffuse.map(round3),
-                material.specular.map(round3),
-                material.emissive.map(round3),
-                material.shininess.map(round6),
-                material.opacity.map(round6),
+                material.diffuse.map(milli3),
+                material.specular.map(milli3),
+                material.emissive.map(milli3),
+                material.shininess.map(milli),
+                material.opacity.map(milli),
                 material.textures,
             )
         })
@@ -443,9 +443,9 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
                     channel.node_name,
                     channel.path,
                     incoming.len(),
-                    incoming.first().copied().map(round6),
+                    incoming.first().copied().map(milli),
                     outgoing.len(),
-                    outgoing.first().copied().map(round6),
+                    outgoing.first().copied().map(milli),
                 ))
             })
         })
@@ -547,15 +547,21 @@ impl SceneSummary {
     }
 }
 
-/// Rounds to a tolerance that survives an f32 write/read cycle.
-fn round6(value: f32) -> i64 {
+/// Quantizes to thousandths, a tolerance that survives an f32 write/read
+/// cycle. Named for what it does: the earlier name said six decimals and gave
+/// three, which is exactly the wrong thing to misread while chasing a
+/// precision difference.
+fn milli(value: f32) -> i64 {
     (value as f64 * 1e3).round() as i64
 }
 
-fn round3(values: [f32; 3]) -> [i64; 3] {
+fn milli3(values: [f32; 3]) -> [i64; 3] {
     values.map(|v| (v as f64 * 1e3).round() as i64)
 }
 
+/// Quantizes a matrix to ten-thousandths -- finer than [`milli`], and fine
+/// enough that a ~1e-7 relative difference in a translation can still flip a
+/// digit. `maya_human_ik_7400` is excluded for exactly that.
 fn matrix_digest(matrix: &[[f32; 4]; 4]) -> Vec<i64> {
     matrix
         .iter()
@@ -633,8 +639,8 @@ fn collect_deformers(
                     target.control_point_indices.len(),
                     target.position_deltas.len(),
                     target.normal_deltas.as_ref().map(Vec::len),
-                    round6(target.default_weight),
-                    round6(target.full_weight),
+                    milli(target.default_weight),
+                    milli(target.full_weight),
                 ));
             }
         }
@@ -849,33 +855,45 @@ fn the_blender_default_scene_camera_and_light_read_their_authored_values() {
 /// fit in `i32`, animation curves stored at a different float width, and bare
 /// enum tokens -- none of which produce an error, only a quietly smaller scene.
 ///
-/// Two corpus pairs are excluded by name, each for a reason that is not a
-/// defect:
-///
-/// * `max_quote` relies on `&quot;`, which ASCII cannot reverse: the binary
-///   file has one object named `"` and another named literally `&quot;`, and
-///   ASCII spells both the same way.
-/// * `motionbuilder_actor` is not actually a pair -- the binary file contains
-///   no `Model` objects at all, only an animation stack and layer.
+/// Six documents are excluded by exact file name, none of them a defect. Four
+/// of the six are not pairs at all: the two exports were taken at different
+/// points on the timeline, so one of them baked a frame's transform into the
+/// static `Model` while the other did not. `examples/fbx_twin_diff.rs` prints
+/// the same comparison for one pair on demand, which is how each was
+/// established and how the next one should be.
 #[test]
 fn an_ascii_document_decodes_like_its_binary_twin() {
-    /// Pairs excluded by name, each for a stated reason.
+    /// Documents excluded by exact name, each with the difference observed.
     ///
-    /// The first two are not defects. The last four are unexplained and
-    /// tracked: for `maya_auto_clamp` the ASCII read is the one that finds the
-    /// node's `Lcl Translation`, which the binary file also contains, so the
-    /// divergence points at the binary path rather than the ASCII one.
+    /// Matched by equality rather than by prefix: a family name would exclude
+    /// every version of that scene, and `maya_auto_clamp_7100` decodes
+    /// identically even though `maya_auto_clamp_7700` does not.
     const NOT_COMPARABLE: [&str; 6] = [
         // ASCII spells both `"` and a literal `&quot;` the same way, so this
         // file cannot survive the container in either direction.
-        "max_quote",
-        // Not actually a pair: the binary file has no `Model` objects at all.
-        "motionbuilder_actor",
-        // Unexplained; see the note above.
-        "maya_auto_clamp",
-        "maya_human_ik",
-        "maya_resampled",
-        "maya_transform_animation",
+        "max_quote_7500_ascii.fbx",
+        // Not a pair: the binary file has no `Model` objects at all.
+        "motionbuilder_actor_7700_ascii.fbx",
+        // Not a pair: the ASCII `Model` carries `Lcl Translation` = 0.7466079
+        // and the binary one carries no transform properties at all. The value
+        // is `KeyValueFloat[1]` of the take, i.e. one frame of the animation
+        // baked into the static transform of that export.
+        "maya_auto_clamp_7700_ascii.fbx",
+        // Not a pair, twice over: the curve holds 30 keys in ASCII against 24
+        // in binary, and here it is the binary `Model` that carries the baked
+        // `Lcl Translation` (-1.6999689).
+        "maya_resampled_7500_ascii.fbx",
+        // Not a pair: the ASCII `Model` carries baked `Lcl Translation`,
+        // `Lcl Rotation` and `Lcl Scaling`; the binary one carries none.
+        "maya_transform_animation_7500_ascii.fbx",
+        // Precision, and unrecoverable. This ASCII export prints `f64` with 15
+        // significant digits where 17 are needed to round-trip, so three of
+        // the 1731 transform components land on the other side of an f32
+        // rounding tie: 10.707250595 against 10.707249641, ~1e-7 relative.
+        // That is above what `transform_stacks` (raw `{:?}`) and
+        // `matrix_digest` (1e-4, and this straddles a .5) tolerate. The digits
+        // are gone from the file; no reader can recover them.
+        "maya_human_ik_7400_ascii.fbx",
     ];
 
     let Some(dir) = corpus_dir() else {
@@ -894,8 +912,7 @@ fn an_ascii_document_decodes_like_its_binary_twin() {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        if !name.ends_with("_ascii.fbx") || NOT_COMPARABLE.iter().any(|skip| name.starts_with(skip))
-        {
+        if !name.ends_with("_ascii.fbx") || NOT_COMPARABLE.contains(&name.as_str()) {
             continue;
         }
         let twin = path.with_file_name(name.replace("_ascii.fbx", "_binary.fbx"));
