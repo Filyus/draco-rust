@@ -107,8 +107,22 @@ function buildNodeMeshes(document, node, meshIndex, nodeIndex, sourceMeshes, wor
         };
         if (meshInput.normals && !sourceUnits) meshInput.normals = convertGltfVectorArrayToFbx(meshInput.normals);
         if (meshInput.uvs && !sourceUnits) meshInput.uvs = flipUvV(meshInput.uvs);
+        if (!sourceUnits) {
+            const uvSets = [];
+            for (let set = 1; set < 8; set += 1) {
+                const values = optionalAttribute(document, primitive, `TEXCOORD_${set}`, flipUvV);
+                if (!values) break;
+                uvSets.push({ name: `UVSet${set}`, mapping: 'ByPolygonVertex', reference: 'Direct', values, indices: [] });
+            }
+            if (uvSets.length > 0) meshInput.uvSets = uvSets;
+        }
         if (sourceUnits && sourceMesh?.uvSets?.length) meshInput.uvSets = structuredClone(sourceMesh.uvSets);
         if (sourceUnits && sourceMesh?.normalSets?.length) meshInput.normalSets = structuredClone(sourceMesh.normalSets);
+        for (const semantic of ['COLOR_0', 'TANGENT']) {
+            if (primitive.attributes?.[semantic] !== undefined) {
+                warnings.push(`FBX export preserves ${semantic} in SceneDocument/glTF but the typed FBX writer does not yet emit this layer`);
+            }
+        }
         const skinIndex = node.skin;
         if (Number.isInteger(skinIndex) && document.skins[skinIndex]) {
             meshInput.skin = sourceUnits && sourceMesh?.skin
@@ -133,10 +147,19 @@ function optionalAttribute(document, primitive, semantic, transform) {
 function buildSkin(document, primitive, skinIndex, nodeIndex, worlds, sourceUnits, warnings) {
     const skin = document.skins[skinIndex];
     const joints = skin.joints || [];
-    const jointValues = optionalAttribute(document, primitive, 'JOINTS_0', null) || [];
-    const weightValues = optionalAttribute(document, primitive, 'WEIGHTS_0', null) || [];
-    if (jointValues.length !== weightValues.length || jointValues.length % 4 !== 0) {
-        warnings.push(`FBX export skin ${skinIndex} lacks aligned JOINTS_0/WEIGHTS_0 attributes`);
+    const influenceSets = [];
+    for (let set = 0; set < 8; set += 1) {
+        const jointValues = optionalAttribute(document, primitive, `JOINTS_${set}`, null);
+        const weightValues = optionalAttribute(document, primitive, `WEIGHTS_${set}`, null);
+        if (jointValues === null && weightValues === null) break;
+        if (!jointValues || !weightValues || jointValues.length !== weightValues.length || jointValues.length % 4 !== 0) {
+            warnings.push(`FBX export skin ${skinIndex} has unaligned JOINTS_${set}/WEIGHTS_${set} attributes`);
+            continue;
+        }
+        influenceSets.push({ jointValues, weightValues });
+    }
+    if (influenceSets.length === 0) {
+        warnings.push(`FBX export skin ${skinIndex} lacks aligned joint/weight attributes`);
         return null;
     }
     const inverseBinds = skin.inverseBindMatrices === undefined
@@ -149,13 +172,16 @@ function buildSkin(document, primitive, skinIndex, nodeIndex, worlds, sourceUnit
         const meshBind = multiplyMat4(convertedMesh, invertMat4(convertedJoint) || identityMatrix());
         const controlPointIndices = [];
         const weights = [];
-        for (let vertex = 0; vertex < jointValues.length / 4; vertex += 1) {
-            for (let component = 0; component < 4; component += 1) {
-                if (Math.trunc(jointValues[vertex * 4 + component]) !== jointSlot) continue;
-                const weight = Number(weightValues[vertex * 4 + component]) || 0;
-                if (weight <= 0) continue;
-                controlPointIndices.push(vertex);
-                weights.push(weight);
+        const vertexCount = influenceSets[0].jointValues.length / 4;
+        for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+            for (const { jointValues, weightValues } of influenceSets) {
+                for (let component = 0; component < 4; component += 1) {
+                    if (Math.trunc(jointValues[vertex * 4 + component]) !== jointSlot) continue;
+                    const weight = Number(weightValues[vertex * 4 + component]) || 0;
+                    if (weight <= 0) continue;
+                    controlPointIndices.push(vertex);
+                    weights.push(weight);
+                }
             }
         }
         return {

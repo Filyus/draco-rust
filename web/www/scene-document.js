@@ -16,6 +16,8 @@ const COMPONENT_BYTES = new Map([
 
 const ATTRIBUTE_COMPONENTS = new Map([
     ['POSITION', 3], ['NORMAL', 3], ['TANGENT', 4], ['TEXCOORD_0', 2],
+    ['TEXCOORD_1', 2], ['TEXCOORD_2', 2], ['TEXCOORD_3', 2],
+    ['TEXCOORD_4', 2], ['TEXCOORD_5', 2], ['TEXCOORD_6', 2], ['TEXCOORD_7', 2],
     ['COLOR_0', 3], ['JOINTS_0', 4], ['WEIGHTS_0', 4],
     ['JOINTS_1', 4], ['WEIGHTS_1', 4],
 ]);
@@ -231,7 +233,9 @@ function validatePrimitive(primitive, label, document, errors, warnings, capabil
     for (const [semantic, accessorIndex] of Object.entries(primitive.attributes)) {
         validateIndex(accessorIndex, document.accessors.length, `${label}.attributes.${semantic}`, errors);
         const expected = ATTRIBUTE_COMPONENTS.get(semantic);
-        if (expected && Number.isInteger(accessorIndex) && document.accessors[accessorIndex]?.components !== expected) {
+        const components = Number.isInteger(accessorIndex) ? document.accessors[accessorIndex]?.components : undefined;
+        const validColor = semantic === 'COLOR_0' && (components === 3 || components === 4);
+        if (expected && components !== undefined && components !== expected && !validColor) {
             errors.push(`${label}.attributes.${semantic} must use ${expected} components`);
         }
     }

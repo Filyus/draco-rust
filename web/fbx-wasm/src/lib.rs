@@ -81,6 +81,13 @@ pub struct MeshData {
     pub joints0: Vec<u16>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub weights0: Vec<f32>,
+    /// Optional second four-influence set for portable eight-influence data.
+    /// The viewer may consume both sets; exporters can preserve them even
+    /// when a source format exposes more influences than the GPU path needs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joints1: Vec<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub weights1: Vec<f32>,
     /// Original FBX control points, retained for scene round-trip.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub control_points: Vec<f32>,
@@ -657,13 +664,25 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
         }
         mesh.joints0 = vec![0; point_count * 4];
         mesh.weights0 = vec![0.0; point_count * 4];
+        mesh.joints1 = vec![0; point_count * 4];
+        mesh.weights1 = vec![0.0; point_count * 4];
         for (point, entries) in influences.iter_mut().enumerate() {
             entries.sort_by(|left, right| right.1.total_cmp(&left.1));
-            let sum: f32 = entries.iter().take(4).map(|entry| entry.1).sum();
-            for (slot, &(joint, weight)) in entries.iter().take(4).enumerate() {
-                mesh.joints0[point * 4 + slot] = joint;
-                mesh.weights0[point * 4 + slot] = if sum > 0.0 { weight / sum } else { 0.0 };
+            let sum: f32 = entries.iter().take(8).map(|entry| entry.1).sum();
+            for (slot, &(joint, weight)) in entries.iter().take(8).enumerate() {
+                if slot < 4 {
+                    mesh.joints0[point * 4 + slot] = joint;
+                    mesh.weights0[point * 4 + slot] = if sum > 0.0 { weight / sum } else { 0.0 };
+                } else {
+                    let second = slot - 4;
+                    mesh.joints1[point * 4 + second] = joint;
+                    mesh.weights1[point * 4 + second] = if sum > 0.0 { weight / sum } else { 0.0 };
+                }
             }
+        }
+        if mesh.weights1.iter().all(|weight| *weight == 0.0) {
+            mesh.joints1.clear();
+            mesh.weights1.clear();
         }
     }
     mesh.morph_targets = instance
@@ -811,6 +830,8 @@ fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
         morph_targets: Vec::new(),
         joints0: Vec::new(),
         weights0: Vec::new(),
+        joints1: Vec::new(),
+        weights1: Vec::new(),
         control_points: Vec::new(),
         polygon_vertex_indices: Vec::new(),
         uv_sets: Vec::new(),

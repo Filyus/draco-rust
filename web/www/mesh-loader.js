@@ -32,6 +32,10 @@ export async function buildSceneFromMeshes(parsed, resources = Object.create(nul
         const colors = mesh.colors?.length > 0 ? Uint8Array.from(mesh.colors) : null;
         const joints = mesh.joints0?.length === vertexCount * 4 ? Uint16Array.from(mesh.joints0) : null;
         const weights = mesh.weights0?.length === vertexCount * 4 ? Float32Array.from(mesh.weights0) : null;
+        if (mesh.joints1?.length === vertexCount * 4 || mesh.weights1?.length === vertexCount * 4) {
+            parsed.warnings ||= [];
+            parsed.warnings.push(`Mesh ${mesh.name || sceneMeshes.length} has additional skin influences; preview uses the first four while document/export paths retain the extra set`);
+        }
         if (vertexCount === 0) continue;
 
         const localAabb = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };

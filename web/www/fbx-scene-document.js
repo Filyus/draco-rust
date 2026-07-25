@@ -202,9 +202,20 @@ function appendMesh(source, materialMap, document) {
     const attributes = { POSITION: appendFloatAccessor(document, scaleVector3(source.positions || []), 3) };
     if (source.normals?.length === vertexCount * 3) attributes.NORMAL = appendFloatAccessor(document, source.normals, 3);
     if (source.uvs?.length === vertexCount * 2) attributes.TEXCOORD_0 = appendFloatAccessor(document, source.uvs, 2);
-    if (source.joints0?.length === vertexCount * 4 && source.weights0?.length === vertexCount * 4) {
-        attributes.JOINTS_0 = appendAccessor(document, { bytes: bytesFromU16(source.joints0), componentType: 5123, components: 4, count: vertexCount, normalized: false });
-        attributes.WEIGHTS_0 = appendFloatAccessor(document, source.weights0, 4);
+    for (let set = 1; set < (source.uvSets?.length || 0) && set < 8; set += 1) {
+        const expanded = expandFbxLayer(source, source.uvSets[set], 2, vertexCount);
+        if (expanded) attributes[`TEXCOORD_${set}`] = appendFloatAccessor(document, expanded, 2);
+    }
+    const influences = expandFbxInfluences(source, vertexCount);
+    const influenceSets = influences || [
+        source.joints0,
+        source.joints1,
+    ].map((joints, set) => joints?.length === vertexCount * 4 && source[`weights${set}`]?.length === vertexCount * 4
+        ? { joints, weights: source[`weights${set}`] } : null).filter(Boolean);
+    for (let set = 0; set < influenceSets.length && set < 2; set += 1) {
+        const influence = influenceSets[set];
+        attributes[`JOINTS_${set}`] = appendAccessor(document, { bytes: bytesFromU16(influence.joints), componentType: 5123, components: 4, count: vertexCount, normalized: false });
+        attributes[`WEIGHTS_${set}`] = appendFloatAccessor(document, influence.weights, 4);
     }
     const targets = appendMorphTargets(source, vertexCount, document);
     const indices = source.indices || [];
@@ -218,10 +229,92 @@ function appendMesh(source, materialMap, document) {
     }));
     const index = document.meshes.length;
     document.meshes.push({ name: source.name || `mesh_${index}`, weights: morphWeights(source), primitives });
-    if (source.skin?.clusters?.some((cluster) => cluster.controlPointIndices?.length > 0) && (!source.joints0?.length || !source.weights0?.length)) {
+    if (source.skin?.clusters?.some((cluster) => cluster.controlPointIndices?.length > 0) && !attributes.JOINTS_0) {
         document.warnings.push(`FBX mesh ${source.name || index} lacks render JOINTS_0/WEIGHTS_0 expansion and cannot be skinned by the portable runtime`);
     }
     return index;
+}
+
+function expandFbxInfluences(source, vertexCount) {
+    const clusters = source.skin?.clusters || [];
+    if (!clusters.some((cluster) => cluster.controlPointIndices?.length || cluster.renderPointIndices?.length)) return null;
+    const perVertex = Array.from({ length: vertexCount }, () => []);
+    const renderByControl = buildRenderPointsByControl(source);
+    clusters.forEach((cluster, joint) => {
+        const controlPoints = cluster.controlPointIndices || [];
+        for (let index = 0; index < controlPoints.length; index += 1) {
+            const weight = Number(cluster.weights?.[index]) || 0;
+            if (weight <= 0) continue;
+            const points = renderByControl.get(controlPoints[index]) || (cluster.renderPointIndices?.length === cluster.weights?.length ? [cluster.renderPointIndices[index]] : []);
+            for (const point of points) if (point >= 0 && point < vertexCount) perVertex[point].push({ joint, weight });
+        }
+    });
+    if (!perVertex.some((entries) => entries.length > 0)) return null;
+    const sets = [
+        { joints: new Uint16Array(vertexCount * 4), weights: new Float32Array(vertexCount * 4) },
+        { joints: new Uint16Array(vertexCount * 4), weights: new Float32Array(vertexCount * 4) },
+    ];
+    perVertex.forEach((entries, vertex) => {
+        entries.sort((left, right) => right.weight - left.weight);
+        const selected = entries.slice(0, 8);
+        const sum = selected.reduce((total, entry) => total + entry.weight, 0);
+        selected.forEach((entry, slot) => {
+            const set = slot < 4 ? 0 : 1;
+            const offset = vertex * 4 + (slot % 4);
+            sets[set].joints[offset] = entry.joint;
+            sets[set].weights[offset] = sum > 0 ? entry.weight / sum : 0;
+        });
+    });
+    if (sets[1].weights.every((weight) => weight === 0)) sets.pop();
+    return sets;
+}
+
+function buildRenderPointsByControl(source) {
+    const byControl = new Map();
+    if (!source.polygonVertexIndices?.length) return byControl;
+    let polygon = [];
+    let render = 0;
+    const emit = (controlPoint) => {
+        if (!byControl.has(controlPoint)) byControl.set(controlPoint, []);
+        byControl.get(controlPoint).push(render);
+        render += 1;
+    };
+    for (const encoded of source.polygonVertexIndices) {
+        polygon.push(encoded < 0 ? ~encoded : encoded);
+        if (encoded < 0) {
+            for (let index = 1; index < polygon.length - 1; index += 1) {
+                emit(polygon[0]); emit(polygon[index]); emit(polygon[index + 1]);
+            }
+            polygon = [];
+        }
+    }
+    return byControl;
+}
+
+function expandFbxLayer(source, layer, components, vertexCount) {
+    if (!layer || !source.controlPoints?.length || !source.polygonVertexIndices?.length) return null;
+    const output = [];
+    const emit = (controlPoint, corner) => {
+        const mapping = layer.mapping || 'ByControlPoint';
+        const logical = mapping === 'ByPolygonVertex' ? corner : mapping === 'AllSame' ? 0 : controlPoint;
+        const valueIndex = layer.reference === 'IndexToDirect' ? (layer.indices?.[logical] ?? logical) : logical;
+        const start = Math.max(0, valueIndex) * components;
+        output.push(...(layer.values || []).slice(start, start + components));
+    };
+    let polygon = [];
+    let corner = 0;
+    for (const encoded of source.polygonVertexIndices) {
+        const controlPoint = encoded < 0 ? ~encoded : encoded;
+        polygon.push({ controlPoint, corner });
+        corner += 1;
+        if (encoded < 0) {
+            for (let index = 1; index < polygon.length - 1; index += 1) {
+                for (const entry of [polygon[0], polygon[index], polygon[index + 1]]) emit(entry.controlPoint, entry.corner);
+            }
+            polygon = [];
+        }
+    }
+    return output.length === vertexCount * components ? output : null;
 }
 
 function appendSkin(sourceMesh, ownerState, state, document) {

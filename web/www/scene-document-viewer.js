@@ -38,6 +38,13 @@ export function buildViewerSceneFromDocument(document) {
     });
 
     const animations = document.animations.map((clip, clipIndex) => adaptAnimation(clip, nodes, accessors, clipIndex));
+    const viewerWarnings = [...document.warnings, ...validation.warnings];
+    for (const mesh of document.meshes) for (const primitive of mesh.primitives) {
+        if (primitive.attributes.JOINTS_1 !== undefined || primitive.attributes.WEIGHTS_1 !== undefined) {
+            viewerWarnings.push('Preview skinning uses the first four influences; additional influence sets remain available to exporters.');
+            break;
+        }
+    }
     return {
         nodes,
         rootIndices: [...document.rootNodes],
@@ -48,7 +55,7 @@ export function buildViewerSceneFromDocument(document) {
         animations,
         renderables,
         aabb: sceneAabb(meshes),
-        warnings: [...document.warnings, ...validation.warnings],
+        warnings: viewerWarnings,
     };
 }
 
