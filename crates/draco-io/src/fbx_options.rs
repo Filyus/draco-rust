@@ -212,6 +212,24 @@ impl FbxDecodeLimits {
 
 /// How the FBX reader treats a document: what it may allocate, and how
 /// strictly it enforces the binary container layout.
+///
+/// ```
+/// use draco_io::{FbxDecodeLimits, FbxReadOptions, FbxScene};
+///
+/// // Tighten the blob ceiling for untrusted input: embedded textures arrive
+/// // as `R` properties and are the largest thing a document can claim.
+/// let options = FbxReadOptions::default()
+///     .with_limits(FbxDecodeLimits::default().with_max_blob_bytes(16 << 20));
+///
+/// match FbxScene::from_bytes_with_options(b"not an fbx file", options) {
+///     Ok(scene) => println!("{} root nodes", scene.root_nodes.len()),
+///     Err(error) => {
+///         // `OutOfMemory` means "too big, retry with `permissive()`";
+///         // `InvalidData` means the document is corrupt.
+///         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct FbxReadOptions {

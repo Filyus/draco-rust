@@ -13,9 +13,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - FBX scene round-tripping now retains skin clusters/bind poses, morph targets,
   authored node-TRS animation, and all decoded UV layers through the typed
-  scene writer. Vertex colors, tangents, and non-default transform inheritance
-  remain explicit unsupported/untested cases rather than being silently
-  discarded.
+  scene writer. Tangents and non-default transform inheritance remain explicit
+  unsupported/untested cases rather than being silently discarded.
 
 - FBX Phong/Lambert materials with diffuse/specular/emissive/ambient colors,
   scalar factors (`DiffuseFactor`, `SpecularFactor`, `Shininess`,
@@ -30,15 +29,64 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - FBX normals and UVs read into Draco `Normal`/`TexCoord` mesh attributes and
   written back as `LayerElementNormal`/`LayerElementUV`.
 - FBX node-TRS animation: the `AnimationStack`/`AnimationLayer`/
-  `AnimationCurveNode`/`AnimationCurve` graph is flattened into
-  `FbxAnimation` takes with `FbxAnimChannel` TRS channels in seconds. FBX KTime
+  `AnimationCurveNode`/`AnimationCurve` graph is resolved into `FbxAnimation`
+  takes with `FbxAnimChannel` TRS channels in seconds. FBX KTime
   ticks-per-second (V7 `46186158000` or V8 `141120000`) is resolved from the
   file version and optional `FBXHeaderExtension/OtherFlags/TCDefinition`.
-- `FbxScene::warnings` records skipped skin deformers and blend shapes so
-  callers can surface them without failing the parse.
+- `FbxScene::warnings` records tolerated container deviations and FBX semantics
+  the decoded scene cannot express, as typed `FbxWarning` values with a stable
+  `FbxWarningCode`, an occurrence count, and `is_data_loss()` to separate
+  "unusual file" from "content missing from the result".
+
+- Binary FBX big-endian reading. The endian marker at header offset 22 selects
+  the byte order for node records, scalars, string/blob lengths and array
+  payloads, matching `ufbx`: any non-zero marker means big-endian.
+
+- `FbxReadOptions` and `FbxDecodeLimits` bound what one document may allocate
+  (file size, node depth and count, properties per node, string and blob
+  payloads, array element counts, per-array and per-document decoded bytes) and
+  select strict container validation. Limit violations report
+  `ErrorKind::OutOfMemory`, structural violations `ErrorKind::InvalidData`.
+  Reachable through `FbxReader::{new,open,from_bytes}_with_options` and
+  `FbxScene::from_bytes_with_options`; the `Reader`/`ReadFromBytes` traits keep
+  their signatures and use the defaults.
+
+- FBX vertex colours (`LayerElementColor`) on `FbxMeshInstance::color_sets`,
+  read and written as linear RGBA. The first set also becomes a 4-component
+  `Color` attribute on the Draco mesh.
+
+- The raw FBX `Edges` array on `FbxMeshInstance::edges`, preserved verbatim.
+
+- `FbxRenderMesh` and `FbxMeshInstance::to_render_mesh`, which resolve every
+  layer element onto the polygon-corner domain and expose the corner-to-control-
+  point and corner-to-polygon maps needed to re-index skin weights and morph
+  deltas.
+
+- Property type `Z` (`FbxProperty::U8`, read unsigned as `ufbx` does) and the
+  `c` byte-array type.
 
 ### Changed
 
+- **Breaking.** `FbxScene::warnings` is `Vec<FbxWarning>` rather than
+  `Vec<String>`. `FbxWarning` implements `Display`, so a consumer that rendered
+  the strings ports by calling `to_string()`.
+- **Breaking.** `FbxMeshInstance` gains `color_sets` and `edges`, and
+  `FbxProperty` gains a `U8` variant; struct literals and exhaustive matches
+  need updating.
+- FBX layer elements resolve on the polygon-corner domain instead of being
+  collapsed onto control points, which silently averaged away UV and hard-normal
+  seams. The Draco mesh welds corners agreeing on every attribute, so seams
+  survive without tripling the point count: across the `ufbx` corpus 78,509
+  control points become 117,345 welded points rather than 320,967 raw corners.
+- Each `AnimationLayer` becomes its own `FbxAnimation` instead of all layers
+  being merged into one. Merging produced several channels driving the same node
+  and path, and a consumer applying them in order kept only the last. This is
+  what Blender's importer does; layer blending is still not applied.
+- Reading is deterministic: object order, animation channel order and bind-pose
+  resolution follow FBX object ids rather than hash iteration, so two reads of
+  the same bytes compare equal.
+- FBX versions below 6000 are rejected with an explicit error instead of
+  decoding to an empty scene.
 - `FbxMeshInstance` now carries `material_indices`; existing constructors must
   supply it (an empty `Vec` preserves previous behavior).
 - `FbxWriter` accepts `Position`, `Normal`, and `TexCoord` mesh attributes
@@ -49,6 +97,29 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- FBX reader no longer loops forever on a node record whose `end_offset` points
+  backwards, and no longer aborts the process on an array header claiming more
+  memory than exists. Record offsets are bounds checked against the record start
+  and the file length, array sizing uses checked multiplication (`usize` is
+  32-bit on wasm32), and decompression is bounded with an exact-output-size
+  check, so a zip bomb is an error rather than an out-of-memory abort.
+- FBX reader no longer panics on a negative `IndexToDirect` layer index, which
+  became a huge `usize` and overflowed the value offset.
+- FBX writer no longer destroys per-polygon material assignment on n-gon meshes.
+  `LayerElementMaterial` is addressed ByPolygon while `material_indices` is per
+  triangle, so writing the triangle list verbatim made the reader take its first
+  N entries as the polygon assignments: on a two-quad mesh `[0, 0, 1, 1]` came
+  back as `[0, 0, 0, 0]`.
+- FBX writer keeps material slots when a file carries a material layer but
+  defines no `Material` objects, instead of collapsing them all to zero.
+- FBX writer emits `PolygonVertexIndex` for a vertices-only `Geometry`, which
+  the reader needs to recognize it as a mesh; such objects used to disappear on
+  round-trip.
+- FBX writer emits the conventional binary footer. It previously wrote 20 zero
+  bytes and the first four bytes of the footer id, with no repeated version and
+  no closing magic.
+- FBX writer no longer invents a `ShadingModel` for materials that declare none,
+  or names an unnamed `Geometry` after its `Model`.
 - FBX writer now emits `UnitScaleFactor = 100.0` (and
   `OriginalUnitScaleFactor = 100.0`) instead of `1.0`. FBX documents its base
   unit as the centimeter, and Blender's `io_scene_fbx` importer applies a

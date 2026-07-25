@@ -96,11 +96,13 @@ load, clip selection, and capability/warning reports beside import/export
 controls. Verified controls are `mixamo.fbx`, `Samba Dancing.fbx`, and the
 Fox glTF fixture, including FBX → GLB → reload and typed-FBX round trips.
 
-Current limitations are explicit: FBX vertex colors/tangents are retained in
+Current limitations are explicit: FBX tangents are retained in
 SceneDocument/glTF but are warned as unsupported by the current typed FBX
 writer; arbitrary FBX camera/light/non-TRS semantics are outside the portable
 subset; and non-default `RotationOrder`/`InheritType` transform-stack behavior
-remains unvalidated beyond the verified fixtures.
+remains unvalidated beyond the verified fixtures. FBX vertex colours now
+travel the whole path, arriving as `COLOR_0` and written back as
+`LayerElementColor`; every FBX UV layer reaches `TEXCOORD_0`..`TEXCOORD_7`.
 
 ## Build and test
 

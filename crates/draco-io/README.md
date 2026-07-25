@@ -44,38 +44,99 @@ Writers do not claim to preserve data that their target cannot represent.
 
 ### FBX support
 
+Binary FBX only; the ASCII container is rejected. Versions 6000 through 8000
+are read, in either byte order — a non-zero endian marker selects big-endian,
+as `ufbx` does. Output is FBX 7500 little-endian.
+
 | Data | Read | Write |
 | --- | :---: | :---: |
 | Mesh geometry | Yes | Yes |
 | Normals and UV layers | Yes | Yes |
-| Vertex colors and tangents | No | No |
+| Vertex colors | Yes | Yes |
+| Tangents | No | No |
+| `Edges` array | Yes | Yes |
+| Edge smoothing / creases (`ByEdge` layers) | No | No |
 | Mesh and model names | Yes | Yes |
 | Node hierarchy | Yes | Yes |
 | Node transforms | Yes | Yes |
 | Materials and textures | Yes | Yes |
 | Node-TRS animation | Yes | Yes |
+| Multiple animation layers | Yes | Yes |
+| Animation layer blending | No | No |
 | Skins, bind poses, and influences | Yes | Yes |
 | Blend shapes / morph targets | Yes | Yes |
+| `Definitions` property templates | No | n/a |
+
+Layer elements are resolved on the polygon-corner domain, so a UV or hard-normal
+seam survives instead of being averaged onto its control point. The Draco mesh
+welds corners that agree on every attribute, which keeps seams while collapsing
+interior duplicates. Every UV, normal and colour set is preserved on
+`FbxMeshInstance`; only the first of each reaches the Draco mesh, since Draco
+has no concept of multiple sets.
+
+`Edges` is kept verbatim rather than normalized: FBX does not require it to list
+every topological edge, and importers reconstruct the rest from faces, so
+discarding the distinction would lose information. It is also the domain
+`ByEdge` layers address, which is what makes them implementable later.
+
+Property templates in `Definitions` are not resolved. The specification allows a
+property to be omitted from an object and supplied by its class template, but
+across 272 binary files in the `ufbx` corpus no `Material` or `Model` relies on
+that for any property this crate reads.
 
 FBX materials cover the canonical Phong/Lambert property set (`DiffuseColor`,
 `SpecularFactor`, `Shininess`, `EmissiveColor`/`EmissiveFactor`,
 `ReflectionFactor`, `TransparencyFactor`/`Opacity`, `BumpFactor`) with diffuse,
 normal, and emissive textures (embedded `Content` or external filename), and
-per-polygon material indices. Animation flattens the
+per-polygon material indices. Animation resolves the
 `AnimationStack → AnimationLayer → AnimationCurveNode → AnimationCurve` graph
-into per-node TRS channels in seconds. Cameras and non-TRS animation are
-skipped safely and recorded in `FbxScene::warnings`. Scene export preserves
+into per-node TRS channels in seconds, one clip per layer — the same choice
+Blender's importer makes. Layers are not blended. Cameras and non-TRS animation
+are skipped safely and recorded in `FbxScene::warnings`. Scene export preserves
 local affine translation, rotation, scale, skins, bind poses, morph targets,
 and authored animation channels. FBX pivot settings and inheritance rules are
 not represented by `FbxTransform`.
 
+Decoding a document twice gives the same result: object order, animation
+channel order and bind-pose resolution follow FBX object ids rather than hash
+iteration.
+
+### Reading untrusted input
+
+FBX is a length-prefixed binary container with a decompression path, so
+`FbxReadOptions` bounds what one document may allocate and how strictly its
+layout is enforced:
+
+```rust
+use draco_io::{FbxDecodeLimits, FbxReadOptions, FbxScene};
+
+let options = FbxReadOptions::default()
+    .with_limits(FbxDecodeLimits::default().with_max_blob_bytes(16 << 20));
+let scene = FbxScene::from_bytes_with_options(&bytes, options)?;
+# Ok::<(), std::io::Error>(())
+```
+
+Limit violations fail with `ErrorKind::OutOfMemory` and structural violations
+with `ErrorKind::InvalidData`, so a caller can tell "too big, retry with
+`FbxDecodeLimits::permissive()`" from "corrupt". The defaults are calibrated
+against real assets, not guessed; see `FbxDecodeLimits::default`.
+
+`FbxReadOptions::strict()` additionally rejects anything the container layout
+does not permit, including a malformed binary footer. It is off by default
+because shipping exporters emit slop that every practical reader tolerates:
+222 of 308 real files in the `ufbx` corpus do not begin their trailing region
+with the conventional footer id at all. Deviations accepted in the default mode
+are reported through `FbxScene::warnings` as typed `FbxWarningCode` values
+rather than passing silently.
+
 The web converter adds a source-neutral `SceneDocument` adapter above this
 crate. That adapter preserves extra UV sets and up to eight skin influences in
 its GLB and typed-FBX paths; its WebGL preview reports when it uses only the
-first four influences. Colors and tangents remain lossless in
-SceneDocument/glTF but are reported as unsupported when lowering to the
-current typed FBX writer. Non-default `RotationOrder`/`InheritType` behavior
-remains unvalidated beyond the Mixamo, Samba Dancing, and Fox controls.
+first four influences. Vertex colours travel end to end as `COLOR_0`; tangents
+remain lossless in SceneDocument/glTF but are reported as unsupported when
+lowering to the typed FBX writer. Non-default `RotationOrder`/`InheritType`
+behavior remains unvalidated beyond the Mixamo, Samba Dancing, and Fox
+controls.
 
 ## Quick start
 
