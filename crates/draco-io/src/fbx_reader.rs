@@ -67,6 +67,16 @@ const FBX_MAGIC_TAIL: u8 = 0x1A;
 /// The layout is fixed, so this offset does not depend on byte order.
 const FBX_HEADER_LEN: u64 = 27;
 
+/// Marks the start of the binary footer, right after the root terminator.
+const FBX_FOOTER_ID: [u8; 16] = [
+    0xFA, 0xBC, 0xAB, 0x09, 0xD0, 0xC8, 0xD4, 0x66, 0xB1, 0x76, 0xFB, 0x83, 0x1C, 0xF7, 0x26, 0x7E,
+];
+
+/// Closes the file, after the repeated version and 120 bytes of padding.
+const FBX_FOOTER_MAGIC: [u8; 16] = [
+    0xF8, 0x5A, 0x8C, 0x6A, 0xDE, 0xF5, 0xD9, 0x7E, 0xEC, 0xE9, 0x0C, 0xE3, 0x75, 0x8F, 0x29, 0x0B,
+];
+
 /// Oldest supported version.
 ///
 /// FBX 3000-era files reuse the same magic but lay out `Objects` differently,
@@ -89,6 +99,12 @@ pub struct FbxReader<R: Read + Seek = BufReader<File>> {
     /// checked without trusting the file's own claims.
     file_len: u64,
     budget: DecodeBudget,
+    /// Non-fatal container-layout notices raised while reading nodes.
+    ///
+    /// Merged into [`crate::FbxScene::warnings`] by `read_scene`. Deviations
+    /// that are tolerated in lenient mode are reported here rather than
+    /// silently accepted.
+    warnings: Vec<String>,
 }
 
 /// Running totals for the limits that apply to a whole document.
@@ -362,7 +378,9 @@ impl<R: Read + Seek> FbxReader<R> {
             }
         }
 
-        let mut warnings = Vec::new();
+        // Container-layout notices raised by `read_nodes` above ride along
+        // with the semantic ones, so a caller sees every tolerated deviation.
+        let mut warnings = self.warnings.clone();
         let mut warned_inherit_type = false;
         for model in model_map.values() {
             for property in model
@@ -1624,7 +1642,27 @@ impl<R: Read + Seek> FbxReader<R> {
             options,
             file_len,
             budget: DecodeBudget::default(),
+            warnings: Vec::new(),
         })
+    }
+
+    /// Records a tolerated container-layout deviation, or fails in strict mode.
+    ///
+    /// Deduplicated by message so one malformed pattern repeated across
+    /// thousands of nodes does not produce thousands of identical notices.
+    fn note_deviation(&mut self, message: String) -> io::Result<()> {
+        if self.options.strict {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, message));
+        }
+        if !self.warnings.contains(&message) {
+            self.warnings.push(message);
+        }
+        Ok(())
+    }
+
+    /// Container-layout notices collected by the most recent read.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     /// Fails when `requested` bytes cannot possibly be in the file.
@@ -1683,7 +1721,7 @@ impl<R: Read + Seek> FbxReader<R> {
             ));
         }
         let order = self.byte_order;
-        let (end_offset, num_properties, _property_list_len, name_len) = if self.is_64bit() {
+        let (end_offset, num_properties, property_list_len, name_len) = if self.is_64bit() {
             let mut buf = [0u8; 25];
             self.reader.read_exact(&mut buf)?;
             let end_offset = order.u64([
@@ -1707,42 +1745,63 @@ impl<R: Read + Seek> FbxReader<R> {
             self.reader.read_exact(&mut buf)?;
             let end_offset = order.u32([buf[0], buf[1], buf[2], buf[3]]) as u64;
             let num_properties = order.u32([buf[4], buf[5], buf[6], buf[7]]);
-            let _property_list_len = order.u32([buf[8], buf[9], buf[10], buf[11]]) as u64;
+            let property_list_len = order.u32([buf[8], buf[9], buf[10], buf[11]]) as u64;
             let name_len = buf[12];
-            (end_offset, num_properties, _property_list_len, name_len)
+            (end_offset, num_properties, property_list_len, name_len)
         };
 
-        // NULL record marks end of children
-        if end_offset == 0 {
+        // The terminator is `end_offset == 0 && name_len == 0`, matching ufbx.
+        // A canonical writer zeroes the whole record, so anything left set is
+        // worth reporting even though we still accept it.
+        if end_offset == 0 && name_len == 0 {
+            if num_properties != 0 || property_list_len != 0 {
+                self.note_deviation(format!(
+                    "FBX: null record has non-zero property fields \
+                     (count {num_properties}, list length {property_list_len})"
+                ))?;
+            }
             return Ok(None);
+        }
+
+        // A *named* record may still declare `end_offset == 0`; Maya emits
+        // these (see `maya_zero_end_*` in the ufbx corpus). ufbx treats the
+        // node as having no children and resumes after its property list, so
+        // there is no end offset to bounds check or seek to.
+        let declared_end = (end_offset != 0).then_some(end_offset);
+        if declared_end.is_none() {
+            self.note_deviation(
+                "FBX: a named node declares no end offset; reading it without children".to_string(),
+            )?;
         }
 
         // A record must end after it starts and inside the file. Without the
         // first check a backwards `end_offset` makes the seek below rewind,
         // and the caller re-reads the same record forever.
         let record_end = self.reader.stream_position()?;
-        if end_offset < record_end {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "FBX: node record at {} claims it ends at {end_offset}, before its own header",
-                    record_end
-                ),
-            ));
-        }
-        if end_offset > self.file_len {
-            if self.options.strict {
+        if let Some(end) = declared_end {
+            if end < record_end {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "FBX: node record claims it ends at {end_offset}, past the {} byte file",
-                        self.file_len
+                        "FBX: node record at {record_end} claims it ends at {end}, \
+                         before its own header"
                     ),
                 ));
             }
-            // Some exporters emit a bogus trailing offset. Treat it as the end
-            // of this sibling list rather than failing an otherwise good file.
-            return Ok(None);
+            if end > self.file_len {
+                if self.options.strict {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "FBX: node record claims it ends at {end}, past the {} byte file",
+                            self.file_len
+                        ),
+                    ));
+                }
+                // Some exporters emit a bogus trailing offset. Treat it as the
+                // end of this sibling list rather than failing a good file.
+                return Ok(None);
+            }
         }
 
         self.budget.nodes += 1;
@@ -1768,22 +1827,52 @@ impl<R: Read + Seek> FbxReader<R> {
                 self.options.limits.max_properties_per_node,
             ));
         }
+        // `property_list_len` is the authoritative size of the property block.
+        // Honouring it lets a node whose properties decoded wrongly re-sync at
+        // the child records instead of consuming them as property data.
+        let properties_start = self.reader.stream_position()?;
+        let properties_end = properties_start
+            .checked_add(property_list_len)
+            .filter(|end| *end <= declared_end.unwrap_or(self.file_len) && *end <= self.file_len)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "FBX: node '{name}' declares a {property_list_len} byte property list \
+                         at offset {properties_start}, which runs past its own end"
+                    ),
+                )
+            })?;
+
         let mut properties = Vec::with_capacity(num_properties as usize);
         for _ in 0..num_properties {
             properties.push(self.read_property()?);
         }
 
-        // Read children
-        let mut children = Vec::new();
-        let current_pos = self.reader.stream_position()?;
-        if current_pos < end_offset {
-            while let Some(child) = self.read_node(depth + 1)? {
-                children.push(child);
-            }
+        let properties_read_to = self.reader.stream_position()?;
+        if properties_read_to != properties_end {
+            self.note_deviation(format!(
+                "FBX: node '{name}' property list ended at {properties_read_to}, \
+                 but its header declared {properties_end}"
+            ))?;
+            self.reader.seek(SeekFrom::Start(properties_end))?;
         }
 
-        // Seek to end offset to be safe
-        self.reader.seek(SeekFrom::Start(end_offset))?;
+        // Read children. A node without a declared end has none: `ufbx` stops
+        // its child loop immediately for those, and following the property
+        // list with a terminator search would consume the next sibling.
+        let mut children = Vec::new();
+        if let Some(end) = declared_end {
+            let current_pos = self.reader.stream_position()?;
+            if current_pos < end {
+                while let Some(child) = self.read_node(depth + 1)? {
+                    children.push(child);
+                }
+            }
+            // Resynchronize on the declared end; children may have stopped
+            // short of it, and trailing slack is legal.
+            self.reader.seek(SeekFrom::Start(end))?;
+        }
 
         Ok(Some(FbxNode {
             name,
@@ -1956,6 +2045,17 @@ impl<R: Read + Seek> FbxReader<R> {
         uncompressed_size: usize,
     ) -> io::Result<Vec<u8>> {
         if encoding == 0 {
+            // For a raw array the stored length must equal the element extent
+            // exactly; ufbx enforces the same equality.
+            if compressed_len != 0 && compressed_len as usize != uncompressed_size {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "FBX: uncompressed array stores {compressed_len} bytes \
+                         but its elements span {uncompressed_size}"
+                    ),
+                ));
+            }
             self.check_available(uncompressed_size as u64, "uncompressed array")?;
             let mut data = vec![0u8; uncompressed_size];
             self.reader.read_exact(&mut data)?;
@@ -2062,7 +2162,78 @@ impl<R: Read + Seek> FbxReader<R> {
         while let Some(node) = self.read_node(0)? {
             nodes.push(node);
         }
+        if self.options.strict {
+            self.validate_footer()?;
+        }
         Ok(nodes)
+    }
+
+    /// Checks the binary footer that follows the root terminator.
+    ///
+    /// Strict mode only. `ufbx` never looks at the footer, and shipping
+    /// exporters get its padding wrong often enough that rejecting on it by
+    /// default would fail files every other reader accepts.
+    fn validate_footer(&mut self) -> io::Result<()> {
+        let start = self.reader.stream_position()?;
+        let mut footer = Vec::new();
+        self.reader.read_to_end(&mut footer)?;
+
+        if footer.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("FBX: no footer after the root terminator at offset {start}"),
+            ));
+        }
+        if !footer.starts_with(&FBX_FOOTER_ID) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("FBX: footer at offset {start} does not begin with the footer id"),
+            ));
+        }
+        if !footer.ends_with(&FBX_FOOTER_MAGIC) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "FBX: file does not end with the footer magic".to_string(),
+            ));
+        }
+
+        // Layout after the id: 4 zero bytes, alignment padding, the version
+        // repeated, 120 zero bytes, then the closing magic.
+        let version_end = footer.len() - FBX_FOOTER_MAGIC.len() - 120;
+        let Some(version_start) = version_end.checked_sub(4) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "FBX: footer is only {} bytes, too short to hold a version",
+                    footer.len()
+                ),
+            ));
+        };
+        let repeated = self.byte_order.u32([
+            footer[version_start],
+            footer[version_start + 1],
+            footer[version_start + 2],
+            footer[version_start + 3],
+        ]);
+        if repeated != self.version {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "FBX: footer repeats version {repeated}, but the header declared {}",
+                    self.version
+                ),
+            ));
+        }
+        if footer[version_end..footer.len() - FBX_FOOTER_MAGIC.len()]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "FBX: footer padding after the version is not zeroed".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Read meshes from the FBX file.

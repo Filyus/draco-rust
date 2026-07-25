@@ -2602,22 +2602,39 @@ fn write_property_timestamp<W: Write + Seek>(
     property.finish()
 }
 
+/// Marks the start of the binary footer, right after the root terminator.
+const FBX_FOOTER_ID: [u8; 16] = [
+    0xFA, 0xBC, 0xAB, 0x09, 0xD0, 0xC8, 0xD4, 0x66, 0xB1, 0x76, 0xFB, 0x83, 0x1C, 0xF7, 0x26, 0x7E,
+];
+
+/// Closes the file, after the repeated version and 120 bytes of padding.
+const FBX_FOOTER_MAGIC: [u8; 16] = [
+    0xF8, 0x5A, 0x8C, 0x6A, 0xDE, 0xF5, 0xD9, 0x7E, 0xEC, 0xE9, 0x0C, 0xE3, 0x75, 0x8F, 0x29, 0x0B,
+];
+
+/// Writes the conventional binary footer.
+///
+/// The previous implementation emitted 20 zero bytes followed by the first
+/// four bytes of the footer id, and stopped there: no repeated version, no
+/// closing magic. Nothing complained because neither ufbx nor Blender reads
+/// the footer at all, but the output was not a conventional FBX file and the
+/// reader's strict mode rejects it.
 fn write_footer<W: Write + Seek>(writer: &mut W) -> io::Result<()> {
-    // FBX footer consists of padding and a footer signature
-    let padding = [0u8; 20];
-    writer.write_all(&padding)?;
+    writer.write_all(&FBX_FOOTER_ID)?;
+    writer.write_all(&[0u8; 4])?;
 
-    // Footer signature
-    let footer_version: [u8; 4] = [0xFA, 0xBC, 0xAB, 0x09];
-    writer.write_all(&footer_version)?;
-
-    // Pad to align to 16-byte boundary
-    let pos = writer.stream_position()?;
-    let padding_needed = (16 - (pos % 16)) % 16;
-    if padding_needed > 0 {
-        writer.write_all(&vec![0u8; padding_needed as usize])?;
+    // Alignment padding is measured from here and is never empty: a position
+    // that is already 16-byte aligned still gets a full 16 bytes.
+    let position = writer.stream_position()?;
+    let mut padding = (16 - (position % 16)) % 16;
+    if padding == 0 {
+        padding = 16;
     }
+    writer.write_all(&vec![0u8; padding as usize])?;
 
+    writer.write_all(&FBX_VERSION.to_le_bytes())?;
+    writer.write_all(&[0u8; 120])?;
+    writer.write_all(&FBX_FOOTER_MAGIC)?;
     Ok(())
 }
 
@@ -3141,6 +3158,24 @@ mod tests {
             sampler.out_tangents.as_deref(),
             Some(&[1.0, 2.0, 3.0, 0.0, 0.0, 0.0][..])
         );
+    }
+
+    #[test]
+    #[cfg(feature = "fbx-reader")]
+    fn written_files_satisfy_the_readers_strict_mode() {
+        // Closes the loop: our own output must be a conventional FBX file,
+        // footer included. This is what caught the truncated footer the
+        // writer used to emit, since no other consumer reads it.
+        let mut writer = FbxWriter::new();
+        writer
+            .add_mesh(&create_triangle_mesh(), Some("strict"))
+            .unwrap();
+        let bytes = writer.write_to_vec().unwrap();
+
+        let scene =
+            crate::FbxScene::from_bytes_with_options(&bytes, crate::FbxReadOptions::strict())
+                .expect("writer output should pass strict validation");
+        assert_eq!(scene.root_nodes.len(), 1);
     }
 
     #[cfg(feature = "compression")]

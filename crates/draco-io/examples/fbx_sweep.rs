@@ -6,7 +6,7 @@
 //! cargo run --example fbx_sweep -- <dir> > after.txt
 //! ```
 
-use draco_io::FbxScene;
+use draco_io::{FbxReadOptions, FbxScene};
 use std::path::{Path, PathBuf};
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -30,6 +30,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let root = PathBuf::from(args.get(1).ok_or("usage: fbx_sweep <dir>")?);
     let skip_fuzz = args.iter().any(|a| a == "--skip-fuzz");
+    let strict = args.iter().any(|a| a == "--strict");
+    let options = if strict {
+        FbxReadOptions::strict()
+    } else {
+        FbxReadOptions::default()
+    };
 
     let mut files = Vec::new();
     collect(&root, &mut files);
@@ -51,15 +57,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !bytes.starts_with(b"Kaydara FBX Binary") {
             continue; // ASCII container, not this reader's job.
         }
-        match FbxScene::from_bytes(&bytes) {
+        match FbxScene::from_bytes_with_options(&bytes, options.clone()) {
             Ok(scene) => {
                 let points: usize = count_points(&scene);
                 println!(
-                    "OK {display} roots={} points={points}",
-                    scene.root_nodes.len()
+                    "OK {display} roots={} points={points} warnings={}",
+                    scene.root_nodes.len(),
+                    scene.warnings.len()
                 );
             }
-            Err(error) => println!("ERR {display} {}", error.kind()),
+            Err(error) => println!("ERR {display} {error}"),
         }
     }
     Ok(())
