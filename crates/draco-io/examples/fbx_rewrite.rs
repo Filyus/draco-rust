@@ -15,10 +15,18 @@
 //! ```text
 //! blender --background --python-expr "
 //! import bpy; bpy.ops.wm.read_factory_settings(use_empty=True)
-//! bpy.ops.import_scene.fbx(filepath=r'out.fbx')
+//! bpy.ops.wm.fbx_import(filepath=r'out.fbx')
 //! for o in bpy.data.objects: print(o.type, o.name, o.data)
 //! "
 //! ```
+//!
+//! Blender 5 ships two importers and they disagree in ways that matter here.
+//! `wm.fbx_import` is the C++ one built on ufbx, which is the compatibility
+//! oracle this crate follows, and it resolves `Definitions` property
+//! templates. `import_scene.fbx` is the legacy Python addon: it substitutes
+//! its own defaults, which hides a missing property, and in Blender 5.0 it
+//! raises `AttributeError: CyclesLightSettings has no attribute cast_shadow`
+//! on any document containing a light -- including unmodified corpus files.
 
 use draco_io::FbxScene;
 use std::env;

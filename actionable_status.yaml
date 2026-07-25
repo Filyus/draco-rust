@@ -62,17 +62,20 @@ items:
 
   - id: fbx-definitions-property-templates
     area: draco-io/fbx
-    priority: low
+    priority: medium
     status: open
-    summary: "Definitions/PropertyTemplate defaults are neither read nor written, so a property an importer would have inherited from the template is lost."
+    summary: "Definitions/PropertyTemplate defaults are not read, so a property an exporter stated once in the template is lost, and the object is left with nothing."
     evidence:
-      - path: "crates/draco-io/src/fbx_writer.rs"
-        note: "definitions_node emits ObjectType and Count but no PropertyTemplate. In revit_empty_7400 the FbxCamera template supplies FocalLength = 34.893 and the camera object itself carries none, so Blender reads 34.893 from the original and its own 35.0 default from the rewrite."
+      - path: "crates/draco-io/src/fbx_reader.rs"
+        note: "properties70_lookup searches only the object's own Properties70. In revit_empty_7400 the FbxCamera template supplies FocalLength = 34.893 and the camera object carries none at all, so the value never reaches FbxCamera and is absent from the rewrite."
+      - path: "crates/draco-io/examples/fbx_rewrite.rs"
+        note: "Blender 5.0's ufbx importer reads the original at lens=34.893 and the rewrite at lens=0.000 -- it resolves the template and has no default to fall back on. The legacy Python importer hides this by substituting its own 35 mm. Three corpus files: revit_empty_7400, revit_empty_7700, revit_wall_square_7700."
       - path: "crates/draco-io/README.md"
-        note: "The capability table already records `Definitions` property templates as not supported; this is the concrete consequence."
-    impact: "Three corpus files change focal length by 0.1 mm through a rewrite. Any property an exporter left to its template is affected the same way."
+        note: "The capability table records `Definitions` property templates as not supported; this is the concrete consequence."
+    impact: "A camera with a zero focal length is broken, not merely different, and any property an exporter left to its template is lost the same way -- Revit states most of the camera there. Medium rather than low because the reference importer produces a degenerate result, not an approximate one."
     next_steps:
-      - "Read PropertyTemplate defaults into the object they apply to, so a value the file states once is not lost by being stated in the template."
+      - "Index Definitions/ObjectType/PropertyTemplate by class and fall back to it in properties70_lookup, so a value stated once in the template reaches the object it applies to."
+      - "Check the read digest afterwards: this changes what many documents decode to, which is the point, but it should be inspected rather than assumed."
       - "Writing templates back is separate and probably unnecessary once the values are inlined on each object."
 
   - id: fbx-ascii-writer
