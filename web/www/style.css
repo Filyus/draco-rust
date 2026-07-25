@@ -667,6 +667,15 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 
 .warnings-box { margin-top: 6px; padding: 9px 11px; border: 0; border-radius: 8px; color: #f2c76c; background: rgba(47, 38, 21, 0.94); backdrop-filter: blur(9px); }
 .warnings-box ul { padding-left: 17px; }
+.scene-summary { margin-top: 8px; padding: 9px 11px; border: 1px solid rgba(123, 153, 194, 0.16); border-radius: 8px; color: #c7d8ed; background: rgba(7, 17, 30, 0.72); }
+.scene-summary-title { margin-bottom: 7px; color: #e3edff; font-size: 0.72rem; font-weight: 650; }
+.scene-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 10px; }
+.scene-summary-grid div { display: flex; justify-content: space-between; gap: 6px; color: #91a5c0; font-size: 0.67rem; }
+.scene-summary-grid strong { color: #d5e3fb; font-weight: 650; }
+.scene-capability-summary { margin: 8px 0 0; color: #9db1cd; font-size: 0.67rem; line-height: 1.4; }
+.scene-warning-list, .capability-box ul { margin: 6px 0 0; padding-left: 16px; color: #f2c76c; font-size: 0.66rem; line-height: 1.4; }
+.capability-box { margin-top: 10px; padding: 9px 11px; border: 1px solid rgba(123, 153, 194, 0.16); border-radius: 8px; color: #c7d8ed; background: rgba(7, 17, 30, 0.72); }
+.capability-box p { margin: 5px 0 0; color: #9db1cd; font-size: 0.67rem; line-height: 1.4; }
 
 /* Activity */
 .console-card { padding: 11px 13px; }

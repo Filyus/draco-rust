@@ -178,6 +178,12 @@
                         <span>⬇</span> Convert &amp; Download
                     </button>
 
+                    <div id="export-capability-report" class="capability-box" hidden>
+                        <strong>Scene conversion</strong>
+                        <p id="export-capability-summary"></p>
+                        <ul id="export-capability-warnings"></ul>
+                    </div>
+
                     <div id="compression-stats" class="stats-box" style="display: none; margin-top: 1rem; padding: 1rem; background: #1e3a5f; border-radius: 8px; border: 1px solid #3b82f6; color: #f8fafc;">
                         <strong style="color: #60a5fa;">✅ Compression Statistics:</strong>
                         <div style="margin-top: 0.5rem; font-size: 0.9rem; color: #e2e8f0;">
@@ -260,6 +266,20 @@
                                     <span class="stat-label">UVs</span>
                                     <span id="has-uvs" class="stat-value">-</span>
                                 </div>
+                            </div>
+
+                            <div id="scene-summary" class="scene-summary" hidden>
+                                <div class="scene-summary-title">Scene details</div>
+                                <div class="scene-summary-grid">
+                                    <div><span>Nodes</span><strong id="scene-node-count">0</strong></div>
+                                    <div><span>Meshes</span><strong id="scene-mesh-count">0</strong></div>
+                                    <div><span>Materials</span><strong id="scene-material-count">0</strong></div>
+                                    <div><span>Skins</span><strong id="scene-skin-count">0</strong></div>
+                                    <div><span>Morphs</span><strong id="scene-morph-count">0</strong></div>
+                                    <div><span>Clips</span><strong id="scene-clip-count">0</strong></div>
+                                </div>
+                                <p id="scene-capability-summary" class="scene-capability-summary"></p>
+                                <ul id="scene-warning-list" class="scene-warning-list"></ul>
                             </div>
 
                             <div id="warnings-container" class="warnings-box" style="display: none;">

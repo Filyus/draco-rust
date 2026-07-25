@@ -175,6 +175,10 @@ test('FBX SceneDocument exports to GLB and reloads without flattening', async ({
   for (const fixture of [mixamoFbx, sambaFbx]) {
     await page.locator('#file-input').setInputFiles(fixture);
     await expect(page.locator('#console')).toContainText('Preview ready');
+    await expect(page.locator('#scene-summary')).toBeVisible();
+    await expect(page.locator('#scene-node-count')).not.toHaveText('0');
+    await expect(page.locator('#scene-capability-summary')).toContainText('shared scene model');
+    await expect(page.locator('#viewer-animation')).toBeVisible();
     await page.locator('[data-choice-for="export-format"] [data-value="glb"]').click();
     const downloadPromise = page.waitForEvent('download');
     await page.locator('#export-btn').click();
@@ -205,6 +209,8 @@ test('FBX SceneDocument exports through the typed FBX writer', async ({ page }) 
   await waitForConverterReady(page);
   await page.locator('#file-input').setInputFiles(mixamoFbx);
   await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#scene-summary')).toBeVisible();
+  await expect(page.locator('#export-capability-report')).toBeVisible();
   await page.locator('[data-choice-for="export-format"] [data-value="fbx"]').click();
   const downloadPromise = page.waitForEvent('download');
   await page.locator('#export-btn').click();
@@ -221,6 +227,20 @@ test('FBX SceneDocument exports through the typed FBX writer', async ({ page }) 
   await expect(page.locator('#console')).toContainText('Successfully parsed scene-document-roundtrip.fbx');
   await expect(page.locator('#console')).toContainText('Preview ready');
   await expect(page.locator('#console')).not.toContainText('Preview failed');
+});
+
+test('shared scene details expose all animation clips', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const fox = path.join(repoRoot, 'testdata', 'Fox', 'glTF');
+  await page.locator('#file-input').setInputFiles([
+    path.join(fox, 'Fox.gltf'),
+    path.join(fox, 'Fox.bin'),
+  ]);
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#scene-summary')).toBeVisible();
+  await expect(page.locator('#scene-clip-count')).toHaveText('3');
+  await expect(page.locator('#anim-clip option')).toHaveCount(3);
 });
 
 test('glTF CUBICSPLINE scales tangents by keyframe duration', async ({ page }) => {

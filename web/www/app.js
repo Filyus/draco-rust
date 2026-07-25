@@ -7,10 +7,12 @@
 
 import { Viewer } from './viewer.js';
 import { buildFbxSceneFromGltf, buildFlatMeshesFromGltf, buildSceneFromGltf } from './gltf-loader.js';
+import { buildSceneDocumentFromGltf } from './gltf-scene-document.js';
 import { buildSceneFromFbx, buildSceneFromMeshes } from './mesh-loader.js';
 import { buildSceneDocumentWithFbxProvenance } from './fbx-scene-document.js';
 import { buildFbxSceneFromDocument } from './fbx-scene-document-writer.js';
 import { serializeSceneDocumentToGlb } from './scene-document-gltf.js';
+import { assertValidSceneDocument } from './scene-document.js';
 import { isAsciiFbx, parseAsciiFbx } from './ascii-fbx-loader.js';
 
 // Module state
@@ -63,6 +65,9 @@ const useDraco = document.getElementById('use-draco');
 const useDracoLabel = document.getElementById('use-draco-label');
 const dracoOptions = document.getElementById('draco-options');
 const dracoSettings = document.getElementById('draco-settings');
+const exportCapabilityReport = document.getElementById('export-capability-report');
+const exportCapabilitySummary = document.getElementById('export-capability-summary');
+const exportCapabilityWarnings = document.getElementById('export-capability-warnings');
 const encodingSpeed = document.getElementById('encoding-speed');
 const encodingMethod = document.getElementById('encoding-method');
 const positionBits = document.getElementById('position-bits');
@@ -99,6 +104,17 @@ const viewerControls = [
     viewerSmoothNormalsBtn,
     viewerGridBtn,
 ];
+const sceneSummary = document.getElementById('scene-summary');
+const sceneSummaryFields = {
+    nodes: document.getElementById('scene-node-count'),
+    meshes: document.getElementById('scene-mesh-count'),
+    materials: document.getElementById('scene-material-count'),
+    skins: document.getElementById('scene-skin-count'),
+    morphs: document.getElementById('scene-morph-count'),
+    clips: document.getElementById('scene-clip-count'),
+};
+const sceneCapabilitySummary = document.getElementById('scene-capability-summary');
+const sceneWarningList = document.getElementById('scene-warning-list');
 
 function setViewerControlsEnabled(enabled) {
     for (const control of viewerControls) control.disabled = !enabled;
@@ -447,6 +463,13 @@ async function handleFile(file, companionFiles = []) {
             case 'gltf':
             case 'glb':
                 result = await parseGltfFile(data, extension, currentSourceResources);
+                if (result?.success && result.document) {
+                    try {
+                        currentSceneDocument = buildSceneDocumentFromGltf(data, currentSourceResources, modules.gltf.module);
+                    } catch (error) {
+                        log(`Scene details unavailable: ${errorMessage(error)}`, 'warning');
+                    }
+                }
                 break;
             case 'fbx':
                 result = await parseFbxFile(data);
@@ -461,8 +484,10 @@ async function handleFile(file, companionFiles = []) {
         if (result && result.success) {
             currentMeshData = result;
             displayMeshInfo(result);
+            renderSceneDocumentSummary(currentSceneDocument);
             previewSection.style.display = 'block';
             exportSection.style.display = 'flex';
+            renderExportCapabilityReport(currentSceneDocument);
             log(`Successfully parsed ${file.name}`, 'success');
             await loadPreview(extension);
         } else {
@@ -647,6 +672,73 @@ async function parseFbxFile(data) {
     return modules.fbx.module.parse_fbx(data);
 }
 
+function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
+    if (!sceneDocument) {
+        sceneSummary.hidden = true;
+        return;
+    }
+    try {
+        const validation = assertValidSceneDocument(sceneDocument);
+        const morphs = sceneDocument.meshes.reduce(
+            (total, mesh) => total + mesh.primitives.reduce((count, primitive) => count + (primitive.targets?.length || 0), 0),
+            0,
+        );
+        sceneSummaryFields.nodes.textContent = sceneDocument.nodes.length.toLocaleString();
+        sceneSummaryFields.meshes.textContent = sceneDocument.meshes.length.toLocaleString();
+        sceneSummaryFields.materials.textContent = sceneDocument.materials.length.toLocaleString();
+        sceneSummaryFields.skins.textContent = sceneDocument.skins.length.toLocaleString();
+        sceneSummaryFields.morphs.textContent = morphs.toLocaleString();
+        sceneSummaryFields.clips.textContent = sceneDocument.animations.length.toLocaleString();
+        sceneCapabilitySummary.textContent = describeSceneCapabilities(validation.capabilities);
+        setWarningList(sceneWarningList, [...sceneDocument.warnings, ...validation.warnings, ...extraWarnings]);
+        sceneSummary.hidden = false;
+    } catch (error) {
+        sceneSummary.hidden = true;
+        log(`Scene details unavailable: ${errorMessage(error)}`, 'warning');
+    }
+}
+
+function renderExportCapabilityReport(sceneDocument, extraWarnings = []) {
+    if (!sceneDocument) {
+        exportCapabilityReport.hidden = true;
+        return;
+    }
+    try {
+        const validation = assertValidSceneDocument(sceneDocument);
+        exportCapabilitySummary.textContent = describeSceneCapabilities(validation.capabilities);
+        setWarningList(exportCapabilityWarnings, [...sceneDocument.warnings, ...validation.warnings, ...extraWarnings]);
+        exportCapabilityReport.hidden = false;
+    } catch (error) {
+        exportCapabilityReport.hidden = false;
+        exportCapabilitySummary.textContent = `Conversion report unavailable: ${errorMessage(error)}`;
+        exportCapabilityWarnings.replaceChildren();
+    }
+}
+
+function describeSceneCapabilities(capabilities = {}) {
+    const preserved = [];
+    if (capabilities.resources) preserved.push('resources');
+    if (capabilities.textures) preserved.push('textures');
+    if (capabilities.materials) preserved.push('materials');
+    if (capabilities.skins) preserved.push('skins');
+    if (capabilities.morphTargets) preserved.push('morph targets');
+    if (capabilities.animations) preserved.push('animation clips');
+    if (capabilities.cubicAnimation) preserved.push('cubic animation samples');
+    return preserved.length > 0
+        ? `Preserved in the shared scene model: ${preserved.join(', ')}.`
+        : 'The shared scene model contains hierarchy and geometry data.';
+}
+
+function setWarningList(list, warnings) {
+    list.replaceChildren();
+    const unique = [...new Set(warnings.filter((warning) => typeof warning === 'string' && warning.trim()))];
+    for (const warning of unique.slice(0, 8)) {
+        const item = document.createElement('li');
+        item.textContent = warning;
+        list.appendChild(item);
+    }
+}
+
 // Display mesh information
 function displayMeshInfo(result) {
     if (result.document) {
@@ -723,6 +815,7 @@ async function exportFile() {
             result = exportSceneDocumentToGlb(currentSceneDocument);
             for (const warning of result.warnings || []) log(warning, 'warning');
             logSceneDocumentCapabilities(result.capabilities);
+            renderExportCapabilityReport(currentSceneDocument, result.warnings || []);
             downloadResult(result, format);
             log(result.message, 'success');
             return;
@@ -1192,6 +1285,8 @@ async function loadPreview(extension) {
         }
 
         viewer.setScene(scene);
+        renderSceneDocumentSummary(currentSceneDocument, scene.warnings || []);
+        renderExportCapabilityReport(currentSceneDocument, scene.warnings || []);
         setViewerControlsEnabled(true);
         syncViewerToolbar();
         log('Preview ready', 'success');
@@ -1203,7 +1298,9 @@ async function loadPreview(extension) {
 }
 
 function updateAnimationUi(scene) {
-    const clips = scene.animations || [];
+    const clips = currentSceneDocument?.animations?.length
+        ? currentSceneDocument.animations
+        : (scene.animations || []);
     resetAnimationUi();
     if (clips.length === 0) return;
     viewerAnimation.style.display = 'flex';
@@ -1368,6 +1465,8 @@ function clearFile() {
     viewer?.clear();
     setViewerControlsEnabled(false);
     resetAnimationUi();
+    sceneSummary.hidden = true;
+    exportCapabilityReport.hidden = true;
 
     fileInput.value = '';
 
