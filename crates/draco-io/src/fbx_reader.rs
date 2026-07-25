@@ -686,14 +686,20 @@ impl<R: Read + Seek> FbxReader<R> {
                 scaling_pivot,
                 inherit_type,
             };
+            // RotationOrder and InheritType are source-provenance metadata;
+            // their ordinary/default values do not mean that the static
+            // Model TRS has been baked into the skin BindPose. Keep the
+            // runtime flag limited to actual pivot/offset/pre/post terms so
+            // plain TRS clips (including Samba Dancing) retain authored
+            // animation composition while the metadata is still re-emitted.
+            // Non-default rotation-order/inheritance evaluation remains an
+            // explicit compatibility caveat at the animation boundary.
             let has_complex_transform_stack = non_zero(pre_rotation)
                 || non_zero(post_rotation)
                 || non_zero(rotation_offset)
                 || non_zero(rotation_pivot)
                 || non_zero(scaling_offset)
-                || non_zero(scaling_pivot)
-                || rotation_order.unwrap_or(0) != 0
-                || inherit_type.unwrap_or(0) != 0;
+                || non_zero(scaling_pivot);
 
             Some((
                 FbxTransform { matrix: mat },

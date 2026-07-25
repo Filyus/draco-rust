@@ -50,12 +50,14 @@ const fbx = await loadWasm('fbx');
 const { buildSceneFromFbx } = await import(pathToFileURL(resolve(here, '..', 'www', 'mesh-loader.js')));
 const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'www', 'viewer.js')));
 const { invertMat4, multiplyMat4 } = await import(pathToFileURL(resolve(here, '..', 'www', 'mat4.js')));
-const scene = await buildSceneFromFbx(fbx.parse_fbx(await readBytes(sambaFbx)));
+const parsed = fbx.parse_fbx(await readBytes(sambaFbx));
+const scene = await buildSceneFromFbx(parsed);
 const probe = Object.create(Viewer.prototype);
 probe.scene = scene;
 probe.animation = { clipIndex: 0, time: 0 };
 let worstWorld = { error: 0 };
 let worstSkin = { error: 0 };
+const perBone = new Map(bones.map((bone) => [bone, { error: 0, time: 0 }]));
 for (let sample = 0; sample < times.length; sample += 1) {
     if (!probe.seekAnimation(times[sample])) throw new Error(`viewer seek failed at ${times[sample]}`);
     probe._updateWorldMatrices();
@@ -65,6 +67,11 @@ for (let sample = 0; sample < times.length; sample += 1) {
         for (let column = 0; column < 4; column += 1) for (let row = 0; row < 4; row += 1) {
             const error = Math.abs(node.world[column * 4 + row] - blenderMatrix[row * 4 + column]);
             if (error > worstWorld.error) worstWorld = { error, bone: bones[index], time: times[sample] };
+            const boneError = perBone.get(bones[index]);
+            if (error > boneError.error) {
+                boneError.error = error;
+                boneError.time = times[sample];
+            }
         }
     }
 }
@@ -80,6 +87,16 @@ for (const skin of scene.skins) for (const joint of skin.joints) {
         if (error > worstSkin.error) worstSkin = { error, bone: name };
     }
 }
-if (worstWorld.error > 0.05) throw new Error(`Samba world mismatch: ${worstWorld.bone} at ${worstWorld.time}s differs by ${worstWorld.error}`);
+if (worstWorld.error > 0.05) {
+    const channels = (parsed.scene?.animations?.[0]?.channels || [])
+        .filter((channel) => bones.includes(channel.nodeName))
+        .map((channel) => ({ node: channel.nodeName, path: channel.path, first: Array.from(channel.sampler?.output || []).slice(0, 4) }));
+    const largest = [...perBone.entries()]
+        .sort((left, right) => right[1].error - left[1].error)
+        .slice(0, 6)
+        .map(([bone, value]) => ({ bone, ...value }));
+    console.error(`Samba composition audit: ${JSON.stringify({ largest, channels })}`);
+    throw new Error(`Samba world mismatch: ${worstWorld.bone} at ${worstWorld.time}s differs by ${worstWorld.error}`);
+}
 if (worstSkin.error > 0.05) throw new Error(`Samba skin bind mismatch: ${worstSkin.bone} differs by ${worstSkin.error}`);
 console.log(`PASS Samba Blender motion + skin: ${bones.length} joints × ${times.length} samples, world=${worstWorld.error.toExponential(2)}, skin=${worstSkin.error.toExponential(2)}`);
