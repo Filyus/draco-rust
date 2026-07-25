@@ -265,6 +265,13 @@ struct SceneSummary {
     material_values: Vec<String>,
     /// Texture filenames and embedded payload sizes.
     texture_values: Vec<String>,
+    /// Source axis, unit and time settings.
+    global_settings: String,
+    /// The authored Model transform stack: pivots, pre/post rotation, inherit.
+    transform_stacks: Vec<String>,
+    /// Cubic tangent payloads, which no external importer can verify for us:
+    /// Blender downgrades cubic keys to linear on import.
+    tangents: Vec<String>,
 }
 
 fn summarize(scene: &FbxScene) -> SceneSummary {
@@ -298,10 +305,18 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
     let mut skins = Vec::new();
     let mut morphs = Vec::new();
     let mut transforms = Vec::new();
-    collect_deformers(scene, &mut skins, &mut morphs, &mut transforms);
+    let mut transform_stacks = Vec::new();
+    collect_deformers(
+        scene,
+        &mut skins,
+        &mut morphs,
+        &mut transforms,
+        &mut transform_stacks,
+    );
     skins.sort();
     morphs.sort();
     transforms.sort();
+    transform_stacks.sort();
 
     let mut channels: Vec<String> = scene
         .animations
@@ -355,6 +370,31 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
         })
         .collect();
 
+    let mut tangents: Vec<String> = scene
+        .animations
+        .iter()
+        .flat_map(|clip| {
+            clip.channels.iter().filter_map(move |channel| {
+                let sampler = &channel.sampler;
+                let (Some(incoming), Some(outgoing)) =
+                    (&sampler.in_tangents, &sampler.out_tangents)
+                else {
+                    return None;
+                };
+                Some(format!(
+                    "{}|{:?}|in={}:{:?}|out={}:{:?}",
+                    channel.node_name,
+                    channel.path,
+                    incoming.len(),
+                    incoming.first().copied().map(round6),
+                    outgoing.len(),
+                    outgoing.first().copied().map(round6),
+                ))
+            })
+        })
+        .collect();
+    tangents.sort();
+
     SceneSummary {
         materials: scene.materials.len(),
         textures: scene.textures.len(),
@@ -366,6 +406,9 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
         transforms,
         material_values,
         texture_values,
+        global_settings: format!("{:?}", scene.global_settings),
+        transform_stacks,
+        tangents,
     }
 }
 
@@ -383,6 +426,20 @@ impl SceneSummary {
         scalar("textures", self.textures, other.textures);
         scalar("animations", self.animations, other.animations);
 
+        // A scene with no `GlobalSettings` gets the writer's defaults, which
+        // then read back as present. That is the writer completing a section
+        // every consumer expects rather than inventing content: exporting the
+        // Fox glTF and importing the result into Blender reproduces the source
+        // bounding box exactly, so the declared axes and the geometry agree.
+        // Only a *change* to settings the source declared is a defect.
+        if self.global_settings != other.global_settings && self.global_settings != "None" {
+            out.push(format!(
+                "global_settings:
+       before {}
+       after  {}",
+                self.global_settings, other.global_settings
+            ));
+        }
         if self.meshes != other.meshes {
             out.push(format!(
                 "meshes: {} -> {} entries",
@@ -405,6 +462,12 @@ impl SceneSummary {
                 &self.texture_values,
                 &other.texture_values,
             ),
+            (
+                "transform_stacks",
+                &self.transform_stacks,
+                &other.transform_stacks,
+            ),
+            ("tangents", &self.tangents, &other.tangents),
         ] {
             if a == b {
                 continue;
@@ -465,6 +528,7 @@ fn collect_deformers(
     skins: &mut Vec<String>,
     morphs: &mut Vec<String>,
     transforms: &mut Vec<String>,
+    transform_stacks: &mut Vec<String>,
 ) {
     let names = node_names(scene);
     fn visit(
@@ -473,7 +537,9 @@ fn collect_deformers(
         skins: &mut Vec<String>,
         morphs: &mut Vec<String>,
         transforms: &mut Vec<String>,
+        transform_stacks: &mut Vec<String>,
     ) {
+        transform_stacks.push(format!("{:?}|{:?}", node.name, node.transform_stack));
         transforms.push(format!(
             "{:?}|{:?}|complex={}",
             node.name,
@@ -516,11 +582,11 @@ fn collect_deformers(
             }
         }
         for child in &node.children {
-            visit(child, names, skins, morphs, transforms);
+            visit(child, names, skins, morphs, transforms, transform_stacks);
         }
     }
     for root in &scene.root_nodes {
-        visit(root, &names, skins, morphs, transforms);
+        visit(root, &names, skins, morphs, transforms, transform_stacks);
     }
 }
 
