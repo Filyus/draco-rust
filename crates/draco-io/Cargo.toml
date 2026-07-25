@@ -112,7 +112,7 @@ required-features = ["fbx-reader", "compression"]
 
 [[example]]
 name = "fbx_sweep"
-required-features = ["fbx-reader", "compression"]
+required-features = ["fbx-reader", "fbx-writer", "compression"]
 
 [[example]]
 name = "fbx_twin_diff"

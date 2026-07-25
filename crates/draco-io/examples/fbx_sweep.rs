@@ -5,9 +5,48 @@
 //! ```text
 //! cargo run --example fbx_sweep -- <dir> > after.txt
 //! ```
+//!
+//! `--digest` hashes what was read, `--write-digest` hashes what is written
+//! back. Between them they bracket a refactor: a change to either half that
+//! was meant to preserve behaviour must leave its digest untouched.
 
-use draco_io::{FbxReadOptions, FbxScene};
+use draco_io::{FbxReadOptions, FbxScene, FbxWriter};
 use std::path::{Path, PathBuf};
+
+/// FNV-1a, the same fold both digests use.
+fn fnv1a(bytes: impl IntoIterator<Item = u8>) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// Writes `scene` twice and folds both results.
+///
+/// Both compression modes are folded because they are different code paths in
+/// the array encoder, and the default is uncompressed -- hashing only the
+/// default would leave the deflate branch, including its "keep the compressed
+/// form only if it came out shorter" decision, entirely unwatched.
+fn write_digest(scene: &FbxScene) -> std::io::Result<(u64, usize, u64, usize)> {
+    let plain = {
+        let mut writer = FbxWriter::new();
+        writer.add_scene(scene)?;
+        writer.write_to_vec()?
+    };
+    let packed = {
+        let mut writer = FbxWriter::new().with_compression(true);
+        writer.add_scene(scene)?;
+        writer.write_to_vec()?
+    };
+    Ok((
+        fnv1a(plain.iter().copied()),
+        plain.len(),
+        fnv1a(packed.iter().copied()),
+        packed.len(),
+    ))
+}
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -34,6 +73,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `--digest` prints a hash of the whole decoded scene, so a refactor can
     // be proven to change nothing.
     let digest = args.iter().any(|a| a == "--digest");
+    // `--write-digest` hashes the bytes the writer produces instead. Nothing
+    // else in the repository pins the writer's byte layout, so this is the
+    // only way to show that a change to the writer was a pure move.
+    let write = args.iter().any(|a| a == "--write-digest");
     let options = if strict {
         FbxReadOptions::strict()
     } else {
@@ -43,6 +86,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut files = Vec::new();
     collect(&root, &mut files);
     files.sort();
+
+    // One line per file, folded once at the end so a whole corpus reduces to a
+    // single number to compare across revisions.
+    let mut written: Vec<String> = Vec::new();
 
     for path in files {
         let display = path
@@ -61,6 +108,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue; // ASCII container, not this reader's job.
         }
         match FbxScene::from_bytes_with_options(&bytes, options.clone()) {
+            Ok(scene) if write => match write_digest(&scene) {
+                Ok((plain, plain_len, packed, packed_len)) => {
+                    let line = format!(
+                        "WRITE {display} plain={plain:016x}:{plain_len} packed={packed:016x}:{packed_len}"
+                    );
+                    println!("{line}");
+                    written.push(line);
+                }
+                Err(error) => println!("WRITEFAIL {display} {error}"),
+            },
             Ok(scene) if digest => {
                 // Derived `Debug` prints each struct's declared name, which a
                 // type alias does not preserve. Those names are not semantics,
@@ -71,12 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .replace("FbxNormalSet", "LayerSet")
                     .replace("FbxColorSet", "LayerSet")
                     .replace("FbxLayerSet", "LayerSet");
-                let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-                for byte in text.bytes() {
-                    hash ^= u64::from(byte);
-                    hash = hash.wrapping_mul(0x0100_0000_01b3);
-                }
-                println!("DIGEST {display} {hash:016x}");
+                println!("DIGEST {display} {:016x}", fnv1a(text.bytes()));
             }
             Ok(scene) => {
                 let points: usize = count_points(&scene);
@@ -92,6 +144,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(error) => println!("ERR {display} {error}"),
         }
+    }
+
+    if write {
+        println!(
+            "WRITE TOTAL {} files {:016x}",
+            written.len(),
+            fnv1a(written.join("\n").bytes())
+        );
     }
     Ok(())
 }
