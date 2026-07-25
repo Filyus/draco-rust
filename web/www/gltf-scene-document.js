@@ -8,7 +8,10 @@
 
 import { assertValidSceneDocument, createSceneDocument } from './scene-document.js';
 
-const SUPPORTED_EXTENSIONS = new Set(['KHR_materials_unlit', 'KHR_texture_transform']);
+const SUPPORTED_EXTENSIONS = new Set([
+    'KHR_materials_unlit', 'KHR_texture_transform',
+    'KHR_texture_basisu', 'EXT_texture_webp',
+]);
 
 /** Extract a portable SceneDocument from an existing GltfAsset-capable module. */
 export function buildSceneDocumentFromGltf(sourceData, resources, gltfModule) {
@@ -52,7 +55,8 @@ function collectImageResources(asset, images, resources, document) {
 
 function collectTextures(textures, samplers, imageResources, document) {
     return textures.map((texture, textureIndex) => {
-        const resource = imageResources[texture.source];
+        const source = textureSource(texture);
+        const resource = imageResources[source];
         if (!Number.isInteger(resource) || resource < 0) {
             document.warnings.push(`glTF texture ${textureIndex} has no supported image source and was omitted`);
             return -1;
@@ -76,16 +80,11 @@ function collectTextures(textures, samplers, imageResources, document) {
 function collectMaterials(materials, textureBySource, document) {
     document.materials.push(...materials.map((material, materialIndex) => {
         const pbr = material.pbrMetallicRoughness || {};
-        const baseColor = textureInfo(pbr.baseColorTexture, textureBySource, true);
-        const transform = pbr.baseColorTexture?.extensions?.KHR_texture_transform;
-        if (baseColor && transform) {
-            baseColor.texCoord = transform.texCoord ?? baseColor.texCoord;
-            baseColor.transform = {
-                offset: transform.offset || [0, 0],
-                scale: transform.scale || [1, 1],
-                rotation: transform.rotation ?? 0,
-            };
-        }
+        const baseColor = textureInfo(pbr.baseColorTexture, textureBySource);
+        const metallicRoughness = textureInfo(pbr.metallicRoughnessTexture, textureBySource);
+        const normal = textureInfo(material.normalTexture, textureBySource);
+        const emissive = textureInfo(material.emissiveTexture, textureBySource);
+        const occlusion = textureInfo(material.occlusionTexture, textureBySource);
         return {
             name: material.name || `material_${materialIndex}`,
             baseColorFactor: Array.from(pbr.baseColorFactor || [1, 1, 1, 1]),
@@ -93,10 +92,10 @@ function collectMaterials(materials, textureBySource, document) {
             roughnessFactor: pbr.roughnessFactor ?? 1,
             emissiveFactor: Array.from(material.emissiveFactor || [0, 0, 0]),
             ...(baseColor ? { baseColorTexture: baseColor } : {}),
-            ...(textureInfo(pbr.metallicRoughnessTexture, textureBySource) ? { metallicRoughnessTexture: textureInfo(pbr.metallicRoughnessTexture, textureBySource) } : {}),
-            ...(textureInfo(material.normalTexture, textureBySource) ? { normalTexture: textureInfo(material.normalTexture, textureBySource) } : {}),
-            ...(textureInfo(material.emissiveTexture, textureBySource) ? { emissiveTexture: textureInfo(material.emissiveTexture, textureBySource) } : {}),
-            ...(textureInfo(material.occlusionTexture, textureBySource) ? { occlusionTexture: textureInfo(material.occlusionTexture, textureBySource) } : {}),
+            ...(metallicRoughness ? { metallicRoughnessTexture: metallicRoughness } : {}),
+            ...(normal ? { normalTexture: normal } : {}),
+            ...(emissive ? { emissiveTexture: emissive } : {}),
+            ...(occlusion ? { occlusionTexture: occlusion } : {}),
             doubleSided: Boolean(material.doubleSided),
             alphaMode: material.alphaMode || 'OPAQUE',
             alphaCutoff: material.alphaCutoff ?? 0.5,
@@ -262,13 +261,33 @@ function appendAccessor(document, accessor) {
     return index;
 }
 
-function textureInfo(info, textureBySource, includeTransform = false) {
+function textureInfo(info, textureBySource) {
     if (!info || !Number.isInteger(info.index)) return null;
     const texture = textureBySource[info.index];
     if (!Number.isInteger(texture) || texture < 0) return null;
     const result = { texture, texCoord: info.texCoord ?? 0 };
-    if (includeTransform) result.transform = { offset: [0, 0], scale: [1, 1], rotation: 0 };
+    const transform = info.extensions?.KHR_texture_transform;
+    if (transform) {
+        result.texCoord = transform.texCoord ?? result.texCoord;
+        result.transform = {
+            offset: Array.from(transform.offset || [0, 0]),
+            scale: Array.from(transform.scale || [1, 1]),
+            rotation: transform.rotation ?? 0,
+            ...(transform.texCoord === undefined ? {} : { texCoord: transform.texCoord }),
+        };
+    }
+    if (info.scale !== undefined) result.scale = info.scale;
+    if (info.strength !== undefined) result.strength = info.strength;
     return result;
+}
+
+function textureSource(texture) {
+    if (Number.isInteger(texture.source)) return texture.source;
+    for (const extension of ['KHR_texture_basisu', 'EXT_texture_webp']) {
+        const source = texture.extensions?.[extension]?.source;
+        if (Number.isInteger(source)) return source;
+    }
+    return -1;
 }
 
 function lastTime(accessor) {

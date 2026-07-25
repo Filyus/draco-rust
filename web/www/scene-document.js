@@ -188,6 +188,17 @@ function validateTextureInfo(info, label, textureCount, errors) {
     if (!info || typeof info !== 'object') return errors.push(`${label} must be an object`);
     validateIndex(info.texture, textureCount, `${label}.texture`, errors);
     if (info.texCoord !== undefined && (!Number.isInteger(info.texCoord) || info.texCoord < 0)) errors.push(`${label}.texCoord must be a non-negative integer`);
+    if (info.transform !== undefined) {
+        if (!info.transform || typeof info.transform !== 'object') errors.push(`${label}.transform must be an object when present`);
+        else {
+            validateNumberArray(info.transform.offset, 2, `${label}.transform.offset`, errors, [0, 0]);
+            validateNumberArray(info.transform.scale, 2, `${label}.transform.scale`, errors, [1, 1]);
+            validateFiniteNumber(info.transform.rotation, `${label}.transform.rotation`, errors, 0);
+            if (info.transform.texCoord !== undefined && (!Number.isInteger(info.transform.texCoord) || info.transform.texCoord < 0)) errors.push(`${label}.transform.texCoord must be a non-negative integer`);
+        }
+    }
+    if (info.scale !== undefined) validateFiniteNumber(info.scale, `${label}.scale`, errors);
+    if (info.strength !== undefined) validateFiniteNumber(info.strength, `${label}.strength`, errors);
 }
 
 function validateAccessor(accessor, index, errors) {

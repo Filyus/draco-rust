@@ -169,7 +169,13 @@ function textureIndex(info) {
 }
 
 function textureInfo(info) {
-    return info ? { index: info.texture, texCoord: info.texCoord || 0 } : null;
+    return info ? {
+        index: info.texture,
+        texCoord: info.texCoord || 0,
+        ...(info.transform ? { transform: structuredClone(info.transform) } : {}),
+        ...(info.scale === undefined ? {} : { scale: info.scale }),
+        ...(info.strength === undefined ? {} : { strength: info.strength }),
+    } : null;
 }
 
 function floatAccessor(accessor) {

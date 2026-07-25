@@ -10,7 +10,8 @@ import { validateBytes } from 'gltf-validator';
 
 import { buildSceneDocumentFromFbx } from '../www/fbx-scene-document.js';
 import { buildSceneDocumentFromGltf } from '../www/gltf-scene-document.js';
-import { serializeSceneDocumentToGlb } from '../www/scene-document-gltf.js';
+import { cloneSceneDocument } from '../www/scene-document.js';
+import { lowerSceneDocumentToGltf, serializeSceneDocumentToGlb } from '../www/scene-document-gltf.js';
 import { invertMat4, multiplyMat4 } from '../www/mat4.js';
 import { here, foxBin, foxGltf, loadFbxViewerAdapter, loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.mjs';
 
@@ -198,6 +199,51 @@ assert.equal(foxRoundtrip.nodes.length, foxDocument.nodes.length, 'Fox hierarchy
 assert.equal(foxRoundtrip.skins[0].joints.length, foxDocument.skins[0].joints.length, 'Fox skin must survive GLB serialization');
 assert.equal(foxRoundtrip.animations.length, foxDocument.animations.length, 'Fox clips must survive GLB serialization');
 assert.equal(foxRoundtrip.resources[0].mimeType, 'image/png', 'Fox texture bytes must survive GLB serialization');
+
+// Texture-info settings and texture source extensions belong to the portable
+// contract, not to the FBX or browser viewer boundary.  Exercise every core
+// material slot through the typed glTF lowering/import path.
+const texturedDocument = cloneSceneDocument(foxDocument);
+const ktxResource = texturedDocument.resources.length;
+texturedDocument.resources.push({
+    name: 'sample.ktx2',
+    mimeType: 'image/ktx2',
+    bytes: new Uint8Array(await readFile('D:/Projects/Three.ts/examples/textures/compressed/2d_etc1s.ktx2')),
+});
+const webpResource = texturedDocument.resources.length;
+// Source-extension selection is based on the declared portable MIME type;
+// image decoding remains a viewer capability, outside this structural test.
+texturedDocument.resources.push({ name: 'declared-webp.webp', mimeType: 'image/webp', bytes: new Uint8Array(texturedDocument.resources[0].bytes) });
+const ktxTexture = texturedDocument.textures.length;
+texturedDocument.textures.push({ name: 'ktx', resource: ktxResource, sampler: {} });
+const webpTexture = texturedDocument.textures.length;
+texturedDocument.textures.push({ name: 'webp', resource: webpResource, sampler: {} });
+texturedDocument.materials.push({
+    name: 'portable-texture-info',
+    baseColorFactor: [1, 1, 1, 1], metallicFactor: 1, roughnessFactor: 1, emissiveFactor: [0, 0, 0],
+    baseColorTexture: { texture: 0, texCoord: 1, transform: { offset: [0.25, 0.5], scale: [2, 3], rotation: 0.125, texCoord: 2 } },
+    metallicRoughnessTexture: { texture: ktxTexture, texCoord: 3, transform: { offset: [0.1, 0.2], scale: [0.5, 0.75], rotation: 0.25 } },
+    normalTexture: { texture: webpTexture, texCoord: 1, scale: 0.6, transform: { offset: [0.2, 0.3], scale: [1.5, 1.25], rotation: 0.5 } },
+    emissiveTexture: { texture: 0, texCoord: 2, transform: { offset: [0.4, 0.5], scale: [0.25, 0.5], rotation: 0.75 } },
+    occlusionTexture: { texture: ktxTexture, texCoord: 1, strength: 0.4, transform: { offset: [0.5, 0.6], scale: [0.75, 0.5], rotation: 1 } },
+});
+const texturedLowered = lowerSceneDocumentToGltf(texturedDocument);
+const texturedManifest = JSON.parse(new TextDecoder().decode(texturedLowered.json));
+assert.deepEqual(new Set(texturedManifest.extensionsUsed), new Set(['KHR_texture_transform', 'KHR_texture_basisu', 'EXT_texture_webp']));
+const portableMaterial = texturedManifest.materials.at(-1);
+assert.equal(portableMaterial.normalTexture.scale, 0.6);
+assert.equal(portableMaterial.occlusionTexture.strength, 0.4);
+assert.equal(portableMaterial.normalTexture.extensions.KHR_texture_transform.rotation, 0.5);
+assert.equal(portableMaterial.occlusionTexture.extensions.KHR_texture_transform.texCoord, undefined);
+assert.equal(texturedManifest.textures[ktxTexture].extensions.KHR_texture_basisu.source >= 0, true);
+assert.equal(texturedManifest.textures[webpTexture].extensions.EXT_texture_webp.source >= 0, true);
+const texturedRoundtrip = buildSceneDocumentFromGltf(texturedLowered.json, texturedLowered.resources, gltf);
+const roundtripMaterial = texturedRoundtrip.materials.at(-1);
+assert.deepEqual(roundtripMaterial.baseColorTexture.transform, { offset: [0.25, 0.5], scale: [2, 3], rotation: 0.125, texCoord: 2 });
+assert.equal(roundtripMaterial.normalTexture.scale, 0.6);
+assert.equal(roundtripMaterial.occlusionTexture.strength, 0.4);
+assert.equal(texturedRoundtrip.resources.some((resource) => resource.mimeType === 'image/ktx2'), true);
+assert.equal(texturedRoundtrip.resources.some((resource) => resource.mimeType === 'image/webp'), true);
 
 for (const [label, path] of [['Mixamo', mixamoFbx], ['Samba', sambaFbx]]) {
     const parsed = fbx.parse_fbx(await readBytes(path));

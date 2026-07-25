@@ -41,7 +41,13 @@ const document = createSceneDocument({
         metallicFactor: 0,
         roughnessFactor: 0.75,
         emissiveFactor: [0, 0, 0],
-        baseColorTexture: { texture: 0, texCoord: 0 },
+        baseColorTexture: {
+            texture: 0,
+            texCoord: 0,
+            transform: { offset: [0.25, 0.5], scale: [2, 1], rotation: 0.125, texCoord: 1 },
+        },
+        normalTexture: { texture: 0, texCoord: 0, scale: 0.75 },
+        occlusionTexture: { texture: 0, texCoord: 0, strength: 0.5 },
     }],
     accessors: [
         { bytes: positions, componentType: 5126, components: 3, count: 3 },

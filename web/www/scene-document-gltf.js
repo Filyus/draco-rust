@@ -35,7 +35,8 @@ export function lowerSceneDocumentToGltf(document) {
     const samplers = [];
     const textures = document.textures.map((texture, index) => {
         const resource = document.resources[texture.resource];
-        if (!resource || !embeddableImage(resource.mimeType)) {
+        const sourceExtension = textureSourceExtension(resource?.mimeType);
+        if (!resource || !sourceExtension) {
             warnings.push(`SceneDocument texture ${index} was omitted: resource ${texture.resource} has no embeddable image MIME type`);
             return null;
         }
@@ -53,7 +54,11 @@ export function lowerSceneDocumentToGltf(document) {
             minFilter: texture.sampler?.minFilter ?? 9987,
             magFilter: texture.sampler?.magFilter ?? 9729,
         });
-        return { name: texture.name || `texture_${index}`, source: image, sampler };
+        return {
+            name: texture.name || `texture_${index}`,
+            sampler,
+            ...(sourceExtension === 'core' ? { source: image } : { extensions: { [sourceExtension]: { source: image } } }),
+        };
     });
     const materials = document.materials.map((material, index) => lowerMaterial(material, index, textures, warnings));
     const meshes = document.meshes.map((mesh, index) => lowerMesh(mesh, index, accessors, materials.length, warnings));
@@ -63,6 +68,8 @@ export function lowerSceneDocumentToGltf(document) {
     const extensionsUsed = new Set();
     if (materials.some((material) => material.extensions?.KHR_materials_unlit)) extensionsUsed.add('KHR_materials_unlit');
     if (materials.some(materialUsesTextureTransform)) extensionsUsed.add('KHR_texture_transform');
+    if (textures.some((texture) => texture?.extensions?.KHR_texture_basisu)) extensionsUsed.add('KHR_texture_basisu');
+    if (textures.some((texture) => texture?.extensions?.EXT_texture_webp)) extensionsUsed.add('EXT_texture_webp');
 
     const manifest = {
         asset: { version: '2.0', generator: 'draco-rust SceneDocument exporter' },
@@ -174,6 +181,8 @@ function lowerMaterial(material, index, textures, warnings) {
     if (normalTexture) output.normalTexture = normalTexture;
     if (occlusionTexture) output.occlusionTexture = occlusionTexture;
     if (emissiveTexture) output.emissiveTexture = emissiveTexture;
+    if (normalTexture && material.normalTexture?.scale !== undefined) output.normalTexture.scale = material.normalTexture.scale;
+    if (occlusionTexture && material.occlusionTexture?.strength !== undefined) output.occlusionTexture.strength = material.occlusionTexture.strength;
     if (material.unlit) output.extensions = { KHR_materials_unlit: {} };
     if (output.alphaMode === 'MASK') output.alphaCutoff = material.alphaCutoff ?? 0.5;
     return output;
@@ -312,11 +321,11 @@ function materialUsesTextureTransform(material) {
     return infos.some((info) => Boolean(info?.extensions?.KHR_texture_transform));
 }
 
-function embeddableImage(mimeType) {
-    // WebP/KTX2 need their own texture-source extensions. Keep this first
-    // exporter slice core-only and report them rather than creating an invalid
-    // core texture or silently changing formats.
-    return ['image/png', 'image/jpeg'].includes(mimeType);
+function textureSourceExtension(mimeType) {
+    if (['image/png', 'image/jpeg'].includes(mimeType)) return 'core';
+    if (mimeType === 'image/webp') return 'EXT_texture_webp';
+    if (mimeType === 'image/ktx2') return 'KHR_texture_basisu';
+    return null;
 }
 
 function decomposeMatrix(matrix) {
