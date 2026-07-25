@@ -1,0 +1,245 @@
+/**
+ * SceneDocument -> viewer runtime adapter.
+ *
+ * This is intentionally format-neutral. Image decoding and GPU upload remain
+ * the viewer's concern; textures retain their source byte resource here so a
+ * browser-specific hydration step can be added without leaking DOM handles
+ * into SceneDocument.
+ */
+
+import { assertValidSceneDocument } from './scene-document.js';
+
+const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+const COMPONENT_BYTES = new Map([
+    [5120, 1], [5121, 1], [5122, 2], [5123, 2], [5125, 4], [5126, 4],
+]);
+
+/** Build the current viewer's runtime Scene from a validated SceneDocument. */
+export function buildViewerSceneFromDocument(document) {
+    const validation = assertValidSceneDocument(document);
+    const accessors = document.accessors.map(toRuntimeAccessor);
+    const meshes = document.meshes.map((mesh, meshIndex) => ({
+        name: mesh.name || `mesh_${meshIndex}`,
+        primitives: mesh.primitives.map((primitive) => adaptPrimitive(primitive, accessors)),
+        aabb: meshAabb(mesh, accessors),
+    }));
+    const nodes = document.nodes.map((node, nodeIndex) => adaptNode(node, meshes, document));
+    const materials = document.materials.map(adaptMaterial);
+    const textures = document.textures.map((texture, textureIndex) => adaptTexture(texture, document.resources, textureIndex));
+    const skins = document.skins.map((skin, skinIndex) => adaptSkin(skin, nodes, accessors, skinIndex));
+
+    nodes.forEach((node, index) => {
+        const source = document.nodes[index];
+        if (source.skin !== undefined) node.skinIndex = source.skin;
+    });
+    const renderables = [];
+    nodes.forEach((node) => {
+        if (node.meshIndex >= 0) renderables.push({ node, meshIndex: node.meshIndex, skinIndex: node.skinIndex });
+    });
+
+    const animations = document.animations.map((clip, clipIndex) => adaptAnimation(clip, nodes, accessors, clipIndex));
+    return {
+        nodes,
+        rootIndices: [...document.rootNodes],
+        meshes,
+        skins,
+        materials,
+        textures,
+        animations,
+        renderables,
+        aabb: sceneAabb(meshes),
+        warnings: [...document.warnings, ...validation.warnings],
+    };
+}
+
+function toRuntimeAccessor(accessor) {
+    return {
+        bytes: new Uint8Array(accessor.bytes),
+        componentType: accessor.componentType,
+        components: accessor.components,
+        normalized: Boolean(accessor.normalized),
+        count: accessor.count,
+    };
+}
+
+function adaptPrimitive(primitive, accessors) {
+    const attributes = {};
+    for (const [semantic, accessorIndex] of Object.entries(primitive.attributes)) {
+        attributes[semantic] = accessors[accessorIndex];
+    }
+    const runtime = {
+        attributes,
+        mode: primitive.mode ?? 4,
+        materialIndex: primitive.material ?? 0,
+    };
+    if (primitive.indices !== undefined) runtime.indices = accessors[primitive.indices];
+    if (primitive.targets?.length) {
+        runtime.morphPositions = primitive.targets.map((target) => target.POSITION === undefined ? null : accessors[target.POSITION]);
+        runtime.morphNormals = primitive.targets.map((target) => target.NORMAL === undefined ? null : accessors[target.NORMAL]);
+    }
+    return runtime;
+}
+
+function adaptNode(node, meshes, document) {
+    const mesh = node.mesh === undefined ? null : document.meshes[node.mesh];
+    const weights = node.weights || mesh?.weights || [];
+    const trs = node.matrix ? decomposeMatrix(node.matrix) : {
+        translation: [...(node.translation || [0, 0, 0])],
+        rotation: [...(node.rotation || [0, 0, 0, 1])],
+        scale: [...(node.scale || [1, 1, 1])],
+    };
+    return {
+        name: node.name || 'node',
+        trs: cloneTrs(trs),
+        restTrs: cloneTrs(trs),
+        animationTrs: cloneTrs(trs),
+        localMatrix: node.matrix ? Float32Array.from(node.matrix) : null,
+        children: [...(node.children || [])],
+        weights: Float32Array.from(weights),
+        meshIndex: node.mesh ?? -1,
+        skinIndex: -1,
+        world: new Float32Array(IDENTITY),
+    };
+}
+
+function adaptSkin(skin, nodes, accessors, skinIndex) {
+    const inverseBinds = skin.inverseBindMatrices === undefined
+        ? null : matrixAccessor(accessors[skin.inverseBindMatrices], skin.joints.length);
+    return {
+        name: skin.name || `skin_${skinIndex}`,
+        joints: skin.joints.map((jointIndex, index) => ({
+            node: nodes[jointIndex],
+            inverseBind: inverseBinds ? inverseBinds[index] : Float32Array.from(IDENTITY),
+        })),
+    };
+}
+
+function adaptAnimation(clip, nodes, accessors, clipIndex) {
+    return {
+        name: clip.name || `animation_${clipIndex}`,
+        duration: clip.duration,
+        channels: clip.channels.map((channel) => {
+            const sampler = clip.samplers[channel.sampler];
+            const input = floatAccessor(accessors[sampler.input]);
+            const output = floatAccessor(accessors[sampler.output]);
+            return {
+                node: nodes[channel.node],
+                path: channel.path,
+                targetCount: channel.path === 'weights' ? accessors[sampler.output].components : 3,
+                sampler: { input, output, interpolation: sampler.interpolation || 'LINEAR' },
+            };
+        }),
+    };
+}
+
+function adaptMaterial(material, index) {
+    return {
+        name: material.name || `material_${index}`,
+        baseColorFactor: [...(material.baseColorFactor || [1, 1, 1, 1])],
+        baseColorTexture: textureIndex(material.baseColorTexture),
+        baseColorTexCoord: material.baseColorTexture?.texCoord || 0,
+        baseColorTextureTransform: material.baseColorTexture?.transform || { offset: [0, 0], scale: [1, 1], rotation: 0 },
+        metallic: material.metallicFactor ?? 1,
+        roughness: material.roughnessFactor ?? 1,
+        metallicRoughnessTexture: textureInfo(material.metallicRoughnessTexture),
+        emissiveFactor: [...(material.emissiveFactor || [0, 0, 0])],
+        emissiveTexture: textureInfo(material.emissiveTexture),
+        normalTexture: textureInfo(material.normalTexture),
+        occlusionTexture: textureInfo(material.occlusionTexture),
+        doubleSided: Boolean(material.doubleSided),
+        alphaMode: material.alphaMode || 'OPAQUE',
+        alphaCutoff: material.alphaCutoff ?? 0.5,
+        unlit: Boolean(material.unlit),
+    };
+}
+
+function adaptTexture(texture, resources, index) {
+    const resource = resources[texture.resource];
+    return {
+        name: texture.name || resource.name || `texture_${index}`,
+        resource: texture.resource,
+        mimeType: resource.mimeType,
+        bytes: new Uint8Array(resource.bytes),
+        ...texture.sampler,
+    };
+}
+
+function textureIndex(info) {
+    return info ? info.texture : null;
+}
+
+function textureInfo(info) {
+    return info ? { index: info.texture, texCoord: info.texCoord || 0 } : null;
+}
+
+function floatAccessor(accessor) {
+    const view = new DataView(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength);
+    const values = new Float32Array(accessor.count * accessor.components);
+    for (let index = 0; index < values.length; index += 1) values[index] = view.getFloat32(index * 4, true);
+    return values;
+}
+
+function matrixAccessor(accessor, count) {
+    const values = floatAccessor(accessor);
+    return Array.from({ length: count }, (_, index) => Float32Array.from(values.subarray(index * 16, index * 16 + 16)));
+}
+
+function meshAabb(mesh, accessors) {
+    const aabb = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+    for (const primitive of mesh.primitives) {
+        const accessor = accessors[primitive.attributes.POSITION];
+        if (!accessor || accessor.components !== 3) continue;
+        const values = readAccessor(accessor);
+        for (let index = 0; index < values.length; index += 3) {
+            for (let component = 0; component < 3; component += 1) {
+                aabb.min[component] = Math.min(aabb.min[component], values[index + component]);
+                aabb.max[component] = Math.max(aabb.max[component], values[index + component]);
+            }
+        }
+    }
+    return Number.isFinite(aabb.min[0]) ? aabb : { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] };
+}
+
+function sceneAabb(meshes) {
+    const aabb = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+    for (const mesh of meshes) for (let component = 0; component < 3; component += 1) {
+        aabb.min[component] = Math.min(aabb.min[component], mesh.aabb.min[component]);
+        aabb.max[component] = Math.max(aabb.max[component], mesh.aabb.max[component]);
+    }
+    return Number.isFinite(aabb.min[0]) ? aabb : { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] };
+}
+
+function readAccessor(accessor) {
+    const bytes = COMPONENT_BYTES.get(accessor.componentType);
+    const view = new DataView(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength);
+    const values = new Array(accessor.count * accessor.components);
+    for (let index = 0; index < values.length; index += 1) {
+        const offset = index * bytes;
+        if (accessor.componentType === 5126) values[index] = view.getFloat32(offset, true);
+        else if (accessor.componentType === 5125) values[index] = view.getUint32(offset, true);
+        else if (accessor.componentType === 5123) values[index] = view.getUint16(offset, true);
+        else if (accessor.componentType === 5122) values[index] = view.getInt16(offset, true);
+        else if (accessor.componentType === 5121) values[index] = view.getUint8(offset);
+        else values[index] = view.getInt8(offset);
+    }
+    return values;
+}
+
+function decomposeMatrix(matrix) {
+    const scale = [Math.hypot(matrix[0], matrix[1], matrix[2]) || 1, Math.hypot(matrix[4], matrix[5], matrix[6]) || 1, Math.hypot(matrix[8], matrix[9], matrix[10]) || 1];
+    const m00 = matrix[0] / scale[0], m01 = matrix[4] / scale[1], m02 = matrix[8] / scale[2];
+    const m10 = matrix[1] / scale[0], m11 = matrix[5] / scale[1], m12 = matrix[9] / scale[2];
+    const m20 = matrix[2] / scale[0], m21 = matrix[6] / scale[1], m22 = matrix[10] / scale[2];
+    const trace = m00 + m11 + m22;
+    let rotation;
+    if (trace > 0) { const s = Math.sqrt(trace + 1) * 2; rotation = [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s]; }
+    else if (m00 > m11 && m00 > m22) { const s = Math.sqrt(1 + m00 - m11 - m22) * 2; rotation = [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]; }
+    else if (m11 > m22) { const s = Math.sqrt(1 + m11 - m00 - m22) * 2; rotation = [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]; }
+    else { const s = Math.sqrt(1 + m22 - m00 - m11) * 2; rotation = [(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s]; }
+    const length = Math.hypot(...rotation) || 1;
+    return { translation: [matrix[12], matrix[13], matrix[14]], rotation: rotation.map((value) => value / length), scale };
+}
+
+function cloneTrs(trs) {
+    return { translation: [...trs.translation], rotation: [...trs.rotation], scale: [...trs.scale] };
+}

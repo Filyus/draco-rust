@@ -323,6 +323,7 @@ function validateAnimation(animation, index, document, errors, warnings, capabil
         const input = document.accessors[sampler.input];
         const output = document.accessors[sampler.output];
         if (input && (input.componentType !== 5126 || input.components !== 1)) errors.push(`${samplerLabel}.input must be float seconds`);
+        if (output && output.componentType !== 5126) errors.push(`${samplerLabel}.output must be float values`);
         if (input && output) {
             const multiplier = interpolation === 'CUBICSPLINE' ? 3 : 1;
             if (output.count !== input.count * multiplier) errors.push(`${samplerLabel}.output count does not match key count/interpolation`);
