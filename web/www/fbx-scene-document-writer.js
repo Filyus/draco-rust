@@ -95,7 +95,7 @@ function buildNodeMeshes(document, node, meshIndex, nodeIndex, sourceMeshes, wor
         const indices = primitive.indices === undefined
             ? Array.from({ length: positions.length / 3 }, (_, value) => value)
             : readAccessorValues(document, primitive.indices).map((value) => Math.max(0, Math.trunc(value)));
-        const sourceMesh = sourceMeshes.get(mesh.name) || sourceMeshes.get(`${mesh.name}_${primitiveIndex}`);
+        const sourceMesh = findSourceMesh(sourceMeshes, document.meshes, mesh.name, meshIndex, primitiveIndex);
         const meshInput = {
             name: mesh.name ? `${mesh.name}_${primitiveIndex}` : `mesh_${meshIndex}_${primitiveIndex}`,
             positions: sourceUnits ? scaleValues(positions, 100) : convertGltfVectorArrayToFbx(positions),
@@ -467,12 +467,41 @@ function indexSourceNodes(roots) {
     return map;
 }
 
+/**
+ * Index the source meshes provenance can restore from, by name and by position.
+ *
+ * Name alone is not enough: an FBX Geometry need not be named, and the document
+ * then synthesizes `mesh_<position>` for it. Keying only by name silently
+ * skipped every unnamed geometry -- 229 of 655 meshes across the ufbx corpus --
+ * so their UV, normal, colour and tangent layers, skin and control points all
+ * fell back to the lossy portable path.
+ *
+ * The positional list is only usable when both traversals agree on how many
+ * meshes there are; the document builder drops nodes it has no state for, which
+ * would otherwise shift the pairing and restore the wrong mesh's layers.
+ */
 function indexSourceMeshes(roots) {
-    const map = new Map();
+    const byName = new Map();
+    const ordered = [];
     const visit = (node) => {
-        for (const mesh of node.meshes || []) if (mesh.name) map.set(mesh.name, mesh);
+        for (const mesh of node.meshes || []) {
+            if (mesh.name) byName.set(mesh.name, mesh);
+            ordered.push(mesh);
+        }
         for (const child of node.children || []) visit(child);
     };
     roots.forEach(visit);
-    return map;
+    return { byName, ordered };
+}
+
+/** Resolve the source mesh a document mesh came from, or undefined. */
+function findSourceMesh(sourceMeshes, documentMeshes, name, meshIndex, primitiveIndex) {
+    const byName = sourceMeshes.byName.get(name)
+        || sourceMeshes.byName.get(`${name}_${primitiveIndex}`);
+    if (byName) return byName;
+    if (sourceMeshes.ordered.length !== documentMeshes.length) return undefined;
+    const positional = sourceMeshes.ordered[meshIndex];
+    // A named source mesh would already have matched above, so a name here
+    // means the two orderings disagree and the pairing cannot be trusted.
+    return positional && !positional.name ? positional : undefined;
 }
