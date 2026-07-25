@@ -105,6 +105,9 @@ const viewerControls = [
     viewerGridBtn,
 ];
 const sceneSummary = document.getElementById('scene-summary');
+const sceneDetailsSection = document.getElementById('scene-details-section');
+const sceneSummaryCompact = document.getElementById('scene-summary-compact');
+const sceneSummaryCompactText = document.getElementById('scene-summary-compact-text');
 const sceneSummaryFields = {
     nodes: document.getElementById('scene-node-count'),
     meshes: document.getElementById('scene-mesh-count'),
@@ -675,6 +678,8 @@ async function parseFbxFile(data) {
 function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
     if (!sceneDocument) {
         sceneSummary.hidden = true;
+        sceneSummaryCompact.hidden = true;
+        sceneDetailsSection.style.display = 'none';
         return;
     }
     try {
@@ -689,11 +694,16 @@ function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
         sceneSummaryFields.skins.textContent = sceneDocument.skins.length.toLocaleString();
         sceneSummaryFields.morphs.textContent = morphs.toLocaleString();
         sceneSummaryFields.clips.textContent = sceneDocument.animations.length.toLocaleString();
+        sceneSummaryCompactText.textContent = `${sceneDocument.nodes.length.toLocaleString()} nodes · ${sceneDocument.meshes.length.toLocaleString()} meshes · ${sceneDocument.animations.length.toLocaleString()} clips`;
+        sceneSummaryCompact.hidden = false;
+        sceneDetailsSection.style.display = 'flex';
         sceneCapabilitySummary.textContent = describeSceneCapabilities(validation.capabilities);
         setWarningList(sceneWarningList, [...sceneDocument.warnings, ...validation.warnings, ...extraWarnings]);
         sceneSummary.hidden = false;
     } catch (error) {
         sceneSummary.hidden = true;
+        sceneSummaryCompact.hidden = true;
+        sceneDetailsSection.style.display = 'none';
         log(`Scene details unavailable: ${errorMessage(error)}`, 'warning');
     }
 }
@@ -1466,6 +1476,8 @@ function clearFile() {
     setViewerControlsEnabled(false);
     resetAnimationUi();
     sceneSummary.hidden = true;
+    sceneSummaryCompact.hidden = true;
+    sceneDetailsSection.style.display = 'none';
     exportCapabilityReport.hidden = true;
 
     fileInput.value = '';

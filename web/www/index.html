@@ -81,6 +81,11 @@
                         </div>
                         <button id="clear-file" class="icon-btn" title="Remove file">✕</button>
                     </div>
+
+                    <div id="scene-summary-compact" class="scene-summary-compact" hidden aria-live="polite">
+                        <span class="scene-summary-compact-label">Scene</span>
+                        <span id="scene-summary-compact-text">No scene loaded</span>
+                    </div>
                 </section>
 
                 <section class="card panel" id="export-section" style="display: none;">
@@ -195,6 +200,22 @@
                     </div>
                 </section>
 
+                <section id="scene-details-section" class="card panel scene-details-panel" style="display: none;">
+                    <details id="scene-summary" class="scene-summary" hidden>
+                        <summary class="scene-summary-title">Scene details</summary>
+                        <div class="scene-summary-grid">
+                            <div><span>Nodes</span><strong id="scene-node-count">0</strong></div>
+                            <div><span>Meshes</span><strong id="scene-mesh-count">0</strong></div>
+                            <div><span>Materials</span><strong id="scene-material-count">0</strong></div>
+                            <div><span>Skins</span><strong id="scene-skin-count">0</strong></div>
+                            <div><span>Morphs</span><strong id="scene-morph-count">0</strong></div>
+                            <div><span>Clips</span><strong id="scene-clip-count">0</strong></div>
+                        </div>
+                        <p id="scene-capability-summary" class="scene-capability-summary"></p>
+                        <ul id="scene-warning-list" class="scene-warning-list"></ul>
+                    </details>
+                </section>
+
             </aside>
 
             <!-- Main canvas area: viewer + mesh details -->
@@ -266,20 +287,6 @@
                                     <span class="stat-label">UVs</span>
                                     <span id="has-uvs" class="stat-value">-</span>
                                 </div>
-                            </div>
-
-                            <div id="scene-summary" class="scene-summary" hidden>
-                                <div class="scene-summary-title">Scene details</div>
-                                <div class="scene-summary-grid">
-                                    <div><span>Nodes</span><strong id="scene-node-count">0</strong></div>
-                                    <div><span>Meshes</span><strong id="scene-mesh-count">0</strong></div>
-                                    <div><span>Materials</span><strong id="scene-material-count">0</strong></div>
-                                    <div><span>Skins</span><strong id="scene-skin-count">0</strong></div>
-                                    <div><span>Morphs</span><strong id="scene-morph-count">0</strong></div>
-                                    <div><span>Clips</span><strong id="scene-clip-count">0</strong></div>
-                                </div>
-                                <p id="scene-capability-summary" class="scene-capability-summary"></p>
-                                <ul id="scene-warning-list" class="scene-warning-list"></ul>
                             </div>
 
                             <div id="warnings-container" class="warnings-box" style="display: none;">
