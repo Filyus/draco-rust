@@ -35,7 +35,7 @@
 
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{self, BufWriter, Cursor, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Cursor, Seek, Write};
 use std::path::Path;
 
 use draco_core::geometry_attribute::GeometryAttributeType;
@@ -43,16 +43,11 @@ use draco_core::geometry_indices::FaceIndex;
 use draco_core::mesh::Mesh;
 
 use crate::fbx_ascii_syntax::{name_class, FBX_VERSION};
+use crate::fbx_encoder::{
+    encode_node, write_footer, write_null_record, NodeWriter, WriterOptions, FBX_MAGIC,
+};
+use crate::fbx_node::{FbxNode, FbxProperty};
 use crate::traits::{WriteToBytes, Writer};
-
-/// FBX file magic: "Kaydara FBX Binary  \0"
-const FBX_MAGIC: &[u8; 21] = b"Kaydara FBX Binary  \0";
-
-/// Size of a null record for 64-bit FBX
-const NULL_RECORD_SIZE_64: usize = 25;
-
-/// Size of a null record for 32-bit FBX
-const NULL_RECORD_SIZE_32: usize = 13;
 
 /// FBX binary format writer.
 ///
@@ -669,21 +664,6 @@ impl FbxWriter {
     }
 }
 
-/// Internal options passed during writing.
-struct WriterOptions {
-    compress: bool,
-    compression_threshold: usize,
-}
-
-impl Default for WriterOptions {
-    fn default() -> Self {
-        Self {
-            compress: false,
-            compression_threshold: 128,
-        }
-    }
-}
-
 // ============================================================================
 // Trait Implementations
 // ============================================================================
@@ -750,248 +730,6 @@ pub fn write_fbx_mesh_compressed<P: AsRef<Path>>(path: P, mesh: &Mesh) -> io::Re
     let mut writer = FbxWriter::new().with_compression(true);
     Writer::add_mesh(&mut writer, mesh, None)?;
     writer.write(path)
-}
-
-// ============================================================================
-// Node Writing Infrastructure
-// ============================================================================
-
-/// Helper struct for writing FBX nodes.
-struct NodeWriter<'a, W: Write + Seek> {
-    writer: &'a mut W,
-    start_pos: u64,
-    properties_start: u64,
-    num_properties: u64,
-    is_64: bool,
-}
-
-impl<'a, W: Write + Seek> NodeWriter<'a, W> {
-    fn start(writer: &'a mut W, name: &str, is_64: bool) -> io::Result<Self> {
-        let start_pos = writer.stream_position()?;
-
-        // Write placeholder for end offset, num properties, property list len
-        let header_size = if is_64 { 24 } else { 12 }; // 3 * 8 or 3 * 4
-        writer.write_all(&vec![0u8; header_size])?;
-
-        // Write name length and name
-        writer.write_all(&[name.len() as u8])?;
-        writer.write_all(name.as_bytes())?;
-
-        let properties_start = writer.stream_position()?;
-
-        Ok(Self {
-            writer,
-            start_pos,
-            properties_start,
-            num_properties: 0,
-            is_64,
-        })
-    }
-
-    fn write_property_i16(&mut self, value: i16) -> io::Result<()> {
-        self.writer.write_all(b"Y")?;
-        self.writer.write_all(&value.to_le_bytes())?;
-        self.num_properties += 1;
-        Ok(())
-    }
-
-    fn write_property_i32(&mut self, value: i32) -> io::Result<()> {
-        self.writer.write_all(b"I")?;
-        self.writer.write_all(&value.to_le_bytes())?;
-        self.num_properties += 1;
-        Ok(())
-    }
-
-    fn write_property_i64(&mut self, value: i64) -> io::Result<()> {
-        self.writer.write_all(b"L")?;
-        self.writer.write_all(&value.to_le_bytes())?;
-        self.num_properties += 1;
-        Ok(())
-    }
-
-    fn write_property_f64(&mut self, value: f64) -> io::Result<()> {
-        self.writer.write_all(b"D")?;
-        self.writer.write_all(&value.to_le_bytes())?;
-        self.num_properties += 1;
-        Ok(())
-    }
-
-    fn write_property_string(&mut self, value: &str) -> io::Result<()> {
-        self.writer.write_all(b"S")?;
-        self.writer.write_all(&(value.len() as u32).to_le_bytes())?;
-        self.writer.write_all(value.as_bytes())?;
-        self.num_properties += 1;
-        Ok(())
-    }
-
-    fn write_property_f64_array(
-        &mut self,
-        values: &[f64],
-        options: &WriterOptions,
-    ) -> io::Result<()> {
-        self.write_array_property(b'd', values, options, |v| v.to_le_bytes().to_vec())
-    }
-
-    fn write_property_i32_array(
-        &mut self,
-        values: &[i32],
-        options: &WriterOptions,
-    ) -> io::Result<()> {
-        self.write_array_property(b'i', values, options, |v| v.to_le_bytes().to_vec())
-    }
-
-    fn write_property_i64_array(
-        &mut self,
-        values: &[i64],
-        options: &WriterOptions,
-    ) -> io::Result<()> {
-        self.write_array_property(b'l', values, options, |v| v.to_le_bytes().to_vec())
-    }
-
-    fn write_property_f32_array(
-        &mut self,
-        values: &[f32],
-        options: &WriterOptions,
-    ) -> io::Result<()> {
-        self.write_array_property(b'f', values, options, |v| v.to_le_bytes().to_vec())
-    }
-
-    fn write_property_raw(&mut self, data: &[u8]) -> io::Result<()> {
-        self.writer.write_all(b"R")?;
-        self.writer.write_all(&(data.len() as u32).to_le_bytes())?;
-        self.writer.write_all(data)?;
-        self.num_properties += 1;
-        Ok(())
-    }
-
-    fn write_array_property<T, F>(
-        &mut self,
-        type_code: u8,
-        values: &[T],
-        options: &WriterOptions,
-        to_bytes: F,
-    ) -> io::Result<()>
-    where
-        F: Fn(&T) -> Vec<u8>,
-    {
-        self.writer.write_all(&[type_code])?;
-        self.writer
-            .write_all(&(values.len() as u32).to_le_bytes())?;
-
-        // Serialize the raw data
-        let raw_data: Vec<u8> = values.iter().flat_map(&to_bytes).collect();
-        let raw_size = raw_data.len();
-
-        // Decide whether to compress
-        let should_compress = options.compress && raw_size >= options.compression_threshold;
-
-        #[cfg(feature = "compression")]
-        if should_compress {
-            use miniz_oxide::deflate::compress_to_vec_zlib;
-            let compressed = compress_to_vec_zlib(&raw_data, 6); // Level 6 is a good balance
-
-            // Only use compression if it actually saves space
-            if compressed.len() < raw_size {
-                self.writer.write_all(&1u32.to_le_bytes())?; // encoding = 1 (zlib)
-                self.writer
-                    .write_all(&(compressed.len() as u32).to_le_bytes())?;
-                self.writer.write_all(&compressed)?;
-                self.num_properties += 1;
-                return Ok(());
-            }
-        }
-
-        // Write uncompressed (or if compression didn't help)
-        #[cfg(not(feature = "compression"))]
-        let _ = should_compress; // Suppress unused warning
-
-        self.writer.write_all(&0u32.to_le_bytes())?; // encoding = 0 (uncompressed)
-        self.writer.write_all(&(raw_size as u32).to_le_bytes())?;
-        self.writer.write_all(&raw_data)?;
-        self.num_properties += 1;
-        Ok(())
-    }
-
-    fn finish(self) -> io::Result<()> {
-        // Write null record to end children section
-        write_null_record(self.writer, self.is_64)?;
-        self.finalize_header()
-    }
-
-    fn finish_with_children<F>(self, write_children: F) -> io::Result<()>
-    where
-        F: FnOnce(&mut W) -> io::Result<()>,
-    {
-        let properties_end = self.writer.stream_position()?;
-        let property_list_len = properties_end - self.properties_start;
-
-        // Write children
-        write_children(self.writer)?;
-
-        // Write null record to end children
-        write_null_record(self.writer, self.is_64)?;
-
-        let end_pos = self.writer.stream_position()?;
-
-        // Write the header
-        self.writer.seek(SeekFrom::Start(self.start_pos))?;
-        if self.is_64 {
-            self.writer.write_all(&end_pos.to_le_bytes())?;
-            self.writer.write_all(&self.num_properties.to_le_bytes())?;
-            self.writer.write_all(&property_list_len.to_le_bytes())?;
-        } else {
-            self.writer.write_all(&(end_pos as u32).to_le_bytes())?;
-            self.writer
-                .write_all(&(self.num_properties as u32).to_le_bytes())?;
-            self.writer
-                .write_all(&(property_list_len as u32).to_le_bytes())?;
-        }
-
-        // Seek back to end
-        self.writer.seek(SeekFrom::Start(end_pos))?;
-        Ok(())
-    }
-
-    fn finalize_header(self) -> io::Result<()> {
-        let end_pos = self.writer.stream_position()?;
-        let null_size = if self.is_64 {
-            NULL_RECORD_SIZE_64
-        } else {
-            NULL_RECORD_SIZE_32
-        };
-        let property_list_len = if self.num_properties > 0 {
-            end_pos - self.properties_start - null_size as u64
-        } else {
-            0u64
-        };
-
-        // Write the header
-        self.writer.seek(SeekFrom::Start(self.start_pos))?;
-        if self.is_64 {
-            self.writer.write_all(&end_pos.to_le_bytes())?;
-            self.writer.write_all(&self.num_properties.to_le_bytes())?;
-            self.writer.write_all(&property_list_len.to_le_bytes())?;
-        } else {
-            self.writer.write_all(&(end_pos as u32).to_le_bytes())?;
-            self.writer
-                .write_all(&(self.num_properties as u32).to_le_bytes())?;
-            self.writer
-                .write_all(&(property_list_len as u32).to_le_bytes())?;
-        }
-
-        // Seek back to end
-        self.writer.seek(SeekFrom::Start(end_pos))?;
-        Ok(())
-    }
-}
-
-fn write_null_record<W: Write>(writer: &mut W, is_64: bool) -> io::Result<()> {
-    let size = if is_64 {
-        NULL_RECORD_SIZE_64
-    } else {
-        NULL_RECORD_SIZE_32
-    };
-    writer.write_all(&vec![0u8; size])
 }
 
 // ============================================================================
@@ -1124,6 +862,46 @@ fn write_global_settings<W: Write + Seek>(
     })
 }
 
+/// Builds one `Properties70` `P` record.
+///
+/// Every `P` node has the same shape: four strings naming the property, its
+/// declared FBX type, a secondary type and a flag string, followed by as many
+/// value properties as the type calls for.
+fn property_node(
+    name: &str,
+    type1: &str,
+    type2: &str,
+    flags: &str,
+    values: Vec<FbxProperty>,
+) -> FbxNode {
+    let mut properties = vec![
+        FbxProperty::String(name.to_string()),
+        FbxProperty::String(type1.to_string()),
+        FbxProperty::String(type2.to_string()),
+        FbxProperty::String(flags.to_string()),
+    ];
+    properties.extend(values);
+    FbxNode {
+        name: "P".to_string(),
+        properties,
+        children: Vec::new(),
+    }
+}
+
+/// Encodes a node that carries no array property, so no encoding options
+/// apply to it.
+///
+/// A scaffold: once the whole document is assembled as a tree there is one
+/// encode call at the top with the document's real options, and this goes
+/// away with the last caller.
+fn encode_scalar_node<W: Write + Seek>(
+    writer: &mut W,
+    node: &FbxNode,
+    is_64: bool,
+) -> io::Result<()> {
+    encode_node(writer, node, is_64, &WriterOptions::default())
+}
+
 fn write_property_node<W: Write + Seek>(
     writer: &mut W,
     is_64: bool,
@@ -1133,13 +911,8 @@ fn write_property_node<W: Write + Seek>(
     flags: &str,
     value: i32,
 ) -> io::Result<()> {
-    let mut p = NodeWriter::start(writer, "P", is_64)?;
-    p.write_property_string(name)?;
-    p.write_property_string(type1)?;
-    p.write_property_string(type2)?;
-    p.write_property_string(flags)?;
-    p.write_property_i32(value)?;
-    p.finish()
+    let node = property_node(name, type1, type2, flags, vec![FbxProperty::I32(value)]);
+    encode_scalar_node(writer, &node, is_64)
 }
 
 fn write_property_node_bool<W: Write + Seek>(
@@ -1148,15 +921,16 @@ fn write_property_node_bool<W: Write + Seek>(
     name: &str,
     value: bool,
 ) -> io::Result<()> {
-    let mut p = NodeWriter::start(writer, "P", is_64)?;
-    p.write_property_string(name)?;
-    p.write_property_string("bool")?;
-    p.write_property_string("")?;
-    p.write_property_string("")?;
     // Blender's FBX property helper expects `RotationActive` to carry an
     // INT32 scalar even though its declared property type is `bool`.
-    p.write_property_i32(i32::from(value))?;
-    p.finish()
+    let node = property_node(
+        name,
+        "bool",
+        "",
+        "",
+        vec![FbxProperty::I32(i32::from(value))],
+    );
+    encode_scalar_node(writer, &node, is_64)
 }
 
 fn write_property_node_f64<W: Write + Seek>(
@@ -1168,13 +942,8 @@ fn write_property_node_f64<W: Write + Seek>(
     flags: &str,
     value: f64,
 ) -> io::Result<()> {
-    let mut p = NodeWriter::start(writer, "P", is_64)?;
-    p.write_property_string(name)?;
-    p.write_property_string(type1)?;
-    p.write_property_string(type2)?;
-    p.write_property_string(flags)?;
-    p.write_property_f64(value)?;
-    p.finish()
+    let node = property_node(name, type1, type2, flags, vec![FbxProperty::F64(value)]);
+    encode_scalar_node(writer, &node, is_64)
 }
 
 fn write_property_node_vec3<W: Write + Seek>(
@@ -1183,15 +952,17 @@ fn write_property_node_vec3<W: Write + Seek>(
     name: &str,
     values: [f64; 3],
 ) -> io::Result<()> {
-    let mut property = NodeWriter::start(writer, "P", is_64)?;
-    property.write_property_string(name)?;
-    property.write_property_string(name)?;
-    property.write_property_string("")?;
-    property.write_property_string("A")?;
-    for value in values {
-        property.write_property_f64(value)?;
-    }
-    property.finish()
+    // The declared type of a vector property is its own name, which is right
+    // for `Lcl Translation` and friends and wrong for anything else. Nothing
+    // but transform properties goes through here today.
+    let node = property_node(
+        name,
+        name,
+        "",
+        "A",
+        values.into_iter().map(FbxProperty::F64).collect(),
+    );
+    encode_scalar_node(writer, &node, is_64)
 }
 
 fn decompose_transform(
@@ -2832,15 +2603,17 @@ fn write_property_color<W: Write + Seek>(
     name: &str,
     values: [f32; 3],
 ) -> io::Result<()> {
-    let mut property = NodeWriter::start(writer, "P", is_64)?;
-    property.write_property_string(name)?;
-    property.write_property_string("Color")?;
-    property.write_property_string("")?;
-    property.write_property_string("A")?;
-    for value in values {
-        property.write_property_f64(value as f64)?;
-    }
-    property.finish()
+    let node = property_node(
+        name,
+        "Color",
+        "",
+        "A",
+        values
+            .into_iter()
+            .map(|value| FbxProperty::F64(value as f64))
+            .collect(),
+    );
+    encode_scalar_node(writer, &node, is_64)
 }
 
 fn write_property_scalar_value<W: Write + Seek>(
@@ -2849,13 +2622,8 @@ fn write_property_scalar_value<W: Write + Seek>(
     name: &str,
     value: f64,
 ) -> io::Result<()> {
-    let mut property = NodeWriter::start(writer, "P", is_64)?;
-    property.write_property_string(name)?;
-    property.write_property_string("Number")?;
-    property.write_property_string("")?;
-    property.write_property_string("A")?;
-    property.write_property_f64(value)?;
-    property.finish()
+    let node = property_node(name, "Number", "", "A", vec![FbxProperty::F64(value)]);
+    encode_scalar_node(writer, &node, is_64)
 }
 
 fn write_property_string_value<W: Write + Seek>(
@@ -2864,13 +2632,14 @@ fn write_property_string_value<W: Write + Seek>(
     name: &str,
     value: &str,
 ) -> io::Result<()> {
-    let mut property = NodeWriter::start(writer, "P", is_64)?;
-    property.write_property_string(name)?;
-    property.write_property_string("KString")?;
-    property.write_property_string("")?;
-    property.write_property_string("A")?;
-    property.write_property_string(value)?;
-    property.finish()
+    let node = property_node(
+        name,
+        "KString",
+        "",
+        "A",
+        vec![FbxProperty::String(value.to_string())],
+    );
+    encode_scalar_node(writer, &node, is_64)
 }
 
 fn write_property_timestamp<W: Write + Seek>(
@@ -2879,49 +2648,8 @@ fn write_property_timestamp<W: Write + Seek>(
     name: &str,
     value: i64,
 ) -> io::Result<()> {
-    let mut property = NodeWriter::start(writer, "P", is_64)?;
-    property.write_property_string(name)?;
-    property.write_property_string("KTime")?;
-    property.write_property_string("Time")?;
-    property.write_property_string("")?;
-    property.write_property_i64(value)?;
-    property.finish()
-}
-
-/// Marks the start of the binary footer, right after the root terminator.
-const FBX_FOOTER_ID: [u8; 16] = [
-    0xFA, 0xBC, 0xAB, 0x09, 0xD0, 0xC8, 0xD4, 0x66, 0xB1, 0x76, 0xFB, 0x83, 0x1C, 0xF7, 0x26, 0x7E,
-];
-
-/// Closes the file, after the repeated version and 120 bytes of padding.
-const FBX_FOOTER_MAGIC: [u8; 16] = [
-    0xF8, 0x5A, 0x8C, 0x6A, 0xDE, 0xF5, 0xD9, 0x7E, 0xEC, 0xE9, 0x0C, 0xE3, 0x75, 0x8F, 0x29, 0x0B,
-];
-
-/// Writes the conventional binary footer.
-///
-/// The previous implementation emitted 20 zero bytes followed by the first
-/// four bytes of the footer id, and stopped there: no repeated version, no
-/// closing magic. Nothing complained because neither ufbx nor Blender reads
-/// the footer at all, but the output was not a conventional FBX file and the
-/// reader's strict mode rejects it.
-fn write_footer<W: Write + Seek>(writer: &mut W) -> io::Result<()> {
-    writer.write_all(&FBX_FOOTER_ID)?;
-    writer.write_all(&[0u8; 4])?;
-
-    // Alignment padding is measured from here and is never empty: a position
-    // that is already 16-byte aligned still gets a full 16 bytes.
-    let position = writer.stream_position()?;
-    let mut padding = (16 - (position % 16)) % 16;
-    if padding == 0 {
-        padding = 16;
-    }
-    writer.write_all(&vec![0u8; padding as usize])?;
-
-    writer.write_all(&FBX_VERSION.to_le_bytes())?;
-    writer.write_all(&[0u8; 120])?;
-    writer.write_all(&FBX_FOOTER_MAGIC)?;
-    Ok(())
+    let node = property_node(name, "KTime", "Time", "", vec![FbxProperty::I64(value)]);
+    encode_scalar_node(writer, &node, is_64)
 }
 
 // ============================================================================
