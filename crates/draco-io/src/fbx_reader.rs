@@ -49,14 +49,16 @@ struct FbxGeometrySource {
     tangent_sets: Vec<FbxTangentSet>,
     binormal_sets: Vec<FbxBinormalSet>,
     edges: Vec<i32>,
+    smoothing_layers: Vec<FbxSmoothingLayer>,
+    crease_layers: Vec<FbxCreaseLayer>,
 }
 
 #[doc(hidden)]
 pub use crate::fbx_scene::{
     FbxAnimChannel, FbxAnimChannelPath, FbxAnimInterpolation, FbxAnimSampler, FbxAnimation,
-    FbxBinormalSet, FbxColorSet, FbxLayerSet, FbxMeshInstance, FbxNodeId, FbxNormalSet, FbxScene,
-    FbxSceneNode, FbxTangentSet, FbxTexture, FbxTextureBinding, FbxTextureSlot, FbxTransform,
-    FbxUvSet, FbxWarning, FbxWarningCode,
+    FbxBinormalSet, FbxColorSet, FbxCreaseKind, FbxCreaseLayer, FbxLayerSet, FbxMeshInstance,
+    FbxNodeId, FbxNormalSet, FbxScene, FbxSceneNode, FbxSmoothingLayer, FbxTangentSet, FbxTexture,
+    FbxTextureBinding, FbxTextureSlot, FbxTransform, FbxUvSet, FbxWarning, FbxWarningCode,
 };
 
 /// FBX file magic: "Kaydara FBX Binary  \0"
@@ -679,6 +681,8 @@ impl<R: Read + Seek> FbxReader<R> {
                             tangent_sets: source.tangent_sets.clone(),
                             binormal_sets: source.binormal_sets.clone(),
                             edges: source.edges.clone(),
+                            smoothing_layers: source.smoothing_layers.clone(),
+                            crease_layers: source.crease_layers.clone(),
                             material_indices: indices,
                             skin: parse_skin_for_geometry(
                                 geom_id,
@@ -2341,6 +2345,8 @@ impl<R: Read + Seek> FbxReader<R> {
         let mut tangent_layers: Vec<&FbxNode> = Vec::new();
         let mut binormal_layers: Vec<&FbxNode> = Vec::new();
         let mut material_layer: Option<&FbxNode> = None;
+        let mut smoothing_layers_raw: Vec<&FbxNode> = Vec::new();
+        let mut crease_layers_raw: Vec<(FbxCreaseKind, &FbxNode)> = Vec::new();
 
         for child in &geometry.children {
             match child.name.as_str() {
@@ -2364,6 +2370,11 @@ impl<R: Read + Seek> FbxReader<R> {
                 "LayerElementUV" => uv_layers.push(child),
                 "LayerElementTangent" => tangent_layers.push(child),
                 "LayerElementBinormal" => binormal_layers.push(child),
+                "LayerElementSmoothing" => smoothing_layers_raw.push(child),
+                "LayerElementEdgeCrease" => crease_layers_raw.push((FbxCreaseKind::Edge, child)),
+                "LayerElementVertexCrease" => {
+                    crease_layers_raw.push((FbxCreaseKind::Vertex, child))
+                }
                 "LayerElementMaterial" if material_layer.is_none() => {
                     material_layer = Some(child);
                 }
@@ -2483,6 +2494,68 @@ impl<R: Read + Seek> FbxReader<R> {
             warn_unsupported_layer_mapping("LayerElementBinormal", &set.layer, warnings);
         }
 
+        // Smoothing and crease layers address edges, polygons or control
+        // points -- never polygon corners -- so they are kept raw beside
+        // `edges` rather than resolved onto the render mesh. A layer whose
+        // length disagrees with the domain its mapping names is misaligned
+        // data, and keeping it would silently sharpen the wrong edges.
+        //
+        // `ByEdge` with no `Edges` array is a third case: FBX does not require
+        // the array, and the layer then addresses the edges an importer would
+        // reconstruct from the faces. This crate does not reconstruct them, so
+        // it cannot check the length -- but it also must not destroy the data,
+        // since preserving it verbatim is what makes a rewrite lossless.
+        let check = |mapping: Option<&str>| -> DomainCheck {
+            match mapping {
+                Some("ByEdge") if edges.is_empty() => DomainCheck::Unverifiable,
+                Some("ByEdge") => DomainCheck::Expect(edges.len()),
+                Some("ByPolygon") => DomainCheck::Expect(polygon_count),
+                Some("ByVertice") | Some("ByVertex") | Some("ByControlPoint") => {
+                    DomainCheck::Expect(control_points.len())
+                }
+                _ => DomainCheck::Unknown,
+            }
+        };
+        let mut smoothing_layers = Vec::new();
+        for layer in smoothing_layers_raw {
+            let mapping = layer_string(layer, "MappingInformationType");
+            let Some(values) = layer_int_array(layer, "Smoothing") else {
+                continue;
+            };
+            if check(mapping.as_deref()).accepts(values.len()) {
+                smoothing_layers.push(FbxSmoothingLayer { mapping, values });
+            } else {
+                warn_misaligned_layer(
+                    "LayerElementSmoothing",
+                    mapping.as_deref(),
+                    values.len(),
+                    warnings,
+                );
+            }
+        }
+        let mut crease_layers = Vec::new();
+        for (kind, layer) in crease_layers_raw {
+            let element = match kind {
+                FbxCreaseKind::Edge => "LayerElementEdgeCrease",
+                FbxCreaseKind::Vertex => "LayerElementVertexCrease",
+            };
+            let mapping = layer_string(layer, "MappingInformationType");
+            let Some(values) = layer_f64_array(layer, element.trim_start_matches("LayerElement"))
+            else {
+                continue;
+            };
+            match check(mapping.as_deref()) {
+                domain if domain.accepts(values.len()) => {
+                    crease_layers.push(FbxCreaseLayer {
+                        kind,
+                        mapping,
+                        values,
+                    });
+                }
+                _ => warn_misaligned_layer(element, mapping.as_deref(), values.len(), warnings),
+            }
+        }
+
         // Build the Draco mesh on the polygon-corner domain. Resolving layer
         // elements onto control points cannot represent a UV or hard-normal
         // seam, and silently averaged them away.
@@ -2510,6 +2583,8 @@ impl<R: Read + Seek> FbxReader<R> {
             tangent_sets,
             binormal_sets,
             edges,
+            smoothing_layers,
+            crease_layers,
         }))
     }
 
@@ -3072,6 +3147,66 @@ fn warn_unsupported_layer_mapping<const N: usize>(
             );
         }
     }
+}
+
+/// What can be said about the length a non-corner layer element should have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DomainCheck {
+    /// The domain has a known size, and the layer must match it exactly.
+    Expect(usize),
+    /// The domain exists but its size is not known here, so the layer is kept
+    /// as authored rather than judged.
+    Unverifiable,
+    /// The mapping names no domain this crate recognizes.
+    Unknown,
+}
+
+impl DomainCheck {
+    fn accepts(self, len: usize) -> bool {
+        match self {
+            DomainCheck::Expect(expected) => expected == len,
+            DomainCheck::Unverifiable => true,
+            DomainCheck::Unknown => false,
+        }
+    }
+}
+
+/// Reports a smoothing or crease layer whose length disagrees with the domain
+/// its mapping names, and which was therefore dropped.
+fn warn_misaligned_layer(
+    element: &str,
+    mapping: Option<&str>,
+    len: usize,
+    warnings: &mut Vec<FbxWarning>,
+) {
+    let mapping = mapping.unwrap_or("no mapping");
+    let subject = format!("{element}/{mapping}");
+    push_warning(
+        warnings,
+        FbxWarningCode::UnsupportedLayerMapping,
+        format!(
+            "FBX {element} has {len} values, which does not match the domain \
+             {mapping} addresses, so the layer was dropped"
+        ),
+        Some(&subject),
+    );
+}
+
+/// Reads a layer element's `f64` payload, for the crease weights that are not
+/// vectors and so do not go through [`chunk_layer_values`].
+fn layer_f64_array(layer: &FbxNode, name: &str) -> Option<Vec<f64>> {
+    for child in &layer.children {
+        if child.name == name {
+            return match child.properties.first() {
+                Some(FbxProperty::F64Array(arr)) => Some(arr.clone()),
+                Some(FbxProperty::F32Array(arr)) => {
+                    Some(arr.iter().map(|v| f64::from(*v)).collect())
+                }
+                _ => None,
+            };
+        }
+    }
+    None
 }
 
 /// Reads a `LayerElementTangent` or `LayerElementBinormal`.

@@ -17,6 +17,13 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fourth component on read and split back into the `TangentsW` sibling array on
   write, only for sets that had one. Draco has no tangent attribute, so these
   never reach the Draco mesh.
+- **Breaking.** FBX `LayerElementSmoothing`, `LayerElementEdgeCrease` and
+  `LayerElementVertexCrease` are read and written. `FbxMeshInstance` gains
+  `smoothing_layers` and `crease_layers`, typed `i32` and `f64` respectively so
+  a crease weight is not rounded through a flag's type. A layer whose length
+  disagrees with the domain its mapping names is dropped with a warning; a
+  `ByEdge` layer in a geometry with no `Edges` array is preserved unchecked,
+  since it addresses edges this crate does not reconstruct.
 - **Breaking.** `expand_to_render_mesh` takes an `FbxGeometryLayers` borrow
   struct instead of five positional slices.
 - `FbxUvSet`, `FbxNormalSet` and `FbxColorSet` are now aliases of a shared

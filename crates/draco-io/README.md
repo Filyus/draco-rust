@@ -65,7 +65,8 @@ version 6100 and fall in this category.
 | Vertex colors | Yes | Yes |
 | Tangents and binormals | Yes | Yes |
 | `Edges` array | Yes | Yes |
-| Edge smoothing / creases (`ByEdge` layers) | No | No |
+| Edge smoothing (`LayerElementSmoothing`) | Yes | Yes |
+| Edge and vertex creases | Yes | Yes |
 | Mesh and model names | Yes | Yes |
 | Node hierarchy | Yes | Yes |
 | Node transforms | Yes | Yes |
@@ -100,7 +101,20 @@ Draco mesh or its weld key; they travel on `FbxMeshInstance` and
 `Edges` is kept verbatim rather than normalized: FBX does not require it to list
 every topological edge, and importers reconstruct the rest from faces, so
 discarding the distinction would lose information. It is also the domain
-`ByEdge` layers address, which is what makes them implementable later.
+`ByEdge` layers address.
+
+Smoothing flags and crease weights address edges, polygons or control points --
+never polygon corners -- so they are preserved raw on `FbxMeshInstance` beside
+`Edges` rather than resolved onto the render mesh, and they have separate types
+because smoothing is an integer flag while a crease is a floating-point weight
+that an integer would flatten. glTF has no equivalent for either, so they
+survive an FBX-to-FBX rewrite and travel no further.
+
+A layer whose length disagrees with the domain its mapping names is dropped with
+a warning instead of being kept as misaligned data; seven layers in the corpus
+are in that state. A `ByEdge` layer in a geometry that has no `Edges` array is a
+separate case -- it addresses the edges an importer would reconstruct, which
+this crate does not do -- so it is preserved unchecked rather than discarded.
 
 Property templates in `Definitions` are not resolved. The specification allows a
 property to be omitted from an object and supplied by its class template, but

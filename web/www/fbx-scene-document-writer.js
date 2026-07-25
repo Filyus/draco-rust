@@ -96,6 +96,14 @@ function buildNodeMeshes(document, node, meshIndex, nodeIndex, sourceMeshes, wor
             ? Array.from({ length: positions.length / 3 }, (_, value) => value)
             : readAccessorValues(document, primitive.indices).map((value) => Math.max(0, Math.trunc(value)));
         const sourceMesh = findSourceMesh(sourceMeshes, document.meshes, mesh.name, meshIndex, primitiveIndex);
+        // With provenance present, an unmatched source mesh is the one case
+        // where FBX-only data is genuinely lost: extra UV/normal/colour layers,
+        // tangents, binormals, hard edges and creases all come from it. Without
+        // provenance there is nothing to lose, so this is the only reachable
+        // point at which the loss can be reported.
+        if (sourceUnits && !sourceMesh) {
+            warnings.push(`FBX mesh ${mesh.name ?? meshIndex} could not be matched to its source geometry, so FBX-only layers were not re-exported`);
+        }
         const meshInput = {
             name: mesh.name ? `${mesh.name}_${primitiveIndex}` : `mesh_${meshIndex}_${primitiveIndex}`,
             positions: sourceUnits ? scaleValues(positions, 100) : convertGltfVectorArrayToFbx(positions),
@@ -137,6 +145,15 @@ function buildNodeMeshes(document, node, meshIndex, nodeIndex, sourceMeshes, wor
                 }];
             }
         }
+        // Smoothing flags and crease weights address edges, polygons or control
+        // points, none of which the portable document represents, so they only
+        // travel on the FBX provenance path.
+        if (sourceUnits && sourceMesh?.smoothingLayers?.length) {
+            meshInput.smoothingLayers = structuredClone(sourceMesh.smoothingLayers);
+        }
+        if (sourceUnits && sourceMesh?.creaseLayers?.length) {
+            meshInput.creaseLayers = structuredClone(sourceMesh.creaseLayers);
+        }
         if (sourceUnits && sourceMesh?.tangentSets?.length) {
             meshInput.tangentSets = structuredClone(sourceMesh.tangentSets);
             if (sourceMesh.binormalSets?.length) meshInput.binormalSets = structuredClone(sourceMesh.binormalSets);
@@ -161,9 +178,6 @@ function buildNodeMeshes(document, node, meshIndex, nodeIndex, sourceMeshes, wor
                     // the reader's default and is written out as TangentsW.
                     values, indices: [], hasHandedness: true,
                 }];
-                if (sourceMesh?.binormalSets?.length) {
-                    warnings.push('FBX binormals were dropped: the portable document carries glTF TANGENT, which has no binormal, so only tangents were re-exported');
-                }
             }
         }
         const skinIndex = node.skin;

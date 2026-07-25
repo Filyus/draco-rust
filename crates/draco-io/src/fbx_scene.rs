@@ -231,6 +231,15 @@ pub struct FbxMeshInstance {
     /// so it is kept raw rather than normalized. It is also the domain
     /// `ByEdge` layer elements address.
     pub edges: Vec<i32>,
+    /// Original `LayerElementSmoothing` layers.
+    ///
+    /// Hard and soft edges. glTF has no equivalent, so these survive an
+    /// FBX-to-FBX rewrite but do not travel further. A layer whose length does
+    /// not match the domain its mapping names is dropped with a warning rather
+    /// than kept as misaligned data.
+    pub smoothing_layers: Vec<FbxSmoothingLayer>,
+    /// Original `LayerElementEdgeCrease` and `LayerElementVertexCrease` layers.
+    pub crease_layers: Vec<FbxCreaseLayer>,
     /// Per-polygon material index from `LayerElementMaterial`, when present.
     ///
     /// Each entry corresponds to one triangle in fan-triangulation order
@@ -300,6 +309,41 @@ pub struct FbxTangentSet {
 /// Structurally identical to a tangent set, and always written alongside one:
 /// no corpus file carries either alone.
 pub type FbxBinormalSet = FbxTangentSet;
+
+/// A preserved FBX `LayerElementSmoothing`.
+///
+/// Smoothing is an integer flag per edge or per polygon -- whether the edge is
+/// soft, or the polygon smooth-shaded -- and is kept separate from
+/// [`FbxCreaseLayer`] because that one is a floating-point weight. Rounding one
+/// through the other's type would quietly change authored crease values.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FbxSmoothingLayer {
+    /// FBX mapping information type: `ByEdge` or `ByPolygon`.
+    pub mapping: Option<String>,
+    /// One flag per edge or per polygon, matching `mapping`.
+    pub values: Vec<i32>,
+}
+
+/// Which domain a [`FbxCreaseLayer`] sharpens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FbxCreaseKind {
+    /// `LayerElementEdgeCrease`, one weight per entry in
+    /// [`FbxMeshInstance::edges`].
+    Edge,
+    /// `LayerElementVertexCrease`, one weight per control point.
+    Vertex,
+}
+
+/// A preserved FBX `LayerElementEdgeCrease` or `LayerElementVertexCrease`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FbxCreaseLayer {
+    /// Whether this sharpens edges or control points.
+    pub kind: FbxCreaseKind,
+    /// FBX mapping information type: `ByEdge` or `ByVertice`.
+    pub mapping: Option<String>,
+    /// Crease weights, normally in `0..=1`.
+    pub values: Vec<f64>,
+}
 
 /// All influences from one joint onto a mesh's control points.
 #[derive(Debug, Clone)]

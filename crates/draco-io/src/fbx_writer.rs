@@ -127,6 +127,8 @@ struct MeshData {
     color_sets: Vec<crate::fbx_scene::FbxColorSet>,
     tangent_sets: Vec<crate::fbx_scene::FbxTangentSet>,
     binormal_sets: Vec<crate::fbx_scene::FbxBinormalSet>,
+    smoothing_layers: Vec<crate::fbx_scene::FbxSmoothingLayer>,
+    crease_layers: Vec<crate::fbx_scene::FbxCreaseLayer>,
     edges: Vec<i32>,
 }
 
@@ -311,6 +313,8 @@ impl FbxWriter {
         morph_targets: &[crate::fbx_scene::FbxMorphTarget],
         layers: crate::fbx_render_mesh::FbxGeometryLayers<'_>,
         edges: &[i32],
+        smoothing_layers: &[crate::fbx_scene::FbxSmoothingLayer],
+        crease_layers: &[crate::fbx_scene::FbxCreaseLayer],
     ) -> io::Result<()> {
         let crate::fbx_render_mesh::FbxGeometryLayers {
             control_points,
@@ -353,6 +357,8 @@ impl FbxWriter {
             tangent_sets: tangent_sets.to_vec(),
             binormal_sets: binormal_sets.to_vec(),
             edges: edges.to_vec(),
+            smoothing_layers: smoothing_layers.to_vec(),
+            crease_layers: crease_layers.to_vec(),
         });
         if let Some(skin) = skin {
             let skin_id = self.allocate_id();
@@ -567,6 +573,8 @@ impl FbxWriter {
                 &mesh_instance.morph_targets,
                 crate::fbx_render_mesh::FbxGeometryLayers::from_instance(mesh_instance),
                 &mesh_instance.edges,
+                &mesh_instance.smoothing_layers,
+                &mesh_instance.crease_layers,
             )?;
         }
         let _ = mesh_count;
@@ -702,6 +710,8 @@ impl Writer for FbxWriter {
             // A flat Draco mesh carries no FBX layer elements of its own; the
             // writer derives normals and UVs from its attributes instead.
             crate::fbx_render_mesh::FbxGeometryLayers::default(),
+            &[],
+            &[],
             &[],
         )
     }
@@ -1812,6 +1822,15 @@ fn write_geometry<W: Write + Seek>(
             write_layer_element_tangent_set(w, is_64, "LayerElementBinormal", set, options)?;
         }
 
+        // Hard edges and creases, written back on whichever domain they were
+        // authored on.
+        for layer in &mesh_data.smoothing_layers {
+            write_layer_element_smoothing(w, is_64, layer, options)?;
+        }
+        for layer in &mesh_data.crease_layers {
+            write_layer_element_crease(w, is_64, layer, options)?;
+        }
+
         // UVs (LayerElementUV, ByVertice/Direct).
         if mesh_data.uv_sets.is_empty() {
             if let Some(uvs) = &mesh_data.uvs {
@@ -1845,6 +1864,8 @@ fn write_geometry<W: Write + Seek>(
             || !mesh_data.color_sets.is_empty()
             || !mesh_data.tangent_sets.is_empty()
             || !mesh_data.binormal_sets.is_empty()
+            || !mesh_data.smoothing_layers.is_empty()
+            || !mesh_data.crease_layers.is_empty()
             || !mesh_data.material_indices.is_empty()
         {
             let layer = NodeWriter::start(w, "Layer", is_64)?;
@@ -1874,6 +1895,16 @@ fn write_geometry<W: Write + Seek>(
                 }
                 for index in 0..mesh_data.binormal_sets.len() {
                     write_layer_element_index(lw, is_64, "LayerElementBinormal", index as i32)?;
+                }
+                for index in 0..mesh_data.smoothing_layers.len() {
+                    write_layer_element_index(lw, is_64, "LayerElementSmoothing", index as i32)?;
+                }
+                for (index, layer) in mesh_data.crease_layers.iter().enumerate() {
+                    let element = match layer.kind {
+                        crate::fbx_scene::FbxCreaseKind::Edge => "LayerElementEdgeCrease",
+                        crate::fbx_scene::FbxCreaseKind::Vertex => "LayerElementVertexCrease",
+                    };
+                    write_layer_element_index(lw, is_64, element, index as i32)?;
                 }
                 if !mesh_data.material_indices.is_empty() {
                     write_layer_element(lw, is_64, "LayerElementMaterial")?;
@@ -2101,6 +2132,65 @@ fn write_layer_element_tangent_set<W: Write + Seek>(
             indices.finish()?;
         }
         Ok(())
+    })
+}
+
+/// Writes a `LayerElementSmoothing`, whose payload is integer flags.
+///
+/// Smoothing carries layer version 102 rather than the 101 every other element
+/// uses, which is what Autodesk writes.
+fn write_layer_element_smoothing<W: Write + Seek>(
+    writer: &mut W,
+    is_64: bool,
+    layer: &crate::fbx_scene::FbxSmoothingLayer,
+    options: &WriterOptions,
+) -> io::Result<()> {
+    let node = NodeWriter::start(writer, "LayerElementSmoothing", is_64)?;
+    node.finish_with_children(|w| {
+        let mut version = NodeWriter::start(w, "Version", is_64)?;
+        version.write_property_i32(102)?;
+        version.finish()?;
+        let mut name = NodeWriter::start(w, "Name", is_64)?;
+        name.write_property_string("")?;
+        name.finish()?;
+        let mut mapping = NodeWriter::start(w, "MappingInformationType", is_64)?;
+        mapping.write_property_string(layer.mapping.as_deref().unwrap_or("ByEdge"))?;
+        mapping.finish()?;
+        let mut reference = NodeWriter::start(w, "ReferenceInformationType", is_64)?;
+        reference.write_property_string("Direct")?;
+        reference.finish()?;
+        let mut data = NodeWriter::start(w, "Smoothing", is_64)?;
+        data.write_property_i32_array(&layer.values, options)?;
+        data.finish()
+    })
+}
+
+/// Writes a `LayerElementEdgeCrease` or `LayerElementVertexCrease`, whose
+/// payload is floating-point weights.
+fn write_layer_element_crease<W: Write + Seek>(
+    writer: &mut W,
+    is_64: bool,
+    layer: &crate::fbx_scene::FbxCreaseLayer,
+    options: &WriterOptions,
+) -> io::Result<()> {
+    let (element, data_node, default_mapping) = match layer.kind {
+        crate::fbx_scene::FbxCreaseKind::Edge => ("LayerElementEdgeCrease", "EdgeCrease", "ByEdge"),
+        crate::fbx_scene::FbxCreaseKind::Vertex => {
+            ("LayerElementVertexCrease", "VertexCrease", "ByVertice")
+        }
+    };
+    let node = NodeWriter::start(writer, element, is_64)?;
+    node.finish_with_children(|w| {
+        write_layer_header_with_name(
+            w,
+            is_64,
+            "",
+            layer.mapping.as_deref().unwrap_or(default_mapping),
+            "Direct",
+        )?;
+        let mut data = NodeWriter::start(w, data_node, is_64)?;
+        data.write_property_f64_array(&layer.values, options)?;
+        data.finish()
     })
 }
 
@@ -3110,6 +3200,8 @@ mod tests {
                         color_sets: Vec::new(),
                         tangent_sets: Vec::new(),
                         binormal_sets: Vec::new(),
+                        smoothing_layers: Vec::new(),
+                        crease_layers: Vec::new(),
                         edges: Vec::new(),
                         material_indices: Vec::new(),
                         skin: None,
@@ -3270,6 +3362,8 @@ mod tests {
                             color_sets: Vec::new(),
                             tangent_sets: Vec::new(),
                             binormal_sets: Vec::new(),
+                            smoothing_layers: Vec::new(),
+                            crease_layers: Vec::new(),
                             edges: Vec::new(),
                             material_indices: Vec::new(),
                             skin: Some(crate::fbx_scene::FbxSkin {
@@ -3401,6 +3495,8 @@ mod tests {
             color_sets: Vec::new(),
             tangent_sets: Vec::new(),
             binormal_sets: Vec::new(),
+            smoothing_layers: Vec::new(),
+            crease_layers: Vec::new(),
             edges: Vec::new(),
             material_indices: vec![0, 0, 1, 1],
             skin: None,
@@ -3481,6 +3577,8 @@ mod tests {
                     color_sets: Vec::new(),
                     tangent_sets: vec![set.clone()],
                     binormal_sets: vec![set],
+                    smoothing_layers: Vec::new(),
+                    crease_layers: Vec::new(),
                     edges: Vec::new(),
                     material_indices: Vec::new(),
                     skin: None,
@@ -3534,6 +3632,116 @@ mod tests {
         }
     }
 
+    /// Smoothing flags and crease weights have different element types, and a
+    /// shared one would round the weights. Both must survive a rewrite on the
+    /// domain they were authored on, including `ByPolygon` smoothing, which is
+    /// a small minority of the corpus and easy to leave unimplemented.
+    #[test]
+    #[cfg(feature = "fbx-reader")]
+    fn smoothing_and_crease_layers_survive_a_round_trip() {
+        let instance = FbxMeshInstance {
+            name: Some("Creased".to_string()),
+            mesh: create_triangle_mesh(),
+            control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            polygon_vertex_indices: vec![0, 1, !2],
+            uv_sets: Vec::new(),
+            normal_sets: Vec::new(),
+            color_sets: Vec::new(),
+            tangent_sets: Vec::new(),
+            binormal_sets: Vec::new(),
+            edges: vec![0, 1, 2],
+            smoothing_layers: vec![
+                crate::fbx_scene::FbxSmoothingLayer {
+                    mapping: Some("ByEdge".to_string()),
+                    values: vec![1, 0, 1],
+                },
+                crate::fbx_scene::FbxSmoothingLayer {
+                    mapping: Some("ByPolygon".to_string()),
+                    values: vec![1],
+                },
+            ],
+            crease_layers: vec![
+                crate::fbx_scene::FbxCreaseLayer {
+                    kind: crate::fbx_scene::FbxCreaseKind::Edge,
+                    mapping: Some("ByEdge".to_string()),
+                    // A weight an integer type would flatten to 0.
+                    values: vec![0.25, 0.5, 1.0],
+                },
+                crate::fbx_scene::FbxCreaseLayer {
+                    kind: crate::fbx_scene::FbxCreaseKind::Vertex,
+                    mapping: Some("ByVertice".to_string()),
+                    values: vec![0.75, 0.0, 0.125],
+                },
+            ],
+            material_indices: Vec::new(),
+            skin: None,
+            morph_targets: Vec::new(),
+        };
+        let scene = FbxScene {
+            root_nodes: vec![FbxSceneNode {
+                id: crate::fbx_scene::FbxNodeId(1),
+                name: Some("Node".to_string()),
+                transform: None,
+                transform_stack: None,
+                has_complex_transform_stack: false,
+                mesh_instances: vec![instance.clone()],
+                children: Vec::new(),
+            }],
+            ..FbxScene::default()
+        };
+
+        let output = crate::FbxScene::from_bytes(&scene.to_bytes().unwrap()).unwrap();
+        let read_back = &output.root_nodes[0].mesh_instances[0];
+        assert_eq!(read_back.smoothing_layers, instance.smoothing_layers);
+        assert_eq!(read_back.crease_layers, instance.crease_layers);
+    }
+
+    /// A `ByEdge` layer in a geometry with no `Edges` array addresses the edges
+    /// an importer would reconstruct from the faces. This crate does not
+    /// reconstruct them, so it cannot check the length -- but discarding the
+    /// layer would lose authored data a rewrite could otherwise return intact.
+    #[test]
+    #[cfg(feature = "fbx-reader")]
+    fn a_by_edge_layer_survives_without_an_explicit_edges_array() {
+        let smoothing = crate::fbx_scene::FbxSmoothingLayer {
+            mapping: Some("ByEdge".to_string()),
+            values: vec![1, 0, 1],
+        };
+        let scene = FbxScene {
+            root_nodes: vec![FbxSceneNode {
+                id: crate::fbx_scene::FbxNodeId(1),
+                name: Some("Node".to_string()),
+                transform: None,
+                transform_stack: None,
+                has_complex_transform_stack: false,
+                mesh_instances: vec![FbxMeshInstance {
+                    name: Some("Implicit".to_string()),
+                    mesh: create_triangle_mesh(),
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    polygon_vertex_indices: vec![0, 1, !2],
+                    uv_sets: Vec::new(),
+                    normal_sets: Vec::new(),
+                    color_sets: Vec::new(),
+                    tangent_sets: Vec::new(),
+                    binormal_sets: Vec::new(),
+                    edges: Vec::new(),
+                    smoothing_layers: vec![smoothing.clone()],
+                    crease_layers: Vec::new(),
+                    material_indices: Vec::new(),
+                    skin: None,
+                    morph_targets: Vec::new(),
+                }],
+                children: Vec::new(),
+            }],
+            ..FbxScene::default()
+        };
+
+        let output = crate::FbxScene::from_bytes(&scene.to_bytes().unwrap()).unwrap();
+        let read_back = &output.root_nodes[0].mesh_instances[0];
+        assert!(read_back.edges.is_empty());
+        assert_eq!(read_back.smoothing_layers, vec![smoothing]);
+    }
+
     /// A colours-only geometry must still emit a `Layer` node listing
     /// `LayerElementColor`.
     ///
@@ -3566,6 +3774,8 @@ mod tests {
                     }],
                     tangent_sets: Vec::new(),
                     binormal_sets: Vec::new(),
+                    smoothing_layers: Vec::new(),
+                    crease_layers: Vec::new(),
                     edges: Vec::new(),
                     material_indices: Vec::new(),
                     skin: None,
@@ -3640,6 +3850,8 @@ mod tests {
                     color_sets: vec![colors.clone()],
                     tangent_sets: Vec::new(),
                     binormal_sets: Vec::new(),
+                    smoothing_layers: Vec::new(),
+                    crease_layers: Vec::new(),
                     edges: Vec::new(),
                     material_indices: Vec::new(),
                     skin: None,

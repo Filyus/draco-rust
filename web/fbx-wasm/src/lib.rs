@@ -124,6 +124,34 @@ pub struct MeshData {
     /// Original `LayerElementBinormal` layers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub binormal_sets: Vec<TangentSetOutput>,
+    /// Original `LayerElementSmoothing` layers, carried opaquely: glTF has no
+    /// hard-edge concept, so these exist to survive an FBX-to-FBX rewrite.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub smoothing_layers: Vec<SmoothingLayerOutput>,
+    /// Original edge and vertex crease layers, carried opaquely.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crease_layers: Vec<CreaseLayerOutput>,
+}
+
+/// A `LayerElementSmoothing` crossing the WASM boundary, in both directions.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SmoothingLayerOutput {
+    pub mapping: Option<String>,
+    /// One integer flag per edge or per polygon.
+    pub values: Vec<i32>,
+}
+
+/// A `LayerElementEdgeCrease` or `LayerElementVertexCrease` crossing the WASM
+/// boundary, in both directions.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CreaseLayerOutput {
+    /// `"edge"` or `"vertex"`; anything else is read as `"edge"`.
+    pub kind: String,
+    pub mapping: Option<String>,
+    /// Crease weights, normally in `0..=1`.
+    pub values: Vec<f64>,
 }
 
 /// A `LayerElementTangent` or `LayerElementBinormal` crossing the WASM
@@ -655,6 +683,26 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
         .iter()
         .map(tangent_set_to_output)
         .collect();
+    mesh.smoothing_layers = instance
+        .smoothing_layers
+        .iter()
+        .map(|layer| SmoothingLayerOutput {
+            mapping: layer.mapping.clone(),
+            values: layer.values.clone(),
+        })
+        .collect();
+    mesh.crease_layers = instance
+        .crease_layers
+        .iter()
+        .map(|layer| CreaseLayerOutput {
+            kind: match layer.kind {
+                draco_io::FbxCreaseKind::Edge => "edge".to_string(),
+                draco_io::FbxCreaseKind::Vertex => "vertex".to_string(),
+            },
+            mapping: layer.mapping.clone(),
+            values: layer.values.clone(),
+        })
+        .collect();
     mesh.color_sets = instance
         .color_sets
         .iter()
@@ -1000,6 +1048,8 @@ fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
         color_sets: Vec::new(),
         tangent_sets: Vec::new(),
         binormal_sets: Vec::new(),
+        smoothing_layers: Vec::new(),
+        crease_layers: Vec::new(),
     }
 }
 
@@ -1096,6 +1146,12 @@ pub struct MeshInput {
     /// Binormal layers to write.
     #[serde(default)]
     pub binormal_sets: Vec<TangentSetOutput>,
+    /// Smoothing layers to write.
+    #[serde(default)]
+    pub smoothing_layers: Vec<SmoothingLayerOutput>,
+    /// Crease layers to write.
+    #[serde(default)]
+    pub crease_layers: Vec<CreaseLayerOutput>,
     #[serde(default)]
     pub color_sets: Vec<ColorSetOutput>,
     #[serde(default)]
@@ -1578,6 +1634,27 @@ fn mesh_input_to_instance(mesh: &MeshInput, index: usize) -> Result<FbxMeshInsta
             .map(|value| [value[0], value[1], value[2]])
             .collect(),
         polygon_vertex_indices: mesh.polygon_vertex_indices.clone().unwrap_or_default(),
+        smoothing_layers: mesh
+            .smoothing_layers
+            .iter()
+            .map(|layer| draco_io::FbxSmoothingLayer {
+                mapping: layer.mapping.clone(),
+                values: layer.values.clone(),
+            })
+            .collect(),
+        crease_layers: mesh
+            .crease_layers
+            .iter()
+            .map(|layer| draco_io::FbxCreaseLayer {
+                kind: if layer.kind == "vertex" {
+                    draco_io::FbxCreaseKind::Vertex
+                } else {
+                    draco_io::FbxCreaseKind::Edge
+                },
+                mapping: layer.mapping.clone(),
+                values: layer.values.clone(),
+            })
+            .collect(),
         tangent_sets: mesh.tangent_sets.iter().map(tangent_output_to_fbx).collect(),
         binormal_sets: mesh
             .binormal_sets
@@ -1950,6 +2027,8 @@ mod reader_tests {
                     color_sets: Vec::new(),
                     tangent_sets: Vec::new(),
                     binormal_sets: Vec::new(),
+                    smoothing_layers: Vec::new(),
+                    crease_layers: Vec::new(),
                     edges: Vec::new(),
                     material_indices: Vec::new(),
                     skin: None,
@@ -2079,6 +2158,8 @@ mod writer_tests {
             color_sets: Vec::new(),
             tangent_sets: Vec::new(),
             binormal_sets: Vec::new(),
+            smoothing_layers: Vec::new(),
+            crease_layers: Vec::new(),
             edges: Vec::new(),
             material_indices: Vec::new(),
             skin: None,

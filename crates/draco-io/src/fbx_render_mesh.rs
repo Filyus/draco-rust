@@ -449,6 +449,8 @@ mod tests {
             color_sets: Vec::new(),
             tangent_sets: Vec::new(),
             binormal_sets: Vec::new(),
+            smoothing_layers: Vec::new(),
+            crease_layers: Vec::new(),
             edges: Vec::new(),
             material_indices: Vec::new(),
             skin: None,

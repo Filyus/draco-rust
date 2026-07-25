@@ -261,6 +261,11 @@ struct MeshSummary {
     /// pre-7500 document that never had one, nor drop one that did.
     tangent_sets: Vec<(usize, bool)>,
     binormal_sets: Vec<(usize, bool)>,
+    /// `(mapping, value count)` per smoothing layer, and per crease layer with
+    /// its kind. Values are compared by count rather than element-wise because
+    /// the round-trip check is about preservation, not about arithmetic.
+    smoothing_layers: Vec<(String, usize)>,
+    crease_layers: Vec<(String, String, usize)>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -316,6 +321,27 @@ fn summarize(scene: &FbxScene) -> SceneSummary {
                     .binormal_sets
                     .iter()
                     .map(|set| (set.layer.values.len(), set.has_handedness))
+                    .collect(),
+                smoothing_layers: mesh
+                    .smoothing_layers
+                    .iter()
+                    .map(|layer| {
+                        (
+                            layer.mapping.clone().unwrap_or_default(),
+                            layer.values.len(),
+                        )
+                    })
+                    .collect(),
+                crease_layers: mesh
+                    .crease_layers
+                    .iter()
+                    .map(|layer| {
+                        (
+                            format!("{:?}", layer.kind),
+                            layer.mapping.clone().unwrap_or_default(),
+                            layer.values.len(),
+                        )
+                    })
                     .collect(),
             });
         }
