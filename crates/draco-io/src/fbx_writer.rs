@@ -1127,11 +1127,7 @@ fn write_objects<W: Write + Seek>(
         }
         for stack in anim {
             for node in animation_stack_nodes(stack) {
-                // Animation arrays have always been written uncompressed,
-                // whatever the document's options say -- every curve writer
-                // passed a fresh default. Preserved verbatim here; whether
-                // that is deliberate is a separate question from this move.
-                encode_node(w, &node, is_64, &WriterOptions::default())?;
+                encode_node(w, &node, is_64, options)?;
             }
         }
         for skin in skins {
