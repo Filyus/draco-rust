@@ -7,6 +7,9 @@
  */
 
 import { assertValidSceneDocument, createSceneDocument } from './scene-document.js';
+import {
+    appendAccessor, basename, decodeDataUri, mimeFromUri, resolveResource, sniffMime,
+} from './scene-resources.js';
 
 const SUPPORTED_EXTENSIONS = new Set([
     'KHR_materials_unlit', 'KHR_texture_transform',
@@ -45,7 +48,7 @@ function collectImageResources(asset, images, resources, document) {
         }
         const resourceIndex = document.resources.length;
         document.resources.push({
-            name: image.name || resourceName(image.uri, `image_${imageIndex}`),
+            name: image.name || basename(image.uri) || `image_${imageIndex}`,
             mimeType: image.mimeType || sniffMime(bytes) || mimeFromUri(image.uri) || 'application/octet-stream',
             bytes: new Uint8Array(bytes),
         });
@@ -255,12 +258,6 @@ function sourceAccessor(asset, sourceIndex, document, cache) {
     }
 }
 
-function appendAccessor(document, accessor) {
-    const index = document.accessors.length;
-    document.accessors.push(accessor);
-    return index;
-}
-
 function textureInfo(info, textureBySource) {
     if (!info || !Number.isInteger(info.index)) return null;
     const texture = textureBySource[info.index];
@@ -309,45 +306,3 @@ function rootNodes(nodes) {
     return nodes.map((_, index) => index).filter((index) => !children.has(index));
 }
 
-function resolveResource(uri, resources) {
-    if (uri.startsWith('data:')) return decodeDataUri(uri);
-    const value = resources?.[uri] || resources?.[resourceName(uri, uri)];
-    if (value instanceof Uint8Array) return value;
-    if (value instanceof ArrayBuffer) return new Uint8Array(value);
-    return null;
-}
-
-function decodeDataUri(uri) {
-    const comma = uri.indexOf(',');
-    if (comma < 0) return null;
-    const meta = uri.substring(0, comma);
-    const payload = uri.substring(comma + 1);
-    try {
-        if (meta.includes(';base64')) {
-            const decoded = atob(payload);
-            return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
-        }
-        return new TextEncoder().encode(decodeURIComponent(payload));
-    } catch {
-        return null;
-    }
-}
-
-function resourceName(uri, fallback) {
-    if (!uri) return fallback;
-    const slash = Math.max(uri.lastIndexOf('/'), uri.lastIndexOf('\\'));
-    return slash < 0 ? uri : uri.slice(slash + 1);
-}
-
-function mimeFromUri(uri) {
-    const extension = resourceName(uri || '', '').split('.').pop()?.toLowerCase();
-    return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', ktx2: 'image/ktx2' }[extension] || null;
-}
-
-function sniffMime(bytes) {
-    if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
-    if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8) return 'image/jpeg';
-    if (bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) return 'image/webp';
-    if (bytes.length >= 4 && bytes[0] === 0xab && bytes[1] === 0x4b && bytes[2] === 0x54 && bytes[3] === 0x58) return 'image/ktx2';
-    return null;
-}

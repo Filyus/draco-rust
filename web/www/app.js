@@ -14,6 +14,7 @@ import { buildFbxSceneFromDocument } from './fbx-scene-document-writer.js';
 import { serializeSceneDocumentToGlb } from './scene-document-gltf.js';
 import { assertValidSceneDocument } from './scene-document.js';
 import { isAsciiFbx, parseAsciiFbx } from './ascii-fbx-loader.js';
+import { basename } from './scene-resources.js';
 
 // Module state
 const modules = {
@@ -563,7 +564,7 @@ function parseObjMaterials(objText, resources, warnings) {
         if (match) libraries.push(match[1].trim());
     }
     for (const library of libraries) {
-        const bytes = resources[library] || resources[resourceBasename(library)];
+        const bytes = resources[library] || resources[basename(library)];
         if (!bytes) {
             warnings.push(`OBJ material library not selected: ${library}`);
             continue;
@@ -604,11 +605,6 @@ function mtlMapPath(values) {
         index += 1 + (optionValues[values[index].toLowerCase()] ?? 0);
     }
     return values.slice(index).join(' ').trim();
-}
-
-function resourceBasename(path) {
-    const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-    return slash >= 0 ? path.substring(slash + 1) : path;
 }
 
 // Parse PLY file

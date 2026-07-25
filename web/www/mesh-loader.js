@@ -6,6 +6,7 @@
  */
 
 import { buildSceneFromFbx as buildSemanticFbxScene } from './fbx-import-scene.js';
+import { basename, mimeFromUri, resolveResource } from './scene-resources.js';
 
 function pushAabb(box, x, y, z) {
     if (x < box.min[0]) box.min[0] = x;
@@ -132,11 +133,11 @@ async function buildObjTextures(materials, resources, warnings, hooks) {
                 continue;
             }
             try {
-                const bitmap = await createImageBitmap(new Blob([bytes], { type: mimeFromUri(uri) }));
+                const bitmap = await createImageBitmap(new Blob([bytes], { type: mimeFromUri(uri) || 'application/octet-stream' }));
                 if (!bitmap) throw new Error('browser could not decode the image');
                 index = textures.length;
                 textures.push({
-                    name: resourceBasename(uri), image: bitmap, flipY: true,
+                    name: basename(uri), image: bitmap, flipY: true,
                     wrapS: WebGL2RenderingContext.REPEAT,
                     wrapT: WebGL2RenderingContext.REPEAT,
                     minFilter: WebGL2RenderingContext.LINEAR_MIPMAP_LINEAR,
@@ -154,20 +155,6 @@ async function buildObjTextures(materials, resources, warnings, hooks) {
         delete material.baseColorTextureUri;
     }
     return textures;
-}
-
-function resolveResource(uri, resources) {
-    return resources?.[uri] || resources?.[resourceBasename(uri)] || null;
-}
-
-function resourceBasename(path) {
-    const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-    return slash >= 0 ? path.substring(slash + 1) : path;
-}
-
-function mimeFromUri(uri) {
-    const extension = resourceBasename(uri).split('.').pop()?.toLowerCase();
-    return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }[extension] || 'application/octet-stream';
 }
 
 function restTrs() {

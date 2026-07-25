@@ -11,6 +11,10 @@ import { adaptFbxAnimation } from './fbx-animation-adapter.js';
 import { adaptFbxMaterial } from './fbx-material-adapter.js';
 import { assertValidSceneDocument, createSceneDocument } from './scene-document.js';
 import { createFbxSceneProvenance } from './fbx-scene-provenance.js';
+import {
+    appendAccessor, basename, bytesFromF32, bytesFromU16, bytesFromU32,
+    mimeFromUri, resolveResource, sniffMime,
+} from './scene-resources.js';
 
 // The semantic decoder currently exposes the common FBX centimeter-space
 // values. SceneDocument is canonical glTF-meter space; normalize only here so
@@ -447,27 +451,6 @@ function appendFloatAccessor(document, values, components) {
     return appendAccessor(document, { bytes: bytesFromF32(values), componentType: 5126, components, count: values.length / components, normalized: false });
 }
 
-function appendAccessor(document, accessor) {
-    const index = document.accessors.length;
-    document.accessors.push(accessor);
-    return index;
-}
-
-function bytesFromF32(values) {
-    const source = Float32Array.from(values);
-    return new Uint8Array(source.buffer);
-}
-
-function bytesFromU16(values) {
-    const source = Uint16Array.from(values);
-    return new Uint8Array(source.buffer);
-}
-
-function bytesFromU32(values) {
-    const source = Uint32Array.from(values);
-    return new Uint8Array(source.buffer);
-}
-
 function decomposeMatrix(matrix) {
     const scale = [Math.hypot(matrix[0], matrix[1], matrix[2]) || 1, Math.hypot(matrix[4], matrix[5], matrix[6]) || 1, Math.hypot(matrix[8], matrix[9], matrix[10]) || 1];
     const m00 = matrix[0] / scale[0], m01 = matrix[4] / scale[1], m02 = matrix[8] / scale[2];
@@ -509,27 +492,3 @@ function defaultSampler() {
     return { wrapS: 10497, wrapT: 10497, minFilter: 9987, magFilter: 9729 };
 }
 
-function resolveResource(uri, resources) {
-    if (!uri) return null;
-    const value = resources?.[uri] || resources?.[basename(uri)];
-    if (value instanceof Uint8Array) return value;
-    if (value instanceof ArrayBuffer) return new Uint8Array(value);
-    return null;
-}
-
-function basename(path) {
-    const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-    return slash >= 0 ? path.slice(slash + 1) : path;
-}
-
-function mimeFromUri(uri) {
-    const extension = basename(uri || '').split('.').pop()?.toLowerCase();
-    return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }[extension] || null;
-}
-
-function sniffMime(bytes) {
-    if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
-    if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8) return 'image/jpeg';
-    if (bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) return 'image/webp';
-    return null;
-}

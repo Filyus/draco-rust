@@ -1,4 +1,5 @@
 /** FBX material and texture import boundary for the format-neutral viewer. */
+import { basename, mimeFromUri, resolveResource } from './scene-resources.js';
 
 /** Convert an FBX Phong/Lambert material into the viewer material contract. */
 export function adaptFbxMaterial(material, index) {
@@ -45,9 +46,9 @@ export async function adaptFbxTextures(fbxTextures, resources, warnings, hooks) 
             continue;
         }
         try {
-            const bitmap = await createImageBitmap(new Blob([bytes], { type: mimeFromUri(texture.filename || '') }));
+            const bitmap = await createImageBitmap(new Blob([bytes], { type: mimeFromUri(texture.filename) || 'application/octet-stream' }));
             textures[index] = {
-                name: texture.name || resourceBasename(texture.filename || `texture_${index}`),
+                name: texture.name || basename(texture.filename || `texture_${index}`),
                 image: bitmap,
                 flipY: true,
                 wrapS: WebGL2RenderingContext.REPEAT,
@@ -64,17 +65,3 @@ export async function adaptFbxTextures(fbxTextures, resources, warnings, hooks) 
     return textures;
 }
 
-function resolveResource(uri, resources) {
-    return resources?.[uri] || resources?.[resourceBasename(uri)] || null;
-}
-
-function resourceBasename(path) {
-    const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-    return slash >= 0 ? path.substring(slash + 1) : path;
-}
-
-function mimeFromUri(uri) {
-    const extension = resourceBasename(uri).split('.').pop()?.toLowerCase();
-    return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }[extension]
-        || 'application/octet-stream';
-}

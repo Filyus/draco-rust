@@ -13,6 +13,7 @@
  * because support policy and fallback behavior are specific to the preview.
  */
 
+import { mimeFromUri, resolveResource, sniffMime } from './scene-resources.js';
 import {
     buildFbxMeshSkin,
     buildFbxMaterials,
@@ -788,20 +789,6 @@ async function decodeImages(asset, defs, resources, hooks) {
     );
 }
 
-function sniffMime(bytes) {
-    if (bytes.length < 4) return null;
-    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
-    if (bytes[0] === 0xff && bytes[1] === 0xd8) return 'image/jpeg';
-    if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) return 'image/webp';
-    if (bytes[0] === 0xab && bytes[1] === 0x4b && bytes[2] === 0x54 && bytes[3] === 0x58) return 'image/ktx2';
-    return null;
-}
-
-function mimeFromUri(uri) {
-    const ext = uri.split('.').pop()?.toLowerCase();
-    return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', ktx2: 'image/ktx2' }[ext];
-}
-
 async function loadImageBytes(bytes, mime, hooks) {
     if (mime === 'image/ktx2') {
         hooks.onLog?.('KTX2 textures require a transcoder; skipping image', 'warning');
@@ -816,30 +803,8 @@ async function loadImageBytes(bytes, mime, hooks) {
     }
 }
 
-export function resolveUriBytes(uri, resources) {
-    if (uri.startsWith('data:')) {
-        const comma = uri.indexOf(',');
-        const meta = uri.substring(0, comma);
-        const payload = uri.substring(comma + 1);
-        if (meta.includes(';base64')) {
-            try {
-                const bin = atob(payload);
-                const bytes = new Uint8Array(bin.length);
-                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                return bytes;
-            } catch (error) {
-                return null;
-            }
-        }
-        return new TextEncoder().encode(decodeURIComponent(payload));
-    }
-    return resources?.[uri] || resources?.[basename(uri)] || null;
-}
-
-function basename(path) {
-    const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-    return slash >= 0 ? path.substring(slash + 1) : path;
-}
+/** Re-exported under its historical name for existing importers. */
+export const resolveUriBytes = resolveResource;
 
 export function buildAnimations(asset, defs, nodes, warnings) {
     return defs.map((def, animIndex) => {
