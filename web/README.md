@@ -74,6 +74,34 @@ The preview is intentionally a diagnostic renderer, not a replacement for a
 full PBR glTF runtime: unsupported material and texture extensions are reported
 as warnings instead of changing exported assets.
 
+### Source-neutral scene conversion
+
+Loaded glTF/GLB and semantic FBX inputs are normalized into a serializable
+`SceneDocument` for cross-format export and diagnostics. The document carries
+resources and MIME types, hierarchy/TRS, mesh primitives and material slots,
+PBR-compatible materials/textures, skins/inverse bind matrices, morph targets,
+and seconds-based TRS/weight clips. Extra UV sets, vertex colors, tangents, and
+two four-influence sets (up to eight influences per vertex) survive the
+SceneDocument → GLB path and the typed FBX writer where the target format can
+represent them. The viewer keeps its hardware limits local: it renders the
+first four influences and reports that limitation while export data remains
+intact.
+
+FBX and glTF parsing/adaptation remain separate at their format boundaries,
+but converge on this shared document for the viewer's scene summary and GLB
+export. Direct glTF/GLB document-preserving import remains the lossless
+same-format path; FBX export uses the typed semantic writer and optional FBX
+transform-stack provenance. The UI exposes a collapsible hierarchy tree after
+load, clip selection, and capability/warning reports beside import/export
+controls. Verified controls are `mixamo.fbx`, `Samba Dancing.fbx`, and the
+Fox glTF fixture, including FBX → GLB → reload and typed-FBX round trips.
+
+Current limitations are explicit: FBX vertex colors/tangents are retained in
+SceneDocument/glTF but are warned as unsupported by the current typed FBX
+writer; arbitrary FBX camera/light/non-TRS semantics are outside the portable
+subset; and non-default `RotationOrder`/`InheritType` transform-stack behavior
+remains unvalidated beyond the verified fixtures.
+
 ## Build and test
 
 `build.ps1` defaults to the interactive converter profile: the format modules

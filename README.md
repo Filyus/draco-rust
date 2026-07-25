@@ -9,3 +9,7 @@ Rust implementation of Draco geometry encoding and decoding.
 
 Full glTF applications should depend on `draco-gltf`; `draco-io` intentionally
 does not expose a glTF scene API.
+
+The browser converter's source-neutral SceneDocument pipeline, FBX/glTF
+boundary rules, verified Mixamo/Samba/Fox controls, and current conversion
+limitations are documented in [`web/README.md`](web/README.md).

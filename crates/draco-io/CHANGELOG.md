@@ -11,6 +11,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- FBX scene round-tripping now retains skin clusters/bind poses, morph targets,
+  authored node-TRS animation, and all decoded UV layers through the typed
+  scene writer. Vertex colors, tangents, and non-default transform inheritance
+  remain explicit unsupported/untested cases rather than being silently
+  discarded.
+
 - FBX Phong/Lambert materials with diffuse/specular/emissive/ambient colors,
   scalar factors (`DiffuseFactor`, `SpecularFactor`, `Shininess`,
   `EmissiveFactor`, `ReflectionFactor`, `TransparencyFactor`, `Opacity`,

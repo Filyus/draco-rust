@@ -35,7 +35,7 @@ draco-io = { version = "0.3", default-features = false, features = ["obj-reader"
 | --- | :---: | :---: | --- |
 | OBJ | Yes | Yes | Meshes, normals, texture coordinates, named groups, and point clouds. |
 | PLY | Yes | Yes | ASCII and binary geometry, normals, colors, and point clouds. |
-| FBX | Yes | Yes | Binary FBX 7.x. See the FBX matrix below. |
+| FBX | Yes | Yes | Binary FBX 7.x scene data. See the FBX matrix below. |
 | glTF / GLB | Containers and geometry contracts | Containers | GLB inspection, JSON/bin extraction, resource resolution, accessors, and optional `KHR_draco_mesh_compression` geometry decode. Full-document operations belong to `draco-gltf`. |
 
 All mesh formats use the `draco-core` geometry model. `Position` is required;
@@ -47,13 +47,15 @@ Writers do not claim to preserve data that their target cannot represent.
 | Data | Read | Write |
 | --- | :---: | :---: |
 | Mesh geometry | Yes | Yes |
-| Normals and UVs | Yes | Yes |
+| Normals and UV layers | Yes | Yes |
+| Vertex colors and tangents | No | No |
 | Mesh and model names | Yes | Yes |
 | Node hierarchy | Yes | Yes |
 | Node transforms | Yes | Yes |
 | Materials and textures | Yes | Yes |
 | Node-TRS animation | Yes | Yes |
-| Skins and blend shapes | No | No |
+| Skins, bind poses, and influences | Yes | Yes |
+| Blend shapes / morph targets | Yes | Yes |
 
 FBX materials cover the canonical Phong/Lambert property set (`DiffuseColor`,
 `SpecularFactor`, `Shininess`, `EmissiveColor`/`EmissiveFactor`,
@@ -61,10 +63,19 @@ FBX materials cover the canonical Phong/Lambert property set (`DiffuseColor`,
 normal, and emissive textures (embedded `Content` or external filename), and
 per-polygon material indices. Animation flattens the
 `AnimationStack → AnimationLayer → AnimationCurveNode → AnimationCurve` graph
-into per-node TRS channels in seconds. Skin deformers, blend shapes, cameras,
-and non-TRS animation are skipped safely and recorded in `FbxScene::warnings`.
-Scene export preserves local affine translation, rotation, and scale. FBX pivot
-settings and inheritance rules are not represented by `FbxTransform`.
+into per-node TRS channels in seconds. Cameras and non-TRS animation are
+skipped safely and recorded in `FbxScene::warnings`. Scene export preserves
+local affine translation, rotation, scale, skins, bind poses, morph targets,
+and authored animation channels. FBX pivot settings and inheritance rules are
+not represented by `FbxTransform`.
+
+The web converter adds a source-neutral `SceneDocument` adapter above this
+crate. That adapter preserves extra UV sets and up to eight skin influences in
+its GLB and typed-FBX paths; its WebGL preview reports when it uses only the
+first four influences. Colors and tangents remain lossless in
+SceneDocument/glTF but are reported as unsupported when lowering to the
+current typed FBX writer. Non-default `RotationOrder`/`InheritType` behavior
+remains unvalidated beyond the Mixamo, Samba Dancing, and Fox controls.
 
 ## Quick start
 
