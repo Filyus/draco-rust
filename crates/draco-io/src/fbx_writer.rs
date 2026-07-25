@@ -3750,6 +3750,41 @@ mod tests {
         assert_eq!(read_back.smoothing_layers, vec![smoothing]);
     }
 
+    /// An FBX `Texture` need not be named, and a rewrite must not give it one.
+    ///
+    /// The writer substituted the class name, so a document with no texture
+    /// names acquired them by passing through -- the same fabrication as
+    /// naming an unnamed `Geometry` after its Model. Only an ASCII corpus file
+    /// reached this, so it is pinned here rather than left to the opt-in
+    /// corpus run, which CI does not have the data for.
+    #[test]
+    #[cfg(feature = "fbx-reader")]
+    fn an_unnamed_texture_is_not_given_a_name_by_a_rewrite() {
+        let scene = FbxScene {
+            materials: vec![crate::fbx_scene::FbxMaterial {
+                name: Some("M".to_string()),
+                textures: vec![crate::fbx_scene::FbxTextureBinding {
+                    slot: crate::fbx_scene::FbxTextureSlot::Diffuse,
+                    texture_index: 0,
+                }],
+                ..Default::default()
+            }],
+            textures: vec![crate::fbx_scene::FbxTexture {
+                name: None,
+                content: None,
+                filename: Some("t.png".to_string()),
+            }],
+            ..FbxScene::default()
+        };
+
+        let output = crate::FbxScene::from_bytes(&scene.to_bytes().unwrap()).unwrap();
+        assert_eq!(output.textures.len(), 1);
+        assert_eq!(
+            output.textures[0].name, None,
+            "an unnamed texture must stay unnamed"
+        );
+    }
+
     /// A colours-only geometry must still emit a `Layer` node listing
     /// `LayerElementColor`.
     ///

@@ -695,3 +695,126 @@ mod tests {
         assert!(error.to_string().contains("nesting"), "{error}");
     }
 }
+
+/// Regressions for defects the ASCII container exposed in code shared with the
+/// binary reader.
+///
+/// These live here because ASCII is the only container that reaches them: the
+/// binary form tags every value's width, so a consumer that matched one width
+/// looked correct. They are written as inline documents rather than corpus
+/// files so they run in CI, where `DRACO_FBX_CORPUS` is not set.
+#[cfg(all(test, feature = "fbx-reader"))]
+mod shared_path_regressions {
+    use crate::FbxScene;
+
+    fn scene(text: &str) -> FbxScene {
+        FbxScene::from_bytes(text.as_bytes()).expect("document should decode")
+    }
+
+    /// Object ids are `i64` in the binary container but a bare number in ASCII,
+    /// so an id small enough for `i32` arrives as one. Matching only `I64`
+    /// skipped every object and returned an empty scene with nothing to
+    /// explain it.
+    #[test]
+    fn objects_with_i32_sized_ids_are_still_indexed() {
+        let decoded = scene(
+            "FBXHeaderExtension:  {\n\tFBXVersion: 7500\n}\n\
+             Objects:  {\n\
+             \tGeometry: 100, \"Geometry::Tri\", \"Mesh\" {\n\
+             \t\tVertices: *9 {\n\t\t\ta: 0,0,0,1,0,0,0,1,0\n\t\t}\n\
+             \t\tPolygonVertexIndex: *3 {\n\t\t\ta: 0,1,-3\n\t\t}\n\t}\n\
+             \tModel: 200, \"Model::Cube\", \"Mesh\" {\n\t}\n}\n\
+             Connections:  {\n\tC: \"OO\",100,200\n}\n",
+        );
+        assert_eq!(decoded.root_nodes.len(), 1);
+        assert_eq!(decoded.root_nodes[0].name.as_deref(), Some("Cube"));
+        assert_eq!(decoded.root_nodes[0].mesh_instances.len(), 1);
+        assert_eq!(
+            decoded.root_nodes[0].mesh_instances[0].control_points.len(),
+            3
+        );
+    }
+
+    /// `bool::then_some` evaluates its argument eagerly, so reading a
+    /// three-component property indexed the values before checking there were
+    /// three of them. A `Lcl Scaling` with fewer panicked.
+    #[test]
+    fn a_short_vector_property_does_not_panic() {
+        let decoded = scene(
+            "FBXHeaderExtension:  {\n\tFBXVersion: 7500\n}\n\
+             Objects:  {\n\
+             \tModel: 200, \"Model::Cube\", \"Mesh\" {\n\
+             \t\tProperties70:  {\n\
+             \t\t\tP: \"InheritType\", \"enum\", \"\", \"\",3\n\
+             \t\t\tP: \"Lcl Scaling\", \"Lcl Scaling\", \"\", \"A\",2\n\t\t}\n\t}\n}\n\
+             Connections:  {\n}\n",
+        );
+        assert_eq!(decoded.root_nodes.len(), 1);
+    }
+
+    /// A document may connect a Model to one of its own ancestors. Following
+    /// that cycle recursed until the stack was exhausted; the hierarchy now
+    /// stops at the repeat.
+    ///
+    /// The cycle has to be reachable from a root to recurse at all: two models
+    /// that are only each other's parent are both excluded from the top level,
+    /// so nothing ever descends into them. `Root` is what makes `A -> B -> A`
+    /// reachable, and without it this test passes even with the guard removed.
+    #[test]
+    fn a_parent_cycle_terminates_instead_of_exhausting_the_stack() {
+        let decoded = scene(
+            "FBXHeaderExtension:  {\n\tFBXVersion: 7500\n}\n\
+             Objects:  {\n\
+             \tModel: 199, \"Model::Root\", \"Null\" {\n\t}\n\
+             \tModel: 200, \"Model::A\", \"Null\" {\n\t}\n\
+             \tModel: 201, \"Model::B\", \"Null\" {\n\t}\n}\n\
+             Connections:  {\n\
+             \tC: \"OO\",200,199\n\
+             \tC: \"OO\",201,200\n\
+             \tC: \"OO\",200,201\n}\n",
+        );
+        fn depth(node: &crate::FbxSceneNode) -> usize {
+            1 + node.children.iter().map(depth).max().unwrap_or(0)
+        }
+        let deepest = decoded.root_nodes.iter().map(depth).max().unwrap_or(0);
+        assert!(deepest <= 4, "cycle produced a chain {deepest} deep");
+    }
+
+    /// A whole-valued double is written without a decimal point, so a
+    /// `DeformPercent: 100` arrives as an integer. Matching only the floating
+    /// point widths read it as a missing weight, and a blend shape came back
+    /// with a default of zero instead of the authored one.
+    ///
+    /// This has to go through a real blend shape rather than a plain transform
+    /// property: those are read by a helper that already accepted integers, so
+    /// a transform test passes either way and pins nothing.
+    #[test]
+    fn a_whole_valued_double_property_is_not_read_as_missing() {
+        let decoded = scene(
+            "FBXHeaderExtension:  {\n\tFBXVersion: 7500\n}\n\
+             Objects:  {\n\
+             \tGeometry: 100, \"Geometry::Tri\", \"Mesh\" {\n\
+             \t\tVertices: *9 {\n\t\t\ta: 0,0,0,1,0,0,0,1,0\n\t\t}\n\
+             \t\tPolygonVertexIndex: *3 {\n\t\t\ta: 0,1,-3\n\t\t}\n\t}\n\
+             \tModel: 200, \"Model::Cube\", \"Mesh\" {\n\t}\n\
+             \tDeformer: 300, \"Deformer::Blend\", \"BlendShape\" {\n\t}\n\
+             \tDeformer: 301, \"SubDeformer::Chan\", \"BlendShapeChannel\" {\n\
+             \t\tDeformPercent: 100\n\
+             \t\tFullWeights: *1 {\n\t\t\ta: 100\n\t\t}\n\t}\n\
+             \tGeometry: 400, \"Geometry::Shape\", \"Shape\" {\n\
+             \t\tIndexes: *1 {\n\t\t\ta: 0\n\t\t}\n\
+             \t\tVertices: *3 {\n\t\t\ta: 0,0,1\n\t\t}\n\t}\n}\n\
+             Connections:  {\n\
+             \tC: \"OO\",100,200\n\
+             \tC: \"OO\",300,100\n\
+             \tC: \"OO\",301,300\n\
+             \tC: \"OO\",400,301\n}\n",
+        );
+        let targets = &decoded.root_nodes[0].mesh_instances[0].morph_targets;
+        assert_eq!(targets.len(), 1, "the blend shape target should be read");
+        assert_eq!(
+            targets[0].default_weight, 100.0,
+            "an integer-written DeformPercent must not read as a missing weight"
+        );
+    }
+}
