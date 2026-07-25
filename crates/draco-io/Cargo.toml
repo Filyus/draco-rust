@@ -113,3 +113,7 @@ required-features = ["fbx-reader", "compression"]
 [[example]]
 name = "fbx_sweep"
 required-features = ["fbx-reader", "compression"]
+
+[[example]]
+name = "fbx_make_seeds"
+required-features = ["fbx-reader", "fbx-writer", "compression"]

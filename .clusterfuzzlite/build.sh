@@ -27,7 +27,7 @@ esac
 # those archives from the same repository fixtures and committed regression
 # seeds used by the lightweight fuzz workflow, so a fresh CFL cache never
 # starts from an empty corpus.
-fuzz_targets=(decode_drc compress_gltf draco_gltf_import)
+fuzz_targets=(decode_drc compress_gltf draco_gltf_import fbx_read_scene fbx_roundtrip)
 for target in "${fuzz_targets[@]}"; do
   cp fuzz/target/*/release/"$target" "$OUT/"
 

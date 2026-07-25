@@ -15,11 +15,24 @@ status, threat model, and known residual risk live in
 | `decode_drc` | [`fuzz/fuzz_targets/decode_drc.rs`](fuzz/fuzz_targets/decode_drc.rs) | Feeds each input through both `MeshDecoder` and `PointCloudDecoder`, including the legacy decode features used for old `.drc` streams. |
 | `compress_gltf` | [`fuzz/fuzz_targets/compress_gltf.rs`](fuzz/fuzz_targets/compress_gltf.rs) | Feeds arbitrary glTF/GLB bytes into the document-preserving glTF compressor with external file resolution disabled. |
 | `draco_gltf_import` | [`fuzz/fuzz_targets/draco_gltf_import.rs`](fuzz/fuzz_targets/draco_gltf_import.rs) | Imports a full scene through `draco-gltf`, decodes every Draco primitive, then exercises atomic in-place decompression. |
+| `fbx_read_scene` | [`fuzz/fuzz_targets/fbx_read_scene.rs`](fuzz/fuzz_targets/fbx_read_scene.rs) | Reads arbitrary bytes as an FBX scene under tight decode limits, in both lenient and strict modes, and checks that reading the same input twice agrees. |
+| `fbx_roundtrip` | [`fuzz/fuzz_targets/fbx_roundtrip.rs`](fuzz/fuzz_targets/fbx_roundtrip.rs) | Writes back whatever the FBX reader accepted and requires the result to satisfy the reader's strict mode, so the writer is fuzzed with scenes nobody would hand-build. |
 
 `decode_drc` builds `draco-core` with `default-features = false` and enables the
 legacy decode features needed for old streams. The two glTF targets use
 `draco-gltf`'s lossless document API, so malformed document parsing, decode,
 compression, and atomic decompression all receive coverage.
+
+The FBX targets cover `draco-io`, whose reader is the workspace's only
+hand-rolled parser of untrusted binary: node records carry file-controlled
+lengths that feed allocations directly, and array payloads pass through zlib
+inflation. They run with [`FbxDecodeLimits::fuzzing()`], which is far tighter
+than the shipped defaults. That is deliberate: with the shipped limits a header
+may legitimately ask for hundreds of megabytes, `-rss_limit_mb` would fire on
+it, and real findings would drown in that noise. Under the fuzzing limits any
+allocation failure is a genuine bug.
+
+[`FbxDecodeLimits::fuzzing()`]: crates/draco-io/src/fbx_options.rs
 
 ### `-O`: fuzz with production (release) semantics
 
@@ -54,15 +67,17 @@ recommended.
 
 On Windows MSVC the AddressSanitizer runtime DLL is frequently not on `PATH`,
 which makes the target fail at startup with `STATUS_DLL_NOT_FOUND`
-(`0xc0000135`). Because `draco-core` contains no `unsafe`, ASan adds little here
-— out-of-bounds access surfaces as a normal Rust panic that libFuzzer already
-catches as a crash. Run with the sanitizer disabled on Windows:
+(`0xc0000135`). Put the runtime that ships with Visual Studio on `PATH` for the
+session — adjust the MSVC version to match your install:
 
 ```powershell
-cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
+$env:PATH = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64;$env:PATH"
+cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
 ```
 
-(If you have the ASan runtime on `PATH`, drop `--sanitizer none` to keep it on.)
+`--sanitizer none` is **not** a workaround on MSVC: libFuzzer's coverage
+counters (`__start___sancov_cntrs` and friends) come from the sanitizer
+runtime, so dropping it fails at link time with unresolved externals.
 
 ## Seeding the corpus
 
@@ -75,12 +90,25 @@ fixtures plus target-specific self-contained seeds under `fuzz/seeds/`:
 pwsh fuzz/seed_corpus.ps1
 pwsh fuzz/seed_corpus.ps1 -Target compress_gltf
 pwsh fuzz/seed_corpus.ps1 -Target draco_gltf_import
+pwsh fuzz/seed_corpus.ps1 -Target fbx_read_scene
+pwsh fuzz/seed_corpus.ps1 -Target fbx_roundtrip
 ```
 
 ```bash
 ./fuzz/seed_corpus.sh
 ./fuzz/seed_corpus.sh compress_gltf
 ./fuzz/seed_corpus.sh draco_gltf_import
+./fuzz/seed_corpus.sh fbx_read_scene
+./fuzz/seed_corpus.sh fbx_roundtrip
+```
+
+No `.fbx` fixtures are committed under `testdata/`, so the FBX targets are
+seeded entirely from `fuzz/seeds/<target>/`. Those files are generated rather
+than hand-edited — each malformed one encodes a single hazard so a crash
+minimises to an obvious cause:
+
+```bash
+cargo run --manifest-path crates/Cargo.toml --example fbx_make_seeds -- fuzz/seeds
 ```
 
 Seeding from the real fixture inventory (point clouds, sequential/EdgeBreaker
@@ -98,16 +126,22 @@ fuzz project with `--fuzz-dir fuzz`.
 
 ```powershell
 # Bounded decode smoke run (CI / pre-release gate)
-cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
+cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
 
 # Bounded glTF compressor smoke run
-cargo +nightly fuzz run -O compress_gltf --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
+cargo +nightly fuzz run -O compress_gltf --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
 
 # Full-scene import, Draco decode, and decompression smoke run
-cargo +nightly fuzz run -O draco_gltf_import --fuzz-dir fuzz --sanitizer none -- -max_total_time=120 -rss_limit_mb=4096
+cargo +nightly fuzz run -O draco_gltf_import --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
+
+# FBX container read, lenient and strict
+cargo +nightly fuzz run -O fbx_read_scene --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
+
+# FBX read/write/read round-trip
+cargo +nightly fuzz run -O fbx_roundtrip --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
 
 # Longer decode soak run
-cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz --sanitizer none -- -max_total_time=3600 -rss_limit_mb=4096
+cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz -- -max_total_time=3600 -rss_limit_mb=4096
 ```
 
 Useful libFuzzer flags (everything after `--` is passed straight to libFuzzer):
@@ -130,6 +164,8 @@ a refreshed seed set or before a long soak:
 cargo +nightly fuzz cmin -O decode_drc --fuzz-dir fuzz
 cargo +nightly fuzz cmin -O compress_gltf --fuzz-dir fuzz
 cargo +nightly fuzz cmin -O draco_gltf_import --fuzz-dir fuzz
+cargo +nightly fuzz cmin -O fbx_read_scene --fuzz-dir fuzz
+cargo +nightly fuzz cmin -O fbx_roundtrip --fuzz-dir fuzz
 ```
 
 ## Reproducing and triaging a crash
@@ -138,7 +174,7 @@ A failing input is written to `fuzz/artifacts/<target>/`. Re-run it
 deterministically and minimize it by substituting the affected target below:
 
 ```powershell
-$Target = "draco_gltf_import" # decode_drc, compress_gltf, or draco_gltf_import
+$Target = "draco_gltf_import" # or decode_drc, compress_gltf, fbx_read_scene, fbx_roundtrip
 $Crash = "fuzz/artifacts/$Target/crash-<hash>"
 
 # Replay a specific crashing input (use -O to match the CI gate's build)
@@ -153,8 +189,11 @@ When a crash is confirmed, keep the minimized input under
 the affected surface. Decoder regressions belong in
 [`crates/draco-core/tests/drc_edge_cases_test.rs`](crates/draco-core/tests/drc_edge_cases_test.rs)
 (see the `*_do_not_panic` tests); glTF compressor/import regressions belong in
-the corresponding `draco-io` or `draco-gltf` test suite. This keeps every case
-covered on stable CI without requiring the fuzzing toolchain.
+the corresponding `draco-io` or `draco-gltf` test suite. FBX regressions belong
+in the `fbx_reader` / `fbx_writer` unit tests — see
+`a_short_footer_is_refused_instead_of_panicking`, which came straight from
+`fbx_read_scene`. This keeps every case covered on stable CI without requiring
+the fuzzing toolchain.
 
 ## CI
 
@@ -169,8 +208,8 @@ changes, plus deeper runs on demand. Trigger a manual run with
 **Level 1 — lightweight in-repo gate ([`.github/workflows/fuzz.yml`](.github/workflows/fuzz.yml)):**
 
 - Bounded smoke runs (`-max_total_time=120`) for `decode_drc`,
-  `compress_gltf`, and `draco_gltf_import` on every pull request and push to
-  `main`. A manual dispatch runs longer soaks (`-max_total_time=1800`).
+  `compress_gltf`, `draco_gltf_import`, `fbx_read_scene` and `fbx_roundtrip`
+  on every pull request and push to `main`. A manual dispatch runs longer soaks (`-max_total_time=1800`).
 - The corpus is persisted across runs via the GitHub Actions cache and
   re-seeded from the committed fixtures each run, so coverage never starts from
   zero even if the cache entry is evicted.

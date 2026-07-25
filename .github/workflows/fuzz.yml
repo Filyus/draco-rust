@@ -63,6 +63,8 @@ jobs:
           ./fuzz/seed_corpus.sh decode_drc
           ./fuzz/seed_corpus.sh compress_gltf
           ./fuzz/seed_corpus.sh draco_gltf_import
+          ./fuzz/seed_corpus.sh fbx_read_scene
+          ./fuzz/seed_corpus.sh fbx_roundtrip
 
       # The decode target includes legacy decode features so old bitstream paths
       # get coverage-guided fuzzing, not just deterministic fixture tests.
@@ -97,10 +99,31 @@ jobs:
             -max_total_time=${{ steps.dur.outputs.seconds }} \
             -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
 
+      # The FBX reader is the workspace's only hand-rolled untrusted binary
+      # parser: file-controlled lengths feed allocations and array payloads go
+      # through zlib. Its target uses FbxDecodeLimits::fuzzing(), well under
+      # -rss_limit_mb, so any allocation failure reported here is a real bug
+      # rather than a header legitimately asking for a lot of memory.
+      - name: Fuzz fbx_read_scene
+        run: |
+          cargo +nightly fuzz run -O fbx_read_scene --fuzz-dir fuzz \
+            --target x86_64-unknown-linux-gnu -- \
+            -max_total_time=${{ steps.dur.outputs.seconds }} \
+            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
+
+      # Feeds reader output back through the writer, so the writer gets
+      # coverage from scenes nobody would think to hand-build.
+      - name: Fuzz fbx_roundtrip
+        run: |
+          cargo +nightly fuzz run -O fbx_roundtrip --fuzz-dir fuzz \
+            --target x86_64-unknown-linux-gnu -- \
+            -max_total_time=${{ steps.dur.outputs.seconds }} \
+            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
+
       - name: Minimize corpora
         if: always()
         run: |
-          for target in decode_drc compress_gltf draco_gltf_import; do
+          for target in decode_drc compress_gltf draco_gltf_import fbx_read_scene fbx_roundtrip; do
             cargo +nightly fuzz cmin -O "$target" --fuzz-dir fuzz \
               --target x86_64-unknown-linux-gnu
           done

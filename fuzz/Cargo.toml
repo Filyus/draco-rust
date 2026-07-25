@@ -10,6 +10,15 @@ cargo-fuzz = true
 [dependencies]
 draco-core = { path = "../crates/draco-core", default-features = false, features = ["decoder", "point_cloud_decode", "edgebreaker_valence_decode", "legacy_bitstream_decode"] }
 draco-gltf = { path = "../crates/draco-gltf" }
+# The FBX reader parses untrusted binary with length-prefixed arrays and a
+# decompression path, so it needs coverage-guided fuzzing as much as the Draco
+# decoder does. `compression` is on because every real exporter emits zlib
+# arrays; without it the inflate path would never be reached.
+draco-io = { path = "../crates/draco-io", default-features = false, features = [
+    "fbx-reader",
+    "fbx-writer",
+    "compression",
+] }
 libfuzzer-sys = "0.4"
 
 [[bin]]
@@ -29,6 +38,20 @@ bench = false
 [[bin]]
 name = "draco_gltf_import"
 path = "fuzz_targets/draco_gltf_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fbx_read_scene"
+path = "fuzz_targets/fbx_read_scene.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fbx_roundtrip"
+path = "fuzz_targets/fbx_roundtrip.rs"
 test = false
 doc = false
 bench = false

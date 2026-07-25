@@ -2073,10 +2073,13 @@ impl<R: Read + Seek> FbxReader<R> {
                 // out-of-memory abort; the exact-size check then rejects a
                 // stream that does not describe this array.
                 let data = decompress_to_vec_zlib_with_limit(&compressed, uncompressed_size)
-                    .map_err(|e| {
+                    .map_err(|error| {
+                        // Only the status: `DecompressError`'s `Debug` carries
+                        // the whole partial output, which would put megabytes
+                        // of payload into the message.
                         io::Error::new(
                             io::ErrorKind::InvalidData,
-                            format!("Decompression error: {:?}", e),
+                            format!("FBX: array decompression failed ({:?})", error.status),
                         )
                     })?;
                 if data.len() != uncompressed_size {
@@ -2198,9 +2201,15 @@ impl<R: Read + Seek> FbxReader<R> {
         }
 
         // Layout after the id: 4 zero bytes, alignment padding, the version
-        // repeated, 120 zero bytes, then the closing magic.
-        let version_end = footer.len() - FBX_FOOTER_MAGIC.len() - 120;
-        let Some(version_start) = version_end.checked_sub(4) else {
+        // repeated, 120 zero bytes, then the closing magic. A footer can begin
+        // with the id and end with the magic and still be far too short to
+        // hold the middle, so every step back from the end must be checked.
+        let Some((version_start, version_end)) = footer
+            .len()
+            .checked_sub(FBX_FOOTER_MAGIC.len())
+            .and_then(|end| end.checked_sub(120))
+            .and_then(|end| Some((end.checked_sub(4)?, end)))
+        else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -3283,6 +3292,29 @@ mod tests {
         let mut reader = FbxReader::new(Cursor::new(data)).unwrap();
         assert!(reader.read_nodes().is_ok());
         assert!(reader.read_nodes().is_ok());
+    }
+
+    #[test]
+    fn a_short_footer_is_refused_instead_of_panicking() {
+        // Found by `cargo fuzz run fbx_read_scene` within minutes of the
+        // target existing. A footer can begin with the id and end with the
+        // magic while being far too short to hold the version and padding
+        // between them; stepping back from the end then wrapped around and
+        // indexed out of bounds.
+        let mut data = Vec::new();
+        data.extend_from_slice(FBX_MAGIC);
+        data.push(FBX_MAGIC_TAIL);
+        data.push(0);
+        data.extend_from_slice(&7400u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 13]); // root terminator
+        data.extend_from_slice(&FBX_FOOTER_ID);
+        data.extend_from_slice(&FBX_FOOTER_MAGIC);
+
+        let mut reader =
+            FbxReader::new_with_options(Cursor::new(data), FbxReadOptions::strict()).unwrap();
+        let error = reader.read_nodes().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("too short"), "{error}");
     }
 
     #[test]
