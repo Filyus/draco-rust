@@ -721,6 +721,7 @@ function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
         workspace.classList.add('scene-loaded');
         sceneCapabilitySummary.textContent = describeSceneCapabilities(validation.capabilities);
         setWarningList(sceneWarningList, [...sceneDocument.warnings, ...validation.warnings, ...extraWarnings]);
+        sceneSummary.open = true;
         sceneSummary.hidden = false;
     } catch (error) {
         sceneSummary.hidden = true;
@@ -784,11 +785,15 @@ function renderSceneTree(sceneDocument) {
         return;
     }
     const animatedNodes = new Set(sceneDocument.animations.flatMap((clip) => clip.channels.map((channel) => channel.node)));
-    const appendNode = (nodeIndex, depth, visited) => {
+    const appendNode = (nodeIndex, depth, visited, target) => {
         if (visited.has(nodeIndex)) return;
         visited.add(nodeIndex);
         const node = sceneDocument.nodes[nodeIndex] || {};
-        const row = document.createElement('div');
+        const children = (node.children || []).filter((child) => Number.isInteger(child) && child >= 0 && child < sceneDocument.nodes.length);
+        const wrapper = children.length > 0 ? document.createElement('details') : document.createElement('div');
+        wrapper.className = children.length > 0 ? 'scene-tree-node' : 'scene-tree-leaf';
+        if (children.length > 0) wrapper.open = true;
+        const row = document.createElement(children.length > 0 ? 'summary' : 'div');
         row.className = 'scene-tree-row';
         row.dataset.nodeIndex = String(nodeIndex);
         row.style.paddingLeft = `${8 + depth * 12}px`;
@@ -808,12 +813,18 @@ function renderSceneTree(sceneDocument) {
         if (node.skin !== undefined) addBadge('skin', 'skin');
         if (animatedNodes.has(nodeIndex)) addBadge('animated', 'animation');
         row.appendChild(badges);
-        sceneTree.appendChild(row);
-        for (const child of node.children || []) appendNode(child, depth + 1, visited);
+        wrapper.appendChild(row);
+        if (children.length > 0) {
+            const childList = document.createElement('div');
+            childList.className = 'scene-tree-children';
+            wrapper.appendChild(childList);
+            for (const child of children) appendNode(child, depth + 1, visited, childList);
+        }
+        target.appendChild(wrapper);
     };
     const visited = new Set();
-    for (const root of sceneDocument.rootNodes) appendNode(root, 0, visited);
-    sceneDocument.nodes.forEach((_, index) => appendNode(index, 0, visited));
+    for (const root of sceneDocument.rootNodes) appendNode(root, 0, visited, sceneTree);
+    sceneDocument.nodes.forEach((_, index) => appendNode(index, 0, visited, sceneTree));
 }
 
 function renderSceneCompanions(sceneDocument) {

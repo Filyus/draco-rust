@@ -145,6 +145,8 @@ input:focus-visible,
 
 .sidebar {
     padding-right: 1px;
+    min-height: 0;
+    max-height: 100%;
     overflow-y: auto;
     scrollbar-gutter: stable;
     display: flex;
@@ -669,14 +671,19 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 .warnings-box { margin-top: 6px; padding: 9px 11px; border: 0; border-radius: 8px; color: #f2c76c; background: rgba(47, 38, 21, 0.94); backdrop-filter: blur(9px); }
 .warnings-box ul { padding-left: 17px; }
 .scene-summary-compact { margin-top: 8px; padding: 8px 10px; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; border: 1px solid rgba(123, 153, 194, 0.2); border-radius: 8px; color: #c7d8ed; background: rgba(7, 17, 30, 0.72); font-size: 0.68rem; }
+.scene-summary-compact[hidden], .scene-summary[hidden] { display: none !important; }
 .scene-summary-compact-label { color: #e3edff; font-weight: 700; }
 .scene-summary-compact-text { color: #9db1cd; text-align: right; }
-.scene-details-panel { min-width: 0; gap: 0; overflow: hidden; }
+.scene-details-panel { min-width: 0; min-height: 0; flex: 0 0 auto; gap: 0; overflow: hidden; }
 .scene-summary { padding: 9px 11px; border: 1px solid rgba(123, 153, 194, 0.16); border-radius: 8px; color: #c7d8ed; background: rgba(7, 17, 30, 0.72); }
 .scene-summary[open] { padding-bottom: 10px; }
 .scene-summary-title { cursor: pointer; color: #e3edff; font-size: 0.72rem; font-weight: 650; }
 .scene-summary-title::marker { color: #7ea9e8; }
-.scene-tree { max-height: 240px; margin: 9px 0 8px; overflow-y: auto; border: 1px solid rgba(123, 153, 194, 0.12); border-radius: 6px; background: rgba(3, 10, 19, 0.46); }
+.scene-tree { max-height: clamp(180px, 42dvh, 440px); margin: 9px 0 8px; overflow-y: auto; border: 1px solid rgba(123, 153, 194, 0.12); border-radius: 6px; background: rgba(3, 10, 19, 0.46); }
+.scene-tree-node > summary { list-style: disclosure-closed; }
+.scene-tree-node[open] > summary { list-style: disclosure-open; }
+.scene-tree-leaf { list-style: none; }
+.scene-tree-children { border-left: 1px solid rgba(123, 153, 194, 0.12); }
 .scene-tree-row { min-height: 25px; padding-top: 4px; padding-right: 7px; padding-bottom: 4px; display: flex; align-items: center; justify-content: space-between; gap: 6px; border-bottom: 1px solid rgba(123, 153, 194, 0.08); color: #b9cbe2; font-size: 0.67rem; }
 .scene-tree-row:last-child { border-bottom: 0; }
 .scene-tree-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

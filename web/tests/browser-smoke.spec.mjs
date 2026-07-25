@@ -180,6 +180,9 @@ test('FBX SceneDocument exports to GLB and reloads without flattening', async ({
     expect(await page.locator('#scene-summary-compact').evaluate((element) => Boolean(element.closest('#input-section')))).toBe(true);
     await expect(page.locator('#scene-summary')).toBeVisible();
     expect(await page.locator('#scene-summary').evaluate((element) => Boolean(element.closest('#scene-details-section')))).toBe(true);
+    expect(await page.locator('#scene-summary').evaluate((element) => element.open)).toBe(true);
+    await expect(page.locator('#scene-tree .scene-tree-row')).not.toHaveCount(0);
+    await expect(page.locator('#scene-tree .scene-tree-node')).not.toHaveCount(0);
     await expect(page.locator('#scene-node-stat')).not.toHaveText('0');
     await expect(page.locator('#scene-capability-summary')).toContainText('shared scene model');
     await expect(page.locator('#viewer-animation')).toBeVisible();
@@ -257,6 +260,7 @@ test('shared scene details expose all animation clips', async ({ page }) => {
 test('scene details stays hidden before load and exposes a hierarchy tree after load', async ({ page }) => {
   await page.goto('/index.html');
   await expect(page.locator('#scene-details-section')).toBeHidden();
+  await expect(page.locator('#scene-summary-compact')).toBeHidden();
   await waitForConverterReady(page);
   const fox = path.join(repoRoot, 'testdata', 'Fox', 'glTF');
   await page.locator('#file-input').setInputFiles([
@@ -265,10 +269,17 @@ test('scene details stays hidden before load and exposes a hierarchy tree after 
   ]);
   await expect(page.locator('#console')).toContainText('Preview ready');
   await expect(page.locator('#scene-details-section')).toBeVisible();
-  await page.locator('#scene-summary').locator('summary').click();
   await expect(page.locator('#scene-tree')).toBeVisible();
   await expect(page.locator('#scene-tree .scene-tree-row')).not.toHaveCount(0);
+  expect(await page.locator('#scene-summary').evaluate((element) => element.open)).toBe(true);
+  await expect(page.locator('#scene-tree .scene-tree-node[open]')).not.toHaveCount(0);
   await expect(page.locator('#scene-tree .scene-tree-badge-animation')).not.toHaveCount(0);
+  const layout = await page.locator('.sidebar').first().evaluate((element) => ({
+    overflowY: getComputedStyle(element).overflowY,
+    maxHeight: getComputedStyle(element).maxHeight,
+  }));
+  expect(layout.overflowY).toBe('auto');
+  expect(layout.maxHeight).not.toBe('none');
 });
 
 test('glTF CUBICSPLINE scales tangents by keyframe duration', async ({ page }) => {
