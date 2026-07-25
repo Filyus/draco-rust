@@ -106,18 +106,34 @@ const viewerControls = [
 ];
 const sceneSummary = document.getElementById('scene-summary');
 const sceneDetailsSection = document.getElementById('scene-details-section');
+const workspace = document.querySelector('.workspace');
+const sidebar = document.querySelector('.sidebar');
+const exportSidebar = document.getElementById('export-sidebar');
 const sceneSummaryCompact = document.getElementById('scene-summary-compact');
 const sceneSummaryCompactText = document.getElementById('scene-summary-compact-text');
+const sceneTree = document.getElementById('scene-tree');
+const sceneResourceList = document.getElementById('scene-resource-list');
+const sceneMaterialList = document.getElementById('scene-material-list');
+const sceneClipList = document.getElementById('scene-clip-list');
 const sceneSummaryFields = {
-    nodes: document.getElementById('scene-node-count'),
-    meshes: document.getElementById('scene-mesh-count'),
-    materials: document.getElementById('scene-material-count'),
-    skins: document.getElementById('scene-skin-count'),
-    morphs: document.getElementById('scene-morph-count'),
-    clips: document.getElementById('scene-clip-count'),
+    nodes: document.getElementById('scene-node-stat'),
+    meshes: document.getElementById('mesh-count'),
+    materials: document.getElementById('scene-material-stat'),
+    skins: document.getElementById('scene-skin-stat'),
+    morphs: document.getElementById('scene-morph-stat'),
+    clips: document.getElementById('scene-clip-stat'),
 };
 const sceneCapabilitySummary = document.getElementById('scene-capability-summary');
 const sceneWarningList = document.getElementById('scene-warning-list');
+
+// Keep the workflow columns source-neutral: import + hierarchy on the left,
+// export/report on the right. The existing viewport statistics stay in place.
+if (sidebar && sceneDetailsSection && sceneDetailsSection.parentElement !== sidebar) {
+    sidebar.append(sceneDetailsSection);
+}
+if (exportSidebar && exportSection && exportSection.parentElement !== exportSidebar) {
+    exportSidebar.append(exportSection);
+}
 
 function setViewerControlsEnabled(enabled) {
     for (const control of viewerControls) control.disabled = !enabled;
@@ -490,6 +506,8 @@ async function handleFile(file, companionFiles = []) {
             renderSceneDocumentSummary(currentSceneDocument);
             previewSection.style.display = 'block';
             exportSection.style.display = 'flex';
+            exportSidebar.style.display = 'flex';
+            workspace.classList.add('export-loaded');
             renderExportCapabilityReport(currentSceneDocument);
             log(`Successfully parsed ${file.name}`, 'success');
             await loadPreview(extension);
@@ -680,6 +698,7 @@ function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
         sceneSummary.hidden = true;
         sceneSummaryCompact.hidden = true;
         sceneDetailsSection.style.display = 'none';
+        workspace.classList.remove('scene-loaded');
         return;
     }
     try {
@@ -694,9 +713,12 @@ function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
         sceneSummaryFields.skins.textContent = sceneDocument.skins.length.toLocaleString();
         sceneSummaryFields.morphs.textContent = morphs.toLocaleString();
         sceneSummaryFields.clips.textContent = sceneDocument.animations.length.toLocaleString();
-        sceneSummaryCompactText.textContent = `${sceneDocument.nodes.length.toLocaleString()} nodes · ${sceneDocument.meshes.length.toLocaleString()} meshes · ${sceneDocument.animations.length.toLocaleString()} clips`;
+        sceneSummaryCompactText.textContent = 'Scene document ready';
+        renderSceneTree(sceneDocument);
+        renderSceneCompanions(sceneDocument);
         sceneSummaryCompact.hidden = false;
         sceneDetailsSection.style.display = 'flex';
+        workspace.classList.add('scene-loaded');
         sceneCapabilitySummary.textContent = describeSceneCapabilities(validation.capabilities);
         setWarningList(sceneWarningList, [...sceneDocument.warnings, ...validation.warnings, ...extraWarnings]);
         sceneSummary.hidden = false;
@@ -704,6 +726,9 @@ function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
         sceneSummary.hidden = true;
         sceneSummaryCompact.hidden = true;
         sceneDetailsSection.style.display = 'none';
+        exportSidebar.style.display = 'none';
+        workspace.classList.remove('scene-loaded');
+        workspace.classList.remove('export-loaded');
         log(`Scene details unavailable: ${errorMessage(error)}`, 'warning');
     }
 }
@@ -747,6 +772,59 @@ function setWarningList(list, warnings) {
         item.textContent = warning;
         list.appendChild(item);
     }
+}
+
+function renderSceneTree(sceneDocument) {
+    sceneTree.replaceChildren();
+    if (sceneDocument.nodes.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'scene-tree-empty';
+        empty.textContent = 'This loaded document has no scene nodes.';
+        sceneTree.appendChild(empty);
+        return;
+    }
+    const animatedNodes = new Set(sceneDocument.animations.flatMap((clip) => clip.channels.map((channel) => channel.node)));
+    const appendNode = (nodeIndex, depth, visited) => {
+        if (visited.has(nodeIndex)) return;
+        visited.add(nodeIndex);
+        const node = sceneDocument.nodes[nodeIndex] || {};
+        const row = document.createElement('div');
+        row.className = 'scene-tree-row';
+        row.dataset.nodeIndex = String(nodeIndex);
+        row.style.paddingLeft = `${8 + depth * 12}px`;
+        const label = document.createElement('span');
+        label.className = 'scene-tree-label';
+        label.textContent = node.name || `Node ${nodeIndex}`;
+        row.appendChild(label);
+        const badges = document.createElement('span');
+        badges.className = 'scene-tree-badges';
+        const addBadge = (text, kind) => {
+            const badge = document.createElement('span');
+            badge.className = `scene-tree-badge scene-tree-badge-${kind}`;
+            badge.textContent = text;
+            badges.appendChild(badge);
+        };
+        if (node.mesh !== undefined) addBadge('mesh', 'mesh');
+        if (node.skin !== undefined) addBadge('skin', 'skin');
+        if (animatedNodes.has(nodeIndex)) addBadge('animated', 'animation');
+        row.appendChild(badges);
+        sceneTree.appendChild(row);
+        for (const child of node.children || []) appendNode(child, depth + 1, visited);
+    };
+    const visited = new Set();
+    for (const root of sceneDocument.rootNodes) appendNode(root, 0, visited);
+    sceneDocument.nodes.forEach((_, index) => appendNode(index, 0, visited));
+}
+
+function renderSceneCompanions(sceneDocument) {
+    const formatNames = (items, fallback) => {
+        if (!items.length) return fallback;
+        const names = items.map((item, index) => item.name || `${fallback} ${index + 1}`);
+        return names.length > 3 ? `${names.slice(0, 3).join(', ')} +${names.length - 3}` : names.join(', ');
+    };
+    sceneResourceList.textContent = formatNames(sceneDocument.resources, 'none');
+    sceneMaterialList.textContent = formatNames(sceneDocument.materials, 'none');
+    sceneClipList.textContent = formatNames(sceneDocument.animations, 'none');
 }
 
 // Display mesh information
@@ -1478,6 +1556,9 @@ function clearFile() {
     sceneSummary.hidden = true;
     sceneSummaryCompact.hidden = true;
     sceneDetailsSection.style.display = 'none';
+    exportSidebar.style.display = 'none';
+    workspace.classList.remove('export-loaded');
+    workspace.classList.remove('scene-loaded');
     exportCapabilityReport.hidden = true;
 
     fileInput.value = '';

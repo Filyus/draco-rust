@@ -176,11 +176,11 @@ test('FBX SceneDocument exports to GLB and reloads without flattening', async ({
     await page.locator('#file-input').setInputFiles(fixture);
     await expect(page.locator('#console')).toContainText('Preview ready');
     await expect(page.locator('#scene-summary-compact')).toBeVisible();
-    await expect(page.locator('#scene-summary-compact')).toContainText('nodes');
+    await expect(page.locator('#scene-summary-compact')).toContainText('Scene document ready');
     expect(await page.locator('#scene-summary-compact').evaluate((element) => Boolean(element.closest('#input-section')))).toBe(true);
     await expect(page.locator('#scene-summary')).toBeVisible();
-    expect(await page.locator('#scene-summary').evaluate((element) => Boolean(element.closest('.sidebar')))).toBe(true);
-    await expect(page.locator('#scene-node-count')).not.toHaveText('0');
+    expect(await page.locator('#scene-summary').evaluate((element) => Boolean(element.closest('#scene-details-section')))).toBe(true);
+    await expect(page.locator('#scene-node-stat')).not.toHaveText('0');
     await expect(page.locator('#scene-capability-summary')).toContainText('shared scene model');
     await expect(page.locator('#viewer-animation')).toBeVisible();
     await page.locator('[data-choice-for="export-format"] [data-value="glb"]').click();
@@ -216,8 +216,9 @@ test('FBX SceneDocument exports through the typed FBX writer', async ({ page }) 
   await expect(page.locator('#scene-summary-compact')).toBeVisible();
   expect(await page.locator('#scene-summary-compact').evaluate((element) => Boolean(element.closest('#input-section')))).toBe(true);
   await expect(page.locator('#scene-summary')).toBeVisible();
-  expect(await page.locator('#scene-summary').evaluate((element) => Boolean(element.closest('.sidebar')))).toBe(true);
+  expect(await page.locator('#scene-summary').evaluate((element) => Boolean(element.closest('#scene-details-section')))).toBe(true);
   await expect(page.locator('#export-capability-report')).toBeVisible();
+  expect(await page.locator('#export-section').evaluate((element) => Boolean(element.closest('#export-sidebar')))).toBe(true);
   await page.locator('[data-choice-for="export-format"] [data-value="fbx"]').click();
   const downloadPromise = page.waitForEvent('download');
   await page.locator('#export-btn').click();
@@ -248,8 +249,26 @@ test('shared scene details expose all animation clips', async ({ page }) => {
   await expect(page.locator('#scene-summary-compact')).toBeVisible();
   expect(await page.locator('#scene-summary-compact').evaluate((element) => Boolean(element.closest('#input-section')))).toBe(true);
   await expect(page.locator('#scene-summary')).toBeVisible();
-  await expect(page.locator('#scene-clip-count')).toHaveText('3');
+  expect(await page.locator('#scene-summary').evaluate((element) => Boolean(element.closest('#scene-details-section')))).toBe(true);
+  await expect(page.locator('#scene-clip-stat')).toHaveText('3');
   await expect(page.locator('#anim-clip option')).toHaveCount(3);
+});
+
+test('scene details stays hidden before load and exposes a hierarchy tree after load', async ({ page }) => {
+  await page.goto('/index.html');
+  await expect(page.locator('#scene-details-section')).toBeHidden();
+  await waitForConverterReady(page);
+  const fox = path.join(repoRoot, 'testdata', 'Fox', 'glTF');
+  await page.locator('#file-input').setInputFiles([
+    path.join(fox, 'Fox.gltf'),
+    path.join(fox, 'Fox.bin'),
+  ]);
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#scene-details-section')).toBeVisible();
+  await page.locator('#scene-summary').locator('summary').click();
+  await expect(page.locator('#scene-tree')).toBeVisible();
+  await expect(page.locator('#scene-tree .scene-tree-row')).not.toHaveCount(0);
+  await expect(page.locator('#scene-tree .scene-tree-badge-animation')).not.toHaveCount(0);
 });
 
 test('glTF CUBICSPLINE scales tangents by keyframe duration', async ({ page }) => {

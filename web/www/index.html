@@ -84,7 +84,7 @@
 
                     <div id="scene-summary-compact" class="scene-summary-compact" hidden aria-live="polite">
                         <span class="scene-summary-compact-label">Scene</span>
-                        <span id="scene-summary-compact-text">No scene loaded</span>
+                        <span id="scene-summary-compact-text">Scene document ready</span>
                     </div>
                 </section>
 
@@ -200,22 +200,6 @@
                     </div>
                 </section>
 
-                <section id="scene-details-section" class="card panel scene-details-panel" style="display: none;">
-                    <details id="scene-summary" class="scene-summary" hidden>
-                        <summary class="scene-summary-title">Scene details</summary>
-                        <div class="scene-summary-grid">
-                            <div><span>Nodes</span><strong id="scene-node-count">0</strong></div>
-                            <div><span>Meshes</span><strong id="scene-mesh-count">0</strong></div>
-                            <div><span>Materials</span><strong id="scene-material-count">0</strong></div>
-                            <div><span>Skins</span><strong id="scene-skin-count">0</strong></div>
-                            <div><span>Morphs</span><strong id="scene-morph-count">0</strong></div>
-                            <div><span>Clips</span><strong id="scene-clip-count">0</strong></div>
-                        </div>
-                        <p id="scene-capability-summary" class="scene-capability-summary"></p>
-                        <ul id="scene-warning-list" class="scene-warning-list"></ul>
-                    </details>
-                </section>
-
             </aside>
 
             <!-- Main canvas area: viewer + mesh details -->
@@ -287,6 +271,26 @@
                                     <span class="stat-label">UVs</span>
                                     <span id="has-uvs" class="stat-value">-</span>
                                 </div>
+                                <div class="stat-box scene-stat">
+                                    <span class="stat-label">Nodes</span>
+                                    <span id="scene-node-stat" class="stat-value">0</span>
+                                </div>
+                                <div class="stat-box scene-stat">
+                                    <span class="stat-label">Materials</span>
+                                    <span id="scene-material-stat" class="stat-value">0</span>
+                                </div>
+                                <div class="stat-box scene-stat">
+                                    <span class="stat-label">Skins</span>
+                                    <span id="scene-skin-stat" class="stat-value">0</span>
+                                </div>
+                                <div class="stat-box scene-stat">
+                                    <span class="stat-label">Morphs</span>
+                                    <span id="scene-morph-stat" class="stat-value">0</span>
+                                </div>
+                                <div class="stat-box scene-stat">
+                                    <span class="stat-label">Clips</span>
+                                    <span id="scene-clip-stat" class="stat-value">0</span>
+                                </div>
                             </div>
 
                             <div id="warnings-container" class="warnings-box" style="display: none;">
@@ -298,6 +302,22 @@
                 </section>
 
             </section>
+
+            <aside id="scene-details-section" class="card panel scene-details-panel" style="display: none;">
+                <details id="scene-summary" class="scene-summary" hidden>
+                    <summary class="scene-summary-title">Scene details</summary>
+                    <div id="scene-tree" class="scene-tree" role="tree" aria-label="Scene hierarchy"></div>
+                    <p id="scene-capability-summary" class="scene-capability-summary"></p>
+                    <div class="scene-companions">
+                        <div><span class="scene-companion-title">Resources</span><span id="scene-resource-list"></span></div>
+                        <div><span class="scene-companion-title">Materials</span><span id="scene-material-list"></span></div>
+                        <div><span class="scene-companion-title">Clips</span><span id="scene-clip-list"></span></div>
+                    </div>
+                    <ul id="scene-warning-list" class="scene-warning-list"></ul>
+                </details>
+            </aside>
+
+            <aside id="export-sidebar" class="sidebar export-sidebar" style="display: none;"></aside>
 
         </div>
 
