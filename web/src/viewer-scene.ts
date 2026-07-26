@@ -123,6 +123,20 @@ export interface ViewerClip {
     channels: ViewerChannel[];
 }
 
+/** The whole runtime scene, as the viewer holds it between frames. */
+export interface ViewerScene {
+    nodes: ViewerNode[];
+    rootIndices: number[];
+    meshes: ViewerMesh[];
+    skins: ViewerSkin[];
+    materials: any[];
+    textures: any[];
+    animations: ViewerClip[];
+    renderables: Renderable[];
+    aabb: Aabb;
+    warnings: string[];
+}
+
 export interface Renderable {
     node: ViewerNode;
     meshIndex: number;

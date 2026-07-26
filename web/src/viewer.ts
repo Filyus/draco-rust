@@ -12,6 +12,6 @@
  * already import.
  */
 
-export { Viewer } from './viewer/viewer-class.js';
-export { buildNormalizedWeightAttribute, buildSmoothNormalAttribute } from './viewer/geometry.js';
-export { cubicSplineInterpolate } from './viewer/animation.js';
+export { Viewer } from './viewer/viewer-class.ts';
+export { buildNormalizedWeightAttribute, buildSmoothNormalAttribute } from './viewer/geometry.ts';
+export { cubicSplineInterpolate } from './viewer/animation.ts';

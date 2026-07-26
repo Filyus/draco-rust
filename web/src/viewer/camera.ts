@@ -1,3 +1,6 @@
+import type { Vec3 } from '../math.ts';
+import type { ViewerScene } from '../viewer-scene.ts';
+
 /**
  * Orbit camera state and the operations that move it.
  *
@@ -16,12 +19,12 @@
  */
 export interface CameraHost {
     canvas: HTMLCanvasElement;
-    scene: { aabb?: { min: number[]; max: number[] } } | null;
+    scene: ViewerScene | null;
     camera: OrbitCamera;
-    _basisRight: Float32Array;
-    _basisUp: Float32Array;
-    _basisForward: Float32Array;
-    _pivotScratch: Float32Array;
+    _basisRight: Vec3;
+    _basisUp: Vec3;
+    _basisForward: Vec3;
+    _pivotScratch: Vec3;
     _navKeys: Set<string>;
     _navFast: boolean;
     _navSlow: boolean;
@@ -29,7 +32,7 @@ export interface CameraHost {
 
 /** Orbit camera: an eye on a sphere around `target`. */
 export interface OrbitCamera {
-    target: Float32Array;
+    target: Vec3;
     distance: number;
     azimuth: number;
     elevation: number;
@@ -83,7 +86,7 @@ export function orbitBy(host: CameraHost, dAz: number, dEl: number) {
 }
 
 /** World-space centre of the loaded scene, or null when nothing is loaded. */
-export function orbitPivot(host: CameraHost, out: Float32Array): Float32Array | null {
+export function orbitPivot(host: CameraHost, out: Vec3): Vec3 | null {
     const box = host.scene?.aabb;
     if (!box) return null;
     for (let i = 0; i < 3; i++) out[i] = (box.min[i] + box.max[i]) * 0.5;
@@ -217,9 +220,9 @@ export function fitCameraToScene(host: CameraHost) {
  */
 export function cameraBasis(
     host: CameraHost,
-    right: Float32Array,
-    up: Float32Array,
-    forward?: Float32Array,
+    right: Vec3,
+    up: Vec3,
+    forward?: Vec3,
 ) {
     const ce = Math.cos(host.camera.elevation);
     const se = Math.sin(host.camera.elevation);
@@ -237,7 +240,7 @@ export function cameraBasis(
     forward[2] = -ce * ca;
 }
 
-export function cameraPosition(host: CameraHost, out: Float32Array): Float32Array {
+export function cameraPosition(host: CameraHost, out: Vec3): Vec3 {
     const ce = Math.cos(host.camera.elevation);
     const se = Math.sin(host.camera.elevation);
     const ca = Math.cos(host.camera.azimuth);

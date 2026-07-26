@@ -1,13 +1,14 @@
 import { composeMatrix, mat4, vec3 } from '../math.ts';
-import type { ViewerNode, ViewerSkin } from '../viewer-scene.ts';
+import type { Mat4, Vec3 } from '../math.ts';
+import type { ViewerNode, ViewerScene, ViewerSkin } from '../viewer-scene.ts';
 
 /** What hierarchy evaluation reads and writes on the viewer. */
 export interface SceneGraphHost {
-    scene: any;
+    scene: ViewerScene | null;
     _visitedNodes?: Set<ViewerNode>;
-    _boundsPoint?: Float32Array | number[];
-    _scratch: Float32Array;
-    _jointScratch?: Float32Array | number[];
+    _boundsPoint?: Vec3;
+    _scratch: Mat4;
+    _jointScratch?: Mat4;
 }
 
 /**
@@ -20,7 +21,9 @@ export interface SceneGraphHost {
 
 export function updateWorldMatrices(host: SceneGraphHost) {
     if (!host.scene) return;
-    const nodes = host.scene.nodes;
+    // Only ever reached from updateWorldMatrices, which returns early
+    // without a scene.
+    const nodes = host.scene!.nodes;
     const roots = host.scene.rootIndices || nodes.map((_: ViewerNode, i: number) => i);
     if (host._visitedNodes) host._visitedNodes.clear();
     else host._visitedNodes = new Set();
@@ -60,7 +63,7 @@ export function updateSceneBounds(host: SceneGraphHost) {
     if (isFinite(aabb.min[0])) host.scene.aabb = aabb;
 }
 
-export function updateNode(host: SceneGraphHost, node: ViewerNode, parentWorld: Float32Array | null) {
+export function updateNode(host: SceneGraphHost, node: ViewerNode, parentWorld: Mat4 | null) {
     if (!node || !node.trs) return;
     const world = node.world;
     if (node.localMatrix) mat4.copy(world, node.localMatrix);
@@ -68,7 +71,9 @@ export function updateNode(host: SceneGraphHost, node: ViewerNode, parentWorld: 
     if (parentWorld) {
         mat4.multiply(world, parentWorld, world);
     }
-    const nodes = host.scene.nodes;
+    // Only ever reached from updateWorldMatrices, which returns early
+    // without a scene.
+    const nodes = host.scene!.nodes;
     const children = node.children || [];
     const visited = host._visitedNodes || (host._visitedNodes = new Set());
     visited.add(node);
@@ -85,7 +90,7 @@ export function updateNode(host: SceneGraphHost, node: ViewerNode, parentWorld: 
 export function computeJointMatrices(
     host: SceneGraphHost,
     skin: ViewerSkin | null,
-    meshWorld: Float32Array,
+    meshWorld: Mat4,
     jointOut: Float32Array | null,
 ): Float32Array | null {
     if (!skin || !jointOut || !mat4.invert(host._scratch, meshWorld)) return null;
