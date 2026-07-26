@@ -1,4 +1,14 @@
-import { ORBIT_RAD_PER_PIXEL, orbitBy, panBy, zoomBy } from './camera.js';
+import { ORBIT_RAD_PER_PIXEL, orbitBy, panBy, zoomBy } from './camera.ts';
+import type { CameraHost } from './camera.ts';
+
+/** What input wiring needs beyond the camera it drives. */
+export interface ControlHost extends CameraHost {
+    setAutoRotate(enabled: boolean): void;
+    _lastPinch: { dist: number; midX: number; midY: number } | null;
+}
+
+/** A drag gesture, decided once on pointerdown. */
+type DragMode = 'orbit' | 'pan' | 'zoom' | null;
 
 /**
  * Pointer, wheel and keyboard wiring for the viewport.
@@ -12,12 +22,12 @@ export const NAV_KEYS = new Set([
     'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
 
-export function installViewerControls(host) {
+export function installViewerControls(host: ControlHost) {
     const el = host.canvas;
     let lastX = 0, lastY = 0;
     // Drag mode picked once on pointerdown: 'orbit' | 'pan' | 'zoom'.
-    let mode = null;
-    const pointers = new Map();
+    let mode: DragMode = null;
+    const pointers = new Map<number, { x: number; y: number }>();
 
     const updateFromPointers = () => {
         if (pointers.size === 1) {
@@ -40,7 +50,7 @@ export function installViewerControls(host) {
         }
     };
 
-    el.addEventListener('pointerdown', (e) => {
+    el.addEventListener('pointerdown', (e: PointerEvent) => {
         el.setPointerCapture(e.pointerId);
         pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
         lastX = e.clientX;
@@ -56,7 +66,7 @@ export function installViewerControls(host) {
         host._lastPinch = null;
         e.preventDefault();
     });
-    el.addEventListener('pointermove', (e) => {
+    el.addEventListener('pointermove', (e: PointerEvent) => {
         if (!pointers.has(e.pointerId)) return;
         pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
         if (pointers.size === 1 && mode !== 'orbit') {
@@ -75,7 +85,7 @@ export function installViewerControls(host) {
         }
         e.preventDefault();
     });
-    const endPointer = (e) => {
+    const endPointer = (e: PointerEvent) => {
         pointers.delete(e.pointerId);
         if (pointers.size < 2) host._lastPinch = null;
         if (pointers.size === 0) mode = null;
@@ -85,7 +95,7 @@ export function installViewerControls(host) {
     el.addEventListener('pointercancel', endPointer);
     el.addEventListener('pointerleave', endPointer);
 
-    el.addEventListener('contextmenu', (e) => e.preventDefault());
+    el.addEventListener('contextmenu', (e: Event) => e.preventDefault());
     // Keep the middle button from starting the browser's autoscroll mode.
     el.addEventListener('auxclick', (e) => e.preventDefault());
 
@@ -103,7 +113,7 @@ export function installViewerControls(host) {
         { passive: false },
     );
 
-    el.addEventListener('keydown', (e) => {
+    el.addEventListener('keydown', (e: KeyboardEvent) => {
         host._navFast = e.shiftKey;
         host._navSlow = e.altKey;
         if (!NAV_KEYS.has(e.code)) return;
@@ -111,7 +121,7 @@ export function installViewerControls(host) {
         host.setAutoRotate(false);
         host._navKeys.add(e.code);
     });
-    el.addEventListener('keyup', (e) => {
+    el.addEventListener('keyup', (e: KeyboardEvent) => {
         host._navFast = e.shiftKey;
         host._navSlow = e.altKey;
         host._navKeys.delete(e.code);

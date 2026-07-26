@@ -7,6 +7,39 @@
  * them; everything that decides how the camera moves lives here.
  */
 
+/**
+ * What camera code reads and writes on the viewer.
+ *
+ * The state lives on the Viewer itself so its existing members stay where the
+ * browser tests reach for them; this names exactly which of them are camera
+ * business.
+ */
+export interface CameraHost {
+    canvas: HTMLCanvasElement;
+    scene: { aabb?: { min: number[]; max: number[] } } | null;
+    camera: OrbitCamera;
+    _basisRight: Float32Array;
+    _basisUp: Float32Array;
+    _basisForward: Float32Array;
+    _pivotScratch: Float32Array;
+    _navKeys: Set<string>;
+    _navFast: boolean;
+    _navSlow: boolean;
+}
+
+/** Orbit camera: an eye on a sphere around `target`. */
+export interface OrbitCamera {
+    target: Float32Array;
+    distance: number;
+    azimuth: number;
+    elevation: number;
+    fov: number;
+    near: number;
+    far: number;
+    minDistance: number;
+    maxDistance: number;
+}
+
 /** Starting framing, chosen to show a model's front-left three-quarter view. */
 export const DEFAULT_CAMERA_AZIMUTH = Math.PI * 0.25;
 export const DEFAULT_CAMERA_ELEVATION = Math.PI * 0.09;
@@ -16,7 +49,7 @@ export const ORBIT_RAD_PER_PIXEL = 0.01;
 export const FLY_DISTANCE_PER_SECOND = 0.4;
 export const ORBIT_RAD_PER_SECOND = 1.2;
 
-export function orbitBy(host, dAz, dEl) {
+export function orbitBy(host: CameraHost, dAz: number, dEl: number) {
     const right = host._basisRight;
     const up = host._basisUp;
     const forward = host._basisForward;
@@ -50,7 +83,7 @@ export function orbitBy(host, dAz, dEl) {
 }
 
 /** World-space centre of the loaded scene, or null when nothing is loaded. */
-export function orbitPivot(host, out) {
+export function orbitPivot(host: CameraHost, out: Float32Array): Float32Array | null {
     const box = host.scene?.aabb;
     if (!box) return null;
     for (let i = 0; i < 3; i++) out[i] = (box.min[i] + box.max[i]) * 0.5;
@@ -63,13 +96,14 @@ export function orbitPivot(host, out) {
  * position — without that the target stays at the model centre and zooming
  * in just buries the camera inside the geometry.
  */
-export function zoomBy(host, factor, clientX, clientY) {
+export function zoomBy(host: CameraHost, factor: number, clientX?: number, clientY?: number) {
     const before = host.camera.distance;
     host.camera.distance = Math.max(
         host.camera.minDistance,
         Math.min(host.camera.maxDistance, before * factor),
     );
-    if (clientX === undefined) return;
+    // Callers pass both cursor coordinates or neither.
+    if (clientX === undefined || clientY === undefined) return;
 
     // The clamp may have swallowed part of the requested dolly.
     const applied = host.camera.distance / before;
@@ -93,7 +127,7 @@ export function zoomBy(host, factor, clientX, clientY) {
  * Slides the orbit target inside the camera plane so the point under the
  * cursor stays under the cursor, for any orbit angle and field of view.
  */
-export function panBy(host, dx, dy) {
+export function panBy(host: CameraHost, dx: number, dy: number) {
     const right = host._basisRight;
     const up = host._basisUp;
     cameraBasis(host, right, up);
@@ -109,7 +143,7 @@ export function panBy(host, dx, dy) {
  * Applies the held navigation keys for one frame: WASD and Q/E move the
  * orbit target along the camera axes, arrows orbit.
  */
-export function applyKeyboardNavigation(host, dt) {
+export function applyKeyboardNavigation(host: CameraHost, dt: number) {
     const keys = host._navKeys;
     if (keys.size === 0) return;
 
@@ -145,7 +179,7 @@ export function applyKeyboardNavigation(host, dt) {
     }
 }
 
-export function fitCameraToScene(host) {
+export function fitCameraToScene(host: CameraHost) {
     const box = host.scene?.aabb;
     if (!box) return;
     const cx = (box.min[0] + box.max[0]) * 0.5;
@@ -181,7 +215,12 @@ export function fitCameraToScene(host) {
  * `_cameraPosition` uses: right = normalize(forward x worldUp),
  * up = right x forward. cos(elevation) stays positive under the clamp.
  */
-export function cameraBasis(host, right, up, forward) {
+export function cameraBasis(
+    host: CameraHost,
+    right: Float32Array,
+    up: Float32Array,
+    forward?: Float32Array,
+) {
     const ce = Math.cos(host.camera.elevation);
     const se = Math.sin(host.camera.elevation);
     const ca = Math.cos(host.camera.azimuth);
@@ -198,7 +237,7 @@ export function cameraBasis(host, right, up, forward) {
     forward[2] = -ce * ca;
 }
 
-export function cameraPosition(host, out) {
+export function cameraPosition(host: CameraHost, out: Float32Array): Float32Array {
     const ce = Math.cos(host.camera.elevation);
     const se = Math.sin(host.camera.elevation);
     const ca = Math.cos(host.camera.azimuth);

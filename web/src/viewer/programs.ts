@@ -1,5 +1,5 @@
-import { createEnvironmentIbl } from '../environment-ibl.js';
-import { linkProgram } from './gl-utils.js';
+import { createEnvironmentIbl } from '../environment-ibl.ts';
+import { linkProgram } from './gl-utils.ts';
 import {
     BACKGROUND_FRAG_SRC,
     BACKGROUND_VERT_SRC,
@@ -7,7 +7,7 @@ import {
     LINE_FRAG_SRC,
     LINE_VERT_SRC,
     VERT_SRC,
-} from './shaders.js';
+} from './shaders.ts';
 
 /**
  * Shader programs and the uniform/attribute locations that address them.
@@ -17,7 +17,10 @@ import {
  * program is current.
  */
 
-export function buildViewerPrograms(gl, onLog) {
+export function buildViewerPrograms(
+    gl: WebGL2RenderingContext,
+    onLog: (message: string, level: string) => void,
+) {
     const program = linkProgram(gl, VERT_SRC, FRAG_SRC);
     const lineProgram = linkProgram(gl, LINE_VERT_SRC, LINE_FRAG_SRC);
     const backgroundProgram = linkProgram(gl, BACKGROUND_VERT_SRC, BACKGROUND_FRAG_SRC);

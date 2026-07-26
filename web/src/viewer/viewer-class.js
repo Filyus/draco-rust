@@ -13,9 +13,16 @@ import {
     zoomBy,
 } from './camera.js';
 import { installViewerControls } from './controls.js';
+import { setSampler, uploadImage } from './textures.js';
 import { GL } from './gl-utils.js';
 import { MORPH_TEXTURE_UNIT } from './morph-texture.js';
 import { uploadPrimitive } from './primitive-upload.js';
+import {
+    computeJointMatrices,
+    updateNode,
+    updateSceneBounds,
+    updateWorldMatrices,
+} from './scene-graph.js';
 import { MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS } from './shaders.js';
 import { buildViewerPrograms } from './programs.js';
 
@@ -281,40 +288,11 @@ export class Viewer {
     }
 
     _uploadImage(tex) {
-        const gl = this.gl;
-        const glTexture = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, glTexture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, !!tex.flipY);
-        // Placeholder color while the bitmap is decoding.
-        gl.texImage2D(
-            gl.TEXTURE_2D,
-            0,
-            gl.RGBA,
-            1,
-            1,
-            0,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            new Uint8Array([255, 255, 255, 255]),
-        );
-        if (tex.image instanceof ImageBitmap || tex.image instanceof HTMLImageElement) {
-            gl.bindTexture(gl.TEXTURE_2D, glTexture);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, tex.image);
-            this._setSampler(gl, tex);
-        }
-        return glTexture;
+        return uploadImage(this.gl, tex);
     }
 
     _setSampler(gl, tex) {
-        const wrapS = tex.wrapS || GL.REPEAT;
-        const wrapT = tex.wrapT || GL.REPEAT;
-        const minFilter = tex.minFilter || GL.LINEAR_MIPMAP_LINEAR;
-        const magFilter = tex.magFilter || GL.LINEAR;
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrapS);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrapT);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minFilter);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, magFilter);
-        gl.generateMipmap(gl.TEXTURE_2D);
+        setSampler(gl, tex);
     }
 
     clear() {
@@ -442,67 +420,16 @@ export class Viewer {
     }
 
     _updateWorldMatrices() {
-        if (!this.scene) return;
-        const nodes = this.scene.nodes;
-        const roots = this.scene.rootIndices || nodes.map((_, i) => i);
-        if (this._visitedNodes) this._visitedNodes.clear();
-        else this._visitedNodes = new Set();
-        for (const rootIndex of roots) {
-            const node = nodes[rootIndex];
-            if (node) this._updateNode(node, null);
-        }
+        updateWorldMatrices(this);
     }
 
     /** Recompute the framing bounds after node transforms have been applied. */
     _updateSceneBounds() {
-        if (!this.scene) return;
-        const aabb = {
-            min: [Infinity, Infinity, Infinity],
-            max: [-Infinity, -Infinity, -Infinity],
-        };
-        const point = this._boundsPoint || (this._boundsPoint = vec3.create());
-        for (const renderable of this.scene.renderables || []) {
-            const meshBox = this.scene.meshes[renderable.meshIndex]?.aabb;
-            if (!meshBox) continue;
-            const { min, max } = meshBox;
-            for (const x of [min[0], max[0]]) {
-                for (const y of [min[1], max[1]]) {
-                    for (const z of [min[2], max[2]]) {
-                        vec3.set(point, x, y, z);
-                        vec3.transformMat4(point, point, renderable.node.world);
-                        aabb.min[0] = Math.min(aabb.min[0], point[0]);
-                        aabb.min[1] = Math.min(aabb.min[1], point[1]);
-                        aabb.min[2] = Math.min(aabb.min[2], point[2]);
-                        aabb.max[0] = Math.max(aabb.max[0], point[0]);
-                        aabb.max[1] = Math.max(aabb.max[1], point[1]);
-                        aabb.max[2] = Math.max(aabb.max[2], point[2]);
-                    }
-                }
-            }
-        }
-        if (isFinite(aabb.min[0])) this.scene.aabb = aabb;
+        updateSceneBounds(this);
     }
 
     _updateNode(node, parentWorld) {
-        if (!node || !node.trs) return;
-        const world = node.world;
-        if (node.localMatrix) mat4.copy(world, node.localMatrix);
-        else composeMatrix(world, node.trs.translation, node.trs.rotation, node.trs.scale);
-        if (parentWorld) {
-            mat4.multiply(world, parentWorld, world);
-        }
-        const nodes = this.scene.nodes;
-        const children = node.children || [];
-        const visited = this._visitedNodes || (this._visitedNodes = new Set());
-        visited.add(node);
-        for (const child of children) {
-            // glTF stores child references as node indices; mesh-loader uses
-            // direct node objects. Support both.
-            const childNode = typeof child === 'number' ? nodes[child] : child;
-            if (childNode && childNode !== node && !visited.has(childNode)) {
-                this._updateNode(childNode, world);
-            }
-        }
+        updateNode(this, node, parentWorld);
     }
 
     _render() {
@@ -745,18 +672,7 @@ export class Viewer {
     }
 
     _computeJointMatrices(skin, meshWorld, jointOut) {
-        if (!skin || !jointOut || !mat4.invert(this._scratch, meshWorld)) return null;
-        const inverseMeshWorld = this._scratch;
-        const tmp = this._jointScratch || (this._jointScratch = mat4.create());
-        const count = jointOut.length / 16;
-        for (let i = 0; i < count; i++) {
-            const joint = skin.joints[i];
-            if (!joint?.node) return null;
-            // In glTF, the palette is inverse(mesh world) * joint world * IBM.
-            mat4.multiply(tmp, inverseMeshWorld, joint.node.world);
-            mat4.multiply(jointOut.subarray(i * 16, (i + 1) * 16), tmp, joint.inverseBind);
-        }
-        return jointOut;
+        return computeJointMatrices(this, skin, meshWorld, jointOut);
     }
 
     _drawGrid() {
