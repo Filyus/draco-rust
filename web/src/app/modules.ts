@@ -44,7 +44,9 @@ export async function loadModule({ key, path, statusId }: { key: string; path: s
     try {
         const module = await import(path);
         const wasmUrl = new URL(path.replace(/\.js(\?.*)?$/, '_bg.wasm$1'), window.location.href);
-        await module.default(wasmUrl);
+        // wasm-bindgen deprecated the positional form and warns about it on
+        // every load; the object is what current glue expects.
+        await module.default({ module_or_path: wasmUrl });
         
         modules[key].module = module;
         modules[key].loaded = true;
