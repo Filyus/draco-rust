@@ -6,11 +6,22 @@
  * images nor imports any FBX compatibility policy.
  */
 
-import { assertValidSceneDocument, createSceneDocument } from './scene-document.ts';
+import {
+  MATERIAL_TEXTURE_SLOTS, assertValidSceneDocument, createSceneDocument,
+} from './scene-document.ts';
 import type {
   AnimationChannel, AnimationSampler, AttributeMap, ComponentType, SceneAccessor, SceneDocument,
-  SceneNode, ScenePrimitive, TextureInfo,
+  SceneMaterial, SceneNode, ScenePrimitive, TextureInfo,
 } from './scene-document.ts';
+import {
+  GLTF_TEXTURE_SOURCE_EXTENSIONS,
+  gltfExtensionWarnings,
+  isInterpretedGltfExtension,
+  readGltfMaterial,
+  resolveSampler,
+  resolveTextureSource,
+} from './gltf-interpretation.ts';
+import type { InterpretedTexture } from './gltf-interpretation.ts';
 import {
   appendAccessor, basename, bytesFromF32, mimeFromUri, resolveResource, sniffMime,
 } from './scene-resources.ts';
@@ -32,14 +43,6 @@ type GltfJson = any;
 function componentType(value: number): ComponentType {
   return value as ComponentType;
 }
-
-const SUPPORTED_EXTENSIONS = new Set([
-  'KHR_materials_unlit', 'KHR_texture_transform',
-  'KHR_texture_basisu', 'EXT_texture_webp',
-  // Draco is decompression, not a document feature: readPrimitive resolves it
-  // into ordinary accessors, so the portable document loses nothing.
-  'KHR_draco_mesh_compression',
-]);
 
 /** Extract a portable SceneDocument from an existing GltfAsset-capable module. */
 export function buildSceneDocumentFromGltf(
@@ -97,53 +100,84 @@ function collectTextures(
   document: SceneDocument,
 ): number[] {
   return textures.map((texture, textureIndex) => {
-    const source = textureSource(texture);
+    const { source } = resolveTextureSource(texture);
     const resource = imageResources[source];
     if (!Number.isInteger(resource) || resource < 0) {
       document.warnings.push(`glTF texture ${textureIndex} has no supported image source and was omitted`);
       return -1;
     }
-    const sourceSampler = Number.isInteger(texture.sampler) ? samplers[texture.sampler] : null;
     const textureIndexInDocument = document.textures.length;
     document.textures.push({
       name: texture.name || `texture_${textureIndex}`,
       resource,
-      sampler: {
-        wrapS: sourceSampler?.wrapS ?? 10497,
-        wrapT: sourceSampler?.wrapT ?? 10497,
-        minFilter: sourceSampler?.minFilter ?? 9987,
-        magFilter: sourceSampler?.magFilter ?? 9729,
-      },
+      sampler: resolveSampler(Number.isInteger(texture.sampler) ? samplers[texture.sampler] : null),
     });
     return textureIndexInDocument;
   });
 }
 
+/**
+ * Lower interpreted glTF materials into portable ones.
+ *
+ * Extension-borne values are written only when they differ from the value the
+ * core model implies, so a document built from an asset without those
+ * extensions is byte-for-byte what it was before they were representable — and
+ * so the writer can decide what to emit by looking at the material alone.
+ */
 function collectMaterials(materials: GltfJson[], textureBySource: number[], document: SceneDocument) {
-  document.materials.push(...materials.map((material, materialIndex) => {
-    const pbr = material.pbrMetallicRoughness || {};
-    const baseColor = textureInfo(pbr.baseColorTexture, textureBySource);
-    const metallicRoughness = textureInfo(pbr.metallicRoughnessTexture, textureBySource);
-    const normal = textureInfo(material.normalTexture, textureBySource);
-    const emissive = textureInfo(material.emissiveTexture, textureBySource);
-    const occlusion = textureInfo(material.occlusionTexture, textureBySource);
-    return {
-      name: material.name || `material_${materialIndex}`,
-      baseColorFactor: Array.from<number>(pbr.baseColorFactor || [1, 1, 1, 1]),
-      metallicFactor: pbr.metallicFactor ?? 1,
-      roughnessFactor: pbr.roughnessFactor ?? 1,
-      emissiveFactor: Array.from<number>(material.emissiveFactor || [0, 0, 0]),
-      ...(baseColor ? { baseColorTexture: baseColor } : {}),
-      ...(metallicRoughness ? { metallicRoughnessTexture: metallicRoughness } : {}),
-      ...(normal ? { normalTexture: normal } : {}),
-      ...(emissive ? { emissiveTexture: emissive } : {}),
-      ...(occlusion ? { occlusionTexture: occlusion } : {}),
-      doubleSided: Boolean(material.doubleSided),
-      alphaMode: material.alphaMode || 'OPAQUE',
-      alphaCutoff: material.alphaCutoff ?? 0.5,
-      unlit: Boolean(material.extensions?.KHR_materials_unlit),
+  document.materials.push(...materials.map((definition, materialIndex) => {
+    const source = readGltfMaterial(definition, materialIndex);
+    const slot = (binding: InterpretedTexture | null) => portableTextureInfo(binding, textureBySource);
+    const material: SceneMaterial = {
+      name: source.name,
+      baseColorFactor: [...source.baseColorFactor],
+      metallicFactor: source.metallicFactor,
+      roughnessFactor: source.roughnessFactor,
+      emissiveFactor: [...source.emissiveFactor],
+      doubleSided: source.doubleSided,
+      alphaMode: source.alphaMode as SceneMaterial['alphaMode'],
+      alphaCutoff: source.alphaCutoff,
+      unlit: source.unlit,
     };
+    for (const key of MATERIAL_TEXTURE_SLOTS) {
+      const info = slot(source[key]);
+      if (info) material[key] = info;
+    }
+    if (source.emissiveStrength !== 1) material.emissiveStrength = source.emissiveStrength;
+    if (source.ior !== 1.5) material.ior = source.ior;
+    if (source.specularFactor !== 1) material.specularFactor = source.specularFactor;
+    if (source.specularColorFactor.some((value) => value !== 1)) {
+      material.specularColorFactor = [...source.specularColorFactor];
+    }
+    if (source.clearcoatFactor !== 0) material.clearcoatFactor = source.clearcoatFactor;
+    if (source.clearcoatRoughnessFactor !== 0) {
+      material.clearcoatRoughnessFactor = source.clearcoatRoughnessFactor;
+    }
+    return material;
   }));
+}
+
+/**
+ * Move a texture binding into document index space.
+ *
+ * A texture whose image the document could not carry was dropped by
+ * `collectTextures`; the slot that referenced it is dropped too rather than
+ * pointing at whatever texture inherited its index.
+ */
+function portableTextureInfo(
+  binding: InterpretedTexture | null,
+  textureBySource: number[],
+): TextureInfo | null {
+  if (!binding) return null;
+  const texture = textureBySource[binding.index];
+  if (!Number.isInteger(texture) || texture < 0) return null;
+  return {
+    texture,
+    texCoord: binding.texCoord,
+    ...(binding.transform ? { transform: { ...binding.transform } } : {}),
+    ...(binding.scale === undefined ? {} : { scale: binding.scale }),
+    ...(binding.strength === undefined ? {} : { strength: binding.strength }),
+  };
 }
 
 function collectMeshes(
@@ -361,35 +395,6 @@ function sourceAccessor(
   }
 }
 
-function textureInfo(info: GltfJson, textureBySource: number[]): TextureInfo | null {
-  if (!info || !Number.isInteger(info.index)) return null;
-  const texture = textureBySource[info.index];
-  if (!Number.isInteger(texture) || texture < 0) return null;
-  const result: TextureInfo = { texture, texCoord: info.texCoord ?? 0 };
-  const transform = info.extensions?.KHR_texture_transform;
-  if (transform) {
-    result.texCoord = transform.texCoord ?? result.texCoord;
-    result.transform = {
-      offset: Array.from(transform.offset || [0, 0]),
-      scale: Array.from(transform.scale || [1, 1]),
-      rotation: transform.rotation ?? 0,
-      ...(transform.texCoord === undefined ? {} : { texCoord: transform.texCoord }),
-    };
-  }
-  if (info.scale !== undefined) result.scale = info.scale;
-  if (info.strength !== undefined) result.strength = info.strength;
-  return result;
-}
-
-function textureSource(texture: GltfJson): number {
-  if (Number.isInteger(texture.source)) return texture.source;
-  for (const extension of ['KHR_texture_basisu', 'EXT_texture_webp']) {
-    const source = texture.extensions?.[extension]?.source;
-    if (Number.isInteger(source)) return source;
-  }
-  return -1;
-}
-
 function lastTime(accessor: SceneAccessor | undefined): number {
   if (!accessor || accessor.componentType !== 5126 || accessor.components !== 1 || accessor.count === 0) return 0;
   const view = new DataView(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength);
@@ -397,11 +402,18 @@ function lastTime(accessor: SceneAccessor | undefined): number {
 }
 
 function extensionWarnings(manifest: GltfJson): string[] {
-  const warnings: string[] = [];
-  const unsupported = (manifest.extensionsUsed || []).filter((extension: string) => !SUPPORTED_EXTENSIONS.has(extension));
-  if (unsupported.length > 0) warnings.push(`Unsupported glTF extensions omitted from SceneDocument: ${unsupported.join(', ')}`);
-  if ((manifest.extensionsRequired || []).some((extension: string) => !SUPPORTED_EXTENSIONS.has(extension))) warnings.push('glTF requires extensions outside the portable SceneDocument subset');
-  return warnings;
+  return gltfExtensionWarnings(
+    manifest,
+    // The document carries image bytes whatever the codec, so an alternate
+    // image source is always honored here — unlike in the preview, which can
+    // only claim one once the browser has decoded it.
+    (extension) => isInterpretedGltfExtension(extension)
+      || (GLTF_TEXTURE_SOURCE_EXTENSIONS as readonly string[]).includes(extension),
+    {
+      ignored: (names) => `Unsupported glTF extensions omitted from SceneDocument: ${names}`,
+      required: 'glTF requires extensions outside the portable SceneDocument subset',
+    },
+  );
 }
 
 function rootNodes(nodes: SceneNode[]): number[] {

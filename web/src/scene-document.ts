@@ -55,6 +55,15 @@ export interface TextureInfo {
   strength?: number;
 }
 
+/**
+ * The portable material.
+ *
+ * Beyond core metallic-roughness it carries the layered extensions both the
+ * preview and the glTF writer understand. Every one of those is optional and
+ * absence must mean the value that reproduces the core model exactly, so a
+ * document from a format that has no such concept — FBX — is unchanged by
+ * their existence.
+ */
 export interface SceneMaterial {
   name?: string;
   baseColorFactor?: number[];
@@ -70,7 +79,42 @@ export interface SceneMaterial {
   alphaCutoff?: number;
   doubleSided?: boolean;
   unlit?: boolean;
+  /** KHR_materials_emissive_strength; 1 leaves the emissive factor alone. */
+  emissiveStrength?: number;
+  /** KHR_materials_ior; 1.5 is the index of refraction the core model implies. */
+  ior?: number;
+  /** KHR_materials_specular: weight and tint on the dielectric lobe. */
+  specularFactor?: number;
+  specularColorFactor?: number[];
+  specularTexture?: TextureInfo;
+  specularColorTexture?: TextureInfo;
+  /** KHR_materials_clearcoat; factor 0 means no coat at all. */
+  clearcoatFactor?: number;
+  clearcoatRoughnessFactor?: number;
+  clearcoatTexture?: TextureInfo;
+  clearcoatRoughnessTexture?: TextureInfo;
+  clearcoatNormalTexture?: TextureInfo;
 }
+
+/**
+ * Every texture slot a material can bind, in one place.
+ *
+ * Validation, the glTF writer and the texture-transform survey all walk this
+ * list; spelled out separately in each, a new slot reaches one of them and not
+ * the others.
+ */
+export const MATERIAL_TEXTURE_SLOTS = [
+  'baseColorTexture',
+  'metallicRoughnessTexture',
+  'normalTexture',
+  'emissiveTexture',
+  'occlusionTexture',
+  'specularTexture',
+  'specularColorTexture',
+  'clearcoatTexture',
+  'clearcoatRoughnessTexture',
+  'clearcoatNormalTexture',
+] as const;
 
 export interface SceneAccessor {
   bytes: Uint8Array;
@@ -354,7 +398,13 @@ function validateMaterial(material: Untrusted, index: number, textureCount: numb
   validateFiniteNumber(material.metallicFactor, `${label}.metallicFactor`, errors, 1);
   validateFiniteNumber(material.roughnessFactor, `${label}.roughnessFactor`, errors, 1);
   validateNumberArray(material.emissiveFactor, 3, `${label}.emissiveFactor`, errors, [0, 0, 0]);
-  for (const key of ['baseColorTexture', 'metallicRoughnessTexture', 'normalTexture', 'emissiveTexture', 'occlusionTexture']) {
+  validateFiniteNumber(material.emissiveStrength, `${label}.emissiveStrength`, errors, 1);
+  validateFiniteNumber(material.ior, `${label}.ior`, errors, 1.5);
+  validateFiniteNumber(material.specularFactor, `${label}.specularFactor`, errors, 1);
+  validateNumberArray(material.specularColorFactor, 3, `${label}.specularColorFactor`, errors, [1, 1, 1]);
+  validateFiniteNumber(material.clearcoatFactor, `${label}.clearcoatFactor`, errors, 0);
+  validateFiniteNumber(material.clearcoatRoughnessFactor, `${label}.clearcoatRoughnessFactor`, errors, 0);
+  for (const key of MATERIAL_TEXTURE_SLOTS) {
     if (material[key] !== undefined && material[key] !== null) validateTextureInfo(material[key], `${label}.${key}`, textureCount, errors);
   }
   if (material.alphaMode !== undefined && !['OPAQUE', 'MASK', 'BLEND'].includes(material.alphaMode)) errors.push(`${label}.alphaMode is invalid`);

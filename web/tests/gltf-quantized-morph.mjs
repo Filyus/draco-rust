@@ -148,6 +148,15 @@ const { assertValidSceneDocument } = await import(
 
 const sceneDocument = buildSceneDocumentFromGltf(source, {}, gltfModule);
 assertValidSceneDocument(sceneDocument);
+// The Rust reader resolves quantized attributes into the document losslessly,
+// so telling the user they were "omitted" — or that the asset requires
+// something the portable subset lacks — is a false alarm about a file that
+// came through intact.
+assert.deepEqual(
+  sceneDocument.warnings.filter((message) => /omitted from SceneDocument|outside the portable/.test(message)),
+  [],
+  'reader-resolved extensions must not be reported as dropped from the document',
+);
 const output = sceneDocument.accessors[sceneDocument.animations[0].samplers[0].output];
 assert.equal(output.componentType, 5126);
 assert.deepEqual(Array.from(new Float32Array(output.bytes.buffer, output.bytes.byteOffset, 2)), [0, 1]);

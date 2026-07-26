@@ -141,14 +141,14 @@ export function readGltfMaterial(def: GltfJson, index: number): InterpretedMater
     unlit: Boolean(extensions.KHR_materials_unlit),
     baseColorTexture: readTexture(pbr.baseColorTexture),
     metallicRoughnessTexture: readTexture(pbr.metallicRoughnessTexture),
-    normalTexture: readTexture(material.normalTexture, { scale: 1 }),
+    normalTexture: readTexture(material.normalTexture, { scale: true }),
     emissiveTexture: readTexture(material.emissiveTexture),
-    occlusionTexture: readTexture(material.occlusionTexture, { strength: 1 }),
+    occlusionTexture: readTexture(material.occlusionTexture, { strength: true }),
     specularTexture: readTexture(specular.specularTexture),
     specularColorTexture: readTexture(specular.specularColorTexture),
     clearcoatTexture: readTexture(clearcoat.clearcoatTexture),
     clearcoatRoughnessTexture: readTexture(clearcoat.clearcoatRoughnessTexture),
-    clearcoatNormalTexture: readTexture(clearcoat.clearcoatNormalTexture, { scale: 1 }),
+    clearcoatNormalTexture: readTexture(clearcoat.clearcoatNormalTexture, { scale: true }),
   };
 }
 
@@ -162,7 +162,7 @@ export function readGltfMaterial(def: GltfJson, index: number): InterpretedMater
  */
 function readTexture(
   info: GltfJson,
-  scalars: { scale?: number; strength?: number } = {},
+  scalars: { scale?: boolean; strength?: boolean } = {},
 ): InterpretedTexture | null {
   if (!info || !Number.isInteger(info.index)) return null;
   const binding: InterpretedTexture = {
@@ -180,8 +180,11 @@ function readTexture(
       ...(transform.texCoord === undefined ? {} : { texCoord: transform.texCoord }),
     };
   }
-  if (scalars.scale !== undefined) binding.scale = info.scale ?? scalars.scale;
-  if (scalars.strength !== undefined) binding.strength = info.strength ?? scalars.strength;
+  // Only carried when the slot defines it and the document states it: both
+  // consumers already default a missing scale or strength to 1, and writing it
+  // out unasked would put a redundant "scale": 1 into every exported material.
+  if (scalars.scale && info.scale !== undefined) binding.scale = info.scale;
+  if (scalars.strength && info.strength !== undefined) binding.strength = info.strength;
   return binding;
 }
 
