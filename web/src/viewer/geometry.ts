@@ -1,6 +1,10 @@
-import { WEIGHT_SUM_TOLERANCE } from './constants.ts';
 import { byteView } from './gl-utils.ts';
 import type { RuntimeAccessor, ViewerPrimitive } from '../viewer-scene.ts';
+
+// How far a vertex's skin weights may sum from one before the preview rebuilds
+// the attribute. Loose enough to pass ordinary quantization rounding, tight
+// enough to catch a vertex that would otherwise be dragged toward the origin.
+const WEIGHT_SUM_TOLERANCE = 1e-3;
 
 /**
  * Attribute preparation done on the CPU before upload.

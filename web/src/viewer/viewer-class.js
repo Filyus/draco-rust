@@ -1,27 +1,23 @@
 import { composeMatrix, mat4, quat, vec3 } from '../math.js';
-import { createEnvironmentIbl } from '../environment-ibl.js';
 import { applyAnimation } from './animation.js';
 import {
+    applyKeyboardNavigation,
+    cameraBasis,
+    cameraPosition,
     DEFAULT_CAMERA_AZIMUTH,
     DEFAULT_CAMERA_ELEVATION,
-    FLY_DISTANCE_PER_SECOND,
-    MAX_ACTIVE_MORPH_TARGETS,
-    MAX_JOINTS,
-    MORPH_TEXTURE_UNIT,
-    NAV_KEYS,
-    ORBIT_RAD_PER_PIXEL,
-    ORBIT_RAD_PER_SECOND,
-} from './constants.js';
-import { GL, linkProgram } from './gl-utils.js';
+    fitCameraToScene,
+    orbitBy,
+    orbitPivot,
+    panBy,
+    zoomBy,
+} from './camera.js';
+import { installViewerControls } from './controls.js';
+import { GL } from './gl-utils.js';
+import { MORPH_TEXTURE_UNIT } from './morph-texture.js';
 import { uploadPrimitive } from './primitive-upload.js';
-import {
-    BACKGROUND_FRAG_SRC,
-    BACKGROUND_VERT_SRC,
-    FRAG_SRC,
-    LINE_FRAG_SRC,
-    LINE_VERT_SRC,
-    VERT_SRC,
-} from './shaders.js';
+import { MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS } from './shaders.js';
+import { buildViewerPrograms } from './programs.js';
 
 export class Viewer {
     constructor(canvas, hooks = {}) {
@@ -114,83 +110,16 @@ export class Viewer {
     }
 
     _buildPrograms() {
-        this.program = linkProgram(this.gl, VERT_SRC, FRAG_SRC);
-        this.lineProgram = linkProgram(this.gl, LINE_VERT_SRC, LINE_FRAG_SRC);
-        this.backgroundProgram = linkProgram(this.gl, BACKGROUND_VERT_SRC, BACKGROUND_FRAG_SRC);
-
-        const gl = this.gl;
-        const p = this.program;
-        this.uniforms = {
-            uProjection: gl.getUniformLocation(p, 'uProjection'),
-            uView: gl.getUniformLocation(p, 'uView'),
-            uModel: gl.getUniformLocation(p, 'uModel'),
-            uNormalMatrix: gl.getUniformLocation(p, 'uNormalMatrix'),
-            uUseSkin: gl.getUniformLocation(p, 'uUseSkin'),
-            uJointCount: gl.getUniformLocation(p, 'uJointCount'),
-            uJointMatrix: gl.getUniformLocation(p, `uJointMatrix[0]`),
-            uMorphDeltas: gl.getUniformLocation(p, 'uMorphDeltas'),
-            uMorphCount: gl.getUniformLocation(p, 'uMorphCount'),
-            uMorphStride: gl.getUniformLocation(p, 'uMorphStride'),
-            uMorphWidth: gl.getUniformLocation(p, 'uMorphWidth'),
-            uMorphWeights: gl.getUniformLocation(p, 'uMorphWeights[0]'),
-            uMorphLayers: gl.getUniformLocation(p, 'uMorphLayers[0]'),
-            uUseSmoothNormals: gl.getUniformLocation(p, 'uUseSmoothNormals'),
-            uHasTexture: gl.getUniformLocation(p, 'uHasTexture'),
-            uHasNormals: gl.getUniformLocation(p, 'uHasNormals'),
-            uHasVertexColors: gl.getUniformLocation(p, 'uHasVertexColors'),
-            uUnlit: gl.getUniformLocation(p, 'uUnlit'),
-            uBaseColorOnly: gl.getUniformLocation(p, 'uBaseColorOnly'),
-            uBaseColor: gl.getUniformLocation(p, 'uBaseColor'),
-            uBaseColorFactor: gl.getUniformLocation(p, 'uBaseColorFactor'),
-            uBaseColorTexCoord: gl.getUniformLocation(p, 'uBaseColorTexCoord'),
-            uBaseColorTexOffset: gl.getUniformLocation(p, 'uBaseColorTexOffset'),
-            uBaseColorTexScale: gl.getUniformLocation(p, 'uBaseColorTexScale'),
-            uBaseColorTexRotation: gl.getUniformLocation(p, 'uBaseColorTexRotation'),
-            uHasMetallicRoughnessTexture: gl.getUniformLocation(p, 'uHasMetallicRoughnessTexture'),
-            uMetallicRoughness: gl.getUniformLocation(p, 'uMetallicRoughness'),
-            uMetallicRoughnessTexCoord: gl.getUniformLocation(p, 'uMetallicRoughnessTexCoord'),
-            uMetallic: gl.getUniformLocation(p, 'uMetallic'),
-            uRoughness: gl.getUniformLocation(p, 'uRoughness'),
-            uHasEmissiveTexture: gl.getUniformLocation(p, 'uHasEmissiveTexture'),
-            uEmissive: gl.getUniformLocation(p, 'uEmissive'),
-            uEmissiveTexCoord: gl.getUniformLocation(p, 'uEmissiveTexCoord'),
-            uEmissiveFactor: gl.getUniformLocation(p, 'uEmissiveFactor'),
-            uHasNormalTexture: gl.getUniformLocation(p, 'uHasNormalTexture'),
-            uNormalTexture: gl.getUniformLocation(p, 'uNormalTexture'),
-            uNormalTexCoord: gl.getUniformLocation(p, 'uNormalTexCoord'),
-            uNormalScale: gl.getUniformLocation(p, 'uNormalScale'),
-            uHasOcclusionTexture: gl.getUniformLocation(p, 'uHasOcclusionTexture'),
-            uOcclusionTexture: gl.getUniformLocation(p, 'uOcclusionTexture'),
-            uOcclusionTexCoord: gl.getUniformLocation(p, 'uOcclusionTexCoord'),
-            uOcclusionStrength: gl.getUniformLocation(p, 'uOcclusionStrength'),
-            uIrradianceMap: gl.getUniformLocation(p, 'uIrradianceMap'),
-            uPrefilteredMap: gl.getUniformLocation(p, 'uPrefilteredMap'),
-            uBrdfLut: gl.getUniformLocation(p, 'uBrdfLut'),
-            uEnvironmentMaxLod: gl.getUniformLocation(p, 'uEnvironmentMaxLod'),
-            uCameraPos: gl.getUniformLocation(p, 'uCameraPos'),
-        };
-        this.locations = {
-            position: 0,
-            normal: 1,
-            texCoord: 2,
-            texCoord1: 6,
-            color: 3,
-            joints: 4,
-            weights: 5,
-            smoothNormal: 15,
-        };
-        this.lineUniforms = {
-            uProjectionView: gl.getUniformLocation(this.lineProgram, 'uProjectionView'),
-            uColor: gl.getUniformLocation(this.lineProgram, 'uColor'),
-        };
-        this.backgroundUniforms = {
-            uInverseProjection: gl.getUniformLocation(this.backgroundProgram, 'uInverseProjection'),
-            uInverseView: gl.getUniformLocation(this.backgroundProgram, 'uInverseView'),
-            uEnvironment: gl.getUniformLocation(this.backgroundProgram, 'uEnvironment'),
-        };
-        // WebGL2 requires a VAO even for a shader driven solely by gl_VertexID.
-        this.backgroundVao = gl.createVertexArray();
-        this.environmentIbl = createEnvironmentIbl(gl, (message, type) => this._log(message, type));
+        const built = buildViewerPrograms(this.gl, (message, type) => this._log(message, type));
+        this.program = built.program;
+        this.lineProgram = built.lineProgram;
+        this.backgroundProgram = built.backgroundProgram;
+        this.uniforms = built.uniforms;
+        this.locations = built.locations;
+        this.lineUniforms = built.lineUniforms;
+        this.backgroundUniforms = built.backgroundUniforms;
+        this.backgroundVao = built.backgroundVao;
+        this.environmentIbl = built.environmentIbl;
     }
 
     _setupResize() {
@@ -213,112 +142,8 @@ export class Viewer {
     }
 
     _setupControls() {
-        const el = this.canvas;
-        let lastX = 0, lastY = 0;
-        // Drag mode picked once on pointerdown: 'orbit' | 'pan' | 'zoom'.
-        let mode = null;
-        const pointers = new Map();
-
-        const updateFromPointers = () => {
-            if (pointers.size === 1) {
-                const [ptr] = pointers.values();
-                this._orbitBy((ptr.x - lastX) * ORBIT_RAD_PER_PIXEL, (ptr.y - lastY) * ORBIT_RAD_PER_PIXEL);
-                lastX = ptr.x;
-                lastY = ptr.y;
-            } else if (pointers.size === 2) {
-                const pts = [...pointers.values()];
-                const dx = pts[0].x - pts[1].x;
-                const dy = pts[0].y - pts[1].y;
-                const dist = Math.hypot(dx, dy);
-                const midX = (pts[0].x + pts[1].x) * 0.5;
-                const midY = (pts[0].y + pts[1].y) * 0.5;
-                if (this._lastPinch) {
-                    this._zoomBy(this._lastPinch.dist / (dist || 1), midX, midY);
-                    this._panBy(midX - this._lastPinch.midX, midY - this._lastPinch.midY);
-                }
-                this._lastPinch = { dist, midX, midY };
-            }
-        };
-
-        el.addEventListener('pointerdown', (e) => {
-            el.setPointerCapture(e.pointerId);
-            pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-            lastX = e.clientX;
-            lastY = e.clientY;
-            if (pointers.size === 1) {
-                if (e.button === 1 || e.button === 2 || e.shiftKey) mode = 'pan';
-                else if (e.ctrlKey || e.altKey || e.metaKey) mode = 'zoom';
-                else mode = 'orbit';
-            }
-            // Keyboard navigation follows viewport focus.
-            el.focus({ preventScroll: true });
-            this.setAutoRotate(false);
-            this._lastPinch = null;
-            e.preventDefault();
-        });
-        el.addEventListener('pointermove', (e) => {
-            if (!pointers.has(e.pointerId)) return;
-            pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-            if (pointers.size === 1 && mode !== 'orbit') {
-                const dx = e.clientX - lastX;
-                const dy = e.clientY - lastY;
-                if (mode === 'pan') this._panBy(dx, dy);
-                else if (mode === 'zoom') this._zoomBy(Math.exp(dy * 0.005));
-                lastX = e.clientX;
-                lastY = e.clientY;
-            } else {
-                updateFromPointers();
-                if (pointers.size === 1) {
-                    lastX = e.clientX;
-                    lastY = e.clientY;
-                }
-            }
-            e.preventDefault();
-        });
-        const endPointer = (e) => {
-            pointers.delete(e.pointerId);
-            if (pointers.size < 2) this._lastPinch = null;
-            if (pointers.size === 0) mode = null;
-            try { el.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ }
-        };
-        el.addEventListener('pointerup', endPointer);
-        el.addEventListener('pointercancel', endPointer);
-        el.addEventListener('pointerleave', endPointer);
-
-        el.addEventListener('contextmenu', (e) => e.preventDefault());
-        // Keep the middle button from starting the browser's autoscroll mode.
-        el.addEventListener('auxclick', (e) => e.preventDefault());
-
-        el.addEventListener(
-            'wheel',
-            (e) => {
-                e.preventDefault();
-                // Firefox reports lines (and pages) rather than pixels; without
-                // this the same notch would barely move the camera there.
-                let dy = e.deltaY;
-                if (e.deltaMode === 1) dy *= 16;
-                else if (e.deltaMode === 2) dy *= this.canvas.clientHeight || 400;
-                this._zoomBy(Math.exp(dy * 0.001), e.clientX, e.clientY);
-            },
-            { passive: false },
-        );
-
-        el.addEventListener('keydown', (e) => {
-            this._navFast = e.shiftKey;
-            this._navSlow = e.altKey;
-            if (!NAV_KEYS.has(e.code)) return;
-            e.preventDefault();
-            this.setAutoRotate(false);
-            this._navKeys.add(e.code);
-        });
-        el.addEventListener('keyup', (e) => {
-            this._navFast = e.shiftKey;
-            this._navSlow = e.altKey;
-            this._navKeys.delete(e.code);
-        });
-        el.addEventListener('blur', () => this._navKeys.clear());
+        installViewerControls(this);
     }
-
     /**
      * Orbits by radians; positive `dAz`/`dEl` match dragging right/down.
      *
@@ -328,132 +153,24 @@ export class Viewer {
      * instead of swinging around an empty pivot.
      */
     _orbitBy(dAz, dEl) {
-        const right = this._basisRight;
-        const up = this._basisUp;
-        const forward = this._basisForward;
-        const pivot = this._orbitPivot(this._pivotScratch);
-
-        let a = 0, b = 0, c = 0;
-        if (pivot) {
-            this._cameraBasis(right, up, forward);
-            for (let i = 0; i < 3; i++) {
-                const d = this.camera.target[i] - pivot[i];
-                a += d * right[i];
-                b += d * up[i];
-                c += d * forward[i];
-            }
-        }
-
-        this.camera.azimuth -= dAz;
-        this.camera.elevation += dEl;
-        this.camera.elevation = Math.max(
-            -Math.PI * 0.495,
-            Math.min(Math.PI * 0.495, this.camera.elevation),
-        );
-
-        if (!pivot) return;
-        // Rebuilding the same camera-space offset in the turned basis rotates
-        // the target around the pivot exactly as far as the eye turned.
-        this._cameraBasis(right, up, forward);
-        for (let i = 0; i < 3; i++) {
-            this.camera.target[i] = pivot[i] + right[i] * a + up[i] * b + forward[i] * c;
-        }
+        orbitBy(this, dAz, dEl);
     }
 
     /** World-space centre of the loaded scene, or null when nothing is loaded. */
     _orbitPivot(out) {
-        const box = this.scene?.aabb;
-        if (!box) return null;
-        for (let i = 0; i < 3; i++) out[i] = (box.min[i] + box.max[i]) * 0.5;
-        return out;
+        return orbitPivot(this, out);
     }
 
-    /**
-     * Dollies the camera by `factor`. With client coordinates, the orbit target
-     * also slides toward the cursor so the point under it keeps its screen
-     * position — without that the target stays at the model centre and zooming
-     * in just buries the camera inside the geometry.
-     */
     _zoomBy(factor, clientX, clientY) {
-        const before = this.camera.distance;
-        this.camera.distance = Math.max(
-            this.camera.minDistance,
-            Math.min(this.camera.maxDistance, before * factor),
-        );
-        if (clientX === undefined) return;
-
-        // The clamp may have swallowed part of the requested dolly.
-        const applied = this.camera.distance / before;
-        const rect = this.canvas.getBoundingClientRect();
-        if (!rect.width || !rect.height) return;
-        const right = this._basisRight;
-        const up = this._basisUp;
-        this._cameraBasis(right, up);
-        // Offset of the cursor from the view centre, in world units on the
-        // plane through the target.
-        const k = (2 * before * Math.tan(this.camera.fov * 0.5)) / rect.height;
-        const ax = (clientX - (rect.left + rect.width * 0.5)) * k;
-        const ay = -(clientY - (rect.top + rect.height * 0.5)) * k;
-        const shift = 1 - applied;
-        for (let i = 0; i < 3; i++) {
-            this.camera.target[i] += (right[i] * ax + up[i] * ay) * shift;
-        }
+        zoomBy(this, factor, clientX, clientY);
     }
 
-    /**
-     * Slides the orbit target inside the camera plane so the point under the
-     * cursor stays under the cursor, for any orbit angle and field of view.
-     */
     _panBy(dx, dy) {
-        const right = this._basisRight;
-        const up = this._basisUp;
-        this._cameraBasis(right, up);
-        const height = this.canvas.clientHeight || this.canvas.height;
-        const k = (2 * this.camera.distance * Math.tan(this.camera.fov * 0.5))
-            / Math.max(1, height);
-        for (let i = 0; i < 3; i++) {
-            this.camera.target[i] += (up[i] * dy - right[i] * dx) * k;
-        }
+        panBy(this, dx, dy);
     }
 
-    /**
-     * Applies the held navigation keys for one frame: WASD and Q/E move the
-     * orbit target along the camera axes, arrows orbit.
-     */
     _applyKeyboardNavigation(dt) {
-        const keys = this._navKeys;
-        if (keys.size === 0) return;
-
-        let scale = 1;
-        if (this._navFast) scale *= 4;
-        if (this._navSlow) scale *= 0.25;
-
-        const orbitStep = ORBIT_RAD_PER_SECOND * dt * scale;
-        let dAz = 0, dEl = 0;
-        if (keys.has('ArrowLeft')) dAz -= 1;
-        if (keys.has('ArrowRight')) dAz += 1;
-        if (keys.has('ArrowUp')) dEl += 1;
-        if (keys.has('ArrowDown')) dEl -= 1;
-        if (dAz || dEl) this._orbitBy(dAz * orbitStep, dEl * orbitStep);
-
-        let fwd = 0, side = 0, lift = 0;
-        if (keys.has('KeyW')) fwd += 1;
-        if (keys.has('KeyS')) fwd -= 1;
-        if (keys.has('KeyD')) side += 1;
-        if (keys.has('KeyA')) side -= 1;
-        if (keys.has('KeyE')) lift += 1;
-        if (keys.has('KeyQ')) lift -= 1;
-        if (!fwd && !side && !lift) return;
-
-        const speed = FLY_DISTANCE_PER_SECOND * this.camera.distance * dt * scale;
-        const right = this._basisRight;
-        const up = this._basisUp;
-        const forward = this._basisForward;
-        this._cameraBasis(right, up, forward);
-        for (let i = 0; i < 3; i++) {
-            this.camera.target[i] +=
-                (forward[i] * fwd + right[i] * side + up[i] * lift) * speed;
-        }
+        applyKeyboardNavigation(this, dt);
     }
 
     _log(msg, type = 'info') {
@@ -671,68 +388,15 @@ export class Viewer {
     }
 
     _fitCameraToScene() {
-        const box = this.scene?.aabb;
-        if (!box) return;
-        const cx = (box.min[0] + box.max[0]) * 0.5;
-        const cy = (box.min[1] + box.max[1]) * 0.5;
-        const cz = (box.min[2] + box.max[2]) * 0.5;
-        const dx = box.max[0] - box.min[0];
-        const dy = box.max[1] - box.min[1];
-        const dz = box.max[2] - box.min[2];
-        // A sphere enclosing the full world-space AABB fits from every orbit
-        // angle, unlike the previous largest-axis estimate.
-        const radius = Math.hypot(dx, dy, dz) * 0.5;
-        const safeRadius = radius > 0 ? radius : 1;
-
-        this.camera.target[0] = cx;
-        this.camera.target[1] = cy;
-        this.camera.target[2] = cz;
-        const verticalFov = this.camera.fov;
-        const aspect = this.canvas.width / Math.max(1, this.canvas.height);
-        const horizontalFov = 2 * Math.atan(Math.tan(verticalFov * 0.5) * aspect);
-        const fitFov = Math.min(verticalFov, horizontalFov);
-        this.camera.distance = Math.max(0.5, (safeRadius / Math.sin(fitFov * 0.5)) * 1.12);
-        const diameter = Math.max(0.001, safeRadius * 2);
-        this.camera.near = Math.max(0.001, diameter * 0.001);
-        this.camera.far = diameter * 1000 + this.camera.distance * 2;
-        // Fixed limits would clamp a large asset below its own fit distance,
-        // so one wheel notch would snap the camera inside the model.
-        this.camera.minDistance = Math.max(0.001, this.camera.near * 2);
-        this.camera.maxDistance = Math.max(this.camera.distance, safeRadius) * 100;
+        fitCameraToScene(this);
     }
 
-    /**
-     * Right and up axes of the camera plane, from the same angles
-     * `_cameraPosition` uses: right = normalize(forward x worldUp),
-     * up = right x forward. cos(elevation) stays positive under the clamp.
-     */
     _cameraBasis(right, up, forward) {
-        const ce = Math.cos(this.camera.elevation);
-        const se = Math.sin(this.camera.elevation);
-        const ca = Math.cos(this.camera.azimuth);
-        const sa = Math.sin(this.camera.azimuth);
-        right[0] = ca;
-        right[1] = 0;
-        right[2] = -sa;
-        up[0] = -sa * se;
-        up[1] = ce;
-        up[2] = -ca * se;
-        if (!forward) return;
-        forward[0] = -ce * sa;
-        forward[1] = -se;
-        forward[2] = -ce * ca;
+        cameraBasis(this, right, up, forward);
     }
 
     _cameraPosition(out) {
-        const ce = Math.cos(this.camera.elevation);
-        const se = Math.sin(this.camera.elevation);
-        const ca = Math.cos(this.camera.azimuth);
-        const sa = Math.sin(this.camera.azimuth);
-        const r = this.camera.distance;
-        out[0] = this.camera.target[0] + r * ce * sa;
-        out[1] = this.camera.target[1] + r * se;
-        out[2] = this.camera.target[2] + r * ce * ca;
-        return out;
+        return cameraPosition(this, out);
     }
 
     _loop(now) {

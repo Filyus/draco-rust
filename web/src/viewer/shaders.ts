@@ -1,4 +1,11 @@
-import { MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS } from './constants.js';
+/**
+ * These two bound uniform array lengths declared below, so they belong with the
+ * GLSL that spells them out. The morph bound is a shader loop length rather
+ * than a hardware limit: a mesh may declare any number of targets, and the
+ * renderer blends the strongest-weighted ones.
+ */
+export const MAX_JOINTS = 256;
+export const MAX_ACTIVE_MORPH_TARGETS = 32;
 
 /** GLSL sources for the preview: PBR surface, debug lines and the backdrop. */
 
