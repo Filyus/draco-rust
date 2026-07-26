@@ -7,6 +7,7 @@ import { MORPH_TEXTURE_UNIT } from './morph-texture.ts';
 import { computeJointMatrices, updateWorldMatrices } from './scene-graph.ts';
 import type { SceneGraphHost } from './scene-graph.ts';
 import { MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS } from './shaders.ts';
+import type { ViewerMaterial, ViewerTextureBinding } from '../viewer-scene.ts';
 
 /**
  * What drawing a frame needs from the viewer: the context, the linked
@@ -219,12 +220,17 @@ export function glMode(host: RenderHost, mode: number, wireframe: boolean) {
   }
 }
 
-export function applyMaterial(host: RenderHost, material: any, uploaded: any, useSmoothNormals: boolean) {
+export function applyMaterial(
+  host: RenderHost,
+  material: ViewerMaterial | undefined,
+  uploaded: any,
+  useSmoothNormals: boolean,
+) {
   const gl = host.gl;
   const texCoord = material?.baseColorTexCoord ?? 0;
   const hasTexCoords = texCoord === 0 ? uploaded.hasTexCoords0
     : texCoord === 1 ? uploaded.hasTexCoords1 : false;
-  const baseTexture = host.glResources.textures[material?.baseColorTexture];
+  const baseTexture = host.glResources.textures[material?.baseColorTexture ?? -1];
   const hasTexture = !!baseTexture && hasTexCoords;
   gl.uniform1i(host.uniforms.uHasTexture, hasTexture ? 1 : 0);
   gl.uniform1i(host.uniforms.uHasNormals, uploaded.hasNormals || useSmoothNormals ? 1 : 0);
@@ -239,16 +245,16 @@ export function applyMaterial(host: RenderHost, material: any, uploaded: any, us
   }
   const factor = material?.baseColorFactor || [1, 1, 1, 1];
   gl.uniform4f(host.uniforms.uBaseColorFactor, factor[0], factor[1], factor[2], factor[3]);
-  const transform = material?.baseColorTextureTransform || {};
-  const offset = transform.offset || [0, 0];
-  const scale = transform.scale || [1, 1];
+  const transform = material?.baseColorTextureTransform;
+  const offset = transform?.offset || [0, 0];
+  const scale = transform?.scale || [1, 1];
   gl.uniform1i(host.uniforms.uBaseColorTexCoord, texCoord);
   gl.uniform2f(host.uniforms.uBaseColorTexOffset, offset[0], offset[1]);
   gl.uniform2f(host.uniforms.uBaseColorTexScale, scale[0], scale[1]);
-  gl.uniform1f(host.uniforms.uBaseColorTexRotation, transform.rotation || 0);
+  gl.uniform1f(host.uniforms.uBaseColorTexRotation, transform?.rotation || 0);
 
   const bindTexture = (
-    binding: any,
+    binding: ViewerTextureBinding | null | undefined,
     unit: number,
     textureUniform: WebGLUniformLocation | null,
     hasUniform: WebGLUniformLocation | null,
@@ -257,8 +263,7 @@ export function applyMaterial(host: RenderHost, material: any, uploaded: any, us
     const texCoord = binding?.texCoord ?? 0;
     const hasUv = texCoord === 0 ? uploaded.hasTexCoords0
       : texCoord === 1 ? uploaded.hasTexCoords1 : false;
-    const textureIndex = binding?.index;
-    const texture = host.glResources.textures[textureIndex];
+    const texture = host.glResources.textures[binding?.index ?? -1];
     const enabled = !!texture && hasUv;
     gl.uniform1i(hasUniform, enabled ? 1 : 0);
     gl.uniform1i(texCoordUniform, texCoord);

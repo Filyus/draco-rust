@@ -1,6 +1,6 @@
 import { mat4, vec3 } from '../math.ts';
 import type { Mat4, Vec3 } from '../math.ts';
-import type { ViewerNode, ViewerScene } from '../viewer-scene.ts';
+import type { ViewerMaterial, ViewerNode, ViewerScene } from '../viewer-scene.ts';
 import type { OrbitCamera } from './camera.ts';
 
 /** Callbacks the embedding page supplies. */
@@ -465,7 +465,11 @@ export class Viewer {
       if (tex) gl.deleteTexture(tex);
     }
     for (const image of new Set((this.scene?.textures || []).map((tex) => tex.image))) {
-      image?.close?.();
+      // Only a decoded ImageBitmap owns releasable memory; an <img> does not.
+      // Tested by shape rather than by instanceof, because this file is also
+      // imported by node tests where ImageBitmap is not defined at all.
+      const releasable = image as { close?: () => void } | null | undefined;
+      if (typeof releasable?.close === 'function') releasable.close();
     }
     this.glResources = null;
   }
@@ -586,7 +590,7 @@ export class Viewer {
     return selectMorphTargets(this, morph, weights);
   }
 
-  _applyMaterial(material: any, uploaded: any, useSmoothNormals: boolean) {
+  _applyMaterial(material: ViewerMaterial | undefined, uploaded: any, useSmoothNormals: boolean) {
     applyMaterial(this, material, uploaded, useSmoothNormals);
   }
 
