@@ -671,6 +671,20 @@ impl PackedGeometry {
             .map(|attribute| attribute.bytes().to_vec())
     }
 
+    /// Which document accessor this attribute was materialized from, or -1.
+    ///
+    /// Primitives share accessors routinely — a mesh split by material is the
+    /// usual case — and the materialized bytes alone cannot say so. Negative
+    /// where the source is unknown, which is every attribute of a compressed
+    /// primitive: its bytes come from the codec stream, not from the accessor
+    /// it names. A plain integer rather than an `Option` or a batch getter
+    /// because both cost more glue than the module's size budget can spare.
+    #[wasm_bindgen(js_name = attributeSourceAccessor)]
+    pub fn attribute_source_accessor(&self, index: usize) -> Result<i32, JsValue> {
+        self.attribute(index)
+            .map(|attribute| source_accessor_index(attribute.source_accessor()))
+    }
+
     #[wasm_bindgen(js_name = hasIndices)]
     pub fn has_indices(&self) -> bool {
         self.indices.is_some()
@@ -691,6 +705,21 @@ impl PackedGeometry {
     pub fn index_bytes(&self) -> Result<Vec<u8>, JsValue> {
         self.indices().map(|indices| indices.bytes().to_vec())
     }
+
+    /// Which document accessor the index stream came from, or -1.
+    #[wasm_bindgen(js_name = indexSourceAccessor)]
+    pub fn index_source_accessor(&self) -> Result<i32, JsValue> {
+        self.indices()
+            .map(|indices| source_accessor_index(indices.source_accessor()))
+    }
+}
+
+/// Narrow a source accessor index for the JS boundary, or -1 when unknown.
+#[cfg(feature = "read")]
+fn source_accessor_index(accessor: Option<usize>) -> i32 {
+    accessor
+        .and_then(|index| i32::try_from(index).ok())
+        .unwrap_or(-1)
 }
 
 #[cfg(feature = "read")]

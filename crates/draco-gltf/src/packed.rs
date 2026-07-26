@@ -188,7 +188,7 @@ pub enum GeometryError {
 /// assert_eq!(position.count(), 1);
 /// # Ok::<(), draco_gltf::GeometryError>(())
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 pub struct PackedAttribute {
     semantic: String,
     count: usize,
@@ -196,6 +196,23 @@ pub struct PackedAttribute {
     component_type: ComponentType,
     normalized: bool,
     bytes: Vec<u8>,
+    source_accessor: Option<usize>,
+}
+
+/// Equality is over the vertex data, not over where it was read from.
+///
+/// `source_accessor` records provenance: the same bytes materialized from a
+/// different document, or re-materialized after a write, are the same
+/// attribute, and a round-trip that renumbers accessors has lost nothing.
+impl PartialEq for PackedAttribute {
+    fn eq(&self, other: &Self) -> bool {
+        self.semantic == other.semantic
+            && self.count == other.count
+            && self.components == other.components
+            && self.component_type == other.component_type
+            && self.normalized == other.normalized
+            && self.bytes == other.bytes
+    }
 }
 
 impl PackedAttribute {
@@ -219,7 +236,26 @@ impl PackedAttribute {
             component_type,
             normalized,
             bytes,
+            source_accessor: None,
         })
+    }
+
+    /// Records which document accessor these bytes were materialized from.
+    ///
+    /// Primitives routinely share one accessor — a mesh split by material is
+    /// the usual case — and a consumer that rebuilds its own buffers has no
+    /// other way to notice, since the bytes arrive already materialized. Left
+    /// unset for compressed geometry, whose bytes come from the codec stream
+    /// rather than from the accessor the attribute names.
+    #[must_use]
+    pub fn with_source_accessor(mut self, accessor: usize) -> Self {
+        self.source_accessor = Some(accessor);
+        self
+    }
+
+    /// Returns the document accessor these bytes came from, when known.
+    pub const fn source_accessor(&self) -> Option<usize> {
+        self.source_accessor
     }
 
     /// Returns the glTF attribute semantic.
@@ -254,11 +290,21 @@ impl PackedAttribute {
 }
 
 /// One materialized, tightly packed primitive index stream.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 pub struct PackedIndices {
     count: usize,
     component_type: ComponentType,
     bytes: Vec<u8>,
+    source_accessor: Option<usize>,
+}
+
+/// Equality is over the index data; see [`PackedAttribute`]'s implementation.
+impl PartialEq for PackedIndices {
+    fn eq(&self, other: &Self) -> bool {
+        self.count == other.count
+            && self.component_type == other.component_type
+            && self.bytes == other.bytes
+    }
 }
 
 impl PackedIndices {
@@ -279,7 +325,22 @@ impl PackedIndices {
             count,
             component_type,
             bytes,
+            source_accessor: None,
         })
+    }
+
+    /// Records which document accessor these indices were materialized from.
+    ///
+    /// See [`PackedAttribute::with_source_accessor`]; the same sharing applies.
+    #[must_use]
+    pub fn with_source_accessor(mut self, accessor: usize) -> Self {
+        self.source_accessor = Some(accessor);
+        self
+    }
+
+    /// Returns the document accessor these indices came from, when known.
+    pub const fn source_accessor(&self) -> Option<usize> {
+        self.source_accessor
     }
 
     /// Returns the number of indices.

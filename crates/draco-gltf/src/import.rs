@@ -336,6 +336,11 @@ impl Import {
                     data.normalized,
                     data.bytes,
                 )
+                // Only the uncompressed path can name a source accessor. A
+                // Draco primitive's bytes come from its own codec stream, so
+                // two primitives naming one accessor say nothing about whether
+                // their vertex data is the same.
+                .map(|attribute| attribute.with_source_accessor(index.0))
                 .map_err(Error::Geometry)
             })
             .collect::<Result<Vec<_>>>()?;
@@ -351,6 +356,7 @@ impl Import {
                         ))
                     })?;
                 crate::PackedIndices::new(data.count, component_type, data.bytes)
+                    .map(|indices| indices.with_source_accessor(index.0))
                     .map_err(Error::Geometry)
             })
             .transpose()?;

@@ -32,10 +32,14 @@ export interface PackedGeometry {
   attributeComponents(index: number): number;
   attributeElementCount(index: number): number;
   attributeNormalized(index: number): boolean;
+  /** Source accessor of this attribute, or -1 when the reader cannot name one. */
+  attributeSourceAccessor(index: number): number;
   hasIndices(): boolean;
   indexBytes(): Uint8Array;
   indexComponentType(): number;
   indexCount(): number;
+  /** Source accessor of the index stream, or -1. */
+  indexSourceAccessor(): number;
 }
 
 export interface GltfAsset {

@@ -185,6 +185,7 @@ jobs:
           npm run test:export-branches
           npm run test:fbx-export-interpretation
           npm run test:scene-document-samplers
+          npm run test:gltf-accessor-dedup
         working-directory: web
 
       - name: Build and smoke raw glTF writer

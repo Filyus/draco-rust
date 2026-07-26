@@ -54,7 +54,7 @@ export function buildSceneDocumentFromGltf(
   try {
     const manifest: GltfJson = JSON.parse(new TextDecoder().decode(asset.json()));
     const document = createSceneDocument({ warnings: extensionWarnings(manifest) });
-    const accessorBySource = new Map<number, number>();
+    const accessorBySource = new Map<string, number>();
     const imageResources = collectImageResources(asset, manifest.images || [], resources, document);
     const textureBySource = collectTextures(manifest.textures || [], manifest.samplers || [], imageResources, document);
     collectMaterials(manifest.materials || [], textureBySource, document);
@@ -184,7 +184,7 @@ function collectMeshes(
   asset: GltfAsset,
   meshes: GltfJson[],
   document: SceneDocument,
-  accessorBySource: Map<number, number>,
+  accessorBySource: Map<string, number>,
 ) {
   document.meshes.push(...meshes.map((mesh, meshIndex) => ({
     name: mesh.name || `mesh_${meshIndex}`,
@@ -194,13 +194,19 @@ function collectMeshes(
       try {
         const attributes: AttributeMap = {};
         for (let index = 0; index < packed.attributeCount(); index += 1) {
-          attributes[packed.attributeSemantic(index)] = appendAccessor(document, {
-            bytes: new Uint8Array(packed.attributeBytes(index)),
-            componentType: componentType(packed.attributeComponentType(index)),
-            components: packed.attributeComponents(index),
-            count: packed.attributeElementCount(index),
-            normalized: packed.attributeNormalized(index),
-          });
+          attributes[packed.attributeSemantic(index)] = reuseAccessor(
+            document,
+            accessorBySource,
+            'attribute',
+            packed.attributeSourceAccessor(index),
+            () => ({
+              bytes: new Uint8Array(packed.attributeBytes(index)),
+              componentType: componentType(packed.attributeComponentType(index)),
+              components: packed.attributeComponents(index),
+              count: packed.attributeElementCount(index),
+              normalized: packed.attributeNormalized(index),
+            }),
+          );
         }
         const targets = (primitive.targets || []).map((target: GltfJson) => {
           const converted: AttributeMap = {};
@@ -216,13 +222,19 @@ function collectMeshes(
           ...(targets.length > 0 ? { targets } : {}),
         };
         if (packed.hasIndices()) {
-          result.indices = appendAccessor(document, {
-            bytes: new Uint8Array(packed.indexBytes()),
-            componentType: componentType(packed.indexComponentType()),
-            components: 1,
-            count: packed.indexCount(),
-            normalized: false,
-          });
+          result.indices = reuseAccessor(
+            document,
+            accessorBySource,
+            'indices',
+            packed.indexSourceAccessor(),
+            () => ({
+              bytes: new Uint8Array(packed.indexBytes()),
+              componentType: componentType(packed.indexComponentType()),
+              components: 1,
+              count: packed.indexCount(),
+              normalized: false,
+            }),
+          );
         }
         return result;
       } finally {
@@ -265,7 +277,7 @@ function collectSkins(
   asset: GltfAsset,
   skins: GltfJson[],
   document: SceneDocument,
-  accessorBySource: Map<number, number>,
+  accessorBySource: Map<string, number>,
 ) {
   document.skins.push(...skins.map((skin, skinIndex) => ({
     name: skin.name || `skin_${skinIndex}`,
@@ -281,7 +293,7 @@ function collectAnimations(
   asset: GltfAsset,
   animations: GltfJson[],
   document: SceneDocument,
-  accessorBySource: Map<number, number>,
+  accessorBySource: Map<string, number>,
 ) {
   document.animations.push(...animations.map((animation, animationIndex) => {
     const samplers: AnimationSampler[] = [];
@@ -375,24 +387,56 @@ function sourceAccessor(
   asset: GltfAsset,
   sourceIndex: number,
   document: SceneDocument,
-  cache: Map<number, number>,
+  cache: Map<string, number>,
 ): number {
-  const cached = cache.get(sourceIndex);
+  return reuseAccessor(document, cache, 'raw', sourceIndex, () => {
+    const packed = asset.readAccessor(sourceIndex);
+    try {
+      return {
+        bytes: new Uint8Array(packed.bytes()),
+        componentType: componentType(packed.componentType()),
+        components: packed.components(),
+        count: packed.count(),
+        normalized: packed.normalized(),
+      };
+    } finally {
+      packed.free();
+    }
+  });
+}
+
+/**
+ * Append an accessor, or point at the one a previous reader already appended.
+ *
+ * Primitives share source accessors constantly — a mesh split by material is
+ * the standard case — and the materialized bytes cannot say so, which is why
+ * the reader reports the source index alongside them. Without this, a mesh of
+ * seven primitives over five accessors produced thirty-five copies of the same
+ * vertex data, in the document, in every GLB written from it, and in every FBX.
+ *
+ * The role belongs in the key. `geometryAccessorTargets` assigns one
+ * bufferView target per accessor, first writer winning, so an accessor read
+ * once as an attribute and once as an index stream must stay two document
+ * accessors — sharing it would emit one buffer view with the wrong target.
+ *
+ * A negative source index means the reader could not name one, which is every
+ * attribute of a Draco primitive: its bytes come from the codec stream, and two
+ * primitives naming one accessor say nothing about whether they match.
+ */
+function reuseAccessor(
+  document: SceneDocument,
+  cache: Map<string, number>,
+  role: 'attribute' | 'indices' | 'raw',
+  sourceIndex: number,
+  read: () => Omit<SceneAccessor, 'min' | 'max'>,
+): number {
+  if (!Number.isInteger(sourceIndex) || sourceIndex < 0) return appendAccessor(document, read());
+  const key = `${role}:${sourceIndex}`;
+  const cached = cache.get(key);
   if (cached !== undefined) return cached;
-  const packed = asset.readAccessor(sourceIndex);
-  try {
-    const index = appendAccessor(document, {
-      bytes: new Uint8Array(packed.bytes()),
-      componentType: componentType(packed.componentType()),
-      components: packed.components(),
-      count: packed.count(),
-      normalized: packed.normalized(),
-    });
-    cache.set(sourceIndex, index);
-    return index;
-  } finally {
-    packed.free();
-  }
+  const index = appendAccessor(document, read());
+  cache.set(key, index);
+  return index;
 }
 
 function lastTime(accessor: SceneAccessor | undefined): number {

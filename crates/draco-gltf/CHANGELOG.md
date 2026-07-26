@@ -11,6 +11,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `PackedAttribute::source_accessor` and `PackedIndices::source_accessor`, with
+  matching `with_source_accessor` builders, so a consumer can tell that two
+  primitives were materialized from one document accessor — the usual case for
+  a mesh split by material. Set on uncompressed reads only; compressed geometry
+  leaves it unset, because its bytes come from the codec stream rather than
+  from the accessor the attribute names. Equality of packed geometry ignores
+  the field: the same bytes read from a different document are the same
+  geometry.
 - `AccessorData::accessor_type` and
   `DocumentAccessorSource::read_buffer_view` for generic accessor and embedded
   payload consumers, including WebAssembly bindings.
