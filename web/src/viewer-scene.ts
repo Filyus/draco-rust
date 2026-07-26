@@ -13,9 +13,15 @@ export interface Trs {
     scale: number[];
 }
 
-/** An attribute or index buffer, still in its source component encoding. */
+/**
+ * An attribute or index buffer, still in its source component encoding.
+ *
+ * `bytes` is usually a Uint8Array, but the FBX morph path builds dense float
+ * deltas directly and hands those over; the viewer normalizes both through
+ * byteView before upload.
+ */
 export interface RuntimeAccessor {
-    bytes: Uint8Array;
+    bytes: ArrayBufferView;
     componentType: number;
     components: number;
     normalized: boolean;
@@ -37,6 +43,12 @@ export interface ViewerNode {
     animationTrs?: Trs;
     /** FBX only: set when Model TRS keys are already in their local space. */
     usesAuthoredModelTrs?: boolean;
+    /** FBX only: the source object id, which skin clusters reference. */
+    id?: number | null;
+    /** FBX only: the BindPose-derived basis the rest pose was built from. */
+    bindTrs?: Trs;
+    /** FBX only: set for nodes carrying pre/post rotation or pivot terms. */
+    hasComplexTransformStack?: boolean;
     /** glTF loader only: the node's own index in the source document. */
     index?: number;
 }

@@ -5,18 +5,36 @@
  * this module.
  */
 
-import { identityMat4, invertMat4, multiplyMat4 } from './mat4.js';
-import { adaptFbxAnimation } from './fbx-animation-adapter.js';
-import { adaptFbxMaterial, adaptFbxTextures } from './fbx-material-adapter.js';
+import { identityMat4, invertMat4, multiplyMat4 } from './mat4.ts';
+import { adaptFbxAnimation } from './fbx-animation-adapter.ts';
+import { adaptFbxMaterial, adaptFbxTextures } from './fbx-material-adapter.ts';
+import type { ResourceMap } from './scene-resources.ts';
+import type { Renderable, Trs, ViewerNode, ViewerSkin } from './viewer-scene.ts';
 
-export async function buildSceneFromFbx(parsed, resources, hooks, buildSceneFromMeshes) {
+/** The semantic FBX tree, walked node by node rather than trusted wholesale. */
+type FbxJson = any;
+
+/** The runtime scene, still being assembled from several importers. */
+type ViewerSceneDraft = any;
+
+/** Diagnostics sink shared with the rest of the import path. */
+interface ImportHooks {
+    onLog?: (message: string, level: string) => void;
+}
+
+export async function buildSceneFromFbx(
+    parsed: FbxJson,
+    resources: ResourceMap,
+    hooks: ImportHooks,
+    buildSceneFromMeshes: (parsed: FbxJson, resources: ResourceMap, hooks: ImportHooks) => Promise<ViewerSceneDraft>,
+): Promise<ViewerSceneDraft> {
     const roots = parsed?.scene?.rootNodes;
     if (!Array.isArray(roots) || roots.length === 0) {
         return buildSceneFromMeshes(parsed, resources, hooks);
     }
 
-    const flatMeshes = [];
-    const collectMeshes = (node) => {
+    const flatMeshes: FbxJson[] = [];
+    const collectMeshes = (node: FbxJson) => {
         flatMeshes.push(...(node.meshes || []));
         for (const child of node.children || []) collectMeshes(child);
     };
@@ -37,27 +55,27 @@ export async function buildSceneFromFbx(parsed, resources, hooks, buildSceneFrom
     const animations = parsed?.scene?.animations || parsed?.animations || [];
     if (animations.length > 0) {
         scene.animations = animations
-            .map((clip) => adaptFbxAnimation(clip, nodeById, nodeByName))
+            .map((clip: FbxJson) => adaptFbxAnimation(clip, nodeById, nodeByName))
             .filter(Boolean);
     }
     return scene;
 }
 
-function applyFbxMaterials(scene, parsed, flatMeshes) {
+function applyFbxMaterials(scene: ViewerSceneDraft, parsed: FbxJson, flatMeshes: FbxJson[]) {
     const fbxMaterials = parsed?.scene?.materials || parsed?.materials || [];
     if (fbxMaterials.length === 0) return;
     const converted = fbxMaterials.map(adaptFbxMaterial);
-    scene.materials = scene.meshes.map((mesh, meshIndex) => {
+    scene.materials = scene.meshes.map((mesh: FbxJson, meshIndex: number) => {
         const materialIndex = typeof flatMeshes[meshIndex]?.material === 'number'
             ? flatMeshes[meshIndex].material : 0;
         return converted[materialIndex] || converted[0] || mesh._defaultMaterial;
     });
-    scene.meshes.forEach((mesh, meshIndex) => {
-        mesh.primitives.forEach((primitive) => { primitive.materialIndex = meshIndex; });
+    scene.meshes.forEach((mesh: FbxJson, meshIndex: number) => {
+        mesh.primitives.forEach((primitive: FbxJson) => { primitive.materialIndex = meshIndex; });
     });
 }
 
-function expandFbxMorphTargets(scene, flatMeshes) {
+function expandFbxMorphTargets(scene: ViewerSceneDraft, flatMeshes: FbxJson[]) {
     // FBX morphs are control-point sparse while WebGL uses expanded render
     // vertices; retain source sparsity for FBX export and build dense preview
     // attributes only at this format boundary.
@@ -100,7 +118,12 @@ function expandFbxMorphTargets(scene, flatMeshes) {
     }
 }
 
-async function applyFbxTextures(scene, parsed, resources, hooks) {
+async function applyFbxTextures(
+    scene: ViewerSceneDraft,
+    parsed: FbxJson,
+    resources: ResourceMap,
+    hooks: ImportHooks,
+) {
     const sourceTextures = parsed?.scene?.textures || parsed?.textures || [];
     if (sourceTextures.length === 0) return;
     const warnings = parsed.warnings || (parsed.warnings = []);
@@ -120,9 +143,9 @@ async function applyFbxTextures(scene, parsed, resources, hooks) {
     }
 }
 
-function buildFbxNodes(roots) {
-    const bindPoseByNodeId = new Map();
-    const collectBindPoses = (source) => {
+function buildFbxNodes(roots: FbxJson[]) {
+    const bindPoseByNodeId = new Map<number, number[]>();
+    const collectBindPoses = (source: FbxJson) => {
         for (const mesh of source.meshes || []) {
             for (const entry of mesh.skin?.bindPose || []) {
                 if (typeof entry?.nodeId === 'number' && Array.isArray(entry.matrix)
@@ -135,12 +158,12 @@ function buildFbxNodes(roots) {
     };
     roots.forEach(collectBindPoses);
 
-    const nodes = [];
-    const renderables = [];
-    const nodeById = new Map();
-    const nodeByName = new Map();
+    const nodes: ViewerNode[] = [];
+    const renderables: Renderable[] = [];
+    const nodeById = new Map<unknown, ViewerNode>();
+    const nodeByName = new Map<string, ViewerNode>();
     let meshIndex = 0;
-    const appendNode = (source, parentBindMatrix = null) => {
+    const appendNode = (source: FbxJson, parentBindMatrix: number[] | null = null): number => {
         const nodeId = typeof source.id === 'number' ? source.id : null;
         const bindMatrix = nodeId === null ? null : bindPoseByNodeId.get(nodeId);
         const sourceMatrix = Array.isArray(source.matrix) && source.matrix.length === 16 ? source.matrix : null;
@@ -160,7 +183,7 @@ function buildFbxNodes(roots) {
             : cloneTrs(bindTrs);
         const usesAuthoredModelTrs = Boolean(sourceMatrix && !source.hasComplexTransformStack);
         const nodeIndex = nodes.length;
-        const node = {
+        const node: ViewerNode = {
             id: nodeId,
             name: source.name || `node_${nodes.length}`,
             trs: cloneTrs(bindTrs),
@@ -171,7 +194,7 @@ function buildFbxNodes(roots) {
             usesAuthoredModelTrs,
             localMatrix,
             children: [],
-            weights: Float32Array.from((source.meshes?.[0]?.morphTargets || []).map((target) => (Number(target.defaultWeight) || 0) / 100)),
+            weights: Float32Array.from((source.meshes?.[0]?.morphTargets || []).map((target: FbxJson) => (Number(target.defaultWeight) || 0) / 100)),
             meshIndex: -1,
             skinIndex: -1,
             world: new Float32Array(16),
@@ -184,21 +207,25 @@ function buildFbxNodes(roots) {
             if (node.meshIndex < 0) node.meshIndex = meshIndex;
             meshIndex += 1;
         }
-        node.children = (source.children || []).map((child) => appendNode(child, bindMatrix || parentBindMatrix));
+        node.children = (source.children || []).map((child: FbxJson) => appendNode(child, bindMatrix || parentBindMatrix));
         return nodeIndex;
     };
-    const rootIndices = roots.map((root) => appendNode(root));
+    const rootIndices = roots.map((root: FbxJson) => appendNode(root));
     return { nodes, renderables, nodeById, nodeByName, rootIndices };
 }
 
-function attachFbxSkins(roots, renderables, nodeById) {
-    const skins = [];
+function attachFbxSkins(
+    roots: FbxJson[],
+    renderables: Renderable[],
+    nodeById: Map<unknown, ViewerNode>,
+): ViewerSkin[] {
+    const skins: ViewerSkin[] = [];
     let flatMeshIndex = 0;
-    const attach = (source, ownerNode) => {
+    const attach = (source: FbxJson, ownerNode: ViewerNode | undefined) => {
         for (const sourceMesh of source.meshes || []) {
             if (sourceMesh.skin?.clusters?.length) {
-                const bindPose = new Map((sourceMesh.skin.bindPose || []).map((entry) => [entry.nodeId, entry.matrix]));
-                const joints = sourceMesh.skin.clusters.map((cluster) => {
+                const bindPose = new Map<unknown, number[]>((sourceMesh.skin.bindPose || []).map((entry: FbxJson) => [entry.nodeId, entry.matrix]));
+                const joints = sourceMesh.skin.clusters.map((cluster: FbxJson) => {
                     const meshBind = bindPose.get(ownerNode?.id) || cluster.meshBindTransform || identityMat4();
                     const jointNode = nodeById.get(cluster.jointNodeId);
                     // For plain-TRS bones the Cluster TransformLink is the
@@ -216,7 +243,7 @@ function attachFbxSkins(roots, renderables, nodeById) {
                         inverseBind: Float32Array.from(multiplyMat4(inverseJointBind, meshBind) || inverseJointBind),
                     };
                 });
-                if (joints.every((joint) => joint.node)) {
+                if (joints.every((joint: FbxJson) => joint.node)) {
                     const skinIndex = skins.length;
                     skins.push({ name: `${sourceMesh.name || 'mesh'}_skin`, joints });
                     renderables[flatMeshIndex].skinIndex = skinIndex;
@@ -226,17 +253,17 @@ function attachFbxSkins(roots, renderables, nodeById) {
         }
         for (const child of source.children || []) attach(child, nodeById.get(child.id));
     };
-    roots.forEach((root) => attach(root, nodeById.get(root.id)));
+    roots.forEach((root: FbxJson) => attach(root, nodeById.get(root.id)));
     return skins;
 }
 
-function decomposeFbxMatrix(matrix) {
+function decomposeFbxMatrix(matrix: ArrayLike<number>): Trs {
     const scale = [Math.hypot(matrix[0], matrix[1], matrix[2]) || 1, Math.hypot(matrix[4], matrix[5], matrix[6]) || 1, Math.hypot(matrix[8], matrix[9], matrix[10]) || 1];
     const m00 = matrix[0] / scale[0], m01 = matrix[4] / scale[1], m02 = matrix[8] / scale[2];
     const m10 = matrix[1] / scale[0], m11 = matrix[5] / scale[1], m12 = matrix[9] / scale[2];
     const m20 = matrix[2] / scale[0], m21 = matrix[6] / scale[1], m22 = matrix[10] / scale[2];
     const trace = m00 + m11 + m22;
-    let rotation;
+    let rotation: number[];
     if (trace > 0) { const s = Math.sqrt(trace + 1) * 2; rotation = [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s]; }
     else if (m00 > m11 && m00 > m22) { const s = Math.sqrt(1 + m00 - m11 - m22) * 2; rotation = [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]; }
     else if (m11 > m22) { const s = Math.sqrt(1 + m11 - m00 - m22) * 2; rotation = [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]; }
@@ -245,10 +272,10 @@ function decomposeFbxMatrix(matrix) {
     return { translation: [matrix[12], matrix[13], matrix[14]], rotation: rotation.map((value) => value / length), scale };
 }
 
-function cloneTrs(trs) {
+function cloneTrs(trs: Trs): Trs {
     return { translation: [...trs.translation], rotation: [...trs.rotation], scale: [...trs.scale] };
 }
 
-function restTrs() {
+function restTrs(): Trs {
     return { translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] };
 }
