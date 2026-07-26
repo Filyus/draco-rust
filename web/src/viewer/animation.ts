@@ -1,4 +1,8 @@
-import { quat } from '../math.js';
+import { quat } from '../math.ts';
+import type { AnimationPath, ViewerNode } from '../viewer-scene.ts';
+
+/** The runtime scene as the viewer holds it while a clip plays. */
+type ViewerSceneState = any;
 
 /**
  * Animation sampling over the runtime scene.
@@ -7,13 +11,13 @@ import { quat } from '../math.js';
  * exercised directly in Node by the parity tests.
  */
 
-export function applyAnimation(scene, clipIndex, t) {
+export function applyAnimation(scene: ViewerSceneState, clipIndex: number, t: number) {
     const clip = scene.animations[clipIndex];
     if (!clip) return;
     // Reset each animated node before applying this frame. This is important
     // when switching clips, and for permissive FBX where a static rest matrix
     // is converted to TRS only once its Lcl animation is evaluated.
-    const resetNodes = new Set();
+    const resetNodes = new Set<ViewerNode>();
     for (const channel of clip.channels) {
         const node = channel.node;
         const animationRest = node?.animationTrs || node?.restTrs;
@@ -54,8 +58,18 @@ export function applyAnimation(scene, clipIndex, t) {
     }
 }
 
-function applyChannel(node, path, targetCount, interpolation, output, i0, frac, duration) {
-    const out = path === 'weights' ? node.weights : node.trs[path];
+function applyChannel(
+    node: ViewerNode,
+    path: AnimationPath,
+    targetCount: number,
+    interpolation: string,
+    output: ArrayLike<number>,
+    i0: number,
+    frac: number,
+    duration: number,
+) {
+    const out: Float32Array | number[] | undefined =
+        path === 'weights' ? node.weights : node.trs[path];
     // Keep this guard at the render boundary so an unsupported future channel
     // cannot break the animation loop and leave the preview canvas stale.
     if (!out) return;
@@ -111,7 +125,14 @@ function applyChannel(node, path, targetCount, interpolation, output, i0, frac, 
 }
 
 /** Evaluate one component of a glTF CUBICSPLINE animation segment. */
-export function cubicSplineInterpolate(p0, outTangent0, p1, inTangent1, t, duration) {
+export function cubicSplineInterpolate(
+    p0: number,
+    outTangent0: number,
+    p1: number,
+    inTangent1: number,
+    t: number,
+    duration: number,
+): number {
     const t2 = t * t;
     const t3 = t2 * t;
     const c0 = 2 * t3 - 3 * t2 + 1;

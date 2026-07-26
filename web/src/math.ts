@@ -6,10 +6,14 @@
  *   where mXY means column X, row Y.
  */
 
-/** Destinations are always the Float32Arrays the viewer keeps around. */
-export type Mat4 = Float32Array;
-export type Vec3 = Float32Array;
-export type Quat = Float32Array;
+/**
+ * Destinations are usually the Float32Arrays the viewer keeps around, but the
+ * animation sampler writes into a node's plain TRS arrays too. Every write
+ * below is by index, so both are equally valid targets.
+ */
+export type Mat4 = Float32Array | number[];
+export type Vec3 = Float32Array | number[];
+export type Quat = Float32Array | number[];
 
 /**
  * Read-only operand. Kept wider than the destinations because callers also

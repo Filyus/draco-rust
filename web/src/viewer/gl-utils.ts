@@ -2,8 +2,10 @@
 
 export const GL = WebGL2RenderingContext;
 
-export function compileShader(gl, type, source) {
-    const shader = gl.createShader(type);
+// createShader and createProgram return null only on a lost context, where
+// the original code already failed at its next call.
+export function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
+    const shader = gl.createShader(type)!;
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
@@ -14,8 +16,8 @@ export function compileShader(gl, type, source) {
     return shader;
 }
 
-export function linkProgram(gl, vert, frag) {
-    const program = gl.createProgram();
+export function linkProgram(gl: WebGL2RenderingContext, vert: string, frag: string): WebGLProgram {
+    const program = gl.createProgram()!;
     gl.attachShader(program, compileShader(gl, gl.VERTEX_SHADER, vert));
     gl.attachShader(program, compileShader(gl, gl.FRAGMENT_SHADER, frag));
     gl.linkProgram(program);
@@ -28,10 +30,10 @@ export function linkProgram(gl, vert, frag) {
 }
 
 /** Return the original byte layout of an ArrayBuffer or typed-array view. */
-export function byteView(data) {
+export function byteView(data: unknown): Uint8Array {
     if (data instanceof Uint8Array) return data;
     if (ArrayBuffer.isView(data)) {
-        return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        return new Uint8Array(data.buffer as ArrayBuffer, data.byteOffset, data.byteLength);
     }
     if (data instanceof ArrayBuffer) return new Uint8Array(data);
     throw new Error('attribute payload is not binary data');

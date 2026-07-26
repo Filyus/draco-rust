@@ -1,8 +1,15 @@
-import { byteView } from './gl-utils.js';
+import { byteView } from './gl-utils.ts';
+import type { RuntimeAccessor, ViewerPrimitive } from '../viewer-scene.ts';
 
 /** Morph target deltas, packed into an array texture for the shader loop. */
 
-function fillMorphLayer(layer, attr, vertexCount, stride, slot) {
+function fillMorphLayer(
+    layer: Float32Array,
+    attr: RuntimeAccessor | null,
+    vertexCount: number,
+    stride: number,
+    slot: number,
+): boolean {
     if (!attr || attr.componentType !== 5126 || attr.components !== 3) return false;
     const bytes = byteView(attr.bytes);
     const count = Math.min(vertexCount, attr.count);
@@ -25,7 +32,11 @@ function fillMorphLayer(layer, attr, vertexCount, stride, slot) {
  * them all, so attribute-fed deltas could never exceed four targets. A texture
  * has no such budget, which is what lets a mesh declare any number of targets.
  */
-export function uploadMorphTexture(gl, primitive, vertexCount) {
+export function uploadMorphTexture(
+    gl: WebGL2RenderingContext,
+    primitive: ViewerPrimitive,
+    vertexCount: number,
+) {
     const positions = primitive.morphPositions || [];
     const normals = primitive.morphNormals || [];
     const targetCount = Math.max(positions.length, normals.length);

@@ -1,18 +1,34 @@
-import { buildNormalizedWeightAttribute, buildSmoothNormalAttribute } from './geometry.js';
-import { byteView } from './gl-utils.js';
-import { uploadMorphTexture } from './morph-texture.js';
+import { buildNormalizedWeightAttribute, buildSmoothNormalAttribute } from './geometry.ts';
+import { byteView } from './gl-utils.ts';
+import { uploadMorphTexture } from './morph-texture.ts';
+import type { RuntimeAccessor, ViewerPrimitive } from '../viewer-scene.ts';
+
+/** Attribute slot -> shader location, as the program layout reports it. */
+type LocationMap = Record<string, number>;
+
+/** What the renderer needs to draw this primitive later. */
+type UploadedPrimitive = any;
 
 /** One primitive's VAO, buffers and attribute layout. */
 
-export function uploadPrimitive(gl, primitive, locationMap) {
+export function uploadPrimitive(
+    gl: WebGL2RenderingContext,
+    primitive: ViewerPrimitive,
+    locationMap: LocationMap,
+): UploadedPrimitive {
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
 
-    const buffers = [];
+    const buffers: WebGLBuffer[] = [];
     const positions = primitive.attributes.POSITION;
     if (!positions) throw new Error('primitive is missing POSITION attribute');
 
-    function bindAccessor(attr, semantic, location, desiredComponents) {
+    function bindAccessor(
+        attr: RuntimeAccessor | null | undefined,
+        semantic: string,
+        location: number,
+        desiredComponents?: number,
+    ): boolean {
         if (!attr || location < 0) return false;
         if (desiredComponents && attr.components !== desiredComponents) {
             gl.disableVertexAttribArray(location);
@@ -29,7 +45,7 @@ export function uploadPrimitive(gl, primitive, locationMap) {
         return true;
     }
 
-    function bindAttribute(semantic, location, desiredComponents) {
+    function bindAttribute(semantic: string, location: number, desiredComponents?: number) {
         return bindAccessor(primitive.attributes[semantic], semantic, location, desiredComponents);
     }
 
@@ -45,7 +61,7 @@ export function uploadPrimitive(gl, primitive, locationMap) {
         smoothNormal: locationMap.smoothNormal,
     };
 
-    const info = {
+    const info: UploadedPrimitive = {
         vao,
         buffers,
         hasNormals: !!bindAttribute('NORMAL', layout.normal),
@@ -72,7 +88,7 @@ export function uploadPrimitive(gl, primitive, locationMap) {
     info.morph = uploadMorphTexture(gl, primitive, positions.count);
     info.morphTargetCount = info.morph ? info.morph.layerCount : 0;
 
-    let indexBuffer = null;
+    let indexBuffer: WebGLBuffer | null = null;
     if (primitive.indices) {
         const idx = primitive.indices;
         const bytes = byteView(idx.bytes);

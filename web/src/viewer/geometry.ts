@@ -1,5 +1,6 @@
-import { WEIGHT_SUM_TOLERANCE } from './constants.js';
-import { byteView } from './gl-utils.js';
+import { WEIGHT_SUM_TOLERANCE } from './constants.ts';
+import { byteView } from './gl-utils.ts';
+import type { RuntimeAccessor, ViewerPrimitive } from '../viewer-scene.ts';
 
 /**
  * Attribute preparation done on the CPU before upload.
@@ -10,7 +11,7 @@ import { byteView } from './gl-utils.js';
  * vertices toward the origin.
  */
 
-export function buildSmoothNormalAttribute(primitive) {
+export function buildSmoothNormalAttribute(primitive: ViewerPrimitive): RuntimeAccessor | null {
     const positions = primitive.attributes.POSITION;
     const normals = primitive.attributes.NORMAL;
     if (primitive.mode !== 4 || !positions
@@ -30,8 +31,8 @@ export function buildSmoothNormalAttribute(primitive) {
     const normalView = normalBytes
         ? new DataView(normalBytes.buffer, normalBytes.byteOffset, normalBytes.byteLength)
         : null;
-    const position = (index, axis) => positionView.getFloat32((index * 3 + axis) * 4, true);
-    const sourceNormal = (index, axis) => normalView
+    const position = (index: number, axis: number) => positionView.getFloat32((index * 3 + axis) * 4, true);
+    const sourceNormal = (index: number, axis: number) => normalView
         ? normalView.getFloat32((index * 3 + axis) * 4, true)
         : (axis === 1 ? 1 : 0);
 
@@ -40,7 +41,8 @@ export function buildSmoothNormalAttribute(primitive) {
     // of rounding deliberately split cube edges and other hard surfaces.
     const groupIds = new Uint32Array(count);
     const groups = new Map();
-    const contributions = [];
+    // Per weld group: the accumulated [nx, ny, nz, angleWeight] face samples.
+    const contributions: number[][][] = [];
     for (let i = 0; i < count; i++) {
         const key = `${position(i, 0)},${position(i, 1)},${position(i, 2)}`;
         let group = groups.get(key);
@@ -54,7 +56,7 @@ export function buildSmoothNormalAttribute(primitive) {
 
     const indices = primitive.indices;
     let indexCount = count;
-    let indexAt = (index) => index;
+    let indexAt = (index: number) => index;
     if (indices) {
         const bytes = byteView(indices.bytes);
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -71,7 +73,7 @@ export function buildSmoothNormalAttribute(primitive) {
     }
     if (indexCount % 3 !== 0) return null;
 
-    const cornerAngle = (ax, ay, az, bx, by, bz) => {
+    const cornerAngle = (ax: number, ay: number, az: number, bx: number, by: number, bz: number) => {
         const divisor = Math.hypot(ax, ay, az) * Math.hypot(bx, by, bz);
         if (divisor <= 1e-12) return 0;
         return Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by + az * bz) / divisor)));
@@ -87,14 +89,14 @@ export function buildSmoothNormalAttribute(primitive) {
             edge1[2] * edge2[0] - edge1[0] * edge2[2],
             edge1[0] * edge2[1] - edge1[1] * edge2[0],
         ];
-        const faceLength = Math.hypot(...face);
+        const faceLength = Math.hypot(face[0], face[1], face[2]);
         if (faceLength <= 1e-12) continue;
         face = face.map((value) => value / faceLength);
         for (let corner = 0; corner < 3; corner++) {
             const point = points[corner];
-            const a = points[(corner + 1) % 3].map((value, axis) => value - point[axis]);
-            const b = points[(corner + 2) % 3].map((value, axis) => value - point[axis]);
-            const weight = cornerAngle(...a, ...b);
+            const a = points[(corner + 1) % 3].map((value: number, axis: number) => value - point[axis]);
+            const b = points[(corner + 2) % 3].map((value: number, axis: number) => value - point[axis]);
+            const weight = cornerAngle(a[0], a[1], a[2], b[0], b[1], b[2]);
             contributions[groupIds[vertices[corner]]].push([
                 face[0],
                 face[1],
@@ -107,7 +109,7 @@ export function buildSmoothNormalAttribute(primitive) {
     const output = new Float32Array(count * 3);
     const creaseCosine = Math.cos(Math.PI / 3);
     for (let i = 0; i < count; i++) {
-        let reference = null;
+        let reference: number[] | null = null;
         if (normalView) {
             const length = Math.hypot(sourceNormal(i, 0), sourceNormal(i, 1), sourceNormal(i, 2));
             if (length > 1e-12) {
@@ -150,7 +152,7 @@ export function buildSmoothNormalAttribute(primitive) {
  * unaligned offset, so the payload is read through a DataView.
  */
 
-function weightScalars(attribute) {
+function weightScalars(attribute: RuntimeAccessor): Float32Array | null {
     const { buffer, byteOffset, byteLength } = byteView(attribute.bytes);
     switch (attribute.componentType) {
         case 5126:
@@ -177,7 +179,9 @@ function weightScalars(attribute) {
  * the source buffer as advisory. A well-formed attribute is passed through
  * without copying.
  */
-export function buildNormalizedWeightAttribute(primitive) {
+export function buildNormalizedWeightAttribute(
+    primitive: ViewerPrimitive,
+): { attribute: RuntimeAccessor | null; drifted: number } {
     const attribute = primitive.attributes.WEIGHTS_0;
     if (!attribute || attribute.components !== 4) return { attribute: attribute || null, drifted: 0 };
     const source = weightScalars(attribute);
@@ -185,7 +189,7 @@ export function buildNormalizedWeightAttribute(primitive) {
         return { attribute, drifted: 0 };
     }
 
-    const sumAt = (vertex) => source[vertex * 4] + source[vertex * 4 + 1]
+    const sumAt = (vertex: number) => source[vertex * 4] + source[vertex * 4 + 1]
         + source[vertex * 4 + 2] + source[vertex * 4 + 3];
     let drifted = 0;
     for (let vertex = 0; vertex < attribute.count; vertex++) {
