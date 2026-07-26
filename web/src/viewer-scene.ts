@@ -31,9 +31,11 @@ export interface RuntimeAccessor {
 export interface ViewerNode {
     name: string;
     trs: Trs;
-    localMatrix: Float32Array | null;
     children: number[];
-    weights: Float32Array | number[];
+    /** Absent on flat OBJ/PLY meshes, which have no source transform at all. */
+    localMatrix?: Float32Array | null;
+    /** Absent wherever the importer knows the node carries no morph weights. */
+    weights?: Float32Array | number[];
     meshIndex: number;
     skinIndex: number;
     world: Float32Array;

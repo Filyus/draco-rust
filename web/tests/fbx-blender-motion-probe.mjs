@@ -60,7 +60,7 @@ if (!line) throw new Error('Blender did not emit Mixamo world-position samples')
 const blenderSamples = JSON.parse(line.slice('DRACO_BLENDER_JSON='.length));
 
 const fbx = await loadWasm('fbx');
-const { buildSceneFromFbx } = await import(pathToFileURL(resolve(here, '..', 'www', 'mesh-loader.js')));
+const { buildSceneFromFbx } = await import(pathToFileURL(resolve(here, '..', 'src', 'mesh-loader.ts')));
 const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'www', 'viewer.js')));
 const parsed = fbx.parse_fbx(await readBytes(MIXAMO));
 const scene = await buildSceneFromFbx(parsed);

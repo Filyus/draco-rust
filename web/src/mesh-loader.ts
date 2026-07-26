@@ -5,10 +5,33 @@
  * adapter in gltf-loader.js; both converge only on viewer's shared Scene.
  */
 
-import { buildSceneFromFbx as buildSemanticFbxScene } from './fbx-import-scene.js';
-import { basename, mimeFromUri, resolveResource } from './scene-resources.js';
+import { buildSceneFromFbx as buildSemanticFbxScene } from './fbx-import-scene.ts';
+import { basename, mimeFromUri, resolveResource } from './scene-resources.ts';
+import type { ResourceMap } from './scene-resources.ts';
+import type { Aabb, Renderable, RuntimeAccessor, Trs, ViewerNode } from './viewer-scene.ts';
 
-function pushAabb(box, x, y, z) {
+/** Flat mesh output from the OBJ, PLY and legacy FBX readers. */
+type ParsedMeshes = any;
+
+/** Diagnostics sink shared with the rest of the import path. */
+interface ImportHooks {
+    onLog?: (message: string, level: string) => void;
+}
+
+/**
+ * The viewer material as these flat formats build it, before the texture pass
+ * resolves the URI into an uploaded index.
+ */
+interface FlatMaterial {
+    baseColorFactor: number[];
+    doubleSided: boolean;
+    alphaMode: string;
+    unlit: boolean;
+    baseColorTextureUri?: string;
+    baseColorTexture?: number;
+}
+
+function pushAabb(box: Aabb, x: number, y: number, z: number) {
     if (x < box.min[0]) box.min[0] = x;
     if (y < box.min[1]) box.min[1] = y;
     if (z < box.min[2]) box.min[2] = z;
@@ -18,11 +41,15 @@ function pushAabb(box, x, y, z) {
 }
 
 /** Build a Scene from flat mesh primitives emitted by OBJ/PLY/legacy FBX. */
-export async function buildSceneFromMeshes(parsed, resources = Object.create(null), hooks = {}) {
+export async function buildSceneFromMeshes(
+    parsed: ParsedMeshes,
+    resources: ResourceMap = Object.create(null),
+    hooks: ImportHooks = {},
+) {
     const meshes = parsed?.meshes || [];
     if (meshes.length === 0) throw new Error('No meshes were decoded from this file');
-    const sceneMeshes = [];
-    const box = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+    const sceneMeshes: ParsedMeshes[] = [];
+    const box: Aabb = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
 
     for (const mesh of meshes) {
         const positions = Float32Array.from(mesh.positions || []);
@@ -39,12 +66,12 @@ export async function buildSceneFromMeshes(parsed, resources = Object.create(nul
         }
         if (vertexCount === 0) continue;
 
-        const localAabb = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+        const localAabb: Aabb = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
         for (let index = 0; index < positions.length; index += 3) {
             pushAabb(box, positions[index], positions[index + 1], positions[index + 2]);
             pushAabb(localAabb, positions[index], positions[index + 1], positions[index + 2]);
         }
-        const attributes = {
+        const attributes: Record<string, RuntimeAccessor> = {
             POSITION: { bytes: positions, componentType: 5126, components: 3, normalized: false, count: vertexCount },
         };
         if (normals) attributes.NORMAL = { bytes: normals, componentType: 5126, components: 3, normalized: false, count: vertexCount };
@@ -56,11 +83,13 @@ export async function buildSceneFromMeshes(parsed, resources = Object.create(nul
             attributes.JOINTS_0 = { bytes: joints, componentType: 5123, components: 4, normalized: false, count: vertexCount };
             attributes.WEIGHTS_0 = { bytes: weights, componentType: 5126, components: 4, normalized: false, count: vertexCount };
         }
-        const primitive = { attributes, mode: 4, materialIndex: 0 };
+        // The index accessor omits `components`/`normalized`, which the viewer
+        // never reads for an element buffer.
+        const primitive: ParsedMeshes = { attributes, mode: 4, materialIndex: 0 };
         if (indices) primitive.indices = { bytes: indices, componentType: 5125, count: indices.length };
 
         const sourceMaterial = parsed.materials?.[mesh.material];
-        const material = {
+        const material: FlatMaterial = {
             baseColorFactor: colors ? [1, 1, 1, 1] : [...(sourceMaterial?.diffuse || [1, 1, 1]), sourceMaterial?.alpha ?? 1],
             doubleSided: true,
             alphaMode: 'OPAQUE',
@@ -88,7 +117,7 @@ export async function buildSceneFromMeshes(parsed, resources = Object.create(nul
         box.max = [0.5, 0.5, 0.5];
     }
 
-    const nodes = sceneMeshes.map((mesh, index) => ({
+    const nodes: ViewerNode[] = sceneMeshes.map((mesh, index) => ({
         name: mesh.name,
         trs: restTrs(),
         children: [],
@@ -97,8 +126,8 @@ export async function buildSceneFromMeshes(parsed, resources = Object.create(nul
         world: new Float32Array(16),
     }));
     const materials = sceneMeshes.map((mesh) => mesh._defaultMaterial);
-    sceneMeshes.forEach((mesh, meshIndex) => mesh.primitives.forEach((primitive) => { primitive.materialIndex = meshIndex; }));
-    const renderables = nodes.map((node, meshIndex) => ({ node, meshIndex, skinIndex: -1 }));
+    sceneMeshes.forEach((mesh, meshIndex) => mesh.primitives.forEach((primitive: ParsedMeshes) => { primitive.materialIndex = meshIndex; }));
+    const renderables: Renderable[] = nodes.map((node, meshIndex) => ({ node, meshIndex, skinIndex: -1 }));
     const textures = await buildObjTextures(materials, resources, parsed.warnings || (parsed.warnings = []), hooks);
     return {
         nodes,
@@ -115,13 +144,22 @@ export async function buildSceneFromMeshes(parsed, resources = Object.create(nul
 }
 
 /** Facade preserving the public FBX import entry point. */
-export async function buildSceneFromFbx(parsed, resources = Object.create(null), hooks = {}) {
+export async function buildSceneFromFbx(
+    parsed: ParsedMeshes,
+    resources: ResourceMap = Object.create(null),
+    hooks: ImportHooks = {},
+) {
     return buildSemanticFbxScene(parsed, resources, hooks, buildSceneFromMeshes);
 }
 
-async function buildObjTextures(materials, resources, warnings, hooks) {
-    const textures = [];
-    const byUri = new Map();
+async function buildObjTextures(
+    materials: FlatMaterial[],
+    resources: ResourceMap,
+    warnings: string[],
+    hooks: ImportHooks,
+) {
+    const textures: ParsedMeshes[] = [];
+    const byUri = new Map<string, number>();
     for (const material of materials) {
         const uri = material.baseColorTextureUri;
         if (!uri) continue;
@@ -133,7 +171,8 @@ async function buildObjTextures(materials, resources, warnings, hooks) {
                 continue;
             }
             try {
-                const bitmap = await createImageBitmap(new Blob([bytes], { type: mimeFromUri(uri) || 'application/octet-stream' }));
+                // BlobPart excludes SharedArrayBuffer-backed views; these never are.
+                const bitmap = await createImageBitmap(new Blob([bytes as BlobPart], { type: mimeFromUri(uri) || 'application/octet-stream' }));
                 if (!bitmap) throw new Error('browser could not decode the image');
                 index = textures.length;
                 textures.push({
@@ -145,7 +184,7 @@ async function buildObjTextures(materials, resources, warnings, hooks) {
                 });
                 byUri.set(uri, index);
             } catch (error) {
-                const message = `Failed to decode OBJ texture ${uri}: ${error.message}`;
+                const message = `Failed to decode OBJ texture ${uri}: ${(error as Error).message}`;
                 warnings.push(message);
                 hooks.onLog?.(message, 'warning');
                 continue;
@@ -157,6 +196,6 @@ async function buildObjTextures(materials, resources, warnings, hooks) {
     return textures;
 }
 
-function restTrs() {
+function restTrs(): Trs {
     return { translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] };
 }

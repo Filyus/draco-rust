@@ -36,7 +36,7 @@ export async function loadWasm(name) {
 }
 
 export async function loadFbxViewerAdapter() {
-    return import(pathToFileURL(resolve(here, '..', 'www', 'mesh-loader.js')));
+    return import(pathToFileURL(resolve(here, '..', 'src', 'mesh-loader.ts')));
 }
 
 export async function readBytes(path) {
