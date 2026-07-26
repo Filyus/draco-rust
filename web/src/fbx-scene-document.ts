@@ -355,12 +355,19 @@ function buildRenderPointsByControl(source: FbxJson) {
 function expandFbxLayer(source: FbxJson, layer: FbxJson, components: number, vertexCount: number) {
     if (!layer || !source.controlPoints?.length || !source.polygonVertexIndices?.length) return null;
     const output: number[] = [];
+    // Hoisted out of emit: these do not vary per corner, and emit runs once for
+    // every polygon vertex in the mesh.
+    const mapping = layer.mapping || 'ByControlPoint';
+    const indexToDirect = layer.reference === 'IndexToDirect';
+    const values: ArrayLike<number> = layer.values || [];
     const emit = (controlPoint: number, corner: number) => {
-        const mapping = layer.mapping || 'ByControlPoint';
         const logical = mapping === 'ByPolygonVertex' ? corner : mapping === 'AllSame' ? 0 : controlPoint;
-        const valueIndex = layer.reference === 'IndexToDirect' ? (layer.indices?.[logical] ?? logical) : logical;
+        const valueIndex = indexToDirect ? (layer.indices?.[logical] ?? logical) : logical;
         const start = Math.max(0, valueIndex) * components;
-        output.push(...(layer.values || []).slice(start, start + components));
+        // Copied element by element: slicing allocated a throwaway array per
+        // corner, and spreading it passed the copy as arguments.
+        const end = Math.min(start + components, values.length);
+        for (let index = start; index < end; index += 1) output.push(values[index]);
     };
     let polygon: { controlPoint: number; corner: number }[] = [];
     let corner = 0;

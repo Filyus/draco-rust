@@ -466,14 +466,17 @@ function packedIndices(packed: PackedGeometry): number[] {
 
 function triangleIndices(mode: number, source: number[]): number[] {
     if (mode === 4) return source.slice(0, source.length - (source.length % 3));
-    const result = [];
+    const result: number[] = [];
     if (mode === 5) {
         for (let index = 2; index < source.length; index += 1) {
             const a = source[index - 2];
             const b = source[index - 1];
             const c = source[index];
             if (a === b || b === c || a === c) continue;
-            result.push(...(index % 2 === 0 ? [a, b, c] : [b, a, c]));
+            // Pushed directly rather than spreading a fresh triple: this runs
+            // once per strip triangle, and the fan branch below already does.
+            if (index % 2 === 0) result.push(a, b, c);
+            else result.push(b, a, c);
         }
     } else if (mode === 6) {
         for (let index = 2; index < source.length; index += 1) {
