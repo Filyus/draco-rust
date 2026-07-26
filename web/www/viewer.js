@@ -10,6 +10,10 @@ import { mat4, vec3, quat, composeMatrix } from './math.js';
 import { createEnvironmentIbl } from './environment-ibl.js';
 
 const MAX_JOINTS = 256;
+// Vertex attribute slots reserved for morph deltas. A mesh may declare far more
+// targets than this: the four with the strongest weights are bound per draw, so
+// a long morph cycle (one target per keyframe) plays in full.
+const MAX_ACTIVE_MORPH_TARGETS = 4;
 const DEFAULT_CAMERA_AZIMUTH = Math.PI * 0.25;
 const DEFAULT_CAMERA_ELEVATION = Math.PI * 0.09;
 const ORBIT_RAD_PER_PIXEL = 0.01;
@@ -51,7 +55,7 @@ uniform int uUseSkin;
 uniform int uJointCount;
 uniform mat4 uJointMatrix[${MAX_JOINTS}];
 uniform int uMorphTargetCount;
-uniform float uMorphWeights[4];
+uniform float uMorphWeights[${MAX_ACTIVE_MORPH_TARGETS}];
 uniform int uUseSmoothNormals;
 
 out vec3 vNormal;
@@ -481,6 +485,18 @@ export function buildSmoothNormalAttribute(primitive) {
     return { bytes: output, componentType: 5126, components: 3, normalized: false, count };
 }
 
+/** Attach an uploaded morph delta buffer to one morph attribute slot. */
+function bindMorphSlot(gl, location, attr) {
+    if (!(location >= 0)) return;
+    if (!attr) {
+        gl.disableVertexAttribArray(location);
+        return;
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, attr.buffer);
+    gl.enableVertexAttribArray(location);
+    gl.vertexAttribPointer(location, attr.components, attr.componentType, attr.normalized, 0, 0);
+}
+
 /**
  * Build GPU buffers for one Mesh primitive.
  * Returns an object describing attribute locations, VAO, index/element counts.
@@ -493,23 +509,42 @@ function uploadPrimitive(gl, primitive, locationMap) {
     const positions = primitive.attributes.POSITION;
     if (!positions) throw new Error('primitive is missing POSITION attribute');
 
-    function bindAccessor(attr, semantic, location, desiredComponents) {
-        if (!attr || location < 0) return false;
+    /**
+     * Upload one accessor without attaching it to an attribute slot. Morph
+     * deltas need this: which slot they occupy is decided per draw.
+     */
+    function uploadAccessor(attr, semantic, desiredComponents) {
+        if (!attr) return null;
+        if (desiredComponents && attr.components !== desiredComponents) return null;
         const buf = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, buf);
         gl.bufferData(gl.ARRAY_BUFFER, byteView(attr.bytes), gl.STATIC_DRAW);
+        buffers.push(buf);
+        return {
+            buffer: buf,
+            components: attr.components,
+            componentType: attr.componentType,
+            normalized: attr.normalized
+                || semantic.startsWith('COLOR_') || semantic.startsWith('WEIGHTS_'),
+        };
+    }
 
-        const normalized = attr.normalized || semantic.startsWith('COLOR_') || semantic.startsWith('WEIGHTS_');
-        const components = attr.components;
-        if (desiredComponents && components !== desiredComponents) {
+    function bindAccessor(attr, semantic, location, desiredComponents) {
+        if (location < 0) return false;
+        const uploadedAttr = uploadAccessor(attr, semantic, desiredComponents);
+        if (!uploadedAttr) {
             gl.disableVertexAttribArray(location);
-            gl.bindBuffer(gl.ARRAY_BUFFER, null);
-            gl.deleteBuffer(buf);
             return false;
         }
         gl.enableVertexAttribArray(location);
-        gl.vertexAttribPointer(location, components, attr.componentType, normalized, 0, 0);
-        buffers.push(buf);
+        gl.vertexAttribPointer(
+            location,
+            uploadedAttr.components,
+            uploadedAttr.componentType,
+            uploadedAttr.normalized,
+            0,
+            0,
+        );
         return true;
     }
 
@@ -545,17 +580,27 @@ function uploadPrimitive(gl, primitive, locationMap) {
         hasColors: !!bindAttribute('COLOR_0', layout.color),
         hasJoints: !!bindAttribute('JOINTS_0', layout.joints),
         hasWeights: !!bindAttribute('WEIGHTS_0', layout.weights),
-        morphTargetCount: Math.min(4, (primitive.morphPositions || []).length),
+        morphTargetCount: (primitive.morphPositions || []).length,
         mode: primitive.mode,
         elementCount: 0,
         indexed: false,
     };
 
     bindAttribute('POSITION', layout.position);
-    for (let i = 0; i < info.morphTargetCount; i++) {
-        bindAccessor(primitive.morphPositions[i], `MORPH_POSITION_${i}`, layout.morphPositions[i], 3);
-        bindAccessor((primitive.morphNormals || [])[i], `MORPH_NORMAL_${i}`, layout.morphNormals[i], 3);
-    }
+
+    // Keep every target uploaded and indexed exactly like the mesh weights, so
+    // slot assignment at draw time is a plain lookup by target index.
+    info.morphTargets = (primitive.morphPositions || []).map((position, i) => ({
+        position: uploadAccessor(position, `MORPH_POSITION_${i}`, 3),
+        normal: uploadAccessor((primitive.morphNormals || [])[i], `MORPH_NORMAL_${i}`, 3),
+    }));
+    info.morphLocations = {
+        positions: layout.morphPositions,
+        normals: layout.morphNormals,
+    };
+    // Which target each slot currently points at, so an unchanged assignment
+    // costs no GL calls.
+    info.morphSlots = new Array(MAX_ACTIVE_MORPH_TARGETS).fill(-1);
 
     let indexBuffer = null;
     if (primitive.indices) {
@@ -1413,13 +1458,10 @@ export class Viewer {
                 gl.uniform1i(this.uniforms.uUseSkin, usesSkin ? 1 : 0);
                 gl.uniform1i(this.uniforms.uJointCount, usesSkin ? jointMatrices.length / 16 : 0);
                 if (usesSkin) gl.uniformMatrix4fv(this.uniforms.uJointMatrix, false, jointMatrices);
-                const morphWeights = this._morphWeights || (this._morphWeights = new Float32Array(4));
-                morphWeights.fill(0);
-                if (node.weights) {
-                    morphWeights.set(node.weights.subarray ? node.weights.subarray(0, 4) : node.weights.slice(0, 4));
-                }
-                gl.uniform1i(this.uniforms.uMorphTargetCount, uploaded.morphTargetCount);
-                gl.uniform1fv(this.uniforms.uMorphWeights, morphWeights);
+                gl.bindVertexArray(uploaded.vao);
+                const activeMorphTargets = this._bindMorphTargets(uploaded, node.weights);
+                gl.uniform1i(this.uniforms.uMorphTargetCount, activeMorphTargets);
+                gl.uniform1fv(this.uniforms.uMorphWeights, this._morphWeights);
                 const useSmoothNormals = this.smoothNormals
                     && uploaded.hasSmoothNormals && uploaded.morphTargetCount === 0;
                 gl.uniform1i(
@@ -1428,7 +1470,6 @@ export class Viewer {
                 );
                 const material = this.scene.materials[materialIndex];
                 this._applyMaterial(material, uploaded, useSmoothNormals);
-                gl.bindVertexArray(uploaded.vao);
 
                 if (material?.doubleSided) gl.disable(gl.CULL_FACE);
                 else gl.enable(gl.CULL_FACE);
@@ -1454,6 +1495,47 @@ export class Viewer {
         gl.depthMask(true);
         gl.disable(gl.BLEND);
         gl.bindVertexArray(null);
+    }
+
+    /**
+     * Point the morph slots at this draw's strongest-weighted targets and stage
+     * their weights in `_morphWeights`. Returns the number of live slots.
+     *
+     * A mesh may declare many more targets than there are slots — a wing flap is
+     * often keyed one target per frame — so binding the first four would freeze
+     * the mesh for the rest of the cycle. Only targets with a non-zero weight
+     * compete for a slot, and glTF weight tracks blend two neighbours at a time,
+     * so the visible pose is exact for such clips.
+     */
+    _bindMorphTargets(uploaded, weights) {
+        const gl = this.gl;
+        const staged = this._morphWeights
+            || (this._morphWeights = new Float32Array(MAX_ACTIVE_MORPH_TARGETS));
+        staged.fill(0);
+        const targets = uploaded.morphTargets;
+        if (!targets || targets.length === 0) return 0;
+
+        const order = this._morphOrder || (this._morphOrder = []);
+        order.length = 0;
+        for (let i = 0; i < targets.length; i++) {
+            if (!targets[i].position && !targets[i].normal) continue;
+            if (!weights || !weights[i]) continue;
+            order.push(i);
+        }
+        // Ties keep the lower target index so a held pose binds stable slots.
+        order.sort((a, b) => Math.abs(weights[b]) - Math.abs(weights[a]) || a - b);
+        const count = Math.min(order.length, MAX_ACTIVE_MORPH_TARGETS);
+
+        const { positions, normals } = uploaded.morphLocations;
+        for (let slot = 0; slot < MAX_ACTIVE_MORPH_TARGETS; slot++) {
+            const target = slot < count ? order[slot] : -1;
+            if (target >= 0) staged[slot] = weights[target];
+            if (uploaded.morphSlots[slot] === target) continue;
+            uploaded.morphSlots[slot] = target;
+            bindMorphSlot(gl, positions[slot], target >= 0 ? targets[target].position : null);
+            bindMorphSlot(gl, normals[slot], target >= 0 ? targets[target].normal : null);
+        }
+        return count;
     }
 
     _glMode(mode, wireframe) {

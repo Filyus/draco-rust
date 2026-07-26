@@ -6,6 +6,7 @@
     "test:node": "node tests/node-smoke.mjs",
     "test:scene-document": "node tests/scene-document-contract.mjs",
     "test:scene-document-viewer": "node tests/scene-document-viewer-parity.mjs",
+    "test:viewer-morph-slots": "node tests/viewer-morph-slots.mjs",
     "test:gltf-scene-document": "node tests/gltf-scene-document-parity.mjs",
     "test:fbx-scene-document": "node tests/fbx-scene-document-parity.mjs",
     "test:fbx-scene-provenance": "node tests/fbx-scene-provenance.mjs",

@@ -38,6 +38,9 @@ const SUPPORTED_EXTENSIONS = new Set([
 // codec this module does not own, so it is reported from the decode result
 // rather than asserted here.
 const TEXTURE_SOURCE_EXTENSIONS = ['EXT_texture_webp', 'KHR_texture_basisu'];
+// Morph targets the preview can blend in one frame. Mirrors the viewer's slot
+// count; a mesh may declare more targets as long as few are active at a time.
+const MAX_ACTIVE_MORPH_TARGETS = 4;
 
 /**
  * Build a Scene from a parsed glTF document.
@@ -623,9 +626,12 @@ function initializeMorphWeights(nodes, meshes, warnings) {
         node.weights = Float32Array.from(
             Array.from({ length: targetCount }, (_, index) => Number(source[index]) || 0),
         );
-        if (targetCount > 4) {
+        // The preview binds the four strongest-weighted targets per frame, so a
+        // long target list is fine as long as few of them are active at once.
+        const activeTargets = node.weights.reduce((total, weight) => total + (weight ? 1 : 0), 0);
+        if (activeTargets > MAX_ACTIVE_MORPH_TARGETS) {
             warnings.push(
-                `Morph mesh ${mesh.name} has ${targetCount} targets; the preview renders the first 4`,
+                `Morph mesh ${mesh.name} holds ${activeTargets} non-zero weights; the preview blends the ${MAX_ACTIVE_MORPH_TARGETS} strongest`,
             );
         }
     }
@@ -848,6 +854,37 @@ async function loadImageBytes(bytes, mime, hooks) {
 /** Re-exported under its historical name for existing importers. */
 export const resolveUriBytes = resolveResource;
 
+/**
+ * Most morph weights a weights sampler ever holds at once. Cubic keyframes store
+ * [inTangent, value, outTangent], so only their middle block is a pose, and an
+ * interpolated segment can carry both of its endpoint poses at the same time.
+ */
+function peakActiveMorphWeights(sampler, targetCount) {
+    if (targetCount <= 0 || !sampler.output) return 0;
+    const interpolation = String(sampler.interpolation || 'LINEAR').toUpperCase();
+    const cubic = interpolation === 'CUBICSPLINE';
+    const stride = cubic ? targetCount * 3 : targetCount;
+    const offset = cubic ? targetCount : 0;
+    const keyframes = Math.floor(sampler.output.length / stride);
+    const poses = [];
+    for (let key = 0; key < keyframes; key++) {
+        const pose = [];
+        for (let i = 0; i < targetCount; i++) {
+            if (sampler.output[key * stride + offset + i]) pose.push(i);
+        }
+        poses.push(pose);
+    }
+    const blends = interpolation !== 'STEP';
+    let peak = 0;
+    for (let key = 0; key < poses.length; key++) {
+        const segment = blends && key + 1 < poses.length
+            ? new Set([...poses[key], ...poses[key + 1]])
+            : new Set(poses[key]);
+        if (segment.size > peak) peak = segment.size;
+    }
+    return peak;
+}
+
 export function buildAnimations(asset, defs, nodes, warnings) {
     return defs.map((def, animIndex) => {
         const name = def.name || `animation_${animIndex}`;
@@ -873,6 +910,14 @@ export function buildAnimations(asset, defs, nodes, warnings) {
                     `Animation ${name}: ${target.path} channels are not supported by the preview and were ignored`,
                 );
                 return null;
+            }
+            if (target.path === 'weights') {
+                const active = peakActiveMorphWeights(sampler, targetCount);
+                if (active > MAX_ACTIVE_MORPH_TARGETS) {
+                    warnings.push(
+                        `Animation ${name}: a weights keyframe drives ${active} targets at once; the preview blends the ${MAX_ACTIVE_MORPH_TARGETS} strongest`,
+                    );
+                }
             }
             return {
                 node,
