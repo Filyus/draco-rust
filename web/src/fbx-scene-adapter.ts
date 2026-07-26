@@ -5,7 +5,61 @@
  * FBX representation and format-specific material/texture mapping.
  */
 
-import { identityMat4, invertMat4 } from './mat4.js';
+import { identityMat4, invertMat4 } from './mat4.ts';
+import type { ResourceMap } from './scene-resources.ts';
+import type { GltfAsset } from './wasm-modules.ts';
+
+/** glTF manifest fragments, inspected field by field rather than trusted. */
+type GltfJson = any;
+
+/** Composes a glTF TRS triple into a column-major matrix. */
+type ComposeTrs = (
+    translation: ArrayLike<number>,
+    rotation: ArrayLike<number>,
+    scale: ArrayLike<number>,
+) => ArrayLike<number>;
+
+/** Reads one glTF accessor into a typed array plus its declared shape. */
+type ReadAccessorAsTyped = (asset: GltfAsset, index: number) => {
+    componentType: number;
+    components: number;
+    count: number;
+    data: Float32Array;
+};
+
+/** A row-major FBX matrix, in the writer's own convention. */
+type FbxMatrix = number[];
+
+/** Key payloads arrive either as typed accessor data or as plain JSON arrays. */
+type Numbers = Float32Array | number[];
+
+interface FbxJoint {
+    nodeId: number;
+    bind: FbxMatrix;
+}
+
+export interface FbxSkin {
+    joints: FbxJoint[];
+    armatureBindTransform: FbxMatrix | null;
+}
+
+interface FbxCluster {
+    jointNodeId: number;
+    controlPointIndices: number[];
+    weights: number[];
+    meshBindTransform: FbxMatrix;
+    jointBindTransform: FbxMatrix;
+    armatureBindTransform: FbxMatrix | null;
+}
+
+/** The mesh geometry the FBX writer consumes, in glTF component order. */
+interface FbxSourceMesh {
+    positions: ArrayLike<number>;
+    joints0?: ArrayLike<number>;
+    weights0?: ArrayLike<number>;
+    joints1?: ArrayLike<number>;
+    weights1?: ArrayLike<number>;
+}
 
 // glTF is right-handed Y-up; the FBX emitted for Blender is right-handed
 // Z-up. With row vectors this rotates -90 degrees around X: (x, y, z) ->
@@ -23,7 +77,7 @@ const FBX_TO_GLTF_BASIS = [
     0, 0, 0, 1,
 ];
 
-function multiplyMat4(a, b) {
+function multiplyMat4(a: ArrayLike<number>, b: ArrayLike<number>): FbxMatrix {
     return Array.from({ length: 16 }, (_, index) => {
         const row = Math.floor(index / 4); const column = index % 4;
         return a[row * 4] * b[column] + a[row * 4 + 1] * b[column + 4]
@@ -31,7 +85,7 @@ function multiplyMat4(a, b) {
     });
 }
 
-export function convertGltfVectorArrayToFbx(values) {
+export function convertGltfVectorArrayToFbx(values: ArrayLike<number>): number[] {
     const converted = Array.from(values);
     for (let offset = 0; offset + 2 < converted.length; offset += 3) {
         const y = converted[offset + 1];
@@ -41,17 +95,17 @@ export function convertGltfVectorArrayToFbx(values) {
     return converted;
 }
 
-export function convertGltfMatrixToFbx(matrix) {
+export function convertGltfMatrixToFbx(matrix: ArrayLike<number>): FbxMatrix {
     return multiplyMat4(multiplyMat4(FBX_TO_GLTF_BASIS, matrix), GLTF_TO_FBX_BASIS);
 }
 
 /** Convert the portable glTF PBR subset to FBX Phong material properties. */
-export function buildFbxMaterials(definitions) {
+export function buildFbxMaterials(definitions: GltfJson[]) {
     return definitions.map((definition, index) => {
         const pbr = definition.pbrMetallicRoughness || {};
-        const base = pbr.baseColorFactor || [1, 1, 1, 1];
-        const textures = [];
-        const add = (info, slot) => {
+        const base: number[] = pbr.baseColorFactor || [1, 1, 1, 1];
+        const textures: { slot: string; textureIndex: number }[] = [];
+        const add = (info: GltfJson, slot: string) => {
             if (typeof info?.index === 'number') textures.push({ slot, textureIndex: info.index });
         };
         add(pbr.baseColorTexture, 'diffuse');
@@ -74,9 +128,14 @@ export function buildFbxMaterials(definitions) {
 }
 
 /** Preserve embedded or external glTF image data for an FBX Texture/Video. */
-export function buildFbxTextures(asset, document, resources, resolveUriBytes) {
-    const images = document.images || [];
-    return (document.textures || []).map((texture, index) => {
+export function buildFbxTextures(
+    asset: GltfAsset,
+    document: GltfJson,
+    resources: ResourceMap,
+    resolveUriBytes: (uri: string, resources: ResourceMap) => Uint8Array | null,
+) {
+    const images: GltfJson[] = document.images || [];
+    return (document.textures || []).map((texture: GltfJson, index: number) => {
         const image = images[texture.source] || {};
         const content = typeof image.bufferView === 'number'
             ? Array.from(new Uint8Array(asset.bufferViewBytes(image.bufferView)))
@@ -86,8 +145,8 @@ export function buildFbxTextures(asset, document, resources, resolveUriBytes) {
 }
 
 /** Convert glTF quaternion key values to FBX XYZ Euler key values. */
-export function quaternionKeysToFbxEuler(values) {
-    const result = [];
+export function quaternionKeysToFbxEuler(values: Numbers): number[] {
+    const result: number[] = [];
     for (let index = 0; index + 3 < values.length; index += 4) {
         // q' = C⁻¹ q C, where C is the glTF Y-up -> FBX Z-up basis.
         // The simplified component form is stable and avoids converting each
@@ -114,8 +173,8 @@ export function quaternionKeysToFbxEuler(values) {
 }
 
 /** Split glTF CUBICSPLINE [in, value, out] key payloads. */
-export function extractGltfCubicSegment(values, components, segment) {
-    const result = [];
+export function extractGltfCubicSegment(values: Numbers, components: number, segment: number): number[] {
+    const result: number[] = [];
     const stride = components * 3;
     for (let offset = 0; offset + stride <= values.length; offset += stride) {
         result.push(...values.slice(offset + components * segment, offset + components * (segment + 1)));
@@ -123,27 +182,31 @@ export function extractGltfCubicSegment(values, components, segment) {
     return result;
 }
 
-export function fbxRowMajorMatrix(node, composeTrs) {
-    const gltfMatrix = Array.from(Array.isArray(node.matrix) && node.matrix.length === 16
+export function fbxRowMajorMatrix(node: GltfJson, composeTrs: ComposeTrs): FbxMatrix {
+    const gltfMatrix = Array.from<number>(Array.isArray(node.matrix) && node.matrix.length === 16
         ? node.matrix
         : composeTrs(node.translation || [0, 0, 0], node.rotation || [0, 0, 0, 1], node.scale || [1, 1, 1]));
     return convertGltfMatrixToFbx(gltfMatrix);
 }
 
-export function buildFbxWorldMatrices(nodes, roots, composeTrs) {
-    const worlds = Array.from({ length: nodes.length }, () => null);
+export function buildFbxWorldMatrices(
+    nodes: GltfJson[],
+    roots: number[],
+    composeTrs: ComposeTrs,
+): (FbxMatrix | null)[] {
+    const worlds: (FbxMatrix | null)[] = Array.from({ length: nodes.length }, () => null);
     // Scale is carried entirely by `UnitScaleFactor = 100.0` in the writer's
     // GlobalSettings (Blender reads it as the centimeters->meters factor).
     // Scaling coordinates here as well makes the imported scene 100× too
     // large, which was the original "legacy FBX" workaround that is no
     // longer needed.
-    const visit = (index, parent) => {
+    const visit = (index: number, parent: FbxMatrix | null) => {
         if (worlds[index]) return;
         const local = fbxRowMajorMatrix(nodes[index] || {}, composeTrs);
         // FBX uses row vectors. The local transform therefore precedes its
         // parent's transform in the composed world matrix.
         worlds[index] = parent ? multiplyMat4(local, parent) : local;
-        for (const child of nodes[index]?.children || []) visit(child, worlds[index]);
+        for (const child of nodes[index]?.children || []) visit(child as number, worlds[index]);
     };
     for (const root of roots) visit(root, null);
     nodes.forEach((_, index) => { if (!worlds[index]) visit(index, null); });
@@ -151,9 +214,16 @@ export function buildFbxWorldMatrices(nodes, roots, composeTrs) {
 }
 
 /** Turn glTF skin accessors into FBX clusters without truncating influences. */
-export function buildFbxSkins(asset, definitions, worlds, warnings, readAccessorAsTyped, composeTrs) {
+export function buildFbxSkins(
+    asset: GltfAsset,
+    definitions: GltfJson[],
+    worlds: (FbxMatrix | null)[],
+    warnings: string[],
+    readAccessorAsTyped: ReadAccessorAsTyped,
+    composeTrs: ComposeTrs,
+): FbxSkin[] {
     return definitions.map((definition, index) => {
-        const joints = (definition.joints || []).map((nodeIndex) => ({
+        const joints: FbxJoint[] = (definition.joints || []).map((nodeIndex: number) => ({
             nodeId: nodeIndex + 1,
             bind: worlds[nodeIndex] || fbxRowMajorMatrix({}, composeTrs),
         }));
@@ -183,10 +253,16 @@ export function buildFbxSkins(asset, definitions, worlds, warnings, readAccessor
 }
 
 /** Attach all JOINTS_0/1 and WEIGHTS_0/1 influences to FBX skin clusters. */
-export function buildFbxMeshSkin(mesh, skin, meshNodeId, meshBindTransform, composeTrs) {
+export function buildFbxMeshSkin(
+    mesh: FbxSourceMesh,
+    skin: FbxSkin | null,
+    meshNodeId: number,
+    meshBindTransform: FbxMatrix | null,
+    composeTrs: ComposeTrs,
+) {
     if (!skin || !mesh.joints0 || !mesh.weights0) return null;
     const meshBind = meshBindTransform || fbxRowMajorMatrix({}, composeTrs);
-    const clusters = skin.joints.map((joint) => ({
+    const clusters: FbxCluster[] = skin.joints.map((joint) => ({
         jointNodeId: joint.nodeId,
         controlPointIndices: [],
         weights: [],
@@ -226,12 +302,17 @@ export function buildFbxMeshSkin(mesh, skin, meshNodeId, meshBindTransform, comp
 }
 
 /** Decode glTF morph deltas into the FBX shape contract. */
-export function buildFbxMorphTargets(asset, targetDefinitions, weights, readAccessorAsTyped) {
+export function buildFbxMorphTargets(
+    asset: GltfAsset,
+    targetDefinitions: GltfJson[],
+    weights: ArrayLike<number>,
+    readAccessorAsTyped: ReadAccessorAsTyped,
+) {
     return targetDefinitions.flatMap((target, index) => {
         if (typeof target.POSITION !== 'number') return [];
         const accessor = readAccessorAsTyped(asset, target.POSITION);
         if (accessor.componentType !== 5126 || accessor.components !== 3) return [];
-        let normalDeltas = null;
+        let normalDeltas: number[] | null = null;
         if (typeof target.NORMAL === 'number') {
             const normal = readAccessorAsTyped(asset, target.NORMAL);
             if (normal.componentType === 5126 && normal.components === 3 && normal.count === accessor.count) normalDeltas = Array.from(normal.data);
