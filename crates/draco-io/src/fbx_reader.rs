@@ -562,10 +562,12 @@ fn parse_skin_for_geometry(
                 .iter()
                 .find(|child| child.name == "Node")
                 .and_then(|child| child.properties.first())
-                .and_then(|value| match value {
-                    FbxProperty::I64(value) => Some(*value),
-                    _ => None,
-                });
+                // Through `object_id`, because ASCII does not record an
+                // integer's width: an id that fits in 32 bits comes back as an
+                // `I32` there and the whole bind pose was dropped. Authored
+                // exports use ids far above that range, so only a document
+                // with small ids -- this crate's own output -- showed it.
+                .and_then(object_id);
             let matrix = transform_array(pose_node, "Matrix");
             if let (Some(_model_id), Some(matrix), Some(&node_id)) = (
                 model_id,

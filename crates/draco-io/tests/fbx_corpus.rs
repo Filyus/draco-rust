@@ -249,6 +249,227 @@ fn scenes_survive_a_write_and_read_cycle() {
     );
 }
 
+/// The two containers spell the same document, so the trees must agree.
+///
+/// Sharper than comparing scenes: this sees every record, including the ones
+/// nothing reads back into an `FbxScene`. It is also the only check that the
+/// ASCII printer covers what the writer actually emits -- its unit tests use
+/// synthetic trees, and no synthetic tree contains what 298 real files do.
+#[test]
+fn an_ascii_rewrite_says_the_same_as_a_binary_one() {
+    let Some(dir) = corpus_dir() else {
+        eprintln!("skipping: set DRACO_FBX_CORPUS to a directory of .fbx files");
+        return;
+    };
+
+    let mut files = Vec::new();
+    collect_fbx(&dir, &mut files);
+    files.sort();
+
+    // The one document the text container provably cannot carry: it holds an
+    // object named `"` and another named literally `&quot;`, and ASCII spells
+    // both `&quot;`. Read back, the second becomes the first. Its own ASCII
+    // twin is comparable, because reading that twin has already collapsed the
+    // pair before anything is written.
+    const NOT_SPELLABLE: [&str; 1] = ["max_quote_7500_binary.fbx"];
+
+    let mut compared = 0;
+    let mut mismatches: Vec<String> = Vec::new();
+    for path in &files {
+        if path.components().any(|c| c.as_os_str() == "fuzz") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let Ok(scene) = FbxScene::from_bytes(&bytes) else {
+            continue;
+        };
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if NOT_SPELLABLE.contains(&name.as_str()) {
+            continue;
+        }
+        // Both spellings come off one `build_document`, so a document either
+        // side refuses is a document the other must refuse too.
+        let (binary, ascii) = match (scene.to_bytes(), scene.to_ascii_bytes()) {
+            (Ok(binary), Ok(ascii)) => (binary, ascii),
+            (Err(_), Err(_)) => continue,
+            (Ok(_), Err(error)) => {
+                mismatches.push(format!("{name}: binary written, ASCII refused: {error}"));
+                continue;
+            }
+            (Err(error), Ok(_)) => {
+                mismatches.push(format!("{name}: ASCII written, binary refused: {error}"));
+                continue;
+            }
+        };
+
+        let binary_tree = match draco_io::fbx_reader::FbxReader::from_bytes(binary)
+            .and_then(|mut reader| reader.read_nodes())
+        {
+            Ok(tree) => tree,
+            Err(error) => {
+                mismatches.push(format!("{name}: written binary does not decode: {error}"));
+                continue;
+            }
+        };
+        let ascii_tree =
+            match draco_io::fbx_ascii::parse_ascii_nodes(&ascii, &FbxReadOptions::default()) {
+                Ok(tree) => tree,
+                Err(error) => {
+                    mismatches.push(format!("{name}: written ASCII does not parse: {error}"));
+                    continue;
+                }
+            };
+        compared += 1;
+
+        if let Some(divergence) = first_divergence("", &ascii_tree, &binary_tree) {
+            mismatches.push(format!("{name}: {divergence}"));
+            continue;
+        }
+
+        // And the scene the ASCII file reads back as must be the scene the
+        // binary one does, which is what a consumer of either actually sees.
+        match (
+            FbxScene::from_bytes(&ascii),
+            FbxScene::from_bytes(&scene.to_bytes().unwrap_or_default()),
+        ) {
+            (Ok(from_ascii), Ok(from_binary)) => {
+                for field in summarize(&from_binary).differing_fields(&summarize(&from_ascii)) {
+                    mismatches.push(format!("{name}: {field}"));
+                }
+            }
+            _ => mismatches.push(format!("{name}: a rewritten file does not read back")),
+        }
+    }
+
+    println!(
+        "compared {compared} ASCII rewrites, {} mismatched",
+        mismatches.len()
+    );
+    for line in mismatches.iter().take(20) {
+        println!("  {line}");
+    }
+    assert!(
+        mismatches.is_empty(),
+        "{} files differ between the two containers",
+        mismatches.len()
+    );
+}
+
+/// The first place the two trees disagree, named by its path.
+fn first_divergence(
+    path: &str,
+    ascii: &[draco_io::fbx_node::FbxNode],
+    binary: &[draco_io::fbx_node::FbxNode],
+) -> Option<String> {
+    if ascii.len() != binary.len() {
+        return Some(format!(
+            "{path}: ASCII has {} children, binary has {}",
+            ascii.len(),
+            binary.len()
+        ));
+    }
+    for (index, (left, right)) in ascii.iter().zip(binary).enumerate() {
+        let here = format!("{path}/{}[{index}]", right.name);
+        if left.name != right.name {
+            return Some(format!("{here}: ASCII names it '{}'", left.name));
+        }
+        if left.properties.len() != right.properties.len() {
+            return Some(format!(
+                "{here}: ASCII has {} properties, binary has {}",
+                left.properties.len(),
+                right.properties.len()
+            ));
+        }
+        for (slot, (from_ascii, from_binary)) in
+            left.properties.iter().zip(&right.properties).enumerate()
+        {
+            if !property_agrees(from_ascii, from_binary) {
+                return Some(format!(
+                    "{here}: property {slot} reads {from_ascii:.32?} from ASCII and \
+                     {from_binary:.32?} from binary"
+                ));
+            }
+        }
+        if let Some(divergence) = first_divergence(&here, &left.children, &right.children) {
+            return Some(divergence);
+        }
+    }
+    None
+}
+
+/// Whether one property survived the text container.
+///
+/// Exact, except for the spellings ASCII does not record. Those are enumerated
+/// rather than tolerated in general: a widening that is not on this list is a
+/// defect, and only saying so file by file would make it look like one.
+fn property_agrees(
+    ascii: &draco_io::fbx_node::FbxProperty,
+    binary: &draco_io::fbx_node::FbxProperty,
+) -> bool {
+    use draco_io::fbx_node::FbxProperty as P;
+    // Compared by bits so `-0.0` does not pass for `0.0`; no NaN reaches here,
+    // because the printer refuses one rather than spelling it.
+    fn same(left: f64, right: f64) -> bool {
+        left.to_bits() == right.to_bits()
+    }
+    match (ascii, binary) {
+        (P::Bool(left), P::Bool(right)) => left == right,
+        (P::I32(left), P::I32(right)) => left == right,
+        (P::I64(left), P::I64(right)) => left == right,
+        (P::F64(left), P::F64(right)) => same(*left, *right),
+        (P::String(left), P::String(right)) => left == right,
+        (P::Raw(left), P::Raw(right)) => left == right,
+        (P::I32Array(left), P::I32Array(right)) => left == right,
+        (P::I64Array(left), P::I64Array(right)) => left == right,
+        (P::F64Array(left), P::F64Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| same(*left, *right))
+        }
+        // ASCII does not record an integer's width, so `number_property` types
+        // one by whether it fits. Every object id in this crate's output does,
+        // which is why the reader accepts either width wherever it reads one.
+        (P::I32(left), P::I64(right)) => i64::from(*left) == *right,
+        // ASCII has no 8- or 16-bit integer and no single-precision scalar.
+        (P::I32(left), P::U8(right)) => *left == i32::from(*right),
+        (P::I32(left), P::I16(right)) => *left == i32::from(*right),
+        (P::F64(left), P::F32(right)) => same(*left, f64::from(*right)),
+        // A float array is typed by its node name, and only the names listed
+        // in `array_element_type` come back single precision.
+        (P::F64Array(left), P::F32Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| same(*left, f64::from(*right)))
+        }
+        (P::F32Array(left), P::F32Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| left.to_bits() == right.to_bits())
+        }
+        // ASCII has no boolean array either; nothing writes one today.
+        (P::F64Array(left), P::BoolArray(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| same(*left, f64::from(u8::from(*right))))
+        }
+        _ => false,
+    }
+}
+
 /// Everything a round-trip must preserve, rendered as comparable strings.
 ///
 /// Kept as text so a mismatch report names the field that moved instead of

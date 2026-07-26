@@ -88,6 +88,11 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A bind pose was dropped from an ASCII document whose object ids fit in 32
+  bits. `PoseNode/Node` was the one id in the reader matched against `I64`
+  alone rather than through `object_id`, and ASCII does not record an
+  integer's width. Authored exports use ids far above that range, so only a
+  document with small ids showed it -- which is what this crate now writes.
 - A written `Model`'s `Shading` record is a boolean, as it is in every FBX
   file: the ufbx corpus types it `C` roughly 1400 times and `Y` never, while
   this crate wrote the 16-bit integer `Y`. No reader in this crate consults
