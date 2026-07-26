@@ -1,8 +1,44 @@
 /** FBX material and texture import boundary for the format-neutral viewer. */
-import { basename, mimeFromUri, resolveResource } from './scene-resources.js';
+import { basename, mimeFromUri, resolveResource } from './scene-resources.ts';
+import type { ResourceMap } from './scene-resources.ts';
+
+/** One material as fbx-wasm materializes it, before viewer interpretation. */
+interface FbxMaterial {
+    name?: string;
+    diffuse?: number[];
+    diffuseFactor?: number;
+    emissive?: number[];
+    emissiveFactor?: number;
+    opacity?: number;
+    transparencyFactor?: number;
+    shininess?: number;
+    reflectionFactor?: number;
+}
+
+interface FbxTexture {
+    name?: string;
+    filename?: string;
+    content?: Uint8Array;
+}
+
+/** A decoded texture, ready for the viewer to upload. */
+export interface AdaptedFbxTexture {
+    name: string;
+    image: ImageBitmap;
+    flipY: boolean;
+    wrapS: number;
+    wrapT: number;
+    minFilter: number;
+    magFilter: number;
+}
+
+/** Diagnostics sink shared with the rest of the FBX import path. */
+interface AdapterHooks {
+    onLog?: (message: string, level: string) => void;
+}
 
 /** Convert an FBX Phong/Lambert material into the viewer material contract. */
-export function adaptFbxMaterial(material, index) {
+export function adaptFbxMaterial(material: FbxMaterial, index: number) {
     const diffuse = material.diffuse || [1, 1, 1];
     const diffuseFactor = typeof material.diffuseFactor === 'number' ? material.diffuseFactor : 1;
     const emissive = material.emissive || [0, 0, 0];
@@ -34,11 +70,16 @@ export function adaptFbxMaterial(material, index) {
 }
 
 /** Decode FBX texture objects (embedded bytes or selected external files). */
-export async function adaptFbxTextures(fbxTextures, resources, warnings, hooks) {
-    const textures = [];
+export async function adaptFbxTextures(
+    fbxTextures: FbxTexture[],
+    resources: ResourceMap,
+    warnings: string[],
+    hooks: AdapterHooks,
+): Promise<AdaptedFbxTexture[]> {
+    const textures: AdaptedFbxTexture[] = [];
     for (let index = 0; index < fbxTextures.length; index++) {
         const texture = fbxTextures[index];
-        const bytes = texture.content?.length > 0
+        const bytes = texture.content && texture.content.length > 0
             ? texture.content
             : texture.filename ? resolveResource(texture.filename, resources) : null;
         if (!bytes) {
@@ -46,7 +87,10 @@ export async function adaptFbxTextures(fbxTextures, resources, warnings, hooks) 
             continue;
         }
         try {
-            const bitmap = await createImageBitmap(new Blob([bytes], { type: mimeFromUri(texture.filename) || 'application/octet-stream' }));
+            // BlobPart insists on an ArrayBuffer-backed view; these bytes never
+            // come from a SharedArrayBuffer, which is the only case it excludes.
+            const part = bytes as BlobPart;
+            const bitmap = await createImageBitmap(new Blob([part], { type: mimeFromUri(texture.filename) || 'application/octet-stream' }));
             textures[index] = {
                 name: texture.name || basename(texture.filename || `texture_${index}`),
                 image: bitmap,
@@ -57,7 +101,7 @@ export async function adaptFbxTextures(fbxTextures, resources, warnings, hooks) 
                 magFilter: WebGL2RenderingContext.LINEAR,
             };
         } catch (error) {
-            const message = `Failed to decode FBX texture ${texture.filename}: ${error.message}`;
+            const message = `Failed to decode FBX texture ${texture.filename}: ${(error as Error).message}`;
             warnings.push(message);
             hooks.onLog?.(message, 'warning');
         }

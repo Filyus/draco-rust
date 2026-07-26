@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { buildSceneDocumentWithFbxProvenance } from '../www/fbx-scene-document.js';
-import { cloneFbxSemanticScene } from '../www/fbx-scene-provenance.js';
+import { cloneFbxSemanticScene } from '../src/fbx-scene-provenance.ts';
 import { loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.mjs';
 
 const fbx = await loadWasm('fbx');

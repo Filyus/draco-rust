@@ -9,8 +9,39 @@
 
 export const FBX_SCENE_PROVENANCE_VERSION = 1;
 
+/**
+ * The semantic scene as fbx-wasm materializes it. Its interior is walked by
+ * the FBX adapters, which is where the shape is pinned down; here it only ever
+ * travels whole, so it stays deliberately open.
+ */
+export type FbxSemanticScene = any;
+
+/** What fbx-wasm returns from a parse. */
+export interface ParsedFbx {
+    scene?: FbxSemanticScene;
+    [key: string]: unknown;
+}
+
+export interface FbxSceneProvenance {
+    version: number;
+    format: 'fbx';
+    coordinateSpace: {
+        axes: string;
+        unitScaleFactor: number | null;
+        sourceUnit: string;
+        sceneDocumentMetersPerSourceUnit: number;
+    };
+    globalSettings?: Record<string, unknown>;
+    animation: {
+        rawChannels: string;
+        evaluator: string;
+        canonicalBake: string;
+    };
+    sourceScene: FbxSemanticScene;
+}
+
 /** Build a serializable sidecar for an FBX semantic parse result. */
-export function createFbxSceneProvenance(parsed) {
+export function createFbxSceneProvenance(parsed: ParsedFbx): FbxSceneProvenance {
     if (!parsed?.scene?.rootNodes?.length) throw new Error('FBX provenance requires a semantic scene');
     const settings = parsed.scene.globalSettings || null;
     return {
@@ -40,12 +71,12 @@ export function createFbxSceneProvenance(parsed) {
 }
 
 /** Return a detached semantic scene suitable for the typed FBX writer. */
-export function cloneFbxSemanticScene(provenance) {
+export function cloneFbxSemanticScene(provenance: FbxSceneProvenance): FbxSemanticScene {
     assertFbxProvenance(provenance);
     return structuredClone(provenance.sourceScene);
 }
 
-export function assertFbxProvenance(provenance) {
+export function assertFbxProvenance(provenance: FbxSceneProvenance | null | undefined) {
     if (!provenance || provenance.version !== FBX_SCENE_PROVENANCE_VERSION || provenance.format !== 'fbx'
         || !provenance.sourceScene?.rootNodes?.length) {
         throw new Error('Invalid FBX SceneDocument provenance');
