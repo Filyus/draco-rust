@@ -9,6 +9,7 @@
 
 import { assertValidSceneDocument } from './scene-document.ts';
 import type { SceneDocument, ScenePrimitive } from './scene-document.ts';
+import { componentByteWidth, normalizeComponent, readComponent } from './component-values.ts';
 import { invertMat4, multiplyMat4 } from './mat4.ts';
 import {
     convertGltfMatrixToFbx,
@@ -39,10 +40,6 @@ interface SourceMeshIndex {
     byName: Map<string, FbxJson>;
     ordered: FbxJson[];
 }
-
-const COMPONENT_BYTES = new Map<number, number>([
-    [5120, 1], [5121, 1], [5122, 2], [5123, 2], [5125, 4], [5126, 4],
-]);
 
 /** Build a typed-writer SceneInput from a validated portable document. */
 export function buildFbxSceneFromDocument(document: SceneDocument, options: FbxWriteOptions = {}) {
@@ -477,7 +474,7 @@ function composeMatrix(
 function readAccessorValues(document: SceneDocument, index: number): number[] {
     const accessor = document.accessors[index];
     if (!accessor) return [];
-    const bytes = COMPONENT_BYTES.get(accessor.componentType);
+    const bytes = componentByteWidth(accessor.componentType);
     if (!bytes) throw new Error(`Unsupported SceneDocument accessor component type ${accessor.componentType}`);
     const view = new DataView(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength);
     const values = [];
@@ -493,26 +490,6 @@ function readAccessorMatrices(document: SceneDocument, index: number): number[][
     if (!accessor || accessor.components !== 16) return [];
     const values = readAccessorValues(document, index);
     return Array.from({ length: accessor.count }, (_, item) => values.slice(item * 16, item * 16 + 16));
-}
-
-function readComponent(view: DataView, offset: number, componentType: number): number {
-    switch (componentType) {
-        case 5120: return view.getInt8(offset);
-        case 5121: return view.getUint8(offset);
-        case 5122: return view.getInt16(offset, true);
-        case 5123: return view.getUint16(offset, true);
-        case 5125: return view.getUint32(offset, true);
-        case 5126: return view.getFloat32(offset, true);
-        default: throw new Error(`Unsupported SceneDocument component type ${componentType}`);
-    }
-}
-
-function normalizeComponent(value: number, componentType: number): number {
-    if (componentType === 5120) return Math.max(-1, value / 127);
-    if (componentType === 5121) return value / 255;
-    if (componentType === 5122) return Math.max(-1, value / 32767);
-    if (componentType === 5123) return value / 65535;
-    return value;
 }
 
 function scaleValues(values: number[], factor: number): number[] {

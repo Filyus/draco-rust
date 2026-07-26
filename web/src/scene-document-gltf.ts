@@ -7,6 +7,8 @@
  * reimplemented in JavaScript.
  */
 
+import { componentByteWidth, readComponent } from './component-values.ts';
+import { decomposeMat4 } from './mat4.ts';
 import { assertValidSceneDocument } from './scene-document.ts';
 import type {
     SceneAccessor,
@@ -70,12 +72,6 @@ interface GltfNode {
     translation?: number[];
     rotation?: number[];
     scale?: number[];
-}
-
-interface Trs {
-    translation: number[];
-    rotation: number[];
-    scale: number[];
 }
 
 const ACCESSOR_TYPES = new Map<number, string>([
@@ -337,7 +333,7 @@ function lowerNode(
     if (node.skin !== undefined && (node.skin < 0 || node.skin >= skinCount)) throw new Error(`SceneDocument node ${index} has invalid skin`);
     if (node.matrix && !animatedNodes.has(index)) output.matrix = [...node.matrix];
     else if (node.matrix) {
-        Object.assign(output, decomposeMatrix(node.matrix));
+        Object.assign(output, decomposeMat4(node.matrix));
         warnings.push(`SceneDocument node ${index} matrix was baked to local TRS for animated glTF export`);
     } else {
         output.translation = [...(node.translation || [0, 0, 0])];
@@ -403,19 +399,6 @@ function accessorBounds(accessor: SceneAccessor) {
     return { min, max };
 }
 
-function componentByteWidth(componentType: number) {
-    return new Map([[5120, 1], [5121, 1], [5122, 2], [5123, 2], [5125, 4], [5126, 4]]).get(componentType);
-}
-
-function readComponent(view: DataView, offset: number, componentType: number) {
-    if (componentType === 5126) return view.getFloat32(offset, true);
-    if (componentType === 5125) return view.getUint32(offset, true);
-    if (componentType === 5123) return view.getUint16(offset, true);
-    if (componentType === 5122) return view.getInt16(offset, true);
-    if (componentType === 5121) return view.getUint8(offset);
-    return view.getInt8(offset);
-}
-
 function materialUsesTextureTransform(material: GltfMaterial) {
     const pbr = material.pbrMetallicRoughness as {
         baseColorTexture?: GltfTextureInfo;
@@ -430,21 +413,6 @@ function textureSourceExtension(mimeType: string | undefined) {
     if (mimeType === 'image/webp') return 'EXT_texture_webp';
     if (mimeType === 'image/ktx2') return 'KHR_texture_basisu';
     return null;
-}
-
-function decomposeMatrix(matrix: number[]): Trs {
-    const scale = [Math.hypot(matrix[0], matrix[1], matrix[2]) || 1, Math.hypot(matrix[4], matrix[5], matrix[6]) || 1, Math.hypot(matrix[8], matrix[9], matrix[10]) || 1];
-    const m00 = matrix[0] / scale[0], m01 = matrix[4] / scale[1], m02 = matrix[8] / scale[2];
-    const m10 = matrix[1] / scale[0], m11 = matrix[5] / scale[1], m12 = matrix[9] / scale[2];
-    const m20 = matrix[2] / scale[0], m21 = matrix[6] / scale[1], m22 = matrix[10] / scale[2];
-    const trace = m00 + m11 + m22;
-    let rotation: number[];
-    if (trace > 0) { const s = Math.sqrt(trace + 1) * 2; rotation = [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s]; }
-    else if (m00 > m11 && m00 > m22) { const s = Math.sqrt(1 + m00 - m11 - m22) * 2; rotation = [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]; }
-    else if (m11 > m22) { const s = Math.sqrt(1 + m11 - m00 - m22) * 2; rotation = [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]; }
-    else { const s = Math.sqrt(1 + m22 - m00 - m11) * 2; rotation = [(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s]; }
-    const length = Math.hypot(...rotation) || 1;
-    return { translation: [matrix[12], matrix[13], matrix[14]], rotation: rotation.map((value) => value / length), scale };
 }
 
 class BinaryBuilder {

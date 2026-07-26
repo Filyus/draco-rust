@@ -13,6 +13,7 @@
  * because support policy and fallback behavior are specific to the preview.
  */
 
+import { componentByteSize, normalizeComponent, readComponent } from './component-values.ts';
 import { mimeFromUri, resolveResource, sniffMime } from './scene-resources.ts';
 import type { ResourceMap } from './scene-resources.ts';
 import {
@@ -444,7 +445,7 @@ function packedAttributeNumbers(attribute: GltfJson): number[] {
     for (let index = 0; index < elementCount; index += 1) {
         const value = readComponent(view, index * componentSize, attribute.componentType);
         result[index] = attribute.normalized
-            ? normalizedComponent(value, attribute.componentType)
+            ? normalizeComponent(value, attribute.componentType)
             : value;
     }
     return result;
@@ -487,40 +488,6 @@ function triangleIndices(mode: number, source: number[]): number[] {
         }
     }
     return result;
-}
-
-function componentByteSize(componentType: number): number {
-    switch (componentType) {
-        case 5120:
-        case 5121: return 1;
-        case 5122:
-        case 5123: return 2;
-        case 5125:
-        case 5126: return 4;
-        default: throw new Error(`Unsupported glTF component type ${componentType}`);
-    }
-}
-
-function readComponent(view: DataView, offset: number, componentType: number): number {
-    switch (componentType) {
-        case 5120: return view.getInt8(offset);
-        case 5121: return view.getUint8(offset);
-        case 5122: return view.getInt16(offset, true);
-        case 5123: return view.getUint16(offset, true);
-        case 5125: return view.getUint32(offset, true);
-        case 5126: return view.getFloat32(offset, true);
-        default: throw new Error(`Unsupported glTF component type ${componentType}`);
-    }
-}
-
-function normalizedComponent(value: number, componentType: number): number {
-    switch (componentType) {
-        case 5120: return Math.max(value / 127, -1);
-        case 5121: return value / 255;
-        case 5122: return Math.max(value / 32767, -1);
-        case 5123: return value / 65535;
-        default: return value;
-    }
 }
 
 /**

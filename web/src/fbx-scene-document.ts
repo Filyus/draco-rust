@@ -6,7 +6,7 @@
  * contains matrices/bytes/TRS clips and no FBX parser or browser objects.
  */
 
-import { identityMat4, invertMat4, multiplyMat4 } from './mat4.ts';
+import { cloneTrs, decomposeMat4, identityMat4, invertMat4, multiplyMat4 } from './mat4.ts';
 import { adaptFbxAnimation } from './fbx-animation-adapter.ts';
 import { adaptFbxMaterial } from './fbx-material-adapter.ts';
 import { assertValidSceneDocument, createSceneDocument } from './scene-document.ts';
@@ -169,9 +169,9 @@ function buildFbxNodeState(roots: FbxJson[], document: SceneDocument): FbxImport
             ? Float32Array.from(parentBind ? (multiplyMat4(invertMat4(parentBind), bind) || bind) : bind)
             : sourceMatrix ? Float32Array.from(sourceMatrix) : Float32Array.from(identityMat4());
         const localMatrix = scaleMatrixTranslation(rawLocalMatrix);
-        const bindTrs = decomposeMatrix(rawLocalMatrix);
+        const bindTrs = decomposeMat4(rawLocalMatrix);
         const animationTrs = sourceMatrix && !source.hasComplexTransformStack
-            ? decomposeMatrix(sourceMatrix)
+            ? decomposeMat4(sourceMatrix)
             : cloneTrs(bindTrs);
         const index = nodes.length;
         const sceneNode: SceneNode = {
@@ -512,25 +512,6 @@ function morphWeights(mesh: FbxJson): number[] {
 
 function appendFloatAccessor(document: SceneDocument, values: ArrayLike<number>, components: number): number {
     return appendAccessor(document, { bytes: bytesFromF32(values), componentType: 5126, components, count: values.length / components, normalized: false });
-}
-
-function decomposeMatrix(matrix: ArrayLike<number>): Trs {
-    const scale = [Math.hypot(matrix[0], matrix[1], matrix[2]) || 1, Math.hypot(matrix[4], matrix[5], matrix[6]) || 1, Math.hypot(matrix[8], matrix[9], matrix[10]) || 1];
-    const m00 = matrix[0] / scale[0], m01 = matrix[4] / scale[1], m02 = matrix[8] / scale[2];
-    const m10 = matrix[1] / scale[0], m11 = matrix[5] / scale[1], m12 = matrix[9] / scale[2];
-    const m20 = matrix[2] / scale[0], m21 = matrix[6] / scale[1], m22 = matrix[10] / scale[2];
-    const trace = m00 + m11 + m22;
-    let rotation: number[];
-    if (trace > 0) { const s = Math.sqrt(trace + 1) * 2; rotation = [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s]; }
-    else if (m00 > m11 && m00 > m22) { const s = Math.sqrt(1 + m00 - m11 - m22) * 2; rotation = [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]; }
-    else if (m11 > m22) { const s = Math.sqrt(1 + m11 - m00 - m22) * 2; rotation = [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]; }
-    else { const s = Math.sqrt(1 + m22 - m00 - m11) * 2; rotation = [(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s]; }
-    const length = Math.hypot(...rotation) || 1;
-    return { translation: [matrix[12], matrix[13], matrix[14]], rotation: rotation.map((value) => value / length), scale };
-}
-
-function cloneTrs(trs: Trs): Trs {
-    return { translation: [...trs.translation], rotation: [...trs.rotation], scale: [...trs.scale] };
 }
 
 function scaleVector3(values: ArrayLike<number>) {

@@ -8,6 +8,8 @@
  * format.
  */
 
+import { componentByteWidth } from './component-values.ts';
+
 export const SCENE_DOCUMENT_VERSION = 1;
 
 /** glTF component type enum; the only widths this contract carries. */
@@ -177,10 +179,6 @@ export interface ValidationResult {
  * assuming the declared shape. Only the exported entry points narrow.
  */
 type Untrusted = any;
-
-const COMPONENT_BYTES = new Map<number, number>([
-    [5120, 1], [5121, 1], [5122, 2], [5123, 2], [5125, 4], [5126, 4],
-]);
 
 const ATTRIBUTE_COMPONENTS = new Map<string, number>([
     ['POSITION', 3], ['NORMAL', 3], ['TANGENT', 4], ['TEXCOORD_0', 2],
@@ -383,7 +381,7 @@ function validateAccessor(accessor: Untrusted, index: number, errors: string[]) 
     const label = `accessors[${index}]`;
     if (!accessor || typeof accessor !== 'object') return errors.push(`${label} must be an object`);
     if (!isBytes(accessor.bytes)) errors.push(`${label}.bytes must be a Uint8Array`);
-    const componentBytes = COMPONENT_BYTES.get(accessor.componentType);
+    const componentBytes = componentByteWidth(accessor.componentType);
     if (!componentBytes) errors.push(`${label}.componentType is unsupported`);
     if (!Number.isInteger(accessor.components) || accessor.components <= 0) errors.push(`${label}.components must be a positive integer`);
     if (!Number.isInteger(accessor.count) || accessor.count < 0) errors.push(`${label}.count must be a non-negative integer`);

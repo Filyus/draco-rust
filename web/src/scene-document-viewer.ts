@@ -7,6 +7,8 @@
  * into SceneDocument.
  */
 
+import { componentByteSize, readComponent } from './component-values.ts';
+import { cloneTrs, decomposeMat4 } from './mat4.ts';
 import { assertValidSceneDocument } from './scene-document.ts';
 import type {
     SceneAccessor,
@@ -34,16 +36,7 @@ interface RuntimeAccessor {
     count: number;
 }
 
-interface Trs {
-    translation: number[];
-    rotation: number[];
-    scale: number[];
-}
-
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-const COMPONENT_BYTES = new Map<number, number>([
-    [5120, 1], [5121, 1], [5122, 2], [5123, 2], [5125, 4], [5126, 4],
-]);
 
 /**
  * Build the current viewer's runtime Scene from a validated SceneDocument.
@@ -134,7 +127,7 @@ function adaptPrimitive(primitive: ScenePrimitive, accessors: RuntimeAccessor[])
 function adaptNode(node: SceneNode, document: SceneDocument) {
     const mesh = node.mesh === undefined ? null : document.meshes[node.mesh];
     const weights = node.weights || mesh?.weights || [];
-    const trs = node.matrix ? decomposeMatrix(node.matrix) : {
+    const trs = node.matrix ? decomposeMat4(node.matrix) : {
         translation: [...(node.translation || [0, 0, 0])],
         rotation: [...(node.rotation || [0, 0, 0, 1])],
         scale: [...(node.scale || [1, 1, 1])],
@@ -277,37 +270,11 @@ function sceneAabb(meshes: { aabb: { min: number[]; max: number[] } }[]) {
 }
 
 function readAccessor(accessor: RuntimeAccessor): number[] {
-    // Validation already rejected any component type outside the map.
-    const bytes = COMPONENT_BYTES.get(accessor.componentType)!;
+    const bytes = componentByteSize(accessor.componentType);
     const view = new DataView(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength);
     const values = new Array(accessor.count * accessor.components);
     for (let index = 0; index < values.length; index += 1) {
-        const offset = index * bytes;
-        if (accessor.componentType === 5126) values[index] = view.getFloat32(offset, true);
-        else if (accessor.componentType === 5125) values[index] = view.getUint32(offset, true);
-        else if (accessor.componentType === 5123) values[index] = view.getUint16(offset, true);
-        else if (accessor.componentType === 5122) values[index] = view.getInt16(offset, true);
-        else if (accessor.componentType === 5121) values[index] = view.getUint8(offset);
-        else values[index] = view.getInt8(offset);
+        values[index] = readComponent(view, index * bytes, accessor.componentType);
     }
     return values;
-}
-
-function decomposeMatrix(matrix: number[]): Trs {
-    const scale = [Math.hypot(matrix[0], matrix[1], matrix[2]) || 1, Math.hypot(matrix[4], matrix[5], matrix[6]) || 1, Math.hypot(matrix[8], matrix[9], matrix[10]) || 1];
-    const m00 = matrix[0] / scale[0], m01 = matrix[4] / scale[1], m02 = matrix[8] / scale[2];
-    const m10 = matrix[1] / scale[0], m11 = matrix[5] / scale[1], m12 = matrix[9] / scale[2];
-    const m20 = matrix[2] / scale[0], m21 = matrix[6] / scale[1], m22 = matrix[10] / scale[2];
-    const trace = m00 + m11 + m22;
-    let rotation: number[];
-    if (trace > 0) { const s = Math.sqrt(trace + 1) * 2; rotation = [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s]; }
-    else if (m00 > m11 && m00 > m22) { const s = Math.sqrt(1 + m00 - m11 - m22) * 2; rotation = [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]; }
-    else if (m11 > m22) { const s = Math.sqrt(1 + m11 - m00 - m22) * 2; rotation = [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]; }
-    else { const s = Math.sqrt(1 + m22 - m00 - m11) * 2; rotation = [(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s]; }
-    const length = Math.hypot(...rotation) || 1;
-    return { translation: [matrix[12], matrix[13], matrix[14]], rotation: rotation.map((value) => value / length), scale };
-}
-
-function cloneTrs(trs: Trs): Trs {
-    return { translation: [...trs.translation], rotation: [...trs.rotation], scale: [...trs.scale] };
 }
