@@ -172,7 +172,11 @@ jobs:
         working-directory: web
 
       # The scene model has no browser dependency, so these run here rather
-      # than in the Playwright job. They need no fixture beyond testdata/.
+      # than in the Playwright job. They need no fixture beyond testdata/;
+      # test:scene-document-fbx skips its Mixamo and Samba legs by itself and
+      # keeps running its glTF-sourced one. The suites left out need locally
+      # installed source models (test:fbx-scene-provenance) or Blender
+      # (test:scene-document-glb).
       - name: Run scene model and material gates
         run: |
           npm run test:scene-document
@@ -186,6 +190,9 @@ jobs:
           npm run test:fbx-export-interpretation
           npm run test:scene-document-samplers
           npm run test:gltf-accessor-dedup
+          npm run test:export-helpers
+          npm run test:scene-document-attributes
+          npm run test:scene-document-fbx
         working-directory: web
 
       - name: Build and smoke raw glTF writer

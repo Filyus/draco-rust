@@ -35,6 +35,7 @@
     "test:fbx-export-interpretation": "node tests/fbx-export-interpretation.mjs",
     "test:scene-document-samplers": "node tests/scene-document-gltf-samplers.mjs",
     "test:gltf-accessor-dedup": "node tests/gltf-accessor-dedup.mjs",
+    "test:export-helpers": "node tests/export-helpers.mjs",
     "test:gltf-quantized-morph": "node tests/gltf-quantized-morph.mjs",
     "test:gltf-write": "node tests/gltf-write-smoke.mjs",
     "test:gltf-draco-write": "node tests/gltf-write-smoke.mjs --draco",

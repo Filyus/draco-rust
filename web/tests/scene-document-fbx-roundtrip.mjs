@@ -8,12 +8,16 @@ import { buildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
 import { buildFbxSceneFromDocument } from '../src/fbx-scene-document-writer.ts';
 import { loadWasm, mixamoFbx, readBytes, sambaFbx, foxBin, foxGltf, skipUnless } from './fbx-test-utils.mjs';
 
-if (skipUnless([mixamoFbx, sambaFbx, foxGltf, foxBin], 'SceneDocument FBX writer')) process.exit(0);
+// The Fox leg needs only testdata, so it runs everywhere including CI; the
+// FBX legs need locally installed source models and skip without them. Gating
+// the whole file on the FBX fixtures kept the glTF-sourced half local too.
+if (skipUnless([foxGltf, foxBin], 'SceneDocument FBX writer')) process.exit(0);
+const fbxFixtures = !skipUnless([mixamoFbx, sambaFbx], 'SceneDocument FBX writer source models');
 
 const [fbx, gltf] = await Promise.all([loadWasm('fbx'), loadWasm('gltf')]);
 const allNodes = (nodes) => nodes.flatMap((node) => [node, ...allNodes(node.children || [])]);
 
-for (const [label, path] of [['Mixamo', mixamoFbx], ['Samba', sambaFbx]]) {
+for (const [label, path] of fbxFixtures ? [['Mixamo', mixamoFbx], ['Samba', sambaFbx]] : []) {
     const parsed = fbx.parse_fbx(await readBytes(path));
     assert.equal(parsed.success, true, `${label} source parse`);
     const { document, provenance } = buildSceneDocumentWithFbxProvenance(parsed);
