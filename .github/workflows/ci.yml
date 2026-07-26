@@ -171,6 +171,18 @@ jobs:
         run: npm run test:node
         working-directory: web
 
+      # The scene model has no browser dependency, so these run here rather
+      # than in the Playwright job. They need no fixture beyond testdata/.
+      - name: Run scene model and material gates
+        run: |
+          npm run test:scene-document
+          npm run test:scene-document-viewer
+          npm run test:gltf-materials
+          npm run test:gltf-material-parity
+          npm run test:gltf-summary-parity
+          npm run test:gltf-quantized-morph
+        working-directory: web
+
       - name: Build and smoke raw glTF writer
         run: |
           cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-wasm --features write --force
