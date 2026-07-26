@@ -9,6 +9,7 @@
 
 import { componentByteSize, readComponent } from './component-values.ts';
 import { cloneTrs, decomposeMat4 } from './mat4.ts';
+import type { RuntimeAccessor } from './viewer-scene.ts';
 import { assertValidSceneDocument } from './scene-document.ts';
 import type {
     SceneAccessor,
@@ -23,18 +24,6 @@ import type {
     SceneTexture,
     TextureInfo,
 } from './scene-document.ts';
-
-/**
- * The runtime accessor keeps the document's bytes but drops everything an
- * exporter needs and a renderer does not.
- */
-interface RuntimeAccessor {
-    bytes: Uint8Array;
-    componentType: number;
-    components: number;
-    normalized: boolean;
-    count: number;
-}
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 

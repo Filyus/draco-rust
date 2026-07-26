@@ -7,8 +7,6 @@
  * Keeping one copy here means a new width is added in one place.
  */
 
-import type { ComponentType } from './scene-document.ts';
-
 const COMPONENT_BYTES = new Map<number, number>([
     [5120, 1], [5121, 1], [5122, 2], [5123, 2], [5125, 4], [5126, 4],
 ]);
@@ -23,10 +21,6 @@ export function componentByteSize(componentType: number): number {
     const width = COMPONENT_BYTES.get(componentType);
     if (width === undefined) throw new Error(`Unsupported component type ${componentType}`);
     return width;
-}
-
-export function isComponentType(value: number): value is ComponentType {
-    return COMPONENT_BYTES.has(value);
 }
 
 /** Read one little-endian component at a byte offset. */
