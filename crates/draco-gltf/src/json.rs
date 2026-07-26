@@ -360,15 +360,26 @@ impl<'a> Parser<'a> {
                     }
                 }
                 0..=0x1f => return Err("control character in string".into()),
+                0x20..=0x7f => out.push(char::from(b)),
                 _ => {
-                    let rest = &self.input[self.pos - 1..];
-                    let ch = std::str::from_utf8(rest)
+                    // Decode exactly one scalar from the lead byte. Validating
+                    // the whole remaining input here would make parsing
+                    // quadratic in document size.
+                    let width = match b {
+                        0xc2..=0xdf => 2,
+                        0xe0..=0xef => 3,
+                        0xf0..=0xf4 => 4,
+                        _ => return Err("invalid utf8".into()),
+                    };
+                    let start = self.pos - 1;
+                    let encoded = self.input.get(start..start + width).ok_or("invalid utf8")?;
+                    let ch = std::str::from_utf8(encoded)
                         .map_err(|_| "invalid utf8")?
                         .chars()
                         .next()
-                        .unwrap();
+                        .ok_or("invalid utf8")?;
                     out.push(ch);
-                    self.pos += ch.len_utf8() - 1;
+                    self.pos = start + width;
                 }
             }
         }
@@ -465,6 +476,27 @@ mod tests {
         );
         assert!(Value::parse(br#""\ud83d""#).is_err());
         assert!(Value::parse(br#""\ude80""#).is_err());
+    }
+
+    #[test]
+    fn parses_raw_multibyte_scalars_and_rejects_malformed_bytes() {
+        let source = "\"aé\u{20ac}\u{1f680}\"";
+        assert_eq!(
+            Value::parse(source.as_bytes()).unwrap(),
+            Value::String("aé\u{20ac}\u{1f680}".into())
+        );
+        for invalid in [
+            b"\"\x80\"".as_slice(),             // bare continuation byte
+            b"\"\xc0\xaf\"".as_slice(),         // overlong encoding
+            b"\"\xed\xa0\x80\"".as_slice(),     // UTF-16 surrogate
+            b"\"\xf5\x80\x80\x80\"".as_slice(), // beyond U+10FFFF
+            b"\"\xe2\x82\"".as_slice(),         // truncated sequence
+        ] {
+            assert!(
+                Value::parse(invalid).is_err(),
+                "{invalid:?} should be invalid"
+            );
+        }
     }
 
     #[test]
