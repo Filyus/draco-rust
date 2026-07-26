@@ -7,7 +7,7 @@
 
 import { identityMat4, invertMat4 } from './mat4.ts';
 import type { ResourceMap } from './scene-resources.ts';
-import type { GltfAsset } from './wasm-modules.ts';
+import type { GltfAsset, NumericArray } from './wasm-modules.ts';
 
 /** glTF manifest fragments, inspected field by field rather than trusted. */
 type GltfJson = any;
@@ -24,7 +24,7 @@ type ReadAccessorAsTyped = (asset: GltfAsset, index: number) => {
     componentType: number;
     components: number;
     count: number;
-    data: Float32Array;
+    data: NumericArray;
 };
 
 /** A row-major FBX matrix, in the writer's own convention. */

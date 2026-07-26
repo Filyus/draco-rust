@@ -147,7 +147,7 @@ if (
 // FBX export from glTF must carry the document's material assignments and
 // node animation, rather than only the hierarchy and triangle buffers.
 globalThis.WebGL2RenderingContext = {};
-const { buildFbxSceneFromGltf } = await import('../www/gltf-loader.js');
+const { buildFbxSceneFromGltf } = await import('../src/gltf-loader.ts');
 const animatedDocument = JSON.parse(animatedTranslation());
 animatedDocument.nodes[0] = { name: 'AnimatedTriangle' };
 const animatedFbxScene = buildFbxSceneFromGltf(

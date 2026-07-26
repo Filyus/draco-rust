@@ -9,7 +9,7 @@ import { buildViewerSceneFromDocument } from '../src/scene-document-viewer.ts';
 import { foxBin, foxGltf, here, loadWasm, readBytes } from './fbx-test-utils.mjs';
 
 const gltf = await loadWasm('gltf');
-const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'www', 'gltf-loader.js')));
+const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')));
 const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'www', 'viewer.js')));
 const resources = {
     'Fox.bin': await readBytes(foxBin),

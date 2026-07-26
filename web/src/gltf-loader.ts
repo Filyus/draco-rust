@@ -13,7 +13,8 @@
  * because support policy and fallback behavior are specific to the preview.
  */
 
-import { mimeFromUri, resolveResource, sniffMime } from './scene-resources.js';
+import { mimeFromUri, resolveResource, sniffMime } from './scene-resources.ts';
+import type { ResourceMap } from './scene-resources.ts';
 import {
     buildFbxMeshSkin,
     buildFbxMaterials,
@@ -25,7 +26,23 @@ import {
     fbxRowMajorMatrix,
     extractGltfCubicSegment,
     quaternionKeysToFbxEuler,
-} from './fbx-scene-adapter.js';
+} from './fbx-scene-adapter.ts';
+import type { GltfAsset, GltfModule, PackedAccessor, PackedGeometry } from './wasm-modules.ts';
+import type {
+    Aabb, Renderable, RuntimeAccessor, ViewerClip, ViewerMesh, ViewerNode, ViewerSkin,
+} from './viewer-scene.ts';
+
+/**
+ * The parsed glTF manifest and the FBX structures built from it: external
+ * JSON on one side, the writer's own shapes on the other, both inspected
+ * field by field rather than trusted.
+ */
+type GltfJson = any;
+
+/** Diagnostics sink shared with the rest of the import path. */
+interface ImportHooks {
+    onLog?: (message: string, level: string) => void;
+}
 
 const GL = WebGL2RenderingContext;
 // Extensions this module interprets on its own.
@@ -54,13 +71,18 @@ const MAX_ACTIVE_MORPH_TARGETS = 32;
  * @param {Object} gltfModule         Imported gltf.js module.
  * @param {Object} hooks              { onLog(msg, type), loadImage(bytes, mime) }
  */
-export async function buildSceneFromGltf(sourceData, resources, gltfModule, hooks = {}) {
-    const log = (msg, type = 'info') => hooks.onLog?.(msg, type);
+export async function buildSceneFromGltf(
+    sourceData: Uint8Array,
+    resources: ResourceMap,
+    gltfModule: GltfModule,
+    hooks: ImportHooks = {},
+) {
+    const log = (msg: string, type = 'info') => hooks.onLog?.(msg, type);
 
     const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
     try {
-        const document = JSON.parse(new TextDecoder().decode(asset.json()));
-        const warnings = [];
+        const document: GltfJson = JSON.parse(new TextDecoder().decode(asset.json()));
+        const warnings: string[] = [];
         const nodes = buildNodes(document.nodes || []);
         const meshes = buildMeshes(asset, document.meshes || [], warnings);
         initializeMorphWeights(nodes, meshes, warnings);
@@ -107,7 +129,11 @@ export async function buildSceneFromGltf(sourceData, resources, gltfModule, hook
  * drops materials, animation, skins, and node transforms: the OBJ/PLY/FBX
  * writers currently accept geometry buffers only.
  */
-export function buildFlatMeshesFromGltf(sourceData, resources, gltfModule) {
+export function buildFlatMeshesFromGltf(
+    sourceData: Uint8Array,
+    resources: ResourceMap,
+    gltfModule: GltfModule,
+): GltfJson[] {
     const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
     try {
         const document = JSON.parse(new TextDecoder().decode(asset.json()));
@@ -176,16 +202,21 @@ export function buildFlatMeshesFromGltf(sourceData, resources, gltfModule) {
 }
 
 /** Build the hierarchy and local transforms representable by FBX export. */
-export function buildFbxSceneFromGltf(sourceData, resources, gltfModule, options = {}) {
+export function buildFbxSceneFromGltf(
+    sourceData: Uint8Array,
+    resources: ResourceMap,
+    gltfModule: GltfModule,
+    options: { legacyCompatibility?: boolean } = {},
+) {
     const legacyCompatibility = options.legacyCompatibility === true;
     const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
     try {
         const document = JSON.parse(new TextDecoder().decode(asset.json()));
         const definitions = document.meshes || [];
         const flatMeshes = buildFlatMeshesFromGltf(sourceData, resources, gltfModule);
-        const meshesByDefinition = definitions.map((definition, meshIndex) => {
+        const meshesByDefinition = definitions.map((definition: GltfJson, meshIndex: number) => {
             const primitives = definition.primitives || [];
-            return flatMeshes.splice(0, primitives.length).map((mesh, primitiveIndex) => {
+            return flatMeshes.splice(0, primitives.length).map((mesh: GltfJson, primitiveIndex: number) => {
                 const material = primitives[primitiveIndex]?.material;
                 return {
                     ...mesh,
@@ -197,7 +228,7 @@ export function buildFbxSceneFromGltf(sourceData, resources, gltfModule, options
                     // Convert only at the glTF -> FBX boundary; FBX re-export
                     // must preserve the coordinates it originally read.
                     uvs: mesh.uvs
-                        ? mesh.uvs.map((value, component) => (component % 2 === 1 ? 1 - value : value))
+                        ? mesh.uvs.map((value: number, component: number) => (component % 2 === 1 ? 1 - value : value))
                         : null,
                     materialIndices: typeof material === 'number'
                         ? Array(mesh.indices.length / 3).fill(material)
@@ -211,11 +242,11 @@ export function buildFbxSceneFromGltf(sourceData, resources, gltfModule, options
                 };
             });
         });
-        const nodes = document.nodes || [];
-        const warnings = [];
+        const nodes: GltfJson[] = document.nodes || [];
+        const warnings: string[] = [];
         const sceneIndex = typeof document.scene === 'number' ? document.scene : 0;
         const roots = document.scenes?.[sceneIndex]?.nodes || document.scenes?.[0]?.nodes
-            || nodes.map((_, index) => index).filter((index) => !nodes.some((node) => node.children?.includes(index)));
+            || nodes.map((_: GltfJson, index: number) => index).filter((index: number) => !nodes.some((node: GltfJson) => node.children?.includes(index)));
         const nodeRecords = buildNodes(nodes);
         // The FBX animation bridge needs a concrete morph-weight count even
         // when glTF omits the optional node.weights array.
@@ -225,10 +256,10 @@ export function buildFbxSceneFromGltf(sourceData, resources, gltfModule, options
                 ? definitions[definition.mesh]
                 : null;
             const targetCount = meshDefinition?.primitives?.reduce(
-                (count, primitive) => Math.max(count, (primitive.targets || []).length),
+                (count: number, primitive: GltfJson) => Math.max(count, (primitive.targets || []).length),
                 0,
             ) || 0;
-            if (targetCount > 0 && node.weights.length === 0) {
+            if (targetCount > 0 && node.weights!.length === 0) {
                 node.weights = Float32Array.from(
                     Array.from({ length: targetCount }, (_, target) =>
                         Number(meshDefinition.weights?.[target]) || 0),
@@ -239,7 +270,7 @@ export function buildFbxSceneFromGltf(sourceData, resources, gltfModule, options
         const skins = buildFbxSkins(
             asset, document.skins || [], worlds, warnings, readAccessorAsTyped, composeTrs,
         );
-        const buildNode = (index, isRoot = false) => {
+        const buildNode = (index: number, isRoot = false): GltfJson => {
             const node = nodes[index] || {};
             return {
                 id: index + 1,
@@ -248,24 +279,24 @@ export function buildFbxSceneFromGltf(sourceData, resources, gltfModule, options
                     fbxRowMajorMatrix(node, composeTrs),
                 ),
                 meshes: typeof node.mesh === 'number'
-                    ? (meshesByDefinition[node.mesh] || []).map((mesh) => ({
+                    ? (meshesByDefinition[node.mesh] || []).map((mesh: GltfJson) => ({
                         ...mesh,
                         skin: typeof node.skin === 'number'
                             ? buildFbxMeshSkin(
                                 mesh, skins[node.skin], index + 1, worlds[index], composeTrs,
                             )
                             : null,
-                        morphTargets: (mesh.morphTargets || []).map((target, targetIndex) => ({
+                        morphTargets: (mesh.morphTargets || []).map((target: GltfJson, targetIndex: number) => ({
                             ...target,
                             defaultWeight: Number(node.weights?.[targetIndex] ?? target.defaultWeight) * 100,
                         })),
                     }))
                     : [],
-                children: (node.children || []).map((child) => buildNode(child, false)),
+                children: (node.children || []).map((child: number) => buildNode(child, false)),
             };
         };
         return {
-            rootNodes: roots.map((root) => buildNode(root, true)),
+            rootNodes: roots.map((root: number) => buildNode(root, true)),
             materials: buildFbxMaterials(document.materials || []),
             textures: buildFbxTextures(asset, document, resources, resolveUriBytes),
             animations: buildFbxAnimations(
@@ -279,16 +310,22 @@ export function buildFbxSceneFromGltf(sourceData, resources, gltfModule, options
 }
 
 /** Convert glTF TRS clips to the FBX animation contract used by fbx-wasm. */
-function buildFbxAnimations(asset, definitions, nodes, warnings, legacyCompatibility = false) {
+function buildFbxAnimations(
+    asset: GltfAsset,
+    definitions: GltfJson[],
+    nodes: GltfJson[],
+    warnings: string[],
+    legacyCompatibility = false,
+): GltfJson[] {
     return buildAnimations(asset, definitions, nodes, warnings).map((animation) => {
-        const channels = animation.channels.flatMap((channel) => {
+        const channels = animation.channels.flatMap((channel: GltfJson): GltfJson[] => {
             if (channel.path === 'weights') {
                 const targetCount = channel.targetCount || 0;
                 const interpolation = String(channel.sampler.interpolation || 'LINEAR').toLowerCase();
                 const cubic = interpolation === 'cubicspline';
-                const result = [];
+                const result: GltfJson[] = [];
                 for (let target = 0; target < targetCount; target++) {
-                    const values = Array.from(channel.sampler.output);
+                    const values = Array.from<number>(channel.sampler.output);
                     const output = [];
                     const inTangents = [];
                     const outTangents = [];
@@ -306,7 +343,7 @@ function buildFbxAnimations(asset, definitions, nodes, warnings, legacyCompatibi
                     }
                     result.push({
                         nodeName: channel.node.name,
-                        nodeId: channel.node.index + 1,
+                        nodeId: channel.node.index! + 1,
                         morphTargetIndex: target,
                         path: 'morphweight',
                         sampler: {
@@ -324,8 +361,8 @@ function buildFbxAnimations(asset, definitions, nodes, warnings, legacyCompatibi
             }
             if (!['translation', 'rotation', 'scale'].includes(channel.path)) return [];
             const interpolation = String(channel.sampler.interpolation || 'LINEAR').toLowerCase();
-            const input = Array.from(channel.sampler.input);
-            const values = Array.from(channel.sampler.output);
+            const input = Array.from<number>(channel.sampler.input);
+            const values = Array.from<number>(channel.sampler.output);
             const cubic = interpolation === 'cubicspline';
             const keyValues = cubic
                 ? extractGltfCubicSegment(values, channel.path === 'rotation' ? 4 : 3, 1)
@@ -341,7 +378,7 @@ function buildFbxAnimations(asset, definitions, nodes, warnings, legacyCompatibi
             }
             return [{
                 nodeName: channel.node.name,
-                nodeId: channel.node.index + 1,
+                nodeId: channel.node.index! + 1,
                 path: channel.path,
                 sampler: {
                     input,
@@ -361,7 +398,7 @@ function buildFbxAnimations(asset, definitions, nodes, warnings, legacyCompatibi
     }).filter(Boolean);
 }
 
-function convertGltfScaleKeysToFbx(values) {
+function convertGltfScaleKeysToFbx(values: number[]): number[] {
     const converted = Array.from(values);
     for (let offset = 0; offset + 2 < converted.length; offset += 3) {
         [converted[offset + 1], converted[offset + 2]] = [converted[offset + 2], converted[offset + 1]];
@@ -374,13 +411,13 @@ function convertGltfScaleKeysToFbx(values) {
 // pre-multiply root matrices by 100 for Blender's legacy importer, which
 // would now make every imported scene 100× too large. We keep the signature
 // for the call site, but the matrix is returned unchanged.
-function scaleFbxRootMatrix(matrix) {
+function scaleFbxRootMatrix(matrix: number[]): number[] {
     return matrix;
 }
 
-function composeTrs(translation, rotation, scale) {
-    const [x, y, z, w] = rotation;
-    const [sx, sy, sz] = scale;
+function composeTrs(translation: ArrayLike<number>, rotation: ArrayLike<number>, scale: ArrayLike<number>): number[] {
+    const [x, y, z, w] = Array.from(rotation);
+    const [sx, sy, sz] = Array.from(scale);
     const xx = x * x; const yy = y * y; const zz = z * z;
     const xy = x * y; const xz = x * z; const yz = y * z;
     const wx = w * x; const wy = w * y; const wz = w * z;
@@ -392,7 +429,7 @@ function composeTrs(translation, rotation, scale) {
     ];
 }
 
-function packedAttributeNumbers(attribute) {
+function packedAttributeNumbers(attribute: GltfJson): number[] {
     const componentSize = componentByteSize(attribute.componentType);
     const elementCount = attribute.count * attribute.components;
     if (attribute.bytes.byteLength !== elementCount * componentSize) {
@@ -413,7 +450,7 @@ function packedAttributeNumbers(attribute) {
     return result;
 }
 
-function packedIndices(packed) {
+function packedIndices(packed: PackedGeometry): number[] {
     const bytes = new Uint8Array(packed.indexBytes());
     const componentType = packed.indexComponentType();
     const componentSize = componentByteSize(componentType);
@@ -427,7 +464,7 @@ function packedIndices(packed) {
     );
 }
 
-function triangleIndices(mode, source) {
+function triangleIndices(mode: number, source: number[]): number[] {
     if (mode === 4) return source.slice(0, source.length - (source.length % 3));
     const result = [];
     if (mode === 5) {
@@ -449,7 +486,7 @@ function triangleIndices(mode, source) {
     return result;
 }
 
-function componentByteSize(componentType) {
+function componentByteSize(componentType: number): number {
     switch (componentType) {
         case 5120:
         case 5121: return 1;
@@ -461,7 +498,7 @@ function componentByteSize(componentType) {
     }
 }
 
-function readComponent(view, offset, componentType) {
+function readComponent(view: DataView, offset: number, componentType: number): number {
     switch (componentType) {
         case 5120: return view.getInt8(offset);
         case 5121: return view.getUint8(offset);
@@ -473,7 +510,7 @@ function readComponent(view, offset, componentType) {
     }
 }
 
-function normalizedComponent(value, componentType) {
+function normalizedComponent(value: number, componentType: number): number {
     switch (componentType) {
         case 5120: return Math.max(value / 127, -1);
         case 5121: return value / 255;
@@ -491,16 +528,16 @@ function normalizedComponent(value, componentType) {
  *   Per alternate-source extension, whether every texture that selected an
  *   image through it ended up with a decoded bitmap.
  */
-function extensionWarnings(document, honoredSources) {
+function extensionWarnings(document: GltfJson, honoredSources: Map<unknown, unknown>): string[] {
     const warnings = [];
-    const honored = (extension) => SUPPORTED_EXTENSIONS.has(extension)
+    const honored = (extension: string) => SUPPORTED_EXTENSIONS.has(extension)
         || honoredSources.get(extension) === true;
     const unsupported = (document.extensionsUsed || [])
-        .filter((extension) => !honored(extension));
+        .filter((extension: string) => !honored(extension));
     if (unsupported.length > 0) {
         warnings.push(`Unsupported glTF extensions ignored: ${unsupported.join(', ')}`);
     }
-    if ((document.extensionsRequired || []).some((extension) => !honored(extension))) {
+    if ((document.extensionsRequired || []).some((extension: string) => !honored(extension))) {
         warnings.push(
             'Model requires extensions that this viewer ignores; rendering may be incomplete',
         );
@@ -508,12 +545,12 @@ function extensionWarnings(document, honoredSources) {
     return warnings;
 }
 
-export function buildNodes(defs) {
+export function buildNodes(defs: GltfJson[]): ViewerNode[] {
     return defs.map((def, index) => {
         const trs = {
-            translation: def.translation ? Array.from(def.translation) : [0, 0, 0],
-            rotation: def.rotation ? Array.from(def.rotation) : [0, 0, 0, 1],
-            scale: def.scale ? Array.from(def.scale) : [1, 1, 1],
+            translation: def.translation ? Array.from<number>(def.translation) : [0, 0, 0],
+            rotation: def.rotation ? Array.from<number>(def.rotation) : [0, 0, 0, 1],
+            scale: def.scale ? Array.from<number>(def.scale) : [1, 1, 1],
         };
         return {
             name: def.name || `node_${index}`,
@@ -533,13 +570,13 @@ export function buildNodes(defs) {
     });
 }
 
-function buildMeshes(asset, defs, warnings) {
+function buildMeshes(asset: GltfAsset, defs: GltfJson[], warnings: string[]): ViewerMesh[] {
     return defs.map((def, meshIndex) => {
-        const primitives = [];
+        const primitives: GltfJson[] = [];
         for (let p = 0; p < def.primitives.length; p++) {
             const packed = asset.readPrimitive(meshIndex, p);
             try {
-                const attributes = {};
+                const attributes: Record<string, RuntimeAccessor> = {};
                 for (let i = 0; i < packed.attributeCount(); i++) {
                     const semantic = packed.attributeSemantic(i);
                     attributes[semantic] = {
@@ -550,7 +587,7 @@ function buildMeshes(asset, defs, warnings) {
                         count: packed.attributeElementCount(i),
                     };
                 }
-                const primitive = {
+                const primitive: GltfJson = {
                     attributes,
                     mode: packed.mode(),
                     materialIndex: typeof def.primitives[p].material === 'number'
@@ -594,7 +631,7 @@ function buildMeshes(asset, defs, warnings) {
                     }
                     primitive.morphNormals.push(target);
                 }
-                if (targets.some((target) => typeof target.TANGENT === 'number')) {
+                if (targets.some((target: GltfJson) => typeof target.TANGENT === 'number')) {
                     warnings.push(
                         `Morph tangents on mesh ${meshIndex} primitive ${p} are ignored because the preview derives its tangent frame from deformed geometry and UVs`,
                     );
@@ -620,13 +657,13 @@ function buildMeshes(asset, defs, warnings) {
     });
 }
 
-function initializeMorphWeights(nodes, meshes, warnings) {
+function initializeMorphWeights(nodes: ViewerNode[], meshes: ViewerMesh[], warnings: string[]) {
     for (const node of nodes) {
         const mesh = meshes[node.meshIndex];
         if (!mesh) continue;
-        const targetCount = Math.max(0, ...mesh.primitives.map((primitive) => primitive.morphPositions.length));
+        const targetCount = Math.max(0, ...mesh.primitives.map((primitive) => primitive.morphPositions!.length));
         if (targetCount === 0) continue;
-        const source = node.weights.length > 0 ? node.weights : mesh.weights;
+        const source = node.weights!.length > 0 ? node.weights! : mesh.weights!;
         node.weights = Float32Array.from(
             Array.from({ length: targetCount }, (_, index) => Number(source[index]) || 0),
         );
@@ -641,7 +678,7 @@ function initializeMorphWeights(nodes, meshes, warnings) {
     }
 }
 
-export function readAccessorAsTyped(asset, index) {
+export function readAccessorAsTyped(asset: GltfAsset, index: number) {
     const packed = asset.readAccessor(index);
     try {
         const componentType = packed.componentType();
@@ -662,7 +699,7 @@ export function readAccessorAsTyped(asset, index) {
     }
 }
 
-function bytesAsTyped(componentType, bytes) {
+function bytesAsTyped(componentType: number, bytes: Uint8Array) {
     switch (componentType) {
         case 5120: return new Int8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
         case 5121: return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -674,9 +711,9 @@ function bytesAsTyped(componentType, bytes) {
     }
 }
 
-function buildSkins(asset, defs, nodes, warnings) {
+function buildSkins(asset: GltfAsset, defs: GltfJson[], nodes: ViewerNode[], warnings: string[]): ViewerSkin[] {
     return defs.map((def, skinIndex) => {
-        const joints = (def.joints || []).map((jointNodeIndex) => ({
+        const joints = (def.joints || []).map((jointNodeIndex: number) => ({
             node: nodes[jointNodeIndex],
             inverseBind: identityMat4(),
         }));
@@ -690,7 +727,7 @@ function buildSkins(asset, defs, nodes, warnings) {
                     }
                 }
             } catch (error) {
-                warnings.push(`Failed to read skin inverse bind matrices: ${error.message}`);
+                warnings.push(`Failed to read skin inverse bind matrices: ${(error as Error).message}`);
             }
         }
         return {
@@ -700,20 +737,20 @@ function buildSkins(asset, defs, nodes, warnings) {
     });
 }
 
-function identityMat4() {
+function identityMat4(): Float32Array {
     const m = new Float32Array(16);
     m[0] = m[5] = m[10] = m[15] = 1;
     return m;
 }
 
-function buildMaterials(defs) {
+function buildMaterials(defs: GltfJson[]): GltfJson[] {
     const fallback = {
         baseColorFactor: [1, 1, 1, 1],
         doubleSided: false,
         alphaMode: 'OPAQUE',
         unlit: false,
     };
-    const list = defs.map((def, idx) => {
+    const list: GltfJson[] = defs.map((def, idx) => {
         const pbr = def.pbrMetallicRoughness || {};
         const baseColor = pbr.baseColorTexture || null;
         const transform = baseColor?.extensions?.KHR_texture_transform || {};
@@ -744,9 +781,9 @@ function buildMaterials(defs) {
     return list;
 }
 
-function textureBinding(info, scalarName = null, fallback = 1) {
+function textureBinding(info: GltfJson, scalarName: string | null = null, fallback = 1): GltfJson {
     if (!info || typeof info.index !== 'number') return null;
-    const binding = {
+    const binding: GltfJson = {
         index: info.index,
         texCoord: info.texCoord ?? 0,
     };
@@ -754,9 +791,9 @@ function textureBinding(info, scalarName = null, fallback = 1) {
     return binding;
 }
 
-async function buildTextures(asset, manifest, resources, hooks) {
+async function buildTextures(asset: GltfAsset, manifest: GltfJson, resources: ResourceMap, hooks: ImportHooks) {
     const images = await decodeImages(asset, manifest.images || [], resources, hooks);
-    const samplers = (manifest.samplers || []).map((s) => ({
+    const samplers = (manifest.samplers || []).map((s: GltfJson) => ({
         wrapS: s.wrapS ?? GL.REPEAT,
         wrapT: s.wrapT ?? GL.REPEAT,
         minFilter: s.minFilter ?? GL.LINEAR_MIPMAP_LINEAR,
@@ -773,7 +810,7 @@ async function buildTextures(asset, manifest, resources, hooks) {
     // reads through it produced a bitmap: the codec belongs to the host, so
     // this is an observation rather than a support claim.
     const honoredSources = new Map();
-    const textures = (manifest.textures || []).map((tex, idx) => {
+    const textures = (manifest.textures || []).map((tex: GltfJson, idx: number) => {
         const samplerIndex = typeof tex.sampler === 'number' ? tex.sampler : -1;
         const sampler = samplerIndex >= 0 ? samplers[samplerIndex] : defaultSampler;
         const { source, extension } = textureSource(tex);
@@ -803,7 +840,7 @@ async function buildTextures(asset, manifest, resources, hooks) {
  * @returns {{ source: number, extension: string|null }}
  *   The image index, or -1, and the alternate-source extension that named it.
  */
-function textureSource(texture) {
+function textureSource(texture: GltfJson) {
     if (Number.isInteger(texture.source)) return { source: texture.source, extension: null };
     for (const extension of TEXTURE_SOURCE_EXTENSIONS) {
         const source = texture.extensions?.[extension]?.source;
@@ -812,7 +849,7 @@ function textureSource(texture) {
     return { source: -1, extension: null };
 }
 
-async function decodeImages(asset, defs, resources, hooks) {
+async function decodeImages(asset: GltfAsset, defs: GltfJson[], resources: ResourceMap, hooks: ImportHooks) {
     return Promise.all(
         defs.map(async (def) => {
             try {
@@ -834,23 +871,24 @@ async function decodeImages(asset, defs, resources, hooks) {
                 }
                 return { bitmap: null, mime: null };
             } catch (error) {
-                hooks.onLog?.(`Failed to decode image: ${error.message}`, 'warning');
+                hooks.onLog?.(`Failed to decode image: ${(error as Error).message}`, 'warning');
                 return { bitmap: null, mime: null };
             }
         }),
     );
 }
 
-async function loadImageBytes(bytes, mime, hooks) {
+async function loadImageBytes(bytes: Uint8Array, mime: string, hooks: ImportHooks) {
     if (mime === 'image/ktx2') {
         hooks.onLog?.('KTX2 textures require a transcoder; skipping image', 'warning');
         return null;
     }
-    const blob = new Blob([bytes], { type: mime || 'application/octet-stream' });
+    // BlobPart excludes SharedArrayBuffer-backed views; these never are.
+    const blob = new Blob([bytes as BlobPart], { type: mime || 'application/octet-stream' });
     try {
         return await createImageBitmap(blob);
     } catch (error) {
-        hooks.onLog?.(`createImageBitmap failed: ${error.message}`, 'warning');
+        hooks.onLog?.(`createImageBitmap failed: ${(error as Error).message}`, 'warning');
         return null;
     }
 }
@@ -863,7 +901,7 @@ export const resolveUriBytes = resolveResource;
  * [inTangent, value, outTangent], so only their middle block is a pose, and an
  * interpolated segment can carry both of its endpoint poses at the same time.
  */
-function peakActiveMorphWeights(sampler, targetCount) {
+function peakActiveMorphWeights(sampler: GltfJson, targetCount: number): number {
     if (targetCount <= 0 || !sampler.output) return 0;
     const interpolation = String(sampler.interpolation || 'LINEAR').toUpperCase();
     const cubic = interpolation === 'CUBICSPLINE';
@@ -889,10 +927,10 @@ function peakActiveMorphWeights(sampler, targetCount) {
     return peak;
 }
 
-export function buildAnimations(asset, defs, nodes, warnings) {
+export function buildAnimations(asset: GltfAsset, defs: GltfJson[], nodes: ViewerNode[], warnings: string[]): GltfJson[] {
     return defs.map((def, animIndex) => {
         const name = def.name || `animation_${animIndex}`;
-        const samplers = (def.samplers || []).map((s) => {
+        const samplers = (def.samplers || []).map((s: GltfJson) => {
             const input = readAccessorAsTyped(asset, s.input);
             const output = readAccessorAsTyped(asset, s.output);
             return {
@@ -902,12 +940,12 @@ export function buildAnimations(asset, defs, nodes, warnings) {
             };
         });
 
-        const channels = (def.channels || []).map((ch) => {
+        const channels = (def.channels || []).map((ch: GltfJson) => {
             const target = ch.target || {};
             const node = nodes[target.node];
             const sampler = samplers[ch.sampler];
             if (!node || !sampler) return null;
-            const targetCount = target.path === 'weights' ? node.weights.length : 0;
+            const targetCount = target.path === 'weights' ? node.weights!.length : 0;
             if (!['translation', 'rotation', 'scale', 'weights'].includes(target.path)
                 || (target.path === 'weights' && targetCount === 0)) {
                 warnings.push(
@@ -946,15 +984,15 @@ export function buildAnimations(asset, defs, nodes, warnings) {
     }).filter(Boolean);
 }
 
-function computeRenderables(nodes, meshes, skins, rootIndices) {
+function computeRenderables(nodes: ViewerNode[], meshes: ViewerMesh[], skins: ViewerSkin[], rootIndices: number[]) {
     const aabb = {
         min: [Infinity, Infinity, Infinity],
         max: [-Infinity, -Infinity, -Infinity],
     };
-    const renderables = [];
+    const renderables: Renderable[] = [];
 
-    const visited = new Set();
-    function walk(nodeIndex) {
+    const visited = new Set<number>();
+    function walk(nodeIndex: number) {
         if (visited.has(nodeIndex)) return;
         visited.add(nodeIndex);
         const node = nodes[nodeIndex];
@@ -976,11 +1014,11 @@ function computeRenderables(nodes, meshes, skins, rootIndices) {
     return { renderables, aabb };
 }
 
-function accumulateAabb(box, mesh) {
+function accumulateAabb(box: Aabb, mesh: Pick<ViewerMesh, 'primitives'>) {
     for (const prim of mesh.primitives) {
         const pos = prim.attributes.POSITION;
         if (!pos) continue;
-        const view = bytesAsTyped(pos.componentType, pos.bytes);
+        const view = bytesAsTyped(pos.componentType, pos.bytes as Uint8Array);
         const components = pos.components;
         for (let i = 0; i < pos.count; i++) {
             const x = view[i * components];
@@ -996,7 +1034,7 @@ function accumulateAabb(box, mesh) {
     }
 }
 
-function meshAabb(primitives) {
+function meshAabb(primitives: GltfJson[]): Aabb {
     const aabb = {
         min: [Infinity, Infinity, Infinity],
         max: [-Infinity, -Infinity, -Infinity],

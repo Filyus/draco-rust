@@ -7,6 +7,10 @@
  * what the front-end actually calls, and are widened as more of it converts.
  */
 
+/** Any of the component encodings an accessor can materialize into. */
+export type NumericArray =
+    | Float32Array | Int8Array | Int16Array | Uint8Array | Uint16Array | Uint32Array;
+
 /** One accessor materialized into tightly packed little-endian bytes. */
 export interface PackedAccessor {
     free(): void;
@@ -53,7 +57,9 @@ export interface GltfModule {
         /** Opens a document with an explicit URI-to-bytes resource map. */
         withResources(
             json: Uint8Array,
-            resources: Record<string, Uint8Array>,
+            // The caller's resource map is handed over as-is; entries it could
+            // not resolve are already absent by the time it gets here.
+            resources: Record<string, Uint8Array | ArrayBuffer | null | undefined>,
             validationProfile: string,
         ): GltfAsset;
     };

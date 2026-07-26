@@ -87,6 +87,8 @@ export interface ViewerMesh {
     name: string;
     primitives: ViewerPrimitive[];
     aabb: Aabb;
+    /** Mesh-level morph defaults, when the source document carried them. */
+    weights?: number[];
 }
 
 export interface ViewerJoint {

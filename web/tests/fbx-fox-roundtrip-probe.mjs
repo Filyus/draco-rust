@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 
 if (skipUnless([foxGltf, foxBin], 'Fox FBX round-trip probe')) process.exit(0);
 const [fbx, gltf] = await Promise.all([loadWasm('fbx'), loadWasm('gltf')]);
-const { buildFbxSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'www', 'gltf-loader.js')));
+const { buildFbxSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')));
 const scene = buildFbxSceneFromGltf(await readBytes(foxGltf), { 'Fox.bin': await readBytes(foxBin) }, gltf, { legacyCompatibility: true });
 const findWithTranslation = (nodes) => {
     let best = null;
