@@ -17,176 +17,81 @@ import { buildFbxSceneFromDocument } from './fbx-scene-document-writer.ts';
 import { serializeSceneDocumentToGlb } from './scene-document-gltf.ts';
 import { assertValidSceneDocument } from './scene-document.ts';
 import { basename } from './scene-resources.ts';
-
-/** One lazily loaded wasm-pack module and whether its init has completed. */
-interface ModuleSlot {
-    loaded: boolean;
-    module: any;
-}
-
-// Module state
-const modules: Record<string, ModuleSlot> = {
-    obj: { loaded: false, module: null },
-    ply: { loaded: false, module: null },
-    gltf: { loaded: false, module: null },
-    fbx: { loaded: false, module: null },
-};
-
-// Current loaded mesh data
-let currentMeshData: any = null;
-let currentFileType: string | null = null;
-let currentSourceData: Uint8Array | null = null;
-let currentSourceResources: ResourceMap = Object.create(null);
-// FBX uses the source-neutral SceneDocument for cross-format GLB export.
-// Direct glTF/GLB inputs continue to use their lossless source-byte route.
-let currentSceneDocument: SceneDocument | null = null;
-let currentFbxProvenance: FbxSceneProvenance | null = null;
-
-// 3D preview viewer (lazily created on first use)
-let viewer: Viewer | null = null;
-
-// Opt-in diagnostics for importer/exporter development. Normal conversion
-// warnings still go through the visible log panel; this only replaces noisy
-// object dumps that were previously emitted for every PLY/export operation.
-const debugLogging = new URLSearchParams(globalThis.location?.search || '').has('debug');
-function debugLog(...values: unknown[]) {
-    if (debugLogging) console.debug('[Draco debug]', ...values);
-}
-
-/**
- * Resolve an element this page owns.
- *
- * index.html declares every id used below, so the app has always treated them
- * as present; this states that instead of threading a null check through each
- * of eighty-odd lookups. Genuinely optional elements keep their explicit
- * guards at the point of use.
- */
-function element<T extends HTMLElement = HTMLElement>(id: string): T {
-    return document.getElementById(id) as T;
-}
-
-function query<T extends HTMLElement = HTMLElement>(selector: string): T {
-    return document.querySelector(selector) as T;
-}
-
-function errorMessage(error: unknown) {
-    if (error && typeof (error as Error).message === 'string') {
-        return (error as Error).message;
-    }
-    return String(error);
-}
-
-// DOM Elements
-const dropZone = element('drop-zone');
-const fileInput = element<HTMLInputElement>('file-input');
-const fileInfo = element('file-info');
-const fileName = element('file-name');
-const fileSize = element('file-size');
-const clearFileBtn = element<HTMLButtonElement>('clear-file');
-const previewSection = element('preview-section');
-const exportSection = element('export-section');
-const exportFormat = element<HTMLSelectElement>('export-format');
-const useDraco = element<HTMLInputElement>('use-draco');
-const useDracoLabel = element('use-draco-label');
-const dracoOptions = element('draco-options');
-const dracoSettings = element('draco-settings');
-const encodingSpeed = element<HTMLSelectElement>('encoding-speed');
-const encodingMethod = element<HTMLSelectElement>('encoding-method');
-const positionBits = element<HTMLInputElement>('position-bits');
-const normalBits = element<HTMLInputElement>('normal-bits');
-const texcoordBits = element<HTMLInputElement>('texcoord-bits');
-const exportBtn = element<HTMLButtonElement>('export-btn');
-const consoleEl = element('console');
-
-// 3D preview DOM references
-const viewerSection = element('viewer-section');
-const viewerCanvas = element<HTMLCanvasElement>('viewer-canvas');
-const viewerResetBtn = element<HTMLButtonElement>('viewer-reset');
-const viewerAutoRotateBtn = element<HTMLButtonElement>('viewer-autorotate');
-const viewerWireframeBtn = element<HTMLButtonElement>('viewer-wireframe');
-const viewerBaseColorBtn = element<HTMLButtonElement>('viewer-base-color');
-const viewerSmoothNormalsBtn = element<HTMLButtonElement>('viewer-smooth-normals');
-const viewerGridBtn = element<HTMLButtonElement>('viewer-grid');
-const viewerAnimation = element('viewer-animation');
-const animPlayBtn = element<HTMLButtonElement>('anim-play');
-const animClipSelect = element<HTMLSelectElement>('anim-clip');
-const animClipTrigger = element<HTMLButtonElement>('anim-clip-trigger');
-const animClipLabel = element('anim-clip-label');
-const animClipMenu = element('anim-clip-menu');
-const animLoopCheckbox = element<HTMLInputElement>('anim-loop');
-const animTimeLabel = element('anim-time');
-const animScrub = element<HTMLInputElement>('anim-scrub');
-const animSpeed = element<HTMLInputElement>('anim-speed');
-const animSpeedValue = element('anim-speed-value');
-const viewerControls = [
-    viewerResetBtn,
+import {
+    animClipLabel,
+    animClipMenu,
+    animClipSelect,
+    animClipTrigger,
+    animLoopCheckbox,
+    animPlayBtn,
+    animScrub,
+    animSpeed,
+    animSpeedValue,
+    animTimeLabel,
+    clearFileBtn,
+    dracoOptions,
+    dracoSettings,
+    dropZone,
+    element,
+    encodingMethod,
+    encodingSpeed,
+    exportBtn,
+    exportFormat,
+    exportSection,
+    exportSidebar,
+    fileInfo,
+    fileInput,
+    fileName,
+    fileSize,
+    normalBits,
+    positionBits,
+    previewSection,
+    sceneCapabilitySummary,
+    sceneClipList,
+    sceneInfo,
+    sceneMaterialList,
+    scenePanel,
+    sceneResourceList,
+    sceneSection,
+    sceneStatFields,
+    sceneTree,
+    texcoordBits,
+    useDraco,
+    useDracoLabel,
+    viewerAnimation,
     viewerAutoRotateBtn,
-    viewerWireframeBtn,
     viewerBaseColorBtn,
-    viewerSmoothNormalsBtn,
+    viewerCanvas,
+    viewerControls,
     viewerGridBtn,
-];
-const scenePanel = element('scene-panel');
-const sceneSection = element('scene-section');
-const workspace = query('.workspace');
-const sidebar = query('.sidebar');
-const exportSidebar = element('export-sidebar');
-const sceneTree = element('scene-tree');
-const sceneResourceList = element('scene-resource-list');
-const sceneMaterialList = element('scene-material-list');
-const sceneClipList = element('scene-clip-list');
-const sceneStatFields = {
-    nodes: element('scene-node-stat'),
-    meshes: element('mesh-count'),
-    materials: element('scene-material-stat'),
-    skins: element('scene-skin-stat'),
-    morphs: element('scene-morph-stat'),
-    clips: element('scene-clip-stat'),
-};
-const sceneCapabilitySummary = element('scene-capability-summary');
-const sceneInfo = element('scene-info');
-const sceneWarningList = element('scene-warning-list');
-const sceneWarnings = element<HTMLDetailsElement>('scene-warnings');
-const sceneWarningsSection = element('scene-warnings-section');
-const sceneWarningCount = element('scene-warning-count');
-const sceneTreeExpandButton = element<HTMLButtonElement>('scene-tree-expand');
-const sceneTreeCollapseButton = element<HTMLButtonElement>('scene-tree-collapse');
-
-const setSceneTreeExpanded = (expanded: boolean) => {
-    for (const branch of sceneTree.querySelectorAll<HTMLDetailsElement>('details.scene-tree-node')) branch.open = expanded;
-};
-sceneTreeExpandButton?.addEventListener('click', () => setSceneTreeExpanded(true));
-sceneTreeCollapseButton?.addEventListener('click', () => setSceneTreeExpanded(false));
-
-// Keep the workflow columns source-neutral: import + hierarchy on the left,
-// export/report on the right. The existing viewport statistics stay in place.
-if (sidebar && sceneSection && sceneSection.parentElement !== sidebar) {
-    sidebar.append(sceneSection);
-}
-// Contents is its own card below the scene card, so it cannot squeeze the tree.
-if (sidebar && sceneInfo && sceneInfo.parentElement !== sidebar) {
-    sidebar.append(sceneInfo);
-}
-if (exportSidebar && exportSection && exportSection.parentElement !== exportSidebar) {
-    exportSidebar.append(exportSection);
-}
-// Every warning the app produces lands in this one card, directly under Export.
-if (exportSidebar && sceneWarningsSection && sceneWarningsSection.parentElement !== exportSidebar) {
-    exportSidebar.append(sceneWarningsSection);
-}
+    viewerResetBtn,
+    viewerSection,
+    viewerSmoothNormalsBtn,
+    viewerWireframeBtn,
+    workspace,
+} from './app/dom.ts';
+import { debugLog, errorMessage, log } from './app/log.ts';
+import { modules, state } from './app/state.ts';
+import {
+    clearWarningPanel,
+    setWarningList,
+    setWarningPanel,
+    setWarningSource,
+    uniqueWarnings,
+} from './app/warnings.ts';
 
 function setViewerControlsEnabled(enabled: boolean) {
     for (const control of viewerControls) control.disabled = !enabled;
 }
 
 function syncViewerToolbar() {
-    if (!viewer) return;
-    syncAutoRotateButton(viewer.autoRotate);
+    if (!state.viewer) return;
+    syncAutoRotateButton(state.viewer.autoRotate);
     const toggles: [HTMLButtonElement, boolean][] = [
-        [viewerWireframeBtn, viewer.wireframe],
-        [viewerBaseColorBtn, viewer.baseColorOnly],
-        [viewerSmoothNormalsBtn, viewer.smoothNormals],
-        [viewerGridBtn, viewer.showGrid],
+        [viewerWireframeBtn, state.viewer.wireframe],
+        [viewerBaseColorBtn, state.viewer.baseColorOnly],
+        [viewerSmoothNormalsBtn, state.viewer.smoothNormals],
+        [viewerGridBtn, state.viewer.showGrid],
     ];
     for (const [button, enabled] of toggles) {
         button.classList.toggle('active', enabled);
@@ -364,45 +269,45 @@ function setupEventListeners() {
 
     // 3D preview toolbar
     viewerResetBtn.addEventListener('click', () => {
-        if (!viewer) return;
-        viewer.resetView();
+        if (!state.viewer) return;
+        state.viewer.resetView();
     });
     viewerAutoRotateBtn.addEventListener('click', () => {
-        if (!viewer) return;
-        viewer.setAutoRotate(!viewer.autoRotate);
+        if (!state.viewer) return;
+        state.viewer.setAutoRotate(!state.viewer.autoRotate);
     });
     viewerWireframeBtn.addEventListener('click', () => {
-        if (!viewer) return;
-        viewer.wireframe = !viewer.wireframe;
-        viewerWireframeBtn.classList.toggle('active', viewer.wireframe);
-        viewerWireframeBtn.setAttribute('aria-pressed', String(viewer.wireframe));
+        if (!state.viewer) return;
+        state.viewer.wireframe = !state.viewer.wireframe;
+        viewerWireframeBtn.classList.toggle('active', state.viewer.wireframe);
+        viewerWireframeBtn.setAttribute('aria-pressed', String(state.viewer.wireframe));
     });
     viewerBaseColorBtn.addEventListener('click', () => {
-        if (!viewer) return;
-        viewer.baseColorOnly = !viewer.baseColorOnly;
-        viewerBaseColorBtn.classList.toggle('active', viewer.baseColorOnly);
-        viewerBaseColorBtn.setAttribute('aria-pressed', String(viewer.baseColorOnly));
+        if (!state.viewer) return;
+        state.viewer.baseColorOnly = !state.viewer.baseColorOnly;
+        viewerBaseColorBtn.classList.toggle('active', state.viewer.baseColorOnly);
+        viewerBaseColorBtn.setAttribute('aria-pressed', String(state.viewer.baseColorOnly));
     });
     viewerSmoothNormalsBtn.addEventListener('click', () => {
-        if (!viewer) return;
-        viewer.smoothNormals = !viewer.smoothNormals;
-        viewerSmoothNormalsBtn.classList.toggle('active', viewer.smoothNormals);
-        viewerSmoothNormalsBtn.setAttribute('aria-pressed', String(viewer.smoothNormals));
+        if (!state.viewer) return;
+        state.viewer.smoothNormals = !state.viewer.smoothNormals;
+        viewerSmoothNormalsBtn.classList.toggle('active', state.viewer.smoothNormals);
+        viewerSmoothNormalsBtn.setAttribute('aria-pressed', String(state.viewer.smoothNormals));
     });
     viewerGridBtn.addEventListener('click', () => {
-        if (!viewer) return;
-        viewer.showGrid = !viewer.showGrid;
-        viewerGridBtn.classList.toggle('active', viewer.showGrid);
-        viewerGridBtn.setAttribute('aria-pressed', String(viewer.showGrid));
+        if (!state.viewer) return;
+        state.viewer.showGrid = !state.viewer.showGrid;
+        viewerGridBtn.classList.toggle('active', state.viewer.showGrid);
+        viewerGridBtn.setAttribute('aria-pressed', String(state.viewer.showGrid));
     });
 
     // Animation controls
     animPlayBtn.addEventListener('click', toggleAnimationPlayback);
     animClipSelect.addEventListener('change', () => {
-        if (!viewer) return;
+        if (!state.viewer) return;
         const idx = Number(animClipSelect.value);
-        viewer.animation.clipIndex = idx;
-        viewer.seekAnimation(0);
+        state.viewer.animation.clipIndex = idx;
+        state.viewer.seekAnimation(0);
         syncAnimationClipSelection();
         updateAnimationScrub();
     });
@@ -423,21 +328,21 @@ function setupEventListeners() {
     });
     document.addEventListener('keydown', handlePlaybackShortcut);
     animLoopCheckbox.addEventListener('change', () => {
-        if (viewer) viewer.animation.loop = animLoopCheckbox.checked;
+        if (state.viewer) state.viewer.animation.loop = animLoopCheckbox.checked;
     });
     animScrub.addEventListener('input', () => {
-        if (!viewer || !viewer.scene?.animations?.length) return;
-        const clip = viewer.scene.animations[viewer.animation.clipIndex];
+        if (!state.viewer || !state.viewer.scene?.animations?.length) return;
+        const clip = state.viewer.scene.animations[state.viewer.animation.clipIndex];
         if (!clip) return;
-        viewer.animation.playing = false;
+        state.viewer.animation.playing = false;
         updateAnimationPlayButton();
         const t = (Number(animScrub.value) / 1000) * clip.duration;
-        viewer.seekAnimation(t);
+        state.viewer.seekAnimation(t);
         updateAnimationScrub();
     });
     animSpeed.addEventListener('input', () => {
         const v = Number(animSpeed.value) / 100;
-        if (viewer) viewer.animation.speed = v;
+        if (state.viewer) state.viewer.animation.speed = v;
         animSpeedValue.textContent = `${v.toFixed(2)}×`;
     });
 }
@@ -491,38 +396,38 @@ async function handleFile(file: File, companionFiles: File[] = []) {
     fileInfo.style.display = 'flex';
     dropZone.style.display = 'none';
     
-    currentFileType = extension;
+    state.currentFileType = extension;
     
     try {
         const arrayBuffer = await file.arrayBuffer();
         const data = new Uint8Array(arrayBuffer);
-        currentSourceData = new Uint8Array(data);
-        currentSourceResources = Object.create(null);
-        currentSceneDocument = null;
-        currentFbxProvenance = null;
+        state.currentSourceData = new Uint8Array(data);
+        state.currentSourceResources = Object.create(null);
+        state.currentSceneDocument = null;
+        state.currentFbxProvenance = null;
         clearWarningPanel();
         for (const companion of companionFiles) {
-            if (Object.prototype.hasOwnProperty.call(currentSourceResources, companion.name)) {
+            if (Object.prototype.hasOwnProperty.call(state.currentSourceResources, companion.name)) {
                 throw new Error(`Duplicate companion resource name: ${companion.name}`);
             }
-            currentSourceResources[companion.name] = new Uint8Array(await companion.arrayBuffer());
+            state.currentSourceResources[companion.name] = new Uint8Array(await companion.arrayBuffer());
         }
         
         // Parse file based on extension
         let result;
         switch (extension) {
             case 'obj':
-                result = await parseObjFile(data, currentSourceResources);
+                result = await parseObjFile(data, state.currentSourceResources);
                 break;
             case 'ply':
                 result = await parsePlyFile(data);
                 break;
             case 'gltf':
             case 'glb':
-                result = await parseGltfFile(data, extension, currentSourceResources);
+                result = await parseGltfFile(data, extension, state.currentSourceResources);
                 if (result?.success && result.document) {
                     try {
-                        currentSceneDocument = buildSceneDocumentFromGltf(data, currentSourceResources as Record<string, Uint8Array>, modules.gltf.module);
+                        state.currentSceneDocument = buildSceneDocumentFromGltf(data, state.currentSourceResources as Record<string, Uint8Array>, modules.gltf.module);
                     } catch (error) {
                         log(`Scene details unavailable: ${errorMessage(error)}`, 'warning');
                     }
@@ -531,17 +436,17 @@ async function handleFile(file: File, companionFiles: File[] = []) {
             case 'fbx':
                 result = await parseFbxFile(data);
                 if (result?.success && result.scene) {
-                    const adapted = buildSceneDocumentWithFbxProvenance(result, currentSourceResources);
-                    currentSceneDocument = adapted.document;
-                    currentFbxProvenance = adapted.provenance;
+                    const adapted = buildSceneDocumentWithFbxProvenance(result, state.currentSourceResources);
+                    state.currentSceneDocument = adapted.document;
+                    state.currentFbxProvenance = adapted.provenance;
                 }
                 break;
         }
         
         if (result && result.success) {
-            currentMeshData = result;
+            state.currentMeshData = result;
             displayMeshInfo(result);
-            renderSceneDocumentSummary(currentSceneDocument!);
+            renderSceneDocumentSummary(state.currentSceneDocument!);
             previewSection.style.display = 'block';
             exportSection.style.display = 'flex';
             exportSidebar.style.display = 'flex';
@@ -784,77 +689,6 @@ function describeSceneCapabilities(capabilities: any = {}) {
         : 'The shared scene model contains hierarchy and geometry data.';
 }
 
-const WARNING_PREVIEW_COUNT = 8;
-
-// Renders a numbered list; the overflow row is a real button that reveals the rest.
-function setWarningList(list: HTMLElement, warnings: string[], limit = WARNING_PREVIEW_COUNT) {
-    list.replaceChildren();
-    const unique = uniqueWarnings(warnings);
-    const shown = Number.isFinite(limit) ? unique.slice(0, limit) : unique;
-    shown.forEach((warning, index) => {
-        const item = document.createElement('li');
-        item.className = 'scene-warning-item';
-        const marker = document.createElement('span');
-        marker.className = 'scene-warning-index';
-        marker.setAttribute('aria-hidden', 'true');
-        marker.textContent = String(index + 1);
-        const text = document.createElement('span');
-        text.className = 'scene-warning-text';
-        text.textContent = warning;
-        item.append(marker, text);
-        list.appendChild(item);
-    });
-    const hidden = unique.length - shown.length;
-    if (hidden > 0) {
-        const item = document.createElement('li');
-        item.className = 'scene-warning-item scene-warning-more';
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'scene-warning-more-button';
-        button.textContent = `Show ${hidden} more`;
-        button.addEventListener('click', () => setWarningList(list, unique, Number.POSITIVE_INFINITY));
-        item.appendChild(button);
-        list.appendChild(item);
-    }
-    return unique;
-}
-
-function uniqueWarnings(warnings: string[]) {
-    return [...new Set(warnings.filter((warning: string) => typeof warning === 'string' && warning.trim()))];
-}
-
-// Warnings arrive from independent stages, so each stage owns one slot and the
-// panel always shows their union — no stage can wipe another's warnings.
-const warningSources: Record<'scene' | 'mesh' | 'preview' | 'export', string[]> =
-    { scene: [], mesh: [], preview: [], export: [] };
-
-type WarningSource = keyof typeof warningSources;
-
-function setWarningSource(source: WarningSource, warnings: string[]) {
-    warningSources[source] = uniqueWarnings(warnings || []);
-    setWarningPanel([
-        ...warningSources.scene,
-        ...warningSources.mesh,
-        ...warningSources.preview,
-        ...warningSources.export,
-    ]);
-}
-
-function clearWarningPanel() {
-    for (const source of Object.keys(warningSources) as WarningSource[]) warningSources[source] = [];
-    setWarningPanel([]);
-}
-
-// The warnings live in their own collapsible panel so the scene tree stays readable.
-// Collapsed state still advertises how many warnings are waiting.
-function setWarningPanel(warnings: string[]) {
-    if (!sceneWarnings) return;
-    const unique = setWarningList(sceneWarningList, warnings);
-    const total = unique.length;
-    sceneWarningCount.textContent = String(total);
-    if (sceneWarningsSection) sceneWarningsSection.hidden = total === 0;
-    if (total === 0) sceneWarnings.open = false;
-}
 
 function renderSceneTree(sceneDocument: SceneDocument) {
     sceneTree.replaceChildren();
@@ -993,7 +827,7 @@ function updateExportOptions() {
 
 // Export file
 async function exportFile() {
-    if (!currentMeshData) {
+    if (!state.currentMeshData) {
         log('No mesh data to export', 'error');
         return;
     }
@@ -1003,8 +837,8 @@ async function exportFile() {
     
     try {
         let result;
-        if (format === 'glb' && currentFileType === 'fbx' && currentSceneDocument) {
-            result = exportSceneDocumentToGlb(currentSceneDocument);
+        if (format === 'glb' && state.currentFileType === 'fbx' && state.currentSceneDocument) {
+            result = exportSceneDocumentToGlb(state.currentSceneDocument);
             for (const warning of result.warnings || []) log(warning, 'warning');
             logSceneDocumentCapabilities(result.capabilities);
             setWarningSource('export', result.warnings || []);
@@ -1012,37 +846,37 @@ async function exportFile() {
             log(result.message, 'success');
             return;
         }
-        if (currentMeshData.document && (format === 'gltf' || format === 'glb')) {
+        if (state.currentMeshData.document && (format === 'gltf' || format === 'glb')) {
             result = exportGltfDocument(format);
             downloadResult(result, format);
             log(result.message, 'success');
             return;
         }
         const legacyFbx = format === 'fbx-legacy';
-        if ((format === 'fbx' || legacyFbx) && currentFileType === 'fbx' && currentSceneDocument) {
-            const scene = buildFbxSceneFromDocument(currentSceneDocument, { provenance: currentFbxProvenance });
+        if ((format === 'fbx' || legacyFbx) && state.currentFileType === 'fbx' && state.currentSceneDocument) {
+            const scene = buildFbxSceneFromDocument(state.currentSceneDocument, { provenance: state.currentFbxProvenance });
             result = await exportToFbxScene(scene, legacyFbx);
-        } else if ((format === 'fbx' || legacyFbx) && currentMeshData.scene) {
+        } else if ((format === 'fbx' || legacyFbx) && state.currentMeshData.scene) {
             result = await exportToFbxScene(
-                prepareFbxSceneForExport(currentMeshData.scene, legacyFbx),
+                prepareFbxSceneForExport(state.currentMeshData.scene, legacyFbx),
                 legacyFbx,
             );
-        } else if (currentMeshData.document && (format === 'fbx' || legacyFbx)) {
+        } else if (state.currentMeshData.document && (format === 'fbx' || legacyFbx)) {
             const scene = prepareFbxSceneForExport(buildFbxSceneFromGltf(
-                currentSourceData!,
-                currentSourceResources,
+                state.currentSourceData!,
+                state.currentSourceResources,
                 modules.gltf.module,
                 { legacyCompatibility: legacyFbx },
             ), legacyFbx);
             result = await exportToFbxScene(scene, legacyFbx);
         } else {
-        const sourceMeshes = currentMeshData.document
+        const sourceMeshes = state.currentMeshData.document
             ? buildFlatMeshesFromGltf(
-                currentSourceData!,
-                currentSourceResources,
+                state.currentSourceData!,
+                state.currentSourceResources,
                 modules.gltf.module,
             )
-            : currentMeshData.meshes;
+            : state.currentMeshData.meshes;
         const meshes = prepareMeshesForExport(sourceMeshes);
         if (meshes.length === 0) {
             throw new Error('The document contains no triangle geometry to export');
@@ -1116,8 +950,8 @@ function exportGltfDocument(format: string) {
     }
 
     const asset = modules.gltf.module.GltfAsset.withResources(
-        currentSourceData,
-        currentSourceResources,
+        state.currentSourceData,
+        state.currentSourceResources,
         '2.1',
     );
     try {
@@ -1142,7 +976,7 @@ function exportGltfDocument(format: string) {
                     : 'Document packaged and exported as GLB',
             };
         }
-        if (format === 'gltf' && currentFileType === 'gltf' && !useDraco.checked) {
+        if (format === 'gltf' && state.currentFileType === 'gltf' && !useDraco.checked) {
             return {
                 success: true,
                 json_data: new TextDecoder().decode(asset.minifiedJson()),
@@ -1246,7 +1080,7 @@ function prepareFbxSceneForExport(scene: any, legacyCompatibility = false) {
     return prepared;
 }
 
-/** Strip viewer-only fields and keep what fbx-wasm's MaterialInput accepts. */
+/** Strip state.viewer-only fields and keep what fbx-wasm's MaterialInput accepts. */
 function prepareFbxMaterialForExport(material: any) {
     if (!material) return material;
     return {
@@ -1423,11 +1257,11 @@ function downloadResult(result: any, format: string) {
 // === 3D preview integration ===
 
 function ensureViewer() {
-    if (viewer) return viewer;
+    if (state.viewer) return state.viewer;
     try {
-        viewer = new Viewer(viewerCanvas, {
-            onLog: (msg, type) => log(msg, type),
-            onSceneLoaded: (scene) => {
+        state.viewer = new Viewer(viewerCanvas, {
+            onLog: (msg: string, type: string) => log(msg, type),
+            onSceneLoaded: (scene: any) => {
                 if (scene) updateAnimationUi(scene);
             },
             onAnimationEnded: () => updateAnimationPlayButton(),
@@ -1436,9 +1270,9 @@ function ensureViewer() {
         syncViewerToolbar();
     } catch (error) {
         log(`Preview unavailable: ${errorMessage(error)}`, 'error');
-        viewer = null;
+        state.viewer = null;
     }
-    return viewer;
+    return state.viewer;
 }
 
 async function loadPreview(extension: string) {
@@ -1458,22 +1292,22 @@ async function loadPreview(extension: string) {
         if (extension === 'gltf' || extension === 'glb') {
             if (!modules.gltf.loaded) throw new Error('glTF module is not loaded');
             scene = await buildSceneFromGltf(
-                currentSourceData!,
-                currentSourceResources,
+                state.currentSourceData!,
+                state.currentSourceResources,
                 modules.gltf.module,
-                { onLog: (msg, type) => log(msg, type) },
+                { onLog: (msg: string, type: string) => log(msg, type) },
             );
-        } else if (extension === 'fbx' && currentMeshData?.scene) {
+        } else if (extension === 'fbx' && state.currentMeshData?.scene) {
             scene = await buildSceneFromFbx(
-                currentMeshData,
-                currentSourceResources,
-                { onLog: (msg, type) => log(msg, type) },
+                state.currentMeshData,
+                state.currentSourceResources,
+                { onLog: (msg: string, type: string) => log(msg, type) },
             );
-        } else if (currentMeshData?.meshes) {
+        } else if (state.currentMeshData?.meshes) {
             scene = await buildSceneFromMeshes(
-                currentMeshData,
-                currentSourceResources,
-                { onLog: (msg, type) => log(msg, type) },
+                state.currentMeshData,
+                state.currentSourceResources,
+                { onLog: (msg: string, type: string) => log(msg, type) },
             );
         } else {
             throw new Error('No geometry available to preview');
@@ -1483,22 +1317,22 @@ async function loadPreview(extension: string) {
             log(warning, 'warning');
         }
 
-        viewer!.setScene(scene);
-        renderSceneDocumentSummary(currentSceneDocument!);
+        state.viewer!.setScene(scene);
+        renderSceneDocumentSummary(state.currentSceneDocument!);
         setWarningSource('preview', scene.warnings || []);
         setViewerControlsEnabled(true);
         syncViewerToolbar();
         log('Preview ready', 'success');
     } catch (error) {
-        viewer!.clear();
+        state.viewer!.clear();
         setViewerControlsEnabled(false);
         log(`Preview failed: ${errorMessage(error)}`, 'error');
     }
 }
 
 function updateAnimationUi(scene: any) {
-    const clips = currentSceneDocument?.animations?.length
-        ? currentSceneDocument.animations
+    const clips = state.currentSceneDocument?.animations?.length
+        ? state.currentSceneDocument.animations
         : (scene.animations || []);
     resetAnimationUi();
     if (clips.length === 0) return;
@@ -1509,7 +1343,7 @@ function updateAnimationUi(scene: any) {
         option.textContent = clips[i].name || `Clip ${i + 1}`;
         animClipSelect.appendChild(option);
     }
-    animClipSelect.value = String(viewer!.animation.clipIndex);
+    animClipSelect.value = String(state.viewer!.animation.clipIndex);
     rebuildAnimationClipMenu();
     updateAnimationPlayButton();
     updateAnimationScrub();
@@ -1627,10 +1461,10 @@ function handleAnimationClipMenuKeydown(event: KeyboardEvent) {
 }
 
 function toggleAnimationPlayback() {
-    if (!viewer || !viewer.scene?.animations?.length) return false;
-    viewer.animation.playing = !viewer.animation.playing;
-    if (viewer.animation.playing && viewer.animation.time >= viewer.scene.animations[viewer.animation.clipIndex].duration) {
-        viewer.seekAnimation(0);
+    if (!state.viewer || !state.viewer.scene?.animations?.length) return false;
+    state.viewer.animation.playing = !state.viewer.animation.playing;
+    if (state.viewer.animation.playing && state.viewer.animation.time >= state.viewer.scene.animations[state.viewer.animation.clipIndex].duration) {
+        state.viewer.seekAnimation(0);
     }
     updateAnimationPlayButton();
     return true;
@@ -1652,8 +1486,8 @@ function handlePlaybackShortcut(event: KeyboardEvent) {
 }
 
 function updateAnimationPlayButton() {
-    if (!viewer || !viewer.scene?.animations?.length) return;
-    const playing = viewer.animation.playing;
+    if (!state.viewer || !state.viewer.scene?.animations?.length) return;
+    const playing = state.viewer.animation.playing;
     animPlayBtn.classList.toggle('active', playing);
     animPlayBtn.title = playing ? 'Pause' : 'Play';
     animPlayBtn.setAttribute('aria-label', playing ? 'Pause animation' : 'Play animation');
@@ -1661,7 +1495,7 @@ function updateAnimationPlayButton() {
 
 // Animation scrub/timeline ticker — bound to the render loop via rAF.
 function animationTick() {
-    if (viewer && viewer.scene?.animations?.length && viewer.animation.clipIndex >= 0) {
+    if (state.viewer && state.viewer.scene?.animations?.length && state.viewer.animation.clipIndex >= 0) {
         updateAnimationScrub();
     }
     requestAnimationFrame(animationTick);
@@ -1669,28 +1503,28 @@ function animationTick() {
 requestAnimationFrame(animationTick);
 
 function updateAnimationScrub() {
-    if (!viewer || !viewer.scene?.animations?.length) return;
-    const clip = viewer.scene.animations[viewer.animation.clipIndex];
+    if (!state.viewer || !state.viewer.scene?.animations?.length) return;
+    const clip = state.viewer.scene.animations[state.viewer.animation.clipIndex];
     if (!clip) return;
-    animTimeLabel.textContent = `${viewer.animation.time.toFixed(2)}s / ${clip.duration.toFixed(2)}s`;
-    animScrub.value = String(Math.round((viewer.animation.time / Math.max(clip.duration, 0.0001)) * 1000));
+    animTimeLabel.textContent = `${state.viewer.animation.time.toFixed(2)}s / ${clip.duration.toFixed(2)}s`;
+    animScrub.value = String(Math.round((state.viewer.animation.time / Math.max(clip.duration, 0.0001)) * 1000));
 }
 
 // Clear loaded file
 function clearFile() {
-    currentMeshData = null;
-    currentFileType = null;
-    currentSourceData = null;
-    currentSourceResources = Object.create(null);
-    currentSceneDocument = null;
-    currentFbxProvenance = null;
+    state.currentMeshData = null;
+    state.currentFileType = null;
+    state.currentSourceData = null;
+    state.currentSourceResources = Object.create(null);
+    state.currentSceneDocument = null;
+    state.currentFbxProvenance = null;
     
     fileInfo.style.display = 'none';
     dropZone.style.display = 'grid';
     previewSection.style.display = 'none';
     exportSection.style.display = 'none';
     viewerSection.classList.remove('loaded');
-    viewer?.clear();
+    state.viewer?.clear();
     setViewerControlsEnabled(false);
     resetAnimationUi();
     scenePanel.hidden = true;
@@ -1714,17 +1548,6 @@ function formatFileSize(bytes: number) {
 }
 
 // Log to console
-function log(message: string, type = 'info') {
-    const timestamp = new Date().toLocaleTimeString();
-    const line = document.createElement('div');
-    line.className = `console-line ${type}`;
-    const timestampEl = document.createElement('span');
-    timestampEl.className = 'timestamp';
-    timestampEl.textContent = `[${timestamp}]`;
-    line.append(timestampEl, document.createTextNode(` ${String(message)}`));
-    consoleEl.appendChild(line);
-    consoleEl.scrollTop = consoleEl.scrollHeight;
-}
 // Display compression statistics
 function displayCompressionStats(stats: any) {
     const statsSection = element('compression-stats');
