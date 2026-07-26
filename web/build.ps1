@@ -62,6 +62,19 @@ if ($Force) {
     $toolArgs += "--force"
 }
 
+# The front-end is TypeScript under web/src; www/ holds only its build output
+# alongside the WASM packages, so compile it before anything serves that
+# directory. Use `npm run watch:ts` while developing the front-end itself.
+Push-Location $scriptDir
+try {
+    npm run build:ts
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+} finally {
+    Pop-Location
+}
+
 cargo run --manifest-path $toolManifest -- @toolArgs
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
