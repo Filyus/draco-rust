@@ -924,8 +924,8 @@ export class Viewer {
     }
 
     /**
-     * Applies the held navigation keys for one frame: WASD moves the orbit
-     * target along the ground plane, Q/E along world up, arrows orbit.
+     * Applies the held navigation keys for one frame: WASD and Q/E move the
+     * orbit target along the camera axes, arrows orbit.
      */
     _applyKeyboardNavigation(dt) {
         const keys = this._navKeys;
@@ -939,8 +939,8 @@ export class Viewer {
         let dAz = 0, dEl = 0;
         if (keys.has('ArrowLeft')) dAz -= 1;
         if (keys.has('ArrowRight')) dAz += 1;
-        if (keys.has('ArrowUp')) dEl -= 1;
-        if (keys.has('ArrowDown')) dEl += 1;
+        if (keys.has('ArrowUp')) dEl += 1;
+        if (keys.has('ArrowDown')) dEl -= 1;
         if (dAz || dEl) this._orbitBy(dAz * orbitStep, dEl * orbitStep);
 
         let fwd = 0, side = 0, lift = 0;
@@ -956,12 +956,19 @@ export class Viewer {
         const right = this._basisRight;
         const up = this._basisUp;
         this._cameraBasis(right, up);
-        // Ground-plane forward: the view direction with its vertical part dropped.
-        const fx = -Math.sin(this.camera.azimuth);
-        const fz = -Math.cos(this.camera.azimuth);
-        this.camera.target[0] += (fx * fwd + right[0] * side) * speed;
-        this.camera.target[1] += lift * speed;
-        this.camera.target[2] += (fz * fwd + right[2] * side) * speed;
+        // Forward is the view direction itself — the negated offset
+        // `_cameraPosition` puts between the target and the eye.
+        const ce = Math.cos(this.camera.elevation);
+        const se = Math.sin(this.camera.elevation);
+        const forward = [
+            -ce * Math.sin(this.camera.azimuth),
+            -se,
+            -ce * Math.cos(this.camera.azimuth),
+        ];
+        for (let i = 0; i < 3; i++) {
+            this.camera.target[i] +=
+                (forward[i] * fwd + right[i] * side + up[i] * lift) * speed;
+        }
     }
 
     _log(msg, type = 'info') {

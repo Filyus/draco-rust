@@ -424,7 +424,7 @@ test('viewport wheel zoom keeps the point under the cursor and scales its limits
   expect(state.zoomedOut).toBeCloseTo(state.fitted * 1.2);
 });
 
-test('viewport movement keys fly the orbit target along the ground plane', async ({ page }) => {
+test('viewport movement keys fly the orbit target along the camera axes', async ({ page }) => {
   await page.goto('/index.html');
   const state = await page.evaluate(async () => {
     const { Viewer } = await import('/viewer.js');
@@ -441,25 +441,35 @@ test('viewport movement keys fly the orbit target along the ground plane', async
     viewer._navFast = false;
     viewer._navSlow = false;
 
-    // 1.5 * distance * dt = 1.5 world units per step, with the pitched view
-    // direction flattened onto the ground plane.
+    // 1.5 * distance * dt = 1.5 world units per step, along the pitched view
+    // direction rather than the ground plane.
     viewer._navKeys = new Set(['KeyW']);
     viewer._applyKeyboardNavigation(0.1);
     const forward = Array.from(viewer.camera.target);
 
+    viewer.camera.target.set([0, 0, 0]);
     viewer._navKeys = new Set(['KeyE']);
     viewer._applyKeyboardNavigation(0.1);
     const lifted = Array.from(viewer.camera.target);
 
+    viewer._navKeys = new Set(['ArrowUp']);
+    viewer._applyKeyboardNavigation(0.1);
+    const elevation = viewer.camera.elevation;
     viewer._navKeys = new Set(['ArrowRight']);
     viewer._applyKeyboardNavigation(0.1);
-    return { forward, lifted, azimuth: viewer.camera.azimuth };
+    return { forward, lifted, elevation, azimuth: viewer.camera.azimuth };
   });
 
+  const pitch = Math.PI * 0.4;
+  // Camera forward at azimuth 0 is (0, -sin(pitch), -cos(pitch)); its up is
+  // perpendicular to that, in the same vertical plane.
   expect(state.forward[0]).toBeCloseTo(0);
-  expect(state.forward[1]).toBeCloseTo(0);
-  expect(state.forward[2]).toBeCloseTo(-1.5);
-  expect(state.lifted[1]).toBeCloseTo(1.5);
+  expect(state.forward[1]).toBeCloseTo(-1.5 * Math.sin(pitch));
+  expect(state.forward[2]).toBeCloseTo(-1.5 * Math.cos(pitch));
+  expect(state.lifted[1]).toBeCloseTo(1.5 * Math.cos(pitch));
+  expect(state.lifted[2]).toBeCloseTo(-1.5 * Math.sin(pitch));
+  // Arrow Up raises the camera, matching the sign the mouse now uses.
+  expect(state.elevation).toBeCloseTo(pitch + 0.12);
   expect(state.azimuth).toBeCloseTo(-0.12);
 });
 
