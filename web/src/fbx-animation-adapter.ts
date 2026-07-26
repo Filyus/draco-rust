@@ -11,17 +11,28 @@
  *   separate tangents cannot be represented as glTF quaternion cubic tangents.
  */
 
+import type { ViewerChannel, ViewerClip, ViewerNode } from './viewer-scene.ts';
+
+/** One animation take as the semantic FBX decoder exposes it. */
+type FbxClip = any;
+
 /** Convert one FBX animation take into a viewer clip. */
-export function adaptFbxAnimation(clip, nodeById, nodeByName) {
-    const channels = [];
+export function adaptFbxAnimation(
+    clip: FbxClip,
+    nodeById: Map<unknown, ViewerNode>,
+    nodeByName: Map<string, ViewerNode>,
+): ViewerClip | null {
+    const channels: ViewerChannel[] = [];
     for (const channel of clip.channels || []) {
         // Names are legal duplicates in FBX; use the object id emitted by
         // WASM first and retain names only for older parser results.
         const node = nodeById.get(channel.nodeId) || nodeByName.get(channel.nodeName);
         if (!node) continue;
         const sampler = channel.sampler || {};
-        const input = Float32Array.from(sampler.input || []);
-        let output = Float32Array.from(sampler.output || []);
+        // Widened past the ArrayBuffer-backed default: the helpers below may
+        // hand back the very array they were given.
+        const input: Float32Array = Float32Array.from(sampler.input || []);
+        let output: Float32Array = Float32Array.from(sampler.output || []);
         let interpolation = (sampler.interpolation || 'linear').toUpperCase() === 'CUBIC'
             ? 'CUBICSPLINE'
             : (sampler.interpolation || 'linear').toUpperCase();
@@ -30,7 +41,7 @@ export function adaptFbxAnimation(clip, nodeById, nodeByName) {
                 ? channel.morphTargetIndex
                 : 0;
             const targetCount = node.weights?.length || targetIndex + 1;
-            const values = [];
+            const values: number[] = [];
             const scalar = output;
             if (interpolation === 'CUBICSPLINE') {
                 for (let frame = 0; frame < input.length; frame++) {
@@ -88,7 +99,7 @@ export function adaptFbxAnimation(clip, nodeById, nodeByName) {
     };
 }
 
-function composeFbxRotationBasis(node, input, values) {
+function composeFbxRotationBasis(node: ViewerNode, input: Float32Array, values: Float32Array) {
     const quatOut = new Float32Array(input.length * 4);
     // Lcl Rotation keys are absolute authored values in the static FBX
     // rotation basis, not deltas from the skin BindPose. Normalizing against
@@ -109,7 +120,7 @@ function composeFbxRotationBasis(node, input, values) {
     return quatOut;
 }
 
-function rebaseFbxTranslationToBindRest(node, input, values) {
+function rebaseFbxTranslationToBindRest(node: ViewerNode, input: Float32Array, values: Float32Array) {
     // Plain Model TRS keys already use the same source space as their static
     // local transform. Retaining their absolute values is necessary for the
     // Cluster TransformLink skin basis (for example Samba Dancing's hips).
@@ -128,7 +139,12 @@ function rebaseFbxTranslationToBindRest(node, input, values) {
     return translated;
 }
 
-function interleaveFbxCubicTangents(channel, sampler, input, output) {
+function interleaveFbxCubicTangents(
+    channel: FbxClip,
+    sampler: FbxClip,
+    input: Float32Array,
+    output: Float32Array,
+) {
     const components = channel.path === 'weights' ? (channel.targetCount || 1) : 3;
     const inTangents = sampler.inTangents || [];
     const outTangents = sampler.outTangents || [];
@@ -146,7 +162,7 @@ function interleaveFbxCubicTangents(channel, sampler, input, output) {
 }
 
 /** Euler XYZ (radians) -> quaternion [x,y,z,w], matching FBX's Rz·Ry·Rx. */
-function eulerXyzToQuat(rx, ry, rz) {
+function eulerXyzToQuat(rx: number, ry: number, rz: number): number[] {
     const cx = Math.cos(rx * 0.5), sx = Math.sin(rx * 0.5);
     const cy = Math.cos(ry * 0.5), sy = Math.sin(ry * 0.5);
     const cz = Math.cos(rz * 0.5), sz = Math.sin(rz * 0.5);
@@ -158,7 +174,7 @@ function eulerXyzToQuat(rx, ry, rz) {
     ];
 }
 
-function quatMultiply(a, b) {
+function quatMultiply(a: ArrayLike<number>, b: ArrayLike<number>): number[] {
     return [
         a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
         a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
