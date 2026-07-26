@@ -78,6 +78,11 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A written `Model`'s `Shading` record is a boolean, as it is in every FBX
+  file: the ufbx corpus types it `C` roughly 1400 times and `Y` never, while
+  this crate wrote the 16-bit integer `Y`. No reader in this crate consults
+  `Shading`, so the visible effect is one byte per model, but the type was
+  also the only thing a `Model` carried that the ASCII container cannot spell.
 - Values an exporter states once in `Definitions/PropertyTemplate` were not
   read, so a property stated there and not on the object was lost. The object
   always wins -- 5553 properties in the corpus are declared in both places,

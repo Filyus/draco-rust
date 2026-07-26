@@ -1232,7 +1232,11 @@ fn model_node(model_data: &ModelData) -> io::Result<FbxNode> {
         children: vec![
             value_node("Version", FbxProperty::I32(232)),
             properties70_node(properties),
-            value_node("Shading", FbxProperty::I16(1)),
+            // A boolean, not the 16-bit integer this used to write: every
+            // `Shading` record in the ufbx corpus is typed `C`, and `Y` appears
+            // in none of them. ASCII has no 16-bit integer at all, so the wrong
+            // type was also the one spelling that could not be printed.
+            value_node("Shading", FbxProperty::Bool(true)),
             value_node("Culling", FbxProperty::String("CullingOff".to_string())),
         ],
     })
