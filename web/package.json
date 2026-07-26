@@ -31,6 +31,7 @@
     "test:gltf-materials": "node tests/gltf-materials.mjs",
     "test:gltf-material-parity": "node tests/gltf-material-parity.mjs",
     "test:gltf-summary-parity": "node tests/gltf-summary-parity.mjs",
+    "test:export-branches": "node tests/export-branches.mjs",
     "test:gltf-quantized-morph": "node tests/gltf-quantized-morph.mjs",
     "test:gltf-write": "node tests/gltf-write-smoke.mjs",
     "test:gltf-draco-write": "node tests/gltf-write-smoke.mjs --draco",

@@ -1495,3 +1495,29 @@ test('normal maps shade a model far smaller than one unit', async ({ page }) => 
   expect(difference.meanAbsolute).toBeGreaterThan(2);
   expect(difference.changedFraction).toBeGreaterThan(0.05);
 });
+
+/**
+ * An export that costs something has to say so.
+ *
+ * Five of the six export routes used to compute warnings and drop them; the
+ * flattening route did not even produce any. Exporting a scene-bearing glTF to
+ * OBJ is the cheapest deterministic case: OBJ has nowhere to put materials,
+ * textures or a hierarchy, and the user should not have to discover that by
+ * opening the result.
+ */
+test('exporting a scene to a flat format says what it costs', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles(
+    path.join(repoRoot, 'testdata', 'Box', 'glTF_Binary', 'Box.glb'),
+  );
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  await page.locator('[data-choice-for="export-format"] [data-value="obj"]').click();
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('#export-btn').click();
+  await downloadPromise;
+
+  await expect(page.locator('#console')).toContainText('Export complete!');
+  await expect(page.locator('#scene-warning-list')).toContainText('flattens the scene');
+});
