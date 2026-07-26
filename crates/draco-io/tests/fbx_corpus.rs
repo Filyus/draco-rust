@@ -249,6 +249,97 @@ fn scenes_survive_a_write_and_read_cycle() {
     );
 }
 
+/// Rewriting a rewrite must change nothing: the writer's output is a fixed
+/// point of read-then-write.
+///
+/// Nothing else asserts this. Comparing a scene with its round trip compares
+/// what the reader exposes, so an error that both halves make consistently --
+/// a conversion narrowed too early, a record the writer omits and the reader
+/// then cannot see -- agrees with itself and passes. Comparing the bytes does
+/// not.
+///
+/// It starts from the second generation rather than the first because the
+/// first renumbers the animation objects: their ids are hashed from the target
+/// node's `FbxNodeId`, which the reader assigns while walking the graph, and
+/// reading this crate's own output assigns them in a different order. That
+/// permutes the `AnimationCurve` records without changing any of them -- the
+/// multiset of key arrays is identical -- and settles after one generation.
+#[test]
+fn a_rewrite_of_a_rewrite_is_byte_for_byte_the_same_file() {
+    let Some(dir) = corpus_dir() else {
+        eprintln!("skipping: set DRACO_FBX_CORPUS to a directory of .fbx files");
+        return;
+    };
+
+    let mut files = Vec::new();
+    collect_fbx(&dir, &mut files);
+    files.sort();
+
+    let mut compared = 0;
+    let mut mismatches: Vec<String> = Vec::new();
+    for path in &files {
+        if path.components().any(|c| c.as_os_str() == "fuzz") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let rewrite =
+            |input: &[u8]| -> Option<Vec<u8>> { FbxScene::from_bytes(input).ok()?.to_bytes().ok() };
+        let Some(first) = rewrite(&bytes) else {
+            continue;
+        };
+        let (Some(second), Some(third)) = (
+            rewrite(&first),
+            rewrite(&first).as_deref().and_then(rewrite),
+        ) else {
+            mismatches.push(format!(
+                "{}: a rewritten file does not rewrite again",
+                path.display()
+            ));
+            continue;
+        };
+        compared += 1;
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if second != third {
+            mismatches.push(format!(
+                "{name}: generation three differs from generation two ({} bytes against {})",
+                third.len(),
+                second.len()
+            ));
+        }
+        // The first generation is exempt from byte equality but not from
+        // saying the same thing: a record the writer omits because it is empty
+        // is a record the reader cannot see, and the object behind it is gone
+        // by the second generation without any byte comparison noticing.
+        match (FbxScene::from_bytes(&first), FbxScene::from_bytes(&second)) {
+            (Ok(first), Ok(second)) => {
+                for field in summarize(&first).differing_fields(&summarize(&second)) {
+                    mismatches.push(format!("{name}: generation two lost {field}"));
+                }
+            }
+            _ => mismatches.push(format!("{name}: a rewritten file does not read back")),
+        }
+    }
+
+    println!(
+        "rewrote {compared} files twice over, {} drifted",
+        mismatches.len()
+    );
+    for line in mismatches.iter().take(20) {
+        println!("  {line}");
+    }
+    assert!(
+        mismatches.is_empty(),
+        "{} files change every time they are rewritten",
+        mismatches.len()
+    );
+}
+
 /// The two containers spell the same document, so the trees must agree.
 ///
 /// Sharper than comparing scenes: this sees every record, including the ones

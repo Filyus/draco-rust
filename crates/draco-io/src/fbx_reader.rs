@@ -1605,9 +1605,15 @@ impl<R: Read + Seek> FbxReader<R> {
             ..
         } = index;
         let fbx_ktime = fbx_ktime_for(nodes, self.version());
+        // Held as `f64`, and divided as `f64`, even though the sampler stores
+        // seconds as `f32`. A tick count is around 2e10 for a one-second key,
+        // where one `f32` step is 2048 ticks: narrowing either the count or
+        // the divisor before the division quantizes the result to about
+        // 4e-8 s, far coarser than the `f32` seconds can hold. Narrowing after
+        // it costs nothing.
         let ktime_f = match fbx_ktime {
             0 => 1.0,
-            v => v as f32,
+            v => v as f64,
         };
 
         // acnode_id -> (layer_id, model_id, path). The FBX convention (and
@@ -1925,7 +1931,7 @@ fn parse_curve(node: &FbxNode) -> Option<FbxAnimCurveData> {
 fn flatten_curve(
     by_component: &std::collections::BTreeMap<u32, FbxAnimCurveData>,
     path: FbxAnimChannelPath,
-    ktime_f: f32,
+    ktime_f: f64,
 ) -> Option<FbxAnimChannel> {
     let time_axis = by_component
         .get(&0)
@@ -1940,7 +1946,7 @@ fn flatten_curve(
     let flags = time_axis.key_attr_flags.first().copied().unwrap_or(0);
     let interpolation = FbxAnimInterpolation::from_key_attr_flags(flags);
     for i in 0..n {
-        input.push(time_axis.key_times[i] as f32 / ktime_f);
+        input.push((time_axis.key_times[i] as f64 / ktime_f) as f32);
         for component in 0..component_count as u32 {
             let value = by_component.get(&component).and_then(|curve| {
                 if i < curve.key_values.len() {
@@ -1969,20 +1975,25 @@ fn flatten_curve(
     // FBX stores Euler rotations in degrees; convert to radians so the JS
     // viewer's Euler→quaternion helper matches expectations. Translation and
     // scale are passed through unchanged.
+    //
+    // Through `f64`, and narrowing once at the end. `f32::to_radians` rounds
+    // its own factor and then rounds the product, so composing it with the
+    // writer's inverse moved an angle by a bit on every rewrite.
+    let radians = |value: f32| f64::from(value).to_radians() as f32;
     if path == FbxAnimChannelPath::Rotation {
         for chunk in output.chunks_mut(3) {
             for value in chunk.iter_mut() {
-                *value = value.to_radians();
+                *value = radians(*value);
             }
         }
         for chunk in in_tangents.chunks_mut(3) {
             for value in chunk.iter_mut() {
-                *value = value.to_radians();
+                *value = radians(*value);
             }
         }
         for chunk in out_tangents.chunks_mut(3) {
             for value in chunk.iter_mut() {
-                *value = value.to_radians();
+                *value = radians(*value);
             }
         }
     }

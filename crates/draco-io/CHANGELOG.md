@@ -88,6 +88,18 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Euler angles and key times drifted a little further on every rewrite,
+  because each was narrowed to `f32` before the arithmetic rather than after
+  it. `f32::to_radians` and the writer's inverse each rounded twice, so `90`
+  became `89.99997` and then `89.99996` without ever settling; a key's tick
+  count, around 2e10 for one second, was narrowed before being divided, where
+  one `f32` step is 2048 ticks. Both now compute in `f64` and narrow once, and
+  a corpus check rewrites all 566 files twice over and requires the second and
+  third generations to be byte-identical.
+- A mesh with no vertices lost its `Geometry` object on the second rewrite.
+  The writer omitted an empty `Vertices` array, but that array is what
+  identifies a geometry, so the record described nothing the reader
+  recognized. Both arrays are now written whatever their length.
 - A bind pose was dropped from an ASCII document whose object ids fit in 32
   bits. `PoseNode/Node` was the one id in the reader matched against `I64`
   alone rather than through `object_id`, and ASCII does not record an

@@ -1624,31 +1624,29 @@ fn morph_nodes(morph: &MorphData) -> Vec<FbxNode> {
 fn geometry_node(mesh_data: &MeshData) -> FbxNode {
     let mut children = vec![value_node("GeometryVersion", FbxProperty::I32(124))];
 
+    // Both arrays are emitted even when empty. A `Geometry` is recognized by
+    // carrying them, so omitting one does not describe a smaller mesh -- it
+    // describes something that is not a mesh, and the object disappears on the
+    // next read. That cost the empty mesh of `blender_279_empty_cube` its
+    // whole `Geometry` record on a second rewrite. A vertices-only geometry is
+    // legal too; Blender writes one for a curve with no faces.
     let vertices = mesh_data
         .control_points
         .as_deref()
         .unwrap_or(&mesh_data.vertices);
-    if !vertices.is_empty() {
-        children.push(value_node(
-            "Vertices",
-            FbxProperty::F64Array(vertices.to_vec()),
-        ));
-    }
+    children.push(value_node(
+        "Vertices",
+        FbxProperty::F64Array(vertices.to_vec()),
+    ));
 
     let polygon_indices = mesh_data
         .polygon_vertex_indices
         .as_deref()
         .unwrap_or(&mesh_data.indices);
-    // Emit the node even when empty, as long as the geometry has vertices.
-    // A vertices-only Geometry is legal -- Blender writes one for a curve
-    // with no faces -- and the reader treats a missing PolygonVertexIndex
-    // as "not a mesh", so skipping it dropped the object entirely.
-    if !polygon_indices.is_empty() || !vertices.is_empty() {
-        children.push(value_node(
-            "PolygonVertexIndex",
-            FbxProperty::I32Array(polygon_indices.to_vec()),
-        ));
-    }
+    children.push(value_node(
+        "PolygonVertexIndex",
+        FbxProperty::I32Array(polygon_indices.to_vec()),
+    ));
 
     // Normals (preserve original layer mappings when available).
     if mesh_data.normal_sets.is_empty() {
@@ -2311,11 +2309,17 @@ fn animation_curve_node(
 
     // FBX stores Euler rotations in degrees; the reader converted them to
     // radians, so convert back here. The same factor applies to key slopes.
+    //
+    // In `f64`, and inverting `f64::to_radians` rather than an `f32` one:
+    // neither factor is representable, so multiplying in `f32` rounds twice
+    // per rewrite and the angle walks. `90` came back `89.99997` and then
+    // `89.99996`, losing a bit per generation without ever settling.
     let scale = if channel.path == crate::fbx_scene::FbxAnimChannelPath::Rotation {
-        180.0 / std::f32::consts::PI
+        180.0 / std::f64::consts::PI
     } else {
         1.0
     };
+    let degrees = |value: f32| (f64::from(value) * scale) as f32;
 
     // KeyAttr* is run-length encoded. Cubic keys carry their explicit right
     // slope and the next key's left slope in four-float records, matching
@@ -2333,16 +2337,18 @@ fn animation_curve_node(
     let mut datafloat = Vec::with_capacity(if cubic { keys * 4 } else { 4 });
     for key in 0..if cubic { keys } else { 1 } {
         let component_index = key * components + component as usize;
-        let right = out_tangents
-            .and_then(|values| values.get(component_index))
-            .copied()
-            .unwrap_or(0.0)
-            * scale;
-        let next_left = in_tangents
-            .and_then(|values| values.get(component_index + components))
-            .copied()
-            .unwrap_or(0.0)
-            * scale;
+        let right = degrees(
+            out_tangents
+                .and_then(|values| values.get(component_index))
+                .copied()
+                .unwrap_or(0.0),
+        );
+        let next_left = degrees(
+            in_tangents
+                .and_then(|values| values.get(component_index + components))
+                .copied()
+                .unwrap_or(0.0),
+        );
         datafloat.extend([right, next_left, 0.0, 0.0]);
     }
 
@@ -2365,7 +2371,7 @@ fn animation_curve_node(
             value_node("KeyTime", FbxProperty::I64Array(key_times)),
             value_node(
                 "KeyValueFloat",
-                FbxProperty::F32Array(key_values.iter().map(|value| value * scale).collect()),
+                FbxProperty::F32Array(key_values.iter().copied().map(degrees).collect()),
             ),
             value_node("KeyAttrFlags", FbxProperty::I32Array(flags)),
             value_node("KeyAttrDataFloat", FbxProperty::F32Array(datafloat)),
@@ -2856,6 +2862,69 @@ mod tests {
         );
         assert!(child(geometry, "Vertices").is_some());
         assert!(child(geometry, "PolygonVertexIndex").is_some());
+    }
+
+    /// A mesh with nothing in it is still a mesh, and must still be written as
+    /// one.
+    ///
+    /// The arrays are what identify a `Geometry`; omitting an empty one does
+    /// not describe a smaller mesh, it describes something the reader does not
+    /// recognize, and the object is gone on the next read. Neither a byte
+    /// comparison of two rewrites nor a scene summary sees this -- by the time
+    /// either looks, the object left no trace to compare -- so it is asserted
+    /// on the document directly.
+    #[cfg(feature = "fbx-reader")]
+    #[test]
+    fn an_empty_mesh_is_still_written_as_a_geometry() {
+        let scene = FbxScene {
+            global_settings: None,
+            root_nodes: vec![FbxSceneNode {
+                id: crate::fbx_scene::FbxNodeId(1),
+                name: Some("Empty".to_string()),
+                transform: None,
+                transform_stack: None,
+                has_complex_transform_stack: false,
+                mesh_instances: vec![FbxMeshInstance {
+                    name: Some("Nothing".to_string()),
+                    mesh: Mesh::new(),
+                    ..Default::default()
+                }],
+                attribute: None,
+                children: Vec::new(),
+            }],
+            materials: Vec::new(),
+            textures: Vec::new(),
+            animations: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        let mut writer = FbxWriter::new();
+        writer.add_scene(&scene).expect("an empty mesh is writable");
+        let document = writer.build_document().expect("document");
+        let objects = document
+            .iter()
+            .find(|node| node.name == "Objects")
+            .expect("Objects");
+        let geometry = child(objects, "Geometry").expect("an empty mesh writes a Geometry");
+        assert!(
+            matches!(child(geometry, "Vertices"), Some(node)
+                if matches!(&node.properties[0], FbxProperty::F64Array(values) if values.is_empty())),
+            "an empty Vertices array is written, not omitted: {:?}",
+            geometry
+                .children
+                .iter()
+                .map(|c| &c.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(child(geometry, "PolygonVertexIndex").is_some());
+
+        // And it survives the read that a rewrite would perform on it.
+        let reread = FbxScene::from_bytes(&scene.to_bytes().expect("write")).expect("read");
+        assert_eq!(
+            reread.root_nodes[0].mesh_instances.len(),
+            1,
+            "the empty mesh must still be there after a rewrite"
+        );
     }
 
     /// A camera is announced in every place an importer looks for one.
