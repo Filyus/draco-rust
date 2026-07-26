@@ -16,6 +16,9 @@
     --error: #ff7082;
     --radius: 12px;
     --space: 10px;
+    /* One readable size for every label over the preview: the toolbar, the
+       playback row and the control legend. */
+    --viewer-ui-font: 0.78rem;
 }
 
 * {
@@ -464,7 +467,7 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     padding: 5px 9px;
     border-radius: 7px;
     color: #8da0bb;
-    font-size: 0.71rem;
+    font-size: var(--viewer-ui-font);
     line-height: 1.5;
     background: rgba(7, 17, 30, 0.6);
     backdrop-filter: blur(9px);
@@ -491,7 +494,7 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     border: 0;
     border-radius: 6px;
     color: #afbed3;
-    font-size: 0.67rem;
+    font-size: var(--viewer-ui-font);
     font-weight: 620;
     background: transparent;
     transition: color 150ms ease, background 150ms ease;
@@ -607,7 +610,7 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     border: 0;
     border-radius: 7px;
     color: #d7e2f2;
-    font-size: 0.72rem;
+    font-size: var(--viewer-ui-font);
     font-weight: 620;
     text-align: left;
     background: var(--control);
@@ -652,7 +655,7 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     border: 0;
     border-radius: 6px;
     color: #aebed5;
-    font-size: 0.71rem;
+    font-size: var(--viewer-ui-font);
     font-weight: 580;
     text-align: left;
     background: transparent;
@@ -663,8 +666,8 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 .anim-clip-option.selected:hover { background: rgba(82, 136, 223, 0.92); }
 .anim-clip-option:focus-visible { outline: 0; box-shadow: inset 0 0 0 1px rgba(124, 169, 235, 0.72); }
 .anim-loop,
-.anim-speed-label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.7rem; }
-.anim-time { margin-left: auto; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.68rem; }
+.anim-speed-label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--viewer-ui-font); }
+.anim-time { margin-left: auto; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: var(--viewer-ui-font); }
 .anim-track-row { flex-wrap: nowrap; }
 .anim-scrub { min-width: 150px; flex: 1; }
 .anim-speed-label { flex: 0 1 190px; white-space: nowrap; }
