@@ -3,13 +3,21 @@
 # CRLF to editors and tools that then write it back into a diff.
 * text=auto eol=lf
 
-# Always-binary fixtures. PLY and STL are deliberately absent: those formats
-# have both an ASCII and a binary flavour, and the ASCII fixtures are text that
-# must stay normalized. Git's content heuristic already leaves the binary ones
-# alone.
+# Formats that are always binary, wherever they appear.
 *.drc binary
 *.glb binary
 *.bin binary
 *.fbx binary
 *.png binary
 *.jpg binary
+
+# Fixtures are decoder input compared byte for byte, so git must not rewrite
+# them. `-text` disables line-ending conversion without disabling diffs, which
+# keeps the glTF fixtures reviewable while leaving their bytes untouched.
+#
+# This matters most for PLY and STL, which have both an ASCII and a binary
+# flavour under one extension: marking those extensions `binary` would corrupt
+# the ASCII fixtures, and leaving them to auto-detection would leave a fixture
+# whose whole point is unusual line endings at the mercy of a heuristic.
+testdata/** -text
+fuzz/seeds/** -text
