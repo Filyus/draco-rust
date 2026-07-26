@@ -7,21 +7,45 @@
  * fbx-wasm.create_fbx_scene; no flattened mesh writer is involved.
  */
 
-import { assertValidSceneDocument } from './scene-document.js';
-import { invertMat4, multiplyMat4 } from './mat4.js';
+import { assertValidSceneDocument } from './scene-document.ts';
+import type { SceneDocument, ScenePrimitive } from './scene-document.ts';
+import { invertMat4, multiplyMat4 } from './mat4.ts';
 import {
     convertGltfMatrixToFbx,
     convertGltfVectorArrayToFbx,
     quaternionKeysToFbxEuler,
-} from './fbx-scene-adapter.js';
-import { assertFbxProvenance } from './fbx-scene-provenance.js';
+} from './fbx-scene-adapter.ts';
+import { assertFbxProvenance } from './fbx-scene-provenance.ts';
+import type { FbxSceneProvenance } from './fbx-scene-provenance.ts';
 
-const COMPONENT_BYTES = new Map([
+/**
+ * The typed-writer SceneInput and the semantic source scene it may reuse.
+ * Both are fbx-wasm's own shapes, assembled field by field here.
+ */
+type FbxJson = any;
+
+export interface FbxWriteOptions {
+    provenance?: FbxSceneProvenance | null;
+}
+
+/** Unit handling depends on whether a source FBX scene is being reused. */
+type SourceUnits = FbxJson;
+
+/**
+ * Source meshes indexed both ways: FBX geometry need not be named, and the
+ * positional list is the only way to reach the unnamed ones.
+ */
+interface SourceMeshIndex {
+    byName: Map<string, FbxJson>;
+    ordered: FbxJson[];
+}
+
+const COMPONENT_BYTES = new Map<number, number>([
     [5120, 1], [5121, 1], [5122, 2], [5123, 2], [5125, 4], [5126, 4],
 ]);
 
 /** Build a typed-writer SceneInput from a validated portable document. */
-export function buildFbxSceneFromDocument(document, options = {}) {
+export function buildFbxSceneFromDocument(document: SceneDocument, options: FbxWriteOptions = {}) {
     assertValidSceneDocument(document);
     const provenance = options.provenance || null;
     if (provenance) assertFbxProvenance(provenance);
@@ -53,9 +77,17 @@ export function buildFbxSceneFromDocument(document, options = {}) {
     return scene;
 }
 
-function buildNode(document, index, sourceNodes, sourceMeshes, worlds, sourceUnits, warnings) {
+function buildNode(
+    document: SceneDocument,
+    index: number,
+    sourceNodes: Map<string, FbxJson>,
+    sourceMeshes: SourceMeshIndex,
+    worlds: number[][],
+    sourceUnits: SourceUnits,
+    warnings: string[],
+): FbxJson {
     const node = document.nodes[index] || {};
-    const source = sourceNodes.get(node.name);
+    const source = node.name === undefined ? undefined : sourceNodes.get(node.name);
     const matrix = source?.matrix?.length === 16
         ? Array.from(source.matrix)
         : convertNodeMatrix(node, sourceUnits);
@@ -87,7 +119,16 @@ function buildNode(document, index, sourceNodes, sourceMeshes, worlds, sourceUni
     };
 }
 
-function buildNodeMeshes(document, node, meshIndex, nodeIndex, sourceMeshes, worlds, sourceUnits, warnings) {
+function buildNodeMeshes(
+    document: SceneDocument,
+    node: FbxJson,
+    meshIndex: number,
+    nodeIndex: number,
+    sourceMeshes: SourceMeshIndex,
+    worlds: number[][],
+    sourceUnits: SourceUnits,
+    warnings: string[],
+): FbxJson[] {
     const mesh = document.meshes[meshIndex];
     if (!mesh) return [];
     return mesh.primitives.map((primitive, primitiveIndex) => {
@@ -104,7 +145,7 @@ function buildNodeMeshes(document, node, meshIndex, nodeIndex, sourceMeshes, wor
         if (sourceUnits && !sourceMesh) {
             warnings.push(`FBX mesh ${mesh.name ?? meshIndex} could not be matched to its source geometry, so FBX-only layers were not re-exported`);
         }
-        const meshInput = {
+        const meshInput: FbxJson = {
             name: mesh.name ? `${mesh.name}_${primitiveIndex}` : `mesh_${meshIndex}_${primitiveIndex}`,
             positions: sourceUnits ? scaleValues(positions, 100) : convertGltfVectorArrayToFbx(positions),
             indices,
@@ -194,17 +235,30 @@ function buildNodeMeshes(document, node, meshIndex, nodeIndex, sourceMeshes, wor
     });
 }
 
-function optionalAttribute(document, primitive, semantic, transform) {
+function optionalAttribute(
+    document: SceneDocument,
+    primitive: ScenePrimitive,
+    semantic: string,
+    transform: ((values: number[]) => number[]) | null,
+) {
     const index = primitive.attributes?.[semantic];
     if (!Number.isInteger(index)) return null;
     const values = readAccessorValues(document, index);
     return transform ? transform(values) : values;
 }
 
-function buildSkin(document, primitive, skinIndex, nodeIndex, worlds, sourceUnits, warnings) {
+function buildSkin(
+    document: SceneDocument,
+    primitive: ScenePrimitive,
+    skinIndex: number,
+    nodeIndex: number,
+    worlds: number[][],
+    sourceUnits: SourceUnits,
+    warnings: string[],
+): FbxJson {
     const skin = document.skins[skinIndex];
     const joints = skin.joints || [];
-    const influenceSets = [];
+    const influenceSets: FbxJson[] = [];
     for (let set = 0; set < 8; set += 1) {
         const jointValues = optionalAttribute(document, primitive, `JOINTS_${set}`, null);
         const weightValues = optionalAttribute(document, primitive, `WEIGHTS_${set}`, null);
@@ -262,7 +316,7 @@ function buildSkin(document, primitive, skinIndex, nodeIndex, worlds, sourceUnit
     return { clusters, bindPose };
 }
 
-function buildMorphTargets(document, primitive, sourceUnits) {
+function buildMorphTargets(document: SceneDocument, primitive: ScenePrimitive, sourceUnits: SourceUnits): FbxJson[] {
     return (primitive.targets || []).flatMap((target, index) => {
         if (target.POSITION === undefined) return [];
         const position = readAccessorValues(document, target.POSITION);
@@ -278,12 +332,12 @@ function buildMorphTargets(document, primitive, sourceUnits) {
     });
 }
 
-function buildMaterials(document) {
+function buildMaterials(document: SceneDocument): FbxJson[] {
     return document.materials.map((material, index) => {
         const base = material.baseColorFactor || [1, 1, 1, 1];
-        const textures = [];
-        const add = (info, slot) => {
-            if (Number.isInteger(info?.texture)) textures.push({ slot, textureIndex: info.texture });
+        const textures: FbxJson[] = [];
+        const add = (info: { texture?: number } | undefined, slot: string) => {
+            if (Number.isInteger(info?.texture)) textures.push({ slot, textureIndex: info!.texture });
         };
         add(material.baseColorTexture, 'diffuse');
         add(material.normalTexture, 'normal');
@@ -304,7 +358,7 @@ function buildMaterials(document) {
     });
 }
 
-function buildTextures(document) {
+function buildTextures(document: SceneDocument): FbxJson[] {
     return document.textures.map((texture, index) => {
         const resource = document.resources[texture.resource];
         return {
@@ -315,11 +369,11 @@ function buildTextures(document) {
     });
 }
 
-function buildAnimations(document, sourceUnits, warnings) {
+function buildAnimations(document: SceneDocument, sourceUnits: SourceUnits, warnings: string[]): FbxJson[] {
     return document.animations.map((clip) => ({
         name: clip.name,
         duration: clip.duration,
-        channels: clip.channels.flatMap((channel) => {
+        channels: clip.channels.flatMap((channel): FbxJson[] => {
             const sampler = clip.samplers[channel.sampler];
             if (!sampler || !document.nodes[channel.node]) return [];
             const input = readAccessorValues(document, sampler.input);
@@ -368,19 +422,19 @@ function buildAnimations(document, sourceUnits, warnings) {
     }));
 }
 
-function extractCubic(values, components, segment) {
+function extractCubic(values: number[], components: number, segment: number): number[] {
     const stride = components * 3;
     const output = [];
     for (let offset = 0; offset + stride <= values.length; offset += stride) output.push(...values.slice(offset + components * segment, offset + components * (segment + 1)));
     return output;
 }
 
-function convertNodeMatrix(node, sourceUnits) {
+function convertNodeMatrix(node: FbxJson, sourceUnits: SourceUnits): number[] {
     const matrix = node.matrix || composeMatrix(node.translation, node.rotation, node.scale);
     return convertMatrixForFbx(matrix, sourceUnits);
 }
 
-function convertMatrixForFbx(matrix, sourceUnits) {
+function convertMatrixForFbx(matrix: ArrayLike<number>, sourceUnits: SourceUnits): number[] {
     if (sourceUnits) {
         const output = Array.from(matrix);
         output[12] *= 100;
@@ -391,9 +445,9 @@ function convertMatrixForFbx(matrix, sourceUnits) {
     return convertGltfMatrixToFbx(matrix);
 }
 
-function buildDocumentWorlds(document) {
-    const worlds = Array.from({ length: document.nodes.length }, () => null);
-    const visit = (index, parent) => {
+function buildDocumentWorlds(document: SceneDocument): number[][] {
+    const worlds: (number[] | null)[] = Array.from({ length: document.nodes.length }, () => null);
+    const visit = (index: number, parent: number[] | null) => {
         if (worlds[index]) return;
         const node = document.nodes[index] || {};
         const local = node.matrix || composeMatrix(node.translation, node.rotation, node.scale);
@@ -402,12 +456,16 @@ function buildDocumentWorlds(document) {
     };
     for (const root of document.rootNodes) visit(root, null);
     document.nodes.forEach((_, index) => { if (!worlds[index]) visit(index, null); });
-    return worlds;
+    return worlds as number[][];
 }
 
-function composeMatrix(translation = [0, 0, 0], rotation = [0, 0, 0, 1], scale = [1, 1, 1]) {
-    const [x, y, z, w] = rotation;
-    const [sx, sy, sz] = scale;
+function composeMatrix(
+    translation: ArrayLike<number> = [0, 0, 0],
+    rotation: ArrayLike<number> = [0, 0, 0, 1],
+    scale: ArrayLike<number> = [1, 1, 1],
+): number[] {
+    const [x, y, z, w] = Array.from(rotation);
+    const [sx, sy, sz] = Array.from(scale);
     return [
         (1 - 2 * (y * y + z * z)) * sx, (2 * (x * y + z * w)) * sx, (2 * (x * z - y * w)) * sx, 0,
         (2 * (x * y - z * w)) * sy, (1 - 2 * (x * x + z * z)) * sy, (2 * (y * z + x * w)) * sy, 0,
@@ -416,7 +474,7 @@ function composeMatrix(translation = [0, 0, 0], rotation = [0, 0, 0, 1], scale =
     ];
 }
 
-function readAccessorValues(document, index) {
+function readAccessorValues(document: SceneDocument, index: number): number[] {
     const accessor = document.accessors[index];
     if (!accessor) return [];
     const bytes = COMPONENT_BYTES.get(accessor.componentType);
@@ -430,14 +488,14 @@ function readAccessorValues(document, index) {
     return values;
 }
 
-function readAccessorMatrices(document, index) {
+function readAccessorMatrices(document: SceneDocument, index: number): number[][] {
     const accessor = document.accessors[index];
     if (!accessor || accessor.components !== 16) return [];
     const values = readAccessorValues(document, index);
     return Array.from({ length: accessor.count }, (_, item) => values.slice(item * 16, item * 16 + 16));
 }
 
-function readComponent(view, offset, componentType) {
+function readComponent(view: DataView, offset: number, componentType: number): number {
     switch (componentType) {
         case 5120: return view.getInt8(offset);
         case 5121: return view.getUint8(offset);
@@ -449,7 +507,7 @@ function readComponent(view, offset, componentType) {
     }
 }
 
-function normalizeComponent(value, componentType) {
+function normalizeComponent(value: number, componentType: number): number {
     if (componentType === 5120) return Math.max(-1, value / 127);
     if (componentType === 5121) return value / 255;
     if (componentType === 5122) return Math.max(-1, value / 32767);
@@ -457,23 +515,23 @@ function normalizeComponent(value, componentType) {
     return value;
 }
 
-function scaleValues(values, factor) {
+function scaleValues(values: number[], factor: number): number[] {
     return Array.from(values, (value) => value * factor);
 }
 
-function flipUvV(values) {
+function flipUvV(values: number[]): number[] {
     const output = Array.from(values);
     for (let index = 1; index < output.length; index += 2) output[index] = 1 - output[index];
     return output;
 }
 
-function identityMatrix() {
+function identityMatrix(): number[] {
     return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 }
 
-function indexSourceNodes(roots) {
-    const map = new Map();
-    const visit = (node) => {
+function indexSourceNodes(roots: FbxJson[]): Map<string, FbxJson> {
+    const map = new Map<string, FbxJson>();
+    const visit = (node: FbxJson) => {
         if (node.name) map.set(node.name, node);
         for (const child of node.children || []) visit(child);
     };
@@ -494,10 +552,10 @@ function indexSourceNodes(roots) {
  * meshes there are; the document builder drops nodes it has no state for, which
  * would otherwise shift the pairing and restore the wrong mesh's layers.
  */
-function indexSourceMeshes(roots) {
-    const byName = new Map();
-    const ordered = [];
-    const visit = (node) => {
+function indexSourceMeshes(roots: FbxJson[]): SourceMeshIndex {
+    const byName = new Map<string, FbxJson>();
+    const ordered: FbxJson[] = [];
+    const visit = (node: FbxJson) => {
         for (const mesh of node.meshes || []) {
             if (mesh.name) byName.set(mesh.name, mesh);
             ordered.push(mesh);
@@ -509,8 +567,14 @@ function indexSourceMeshes(roots) {
 }
 
 /** Resolve the source mesh a document mesh came from, or undefined. */
-function findSourceMesh(sourceMeshes, documentMeshes, name, meshIndex, primitiveIndex) {
-    const byName = sourceMeshes.byName.get(name)
+function findSourceMesh(
+    sourceMeshes: SourceMeshIndex,
+    documentMeshes: SceneDocument['meshes'],
+    name: string | undefined,
+    meshIndex: number,
+    primitiveIndex: number,
+): FbxJson {
+    const byName = (name === undefined ? undefined : sourceMeshes.byName.get(name))
         || sourceMeshes.byName.get(`${name}_${primitiveIndex}`);
     if (byName) return byName;
     if (sourceMeshes.ordered.length !== documentMeshes.length) return undefined;

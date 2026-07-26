@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildFbxSceneFromDocument } from '../www/fbx-scene-document-writer.js';
+import { buildFbxSceneFromDocument } from '../src/fbx-scene-document-writer.ts';
 import { lowerSceneDocumentToGltf } from '../src/scene-document-gltf.ts';
 import { buildViewerSceneFromDocument } from '../src/scene-document-viewer.ts';
 import { assertValidSceneDocument, createSceneDocument } from '../src/scene-document.ts';

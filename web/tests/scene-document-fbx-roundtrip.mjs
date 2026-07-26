@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 
 import { buildSceneDocumentFromFbx, buildSceneDocumentWithFbxProvenance } from '../src/fbx-scene-document.ts';
 import { buildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
-import { buildFbxSceneFromDocument } from '../www/fbx-scene-document-writer.js';
+import { buildFbxSceneFromDocument } from '../src/fbx-scene-document-writer.ts';
 import { loadWasm, mixamoFbx, readBytes, sambaFbx, foxBin, foxGltf, skipUnless } from './fbx-test-utils.mjs';
 
 if (skipUnless([mixamoFbx, sambaFbx, foxGltf, foxBin], 'SceneDocument FBX writer')) process.exit(0);
