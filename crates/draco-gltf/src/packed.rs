@@ -409,6 +409,7 @@ impl PackedGeometry {
         mode: PrimitiveMode,
         mesh: &Mesh,
         attributes: &[(String, u32)],
+        normalized: &std::collections::BTreeMap<String, bool>,
     ) -> Result<Self> {
         let attributes = attributes
             .iter()
@@ -423,7 +424,13 @@ impl PackedGeometry {
                     mesh.num_points(),
                     attribute.num_components(),
                     component_type_for_data_type(attribute.data_type())?,
-                    attribute.normalized(),
+                    // The glTF accessor is authoritative here; the decoded
+                    // Draco attribute carries its own flag, which encoders
+                    // leave unset even for normalized colours and weights.
+                    normalized
+                        .get(semantic.as_str())
+                        .copied()
+                        .unwrap_or_else(|| attribute.normalized()),
                     packed_draco_attribute_bytes(mesh, *unique_id)?,
                 )
                 .map_err(Error::Geometry)

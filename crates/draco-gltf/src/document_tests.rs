@@ -501,6 +501,74 @@ fn import_reads_json() {
 mod compression_tests {
     use super::*;
 
+    /// The accessor decides how decoded Draco integers are read.
+    ///
+    /// KHR_draco_mesh_compression makes the glTF accessor authoritative. A
+    /// Draco attribute carries a normalization flag of its own, and third-party
+    /// encoders leave it unset even for a normalized COLOR_0 — reading that
+    /// flag handed consumers raw 0..65535 values, which saturate to white.
+    ///
+    /// Built here rather than round-tripped: this crate's own encoder writes
+    /// the flag into the payload, so an encode/decode cycle cannot produce the
+    /// disagreement that the files in the wild have.
+    #[cfg(feature = "draco-decode")]
+    #[test]
+    fn draco_reading_takes_normalization_from_the_accessor() {
+        use draco_core::{DataType, GeometryAttributeType, Mesh, PointAttribute};
+
+        let mut mesh = Mesh::new();
+        mesh.set_num_points(3);
+        mesh.set_num_faces(1);
+        mesh.set_face(
+            draco_core::FaceIndex(0),
+            [
+                draco_core::PointIndex(0),
+                draco_core::PointIndex(1),
+                draco_core::PointIndex(2),
+            ],
+        );
+
+        let mut position = PointAttribute::new();
+        position.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            3,
+        );
+        let position_id = mesh.add_attribute(position);
+
+        // As a foreign encoder leaves it: the payload says not normalized.
+        let mut color = PointAttribute::new();
+        color.init(GeometryAttributeType::Color, 4, DataType::Uint16, false, 3);
+        let color_id = mesh.add_attribute(color);
+
+        let unique_id = |id: i32| mesh.attribute(id).unique_id();
+        let contract = vec![
+            ("POSITION".to_owned(), unique_id(position_id)),
+            ("COLOR_0".to_owned(), unique_id(color_id)),
+        ];
+        let normalized = [("COLOR_0".to_owned(), true)].into_iter().collect();
+
+        let geometry = crate::PackedGeometry::from_draco_mesh(
+            crate::PrimitiveMode::Triangles,
+            &mesh,
+            &contract,
+            &normalized,
+        )
+        .unwrap();
+
+        let flag = |semantic: &str| {
+            geometry
+                .attributes()
+                .iter()
+                .find(|attribute| attribute.semantic() == semantic)
+                .map(crate::PackedAttribute::normalized)
+        };
+        assert_eq!(flag("COLOR_0"), Some(true), "the accessor flag must win");
+        assert_eq!(flag("POSITION"), Some(false), "and must not invent one");
+    }
+
     #[test]
     fn compression_appends_a_decodable_draco_payload() {
         let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;

@@ -283,8 +283,27 @@ impl Import {
                 )?
                 .ok_or_else(|| Error::Extension("missing Draco extension".into()))?;
                 let decoded = self.decode_draco_primitive(reference)?;
-                let geometry =
-                    crate::PackedGeometry::from_draco_mesh(mode, &decoded, &contract.attributes)?;
+                // The accessor, not the Draco attribute, defines how the
+                // decoded integers are read. KHR_draco_mesh_compression makes
+                // the accessor authoritative, and encoders leave the Draco
+                // flag unset, so a normalized COLOR_0 would otherwise reach the
+                // consumer as raw 0..65535 values.
+                let normalized: std::collections::BTreeMap<String, bool> = reference
+                    .attribute_indices()
+                    .map(|(semantic, index)| {
+                        let normalized = self
+                            .document
+                            .accessor(index)
+                            .is_some_and(crate::Accessor::normalized);
+                        (semantic.to_owned(), normalized)
+                    })
+                    .collect();
+                let geometry = crate::PackedGeometry::from_draco_mesh(
+                    mode,
+                    &decoded,
+                    &contract.attributes,
+                    &normalized,
+                )?;
                 geometry.validate(self.profile)?;
                 return Ok(geometry);
             }
