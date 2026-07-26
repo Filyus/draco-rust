@@ -284,8 +284,16 @@ export function applyMaterial(host: RenderHost, material: any, uploaded: any, us
     host.uniforms.uHasEmissiveTexture,
     host.uniforms.uEmissiveTexCoord,
   );
+  // KHR_materials_emissive_strength scales the factor rather than reaching the
+  // shader on its own: the two are always multiplied together anyway.
   const emissive = material?.emissiveFactor || [0, 0, 0];
-  gl.uniform3f(host.uniforms.uEmissiveFactor, emissive[0], emissive[1], emissive[2]);
+  const emissiveStrength = material?.emissiveStrength ?? 1;
+  gl.uniform3f(
+    host.uniforms.uEmissiveFactor,
+    emissive[0] * emissiveStrength,
+    emissive[1] * emissiveStrength,
+    emissive[2] * emissiveStrength,
+  );
   bindTexture(
     material?.normalTexture,
     3,
@@ -302,6 +310,52 @@ export function applyMaterial(host: RenderHost, material: any, uploaded: any, us
     host.uniforms.uOcclusionTexCoord,
   );
   gl.uniform1f(host.uniforms.uOcclusionStrength, material?.occlusionTexture?.strength ?? 1);
+
+  // Units 5..8 are taken by the backdrop and the IBL maps, so the material
+  // extension layers start at 9. That leaves 13 samplers in the fragment
+  // program, inside the WebGL2 floor of 16.
+  gl.uniform1f(host.uniforms.uIor, material?.ior ?? 1.5);
+  gl.uniform1f(host.uniforms.uSpecularFactor, material?.specularFactor ?? 1);
+  const specularColor = material?.specularColorFactor || [1, 1, 1];
+  gl.uniform3f(host.uniforms.uSpecularColorFactor, specularColor[0], specularColor[1], specularColor[2]);
+  bindTexture(
+    material?.specularTexture,
+    9,
+    host.uniforms.uSpecularTexture,
+    host.uniforms.uHasSpecularTexture,
+    host.uniforms.uSpecularTexCoord,
+  );
+  bindTexture(
+    material?.specularColorTexture,
+    10,
+    host.uniforms.uSpecularColorTexture,
+    host.uniforms.uHasSpecularColorTexture,
+    host.uniforms.uSpecularColorTexCoord,
+  );
+  gl.uniform1f(host.uniforms.uClearcoatFactor, material?.clearcoatFactor ?? 0);
+  gl.uniform1f(host.uniforms.uClearcoatRoughnessFactor, material?.clearcoatRoughnessFactor ?? 0);
+  bindTexture(
+    material?.clearcoatTexture,
+    11,
+    host.uniforms.uClearcoatTexture,
+    host.uniforms.uHasClearcoatTexture,
+    host.uniforms.uClearcoatTexCoord,
+  );
+  bindTexture(
+    material?.clearcoatRoughnessTexture,
+    12,
+    host.uniforms.uClearcoatRoughnessTexture,
+    host.uniforms.uHasClearcoatRoughnessTexture,
+    host.uniforms.uClearcoatRoughnessTexCoord,
+  );
+  bindTexture(
+    material?.clearcoatNormalTexture,
+    13,
+    host.uniforms.uClearcoatNormalTexture,
+    host.uniforms.uHasClearcoatNormalTexture,
+    host.uniforms.uClearcoatNormalTexCoord,
+  );
+  gl.uniform1f(host.uniforms.uClearcoatNormalScale, material?.clearcoatNormalTexture?.scale ?? 1);
 }
 
 export function drawGrid(host: RenderHost) {

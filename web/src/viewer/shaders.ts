@@ -125,6 +125,30 @@ uniform int uHasOcclusionTexture;
 uniform sampler2D uOcclusionTexture;
 uniform int uOcclusionTexCoord;
 uniform float uOcclusionStrength;
+// KHR_materials_ior / KHR_materials_specular: the dielectric reflectance the
+// index of refraction implies, tinted and weighted by the specular extension.
+uniform float uIor;
+uniform float uSpecularFactor;
+uniform vec3 uSpecularColorFactor;
+uniform int uHasSpecularTexture;
+uniform sampler2D uSpecularTexture;
+uniform int uSpecularTexCoord;
+uniform int uHasSpecularColorTexture;
+uniform sampler2D uSpecularColorTexture;
+uniform int uSpecularColorTexCoord;
+// KHR_materials_clearcoat: a second specular lobe over the whole material.
+uniform float uClearcoatFactor;
+uniform float uClearcoatRoughnessFactor;
+uniform int uHasClearcoatTexture;
+uniform sampler2D uClearcoatTexture;
+uniform int uClearcoatTexCoord;
+uniform int uHasClearcoatRoughnessTexture;
+uniform sampler2D uClearcoatRoughnessTexture;
+uniform int uClearcoatRoughnessTexCoord;
+uniform int uHasClearcoatNormalTexture;
+uniform sampler2D uClearcoatNormalTexture;
+uniform int uClearcoatNormalTexCoord;
+uniform float uClearcoatNormalScale;
 uniform samplerCube uIrradianceMap;
 uniform samplerCube uPrefilteredMap;
 uniform sampler2D uBrdfLut;
@@ -150,6 +174,24 @@ vec3 acesToneMap(vec3 color) {
     const float d = 0.59;
     const float e = 0.14;
     return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
+}
+
+/**
+ * Bend N by a tangent-space normal map sample. The tangent frame is derived
+ * from screen-space derivatives because the preview does not upload TANGENT;
+ * a degenerate frame (no UV gradient) leaves the normal untouched.
+ */
+vec3 applyTangentNormal(vec3 N, vec2 uv, vec3 tangentNormal) {
+    vec3 dpdx = dFdx(vWorldPos);
+    vec3 dpdy = dFdy(vWorldPos);
+    vec2 duvdx = dFdx(uv);
+    vec2 duvdy = dFdy(uv);
+    vec3 T = dpdx * duvdy.y - dpdy * duvdx.y;
+    vec3 B = -dpdx * duvdy.x + dpdy * duvdx.x;
+    if (dot(T, T) > 0.000001 && dot(B, B) > 0.000001) {
+        return normalize(mat3(normalize(T), normalize(B), N) * tangentNormal);
+    }
+    return N;
 }
 
 void main() {
@@ -188,21 +230,16 @@ void main() {
     // material rule so the visible side receives the same lighting either way.
     if (!gl_FrontFacing) N = -N;
 
+    // Kept before the base normal map: the clearcoat layer has its own normal,
+    // and when it ships none it follows the geometry rather than the coated
+    // surface underneath.
+    vec3 geometricN = N;
+
     if (uHasNormalTexture == 1) {
         vec2 uv = selectUv(uNormalTexCoord);
         vec3 tangentNormal = texture(uNormalTexture, uv).xyz * 2.0 - 1.0;
         tangentNormal.xy *= uNormalScale;
-        vec3 dpdx = dFdx(vWorldPos);
-        vec3 dpdy = dFdy(vWorldPos);
-        vec2 duvdx = dFdx(uv);
-        vec2 duvdy = dFdy(uv);
-        vec3 T = dpdx * duvdy.y - dpdy * duvdx.y;
-        vec3 B = -dpdx * duvdy.x + dpdy * duvdx.x;
-        if (dot(T, T) > 0.000001 && dot(B, B) > 0.000001) {
-            T = normalize(T);
-            B = normalize(B);
-            N = normalize(mat3(T, B, N) * tangentNormal);
-        }
+        N = applyTangentNormal(N, uv, tangentNormal);
     }
 
     vec3 V = normalize(uCameraPos - vWorldPos);
@@ -222,7 +259,20 @@ void main() {
     if (uHasOcclusionTexture == 1) {
         occlusion = mix(1.0, texture(uOcclusionTexture, selectUv(uOcclusionTexCoord)).r, uOcclusionStrength);
     }
-    vec3 f0 = mix(vec3(0.04), baseColor, metallic);
+    // Dielectric reflectance from the index of refraction (0.04 at the glTF
+    // default of 1.5), tinted and scaled by KHR_materials_specular. Metals keep
+    // taking their f0 from the base color, so the weight only fades dielectrics.
+    float iorF0 = (uIor - 1.0) / (uIor + 1.0);
+    iorF0 *= iorF0;
+    float specularWeight = uSpecularFactor;
+    if (uHasSpecularTexture == 1) {
+        specularWeight *= texture(uSpecularTexture, selectUv(uSpecularTexCoord)).a;
+    }
+    vec3 specularColor = uSpecularColorFactor;
+    if (uHasSpecularColorTexture == 1) {
+        specularColor *= pow(texture(uSpecularColorTexture, selectUv(uSpecularColorTexCoord)).rgb, vec3(2.2));
+    }
+    vec3 f0 = mix(min(vec3(iorF0) * specularColor, vec3(1.0)), baseColor, metallic);
     float nDotV = max(dot(N, V), 0.0);
     vec3 iblFresnel = fresnelSchlickRoughness(nDotV, f0, roughness);
     vec3 diffuseWeight = (1.0 - iblFresnel) * (1.0 - metallic);
@@ -231,13 +281,41 @@ void main() {
     vec3 reflected = reflect(-V, N);
     vec3 prefiltered = textureLod(uPrefilteredMap, reflected, roughness * uEnvironmentMaxLod).rgb;
     vec2 brdf = texture(uBrdfLut, vec2(nDotV, roughness)).rg;
-    vec3 specularIbl = prefiltered * (f0 * brdf.x + brdf.y);
+    vec3 specularIbl = prefiltered * (f0 * brdf.x + brdf.y) * mix(specularWeight, 1.0, metallic);
     vec3 color = (diffuseWeight * diffuseIbl + specularIbl) * occlusion;
     vec3 emissive = uEmissiveFactor;
     if (uHasEmissiveTexture == 1) {
         emissive *= pow(texture(uEmissive, selectUv(uEmissiveTexCoord)).rgb, vec3(2.2));
     }
     color += emissive;
+
+    // Clearcoat sits on top of everything below, emission included: the layer
+    // reflects its own share of the environment and dims what shows through it.
+    float clearcoat = uClearcoatFactor;
+    if (uHasClearcoatTexture == 1) {
+        clearcoat *= texture(uClearcoatTexture, selectUv(uClearcoatTexCoord)).r;
+    }
+    if (clearcoat > 0.0) {
+        float coatRoughness = uClearcoatRoughnessFactor;
+        if (uHasClearcoatRoughnessTexture == 1) {
+            coatRoughness *= texture(uClearcoatRoughnessTexture, selectUv(uClearcoatRoughnessTexCoord)).g;
+        }
+        coatRoughness = clamp(coatRoughness, 0.045, 1.0);
+        vec3 coatN = geometricN;
+        if (uHasClearcoatNormalTexture == 1) {
+            vec2 uv = selectUv(uClearcoatNormalTexCoord);
+            vec3 tangentNormal = texture(uClearcoatNormalTexture, uv).xyz * 2.0 - 1.0;
+            tangentNormal.xy *= uClearcoatNormalScale;
+            coatN = applyTangentNormal(coatN, uv, tangentNormal);
+        }
+        float coatNdotV = max(dot(coatN, V), 0.0);
+        vec3 coatPrefiltered = textureLod(
+            uPrefilteredMap, reflect(-V, coatN), coatRoughness * uEnvironmentMaxLod).rgb;
+        vec2 coatBrdf = texture(uBrdfLut, vec2(coatNdotV, coatRoughness)).rg;
+        vec3 coatSpecular = coatPrefiltered * (0.04 * coatBrdf.x + coatBrdf.y) * occlusion;
+        float coatFresnel = clearcoat * fresnelSchlickRoughness(coatNdotV, vec3(0.04), coatRoughness).x;
+        color = color * (1.0 - coatFresnel) + coatSpecular * clearcoat;
+    }
     color = acesToneMap(color);
     outColor = vec4(pow(color, vec3(1.0 / 2.2)), base.a);
 }

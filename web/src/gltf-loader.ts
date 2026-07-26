@@ -49,6 +49,13 @@ const GL = WebGL2RenderingContext;
 // Extensions this module interprets on its own.
 const SUPPORTED_EXTENSIONS = new Set([
   'KHR_materials_unlit',
+  // Material layers the PBR shader evaluates: a second specular lobe, the
+  // dielectric f0 the index of refraction implies, its tint and weight, and a
+  // multiplier on the emissive factor.
+  'KHR_materials_clearcoat',
+  'KHR_materials_ior',
+  'KHR_materials_specular',
+  'KHR_materials_emissive_strength',
   'KHR_texture_transform',
   // Consumed by the wasm reader: readPrimitive materializes Draco geometry,
   // and fails the load outright when it cannot. Nothing reaches here to ignore.
@@ -503,7 +510,7 @@ function triangleIndices(mode: number, source: number[]): number[] {
  *   Per alternate-source extension, whether every texture that selected an
  *   image through it ended up with a decoded bitmap.
  */
-function extensionWarnings(document: GltfJson, honoredSources: Map<unknown, unknown>): string[] {
+export function extensionWarnings(document: GltfJson, honoredSources: Map<unknown, unknown>): string[] {
   const warnings = [];
   const honored = (extension: string) => SUPPORTED_EXTENSIONS.has(extension)
     || honoredSources.get(extension) === true;
@@ -775,7 +782,14 @@ function identityMat4(): Float32Array {
   return m;
 }
 
-function buildMaterials(defs: GltfJson[]): GltfJson[] {
+/**
+ * Flatten glTF material definitions into the flat records the renderer binds.
+ *
+ * Exported for the material smoke test: extension defaults are the difference
+ * between a coated surface and a flat one, and they are easier to pin here than
+ * through a rendered frame.
+ */
+export function buildMaterials(defs: GltfJson[]): GltfJson[] {
   const fallback = {
     baseColorFactor: [1, 1, 1, 1],
     doubleSided: false,
@@ -786,6 +800,9 @@ function buildMaterials(defs: GltfJson[]): GltfJson[] {
     const pbr = def.pbrMetallicRoughness || {};
     const baseColor = pbr.baseColorTexture || null;
     const transform = baseColor?.extensions?.KHR_texture_transform || {};
+    const extensions = def.extensions || {};
+    const clearcoat = extensions.KHR_materials_clearcoat || {};
+    const specular = extensions.KHR_materials_specular || {};
     return {
       name: def.name || `material_${idx}`,
       baseColorFactor: pbr.baseColorFactor || [1, 1, 1, 1],
@@ -800,13 +817,30 @@ function buildMaterials(defs: GltfJson[]): GltfJson[] {
       roughness: pbr.roughnessFactor ?? 1,
       metallicRoughnessTexture: textureBinding(pbr.metallicRoughnessTexture),
       emissiveFactor: def.emissiveFactor || [0, 0, 0],
+      emissiveStrength: extensions.KHR_materials_emissive_strength?.emissiveStrength ?? 1,
       emissiveTexture: textureBinding(def.emissiveTexture),
       normalTexture: textureBinding(def.normalTexture, 'scale', 1),
       occlusionTexture: textureBinding(def.occlusionTexture, 'strength', 1),
+      // KHR_materials_ior; 1.5 is the implied index of refraction of the core
+      // metallic-roughness model, so a material without the extension is
+      // shaded exactly as before.
+      ior: extensions.KHR_materials_ior?.ior ?? 1.5,
+      // KHR_materials_specular: a weight on the dielectric lobe (alpha channel)
+      // and a tint on its f0 (rgb).
+      specularFactor: specular.specularFactor ?? 1,
+      specularColorFactor: specular.specularColorFactor || [1, 1, 1],
+      specularTexture: textureBinding(specular.specularTexture),
+      specularColorTexture: textureBinding(specular.specularColorTexture),
+      // KHR_materials_clearcoat. Absent means factor 0, i.e. no coat at all.
+      clearcoatFactor: clearcoat.clearcoatFactor ?? 0,
+      clearcoatRoughnessFactor: clearcoat.clearcoatRoughnessFactor ?? 0,
+      clearcoatTexture: textureBinding(clearcoat.clearcoatTexture),
+      clearcoatRoughnessTexture: textureBinding(clearcoat.clearcoatRoughnessTexture),
+      clearcoatNormalTexture: textureBinding(clearcoat.clearcoatNormalTexture, 'scale', 1),
       doubleSided: !!def.doubleSided,
       alphaMode: def.alphaMode || 'OPAQUE',
       alphaCutoff: def.alphaCutoff ?? 0.5,
-      unlit: !!def.extensions?.KHR_materials_unlit,
+      unlit: !!extensions.KHR_materials_unlit,
     };
   });
   list.push(fallback);
