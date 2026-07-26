@@ -308,6 +308,36 @@ test('Space toggles playback from the viewport but not from a focused control', 
   await expect(play).toHaveAttribute('aria-label', 'Pause animation');
 });
 
+test('the animation timeline follows playback and holds still when paused', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const fox = path.join(repoRoot, 'testdata', 'Fox', 'glTF');
+  await page.locator('#file-input').setInputFiles([
+    path.join(fox, 'Fox.gltf'),
+    path.join(fox, 'Fox.bin'),
+  ]);
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#viewer-animation')).toBeVisible();
+
+  const timeLabel = page.locator('#anim-time');
+  const scrub = page.locator('#anim-scrub');
+  const readTime = () => timeLabel.textContent();
+
+  // Playing: the label has to move on its own.
+  const started = await readTime();
+  await expect.poll(readTime).not.toBe(started);
+
+  // Paused: it has to stop, including the scrub position.
+  await page.locator('#viewer-canvas').click();
+  await page.keyboard.press('Space');
+  await expect(page.locator('#anim-play')).toHaveAttribute('aria-label', 'Play animation');
+  const paused = await readTime();
+  const pausedScrub = await scrub.inputValue();
+  await page.waitForTimeout(300);
+  expect(await readTime()).toBe(paused);
+  expect(await scrub.inputValue()).toBe(pausedScrub);
+});
+
 test('scene details stays hidden before load and exposes a hierarchy tree after load', async ({ page }) => {
   await page.goto('/index.html');
   await expect(page.locator('#scene-section')).toBeHidden();

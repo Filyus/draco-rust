@@ -28,6 +28,8 @@ export function updateAnimationUi(scene: any) {
 }
 
 export function resetAnimationUi() {
+    lastTimeLabel = '';
+    lastScrubValue = '';
     viewerAnimation.style.display = 'none';
     animClipSelect.innerHTML = '';
     animClipMenu.replaceChildren();
@@ -171,18 +173,36 @@ export function updateAnimationPlayButton() {
     animPlayBtn.setAttribute('aria-label', playing ? 'Pause animation' : 'Play animation');
 }
 
-// Animation scrub/timeline ticker — bound to the render loop via rAF.
+/**
+ * Follows playback while it is running.
+ *
+ * Only while it is running: a paused clip's time does not change, and the
+ * paths that move it — the scrub handle, clip selection, the play button —
+ * refresh the bar themselves. Idle frames therefore touch no DOM at all.
+ */
 export function animationTick() {
-    if (state.viewer && state.viewer.scene?.animations?.length && state.viewer.animation.clipIndex >= 0) {
-        updateAnimationScrub();
-    }
+    if (state.viewer?.animation.playing) updateAnimationScrub();
     requestAnimationFrame(animationTick);
 }
+
+let lastTimeLabel = '';
+let lastScrubValue = '';
 
 export function updateAnimationScrub() {
     if (!state.viewer || !state.viewer.scene?.animations?.length) return;
     const clip = state.viewer.scene.animations[state.viewer.animation.clipIndex];
     if (!clip) return;
-    animTimeLabel.textContent = `${state.viewer.animation.time.toFixed(2)}s / ${clip.duration.toFixed(2)}s`;
-    animScrub.value = String(Math.round((state.viewer.animation.time / Math.max(clip.duration, 0.0001)) * 1000));
+    // Written only on change: at 60 Hz and above most frames land on the same
+    // hundredth of a second, and assigning an input's value moves the caret
+    // and invalidates layout whether or not the text differs.
+    const label = `${state.viewer.animation.time.toFixed(2)}s / ${clip.duration.toFixed(2)}s`;
+    if (label !== lastTimeLabel) {
+        animTimeLabel.textContent = label;
+        lastTimeLabel = label;
+    }
+    const scrub = String(Math.round((state.viewer.animation.time / Math.max(clip.duration, 0.0001)) * 1000));
+    if (scrub !== lastScrubValue) {
+        animScrub.value = scrub;
+        lastScrubValue = scrub;
+    }
 }
