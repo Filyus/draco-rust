@@ -14,6 +14,9 @@ import {
 const SUPPORTED_EXTENSIONS = new Set([
     'KHR_materials_unlit', 'KHR_texture_transform',
     'KHR_texture_basisu', 'EXT_texture_webp',
+    // Draco is decompression, not a document feature: readPrimitive resolves it
+    // into ordinary accessors, so the portable document loses nothing.
+    'KHR_draco_mesh_compression',
 ]);
 
 /** Extract a portable SceneDocument from an existing GltfAsset-capable module. */

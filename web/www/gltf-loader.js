@@ -32,6 +32,9 @@ const GL = WebGL2RenderingContext;
 const SUPPORTED_EXTENSIONS = new Set([
     'KHR_materials_unlit',
     'KHR_texture_transform',
+    // Consumed by the wasm reader: readPrimitive materializes Draco geometry,
+    // and fails the load outright when it cannot. Nothing reaches here to ignore.
+    'KHR_draco_mesh_compression',
 ]);
 // Extensions whose only effect is naming an alternate image source, in the
 // order the preview prefers them. Whether one of these is honored depends on a
