@@ -6,7 +6,7 @@ import {
     createSceneDocument,
     sceneDocumentTransferables,
     validateSceneDocument,
-} from '../www/scene-document.js';
+} from '../src/scene-document.ts';
 
 function bytes(values) {
     return new Uint8Array(values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength));

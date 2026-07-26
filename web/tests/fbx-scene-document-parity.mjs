@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { assertValidSceneDocument } from '../www/scene-document.js';
+import { assertValidSceneDocument } from '../src/scene-document.ts';
 import { buildSceneDocumentFromFbx } from '../www/fbx-scene-document.js';
 import { buildViewerSceneFromDocument } from '../www/scene-document-viewer.js';
 import { here, loadFbxViewerAdapter, loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.mjs';

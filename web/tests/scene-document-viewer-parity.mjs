@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createSceneDocument } from '../www/scene-document.js';
+import { createSceneDocument } from '../src/scene-document.ts';
 import { buildViewerSceneFromDocument } from '../www/scene-document-viewer.js';
 
 globalThis.WebGL2RenderingContext = class {};

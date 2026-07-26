@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { buildFbxSceneFromDocument } from '../www/fbx-scene-document-writer.js';
 import { lowerSceneDocumentToGltf } from '../www/scene-document-gltf.js';
 import { buildViewerSceneFromDocument } from '../www/scene-document-viewer.js';
-import { assertValidSceneDocument, createSceneDocument } from '../www/scene-document.js';
+import { assertValidSceneDocument, createSceneDocument } from '../src/scene-document.ts';
 
 function bytes(values) {
     return new Uint8Array(values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength));
