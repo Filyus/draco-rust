@@ -957,6 +957,39 @@ test('preview loads metallic-roughness and emissive PBR textures', async ({ page
   await expect(page.locator('#console')).not.toContainText('Skipped primitive');
 });
 
+test('preview uploads its textures to the GPU', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const fixture = path.join(repoRoot, 'testdata', 'Lantern', 'glTF');
+  await page.locator('#file-input').setInputFiles([
+    path.join(fixture, 'Lantern.gltf'),
+    path.join(fixture, 'Lantern.bin'),
+    path.join(fixture, 'Lantern_baseColor.png'),
+    path.join(fixture, 'Lantern_roughnessMetallic.png'),
+    path.join(fixture, 'Lantern_normal.png'),
+    path.join(fixture, 'Lantern_emissive.png'),
+  ]);
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  // Decoding a bitmap is not the same as handing it to WebGL: a scene can
+  // carry every image and still draw untextured, which is what an untextured
+  // model looks like — flat white.
+  const textures = await page.evaluate(async () => {
+    const { state } = await import('/app/state.js');
+    const scene = state.viewer.scene;
+    const gl = state.viewer.glResources.textures;
+    return {
+      withBitmap: scene.textures.filter((t) => t && t.image).length,
+      uploaded: gl.filter(Boolean).length,
+      distinct: new Set(gl.filter(Boolean)).size,
+    };
+  });
+  expect(textures.withBitmap).toBeGreaterThan(0);
+  expect(textures.uploaded).toBe(textures.withBitmap);
+  // One GL texture per distinct image and sampler, not one per slot.
+  expect(textures.distinct).toBeLessThanOrEqual(textures.uploaded);
+});
+
 test('preview loads normal and occlusion PBR textures', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);

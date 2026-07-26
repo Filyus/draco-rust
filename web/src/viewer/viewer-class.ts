@@ -371,18 +371,23 @@ export class Viewer {
         // sampler state match.
         const uploaded = new Map<unknown, Map<string, WebGLTexture>>();
         for (const tex of scene.textures) {
-            let glTexture = null;
+            // Absent means "not uploaded yet"; null is a texture that has no
+            // image at all. Collapsing the two skips every upload.
+            let glTexture: WebGLTexture | null | undefined = null;
             if (tex && tex.image) {
-                const perImage = uploaded.get(tex.image)
-                    || uploaded.set(tex.image, new Map()).get(tex.image);
+                let perImage = uploaded.get(tex.image);
+                if (!perImage) {
+                    perImage = new Map();
+                    uploaded.set(tex.image, perImage);
+                }
                 const key = `${!!tex.flipY}|${tex.wrapS}|${tex.wrapT}|${tex.minFilter}|${tex.magFilter}`;
-                glTexture = perImage!.get(key) ?? null;
+                glTexture = perImage.get(key);
                 if (glTexture === undefined) {
                     glTexture = this._uploadImage(tex);
-                    perImage!.set(key, glTexture);
+                    perImage.set(key, glTexture);
                 }
             }
-            resources.textures.push(glTexture);
+            resources.textures.push(glTexture ?? null);
         }
 
         // Every skin needs its own palette. Sharing one array makes the last
