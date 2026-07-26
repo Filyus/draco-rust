@@ -178,6 +178,14 @@ function adaptAnimation(
   };
 }
 
+/**
+ * Project a portable material into the flat record the renderer binds.
+ *
+ * Field for field this must match what the glTF loader produces: the two are
+ * the only producers of `ViewerScene.materials`, they feed the same
+ * `applyMaterial`, and a field present in one and missing in the other shades
+ * the same asset differently depending on which path loaded it.
+ */
 function adaptMaterial(material: SceneMaterial, index: number) {
   return {
     name: material.name || `material_${index}`,
@@ -189,9 +197,20 @@ function adaptMaterial(material: SceneMaterial, index: number) {
     roughness: material.roughnessFactor ?? 1,
     metallicRoughnessTexture: textureInfo(material.metallicRoughnessTexture),
     emissiveFactor: [...(material.emissiveFactor || [0, 0, 0])],
+    emissiveStrength: material.emissiveStrength ?? 1,
     emissiveTexture: textureInfo(material.emissiveTexture),
     normalTexture: textureInfo(material.normalTexture),
     occlusionTexture: textureInfo(material.occlusionTexture),
+    ior: material.ior ?? 1.5,
+    specularFactor: material.specularFactor ?? 1,
+    specularColorFactor: [...(material.specularColorFactor || [1, 1, 1])],
+    specularTexture: textureInfo(material.specularTexture),
+    specularColorTexture: textureInfo(material.specularColorTexture),
+    clearcoatFactor: material.clearcoatFactor ?? 0,
+    clearcoatRoughnessFactor: material.clearcoatRoughnessFactor ?? 0,
+    clearcoatTexture: textureInfo(material.clearcoatTexture),
+    clearcoatRoughnessTexture: textureInfo(material.clearcoatRoughnessTexture),
+    clearcoatNormalTexture: textureInfo(material.clearcoatNormalTexture),
     doubleSided: Boolean(material.doubleSided),
     alphaMode: material.alphaMode || 'OPAQUE',
     alphaCutoff: material.alphaCutoff ?? 0.5,
