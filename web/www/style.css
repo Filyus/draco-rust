@@ -735,7 +735,10 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 .scene-tree-twisty-empty, .scene-tree-row:hover .scene-tree-twisty-empty { border: 0; background: transparent; }
 .scene-tree-twisty-empty::before { content: none; }
 
-.scene-tree-label { flex: 0 0 auto; margin-right: auto; padding-right: 4px; white-space: nowrap; }
+/* Badges follow the name directly. Pushing them to the row's end with an auto
+   margin left shallow rows — which are wider, being less indented — with a much
+   bigger gap than deep ones. */
+.scene-tree-label { flex: 0 0 auto; padding-right: 4px; white-space: nowrap; }
 .scene-tree-orphans-title { margin: 8px 0 3px; color: #8ea3bf; font-size: 0.6rem; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; }
 .scene-tree-badges { flex-shrink: 0; display: inline-flex; gap: 3px; }
 .scene-tree-badge { padding: 2px 5px; border-radius: 4px; color: #c2d5ee; font-size: 0.6rem; line-height: 1.2; background: rgba(69, 102, 148, 0.55); }
