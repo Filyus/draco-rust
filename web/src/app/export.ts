@@ -3,7 +3,7 @@ import type { SceneDocument } from '../scene-document.ts';
 import { buildFbxSceneFromDocument } from '../fbx-scene-document-writer.ts';
 import { buildFbxSceneFromGltf, buildFlatMeshesFromGltf } from '../gltf-loader.ts';
 import { debugLog, errorMessage, log } from './log.ts';
-import { dracoOptions, element, encodingSpeed, exportFormat, useDraco } from './dom.ts';
+import { compressionStatFields, compressionStats, dracoOptions, element, encodingSpeed, exportFormat, useDraco } from './dom.ts';
 import { modules, state } from './state.ts';
 import { serializeSceneDocumentToGlb } from '../scene-document-gltf.ts';
 import { setWarningSource } from './warnings.ts';
@@ -111,7 +111,7 @@ export async function exportFile() {
                 displayCompressionStats(result.draco_stats);
             } else {
                 // Hide stats if not using Draco
-                element('compression-stats').style.display = 'none';
+                compressionStats.style.display = 'none';
             }
             if (result.compression_report) {
                 const compressed = result.compression_report.compressed_primitives?.length || 0;
@@ -467,12 +467,12 @@ export function downloadResult(result: any, format: string) {
 // Log to console
 // Display compression statistics
 export function displayCompressionStats(stats: any) {
-    const statsSection = element('compression-stats');
+    const statsSection = compressionStats;
     // Use proper naming: EdgeBreaker (not Edgebreaker)
     const methodDisplay = stats.method === 'edgebreaker' ? 'EdgeBreaker' : 
                           stats.method === 'sequential' ? 'Sequential' : stats.method;
-    element('stats-method').textContent = methodDisplay;
-    element('stats-speed').textContent = `${stats.speed} (${stats.speed === 0 ? 'best compression' : stats.speed === 10 ? 'fastest' : 'balanced'})`;
+    compressionStatFields.method.textContent = methodDisplay;
+    compressionStatFields.speed.textContent = `${stats.speed} (${stats.speed === 0 ? 'best compression' : stats.speed === 10 ? 'fastest' : 'balanced'})`;
     
     // Display prediction scheme with readable formatting
     const predictionSchemeMap = {
@@ -483,9 +483,9 @@ export function displayCompressionStats(stats: any) {
     };
     const predictionDisplay = predictionSchemeMap[stats.prediction_scheme as keyof typeof predictionSchemeMap]
         || stats.prediction_scheme || 'Unknown';
-    element('stats-prediction').textContent = predictionDisplay;
+    compressionStatFields.prediction.textContent = predictionDisplay;
     
-    element('stats-size').textContent = formatFileSize(stats.compressed_size);
+    compressionStatFields.size.textContent = formatFileSize(stats.compressed_size);
     statsSection.style.display = 'block';
     
     log(`Compression: ${methodDisplay} method, speed ${stats.speed}, prediction ${predictionDisplay}, ${formatFileSize(stats.compressed_size)}`, 'success');

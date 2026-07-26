@@ -13,6 +13,9 @@ import { viewerAutoRotateBtn, viewerBaseColorBtn, viewerCanvas, viewerControls, 
  * keeping the viewport toolbar in step with the viewer's own display flags.
  */
 
+/** The viewer display flags a viewport button can toggle. */
+type ViewerToggle = 'wireframe' | 'baseColorOnly' | 'smoothNormals' | 'showGrid';
+
 export function ensureViewer() {
     if (state.viewer) return state.viewer;
     try {
@@ -91,22 +94,43 @@ export function setViewerControlsEnabled(enabled: boolean) {
     for (const control of viewerControls) control.disabled = !enabled;
 }
 
-export function syncViewerToolbar() {
-    if (!state.viewer) return;
-    syncAutoRotateButton(state.viewer.autoRotate);
-    const toggles: [HTMLButtonElement, boolean][] = [
-        [viewerWireframeBtn, state.viewer.wireframe],
-        [viewerBaseColorBtn, state.viewer.baseColorOnly],
-        [viewerSmoothNormalsBtn, state.viewer.smoothNormals],
-        [viewerGridBtn, state.viewer.showGrid],
-    ];
-    for (const [button, enabled] of toggles) {
-        button.classList.toggle('active', enabled);
-        button.setAttribute('aria-pressed', String(enabled));
+/** Which viewport button drives which viewer display flag. */
+const VIEWER_TOGGLES: [HTMLButtonElement, ViewerToggle][] = [
+    [viewerWireframeBtn, 'wireframe'],
+    [viewerBaseColorBtn, 'baseColorOnly'],
+    [viewerSmoothNormalsBtn, 'smoothNormals'],
+    [viewerGridBtn, 'showGrid'],
+];
+
+/**
+ * Wire the viewport toggles to their flags.
+ *
+ * The handlers only flip the flag; how a button then looks is
+ * syncViewerToolbar's business, so the button-to-flag mapping is stated once
+ * and the two cannot drift apart.
+ */
+export function installViewerToggles() {
+    for (const [button, flag] of VIEWER_TOGGLES) {
+        button.addEventListener('click', () => {
+            if (!state.viewer) return;
+            state.viewer[flag] = !state.viewer[flag];
+            syncViewerToolbar();
+        });
     }
 }
 
+export function syncViewerToolbar() {
+    if (!state.viewer) return;
+    syncAutoRotateButton(state.viewer.autoRotate);
+    for (const [button, flag] of VIEWER_TOGGLES) setPressed(button, state.viewer[flag]);
+}
+
 export function syncAutoRotateButton(enabled: boolean) {
-    viewerAutoRotateBtn.classList.toggle('active', enabled);
-    viewerAutoRotateBtn.setAttribute('aria-pressed', String(enabled));
+    setPressed(viewerAutoRotateBtn, enabled);
+}
+
+/** A toggle button reports its state to both the stylesheet and the reader. */
+function setPressed(button: HTMLElement, active: boolean) {
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
 }

@@ -90,6 +90,24 @@ export const sceneStatFields = {
     morphs: element('scene-morph-stat'),
     clips: element('scene-clip-stat'),
 };
+/** The geometry readout under the viewport, shared by both mesh summaries. */
+export const meshStatFields = {
+    meshes: element('mesh-count'),
+    vertices: element('vertex-count'),
+    triangles: element('triangle-count'),
+    hasNormals: element('has-normals'),
+    hasUvs: element('has-uvs'),
+};
+
+/** The Draco compression report, shown only after an encode. */
+export const compressionStats = element('compression-stats');
+export const compressionStatFields = {
+    method: element('stats-method'),
+    speed: element('stats-speed'),
+    prediction: element('stats-prediction'),
+    size: element('stats-size'),
+};
+
 export const sceneCapabilitySummary = element('scene-capability-summary');
 export const sceneInfo = element('scene-info');
 export const sceneWarningList = element('scene-warning-list');

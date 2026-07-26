@@ -1,6 +1,6 @@
 import type { SceneDocument } from '../scene-document.ts';
 import { assertValidSceneDocument } from '../scene-document.ts';
-import { element, exportSidebar, sceneCapabilitySummary, sceneClipList, sceneInfo, sceneMaterialList, scenePanel, sceneResourceList, sceneSection, sceneStatFields, sceneTree, workspace } from './dom.ts';
+import { exportSidebar, meshStatFields, sceneCapabilitySummary, sceneClipList, sceneInfo, sceneMaterialList, scenePanel, sceneResourceList, sceneSection, sceneStatFields, sceneTree, workspace } from './dom.ts';
 import { errorMessage, log } from './log.ts';
 import { setWarningSource } from './warnings.ts';
 
@@ -159,11 +159,11 @@ export function renderSceneCompanions(sceneDocument: SceneDocument) {
 // Display mesh information
 export function displayMeshInfo(result: any) {
     if (result.document) {
-        element('mesh-count').textContent = result.meshCount.toLocaleString();
-        element('vertex-count').textContent = result.vertexCount.toLocaleString();
-        element('triangle-count').textContent = result.triangleCount.toLocaleString();
-        element('has-normals').textContent = result.hasNormals ? 'Yes' : 'No';
-        element('has-uvs').textContent = result.hasUvs ? 'Yes' : 'No';
+        meshStatFields.meshes.textContent = result.meshCount.toLocaleString();
+        meshStatFields.vertices.textContent = result.vertexCount.toLocaleString();
+        meshStatFields.triangles.textContent = result.triangleCount.toLocaleString();
+        meshStatFields.hasNormals.textContent = result.hasNormals ? 'Yes' : 'No';
+        meshStatFields.hasUvs.textContent = result.hasUvs ? 'Yes' : 'No';
         setWarningSource('mesh', result.warnings || []);
         return;
     }
@@ -181,11 +181,11 @@ export function displayMeshInfo(result: any) {
         if (mesh.uvs?.length > 0) hasUvs = true;
     }
     
-    element('mesh-count').textContent = meshes.length;
-    element('vertex-count').textContent = totalVertices.toLocaleString();
-    element('triangle-count').textContent = totalTriangles.toLocaleString();
-    element('has-normals').textContent = hasNormals ? 'Yes' : 'No';
-    element('has-uvs').textContent = hasUvs ? 'Yes' : 'No';
+    meshStatFields.meshes.textContent = String(meshes.length);
+    meshStatFields.vertices.textContent = totalVertices.toLocaleString();
+    meshStatFields.triangles.textContent = totalTriangles.toLocaleString();
+    meshStatFields.hasNormals.textContent = hasNormals ? 'Yes' : 'No';
+    meshStatFields.hasUvs.textContent = hasUvs ? 'Yes' : 'No';
 
     setWarningSource('mesh', result.warnings || []);
 }

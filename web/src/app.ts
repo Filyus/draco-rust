@@ -53,12 +53,8 @@ import {
     texcoordBits,
     useDraco,
     viewerAutoRotateBtn,
-    viewerBaseColorBtn,
-    viewerGridBtn,
     viewerResetBtn,
     viewerSection,
-    viewerSmoothNormalsBtn,
-    viewerWireframeBtn,
     workspace,
 } from './app/dom.ts';
 import { debugLog, errorMessage, log } from './app/log.ts';
@@ -93,6 +89,7 @@ import {
 import { exportFile, updateExportOptions } from './app/export.ts';
 import {
     ensureViewer,
+    installViewerToggles,
     loadPreview,
     setViewerControlsEnabled,
     syncAutoRotateButton,
@@ -208,30 +205,7 @@ function setupEventListeners() {
         if (!state.viewer) return;
         state.viewer.setAutoRotate(!state.viewer.autoRotate);
     });
-    viewerWireframeBtn.addEventListener('click', () => {
-        if (!state.viewer) return;
-        state.viewer.wireframe = !state.viewer.wireframe;
-        viewerWireframeBtn.classList.toggle('active', state.viewer.wireframe);
-        viewerWireframeBtn.setAttribute('aria-pressed', String(state.viewer.wireframe));
-    });
-    viewerBaseColorBtn.addEventListener('click', () => {
-        if (!state.viewer) return;
-        state.viewer.baseColorOnly = !state.viewer.baseColorOnly;
-        viewerBaseColorBtn.classList.toggle('active', state.viewer.baseColorOnly);
-        viewerBaseColorBtn.setAttribute('aria-pressed', String(state.viewer.baseColorOnly));
-    });
-    viewerSmoothNormalsBtn.addEventListener('click', () => {
-        if (!state.viewer) return;
-        state.viewer.smoothNormals = !state.viewer.smoothNormals;
-        viewerSmoothNormalsBtn.classList.toggle('active', state.viewer.smoothNormals);
-        viewerSmoothNormalsBtn.setAttribute('aria-pressed', String(state.viewer.smoothNormals));
-    });
-    viewerGridBtn.addEventListener('click', () => {
-        if (!state.viewer) return;
-        state.viewer.showGrid = !state.viewer.showGrid;
-        viewerGridBtn.classList.toggle('active', state.viewer.showGrid);
-        viewerGridBtn.setAttribute('aria-pressed', String(state.viewer.showGrid));
-    });
+    installViewerToggles();
 
     // Animation controls
     animPlayBtn.addEventListener('click', toggleAnimationPlayback);
