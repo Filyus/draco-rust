@@ -14,6 +14,13 @@
  */
 
 import { componentByteSize, normalizeComponent, readComponent } from './component-values.ts';
+import {
+  gltfExtensionWarnings,
+  isInterpretedGltfExtension,
+  readGltfMaterial,
+  resolveSampler,
+  resolveTextureSource,
+} from './gltf-interpretation.ts';
 import { mimeFromUri, resolveResource, sniffMime } from './scene-resources.ts';
 import type { ResourceMap } from './scene-resources.ts';
 import {
@@ -45,32 +52,6 @@ interface ImportHooks {
   onLog?: (message: string, level: string) => void;
 }
 
-const GL = WebGL2RenderingContext;
-// Extensions this module interprets on its own.
-const SUPPORTED_EXTENSIONS = new Set([
-  'KHR_materials_unlit',
-  // Material layers the PBR shader evaluates: a second specular lobe, the
-  // dielectric f0 the index of refraction implies, its tint and weight, and a
-  // multiplier on the emissive factor.
-  'KHR_materials_clearcoat',
-  'KHR_materials_ior',
-  'KHR_materials_specular',
-  'KHR_materials_emissive_strength',
-  'KHR_texture_transform',
-  // Consumed by the wasm reader: readPrimitive materializes Draco geometry,
-  // and fails the load outright when it cannot. Nothing reaches here to ignore.
-  'KHR_draco_mesh_compression',
-  // Also consumed by the wasm reader: buffer views arrive already decoded.
-  'EXT_meshopt_compression',
-  // Quantized attributes are uploaded in their storage type, and quantized
-  // morph deltas are expanded to float when the morph texture is built.
-  'KHR_mesh_quantization',
-]);
-// Extensions whose only effect is naming an alternate image source, in the
-// order the preview prefers them. Whether one of these is honored depends on a
-// codec this module does not own, so it is reported from the decode result
-// rather than asserted here.
-const TEXTURE_SOURCE_EXTENSIONS = ['EXT_texture_webp', 'KHR_texture_basisu'];
 // Morph targets the preview can blend in one frame. Mirrors the viewer's shader
 // loop bound; a mesh may declare any number of targets as long as no single
 // frame drives more than this many at once.
@@ -511,20 +492,16 @@ function triangleIndices(mode: number, source: number[]): number[] {
  *   image through it ended up with a decoded bitmap.
  */
 export function extensionWarnings(document: GltfJson, honoredSources: Map<unknown, unknown>): string[] {
-  const warnings = [];
-  const honored = (extension: string) => SUPPORTED_EXTENSIONS.has(extension)
-    || honoredSources.get(extension) === true;
-  const unsupported = (document.extensionsUsed || [])
-    .filter((extension: string) => !honored(extension));
-  if (unsupported.length > 0) {
-    warnings.push(`Unsupported glTF extensions ignored: ${unsupported.join(', ')}`);
-  }
-  if ((document.extensionsRequired || []).some((extension: string) => !honored(extension))) {
-    warnings.push(
-      'Model requires extensions that this viewer ignores; rendering may be incomplete',
-    );
-  }
-  return warnings;
+  return gltfExtensionWarnings(
+    document,
+    // An alternate-source extension counts as honored only when every texture
+    // that read through it produced a bitmap: the codec belongs to the host.
+    (extension) => isInterpretedGltfExtension(extension) || honoredSources.get(extension) === true,
+    {
+      ignored: (names) => `Unsupported glTF extensions ignored: ${names}`,
+      required: 'Model requires extensions that this viewer ignores; rendering may be incomplete',
+    },
+  );
 }
 
 export function buildNodes(defs: GltfJson[]): ViewerNode[] {
@@ -797,80 +774,48 @@ export function buildMaterials(defs: GltfJson[]): GltfJson[] {
     unlit: false,
   };
   const list: GltfJson[] = defs.map((def, idx) => {
-    const pbr = def.pbrMetallicRoughness || {};
-    const baseColor = pbr.baseColorTexture || null;
-    const transform = baseColor?.extensions?.KHR_texture_transform || {};
-    const extensions = def.extensions || {};
-    const clearcoat = extensions.KHR_materials_clearcoat || {};
-    const specular = extensions.KHR_materials_specular || {};
+    const material = readGltfMaterial(def, idx);
     return {
-      name: def.name || `material_${idx}`,
-      baseColorFactor: pbr.baseColorFactor || [1, 1, 1, 1],
-      baseColorTexture: typeof baseColor?.index === 'number' ? baseColor.index : null,
-      baseColorTexCoord: transform.texCoord ?? baseColor?.texCoord ?? 0,
-      baseColorTextureTransform: {
-        offset: transform.offset || [0, 0],
-        scale: transform.scale || [1, 1],
-        rotation: transform.rotation ?? 0,
-      },
-      metallic: pbr.metallicFactor ?? 1,
-      roughness: pbr.roughnessFactor ?? 1,
-      metallicRoughnessTexture: textureBinding(pbr.metallicRoughnessTexture),
-      emissiveFactor: def.emissiveFactor || [0, 0, 0],
-      emissiveStrength: extensions.KHR_materials_emissive_strength?.emissiveStrength ?? 1,
-      emissiveTexture: textureBinding(def.emissiveTexture),
-      normalTexture: textureBinding(def.normalTexture, 'scale', 1),
-      occlusionTexture: textureBinding(def.occlusionTexture, 'strength', 1),
-      // KHR_materials_ior; 1.5 is the implied index of refraction of the core
-      // metallic-roughness model, so a material without the extension is
-      // shaded exactly as before.
-      ior: extensions.KHR_materials_ior?.ior ?? 1.5,
-      // KHR_materials_specular: a weight on the dielectric lobe (alpha channel)
-      // and a tint on its f0 (rgb).
-      specularFactor: specular.specularFactor ?? 1,
-      specularColorFactor: specular.specularColorFactor || [1, 1, 1],
-      specularTexture: textureBinding(specular.specularTexture),
-      specularColorTexture: textureBinding(specular.specularColorTexture),
-      // KHR_materials_clearcoat. Absent means factor 0, i.e. no coat at all.
-      clearcoatFactor: clearcoat.clearcoatFactor ?? 0,
-      clearcoatRoughnessFactor: clearcoat.clearcoatRoughnessFactor ?? 0,
-      clearcoatTexture: textureBinding(clearcoat.clearcoatTexture),
-      clearcoatRoughnessTexture: textureBinding(clearcoat.clearcoatRoughnessTexture),
-      clearcoatNormalTexture: textureBinding(clearcoat.clearcoatNormalTexture, 'scale', 1),
-      doubleSided: !!def.doubleSided,
-      alphaMode: def.alphaMode || 'OPAQUE',
-      alphaCutoff: def.alphaCutoff ?? 0.5,
-      unlit: !!extensions.KHR_materials_unlit,
+      name: material.name,
+      baseColorFactor: material.baseColorFactor,
+      // The renderer addresses base color through three separate uniforms, so
+      // this one slot is flattened while the rest pass through as bindings.
+      baseColorTexture: material.baseColorTexture?.index ?? null,
+      baseColorTexCoord: material.baseColorTexture?.texCoord ?? 0,
+      baseColorTextureTransform: material.baseColorTexture?.transform
+        ?? { offset: [0, 0], scale: [1, 1], rotation: 0 },
+      metallic: material.metallicFactor,
+      roughness: material.roughnessFactor,
+      metallicRoughnessTexture: material.metallicRoughnessTexture,
+      emissiveFactor: material.emissiveFactor,
+      emissiveStrength: material.emissiveStrength,
+      emissiveTexture: material.emissiveTexture,
+      normalTexture: material.normalTexture,
+      occlusionTexture: material.occlusionTexture,
+      ior: material.ior,
+      specularFactor: material.specularFactor,
+      specularColorFactor: material.specularColorFactor,
+      specularTexture: material.specularTexture,
+      specularColorTexture: material.specularColorTexture,
+      clearcoatFactor: material.clearcoatFactor,
+      clearcoatRoughnessFactor: material.clearcoatRoughnessFactor,
+      clearcoatTexture: material.clearcoatTexture,
+      clearcoatRoughnessTexture: material.clearcoatRoughnessTexture,
+      clearcoatNormalTexture: material.clearcoatNormalTexture,
+      doubleSided: material.doubleSided,
+      alphaMode: material.alphaMode,
+      alphaCutoff: material.alphaCutoff,
+      unlit: material.unlit,
     };
   });
   list.push(fallback);
   return list;
 }
 
-function textureBinding(info: GltfJson, scalarName: string | null = null, fallback = 1): GltfJson {
-  if (!info || typeof info.index !== 'number') return null;
-  const binding: GltfJson = {
-    index: info.index,
-    texCoord: info.texCoord ?? 0,
-  };
-  if (scalarName) binding[scalarName] = info[scalarName] ?? fallback;
-  return binding;
-}
-
 async function buildTextures(asset: GltfAsset, manifest: GltfJson, resources: ResourceMap, hooks: ImportHooks) {
   const images = await decodeImages(asset, manifest.images || [], resources, hooks);
-  const samplers = (manifest.samplers || []).map((s: GltfJson) => ({
-    wrapS: s.wrapS ?? GL.REPEAT,
-    wrapT: s.wrapT ?? GL.REPEAT,
-    minFilter: s.minFilter ?? GL.LINEAR_MIPMAP_LINEAR,
-    magFilter: s.magFilter ?? GL.LINEAR,
-  }));
-  const defaultSampler = {
-    wrapS: GL.REPEAT,
-    wrapT: GL.REPEAT,
-    minFilter: GL.LINEAR_MIPMAP_LINEAR,
-    magFilter: GL.LINEAR,
-  };
+  const samplers = (manifest.samplers || []).map(resolveSampler);
+  const defaultSampler = resolveSampler(null);
 
   // An alternate-source extension is honored only while every texture that
   // reads through it produced a bitmap: the codec belongs to the host, so
@@ -879,7 +824,7 @@ async function buildTextures(asset: GltfAsset, manifest: GltfJson, resources: Re
   const textures = (manifest.textures || []).map((tex: GltfJson, idx: number) => {
     const samplerIndex = typeof tex.sampler === 'number' ? tex.sampler : -1;
     const sampler = samplerIndex >= 0 ? samplers[samplerIndex] : defaultSampler;
-    const { source, extension } = textureSource(tex);
+    const { source, extension } = resolveTextureSource(tex);
     const image = source >= 0 ? images[source] : null;
     if (extension) {
       honoredSources.set(
@@ -898,21 +843,6 @@ async function buildTextures(asset: GltfAsset, manifest: GltfJson, resources: Re
     };
   });
   return { textures, honoredSources };
-}
-
-/**
- * Resolve the image a texture reads.
- *
- * @returns {{ source: number, extension: string|null }}
- *   The image index, or -1, and the alternate-source extension that named it.
- */
-function textureSource(texture: GltfJson) {
-  if (Number.isInteger(texture.source)) return { source: texture.source, extension: null };
-  for (const extension of TEXTURE_SOURCE_EXTENSIONS) {
-    const source = texture.extensions?.[extension]?.source;
-    if (Number.isInteger(source)) return { source, extension };
-  }
-  return { source: -1, extension: null };
 }
 
 async function decodeImages(asset: GltfAsset, defs: GltfJson[], resources: ResourceMap, hooks: ImportHooks) {

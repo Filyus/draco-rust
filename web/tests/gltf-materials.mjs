@@ -6,10 +6,12 @@
  * defaults a material without extensions must keep (they reproduce the core
  * metallic-roughness model exactly) and the values the four supported material
  * extensions contribute.
+ *
+ * Runs against the compiled output, so `npm run build:ts` has to be current or
+ * this passes against the previous edit.
  */
 import assert from 'node:assert/strict';
 
-globalThis.WebGL2RenderingContext = class {};
 const { buildMaterials, extensionWarnings } = await import('../www/gltf-loader.js');
 
 // A bare material must shade exactly as it did before the extensions landed:

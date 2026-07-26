@@ -10,12 +10,6 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-globalThis.WebGL2RenderingContext = {
-  ARRAY_BUFFER: 34962, ELEMENT_ARRAY_BUFFER: 34963, FLOAT: 5126, BYTE: 5120,
-  UNSIGNED_BYTE: 5121, SHORT: 5122, UNSIGNED_SHORT: 5123, UNSIGNED_INT: 5125,
-  TRIANGLES: 4, NEAREST: 9728, LINEAR: 9729, REPEAT: 10497, CLAMP_TO_EDGE: 33071,
-};
-
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');
 
