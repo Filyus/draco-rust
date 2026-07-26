@@ -18,6 +18,7 @@
     "test:fbx-source-provenance": "node tests/fbx-source-provenance-roundtrip.mjs",
     "test:fbx-source-provenance-blender": "node tests/fbx-source-provenance-blender-roundtrip.mjs",
     "test:scene-document-fbx": "node tests/scene-document-fbx-roundtrip.mjs",
+    "test:scene-document-fbx-morph": "node tests/scene-document-fbx-morph-weights.mjs",
     "test:scene-document-attributes": "node tests/scene-document-attributes.mjs",
     "test:scene-document-fbx-blender": "node tests/scene-document-fbx-blender-roundtrip.mjs",
     "test:scene-document-glb": "node tests/scene-document-glb-roundtrip.mjs",

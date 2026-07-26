@@ -379,26 +379,33 @@ function buildAnimations(document: SceneDocument, sourceUnits: SourceUnits, warn
         ? document.accessors[sampler.output].components : 3;
       const values = readAccessorValues(document, sampler.output);
       const keyValues = cubic ? extractCubic(values, components, 1) : values;
+      if (channel.path === 'weights') {
+        // One glTF sampler interleaves every target's weight; FBX wants one
+        // curve per target, so this fans out rather than returning a channel.
+        const targetCount = components;
+        if (cubic) {
+          warnings.push(`Animation ${clip.name}: morph weight tangents were flattened for FBX export`);
+        }
+        return Array.from({ length: targetCount }, (_, target) => ({
+          nodeName: document.nodes[channel.node].name,
+          nodeId: channel.node + 1,
+          morphTargetIndex: target,
+          path: 'morphweight',
+          sampler: {
+            input,
+            // Weights are normalized in SceneDocument; FBX samples percentages.
+            output: keyValues.filter((_, index) => index % targetCount === target).map((value) => value * 100),
+            // Linear regardless of the source: extractCubic has already dropped
+            // the tangents by keeping only the value segment, unlike the direct
+            // glTF-to-FBX path, which still holds them when it converts.
+            interpolation: 'linear',
+          },
+        }));
+      }
       let output;
       if (channel.path === 'rotation') output = quaternionKeysToFbxEuler(keyValues);
       else if (channel.path === 'translation') output = convertGltfVectorArrayToFbx(keyValues);
       else output = keyValues;
-      if (channel.path === 'weights') {
-        const targetCount = components;
-        for (let target = 0; target < targetCount; target += 1) {
-          const scalar = cubic ? keyValues.filter((_, index) => index % targetCount === target) : values.filter((_, index) => index % targetCount === target);
-          // Weight channels are already normalized in SceneDocument;
-          // FBX writer samples them as percentages.
-          output = scalar.map((value) => value * 100);
-          return [{
-            nodeName: document.nodes[channel.node].name,
-            nodeId: channel.node + 1,
-            morphTargetIndex: target,
-            path: 'morphweight',
-            sampler: { input, output, interpolation: 'linear' },
-          }];
-        }
-      }
       if (output.length !== input.length * 3) {
         warnings.push(`Animation ${clip.name}: ${channel.path} sampler was omitted from FBX export`);
         return [];

@@ -181,6 +181,7 @@ jobs:
           npm run test:gltf-material-parity
           npm run test:gltf-summary-parity
           npm run test:gltf-quantized-morph
+          npm run test:scene-document-fbx-morph
         working-directory: web
 
       - name: Build and smoke raw glTF writer
