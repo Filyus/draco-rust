@@ -28,10 +28,16 @@ import {
 } from './fbx-scene-adapter.js';
 
 const GL = WebGL2RenderingContext;
+// Extensions this module interprets on its own.
 const SUPPORTED_EXTENSIONS = new Set([
     'KHR_materials_unlit',
     'KHR_texture_transform',
 ]);
+// Extensions whose only effect is naming an alternate image source, in the
+// order the preview prefers them. Whether one of these is honored depends on a
+// codec this module does not own, so it is reported from the decode result
+// rather than asserted here.
+const TEXTURE_SOURCE_EXTENSIONS = ['EXT_texture_webp', 'KHR_texture_basisu'];
 
 /**
  * Build a Scene from a parsed glTF document.
@@ -47,13 +53,14 @@ export async function buildSceneFromGltf(sourceData, resources, gltfModule, hook
     const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
     try {
         const document = JSON.parse(new TextDecoder().decode(asset.json()));
-        const warnings = extensionWarnings(document);
+        const warnings = [];
         const nodes = buildNodes(document.nodes || []);
         const meshes = buildMeshes(asset, document.meshes || [], warnings);
         initializeMorphWeights(nodes, meshes, warnings);
         const skins = buildSkins(asset, document.skins || [], nodes, warnings);
         const materials = buildMaterials(document.materials || []);
-        const textures = await buildTextures(asset, document, resources, hooks);
+        const { textures, honoredSources } = await buildTextures(asset, document, resources, hooks);
+        warnings.push(...extensionWarnings(document, honoredSources));
         const animations = buildAnimations(asset, document.animations || [], nodes, warnings);
         const scenes = document.scenes || [];
         const sceneIndex = typeof document.scene === 'number' ? document.scene : 0;
@@ -469,15 +476,24 @@ function normalizedComponent(value, componentType) {
     }
 }
 
-function extensionWarnings(document) {
+/**
+ * Report the extensions the preview did not act on.
+ *
+ * @param {Object} document          The glTF JSON document.
+ * @param {Map<string, boolean>} honoredSources
+ *   Per alternate-source extension, whether every texture that selected an
+ *   image through it ended up with a decoded bitmap.
+ */
+function extensionWarnings(document, honoredSources) {
     const warnings = [];
+    const honored = (extension) => SUPPORTED_EXTENSIONS.has(extension)
+        || honoredSources.get(extension) === true;
     const unsupported = (document.extensionsUsed || [])
-        .filter((extension) => !SUPPORTED_EXTENSIONS.has(extension));
+        .filter((extension) => !honored(extension));
     if (unsupported.length > 0) {
         warnings.push(`Unsupported glTF extensions ignored: ${unsupported.join(', ')}`);
     }
-    if ((document.extensionsRequired || [])
-        .some((extension) => !SUPPORTED_EXTENSIONS.has(extension))) {
+    if ((document.extensionsRequired || []).some((extension) => !honored(extension))) {
         warnings.push(
             'Model requires extensions that this viewer ignores; rendering may be incomplete',
         );
@@ -743,11 +759,21 @@ async function buildTextures(asset, manifest, resources, hooks) {
         magFilter: GL.LINEAR,
     };
 
-    return (manifest.textures || []).map((tex, idx) => {
+    // An alternate-source extension is honored only while every texture that
+    // reads through it produced a bitmap: the codec belongs to the host, so
+    // this is an observation rather than a support claim.
+    const honoredSources = new Map();
+    const textures = (manifest.textures || []).map((tex, idx) => {
         const samplerIndex = typeof tex.sampler === 'number' ? tex.sampler : -1;
         const sampler = samplerIndex >= 0 ? samplers[samplerIndex] : defaultSampler;
-        const sourceIndex = tex.source;
-        const image = typeof sourceIndex === 'number' ? images[sourceIndex] : null;
+        const { source, extension } = textureSource(tex);
+        const image = source >= 0 ? images[source] : null;
+        if (extension) {
+            honoredSources.set(
+                extension,
+                (honoredSources.get(extension) ?? true) && Boolean(image?.bitmap),
+            );
+        }
         return {
             name: tex.name || `texture_${idx}`,
             image: image?.bitmap || null,
@@ -758,6 +784,22 @@ async function buildTextures(asset, manifest, resources, hooks) {
             magFilter: sampler.magFilter,
         };
     });
+    return { textures, honoredSources };
+}
+
+/**
+ * Resolve the image a texture reads.
+ *
+ * @returns {{ source: number, extension: string|null }}
+ *   The image index, or -1, and the alternate-source extension that named it.
+ */
+function textureSource(texture) {
+    if (Number.isInteger(texture.source)) return { source: texture.source, extension: null };
+    for (const extension of TEXTURE_SOURCE_EXTENSIONS) {
+        const source = texture.extensions?.[extension]?.source;
+        if (Number.isInteger(source)) return { source, extension };
+    }
+    return { source: -1, extension: null };
 }
 
 async function decodeImages(asset, defs, resources, hooks) {
