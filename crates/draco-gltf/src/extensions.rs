@@ -12,6 +12,12 @@ use crate::{Document, Error, PrimitiveRef, Result};
 /// Extension name for the Khronos Draco mesh compression contract.
 pub const KHR_DRACO_MESH_COMPRESSION: &str = "KHR_draco_mesh_compression";
 
+/// Extension name for the meshoptimizer buffer view compression contract.
+///
+/// The import path decodes it eagerly into the fallback buffers, so the rest of
+/// the crate never sees a compressed buffer view.
+pub const EXT_MESHOPT_COMPRESSION: &str = "EXT_meshopt_compression";
+
 /// Resolved binary resources indexed by glTF buffer index.
 #[derive(Clone, Debug, Default)]
 pub struct ResourceStore {

@@ -4,12 +4,15 @@ use crate::json::Value;
 
 #[cfg(feature = "draco-decode")]
 use crate::PrimitiveRef;
-use crate::{Document, Error, ExtensionRegistry, ResourceStore, Result, ValidationProfile};
+use crate::{
+    Document, Error, ExtensionRegistry, ResourceStore, Result, ValidationProfile,
+    EXT_MESHOPT_COMPRESSION,
+};
 #[cfg(feature = "resources")]
 use crate::{ExternalAssetIndex, FileIndex};
 use draco_io::{
-    parse_gltf_container, resolve_gltf_buffers, GltfBufferReference, GltfContainerFormat,
-    ResourceLimits, ResourceResolver,
+    meshopt, parse_gltf_container, resolve_gltf_buffers, GltfBufferReference, GltfContainerFormat,
+    MeshoptFilter, MeshoptMode, ResourceLimits, ResourceResolver,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use draco_io::{ExternalFilePolicy, FileResourceResolver};
@@ -743,6 +746,76 @@ impl Import {
     }
 }
 
+/// Expands every `EXT_meshopt_compression` buffer view into its target buffer.
+///
+/// The extension stores compressed views in a real buffer and points the plain
+/// glTF view at a zero-filled fallback buffer, so decoding here keeps every
+/// downstream accessor read unaware of the compression.
+fn decode_meshopt_buffer_views(document: &Document, buffers: &mut [Vec<u8>]) -> Result<()> {
+    let Some(views) = document
+        .as_value()
+        .get("bufferViews")
+        .and_then(Value::as_array)
+    else {
+        return Ok(());
+    };
+    for (index, view) in views.iter().enumerate() {
+        let Some(extension) = view
+            .get("extensions")
+            .and_then(|value| value.get(EXT_MESHOPT_COMPRESSION))
+        else {
+            continue;
+        };
+        let fail = |message: &str| Error::Extension(format!("bufferViews[{index}]: {message}"));
+        let number = |value: Option<&Value>| {
+            value
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+        };
+
+        let source_buffer = number(extension.get("buffer"))
+            .filter(|buffer| *buffer < buffers.len())
+            .ok_or_else(|| fail("meshopt buffer is invalid"))?;
+        let source_offset = number(extension.get("byteOffset")).unwrap_or(0);
+        let source_length = number(extension.get("byteLength"))
+            .ok_or_else(|| fail("meshopt byteLength is invalid"))?;
+        let source = buffers[source_buffer]
+            .get(source_offset..)
+            .and_then(|bytes| bytes.get(..source_length))
+            .ok_or_else(|| fail("meshopt range is outside its buffer"))?
+            .to_vec();
+
+        let count =
+            number(extension.get("count")).ok_or_else(|| fail("meshopt count is invalid"))?;
+        let stride = number(extension.get("byteStride"))
+            .ok_or_else(|| fail("meshopt byteStride is invalid"))?;
+        let mode = MeshoptMode::from_name(
+            extension
+                .get("mode")
+                .and_then(Value::as_str)
+                .ok_or_else(|| fail("meshopt mode is missing"))?,
+        )?;
+        let filter = match extension.get("filter").and_then(Value::as_str) {
+            Some(name) => MeshoptFilter::from_name(name)?,
+            None => MeshoptFilter::None,
+        };
+
+        let target_buffer = number(view.get("buffer"))
+            .filter(|buffer| *buffer < buffers.len())
+            .ok_or_else(|| fail("buffer is invalid"))?;
+        let target_offset = number(view.get("byteOffset")).unwrap_or(0);
+        let target_length =
+            number(view.get("byteLength")).ok_or_else(|| fail("byteLength is invalid"))?;
+        let target = buffers[target_buffer]
+            .get_mut(target_offset..)
+            .and_then(|bytes| bytes.get_mut(..target_length))
+            .ok_or_else(|| fail("buffer view is outside its buffer"))?;
+
+        meshopt::decode_buffer_view(target, &source, mode, filter, count, stride)?;
+    }
+    Ok(())
+}
+
 /// Parses glTF or GLB bytes and applies the selected profile's basic checks.
 ///
 /// Enable `strict-validation` to validate all cross-references before loading.
@@ -803,15 +876,26 @@ pub fn parse_with_options(
                     buffer.index().0
                 )])
             })?;
-        references.push(GltfBufferReference { uri, byte_length });
+        let meshopt_fallback = buffer
+            .value()
+            .get("extensions")
+            .and_then(|value| value.get(EXT_MESHOPT_COMPRESSION))
+            .and_then(|value| value.get("fallback"))
+            .is_some_and(|value| matches!(value, Value::Bool(true)));
+        references.push(GltfBufferReference {
+            uri,
+            byte_length,
+            meshopt_fallback,
+        });
     }
-    let buffers = resolve_gltf_buffers(
+    let mut buffers = resolve_gltf_buffers(
         &references,
         container.format,
         container.bin,
         resolver,
         limits,
     )?;
+    decode_meshopt_buffer_views(&document, &mut buffers)?;
     Ok(Import {
         document,
         resources: ResourceStore { buffers },
@@ -822,4 +906,59 @@ pub fn parse_with_options(
         #[cfg(feature = "resources")]
         provenance: Vec::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use draco_io::gltf_container::build_glb_from_json;
+
+    /// One vertex of four zero deltas, so the decoded value is the tail
+    /// baseline `[1, 2, 3, 4]`. Every byte group uses the literal encoding.
+    fn meshopt_vertex_stream() -> Vec<u8> {
+        let mut stream = vec![0xa0u8];
+        for _ in 0..4 {
+            stream.push(0x03);
+            stream.resize(stream.len() + 16, 0);
+        }
+        stream.resize(stream.len() + 28, 0);
+        stream.extend_from_slice(&[1, 2, 3, 4]);
+        stream
+    }
+
+    #[test]
+    fn meshopt_buffer_views_decode_into_the_fallback_buffer() {
+        let bin = meshopt_vertex_stream();
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},
+            "extensionsUsed":["EXT_meshopt_compression"],
+            "extensionsRequired":["EXT_meshopt_compression"],
+            "buffers":[{{"byteLength":{}}},
+                       {{"byteLength":4,"extensions":{{"EXT_meshopt_compression":{{"fallback":true}}}}}}],
+            "bufferViews":[{{"buffer":1,"byteOffset":0,"byteLength":4,"byteStride":4,
+                "extensions":{{"EXT_meshopt_compression":{{"buffer":0,"byteOffset":0,"byteLength":{},
+                "byteStride":4,"mode":"ATTRIBUTES","count":1}}}}}}]}}"#,
+            bin.len(),
+            bin.len()
+        );
+        let glb = build_glb_from_json(json.as_bytes(), &bin, GltfContainerFormat::GlbV2).unwrap();
+
+        let import = parse(&glb, ValidationProfile::Gltf20).unwrap();
+
+        assert_eq!(import.resources.buffers[1], vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn an_optional_extension_keeps_the_stored_fallback_data() {
+        // Without `extensionsRequired` the fallback buffer holds real data, so
+        // it must still be resolved from its URI rather than zeroed.
+        let json = r#"{"asset":{"version":"2.0"},
+            "extensionsUsed":["EXT_meshopt_compression"],
+            "buffers":[{"byteLength":4,"uri":"data:application/octet-stream;base64,AQIDBA==",
+                "extensions":{"EXT_meshopt_compression":{"fallback":true}}}]}"#;
+
+        let import = parse(json.as_bytes(), ValidationProfile::Gltf20).unwrap();
+
+        assert_eq!(import.resources.buffers[0], vec![1, 2, 3, 4]);
+    }
 }

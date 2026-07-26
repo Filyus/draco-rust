@@ -326,12 +326,15 @@ pub struct ResourceLimits {
 }
 
 /// One glTF `buffers[]` declaration, independent of a JSON front end.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GltfBufferReference<'a> {
     /// Optional data or companion-resource URI.
     pub uri: Option<&'a str>,
     /// Declared `byteLength` of the logical buffer, excluding GLB padding.
     pub byte_length: usize,
+    /// `EXT_meshopt_compression` fallback buffer: it carries no stored bytes
+    /// and starts out zeroed, waiting for its buffer views to be decoded.
+    pub meshopt_fallback: bool,
 }
 
 /// Synchronous resolver for non-data resource URIs.
@@ -811,6 +814,23 @@ fn resolve_gltf_buffer(
     resolver: Option<&dyn ResourceResolver>,
     limits: &ResourceLimits,
 ) -> Result<Vec<u8>> {
+    // A fallback buffer only carries stored bytes when the extension is
+    // optional; when it is required the buffer starts out zeroed and its views
+    // are filled in by the meshopt decoder.
+    if reference.meshopt_fallback && reference.uri.is_none() && !(index == 0 && glb_bin.is_some()) {
+        check_limit(
+            reference.byte_length,
+            limits.max_resource_bytes,
+            "meshopt fallback buffer",
+        )?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(reference.byte_length).map_err(|_| {
+            GltfError::ResourceLimitExceeded("meshopt fallback buffer allocation failed".into())
+        })?;
+        data.resize(reference.byte_length, 0);
+        return Ok(data);
+    }
+
     if let Some(uri) = reference.uri {
         let mut data = resolve_resource_uri(uri, resolver, limits.max_resource_bytes)?;
         validate_declared_buffer_length(index, reference.byte_length, data.len(), false)?;
@@ -1149,6 +1169,7 @@ mod tests {
             &[GltfBufferReference {
                 uri: Some("mesh.bin"),
                 byte_length: 2,
+                meshopt_fallback: false,
             }],
             GltfContainerFormat::Gltf,
             None,
@@ -1166,6 +1187,7 @@ mod tests {
             &[GltfBufferReference {
                 uri: Some("data:,abcd"),
                 byte_length: 4,
+                meshopt_fallback: false,
             }],
             GltfContainerFormat::Gltf,
             None,

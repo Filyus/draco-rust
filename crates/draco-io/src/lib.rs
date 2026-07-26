@@ -48,6 +48,9 @@ mod gltf_error;
 #[cfg(feature = "gltf-geometry")]
 /// Reader-agnostic accessor and Draco geometry contracts.
 pub mod gltf_geometry;
+#[cfg(feature = "gltf-container")]
+/// `EXT_meshopt_compression` bitstream decoders.
+pub mod meshopt;
 #[cfg(feature = "obj-reader")]
 /// Wavefront OBJ reader.
 pub mod obj_reader;
@@ -93,6 +96,8 @@ pub use gltf_container::{
 pub use gltf_error::GltfError;
 #[cfg(feature = "gltf-geometry")]
 pub use gltf_geometry::{decode_geometry, AccessorSource, DecodedAccessor};
+#[cfg(feature = "gltf-container")]
+pub use meshopt::{MeshoptFilter, MeshoptMode};
 #[cfg(feature = "obj-reader")]
 pub use obj_reader::ObjReader;
 #[cfg(feature = "obj-writer")]
