@@ -17,6 +17,10 @@ const MAX_ACTIVE_MORPH_TARGETS = 32;
 // Texture unit for the morph delta array. Units 0..4 are material maps and
 // 5..8 belong to the environment IBL.
 const MORPH_TEXTURE_UNIT = 9;
+// How far a vertex's skin weights may sum from one before the preview rebuilds
+// the attribute. Loose enough to pass ordinary quantization rounding, tight
+// enough to catch a vertex that would otherwise be dragged toward the origin.
+const WEIGHT_SUM_TOLERANCE = 1e-3;
 const DEFAULT_CAMERA_AZIMUTH = Math.PI * 0.25;
 const DEFAULT_CAMERA_ELEVATION = Math.PI * 0.09;
 const ORBIT_RAD_PER_PIXEL = 0.01;
@@ -559,6 +563,80 @@ function uploadMorphTexture(gl, primitive, vertexCount) {
 }
 
 /**
+ * Read `WEIGHTS_0` as unit-range scalars whatever storage the source chose.
+ *
+ * Returns null for a component type the glTF skin contract does not allow, so
+ * the caller can fall back to uploading the attribute untouched.
+ */
+function weightScalars(attribute) {
+    const { buffer, byteOffset, byteLength } = byteView(attribute.bytes);
+    switch (attribute.componentType) {
+        case 5126:
+            return new Float32Array(buffer, byteOffset, byteLength / 4);
+        case 5121:
+            return Float32Array.from(new Uint8Array(buffer, byteOffset, byteLength), (v) => v / 255);
+        case 5123:
+            return Float32Array.from(
+                new Uint16Array(buffer, byteOffset, byteLength / 2),
+                (v) => v / 65535,
+            );
+        default:
+            return null;
+    }
+}
+
+/**
+ * Return `WEIGHTS_0` with every vertex summing to one.
+ *
+ * The skinning shader blends joint matrices weighted by this attribute and does
+ * not renormalize, so a vertex whose weights sum to nearly zero is placed at the
+ * model origin and stretches its triangles across the whole scene. Quantized
+ * skins drift off unit sum routinely — Draco encodes weights lossily — so treat
+ * the source buffer as advisory. A well-formed attribute is passed through
+ * without copying.
+ */
+export function buildNormalizedWeightAttribute(primitive) {
+    const attribute = primitive.attributes.WEIGHTS_0;
+    if (!attribute || attribute.components !== 4) return { attribute: attribute || null, drifted: 0 };
+    const source = weightScalars(attribute);
+    if (!source || source.length < attribute.count * 4) {
+        return { attribute, drifted: 0 };
+    }
+
+    const sumAt = (vertex) => source[vertex * 4] + source[vertex * 4 + 1]
+        + source[vertex * 4 + 2] + source[vertex * 4 + 3];
+    let drifted = 0;
+    for (let vertex = 0; vertex < attribute.count; vertex++) {
+        if (Math.abs(sumAt(vertex) - 1) > WEIGHT_SUM_TOLERANCE) drifted++;
+    }
+    if (drifted === 0) return { attribute, drifted: 0 };
+
+    const values = new Float32Array(attribute.count * 4);
+    for (let vertex = 0; vertex < attribute.count; vertex++) {
+        const base = vertex * 4;
+        const sum = sumAt(vertex);
+        if (sum > WEIGHT_SUM_TOLERANCE) {
+            for (let c = 0; c < 4; c++) values[base + c] = source[base + c] / sum;
+        } else {
+            // No influence survived quantization. Binding the vertex rigidly to
+            // its first joint keeps it on the body; normalizing a zero vector
+            // cannot, and leaving it collapses the vertex onto the origin.
+            values[base] = 1;
+        }
+    }
+    return {
+        attribute: {
+            bytes: values,
+            componentType: 5126,
+            components: 4,
+            normalized: false,
+            count: attribute.count,
+        },
+        drifted,
+    };
+}
+
+/**
  * Build GPU buffers for one Mesh primitive.
  * Returns an object describing attribute locations, VAO, index/element counts.
  */
@@ -591,6 +669,7 @@ function uploadPrimitive(gl, primitive, locationMap) {
         return bindAccessor(primitive.attributes[semantic], semantic, location, desiredComponents);
     }
 
+    const skinWeights = buildNormalizedWeightAttribute(primitive);
     const layout = {
         position: locationMap.position,
         normal: locationMap.normal,
@@ -616,7 +695,8 @@ function uploadPrimitive(gl, primitive, locationMap) {
         hasTexCoords1: !!bindAttribute('TEXCOORD_1', layout.texCoord1),
         hasColors: !!bindAttribute('COLOR_0', layout.color),
         hasJoints: !!bindAttribute('JOINTS_0', layout.joints),
-        hasWeights: !!bindAttribute('WEIGHTS_0', layout.weights),
+        hasWeights: !!bindAccessor(skinWeights.attribute, 'WEIGHTS_0', layout.weights),
+        driftedWeights: skinWeights.drifted,
         mode: primitive.mode,
         elementCount: 0,
         indexed: false,
@@ -1118,6 +1198,12 @@ export class Viewer {
                     if (uploaded.morph?.dropped > 0) {
                         this._log(
                             `Mesh ${mesh.name}: ${uploaded.morph.dropped} morph targets exceed this GPU's array texture layers and were ignored`,
+                            'warning',
+                        );
+                    }
+                    if (uploaded.driftedWeights > 0) {
+                        this._log(
+                            `Mesh ${mesh.name}: skin weights on ${uploaded.driftedWeights} vertices did not sum to one and were renormalized`,
                             'warning',
                         );
                     }
