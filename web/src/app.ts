@@ -5,18 +5,27 @@
  * and provides a unified interface for 3D file format conversion.
  */
 
-import { Viewer } from './viewer.js';
-import { buildFbxSceneFromGltf, buildFlatMeshesFromGltf, buildSceneFromGltf } from './gltf-loader.js';
-import { buildSceneDocumentFromGltf } from './gltf-scene-document.js';
-import { buildSceneFromFbx, buildSceneFromMeshes } from './mesh-loader.js';
-import { buildSceneDocumentWithFbxProvenance } from './fbx-scene-document.js';
-import { buildFbxSceneFromDocument } from './fbx-scene-document-writer.js';
-import { serializeSceneDocumentToGlb } from './scene-document-gltf.js';
-import { assertValidSceneDocument } from './scene-document.js';
-import { basename } from './scene-resources.js';
+import { Viewer } from './viewer.ts';
+import type { SceneDocument } from './scene-document.ts';
+import type { ResourceMap } from './scene-resources.ts';
+import type { FbxSceneProvenance } from './fbx-scene-provenance.ts';
+import { buildFbxSceneFromGltf, buildFlatMeshesFromGltf, buildSceneFromGltf } from './gltf-loader.ts';
+import { buildSceneDocumentFromGltf } from './gltf-scene-document.ts';
+import { buildSceneFromFbx, buildSceneFromMeshes } from './mesh-loader.ts';
+import { buildSceneDocumentWithFbxProvenance } from './fbx-scene-document.ts';
+import { buildFbxSceneFromDocument } from './fbx-scene-document-writer.ts';
+import { serializeSceneDocumentToGlb } from './scene-document-gltf.ts';
+import { assertValidSceneDocument } from './scene-document.ts';
+import { basename } from './scene-resources.ts';
+
+/** One lazily loaded wasm-pack module and whether its init has completed. */
+interface ModuleSlot {
+    loaded: boolean;
+    module: any;
+}
 
 // Module state
-const modules = {
+const modules: Record<string, ModuleSlot> = {
     obj: { loaded: false, module: null },
     ply: { loaded: false, module: null },
     gltf: { loaded: false, module: null },
@@ -24,75 +33,91 @@ const modules = {
 };
 
 // Current loaded mesh data
-let currentMeshData = null;
-let currentFileType = null;
-let currentSourceData = null;
-let currentSourceResources = Object.create(null);
+let currentMeshData: any = null;
+let currentFileType: string | null = null;
+let currentSourceData: Uint8Array | null = null;
+let currentSourceResources: ResourceMap = Object.create(null);
 // FBX uses the source-neutral SceneDocument for cross-format GLB export.
 // Direct glTF/GLB inputs continue to use their lossless source-byte route.
-let currentSceneDocument = null;
-let currentFbxProvenance = null;
+let currentSceneDocument: SceneDocument | null = null;
+let currentFbxProvenance: FbxSceneProvenance | null = null;
 
 // 3D preview viewer (lazily created on first use)
-let viewer = null;
+let viewer: Viewer | null = null;
 
 // Opt-in diagnostics for importer/exporter development. Normal conversion
 // warnings still go through the visible log panel; this only replaces noisy
 // object dumps that were previously emitted for every PLY/export operation.
 const debugLogging = new URLSearchParams(globalThis.location?.search || '').has('debug');
-function debugLog(...values) {
+function debugLog(...values: unknown[]) {
     if (debugLogging) console.debug('[Draco debug]', ...values);
 }
 
-function errorMessage(error) {
-    if (error && typeof error.message === 'string') {
-        return error.message;
+/**
+ * Resolve an element this page owns.
+ *
+ * index.html declares every id used below, so the app has always treated them
+ * as present; this states that instead of threading a null check through each
+ * of eighty-odd lookups. Genuinely optional elements keep their explicit
+ * guards at the point of use.
+ */
+function element<T extends HTMLElement = HTMLElement>(id: string): T {
+    return document.getElementById(id) as T;
+}
+
+function query<T extends HTMLElement = HTMLElement>(selector: string): T {
+    return document.querySelector(selector) as T;
+}
+
+function errorMessage(error: unknown) {
+    if (error && typeof (error as Error).message === 'string') {
+        return (error as Error).message;
     }
     return String(error);
 }
 
 // DOM Elements
-const dropZone = document.getElementById('drop-zone');
-const fileInput = document.getElementById('file-input');
-const fileInfo = document.getElementById('file-info');
-const fileName = document.getElementById('file-name');
-const fileSize = document.getElementById('file-size');
-const clearFileBtn = document.getElementById('clear-file');
-const previewSection = document.getElementById('preview-section');
-const exportSection = document.getElementById('export-section');
-const exportFormat = document.getElementById('export-format');
-const useDraco = document.getElementById('use-draco');
-const useDracoLabel = document.getElementById('use-draco-label');
-const dracoOptions = document.getElementById('draco-options');
-const dracoSettings = document.getElementById('draco-settings');
-const encodingSpeed = document.getElementById('encoding-speed');
-const encodingMethod = document.getElementById('encoding-method');
-const positionBits = document.getElementById('position-bits');
-const normalBits = document.getElementById('normal-bits');
-const texcoordBits = document.getElementById('texcoord-bits');
-const exportBtn = document.getElementById('export-btn');
-const consoleEl = document.getElementById('console');
+const dropZone = element('drop-zone');
+const fileInput = element<HTMLInputElement>('file-input');
+const fileInfo = element('file-info');
+const fileName = element('file-name');
+const fileSize = element('file-size');
+const clearFileBtn = element<HTMLButtonElement>('clear-file');
+const previewSection = element('preview-section');
+const exportSection = element('export-section');
+const exportFormat = element<HTMLSelectElement>('export-format');
+const useDraco = element<HTMLInputElement>('use-draco');
+const useDracoLabel = element('use-draco-label');
+const dracoOptions = element('draco-options');
+const dracoSettings = element('draco-settings');
+const encodingSpeed = element<HTMLSelectElement>('encoding-speed');
+const encodingMethod = element<HTMLSelectElement>('encoding-method');
+const positionBits = element<HTMLInputElement>('position-bits');
+const normalBits = element<HTMLInputElement>('normal-bits');
+const texcoordBits = element<HTMLInputElement>('texcoord-bits');
+const exportBtn = element<HTMLButtonElement>('export-btn');
+const consoleEl = element('console');
 
 // 3D preview DOM references
-const viewerSection = document.getElementById('viewer-section');
-const viewerCanvas = document.getElementById('viewer-canvas');
-const viewerResetBtn = document.getElementById('viewer-reset');
-const viewerAutoRotateBtn = document.getElementById('viewer-autorotate');
-const viewerWireframeBtn = document.getElementById('viewer-wireframe');
-const viewerBaseColorBtn = document.getElementById('viewer-base-color');
-const viewerSmoothNormalsBtn = document.getElementById('viewer-smooth-normals');
-const viewerGridBtn = document.getElementById('viewer-grid');
-const viewerAnimation = document.getElementById('viewer-animation');
-const animPlayBtn = document.getElementById('anim-play');
-const animClipSelect = document.getElementById('anim-clip');
-const animClipTrigger = document.getElementById('anim-clip-trigger');
-const animClipLabel = document.getElementById('anim-clip-label');
-const animClipMenu = document.getElementById('anim-clip-menu');
-const animLoopCheckbox = document.getElementById('anim-loop');
-const animTimeLabel = document.getElementById('anim-time');
-const animScrub = document.getElementById('anim-scrub');
-const animSpeed = document.getElementById('anim-speed');
-const animSpeedValue = document.getElementById('anim-speed-value');
+const viewerSection = element('viewer-section');
+const viewerCanvas = element<HTMLCanvasElement>('viewer-canvas');
+const viewerResetBtn = element<HTMLButtonElement>('viewer-reset');
+const viewerAutoRotateBtn = element<HTMLButtonElement>('viewer-autorotate');
+const viewerWireframeBtn = element<HTMLButtonElement>('viewer-wireframe');
+const viewerBaseColorBtn = element<HTMLButtonElement>('viewer-base-color');
+const viewerSmoothNormalsBtn = element<HTMLButtonElement>('viewer-smooth-normals');
+const viewerGridBtn = element<HTMLButtonElement>('viewer-grid');
+const viewerAnimation = element('viewer-animation');
+const animPlayBtn = element<HTMLButtonElement>('anim-play');
+const animClipSelect = element<HTMLSelectElement>('anim-clip');
+const animClipTrigger = element<HTMLButtonElement>('anim-clip-trigger');
+const animClipLabel = element('anim-clip-label');
+const animClipMenu = element('anim-clip-menu');
+const animLoopCheckbox = element<HTMLInputElement>('anim-loop');
+const animTimeLabel = element('anim-time');
+const animScrub = element<HTMLInputElement>('anim-scrub');
+const animSpeed = element<HTMLInputElement>('anim-speed');
+const animSpeedValue = element('anim-speed-value');
 const viewerControls = [
     viewerResetBtn,
     viewerAutoRotateBtn,
@@ -101,34 +126,34 @@ const viewerControls = [
     viewerSmoothNormalsBtn,
     viewerGridBtn,
 ];
-const scenePanel = document.getElementById('scene-panel');
-const sceneSection = document.getElementById('scene-section');
-const workspace = document.querySelector('.workspace');
-const sidebar = document.querySelector('.sidebar');
-const exportSidebar = document.getElementById('export-sidebar');
-const sceneTree = document.getElementById('scene-tree');
-const sceneResourceList = document.getElementById('scene-resource-list');
-const sceneMaterialList = document.getElementById('scene-material-list');
-const sceneClipList = document.getElementById('scene-clip-list');
+const scenePanel = element('scene-panel');
+const sceneSection = element('scene-section');
+const workspace = query('.workspace');
+const sidebar = query('.sidebar');
+const exportSidebar = element('export-sidebar');
+const sceneTree = element('scene-tree');
+const sceneResourceList = element('scene-resource-list');
+const sceneMaterialList = element('scene-material-list');
+const sceneClipList = element('scene-clip-list');
 const sceneStatFields = {
-    nodes: document.getElementById('scene-node-stat'),
-    meshes: document.getElementById('mesh-count'),
-    materials: document.getElementById('scene-material-stat'),
-    skins: document.getElementById('scene-skin-stat'),
-    morphs: document.getElementById('scene-morph-stat'),
-    clips: document.getElementById('scene-clip-stat'),
+    nodes: element('scene-node-stat'),
+    meshes: element('mesh-count'),
+    materials: element('scene-material-stat'),
+    skins: element('scene-skin-stat'),
+    morphs: element('scene-morph-stat'),
+    clips: element('scene-clip-stat'),
 };
-const sceneCapabilitySummary = document.getElementById('scene-capability-summary');
-const sceneInfo = document.getElementById('scene-info');
-const sceneWarningList = document.getElementById('scene-warning-list');
-const sceneWarnings = document.getElementById('scene-warnings');
-const sceneWarningsSection = document.getElementById('scene-warnings-section');
-const sceneWarningCount = document.getElementById('scene-warning-count');
-const sceneTreeExpandButton = document.getElementById('scene-tree-expand');
-const sceneTreeCollapseButton = document.getElementById('scene-tree-collapse');
+const sceneCapabilitySummary = element('scene-capability-summary');
+const sceneInfo = element('scene-info');
+const sceneWarningList = element('scene-warning-list');
+const sceneWarnings = element<HTMLDetailsElement>('scene-warnings');
+const sceneWarningsSection = element('scene-warnings-section');
+const sceneWarningCount = element('scene-warning-count');
+const sceneTreeExpandButton = element<HTMLButtonElement>('scene-tree-expand');
+const sceneTreeCollapseButton = element<HTMLButtonElement>('scene-tree-collapse');
 
-const setSceneTreeExpanded = (expanded) => {
-    for (const branch of sceneTree.querySelectorAll('details.scene-tree-node')) branch.open = expanded;
+const setSceneTreeExpanded = (expanded: boolean) => {
+    for (const branch of sceneTree.querySelectorAll<HTMLDetailsElement>('details.scene-tree-node')) branch.open = expanded;
 };
 sceneTreeExpandButton?.addEventListener('click', () => setSceneTreeExpanded(true));
 sceneTreeCollapseButton?.addEventListener('click', () => setSceneTreeExpanded(false));
@@ -150,33 +175,34 @@ if (exportSidebar && sceneWarningsSection && sceneWarningsSection.parentElement 
     exportSidebar.append(sceneWarningsSection);
 }
 
-function setViewerControlsEnabled(enabled) {
+function setViewerControlsEnabled(enabled: boolean) {
     for (const control of viewerControls) control.disabled = !enabled;
 }
 
 function syncViewerToolbar() {
     if (!viewer) return;
     syncAutoRotateButton(viewer.autoRotate);
-    for (const [button, enabled] of [
+    const toggles: [HTMLButtonElement, boolean][] = [
         [viewerWireframeBtn, viewer.wireframe],
         [viewerBaseColorBtn, viewer.baseColorOnly],
         [viewerSmoothNormalsBtn, viewer.smoothNormals],
         [viewerGridBtn, viewer.showGrid],
-    ]) {
+    ];
+    for (const [button, enabled] of toggles) {
         button.classList.toggle('active', enabled);
         button.setAttribute('aria-pressed', String(enabled));
     }
 }
 
-function syncAutoRotateButton(enabled) {
+function syncAutoRotateButton(enabled: boolean) {
     viewerAutoRotateBtn.classList.toggle('active', enabled);
     viewerAutoRotateBtn.setAttribute('aria-pressed', String(enabled));
 }
 
-function setupChoiceControl(select) {
+function setupChoiceControl(select: HTMLSelectElement) {
     const control = document.querySelector(`[data-choice-for="${select.id}"]`);
     if (!control) return;
-    const buttons = Array.from(control.querySelectorAll('button[data-value]'));
+    const buttons = Array.from(control.querySelectorAll<HTMLButtonElement>('button[data-value]'));
     const sync = () => {
         for (const button of buttons) {
             const selected = button.dataset.value === select.value;
@@ -187,7 +213,7 @@ function setupChoiceControl(select) {
     for (const button of buttons) {
         button.addEventListener('click', () => {
             if (button.dataset.value === select.value) return;
-            select.value = button.dataset.value;
+            select.value = button.dataset.value!;
             select.dispatchEvent(new Event('change', { bubbles: true }));
         });
     }
@@ -227,9 +253,9 @@ async function loadAllModules() {
 }
 
 // Load a single WASM module
-async function loadModule({ key, path, statusId }) {
-    const statusEl = document.getElementById(statusId);
-    const indicator = statusEl.querySelector('.status-indicator');
+async function loadModule({ key, path, statusId }: { key: string; path: string; statusId: string }) {
+    const statusEl = element(statusId);
+    const indicator = statusEl.querySelector('.status-indicator')!;
     // ensure initial loading state
     if (indicator) {
         indicator.classList.remove('ready','error');
@@ -295,16 +321,16 @@ function setupEventListeners() {
         e.preventDefault();
         dropZone.classList.remove('drag-over');
         
-        const files = e.dataTransfer.files;
+        const files = e.dataTransfer!.files;
         if (files.length > 0) {
             handleFiles(files);
         }
     });
     
     // File input
-    fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) {
-            handleFiles(e.target.files);
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files && fileInput.files.length > 0) {
+            handleFiles(fileInput.files);
         }
     });
     
@@ -320,17 +346,17 @@ function setupEventListeners() {
     });
     
     // Quantization sliders
-    encodingSpeed.addEventListener('input', (e) => {
-        document.getElementById('speed-value').textContent = e.target.value;
+    encodingSpeed.addEventListener('input', () => {
+        element('speed-value').textContent = encodingSpeed.value;
     });
-    positionBits.addEventListener('input', (e) => {
-        document.getElementById('position-bits-value').textContent = e.target.value;
+    positionBits.addEventListener('input', () => {
+        element('position-bits-value').textContent = positionBits.value;
     });
-    normalBits.addEventListener('input', (e) => {
-        document.getElementById('normal-bits-value').textContent = e.target.value;
+    normalBits.addEventListener('input', () => {
+        element('normal-bits-value').textContent = normalBits.value;
     });
-    texcoordBits.addEventListener('input', (e) => {
-        document.getElementById('texcoord-bits-value').textContent = e.target.value;
+    texcoordBits.addEventListener('input', () => {
+        element('texcoord-bits-value').textContent = texcoordBits.value;
     });
     
     // Export button
@@ -417,10 +443,10 @@ function setupEventListeners() {
 }
 
 // Handle file selection
-async function handleFiles(fileList) {
+async function handleFiles(fileList: FileList) {
     const files = Array.from(fileList);
     const supportedMain = files.filter((file) =>
-        ['obj', 'ply', 'gltf', 'glb', 'fbx'].includes(file.name.split('.').pop().toLowerCase())
+        ['obj', 'ply', 'gltf', 'glb', 'fbx'].includes(file.name.split('.').pop()!.toLowerCase())
     );
     if (supportedMain.length === 0) {
         log('No supported main 3D file found in the selection', 'error');
@@ -446,8 +472,8 @@ function updateDracoEncoderAvailability() {
     dracoSettings.style.display = available && useDraco.checked ? 'grid' : 'none';
 }
 
-async function handleFile(file, companionFiles = []) {
-    const extension = file.name.split('.').pop().toLowerCase();
+async function handleFile(file: File, companionFiles: File[] = []) {
+    const extension = file.name.split('.').pop()!.toLowerCase();
     
     if (!['obj', 'ply', 'gltf', 'glb', 'fbx'].includes(extension)) {
         log(`Unsupported file format: .${extension}`, 'error');
@@ -496,7 +522,7 @@ async function handleFile(file, companionFiles = []) {
                 result = await parseGltfFile(data, extension, currentSourceResources);
                 if (result?.success && result.document) {
                     try {
-                        currentSceneDocument = buildSceneDocumentFromGltf(data, currentSourceResources, modules.gltf.module);
+                        currentSceneDocument = buildSceneDocumentFromGltf(data, currentSourceResources as Record<string, Uint8Array>, modules.gltf.module);
                     } catch (error) {
                         log(`Scene details unavailable: ${errorMessage(error)}`, 'warning');
                     }
@@ -515,7 +541,7 @@ async function handleFile(file, companionFiles = []) {
         if (result && result.success) {
             currentMeshData = result;
             displayMeshInfo(result);
-            renderSceneDocumentSummary(currentSceneDocument);
+            renderSceneDocumentSummary(currentSceneDocument!);
             previewSection.style.display = 'block';
             exportSection.style.display = 'flex';
             exportSidebar.style.display = 'flex';
@@ -536,7 +562,7 @@ async function handleFile(file, companionFiles = []) {
 }
 
 // Parse OBJ file
-async function parseObjFile(data, resources = Object.create(null)) {
+async function parseObjFile(data: Uint8Array, resources = Object.create(null)) {
     if (!modules.obj.loaded) {
         return { success: false, error: 'OBJ module not loaded' };
     }
@@ -549,7 +575,7 @@ async function parseObjFile(data, resources = Object.create(null)) {
     return result;
 }
 
-function parseObjMaterials(objText, resources, warnings) {
+function parseObjMaterials(objText: string, resources: ResourceMap, warnings: string[]) {
     const materials = Object.create(null);
     const libraries = [];
     for (const line of objText.split(/\r\n|[\r\n]/)) {
@@ -588,20 +614,20 @@ function parseObjMaterials(objText, resources, warnings) {
 
 // `map_Kd` accepts optional flags before its filename. Keep the filename (which
 // may itself contain spaces) while skipping the standardized flag arguments.
-function mtlMapPath(values) {
+function mtlMapPath(values: string[]) {
     const optionValues = {
         '-blendu': 1, '-blendv': 1, '-cc': 1, '-clamp': 1, '-texres': 1,
         '-bm': 1, '-imfchan': 1, '-type': 1, '-mm': 2, '-o': 3, '-s': 3, '-t': 3,
     };
     let index = 0;
     while (index < values.length && values[index].startsWith('-')) {
-        index += 1 + (optionValues[values[index].toLowerCase()] ?? 0);
+        index += 1 + (optionValues[values[index].toLowerCase() as keyof typeof optionValues] ?? 0);
     }
     return values.slice(index).join(' ').trim();
 }
 
 // Parse PLY file
-async function parsePlyFile(data) {
+async function parsePlyFile(data: Uint8Array) {
     if (!modules.ply.loaded) {
         return { success: false, error: 'PLY module not loaded' };
     }
@@ -619,7 +645,7 @@ async function parsePlyFile(data) {
 }
 
 // Parse glTF/GLB file
-async function parseGltfFile(data, extension, resources = Object.create(null)) {
+async function parseGltfFile(data: Uint8Array, extension: string, resources = Object.create(null)) {
     if (!modules.gltf.loaded) {
         return { success: false, error: 'glTF module not loaded' };
     }
@@ -678,7 +704,7 @@ async function parseGltfFile(data, extension, resources = Object.create(null)) {
     };
 }
 
-function triangleCountForMode(mode, elementCount) {
+function triangleCountForMode(mode: number, elementCount: number) {
     switch (mode) {
         case 4: // TRIANGLES
             return Math.floor(elementCount / 3);
@@ -691,7 +717,7 @@ function triangleCountForMode(mode, elementCount) {
 }
 
 // Parse FBX file
-async function parseFbxFile(data) {
+async function parseFbxFile(data: Uint8Array) {
     // ASCII and binary both go through the WASM reader now; it produces the
     // same node tree from either container, so the regex fallback that used to
     // scrape ASCII geometry -- without transforms, materials, skins or
@@ -703,7 +729,7 @@ async function parseFbxFile(data) {
     return modules.fbx.module.parse_fbx(data);
 }
 
-function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
+function renderSceneDocumentSummary(sceneDocument: SceneDocument, extraWarnings = []) {
     if (!sceneDocument) {
         scenePanel.hidden = true;
         sceneInfo.hidden = true;
@@ -715,7 +741,7 @@ function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
     try {
         const validation = assertValidSceneDocument(sceneDocument);
         const morphs = sceneDocument.meshes.reduce(
-            (total, mesh) => total + mesh.primitives.reduce((count, primitive) => count + (primitive.targets?.length || 0), 0),
+            (total: number, mesh: any) => total + mesh.primitives.reduce((count: number, primitive: any) => count + (primitive.targets?.length || 0), 0),
             0,
         );
         sceneStatFields.nodes.textContent = sceneDocument.nodes.length.toLocaleString();
@@ -744,8 +770,8 @@ function renderSceneDocumentSummary(sceneDocument, extraWarnings = []) {
     }
 }
 
-function describeSceneCapabilities(capabilities = {}) {
-    const preserved = [];
+function describeSceneCapabilities(capabilities: any = {}) {
+    const preserved: string[] = [];
     if (capabilities.resources) preserved.push('resources');
     if (capabilities.textures) preserved.push('textures');
     if (capabilities.materials) preserved.push('materials');
@@ -761,7 +787,7 @@ function describeSceneCapabilities(capabilities = {}) {
 const WARNING_PREVIEW_COUNT = 8;
 
 // Renders a numbered list; the overflow row is a real button that reveals the rest.
-function setWarningList(list, warnings, limit = WARNING_PREVIEW_COUNT) {
+function setWarningList(list: HTMLElement, warnings: string[], limit = WARNING_PREVIEW_COUNT) {
     list.replaceChildren();
     const unique = uniqueWarnings(warnings);
     const shown = Number.isFinite(limit) ? unique.slice(0, limit) : unique;
@@ -793,15 +819,18 @@ function setWarningList(list, warnings, limit = WARNING_PREVIEW_COUNT) {
     return unique;
 }
 
-function uniqueWarnings(warnings) {
-    return [...new Set(warnings.filter((warning) => typeof warning === 'string' && warning.trim()))];
+function uniqueWarnings(warnings: string[]) {
+    return [...new Set(warnings.filter((warning: string) => typeof warning === 'string' && warning.trim()))];
 }
 
 // Warnings arrive from independent stages, so each stage owns one slot and the
 // panel always shows their union — no stage can wipe another's warnings.
-const warningSources = { scene: [], mesh: [], preview: [], export: [] };
+const warningSources: Record<'scene' | 'mesh' | 'preview' | 'export', string[]> =
+    { scene: [], mesh: [], preview: [], export: [] };
 
-function setWarningSource(source, warnings) {
+type WarningSource = keyof typeof warningSources;
+
+function setWarningSource(source: WarningSource, warnings: string[]) {
     warningSources[source] = uniqueWarnings(warnings || []);
     setWarningPanel([
         ...warningSources.scene,
@@ -812,13 +841,13 @@ function setWarningSource(source, warnings) {
 }
 
 function clearWarningPanel() {
-    for (const source of Object.keys(warningSources)) warningSources[source] = [];
+    for (const source of Object.keys(warningSources) as WarningSource[]) warningSources[source] = [];
     setWarningPanel([]);
 }
 
 // The warnings live in their own collapsible panel so the scene tree stays readable.
 // Collapsed state still advertises how many warnings are waiting.
-function setWarningPanel(warnings) {
+function setWarningPanel(warnings: string[]) {
     if (!sceneWarnings) return;
     const unique = setWarningList(sceneWarningList, warnings);
     const total = unique.length;
@@ -827,7 +856,7 @@ function setWarningPanel(warnings) {
     if (total === 0) sceneWarnings.open = false;
 }
 
-function renderSceneTree(sceneDocument) {
+function renderSceneTree(sceneDocument: SceneDocument) {
     sceneTree.replaceChildren();
     if (sceneDocument.nodes.length === 0) {
         const empty = document.createElement('div');
@@ -836,14 +865,16 @@ function renderSceneTree(sceneDocument) {
         sceneTree.appendChild(empty);
         return;
     }
-    const animatedNodes = new Set(sceneDocument.animations.flatMap((clip) => clip.channels.map((channel) => channel.node)));
-    const appendNode = (nodeIndex, depth, visited, target) => {
+    const animatedNodes = new Set(sceneDocument.animations.flatMap((clip: any) => clip.channels.map((channel: any) => channel.node)));
+    const appendNode = (nodeIndex: number, depth: number, visited: Set<number>, target: any) => {
         if (visited.has(nodeIndex)) return;
         visited.add(nodeIndex);
         const node = sceneDocument.nodes[nodeIndex] || {};
-        const children = (node.children || []).filter((child) => Number.isInteger(child) && child >= 0 && child < sceneDocument.nodes.length);
+        const children = (node.children || []).filter((child: any) => Number.isInteger(child) && child >= 0 && child < sceneDocument.nodes.length);
         const branching = children.length > 0;
-        const wrapper = branching ? document.createElement('details') : document.createElement('div');
+        const wrapper = branching
+            ? document.createElement('details')
+            : document.createElement('div') as HTMLElement as HTMLDetailsElement;
         wrapper.className = branching ? 'scene-tree-node' : 'scene-tree-leaf';
         if (branching) wrapper.open = true;
         const row = document.createElement(branching ? 'summary' : 'div');
@@ -863,7 +894,7 @@ function renderSceneTree(sceneDocument) {
         row.appendChild(label);
         const badges = document.createElement('span');
         badges.className = 'scene-tree-badges';
-        const addBadge = (text, kind) => {
+        const addBadge = (text: string, kind: string) => {
             const badge = document.createElement('span');
             badge.className = `scene-tree-badge scene-tree-badge-${kind}`;
             badge.textContent = text;
@@ -879,22 +910,22 @@ function renderSceneTree(sceneDocument) {
             childList.className = 'scene-tree-children';
             childList.setAttribute('role', 'group');
             wrapper.appendChild(childList);
-            children.forEach((child, position) => {
+            children.forEach((child: any, position) => {
                 const before = childList.childElementCount;
                 appendNode(child, depth + 1, visited, childList);
                 // Mark the visually last child so its guide line can stop at the elbow.
                 if (childList.childElementCount > before && position === children.length - 1) {
-                    childList.lastElementChild.classList.add('scene-tree-last');
+                    childList.lastElementChild!.classList.add('scene-tree-last');
                 }
             });
         }
         target.appendChild(wrapper);
     };
-    const visited = new Set();
+    const visited = new Set<number>();
     for (const root of sceneDocument.rootNodes) appendNode(root, 0, visited, sceneTree);
     const orphans = document.createElement('div');
     orphans.className = 'scene-tree-orphans';
-    sceneDocument.nodes.forEach((_, index) => appendNode(index, 0, visited, orphans));
+    sceneDocument.nodes.forEach((_, index: number) => appendNode(index, 0, visited, orphans));
     if (orphans.childElementCount > 0) {
         const heading = document.createElement('div');
         heading.className = 'scene-tree-orphans-title';
@@ -903,10 +934,10 @@ function renderSceneTree(sceneDocument) {
     }
 }
 
-function renderSceneCompanions(sceneDocument) {
-    const formatNames = (items, fallback) => {
+function renderSceneCompanions(sceneDocument: SceneDocument) {
+    const formatNames = (items: any[], fallback: string) => {
         if (!items.length) return fallback;
-        const names = items.map((item, index) => item.name || `${fallback} ${index + 1}`);
+        const names = items.map((item, index: number) => item.name || `${fallback} ${index + 1}`);
         return names.length > 3 ? `${names.slice(0, 3).join(', ')} +${names.length - 3}` : names.join(', ');
     };
     sceneResourceList.textContent = formatNames(sceneDocument.resources, 'none');
@@ -915,13 +946,13 @@ function renderSceneCompanions(sceneDocument) {
 }
 
 // Display mesh information
-function displayMeshInfo(result) {
+function displayMeshInfo(result: any) {
     if (result.document) {
-        document.getElementById('mesh-count').textContent = result.meshCount.toLocaleString();
-        document.getElementById('vertex-count').textContent = result.vertexCount.toLocaleString();
-        document.getElementById('triangle-count').textContent = result.triangleCount.toLocaleString();
-        document.getElementById('has-normals').textContent = result.hasNormals ? 'Yes' : 'No';
-        document.getElementById('has-uvs').textContent = result.hasUvs ? 'Yes' : 'No';
+        element('mesh-count').textContent = result.meshCount.toLocaleString();
+        element('vertex-count').textContent = result.vertexCount.toLocaleString();
+        element('triangle-count').textContent = result.triangleCount.toLocaleString();
+        element('has-normals').textContent = result.hasNormals ? 'Yes' : 'No';
+        element('has-uvs').textContent = result.hasUvs ? 'Yes' : 'No';
         setWarningSource('mesh', result.warnings || []);
         return;
     }
@@ -939,11 +970,11 @@ function displayMeshInfo(result) {
         if (mesh.uvs?.length > 0) hasUvs = true;
     }
     
-    document.getElementById('mesh-count').textContent = meshes.length;
-    document.getElementById('vertex-count').textContent = totalVertices.toLocaleString();
-    document.getElementById('triangle-count').textContent = totalTriangles.toLocaleString();
-    document.getElementById('has-normals').textContent = hasNormals ? 'Yes' : 'No';
-    document.getElementById('has-uvs').textContent = hasUvs ? 'Yes' : 'No';
+    element('mesh-count').textContent = meshes.length;
+    element('vertex-count').textContent = totalVertices.toLocaleString();
+    element('triangle-count').textContent = totalTriangles.toLocaleString();
+    element('has-normals').textContent = hasNormals ? 'Yes' : 'No';
+    element('has-uvs').textContent = hasUvs ? 'Yes' : 'No';
 
     setWarningSource('mesh', result.warnings || []);
 }
@@ -998,7 +1029,7 @@ async function exportFile() {
             );
         } else if (currentMeshData.document && (format === 'fbx' || legacyFbx)) {
             const scene = prepareFbxSceneForExport(buildFbxSceneFromGltf(
-                currentSourceData,
+                currentSourceData!,
                 currentSourceResources,
                 modules.gltf.module,
                 { legacyCompatibility: legacyFbx },
@@ -1007,7 +1038,7 @@ async function exportFile() {
         } else {
         const sourceMeshes = currentMeshData.document
             ? buildFlatMeshesFromGltf(
-                currentSourceData,
+                currentSourceData!,
                 currentSourceResources,
                 modules.gltf.module,
             )
@@ -1043,7 +1074,7 @@ async function exportFile() {
                 displayCompressionStats(result.draco_stats);
             } else {
                 // Hide stats if not using Draco
-                document.getElementById('compression-stats').style.display = 'none';
+                element('compression-stats').style.display = 'none';
             }
             if (result.compression_report) {
                 const compressed = result.compression_report.compressed_primitives?.length || 0;
@@ -1060,7 +1091,7 @@ async function exportFile() {
     }
 }
 
-function exportSceneDocumentToGlb(document) {
+function exportSceneDocumentToGlb(document: SceneDocument) {
     if (!modules.gltf.loaded) throw new Error('glTF module not loaded');
     const output = serializeSceneDocumentToGlb(document, modules.gltf.module);
     return {
@@ -1072,14 +1103,14 @@ function exportSceneDocumentToGlb(document) {
     };
 }
 
-function logSceneDocumentCapabilities(capabilities = {}) {
+function logSceneDocumentCapabilities(capabilities: any = {}) {
     const supported = Object.entries(capabilities)
         .filter(([, value]) => value === true)
         .map(([key]) => key);
     if (supported.length > 0) log(`SceneDocument capabilities: ${supported.join(', ')}`, 'info');
 }
 
-function exportGltfDocument(format) {
+function exportGltfDocument(format: string) {
     if (!modules.gltf.loaded) {
         throw new Error('glTF module not loaded');
     }
@@ -1128,9 +1159,9 @@ function exportGltfDocument(format) {
 }
 
 // Prepare meshes for export
-function prepareMeshesForExport(meshes) {
-    const includeNormals = document.getElementById('include-normals').checked;
-    const includeUvs = document.getElementById('include-uvs').checked;
+function prepareMeshesForExport(meshes: any[]) {
+    const includeNormals = element<HTMLInputElement>('include-normals').checked;
+    const includeUvs = element<HTMLInputElement>('include-uvs').checked;
     
     debugLog('prepareMeshesForExport called with', meshes.length, 'meshes');
     for (const mesh of meshes) {
@@ -1141,7 +1172,7 @@ function prepareMeshesForExport(meshes) {
             'uvs:', mesh.uvs?.length);
     }
     
-    const result = meshes.map((mesh, idx) => ({
+    const result = meshes.map((mesh: any, idx) => ({
         name: mesh.name || `mesh_${idx}`,
         positions: Array.from(mesh.positions || []),
         indices: Array.from(mesh.indices || []),
@@ -1151,21 +1182,21 @@ function prepareMeshesForExport(meshes) {
         polygonVertexIndices: mesh.polygonVertexIndices
             ? Array.from(mesh.polygonVertexIndices)
             : null,
-        uvSets: (mesh.uvSets || []).map((set) => ({
+        uvSets: (mesh.uvSets || []).map((set: any) => ({
             name: set.name,
             mapping: set.mapping,
             reference: set.reference,
             values: Array.from(set.values || []),
             indices: Array.from(set.indices || []),
         })),
-        normalSets: (mesh.normalSets || []).map((set) => ({
+        normalSets: (mesh.normalSets || []).map((set: any) => ({
             name: set.name,
             mapping: set.mapping,
             reference: set.reference,
             values: Array.from(set.values || []),
             indices: Array.from(set.indices || []),
         })),
-        colorSets: (mesh.colorSets || []).map((set) => ({
+        colorSets: (mesh.colorSets || []).map((set: any) => ({
             name: set.name,
             mapping: set.mapping,
             reference: set.reference,
@@ -1186,10 +1217,10 @@ function prepareMeshesForExport(meshes) {
     return result;
 }
 
-function prepareFbxSceneForExport(scene, legacyCompatibility = false) {
-    const prepareNode = (node) => ({
+function prepareFbxSceneForExport(scene: any, legacyCompatibility = false) {
+    const prepareNode = (node: any) => ({
         ...node,
-        meshes: (node.meshes || []).map((sourceMesh) => {
+        meshes: (node.meshes || []).map((sourceMesh: any) => {
             const [mesh] = prepareMeshesForExport([sourceMesh]);
             return {
                 ...mesh,
@@ -1208,7 +1239,7 @@ function prepareFbxSceneForExport(scene, legacyCompatibility = false) {
         rootNodes: (scene.rootNodes || []).map(prepareNode),
         materials: (scene.materials || []).map(prepareFbxMaterialForExport),
         textures: scene.textures || [],
-        animations: (scene.animations || []).map((animation) => prepareFbxAnimationForExport(
+        animations: (scene.animations || []).map((animation: any) => prepareFbxAnimationForExport(
             animation, legacyCompatibility,
         )),
     };
@@ -1216,7 +1247,7 @@ function prepareFbxSceneForExport(scene, legacyCompatibility = false) {
 }
 
 /** Strip viewer-only fields and keep what fbx-wasm's MaterialInput accepts. */
-function prepareFbxMaterialForExport(material) {
+function prepareFbxMaterialForExport(material: any) {
     if (!material) return material;
     return {
         name: material.name,
@@ -1238,12 +1269,12 @@ function prepareFbxMaterialForExport(material) {
 }
 
 /** Pass animation clips through; fbx-wasm's AnimationInput mirrors the reader. */
-function prepareFbxAnimationForExport(animation, legacyCompatibility = false) {
+function prepareFbxAnimationForExport(animation: any, legacyCompatibility = false) {
     if (!animation) return animation;
     return {
         name: animation.name,
         duration: animation.duration,
-        channels: (animation.channels || []).map((channel) => ({
+        channels: (animation.channels || []).map((channel: any) => ({
             nodeName: channel.nodeName,
             nodeId: channel.nodeId,
             path: channel.path,
@@ -1260,14 +1291,14 @@ function prepareFbxAnimationForExport(animation, legacyCompatibility = false) {
 }
 
 // Export to OBJ
-async function exportToObj(meshes) {
+async function exportToObj(meshes: any[]) {
     if (!modules.obj.loaded) {
         return { success: false, error: 'OBJ module not loaded' };
     }
 
     const options = {
-        include_normals: document.getElementById('include-normals').checked,
-        include_uvs: document.getElementById('include-uvs').checked,
+        include_normals: element<HTMLInputElement>('include-normals').checked,
+        include_uvs: element<HTMLInputElement>('include-uvs').checked,
         precision: 6,
     };
 
@@ -1279,7 +1310,7 @@ async function exportToObj(meshes) {
 }
 
 // Export to PLY
-async function exportToPly(meshes) {
+async function exportToPly(meshes: any[]) {
     if (!modules.ply.loaded) {
         return { success: false, error: 'PLY module not loaded' };
     }
@@ -1288,7 +1319,7 @@ async function exportToPly(meshes) {
     const merged = mergeMeshes(meshes);
 
     const options = {
-        include_normals: document.getElementById('include-normals').checked,
+        include_normals: element<HTMLInputElement>('include-normals').checked,
         include_colors: true,
         precision: 6,
         format: 'ascii',
@@ -1298,7 +1329,7 @@ async function exportToPly(meshes) {
 }
 
 // Export to glTF/GLB
-async function exportToGltf(meshes, format) {
+async function exportToGltf(meshes: any[], format: string) {
     return {
         success: false,
         error: `Creating ${format.toUpperCase()} from flattened meshes is not part of the document API`,
@@ -1306,7 +1337,7 @@ async function exportToGltf(meshes, format) {
 }
 
 // Export to FBX
-async function exportToFbx(meshes) {
+async function exportToFbx(meshes: any[]) {
     if (!modules.fbx.loaded) {
         return { success: false, error: 'FBX module not loaded' };
     }
@@ -1318,7 +1349,7 @@ async function exportToFbx(meshes) {
     return modules.fbx.module.create_fbx(meshes, options);
 }
 
-async function exportToFbxScene(scene, legacyCompatibility = false) {
+async function exportToFbxScene(scene: any, legacyCompatibility = false) {
     if (!modules.fbx.loaded) {
         return { success: false, error: 'FBX module not loaded' };
     }
@@ -1326,15 +1357,15 @@ async function exportToFbxScene(scene, legacyCompatibility = false) {
 }
 
 // Merge multiple meshes into one
-function mergeMeshes(meshes) {
+function mergeMeshes(meshes: any[]) {
     if (meshes.length === 1) return meshes[0];
     
     const merged = {
         name: 'merged',
-        positions: [],
-        indices: [],
-        normals: [],
-        uvs: [],
+        positions: [] as number[],
+        indices: [] as number[],
+        normals: [] as number[],
+        uvs: [] as number[],
     };
     
     let vertexOffset = 0;
@@ -1363,7 +1394,7 @@ function mergeMeshes(meshes) {
 }
 
 // Download the export result
-function downloadResult(result, format) {
+function downloadResult(result: any, format: string) {
     let blob;
     const extension = format === 'fbx-legacy' ? 'fbx' : format;
     let filename = `export.${extension}`;
@@ -1410,7 +1441,7 @@ function ensureViewer() {
     return viewer;
 }
 
-async function loadPreview(extension) {
+async function loadPreview(extension: string) {
     viewerSection.classList.add('loaded');
     setViewerControlsEnabled(false);
 
@@ -1423,11 +1454,11 @@ async function loadPreview(extension) {
     }
 
     try {
-        let scene;
+        let scene: any;
         if (extension === 'gltf' || extension === 'glb') {
             if (!modules.gltf.loaded) throw new Error('glTF module is not loaded');
             scene = await buildSceneFromGltf(
-                currentSourceData,
+                currentSourceData!,
                 currentSourceResources,
                 modules.gltf.module,
                 { onLog: (msg, type) => log(msg, type) },
@@ -1452,20 +1483,20 @@ async function loadPreview(extension) {
             log(warning, 'warning');
         }
 
-        viewer.setScene(scene);
-        renderSceneDocumentSummary(currentSceneDocument);
+        viewer!.setScene(scene);
+        renderSceneDocumentSummary(currentSceneDocument!);
         setWarningSource('preview', scene.warnings || []);
         setViewerControlsEnabled(true);
         syncViewerToolbar();
         log('Preview ready', 'success');
     } catch (error) {
-        viewer.clear();
+        viewer!.clear();
         setViewerControlsEnabled(false);
         log(`Preview failed: ${errorMessage(error)}`, 'error');
     }
 }
 
-function updateAnimationUi(scene) {
+function updateAnimationUi(scene: any) {
     const clips = currentSceneDocument?.animations?.length
         ? currentSceneDocument.animations
         : (scene.animations || []);
@@ -1474,11 +1505,11 @@ function updateAnimationUi(scene) {
     viewerAnimation.style.display = 'flex';
     for (let i = 0; i < clips.length; i++) {
         const option = document.createElement('option');
-        option.value = i;
+        option.value = String(i);
         option.textContent = clips[i].name || `Clip ${i + 1}`;
         animClipSelect.appendChild(option);
     }
-    animClipSelect.value = String(viewer.animation.clipIndex);
+    animClipSelect.value = String(viewer!.animation.clipIndex);
     rebuildAnimationClipMenu();
     updateAnimationPlayButton();
     updateAnimationScrub();
@@ -1491,9 +1522,9 @@ function resetAnimationUi() {
     animClipLabel.textContent = 'Animation';
     closeAnimationClipMenu();
     animTimeLabel.textContent = '0.00s';
-    animScrub.value = 0;
+    animScrub.value = '0';
     animSpeedValue.textContent = '1.00×';
-    animSpeed.value = 100;
+    animSpeed.value = '100';
     animPlayBtn.classList.remove('active');
     animPlayBtn.title = 'Play';
     animPlayBtn.setAttribute('aria-label', 'Play animation');
@@ -1523,7 +1554,7 @@ function rebuildAnimationClipMenu() {
 function syncAnimationClipSelection() {
     const selected = animClipSelect.selectedOptions[0];
     animClipLabel.textContent = selected?.textContent || 'Animation';
-    for (const option of animClipMenu.querySelectorAll('.anim-clip-option')) {
+    for (const option of animClipMenu.querySelectorAll<HTMLElement>('.anim-clip-option')) {
         const active = option.dataset.value === animClipSelect.value;
         option.classList.toggle('selected', active);
         option.setAttribute('aria-selected', String(active));
@@ -1534,8 +1565,8 @@ function syncAnimationClipSelection() {
 function openAnimationClipMenu() {
     animClipTrigger.setAttribute('aria-expanded', 'true');
     animClipMenu.hidden = false;
-    const selected = animClipMenu.querySelector('.anim-clip-option.selected')
-        || animClipMenu.querySelector('.anim-clip-option');
+    const selected = animClipMenu.querySelector<HTMLElement>('.anim-clip-option.selected')
+        || animClipMenu.querySelector<HTMLElement>('.anim-clip-option');
     selected?.focus();
 }
 
@@ -1549,7 +1580,7 @@ function closeAnimationClipMenu(restoreFocus = false) {
     if (restoreFocus || hadFocus) animClipTrigger.focus();
 }
 
-function selectAnimationClipAt(index) {
+function selectAnimationClipAt(index: number) {
     const options = [...animClipSelect.options];
     if (options.length === 0) return;
     const wrapped = (index + options.length) % options.length;
@@ -1557,7 +1588,7 @@ function selectAnimationClipAt(index) {
     animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-function handleAnimationClipTriggerKeydown(event) {
+function handleAnimationClipTriggerKeydown(event: KeyboardEvent) {
     const options = [...animClipSelect.options];
     if (options.length === 0) return;
     const current = Math.max(0, options.findIndex(option => option.value === animClipSelect.value));
@@ -1573,9 +1604,9 @@ function handleAnimationClipTriggerKeydown(event) {
     }
 }
 
-function handleAnimationClipMenuKeydown(event) {
-    const options = [...animClipMenu.querySelectorAll('.anim-clip-option')];
-    const current = options.indexOf(document.activeElement);
+function handleAnimationClipMenuKeydown(event: KeyboardEvent) {
+    const options = [...animClipMenu.querySelectorAll<HTMLElement>('.anim-clip-option')];
+    const current = options.indexOf(document.activeElement as HTMLElement);
     if (event.key === 'Escape') {
         event.preventDefault();
         closeAnimationClipMenu(true);
@@ -1590,7 +1621,7 @@ function handleAnimationClipMenuKeydown(event) {
     event.preventDefault();
     options[next]?.focus();
     if (options[next]) {
-        animClipSelect.value = options[next].dataset.value;
+        animClipSelect.value = options[next].dataset.value!;
         animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
     }
 }
@@ -1606,7 +1637,7 @@ function toggleAnimationPlayback() {
 }
 
 /** Space plays and pauses, unless it belongs to the focused control. */
-function handlePlaybackShortcut(event) {
+function handlePlaybackShortcut(event: KeyboardEvent) {
     if (event.code !== 'Space' || event.repeat) return;
     if (event.ctrlKey || event.altKey || event.metaKey) return;
     const target = event.target;
@@ -1676,14 +1707,14 @@ function clearFile() {
 }
 
 // Format file size
-function formatFileSize(bytes) {
+function formatFileSize(bytes: number) {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
 }
 
 // Log to console
-function log(message, type = 'info') {
+function log(message: string, type = 'info') {
     const timestamp = new Date().toLocaleTimeString();
     const line = document.createElement('div');
     line.className = `console-line ${type}`;
@@ -1695,13 +1726,13 @@ function log(message, type = 'info') {
     consoleEl.scrollTop = consoleEl.scrollHeight;
 }
 // Display compression statistics
-function displayCompressionStats(stats) {
-    const statsSection = document.getElementById('compression-stats');
+function displayCompressionStats(stats: any) {
+    const statsSection = element('compression-stats');
     // Use proper naming: EdgeBreaker (not Edgebreaker)
     const methodDisplay = stats.method === 'edgebreaker' ? 'EdgeBreaker' : 
                           stats.method === 'sequential' ? 'Sequential' : stats.method;
-    document.getElementById('stats-method').textContent = methodDisplay;
-    document.getElementById('stats-speed').textContent = `${stats.speed} (${stats.speed === 0 ? 'best compression' : stats.speed === 10 ? 'fastest' : 'balanced'})`;
+    element('stats-method').textContent = methodDisplay;
+    element('stats-speed').textContent = `${stats.speed} (${stats.speed === 0 ? 'best compression' : stats.speed === 10 ? 'fastest' : 'balanced'})`;
     
     // Display prediction scheme with readable formatting
     const predictionSchemeMap = {
@@ -1710,10 +1741,11 @@ function displayCompressionStats(stats) {
         'CONSTRAINED_MULTI_PARALLELOGRAM': 'Constrained Multi-Parallelogram',
         'TEXCOORDS_PORTABLE': 'TexCoords Portable'
     };
-    const predictionDisplay = predictionSchemeMap[stats.prediction_scheme] || stats.prediction_scheme || 'Unknown';
-    document.getElementById('stats-prediction').textContent = predictionDisplay;
+    const predictionDisplay = predictionSchemeMap[stats.prediction_scheme as keyof typeof predictionSchemeMap]
+        || stats.prediction_scheme || 'Unknown';
+    element('stats-prediction').textContent = predictionDisplay;
     
-    document.getElementById('stats-size').textContent = formatFileSize(stats.compressed_size);
+    element('stats-size').textContent = formatFileSize(stats.compressed_size);
     statsSection.style.display = 'block';
     
     log(`Compression: ${methodDisplay} method, speed ${stats.speed}, prediction ${predictionDisplay}, ${formatFileSize(stats.compressed_size)}`, 'success');
