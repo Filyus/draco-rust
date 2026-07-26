@@ -69,6 +69,7 @@ web/www/pkg/
 # so keep showing up despite this pattern.
 web/www/*.js
 web/www/*.js.map
+web/www/viewer/
 
 # Temporary/debug Python scripts (at root level)
 /analyze_*.py
