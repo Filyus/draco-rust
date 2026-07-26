@@ -13,6 +13,10 @@ const MAX_JOINTS = 256;
 const DEFAULT_CAMERA_AZIMUTH = Math.PI * 0.25;
 const DEFAULT_CAMERA_ELEVATION = Math.PI * 0.09;
 const ORBIT_RAD_PER_PIXEL = 0.01;
+// Movement keys cross this fraction of the orbit distance per second, so the
+// same tap feels alike on a small prop and on a whole level.
+const FLY_DISTANCE_PER_SECOND = 0.4;
+const ORBIT_RAD_PER_SECOND = 1.2;
 // Keys the viewport claims while focused, so they never scroll the page.
 const NAV_KEYS = new Set([
     'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE',
@@ -976,7 +980,7 @@ export class Viewer {
         if (this._navFast) scale *= 4;
         if (this._navSlow) scale *= 0.25;
 
-        const orbitStep = 1.2 * dt * scale;
+        const orbitStep = ORBIT_RAD_PER_SECOND * dt * scale;
         let dAz = 0, dEl = 0;
         if (keys.has('ArrowLeft')) dAz -= 1;
         if (keys.has('ArrowRight')) dAz += 1;
@@ -993,7 +997,7 @@ export class Viewer {
         if (keys.has('KeyQ')) lift -= 1;
         if (!fwd && !side && !lift) return;
 
-        const speed = 1.5 * this.camera.distance * dt * scale;
+        const speed = FLY_DISTANCE_PER_SECOND * this.camera.distance * dt * scale;
         const right = this._basisRight;
         const up = this._basisUp;
         const forward = this._basisForward;

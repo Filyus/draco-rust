@@ -478,7 +478,7 @@ test('viewport movement keys fly the orbit target along the camera axes', async 
     viewer._navFast = false;
     viewer._navSlow = false;
 
-    // 1.5 * distance * dt = 1.5 world units per step, along the pitched view
+    // 0.4 * distance * dt = 0.4 world units per step, along the pitched view
     // direction rather than the ground plane.
     viewer._navKeys = new Set(['KeyW']);
     viewer._applyKeyboardNavigation(0.1);
@@ -501,10 +501,10 @@ test('viewport movement keys fly the orbit target along the camera axes', async 
   // Camera forward at azimuth 0 is (0, -sin(pitch), -cos(pitch)); its up is
   // perpendicular to that, in the same vertical plane.
   expect(state.forward[0]).toBeCloseTo(0);
-  expect(state.forward[1]).toBeCloseTo(-1.5 * Math.sin(pitch));
-  expect(state.forward[2]).toBeCloseTo(-1.5 * Math.cos(pitch));
-  expect(state.lifted[1]).toBeCloseTo(1.5 * Math.cos(pitch));
-  expect(state.lifted[2]).toBeCloseTo(-1.5 * Math.sin(pitch));
+  expect(state.forward[1]).toBeCloseTo(-0.4 * Math.sin(pitch));
+  expect(state.forward[2]).toBeCloseTo(-0.4 * Math.cos(pitch));
+  expect(state.lifted[1]).toBeCloseTo(0.4 * Math.cos(pitch));
+  expect(state.lifted[2]).toBeCloseTo(-0.4 * Math.sin(pitch));
   // Arrow Up raises the camera, matching the sign the mouse now uses.
   expect(state.elevation).toBeCloseTo(pitch + 0.12);
   expect(state.azimuth).toBeCloseTo(-0.12);
