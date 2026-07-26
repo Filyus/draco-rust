@@ -1218,11 +1218,22 @@ export class Viewer {
             resources.primitives.push(primitives);
         }
 
-        // Upload textures
+        // Upload textures. A document commonly points many textures at one
+        // image, and uploading each separately costs a full decode-sized copy
+        // plus its mip chain, so share a GL texture whenever the image and the
+        // sampler state match.
+        const uploaded = new Map();
         for (const tex of scene.textures) {
             let glTexture = null;
             if (tex && tex.image) {
-                glTexture = this._uploadImage(tex);
+                const perImage = uploaded.get(tex.image)
+                    || uploaded.set(tex.image, new Map()).get(tex.image);
+                const key = `${!!tex.flipY}|${tex.wrapS}|${tex.wrapT}|${tex.minFilter}|${tex.magFilter}`;
+                glTexture = perImage.get(key);
+                if (glTexture === undefined) {
+                    glTexture = this._uploadImage(tex);
+                    perImage.set(key, glTexture);
+                }
             }
             resources.textures.push(glTexture);
         }
@@ -1323,11 +1334,13 @@ export class Viewer {
                 if (p.uploaded.vao) gl.deleteVertexArray(p.uploaded.vao);
             }
         }
-        for (const tex of this.glResources.textures) {
+        // Textures and images are both shared across slots, so delete and close
+        // each distinct object once.
+        for (const tex of new Set(this.glResources.textures)) {
             if (tex) gl.deleteTexture(tex);
         }
-        for (const tex of this.scene?.textures || []) {
-            tex.image?.close?.();
+        for (const image of new Set((this.scene?.textures || []).map((tex) => tex.image))) {
+            image?.close?.();
         }
         this.glResources = null;
     }
