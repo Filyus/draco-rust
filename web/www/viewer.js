@@ -607,6 +607,8 @@ export class Viewer {
         // Scratch vectors for the camera basis used by pan and keyboard flight.
         this._basisRight = vec3.create();
         this._basisUp = vec3.create();
+        this._basisForward = vec3.create();
+        this._pivotScratch = vec3.create();
         // Navigation keys currently held down, by KeyboardEvent.code.
         this._navKeys = new Set();
         this._navFast = false;
@@ -865,14 +867,53 @@ export class Viewer {
         el.addEventListener('blur', () => this._navKeys.clear());
     }
 
-    /** Orbit by radians; positive `dAz`/`dEl` match dragging right/down. */
+    /**
+     * Orbits by radians; positive `dAz`/`dEl` match dragging right/down.
+     *
+     * The whole rig turns around the scene centre rather than around the look-at
+     * point, the way Blender orbits around the selection: once panning or the
+     * movement keys have carried the target away, the model still stays put
+     * instead of swinging around an empty pivot.
+     */
     _orbitBy(dAz, dEl) {
+        const right = this._basisRight;
+        const up = this._basisUp;
+        const forward = this._basisForward;
+        const pivot = this._orbitPivot(this._pivotScratch);
+
+        let a = 0, b = 0, c = 0;
+        if (pivot) {
+            this._cameraBasis(right, up, forward);
+            for (let i = 0; i < 3; i++) {
+                const d = this.camera.target[i] - pivot[i];
+                a += d * right[i];
+                b += d * up[i];
+                c += d * forward[i];
+            }
+        }
+
         this.camera.azimuth -= dAz;
         this.camera.elevation += dEl;
         this.camera.elevation = Math.max(
             -Math.PI * 0.495,
             Math.min(Math.PI * 0.495, this.camera.elevation),
         );
+
+        if (!pivot) return;
+        // Rebuilding the same camera-space offset in the turned basis rotates
+        // the target around the pivot exactly as far as the eye turned.
+        this._cameraBasis(right, up, forward);
+        for (let i = 0; i < 3; i++) {
+            this.camera.target[i] = pivot[i] + right[i] * a + up[i] * b + forward[i] * c;
+        }
+    }
+
+    /** World-space centre of the loaded scene, or null when nothing is loaded. */
+    _orbitPivot(out) {
+        const box = this.scene?.aabb;
+        if (!box) return null;
+        for (let i = 0; i < 3; i++) out[i] = (box.min[i] + box.max[i]) * 0.5;
+        return out;
     }
 
     /**
@@ -955,16 +996,8 @@ export class Viewer {
         const speed = 1.5 * this.camera.distance * dt * scale;
         const right = this._basisRight;
         const up = this._basisUp;
-        this._cameraBasis(right, up);
-        // Forward is the view direction itself — the negated offset
-        // `_cameraPosition` puts between the target and the eye.
-        const ce = Math.cos(this.camera.elevation);
-        const se = Math.sin(this.camera.elevation);
-        const forward = [
-            -ce * Math.sin(this.camera.azimuth),
-            -se,
-            -ce * Math.cos(this.camera.azimuth),
-        ];
+        const forward = this._basisForward;
+        this._cameraBasis(right, up, forward);
         for (let i = 0; i < 3; i++) {
             this.camera.target[i] +=
                 (forward[i] * fwd + right[i] * side + up[i] * lift) * speed;
@@ -1191,7 +1224,7 @@ export class Viewer {
      * `_cameraPosition` uses: right = normalize(forward x worldUp),
      * up = right x forward. cos(elevation) stays positive under the clamp.
      */
-    _cameraBasis(right, up) {
+    _cameraBasis(right, up, forward) {
         const ce = Math.cos(this.camera.elevation);
         const se = Math.sin(this.camera.elevation);
         const ca = Math.cos(this.camera.azimuth);
@@ -1202,6 +1235,10 @@ export class Viewer {
         up[0] = -sa * se;
         up[1] = ce;
         up[2] = -ca * se;
+        if (!forward) return;
+        forward[0] = -ce * sa;
+        forward[1] = -se;
+        forward[2] = -ce * ca;
     }
 
     _cameraPosition(out) {
@@ -1221,7 +1258,8 @@ export class Viewer {
         const dt = (now - this._lastTime) / 1000;
         this._lastTime = now;
 
-        if (this.autoRotate) this.camera.azimuth += dt * 0.4;
+        // Through `_orbitBy` so auto-rotation circles the model, not the target.
+        if (this.autoRotate) this._orbitBy(-dt * 0.4, 0);
         this._applyKeyboardNavigation(dt);
 
         if (this.animation.playing && this.scene?.animations?.length) {

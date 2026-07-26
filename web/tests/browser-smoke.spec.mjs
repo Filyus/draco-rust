@@ -362,6 +362,8 @@ test('viewport pan slides inside the camera plane and vertical orbit follows the
     viewer.canvas = { clientHeight: 100, height: 100 };
     viewer._basisRight = new Float32Array(3);
     viewer._basisUp = new Float32Array(3);
+    viewer._basisForward = new Float32Array(3);
+    viewer._pivotScratch = new Float32Array(3);
 
     // 2 * distance * tan(fov / 2) / height = 0.2 world units per pixel.
     viewer._panBy(10, 5);
@@ -380,6 +382,39 @@ test('viewport pan slides inside the camera plane and vertical orbit follows the
   expect(state.panned[2]).toBeCloseTo(2);
   expect(state.azimuth).toBeCloseTo(Math.PI * 0.5 - 0.3);
   expect(state.elevation).toBeCloseTo(0.1);
+});
+
+test('viewport orbit turns around the scene centre after the target has moved', async ({ page }) => {
+  await page.goto('/index.html');
+  const state = await page.evaluate(async () => {
+    const { Viewer } = await import('/viewer.js');
+    const viewer = Object.create(Viewer.prototype);
+    viewer.camera = {
+      // Flown 5 units forward, so the look-at point is no longer the model.
+      target: new Float32Array([0, 0, -5]),
+      distance: 10,
+      azimuth: 0,
+      elevation: 0,
+      fov: Math.PI * 0.5,
+    };
+    viewer.scene = { aabb: { min: [-1, -1, -1], max: [1, 1, 1] } };
+    viewer._basisRight = new Float32Array(3);
+    viewer._basisUp = new Float32Array(3);
+    viewer._basisForward = new Float32Array(3);
+    viewer._pivotScratch = new Float32Array(3);
+
+    viewer._orbitBy(Math.PI * 0.5, 0);
+    const eye = Array.from(viewer._cameraPosition(new Float32Array(3)));
+    return { target: Array.from(viewer.camera.target), eye };
+  });
+
+  // A quarter turn about the origin takes the eye from (0, 0, 5) to (-5, 0, 0)
+  // and carries the look-at point with it, so the model stays framed the same.
+  expect(state.eye[0]).toBeCloseTo(-5);
+  expect(state.eye[1]).toBeCloseTo(0);
+  expect(state.eye[2]).toBeCloseTo(0);
+  expect(state.target[0]).toBeCloseTo(5);
+  expect(state.target[2]).toBeCloseTo(0);
 });
 
 test('viewport wheel zoom keeps the point under the cursor and scales its limits to the scene', async ({ page }) => {
@@ -438,6 +473,8 @@ test('viewport movement keys fly the orbit target along the camera axes', async 
     };
     viewer._basisRight = new Float32Array(3);
     viewer._basisUp = new Float32Array(3);
+    viewer._basisForward = new Float32Array(3);
+    viewer._pivotScratch = new Float32Array(3);
     viewer._navFast = false;
     viewer._navSlow = false;
 
