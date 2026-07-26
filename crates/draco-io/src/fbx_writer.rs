@@ -43,10 +43,28 @@ use draco_core::geometry_indices::FaceIndex;
 use draco_core::mesh::Mesh;
 
 use crate::fbx_ascii_syntax::{name_class, FBX_VERSION};
+use crate::fbx_ascii_writer::print_document;
 use crate::fbx_encoder::{encode_node, write_footer, write_null_record, WriterOptions, FBX_MAGIC};
 use crate::fbx_node::{FbxNode, FbxProperty};
 use crate::fbx_scene::FbxNodeAttribute;
 use crate::traits::{WriteToBytes, Writer};
+
+/// Container an FBX document is written in.
+///
+/// Both spell the same tree of records; they differ only in how one record is
+/// written down. Binary is what every tool reads fastest and what this crate
+/// writes unless told otherwise. ASCII is text, so a document can be read and
+/// diffed -- at the cost of size, and of the few spellings the text container
+/// records less precisely, which [`crate::fbx_ascii_writer`] lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FbxFormat {
+    /// The binary container, with 64-bit record headers and optional array
+    /// compression.
+    #[default]
+    Binary,
+    /// The text container. Array compression does not apply and is ignored.
+    Ascii,
+}
 
 /// FBX binary format writer.
 ///
@@ -70,6 +88,8 @@ use crate::traits::{WriteToBytes, Writer};
 /// ```
 #[derive(Debug, Clone)]
 pub struct FbxWriter {
+    /// Container the document is written in.
+    format: FbxFormat,
     /// Whether to compress arrays using zlib (requires `compression` feature).
     compress: bool,
     /// Minimum array size (in bytes) to consider for compression.
@@ -226,6 +246,7 @@ impl FbxWriter {
     /// Create a new FBX writer with default settings.
     pub fn new() -> Self {
         Self {
+            format: FbxFormat::Binary,
             compress: false,
             compression_threshold: 128,
             meshes: Vec::new(),
@@ -240,6 +261,16 @@ impl FbxWriter {
             connections: Vec::new(),
             next_id: 1000, // Start at 1000 to avoid reserved IDs (0 = root)
         }
+    }
+
+    /// Choose the container the document is written in.
+    ///
+    /// The document itself does not change; only how its records are spelled.
+    /// Compression settings are ignored for [`FbxFormat::Ascii`], which has no
+    /// encoding field to put a compressed array in.
+    pub fn with_format(mut self, format: FbxFormat) -> Self {
+        self.format = format;
+        self
     }
 
     /// Enable or disable zlib compression for arrays.
@@ -660,6 +691,9 @@ impl FbxWriter {
 
     /// Write the FBX data into a byte vector.
     pub fn write_to_vec(&self) -> io::Result<Vec<u8>> {
+        if self.format == FbxFormat::Ascii {
+            return print_document(&self.build_document()?);
+        }
         let options = WriterOptions {
             compress: self.compress,
             compression_threshold: self.compression_threshold,

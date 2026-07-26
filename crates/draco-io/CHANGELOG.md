@@ -36,6 +36,16 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   32 mm default without it, silently reframing every camera. Other attribute
   classes raise `FbxWarningCode::DroppedNodeAttribute` on read and are not
   written.
+- The ASCII FBX container is written as well as read. `FbxWriter::with_format`
+  takes the new `FbxFormat`, `FbxScene::to_ascii_bytes` writes text where
+  `to_bytes` writes records, and `fbx_rewrite --ascii` produces one. Both
+  spellings come off the same document tree, so the two containers can differ
+  only in how a record is written down -- a corpus check compares the trees
+  they read back as, over all 565 comparable files. Three things ASCII cannot
+  record are reported as errors rather than written wrong: a node with two
+  array properties, a non-finite float, and raw bytes on a node no reader
+  decodes as base64. Two it records less precisely and cannot be helped: an
+  integer's width, and an object named `"` against one named `&quot;`.
 - The ASCII FBX container is read, for versions 7000 and later, through the
   new `fbx_ascii` module. It produces the same node tree as the binary reader,
   so `FbxReader`, `FbxScene::from_bytes` and the `Reader` traits all accept it

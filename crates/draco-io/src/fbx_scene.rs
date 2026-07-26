@@ -857,4 +857,17 @@ impl FbxScene {
         writer.add_scene(self)?;
         writer.write_to_vec()
     }
+
+    /// Writes this scene as ASCII FBX text.
+    ///
+    /// The same document as [`Self::to_bytes`], spelled as text rather than as
+    /// records. Larger and slower to read, but diffable; a handful of property
+    /// types come back wider, which [`crate::fbx_ascii_writer`] lists.
+    #[cfg(feature = "fbx-writer")]
+    pub fn to_ascii_bytes(&self) -> io::Result<Vec<u8>> {
+        let mut writer =
+            crate::fbx_writer::FbxWriter::new().with_format(crate::fbx_writer::FbxFormat::Ascii);
+        writer.add_scene(self)?;
+        writer.write_to_vec()
+    }
 }

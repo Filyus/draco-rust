@@ -3,7 +3,12 @@
 //!
 //! ```text
 //! cargo run --example fbx_rewrite -- in.fbx out.fbx
+//! cargo run --example fbx_rewrite -- --ascii in.fbx out.fbx
 //! ```
+//!
+//! `--ascii` writes the text container instead. ufbx reads both, so the same
+//! Blender recipe below checks either one; the text file is also the only form
+//! of this crate's output a person can read.
 //!
 //! The corpus round-trip test compares this crate's own read of both files,
 //! so it agrees with itself by construction and cannot see anything only an
@@ -32,12 +37,18 @@ use draco_io::FbxScene;
 use std::env;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().skip(1).collect();
+    let mut args: Vec<String> = env::args().skip(1).collect();
+    let ascii = args.iter().any(|arg| arg == "--ascii");
+    args.retain(|arg| arg != "--ascii");
     let [input, output] = args.as_slice() else {
-        return Err("usage: fbx_rewrite <in.fbx> <out.fbx>".into());
+        return Err("usage: fbx_rewrite [--ascii] <in.fbx> <out.fbx>".into());
     };
     let scene = FbxScene::from_bytes(&std::fs::read(input)?)?;
-    let bytes = scene.to_bytes()?;
+    let bytes = if ascii {
+        scene.to_ascii_bytes()?
+    } else {
+        scene.to_bytes()?
+    };
     std::fs::write(output, &bytes)?;
     println!("{input} -> {output}: {} bytes", bytes.len());
     Ok(())

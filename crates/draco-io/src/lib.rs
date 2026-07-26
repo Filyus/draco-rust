@@ -12,6 +12,8 @@
 pub mod fbx_ascii;
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
 mod fbx_ascii_syntax;
+#[cfg(feature = "fbx-writer")]
+mod fbx_ascii_writer;
 #[cfg(feature = "fbx-reader")]
 /// FBX binary container decoder.
 pub mod fbx_container;
@@ -79,7 +81,7 @@ pub use fbx_scene::{
     FbxTransformStack, FbxUvSet, FbxWarning, FbxWarningCode,
 };
 #[cfg(feature = "fbx-writer")]
-pub use fbx_writer::FbxWriter;
+pub use fbx_writer::{FbxFormat, FbxWriter};
 #[cfg(feature = "gltf-container")]
 pub use gltf_container::{
     decode_data_uri, inspect_glb, parse_glb_json_and_bin, parse_gltf_container,
