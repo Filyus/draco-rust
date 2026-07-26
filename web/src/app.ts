@@ -46,18 +46,11 @@ import {
     normalBits,
     positionBits,
     previewSection,
-    sceneCapabilitySummary,
-    sceneClipList,
     sceneInfo,
-    sceneMaterialList,
     scenePanel,
-    sceneResourceList,
     sceneSection,
-    sceneStatFields,
-    sceneTree,
     texcoordBits,
     useDraco,
-    useDracoLabel,
     viewerAnimation,
     viewerAutoRotateBtn,
     viewerBaseColorBtn,
@@ -74,11 +67,15 @@ import { debugLog, errorMessage, log } from './app/log.ts';
 import { modules, state } from './app/state.ts';
 import {
     clearWarningPanel,
-    setWarningList,
-    setWarningPanel,
     setWarningSource,
-    uniqueWarnings,
 } from './app/warnings.ts';
+import { loadAllModules, updateDracoEncoderAvailability } from './app/modules.ts';
+import { parseFbxFile, parseGltfFile, parseObjFile, parsePlyFile } from './app/parsers.ts';
+import {
+    describeSceneCapabilities,
+    displayMeshInfo,
+    renderSceneDocumentSummary,
+} from './app/scene-report.ts';
 
 function setViewerControlsEnabled(enabled: boolean) {
     for (const control of viewerControls) control.disabled = !enabled;
@@ -142,73 +139,7 @@ async function init() {
     log('Ready to convert 3D files!', 'success');
 }
 
-// Load all WASM modules
-async function loadAllModules() {
-    // Cache-bust to ensure fresh WASM/JS are loaded (helps avoid stale cached files during development)
-    const CACHE_BUST = `?v=${Date.now()}`;
-    const moduleConfigs = [
-        { key: 'obj', path: `./pkg/obj.js${CACHE_BUST}`, statusId: 'obj-status' },
-        { key: 'ply', path: `./pkg/ply.js${CACHE_BUST}`, statusId: 'ply-status' },
-        { key: 'gltf', path: `./pkg/gltf.js${CACHE_BUST}`, statusId: 'gltf-status' },
-        { key: 'fbx', path: `./pkg/fbx.js${CACHE_BUST}`, statusId: 'fbx-status' },
-    ];
 
-    const loadPromises = moduleConfigs.map(config => loadModule(config));
-    await Promise.allSettled(loadPromises);
-}
-
-// Load a single WASM module
-async function loadModule({ key, path, statusId }: { key: string; path: string; statusId: string }) {
-    const statusEl = element(statusId);
-    const indicator = statusEl.querySelector('.status-indicator')!;
-    // ensure initial loading state
-    if (indicator) {
-        indicator.classList.remove('ready','error');
-        indicator.classList.add('loading');
-        const statusTextInit = indicator.querySelector('.status-text');
-        if (statusTextInit) statusTextInit.textContent = 'Loading...';
-        statusEl.removeAttribute('aria-label');
-    }
-    
-    try {
-        const module = await import(path);
-        const wasmUrl = new URL(path.replace(/\.js(\?.*)?$/, '_bg.wasm$1'), window.location.href);
-        await module.default(wasmUrl);
-        
-        modules[key].module = module;
-        modules[key].loaded = true;
-        if (key === 'gltf') {
-            updateDracoEncoderAvailability();
-        }
-        
-        // Update visual indicator (dot + aria label)
-        const statusText = indicator.querySelector('.status-text');
-        const statusDot = indicator.querySelector('.status-dot');
-        if (statusText) statusText.textContent = 'Ready';
-        indicator.classList.remove('loading','error');
-        indicator.classList.add('ready');
-        indicator.setAttribute('aria-label', 'Ready');
-        if (statusDot) {
-            statusDot.classList.remove('dot-loading','dot-error','dot-ready');
-            // visual state is controlled by the parent .status-indicator class
-        }
-        
-        const version = module.version ? module.version() : '?';
-        log(`${key} v${version} loaded`, 'success');
-    } catch (error) {
-        const statusText = indicator.querySelector('.status-text');
-        const statusDot = indicator.querySelector('.status-dot');
-        if (statusText) statusText.textContent = 'Error';
-        indicator.classList.remove('loading','ready');
-        indicator.classList.add('error');
-        indicator.setAttribute('aria-label', 'Error');
-        if (statusDot) {
-            statusDot.classList.remove('dot-loading','dot-ready','dot-error');
-            // visual state is controlled by the parent .status-indicator class
-        }
-        log(`Failed to load ${key}: ${errorMessage(error)}`, 'error');
-    }
-}
 
 // Setup event listeners
 function setupEventListeners() {
@@ -366,16 +297,6 @@ async function handleFiles(fileList: FileList) {
     await handleFile(file, files.filter((candidate) => candidate !== file));
 }
 
-function updateDracoEncoderAvailability() {
-    const prototype = modules.gltf.module?.GltfAsset?.prototype;
-    const available = typeof prototype?.compressPrimitive === 'function';
-    useDraco.disabled = !available;
-    useDraco.checked = available;
-    useDracoLabel.textContent = available
-        ? 'Enable Draco Compression'
-        : 'Draco Compression (not included in this build)';
-    dracoSettings.style.display = available && useDraco.checked ? 'grid' : 'none';
-}
 
 async function handleFile(file: File, companionFiles: File[] = []) {
     const extension = file.name.split('.').pop()!.toLowerCase();
@@ -466,352 +387,18 @@ async function handleFile(file: File, companionFiles: File[] = []) {
     }
 }
 
-// Parse OBJ file
-async function parseObjFile(data: Uint8Array, resources = Object.create(null)) {
-    if (!modules.obj.loaded) {
-        return { success: false, error: 'OBJ module not loaded' };
-    }
-
-    const textContent = new TextDecoder().decode(data);
-    const result = modules.obj.module.parse_obj(textContent);
-    if (result?.success) {
-        result.materials = parseObjMaterials(textContent, resources, result.warnings || (result.warnings = []));
-    }
-    return result;
-}
-
-function parseObjMaterials(objText: string, resources: ResourceMap, warnings: string[]) {
-    const materials = Object.create(null);
-    const libraries = [];
-    for (const line of objText.split(/\r\n|[\r\n]/)) {
-        const match = line.trim().match(/^mtllib\s+(.+)$/i);
-        if (match) libraries.push(match[1].trim());
-    }
-    for (const library of libraries) {
-        const bytes = resources[library] || resources[basename(library)];
-        if (!bytes) {
-            warnings.push(`OBJ material library not selected: ${library}`);
-            continue;
-        }
-        let current = null;
-        const text = new TextDecoder().decode(bytes);
-        for (const line of text.split(/\r\n|[\r\n]/)) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith('#')) continue;
-            const [directive, ...values] = trimmed.split(/\s+/);
-            if (directive === 'newmtl') {
-                current = values.join(' ');
-                if (current) materials[current] ||= { diffuse: [1, 1, 1], alpha: 1 };
-            } else if (directive === 'Kd' && current && values.length >= 3) {
-                const diffuse = values.slice(0, 3).map(Number);
-                if (diffuse.every(Number.isFinite)) materials[current].diffuse = diffuse;
-            } else if ((directive === 'd' || directive === 'Tr') && current && values.length >= 1) {
-                const value = Number(values[0]);
-                if (Number.isFinite(value)) materials[current].alpha = directive === 'Tr' ? 1 - value : value;
-            } else if (directive.toLowerCase() === 'map_kd' && current) {
-                const texture = mtlMapPath(values);
-                if (texture) materials[current].baseColorTextureUri = texture;
-            }
-        }
-    }
-    return materials;
-}
-
-// `map_Kd` accepts optional flags before its filename. Keep the filename (which
-// may itself contain spaces) while skipping the standardized flag arguments.
-function mtlMapPath(values: string[]) {
-    const optionValues = {
-        '-blendu': 1, '-blendv': 1, '-cc': 1, '-clamp': 1, '-texres': 1,
-        '-bm': 1, '-imfchan': 1, '-type': 1, '-mm': 2, '-o': 3, '-s': 3, '-t': 3,
-    };
-    let index = 0;
-    while (index < values.length && values[index].startsWith('-')) {
-        index += 1 + (optionValues[values[index].toLowerCase() as keyof typeof optionValues] ?? 0);
-    }
-    return values.slice(index).join(' ').trim();
-}
-
-// Parse PLY file
-async function parsePlyFile(data: Uint8Array) {
-    if (!modules.ply.loaded) {
-        return { success: false, error: 'PLY module not loaded' };
-    }
-
-    const result = modules.ply.module.parse_ply_bytes(data);
-    debugLog('PLY parse result:', result);
-    if (result.meshes) {
-        for (const mesh of result.meshes) {
-            debugLog('PLY mesh: positions=', mesh.positions?.length,
-                ', indices=', mesh.indices?.length,
-                ', normals=', mesh.normals?.length);
-        }
-    }
-    return result;
-}
-
-// Parse glTF/GLB file
-async function parseGltfFile(data: Uint8Array, extension: string, resources = Object.create(null)) {
-    if (!modules.gltf.loaded) {
-        return { success: false, error: 'glTF module not loaded' };
-    }
-
-    const summary = modules.gltf.module.inspect_gltf(data);
-    if (!summary.success) {
-        return { ...summary, document: true, format: extension };
-    }
-
-    const asset = modules.gltf.module.GltfAsset.withResources(data, resources, '2.1');
-    let vertexCount = 0;
-    let triangleCount = 0;
-    let hasNormals = false;
-    let hasUvs = false;
-
-    try {
-        for (let mesh = 0; mesh < asset.meshCount(); mesh += 1) {
-            const primitiveCount = asset.primitiveCount(mesh);
-            for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
-                const geometry = asset.readPrimitive(mesh, primitive);
-                try {
-                    let primitiveVertexCount = 0;
-                    for (let attribute = 0; attribute < geometry.attributeCount(); attribute += 1) {
-                        const semantic = geometry.attributeSemantic(attribute);
-                        if (semantic === 'POSITION') {
-                            primitiveVertexCount = geometry.attributeElementCount(attribute);
-                        } else if (semantic === 'NORMAL') {
-                            hasNormals = true;
-                        } else if (semantic.startsWith('TEXCOORD_')) {
-                            hasUvs = true;
-                        }
-                    }
-
-                    vertexCount += primitiveVertexCount;
-                    const elementCount = geometry.hasIndices()
-                        ? geometry.indexCount()
-                        : primitiveVertexCount;
-                    triangleCount += triangleCountForMode(geometry.mode(), elementCount);
-                } finally {
-                    geometry.free();
-                }
-            }
-        }
-    } finally {
-        asset.free();
-    }
-
-    return {
-        ...summary,
-        document: true,
-        format: extension,
-        vertexCount,
-        triangleCount,
-        hasNormals,
-        hasUvs,
-    };
-}
-
-function triangleCountForMode(mode: number, elementCount: number) {
-    switch (mode) {
-        case 4: // TRIANGLES
-            return Math.floor(elementCount / 3);
-        case 5: // TRIANGLE_STRIP
-        case 6: // TRIANGLE_FAN
-            return Math.max(0, elementCount - 2);
-        default:
-            return 0;
-    }
-}
-
-// Parse FBX file
-async function parseFbxFile(data: Uint8Array) {
-    // ASCII and binary both go through the WASM reader now; it produces the
-    // same node tree from either container, so the regex fallback that used to
-    // scrape ASCII geometry -- without transforms, materials, skins or
-    // animation -- is gone.
-    if (!modules.fbx.loaded) {
-        return { success: false, error: 'FBX module not loaded' };
-    }
-
-    return modules.fbx.module.parse_fbx(data);
-}
-
-function renderSceneDocumentSummary(sceneDocument: SceneDocument, extraWarnings = []) {
-    if (!sceneDocument) {
-        scenePanel.hidden = true;
-        sceneInfo.hidden = true;
-        setWarningSource('scene', []);
-        sceneSection.style.display = 'none';
-        workspace.classList.remove('scene-loaded');
-        return;
-    }
-    try {
-        const validation = assertValidSceneDocument(sceneDocument);
-        const morphs = sceneDocument.meshes.reduce(
-            (total: number, mesh: any) => total + mesh.primitives.reduce((count: number, primitive: any) => count + (primitive.targets?.length || 0), 0),
-            0,
-        );
-        sceneStatFields.nodes.textContent = sceneDocument.nodes.length.toLocaleString();
-        sceneStatFields.meshes.textContent = sceneDocument.meshes.length.toLocaleString();
-        sceneStatFields.materials.textContent = sceneDocument.materials.length.toLocaleString();
-        sceneStatFields.skins.textContent = sceneDocument.skins.length.toLocaleString();
-        sceneStatFields.morphs.textContent = morphs.toLocaleString();
-        sceneStatFields.clips.textContent = sceneDocument.animations.length.toLocaleString();
-        renderSceneTree(sceneDocument);
-        renderSceneCompanions(sceneDocument);
-        sceneSection.style.display = 'flex';
-        workspace.classList.add('scene-loaded');
-        sceneCapabilitySummary.textContent = describeSceneCapabilities(validation.capabilities);
-        setWarningSource('scene', [...sceneDocument.warnings, ...validation.warnings, ...extraWarnings]);
-        scenePanel.hidden = false;
-        sceneInfo.hidden = false;
-    } catch (error) {
-        scenePanel.hidden = true;
-        sceneInfo.hidden = true;
-        setWarningSource('scene', []);
-        sceneSection.style.display = 'none';
-        exportSidebar.style.display = 'none';
-        workspace.classList.remove('scene-loaded');
-        workspace.classList.remove('export-loaded');
-        log(`Scene details unavailable: ${errorMessage(error)}`, 'warning');
-    }
-}
-
-function describeSceneCapabilities(capabilities: any = {}) {
-    const preserved: string[] = [];
-    if (capabilities.resources) preserved.push('resources');
-    if (capabilities.textures) preserved.push('textures');
-    if (capabilities.materials) preserved.push('materials');
-    if (capabilities.skins) preserved.push('skins');
-    if (capabilities.morphTargets) preserved.push('morph targets');
-    if (capabilities.animations) preserved.push('animation clips');
-    if (capabilities.cubicAnimation) preserved.push('cubic animation samples');
-    return preserved.length > 0
-        ? `Preserved in the shared scene model: ${preserved.join(', ')}.`
-        : 'The shared scene model contains hierarchy and geometry data.';
-}
 
 
-function renderSceneTree(sceneDocument: SceneDocument) {
-    sceneTree.replaceChildren();
-    if (sceneDocument.nodes.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'scene-tree-empty';
-        empty.textContent = 'This loaded document has no scene nodes.';
-        sceneTree.appendChild(empty);
-        return;
-    }
-    const animatedNodes = new Set(sceneDocument.animations.flatMap((clip: any) => clip.channels.map((channel: any) => channel.node)));
-    const appendNode = (nodeIndex: number, depth: number, visited: Set<number>, target: any) => {
-        if (visited.has(nodeIndex)) return;
-        visited.add(nodeIndex);
-        const node = sceneDocument.nodes[nodeIndex] || {};
-        const children = (node.children || []).filter((child: any) => Number.isInteger(child) && child >= 0 && child < sceneDocument.nodes.length);
-        const branching = children.length > 0;
-        const wrapper = branching
-            ? document.createElement('details')
-            : document.createElement('div') as HTMLElement as HTMLDetailsElement;
-        wrapper.className = branching ? 'scene-tree-node' : 'scene-tree-leaf';
-        if (branching) wrapper.open = true;
-        const row = document.createElement(branching ? 'summary' : 'div');
-        row.className = 'scene-tree-row';
-        row.dataset.nodeIndex = String(nodeIndex);
-        row.dataset.depth = String(depth);
-        row.setAttribute('role', 'treeitem');
-        // Nesting supplies the indentation, so rows no longer need inline padding math.
-        const twisty = document.createElement('span');
-        // Leaves get an invisible spacer instead of a control, so only real branches show a box.
-        twisty.className = branching ? 'scene-tree-twisty' : 'scene-tree-twisty scene-tree-twisty-empty';
-        twisty.setAttribute('aria-hidden', 'true');
-        row.appendChild(twisty);
-        const label = document.createElement('span');
-        label.className = 'scene-tree-label';
-        label.textContent = node.name || `Node ${nodeIndex}`;
-        row.appendChild(label);
-        const badges = document.createElement('span');
-        badges.className = 'scene-tree-badges';
-        const addBadge = (text: string, kind: string) => {
-            const badge = document.createElement('span');
-            badge.className = `scene-tree-badge scene-tree-badge-${kind}`;
-            badge.textContent = text;
-            badges.appendChild(badge);
-        };
-        if (node.mesh !== undefined) addBadge('mesh', 'mesh');
-        if (node.skin !== undefined) addBadge('skin', 'skin');
-        if (animatedNodes.has(nodeIndex)) addBadge('animated', 'animation');
-        row.appendChild(badges);
-        wrapper.appendChild(row);
-        if (branching) {
-            const childList = document.createElement('div');
-            childList.className = 'scene-tree-children';
-            childList.setAttribute('role', 'group');
-            wrapper.appendChild(childList);
-            children.forEach((child: any, position) => {
-                const before = childList.childElementCount;
-                appendNode(child, depth + 1, visited, childList);
-                // Mark the visually last child so its guide line can stop at the elbow.
-                if (childList.childElementCount > before && position === children.length - 1) {
-                    childList.lastElementChild!.classList.add('scene-tree-last');
-                }
-            });
-        }
-        target.appendChild(wrapper);
-    };
-    const visited = new Set<number>();
-    for (const root of sceneDocument.rootNodes) appendNode(root, 0, visited, sceneTree);
-    const orphans = document.createElement('div');
-    orphans.className = 'scene-tree-orphans';
-    sceneDocument.nodes.forEach((_, index: number) => appendNode(index, 0, visited, orphans));
-    if (orphans.childElementCount > 0) {
-        const heading = document.createElement('div');
-        heading.className = 'scene-tree-orphans-title';
-        heading.textContent = 'Detached nodes';
-        sceneTree.append(heading, orphans);
-    }
-}
 
-function renderSceneCompanions(sceneDocument: SceneDocument) {
-    const formatNames = (items: any[], fallback: string) => {
-        if (!items.length) return fallback;
-        const names = items.map((item, index: number) => item.name || `${fallback} ${index + 1}`);
-        return names.length > 3 ? `${names.slice(0, 3).join(', ')} +${names.length - 3}` : names.join(', ');
-    };
-    sceneResourceList.textContent = formatNames(sceneDocument.resources, 'none');
-    sceneMaterialList.textContent = formatNames(sceneDocument.materials, 'none');
-    sceneClipList.textContent = formatNames(sceneDocument.animations, 'none');
-}
 
-// Display mesh information
-function displayMeshInfo(result: any) {
-    if (result.document) {
-        element('mesh-count').textContent = result.meshCount.toLocaleString();
-        element('vertex-count').textContent = result.vertexCount.toLocaleString();
-        element('triangle-count').textContent = result.triangleCount.toLocaleString();
-        element('has-normals').textContent = result.hasNormals ? 'Yes' : 'No';
-        element('has-uvs').textContent = result.hasUvs ? 'Yes' : 'No';
-        setWarningSource('mesh', result.warnings || []);
-        return;
-    }
-    const meshes = result.meshes || [];
-    
-    let totalVertices = 0;
-    let totalTriangles = 0;
-    let hasNormals = false;
-    let hasUvs = false;
-    
-    for (const mesh of meshes) {
-        totalVertices += (mesh.positions?.length || 0) / 3;
-        totalTriangles += (mesh.indices?.length || 0) / 3;
-        if (mesh.normals?.length > 0) hasNormals = true;
-        if (mesh.uvs?.length > 0) hasUvs = true;
-    }
-    
-    element('mesh-count').textContent = meshes.length;
-    element('vertex-count').textContent = totalVertices.toLocaleString();
-    element('triangle-count').textContent = totalTriangles.toLocaleString();
-    element('has-normals').textContent = hasNormals ? 'Yes' : 'No';
-    element('has-uvs').textContent = hasUvs ? 'Yes' : 'No';
 
-    setWarningSource('mesh', result.warnings || []);
-}
+
+
+
+
+
+
+
 
 // Update export options based on format
 function updateExportOptions() {
