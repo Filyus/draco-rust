@@ -138,3 +138,20 @@ npm run --prefix web test:node
 ```
 
 Optimized packages are written to `web/www/pkg/`.
+
+The front-end is TypeScript in `web/src/`, compiled by `tsc` into `web/www/`
+as plain ES modules — no bundler, and `index.html` still loads a single
+`app.js`. `web/www/` therefore holds only build output and the two tracked
+static files (`index.html`, `style.css`). Both `build.ps1` and `build.sh` run
+that compile for you; the raw `cargo run` build-tool invocations above do not,
+so run it yourself when using them:
+
+```sh
+npm run --prefix web build:ts     # once
+npm run --prefix web watch:ts     # while working on the front-end
+npm run --prefix web typecheck
+```
+
+Node 24 executes TypeScript directly, so `test:node` and the other Node suites
+import `web/src/*.ts` and need no build step. Only the browser — and therefore
+`test:browser` — consumes the compiled output.
