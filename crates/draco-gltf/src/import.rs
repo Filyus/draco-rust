@@ -526,27 +526,19 @@ impl Import {
         let root = document.as_value_mut();
         if let Some(views) = root.get_mut("bufferViews").and_then(Value::as_array_mut) {
             for (index, view) in views.iter_mut().enumerate() {
-                let buffer = view
-                    .get("buffer")
-                    .and_then(Value::as_u64)
-                    .and_then(|value| usize::try_from(value).ok())
-                    .ok_or_else(|| {
-                        Error::Validation(vec![format!(
-                            "bufferViews[{index}].buffer is not a valid index"
-                        )])
-                    })?;
-                let prefix = *offsets.get(buffer).ok_or_else(|| {
-                    Error::Validation(vec![format!(
-                        "bufferViews[{index}].buffer references missing buffer {buffer}"
-                    )])
-                })?;
-                let offset = view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0);
-                let offset = usize::try_from(offset)
-                    .ok()
-                    .and_then(|offset| prefix.checked_add(offset))
-                    .ok_or_else(|| Error::ResourceLimit("GLB bufferView offset overflow".into()))?;
-                view["buffer"] = Value::from(0usize);
-                view["byteOffset"] = Value::from(offset);
+                // The compressed range of a meshopt view names its own buffer,
+                // so it has to follow the view onto the consolidated buffer.
+                if let Some(extension) = view
+                    .get_mut("extensions")
+                    .and_then(|value| value.get_mut(EXT_MESHOPT_COMPRESSION))
+                {
+                    rebase_buffer_reference(
+                        extension,
+                        &offsets,
+                        &format!("bufferViews[{index}].extensions.{EXT_MESHOPT_COMPRESSION}"),
+                    )?;
+                }
+                rebase_buffer_reference(view, &offsets, &format!("bufferViews[{index}]"))?;
             }
         }
         root["buffers"] = Value::Array(vec![Value::object([(
@@ -744,6 +736,31 @@ impl Import {
             .ok_or_else(|| Error::Extension("file bufferView is outside its buffer".into()))?;
         Ok(bytes[start..end].to_vec())
     }
+}
+
+/// Rebases one `{buffer, byteOffset}` pair onto the consolidated GLB buffer.
+///
+/// `offsets` holds where each declared buffer starts in the merged binary
+/// chunk, indexed the way the document declared them.
+fn rebase_buffer_reference(value: &mut Value, offsets: &[usize], label: &str) -> Result<()> {
+    let buffer = value
+        .get("buffer")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| Error::Validation(vec![format!("{label}.buffer is not a valid index")]))?;
+    let prefix = *offsets.get(buffer).ok_or_else(|| {
+        Error::Validation(vec![format!(
+            "{label}.buffer references missing buffer {buffer}"
+        )])
+    })?;
+    let offset = value.get("byteOffset").and_then(Value::as_u64).unwrap_or(0);
+    let offset = usize::try_from(offset)
+        .ok()
+        .and_then(|offset| prefix.checked_add(offset))
+        .ok_or_else(|| Error::ResourceLimit(format!("{label} byteOffset overflow")))?;
+    value["buffer"] = Value::from(0usize);
+    value["byteOffset"] = Value::from(offset);
+    Ok(())
 }
 
 /// Expands every `EXT_meshopt_compression` buffer view into its target buffer.
@@ -946,6 +963,43 @@ mod tests {
         let import = parse(&glb, ValidationProfile::Gltf20).unwrap();
 
         assert_eq!(import.resources.buffers[1], vec![1, 2, 3, 4]);
+    }
+
+    /// GLB output merges every declared buffer into one binary chunk, so a
+    /// compressed range that does not start the chunk only survives when the
+    /// extension's own offsets are rebased along with the buffer view's.
+    #[test]
+    fn glb_output_rebases_a_meshopt_source_buffer_that_is_not_first() {
+        let stream = meshopt_vertex_stream();
+        let uri: String = stream
+            .iter()
+            .map(|byte| format!("%{byte:02X}"))
+            .collect::<Vec<_>>()
+            .concat();
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},
+            "extensionsUsed":["EXT_meshopt_compression"],
+            "extensionsRequired":["EXT_meshopt_compression"],
+            "buffers":[{{"byteLength":4,"extensions":{{"EXT_meshopt_compression":{{"fallback":true}}}}}},
+                       {{"byteLength":{},"uri":"data:application/octet-stream,{uri}"}}],
+            "bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":4,"byteStride":4,
+                "extensions":{{"EXT_meshopt_compression":{{"buffer":1,"byteOffset":0,"byteLength":{},
+                "byteStride":4,"mode":"ATTRIBUTES","count":1}}}}}}]}}"#,
+            stream.len(),
+            stream.len()
+        );
+
+        let import = parse(json.as_bytes(), ValidationProfile::Gltf20).unwrap();
+        assert_eq!(import.resources.buffers[0], vec![1, 2, 3, 4]);
+
+        let glb = import.to_bytes(crate::OutputFormat::GlbV2).unwrap();
+        let reimported = parse(&glb, ValidationProfile::Gltf20).unwrap();
+
+        assert_eq!(
+            &reimported.resources.buffers[0][..4],
+            &[1, 2, 3, 4],
+            "the consolidated buffer must still decode to the same vertex"
+        );
     }
 
     #[test]
