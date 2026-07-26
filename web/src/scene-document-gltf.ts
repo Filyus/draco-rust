@@ -105,6 +105,7 @@ export function lowerSceneDocumentToGltf(document: SceneDocument) {
   const images: { name: string; bufferView: number; mimeType: string }[] = [];
   const imageByResource = new Map<number, number>();
   const samplers: Record<string, number>[] = [];
+  const samplerByKey = new Map<string, number>();
   const textures: (GltfTexture | null)[] = document.textures.map((texture, index) => {
     const resource = document.resources[texture.resource];
     const sourceExtension = textureSourceExtension(resource?.mimeType);
@@ -119,13 +120,21 @@ export function lowerSceneDocumentToGltf(document: SceneDocument) {
       images.push({ name: resource.name || `image_${image}`, bufferView, mimeType: resource.mimeType });
       imageByResource.set(texture.resource, image);
     }
-    const sampler = samplers.length;
-    samplers.push({
+    // Samplers carry no identity in glTF, so textures that want the same
+    // filtering share one record rather than each getting a copy of it.
+    const settings = {
       wrapS: texture.sampler?.wrapS ?? 10497,
       wrapT: texture.sampler?.wrapT ?? 10497,
       minFilter: texture.sampler?.minFilter ?? 9987,
       magFilter: texture.sampler?.magFilter ?? 9729,
-    });
+    };
+    const key = `${settings.wrapS}:${settings.wrapT}:${settings.minFilter}:${settings.magFilter}`;
+    let sampler = samplerByKey.get(key);
+    if (sampler === undefined) {
+      sampler = samplers.length;
+      samplers.push(settings);
+      samplerByKey.set(key, sampler);
+    }
     return {
       name: texture.name || `texture_${index}`,
       sampler,

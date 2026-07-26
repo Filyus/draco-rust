@@ -33,6 +33,7 @@
     "test:gltf-summary-parity": "node tests/gltf-summary-parity.mjs",
     "test:export-branches": "node tests/export-branches.mjs",
     "test:fbx-export-interpretation": "node tests/fbx-export-interpretation.mjs",
+    "test:scene-document-samplers": "node tests/scene-document-gltf-samplers.mjs",
     "test:gltf-quantized-morph": "node tests/gltf-quantized-morph.mjs",
     "test:gltf-write": "node tests/gltf-write-smoke.mjs",
     "test:gltf-draco-write": "node tests/gltf-write-smoke.mjs --draco",
