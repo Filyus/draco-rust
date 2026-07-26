@@ -10,10 +10,13 @@ import { mat4, vec3, quat, composeMatrix } from './math.js';
 import { createEnvironmentIbl } from './environment-ibl.js';
 
 const MAX_JOINTS = 256;
-// Vertex attribute slots reserved for morph deltas. A mesh may declare far more
-// targets than this: the four with the strongest weights are bound per draw, so
-// a long morph cycle (one target per keyframe) plays in full.
-const MAX_ACTIVE_MORPH_TARGETS = 4;
+// Morph targets blended in one draw. Deltas are sampled from an array texture,
+// so this is a shader loop bound rather than a hardware limit; a mesh may
+// declare any number of targets and the strongest-weighted ones are blended.
+const MAX_ACTIVE_MORPH_TARGETS = 32;
+// Texture unit for the morph delta array. Units 0..4 are material maps and
+// 5..8 belong to the environment IBL.
+const MORPH_TEXTURE_UNIT = 9;
 const DEFAULT_CAMERA_AZIMUTH = Math.PI * 0.25;
 const DEFAULT_CAMERA_ELEVATION = Math.PI * 0.09;
 const ORBIT_RAD_PER_PIXEL = 0.01;
@@ -37,14 +40,6 @@ layout(location=6) in vec2 aTexCoord1;
 layout(location=3) in vec4 aColor;
 layout(location=4) in vec4 aJoints;
 layout(location=5) in vec4 aWeights;
-layout(location=7) in vec3 aMorphPosition0;
-layout(location=8) in vec3 aMorphPosition1;
-layout(location=9) in vec3 aMorphPosition2;
-layout(location=10) in vec3 aMorphPosition3;
-layout(location=11) in vec3 aMorphNormal0;
-layout(location=12) in vec3 aMorphNormal1;
-layout(location=13) in vec3 aMorphNormal2;
-layout(location=14) in vec3 aMorphNormal3;
 layout(location=15) in vec3 aSmoothNormal;
 
 uniform mat4 uProjection;
@@ -54,8 +49,14 @@ uniform mat4 uNormalMatrix;
 uniform int uUseSkin;
 uniform int uJointCount;
 uniform mat4 uJointMatrix[${MAX_JOINTS}];
-uniform int uMorphTargetCount;
+// Morph deltas live in an array texture: one layer per target, uMorphStride
+// texels per vertex (position, plus a normal when the asset ships one).
+uniform highp sampler2DArray uMorphDeltas;
+uniform int uMorphCount;
+uniform int uMorphStride;
+uniform int uMorphWidth;
 uniform float uMorphWeights[${MAX_ACTIVE_MORPH_TARGETS}];
+uniform int uMorphLayers[${MAX_ACTIVE_MORPH_TARGETS}];
 uniform int uUseSmoothNormals;
 
 out vec3 vNormal;
@@ -64,17 +65,20 @@ out vec2 vTexCoord1;
 out vec4 vColor;
 out vec3 vWorldPos;
 
+vec3 morphDelta(int texel, int layer) {
+    return texelFetch(uMorphDeltas, ivec3(texel % uMorphWidth, texel / uMorphWidth, layer), 0).xyz;
+}
+
 void main() {
     vec3 morphedPosition = aPosition;
-    if (uMorphTargetCount > 0) morphedPosition += aMorphPosition0 * uMorphWeights[0];
-    if (uMorphTargetCount > 1) morphedPosition += aMorphPosition1 * uMorphWeights[1];
-    if (uMorphTargetCount > 2) morphedPosition += aMorphPosition2 * uMorphWeights[2];
-    if (uMorphTargetCount > 3) morphedPosition += aMorphPosition3 * uMorphWeights[3];
     vec3 morphedNormal = uUseSmoothNormals == 1 ? aSmoothNormal : aNormal;
-    if (uMorphTargetCount > 0) morphedNormal += aMorphNormal0 * uMorphWeights[0];
-    if (uMorphTargetCount > 1) morphedNormal += aMorphNormal1 * uMorphWeights[1];
-    if (uMorphTargetCount > 2) morphedNormal += aMorphNormal2 * uMorphWeights[2];
-    if (uMorphTargetCount > 3) morphedNormal += aMorphNormal3 * uMorphWeights[3];
+    for (int i = 0; i < uMorphCount; i++) {
+        int texel = gl_VertexID * uMorphStride;
+        float weight = uMorphWeights[i];
+        int layer = uMorphLayers[i];
+        morphedPosition += morphDelta(texel, layer) * weight;
+        if (uMorphStride > 1) morphedNormal += morphDelta(texel + 1, layer) * weight;
+    }
     vec4 skinned = vec4(0.0);
     if (uUseSkin == 1 && uJointCount > 0) {
         vec4 pos = vec4(morphedPosition, 1.0);
@@ -485,16 +489,73 @@ export function buildSmoothNormalAttribute(primitive) {
     return { bytes: output, componentType: 5126, components: 3, normalized: false, count };
 }
 
-/** Attach an uploaded morph delta buffer to one morph attribute slot. */
-function bindMorphSlot(gl, location, attr) {
-    if (!(location >= 0)) return;
-    if (!attr) {
-        gl.disableVertexAttribArray(location);
-        return;
+/**
+ * Copy one morph accessor into its texel slot of a packed layer. Both loaders
+ * reject targets that are not float vec3, and accessor bytes can start at an
+ * unaligned offset, so the payload is read through a DataView.
+ */
+function fillMorphLayer(layer, attr, vertexCount, stride, slot) {
+    if (!attr || attr.componentType !== 5126 || attr.components !== 3) return false;
+    const bytes = byteView(attr.bytes);
+    const count = Math.min(vertexCount, attr.count);
+    if (bytes.byteLength < count * 12) return false;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let i = 0; i < count; i++) {
+        const texel = (i * stride + slot) * 4;
+        layer[texel] = view.getFloat32(i * 12, true);
+        layer[texel + 1] = view.getFloat32(i * 12 + 4, true);
+        layer[texel + 2] = view.getFloat32(i * 12 + 8, true);
     }
-    gl.bindBuffer(gl.ARRAY_BUFFER, attr.buffer);
-    gl.enableVertexAttribArray(location);
-    gl.vertexAttribPointer(location, attr.components, attr.componentType, attr.normalized, 0, 0);
+    return true;
+}
+
+/**
+ * Pack every morph target of a primitive into one RGBA32F array texture: a
+ * layer per target, `stride` texels per vertex, addressed by gl_VertexID.
+ *
+ * Vertex attributes are capped at 16 by WebGL2 and the preview already spends
+ * them all, so attribute-fed deltas could never exceed four targets. A texture
+ * has no such budget, which is what lets a mesh declare any number of targets.
+ */
+function uploadMorphTexture(gl, primitive, vertexCount) {
+    const positions = primitive.morphPositions || [];
+    const normals = primitive.morphNormals || [];
+    const targetCount = Math.max(positions.length, normals.length);
+    if (targetCount === 0 || vertexCount === 0) return null;
+
+    const layerCount = Math.min(targetCount, gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS));
+    const stride = normals.some(Boolean) ? 2 : 1;
+    const texels = vertexCount * stride;
+    const maxSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    const width = Math.max(1, Math.min(maxSize, Math.ceil(Math.sqrt(texels))));
+    const height = Math.ceil(texels / width);
+    if (height > maxSize) return null;
+
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA32F, width, height, layerCount);
+
+    const layer = new Float32Array(width * height * 4);
+    // A target whose accessor was rejected upstream stays an all-zero layer, so
+    // its weight simply contributes nothing.
+    const filled = new Array(layerCount).fill(false);
+    for (let target = 0; target < layerCount; target++) {
+        layer.fill(0);
+        filled[target] = fillMorphLayer(layer, positions[target], vertexCount, stride, 0);
+        if (stride > 1) {
+            filled[target] = fillMorphLayer(layer, normals[target], vertexCount, stride, 1)
+                || filled[target];
+        }
+        gl.texSubImage3D(
+            gl.TEXTURE_2D_ARRAY, 0, 0, 0, target, width, height, 1, gl.RGBA, gl.FLOAT, layer,
+        );
+    }
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+    return { texture, width, stride, layerCount, filled, dropped: targetCount - layerCount };
 }
 
 /**
@@ -509,42 +570,20 @@ function uploadPrimitive(gl, primitive, locationMap) {
     const positions = primitive.attributes.POSITION;
     if (!positions) throw new Error('primitive is missing POSITION attribute');
 
-    /**
-     * Upload one accessor without attaching it to an attribute slot. Morph
-     * deltas need this: which slot they occupy is decided per draw.
-     */
-    function uploadAccessor(attr, semantic, desiredComponents) {
-        if (!attr) return null;
-        if (desiredComponents && attr.components !== desiredComponents) return null;
+    function bindAccessor(attr, semantic, location, desiredComponents) {
+        if (!attr || location < 0) return false;
+        if (desiredComponents && attr.components !== desiredComponents) {
+            gl.disableVertexAttribArray(location);
+            return false;
+        }
         const buf = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, buf);
         gl.bufferData(gl.ARRAY_BUFFER, byteView(attr.bytes), gl.STATIC_DRAW);
         buffers.push(buf);
-        return {
-            buffer: buf,
-            components: attr.components,
-            componentType: attr.componentType,
-            normalized: attr.normalized
-                || semantic.startsWith('COLOR_') || semantic.startsWith('WEIGHTS_'),
-        };
-    }
-
-    function bindAccessor(attr, semantic, location, desiredComponents) {
-        if (location < 0) return false;
-        const uploadedAttr = uploadAccessor(attr, semantic, desiredComponents);
-        if (!uploadedAttr) {
-            gl.disableVertexAttribArray(location);
-            return false;
-        }
+        const normalized = attr.normalized
+            || semantic.startsWith('COLOR_') || semantic.startsWith('WEIGHTS_');
         gl.enableVertexAttribArray(location);
-        gl.vertexAttribPointer(
-            location,
-            uploadedAttr.components,
-            uploadedAttr.componentType,
-            uploadedAttr.normalized,
-            0,
-            0,
-        );
+        gl.vertexAttribPointer(location, attr.components, attr.componentType, normalized, 0, 0);
         return true;
     }
 
@@ -560,8 +599,6 @@ function uploadPrimitive(gl, primitive, locationMap) {
         color: locationMap.color,
         joints: locationMap.joints,
         weights: locationMap.weights,
-        morphPositions: locationMap.morphPositions,
-        morphNormals: locationMap.morphNormals,
         smoothNormal: locationMap.smoothNormal,
     };
 
@@ -580,27 +617,16 @@ function uploadPrimitive(gl, primitive, locationMap) {
         hasColors: !!bindAttribute('COLOR_0', layout.color),
         hasJoints: !!bindAttribute('JOINTS_0', layout.joints),
         hasWeights: !!bindAttribute('WEIGHTS_0', layout.weights),
-        morphTargetCount: (primitive.morphPositions || []).length,
         mode: primitive.mode,
         elementCount: 0,
         indexed: false,
     };
 
     bindAttribute('POSITION', layout.position);
-
-    // Keep every target uploaded and indexed exactly like the mesh weights, so
-    // slot assignment at draw time is a plain lookup by target index.
-    info.morphTargets = (primitive.morphPositions || []).map((position, i) => ({
-        position: uploadAccessor(position, `MORPH_POSITION_${i}`, 3),
-        normal: uploadAccessor((primitive.morphNormals || [])[i], `MORPH_NORMAL_${i}`, 3),
-    }));
-    info.morphLocations = {
-        positions: layout.morphPositions,
-        normals: layout.morphNormals,
-    };
-    // Which target each slot currently points at, so an unchanged assignment
-    // costs no GL calls.
-    info.morphSlots = new Array(MAX_ACTIVE_MORPH_TARGETS).fill(-1);
+    // Layers are indexed exactly like the mesh weights, so picking targets at
+    // draw time is a plain lookup by target index.
+    info.morph = uploadMorphTexture(gl, primitive, positions.count);
+    info.morphTargetCount = info.morph ? info.morph.layerCount : 0;
 
     let indexBuffer = null;
     if (primitive.indices) {
@@ -727,8 +753,12 @@ export class Viewer {
             uUseSkin: gl.getUniformLocation(p, 'uUseSkin'),
             uJointCount: gl.getUniformLocation(p, 'uJointCount'),
             uJointMatrix: gl.getUniformLocation(p, `uJointMatrix[0]`),
-            uMorphTargetCount: gl.getUniformLocation(p, 'uMorphTargetCount'),
+            uMorphDeltas: gl.getUniformLocation(p, 'uMorphDeltas'),
+            uMorphCount: gl.getUniformLocation(p, 'uMorphCount'),
+            uMorphStride: gl.getUniformLocation(p, 'uMorphStride'),
+            uMorphWidth: gl.getUniformLocation(p, 'uMorphWidth'),
             uMorphWeights: gl.getUniformLocation(p, 'uMorphWeights[0]'),
+            uMorphLayers: gl.getUniformLocation(p, 'uMorphLayers[0]'),
             uUseSmoothNormals: gl.getUniformLocation(p, 'uUseSmoothNormals'),
             uHasTexture: gl.getUniformLocation(p, 'uHasTexture'),
             uHasNormals: gl.getUniformLocation(p, 'uHasNormals'),
@@ -772,8 +802,6 @@ export class Viewer {
             color: 3,
             joints: 4,
             weights: 5,
-            morphPositions: [7, 8, 9, 10],
-            morphNormals: [11, 12, 13, 14],
             smoothNormal: 15,
         };
         this.lineUniforms = {
@@ -1087,6 +1115,12 @@ export class Viewer {
             for (const primitive of mesh.primitives) {
                 try {
                     const uploaded = uploadPrimitive(gl, primitive, this.locations);
+                    if (uploaded.morph?.dropped > 0) {
+                        this._log(
+                            `Mesh ${mesh.name}: ${uploaded.morph.dropped} morph targets exceed this GPU's array texture layers and were ignored`,
+                            'warning',
+                        );
+                    }
                     primitives.push({
                         uploaded,
                         materialIndex: primitive.materialIndex,
@@ -1199,6 +1233,7 @@ export class Viewer {
                 for (const buf of p.uploaded.buffers) {
                     if (buf) gl.deleteBuffer(buf);
                 }
+                if (p.uploaded.morph) gl.deleteTexture(p.uploaded.morph.texture);
                 if (p.uploaded.vao) gl.deleteVertexArray(p.uploaded.vao);
             }
         }
@@ -1214,6 +1249,10 @@ export class Viewer {
     dispose() {
         this._running = false;
         this._disposeGlResources();
+        if (this._emptyMorphTexture) {
+            this.gl.deleteTexture(this._emptyMorphTexture);
+            this._emptyMorphTexture = null;
+        }
         this._resizeObserver?.disconnect();
         if (this.program) this.gl.deleteProgram(this.program);
         if (this.lineProgram) this.gl.deleteProgram(this.lineProgram);
@@ -1459,9 +1498,15 @@ export class Viewer {
                 gl.uniform1i(this.uniforms.uJointCount, usesSkin ? jointMatrices.length / 16 : 0);
                 if (usesSkin) gl.uniformMatrix4fv(this.uniforms.uJointMatrix, false, jointMatrices);
                 gl.bindVertexArray(uploaded.vao);
-                const activeMorphTargets = this._bindMorphTargets(uploaded, node.weights);
-                gl.uniform1i(this.uniforms.uMorphTargetCount, activeMorphTargets);
+                const morph = uploaded.morph;
+                gl.activeTexture(gl.TEXTURE0 + MORPH_TEXTURE_UNIT);
+                gl.bindTexture(gl.TEXTURE_2D_ARRAY, morph ? morph.texture : this._morphPlaceholder());
+                gl.uniform1i(this.uniforms.uMorphDeltas, MORPH_TEXTURE_UNIT);
+                gl.uniform1i(this.uniforms.uMorphCount, this._selectMorphTargets(morph, node.weights));
+                gl.uniform1i(this.uniforms.uMorphStride, morph ? morph.stride : 1);
+                gl.uniform1i(this.uniforms.uMorphWidth, morph ? morph.width : 1);
                 gl.uniform1fv(this.uniforms.uMorphWeights, this._morphWeights);
+                gl.uniform1iv(this.uniforms.uMorphLayers, this._morphLayers);
                 const useSmoothNormals = this.smoothNormals
                     && uploaded.hasSmoothNormals && uploaded.morphTargetCount === 0;
                 gl.uniform1i(
@@ -1498,44 +1543,54 @@ export class Viewer {
     }
 
     /**
-     * Point the morph slots at this draw's strongest-weighted targets and stage
-     * their weights in `_morphWeights`. Returns the number of live slots.
+     * Stage this draw's active morph targets into `_morphLayers`/`_morphWeights`
+     * and return how many the shader should blend.
      *
-     * A mesh may declare many more targets than there are slots — a wing flap is
-     * often keyed one target per frame — so binding the first four would freeze
-     * the mesh for the rest of the cycle. Only targets with a non-zero weight
-     * compete for a slot, and glTF weight tracks blend two neighbours at a time,
-     * so the visible pose is exact for such clips.
+     * The shader loop is bounded, so a mesh with more targets than that keeps
+     * its strongest-weighted ones. Real clips stay far below the bound: a glTF
+     * weight track blends two neighbouring poses at a time, and even a facial
+     * rig drives only a handful of shapes at once.
      */
-    _bindMorphTargets(uploaded, weights) {
-        const gl = this.gl;
+    _selectMorphTargets(morph, weights) {
         const staged = this._morphWeights
             || (this._morphWeights = new Float32Array(MAX_ACTIVE_MORPH_TARGETS));
+        const layers = this._morphLayers
+            || (this._morphLayers = new Int32Array(MAX_ACTIVE_MORPH_TARGETS));
         staged.fill(0);
-        const targets = uploaded.morphTargets;
-        if (!targets || targets.length === 0) return 0;
+        layers.fill(0);
+        if (!morph || !weights) return 0;
 
         const order = this._morphOrder || (this._morphOrder = []);
         order.length = 0;
-        for (let i = 0; i < targets.length; i++) {
-            if (!targets[i].position && !targets[i].normal) continue;
-            if (!weights || !weights[i]) continue;
-            order.push(i);
+        for (let i = 0; i < morph.layerCount; i++) {
+            if (weights[i] && morph.filled[i]) order.push(i);
         }
-        // Ties keep the lower target index so a held pose binds stable slots.
+        // Ties keep the lower target index so a held pose stays stable.
         order.sort((a, b) => Math.abs(weights[b]) - Math.abs(weights[a]) || a - b);
-        const count = Math.min(order.length, MAX_ACTIVE_MORPH_TARGETS);
 
-        const { positions, normals } = uploaded.morphLocations;
-        for (let slot = 0; slot < MAX_ACTIVE_MORPH_TARGETS; slot++) {
-            const target = slot < count ? order[slot] : -1;
-            if (target >= 0) staged[slot] = weights[target];
-            if (uploaded.morphSlots[slot] === target) continue;
-            uploaded.morphSlots[slot] = target;
-            bindMorphSlot(gl, positions[slot], target >= 0 ? targets[target].position : null);
-            bindMorphSlot(gl, normals[slot], target >= 0 ? targets[target].normal : null);
+        const count = Math.min(order.length, MAX_ACTIVE_MORPH_TARGETS);
+        for (let slot = 0; slot < count; slot++) {
+            layers[slot] = order[slot];
+            staged[slot] = weights[order[slot]];
         }
         return count;
+    }
+
+    /**
+     * Array texture bound when a primitive has no morph targets. A sampler must
+     * reference a complete texture even on the branch that never samples it.
+     */
+    _morphPlaceholder() {
+        if (!this._emptyMorphTexture) {
+            const gl = this.gl;
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA32F, 1, 1, 1);
+            this._emptyMorphTexture = texture;
+        }
+        return this._emptyMorphTexture;
     }
 
     _glMode(mode, wireframe) {

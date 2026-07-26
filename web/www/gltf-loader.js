@@ -38,9 +38,10 @@ const SUPPORTED_EXTENSIONS = new Set([
 // codec this module does not own, so it is reported from the decode result
 // rather than asserted here.
 const TEXTURE_SOURCE_EXTENSIONS = ['EXT_texture_webp', 'KHR_texture_basisu'];
-// Morph targets the preview can blend in one frame. Mirrors the viewer's slot
-// count; a mesh may declare more targets as long as few are active at a time.
-const MAX_ACTIVE_MORPH_TARGETS = 4;
+// Morph targets the preview can blend in one frame. Mirrors the viewer's shader
+// loop bound; a mesh may declare any number of targets as long as no single
+// frame drives more than this many at once.
+const MAX_ACTIVE_MORPH_TARGETS = 32;
 
 /**
  * Build a Scene from a parsed glTF document.
@@ -626,8 +627,8 @@ function initializeMorphWeights(nodes, meshes, warnings) {
         node.weights = Float32Array.from(
             Array.from({ length: targetCount }, (_, index) => Number(source[index]) || 0),
         );
-        // The preview binds the four strongest-weighted targets per frame, so a
-        // long target list is fine as long as few of them are active at once.
+        // The preview blends the strongest-weighted targets per frame, so a long
+        // target list is fine as long as few of them are active at once.
         const activeTargets = node.weights.reduce((total, weight) => total + (weight ? 1 : 0), 0);
         if (activeTargets > MAX_ACTIVE_MORPH_TARGETS) {
             warnings.push(

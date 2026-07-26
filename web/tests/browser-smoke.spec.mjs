@@ -1009,7 +1009,7 @@ test('preview renders a glTF morph target animation', async ({ page }) => {
   expect(webglError).toBe(0);
 });
 
-test('preview animates morph targets beyond its attribute slots', async ({ page }) => {
+test('preview animates every target of a long morph cycle', async ({ page }) => {
   await page.goto('/index.html');
   const samples = await page.evaluate(async () => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
@@ -1025,8 +1025,8 @@ test('preview animates morph targets beyond its attribute slots', async ({ page 
     const accessor = (values, components) => ({
       bytes: bytes(values), componentType: 5126, components, count: values.length / components,
     });
-    // Every target sweeps the quad far off screen, so a frame that fails to bind
-    // its target is visible as the quad still covering the sampled pixel.
+    // Every target sweeps the quad far off screen, so a frame that drops its
+    // target is visible as the quad still covering the sampled pixel.
     const offScreen = accessor(new Float32Array(Array.from(
       { length: 12 }, (_, i) => (i % 3 === 1 ? 100 : 0),
     )), 3);
@@ -1113,6 +1113,98 @@ test('preview animates morph targets beyond its attribute slots', async ({ page 
   expect(samples.firstTarget).not.toEqual(samples.rest);
   expect(samples.lastTarget).toEqual(samples.firstTarget);
   expect(samples.backToRest).toEqual(samples.rest);
+});
+
+test('preview blends more than four morph targets at once', async ({ page }) => {
+  await page.goto('/index.html');
+  const samples = await page.evaluate(async () => {
+    const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
+      import('/viewer.js'),
+      import('/scene-document.js'),
+      import('/scene-document-viewer.js'),
+    ]);
+
+    const bytes = (values) => new Uint8Array(
+      values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
+    );
+    const accessor = (values, components) => ({
+      bytes: bytes(values), componentType: 5126, components, count: values.length / components,
+    });
+    // Six targets that cancel out: the first four push the quad up by 1, the
+    // last two pull it down by 2. Blending all six leaves the quad centred,
+    // while blending only the four strongest sweeps it off screen.
+    const shift = (dy) => accessor(new Float32Array(Array.from(
+      { length: 12 }, (_, i) => (i % 3 === 1 ? dy : 0),
+    )), 3);
+    const deltas = [shift(1), shift(1), shift(1), shift(1), shift(-2), shift(-2)];
+
+    const scene = buildViewerSceneFromDocument(createSceneDocument({
+      materials: [{
+        baseColorFactor: [1, 0, 0, 1],
+        metallicFactor: 0,
+        roughnessFactor: 1,
+        emissiveFactor: [0, 0, 0],
+      }],
+      accessors: [
+        accessor(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3),
+        {
+          bytes: bytes(new Uint16Array([0, 1, 2, 0, 2, 3])),
+          componentType: 5123,
+          components: 1,
+          count: 6,
+        },
+        ...deltas,
+      ],
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          indices: 1,
+          material: 0,
+          targets: deltas.map((_, i) => ({ POSITION: 2 + i })),
+        }],
+        weights: new Array(deltas.length).fill(0),
+      }],
+      nodes: [{
+        name: 'Blend',
+        translation: [0, 0, 0],
+        rotation: [0, 0, 0, 1],
+        scale: [1, 1, 1],
+        mesh: 0,
+      }],
+      rootNodes: [0],
+    }));
+
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
+    document.body.appendChild(canvas);
+    const viewer = new Viewer(canvas);
+    viewer.setScene(scene);
+    viewer.showGrid = false;
+    viewer.camera.target.set([0, 0, 0]);
+    viewer.camera.distance = 3;
+    viewer.camera.azimuth = 0;
+    viewer.camera.elevation = 0;
+
+    const sample = (weights) => {
+      scene.nodes[0].weights.set(weights);
+      viewer._render();
+      const rgba = new Uint8Array(4);
+      viewer.gl.readPixels(32, 32, 1, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, rgba);
+      return Array.from(rgba);
+    };
+    const rest = sample([0, 0, 0, 0, 0, 0]);
+    const allSix = sample([1, 1, 1, 1, 1, 1]);
+    const firstFour = sample([1, 1, 1, 1, 0, 0]);
+    const glError = viewer.gl.getError();
+    viewer.dispose();
+    canvas.remove();
+    return { rest, allSix, firstFour, glError };
+  });
+
+  expect(samples.glError).toBe(0);
+  // All six cancel back to the rest pose; the up-shifts alone clear the pixel.
+  expect(samples.allSix).toEqual(samples.rest);
+  expect(samples.firstFour).not.toEqual(samples.rest);
 });
 
 test('3D preview opens a transformed skinned glTF scene', async ({ page }) => {
