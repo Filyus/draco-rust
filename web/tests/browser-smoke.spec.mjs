@@ -254,6 +254,30 @@ test('shared scene details expose all animation clips', async ({ page }) => {
   await expect(page.locator('#anim-clip option')).toHaveCount(3);
 });
 
+test('clicking the animated preview keeps focus on the viewport, not the clip picker', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const fox = path.join(repoRoot, 'testdata', 'Fox', 'glTF');
+  await page.locator('#file-input').setInputFiles([
+    path.join(fox, 'Fox.gltf'),
+    path.join(fox, 'Fox.bin'),
+  ]);
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#viewer-animation')).toBeVisible();
+
+  const box = await page.locator('#viewer-canvas').boundingBox();
+  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe('viewer-canvas');
+
+  // Opening the picker and closing it with Escape hands focus back to the
+  // trigger rather than dropping it on the body.
+  await page.locator('#anim-clip-trigger').click();
+  await expect(page.locator('#anim-clip-menu')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#anim-clip-menu')).toBeHidden();
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe('anim-clip-trigger');
+});
+
 test('scene details stays hidden before load and exposes a hierarchy tree after load', async ({ page }) => {
   await page.goto('/index.html');
   await expect(page.locator('#scene-section')).toBeHidden();

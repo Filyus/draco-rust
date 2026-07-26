@@ -396,7 +396,9 @@ function setupEventListeners() {
     animClipMenu.addEventListener('click', (event) => event.stopPropagation());
     animClipTrigger.addEventListener('keydown', handleAnimationClipTriggerKeydown);
     animClipMenu.addEventListener('keydown', handleAnimationClipMenuKeydown);
-    document.addEventListener('click', closeAnimationClipMenu);
+    // Wrapped: passing the listener directly would hand the MouseEvent in as a
+    // truthy `restoreFocus`, so every click in the page focused the trigger.
+    document.addEventListener('click', () => closeAnimationClipMenu());
     document.addEventListener('keydown', (event) => {
         if (event.key === 'Escape') closeAnimationClipMenu();
     });
@@ -1544,9 +1546,13 @@ function openAnimationClipMenu() {
 }
 
 function closeAnimationClipMenu(restoreFocus = false) {
+    // Hiding the menu while one of its options holds focus would drop focus to
+    // the body, so the trigger takes it back — but only then, otherwise closing
+    // would steal focus from whatever the user just clicked.
+    const hadFocus = animClipMenu.contains(document.activeElement);
     animClipTrigger.setAttribute('aria-expanded', 'false');
     animClipMenu.hidden = true;
-    if (restoreFocus) animClipTrigger.focus();
+    if (restoreFocus || hadFocus) animClipTrigger.focus();
 }
 
 function selectAnimationClipAt(index) {
