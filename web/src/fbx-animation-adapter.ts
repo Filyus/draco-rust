@@ -11,18 +11,38 @@
  *   separate tangents cannot be represented as glTF quaternion cubic tangents.
  */
 
-import type { ViewerChannel, ViewerClip, ViewerNode } from './viewer-scene.ts';
+import type { AnimationPath, AnimationTarget, ViewerSampler } from './viewer-scene.ts';
 
 /** One animation take as the semantic FBX decoder exposes it. */
 type FbxClip = any;
 
-/** Convert one FBX animation take into a viewer clip. */
-export function adaptFbxAnimation(
+/** A clip still tied to whichever node representation the caller supplied. */
+interface AdaptedChannel<TNode> {
+    node: TNode;
+    path: AnimationPath;
+    targetCount: number;
+    sampler: ViewerSampler;
+}
+
+interface AdaptedClip<TNode> {
+    name: string;
+    duration: number;
+    channels: AdaptedChannel<TNode>[];
+}
+
+/**
+ * Convert one FBX animation take into a viewer clip.
+ *
+ * Generic over the node: the direct FBX preview passes runtime nodes, while
+ * the SceneDocument importer passes its own per-node state. Both satisfy
+ * AnimationTarget, which is all this adapter reads.
+ */
+export function adaptFbxAnimation<TNode extends AnimationTarget>(
     clip: FbxClip,
-    nodeById: Map<unknown, ViewerNode>,
-    nodeByName: Map<string, ViewerNode>,
-): ViewerClip | null {
-    const channels: ViewerChannel[] = [];
+    nodeById: Map<unknown, TNode>,
+    nodeByName: Map<string, TNode>,
+): AdaptedClip<TNode> | null {
+    const channels: AdaptedChannel<TNode>[] = [];
     for (const channel of clip.channels || []) {
         // Names are legal duplicates in FBX; use the object id emitted by
         // WASM first and retain names only for older parser results.
@@ -99,7 +119,7 @@ export function adaptFbxAnimation(
     };
 }
 
-function composeFbxRotationBasis(node: ViewerNode, input: Float32Array, values: Float32Array) {
+function composeFbxRotationBasis(node: AnimationTarget, input: Float32Array, values: Float32Array) {
     const quatOut = new Float32Array(input.length * 4);
     // Lcl Rotation keys are absolute authored values in the static FBX
     // rotation basis, not deltas from the skin BindPose. Normalizing against
@@ -120,7 +140,7 @@ function composeFbxRotationBasis(node: ViewerNode, input: Float32Array, values: 
     return quatOut;
 }
 
-function rebaseFbxTranslationToBindRest(node: ViewerNode, input: Float32Array, values: Float32Array) {
+function rebaseFbxTranslationToBindRest(node: AnimationTarget, input: Float32Array, values: Float32Array) {
     // Plain Model TRS keys already use the same source space as their static
     // local transform. Retaining their absolute values is necessary for the
     // Cluster TransformLink skin basis (for example Samba Dancing's hips).

@@ -55,6 +55,20 @@ export interface ViewerNode {
     index?: number;
 }
 
+/**
+ * What the FBX animation adapter actually reads off a node.
+ *
+ * Two different node representations flow through it: the runtime node below,
+ * and the SceneDocument importer's own per-node state, which has no world
+ * matrix because nothing ever renders it. This is their common ground.
+ */
+export interface AnimationTarget {
+    weights?: Float32Array | number[];
+    restTrs?: Trs;
+    animationTrs?: Trs;
+    usesAuthoredModelTrs?: boolean;
+}
+
 export interface ViewerPrimitive {
     attributes: Record<string, RuntimeAccessor>;
     mode: number;

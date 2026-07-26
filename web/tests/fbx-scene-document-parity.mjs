@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { assertValidSceneDocument } from '../src/scene-document.ts';
-import { buildSceneDocumentFromFbx } from '../www/fbx-scene-document.js';
+import { buildSceneDocumentFromFbx } from '../src/fbx-scene-document.ts';
 import { buildViewerSceneFromDocument } from '../src/scene-document-viewer.ts';
 import { here, loadFbxViewerAdapter, loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.mjs';
 

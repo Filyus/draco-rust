@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 import { validateBytes } from 'gltf-validator';
 
-import { buildSceneDocumentFromFbx } from '../www/fbx-scene-document.js';
+import { buildSceneDocumentFromFbx } from '../src/fbx-scene-document.ts';
 import { buildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
 import { cloneSceneDocument } from '../src/scene-document.ts';
 import { lowerSceneDocumentToGltf, serializeSceneDocumentToGlb } from '../src/scene-document-gltf.ts';

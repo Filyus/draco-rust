@@ -6,15 +6,53 @@
  * contains matrices/bytes/TRS clips and no FBX parser or browser objects.
  */
 
-import { identityMat4, invertMat4, multiplyMat4 } from './mat4.js';
-import { adaptFbxAnimation } from './fbx-animation-adapter.js';
-import { adaptFbxMaterial } from './fbx-material-adapter.js';
-import { assertValidSceneDocument, createSceneDocument } from './scene-document.js';
-import { createFbxSceneProvenance } from './fbx-scene-provenance.js';
+import { identityMat4, invertMat4, multiplyMat4 } from './mat4.ts';
+import { adaptFbxAnimation } from './fbx-animation-adapter.ts';
+import { adaptFbxMaterial } from './fbx-material-adapter.ts';
+import { assertValidSceneDocument, createSceneDocument } from './scene-document.ts';
+import type {
+    AlphaMode, AnimationChannel, AnimationSampler, AttributeMap, SceneDocument, SceneMaterial,
+    SceneNode, ScenePrimitive,
+} from './scene-document.ts';
+import { createFbxSceneProvenance } from './fbx-scene-provenance.ts';
+import type { FbxSceneProvenance } from './fbx-scene-provenance.ts';
 import {
     appendAccessor, basename, bytesFromF32, bytesFromU16, bytesFromU32,
     mimeFromUri, resolveResource, sniffMime,
-} from './scene-resources.js';
+} from './scene-resources.ts';
+import type { ResourceMap } from './scene-resources.ts';
+import type { AnimationTarget, Trs } from './viewer-scene.ts';
+
+/** The semantic FBX tree, walked node by node rather than trusted wholesale. */
+type FbxJson = any;
+
+/**
+ * Per-node bookkeeping threaded through the whole conversion: which document
+ * node it produced, plus the rest/animation bases the shared FBX animation
+ * adapter reads. It has no world matrix — nothing renders these.
+ */
+interface FbxNodeState extends AnimationTarget {
+    id: number | null;
+    name: string;
+    documentNode: number;
+    trs: Trs;
+    restTrs: Trs;
+    bindTrs: Trs;
+    animationTrs: Trs;
+    hasComplexTransformStack: boolean;
+    usesAuthoredModelTrs: boolean;
+    localMatrix: Float32Array;
+    weights: Float32Array;
+    source: FbxJson;
+}
+
+/** The node lookups the animation pass resolves channel targets through. */
+interface FbxImportState {
+    stateById: Map<unknown, FbxNodeState>;
+    stateByName: Map<string, FbxNodeState>;
+    bindPoseByNodeId: Map<number, number[]>;
+    nodes: FbxJson[];
+}
 
 // The semantic decoder currently exposes the common FBX centimeter-space
 // values. SceneDocument is canonical glTF-meter space; normalize only here so
@@ -22,7 +60,10 @@ import {
 const FBX_CENTIMETERS_TO_METERS = 0.01;
 
 /** Adapt a semantic `fbx-wasm` parse result into a portable SceneDocument. */
-export function buildSceneDocumentFromFbx(parsed, resources = Object.create(null)) {
+export function buildSceneDocumentFromFbx(
+    parsed: FbxJson,
+    resources: ResourceMap = Object.create(null),
+): SceneDocument {
     const roots = parsed?.scene?.rootNodes;
     if (!Array.isArray(roots) || roots.length === 0) {
         throw new Error('FBX SceneDocument import requires semantic binary FBX scene data');
@@ -47,16 +88,19 @@ export function buildSceneDocumentFromFbx(parsed, resources = Object.create(null
  * receive only SceneDocument, while a future FBX export boundary can retain
  * raw unit/axis/curve provenance without contaminating shared scene data.
  */
-export function buildSceneDocumentWithFbxProvenance(parsed, resources = Object.create(null)) {
+export function buildSceneDocumentWithFbxProvenance(
+    parsed: FbxJson,
+    resources: ResourceMap = Object.create(null),
+): { document: SceneDocument; provenance: FbxSceneProvenance } {
     return {
         document: buildSceneDocumentFromFbx(parsed, resources),
         provenance: createFbxSceneProvenance(parsed),
     };
 }
 
-function collectFbxMaterials(parsed, resources, document) {
+function collectFbxMaterials(parsed: FbxJson, resources: ResourceMap, document: SceneDocument) {
     const sourceTextures = parsed?.scene?.textures || parsed?.textures || [];
-    const textureMap = sourceTextures.map((texture, sourceIndex) => {
+    const textureMap: number[] = sourceTextures.map((texture: FbxJson, sourceIndex: number) => {
         const bytes = texture.content?.length ? new Uint8Array(texture.content) : resolveResource(texture.filename, resources);
         if (!bytes) {
             if (texture.filename) document.warnings.push(`FBX texture not selected: ${texture.filename}`);
@@ -73,16 +117,16 @@ function collectFbxMaterials(parsed, resources, document) {
         return index;
     });
     const sourceMaterials = parsed?.scene?.materials || parsed?.materials || [];
-    const materialMap = sourceMaterials.map((source, materialIndex) => {
+    const materialMap: number[] = sourceMaterials.map((source: FbxJson, materialIndex: number) => {
         const converted = adaptFbxMaterial(source, materialIndex);
-        const material = {
+        const material: SceneMaterial = {
             name: converted.name,
             baseColorFactor: converted.baseColorFactor,
             metallicFactor: converted.metallic,
             roughnessFactor: converted.roughness,
             emissiveFactor: converted.emissiveFactor,
             doubleSided: converted.doubleSided,
-            alphaMode: converted.alphaMode,
+            alphaMode: converted.alphaMode as AlphaMode,
             alphaCutoff: converted.alphaCutoff,
             unlit: converted.unlit,
         };
@@ -102,9 +146,9 @@ function collectFbxMaterials(parsed, resources, document) {
     return { materialMap };
 }
 
-function buildFbxNodeState(roots, document) {
-    const bindPoseByNodeId = new Map();
-    const collectBindPoses = (source) => {
+function buildFbxNodeState(roots: FbxJson[], document: SceneDocument): FbxImportState {
+    const bindPoseByNodeId = new Map<number, number[]>();
+    const collectBindPoses = (source: FbxJson) => {
         for (const mesh of source.meshes || []) {
             for (const entry of mesh.skin?.bindPose || []) {
                 if (Number.isInteger(entry?.nodeId) && validMatrix(entry.matrix) && !bindPoseByNodeId.has(entry.nodeId)) bindPoseByNodeId.set(entry.nodeId, entry.matrix);
@@ -114,11 +158,11 @@ function buildFbxNodeState(roots, document) {
     };
     roots.forEach(collectBindPoses);
 
-    const nodes = [];
-    const stateById = new Map();
-    const stateByName = new Map();
-    const rootsOut = [];
-    const append = (source, parentBind = null) => {
+    const nodes: SceneNode[] = [];
+    const stateById = new Map<unknown, FbxNodeState>();
+    const stateByName = new Map<string, FbxNodeState>();
+    const rootsOut: number[] = [];
+    const append = (source: FbxJson, parentBind: number[] | null = null): number => {
         const bind = Number.isInteger(source.id) ? bindPoseByNodeId.get(source.id) : null;
         const sourceMatrix = validMatrix(source.matrix) ? source.matrix : null;
         const rawLocalMatrix = bind
@@ -130,15 +174,15 @@ function buildFbxNodeState(roots, document) {
             ? decomposeMatrix(sourceMatrix)
             : cloneTrs(bindTrs);
         const index = nodes.length;
-        const sceneNode = {
+        const sceneNode: SceneNode = {
             name: source.name || `node_${index}`,
             matrix: Array.from(localMatrix),
             children: [],
         };
         nodes.push(sceneNode);
-        const state = {
+        const state: FbxNodeState = {
             id: Number.isInteger(source.id) ? source.id : null,
-            name: sceneNode.name,
+            name: sceneNode.name!,
             documentNode: index,
             // Keep the complete animation-adapter node contract here. The
             // adapter is shared with the established direct FBX path, whose
@@ -156,7 +200,7 @@ function buildFbxNodeState(roots, document) {
         };
         if (state.id !== null) stateById.set(state.id, state);
         if (source.name) stateByName.set(source.name, state);
-        sceneNode.children.push(...(source.children || []).map((child) => append(child, bind || parentBind)));
+        sceneNode.children!.push(...(source.children || []).map((child: FbxJson) => append(child, bind || parentBind)));
         return index;
     };
     for (const root of roots) rootsOut.push(append(root));
@@ -165,8 +209,8 @@ function buildFbxNodeState(roots, document) {
     return { stateById, stateByName, bindPoseByNodeId, nodes };
 }
 
-function attachMeshesAndSkins(roots, state, materialMap, document) {
-    const append = (source, ownerState) => {
+function attachMeshesAndSkins(roots: FbxJson[], state: FbxImportState, materialMap: number[], document: SceneDocument) {
+    const append = (source: FbxJson, ownerState: FbxNodeState) => {
         const ownerNode = document.nodes[ownerState.documentNode];
         const meshBindings = [];
         for (const sourceMesh of source.meshes || []) {
@@ -187,7 +231,7 @@ function attachMeshesAndSkins(roots, state, materialMap, document) {
                     mesh: binding.meshIndex,
                     ...(binding.skinIndex >= 0 ? { skin: binding.skinIndex } : {}),
                 });
-                ownerNode.children.push(childIndex);
+                ownerNode.children!.push(childIndex);
             }
         }
         for (const child of source.children || []) {
@@ -201,9 +245,9 @@ function attachMeshesAndSkins(roots, state, materialMap, document) {
     }
 }
 
-function appendMesh(source, materialMap, document) {
+function appendMesh(source: FbxJson, materialMap: number[], document: SceneDocument) {
     const vertexCount = (source.positions?.length || 0) / 3;
-    const attributes = { POSITION: appendFloatAccessor(document, scaleVector3(source.positions || []), 3) };
+    const attributes: AttributeMap = { POSITION: appendFloatAccessor(document, scaleVector3(source.positions || []), 3) };
     if (source.normals?.length === vertexCount * 3) attributes.NORMAL = appendFloatAccessor(document, source.normals, 3);
     if (source.uvs?.length === vertexCount * 2) attributes.TEXCOORD_0 = appendFloatAccessor(document, source.uvs, 2);
     // Extra FBX UV layers become TEXCOORD_1.. so a second set -- a lightmap,
@@ -231,13 +275,13 @@ function appendMesh(source, materialMap, document) {
         ? { joints, weights: source[`weights${set}`] } : null).filter(Boolean);
     for (let set = 0; set < influenceSets.length && set < 2; set += 1) {
         const influence = influenceSets[set];
-        attributes[`JOINTS_${set}`] = appendAccessor(document, { bytes: bytesFromU16(influence.joints), componentType: 5123, components: 4, count: vertexCount, normalized: false });
-        attributes[`WEIGHTS_${set}`] = appendFloatAccessor(document, influence.weights, 4);
+        attributes[`JOINTS_${set}`] = appendAccessor(document, { bytes: bytesFromU16(influence!.joints), componentType: 5123, components: 4, count: vertexCount, normalized: false });
+        attributes[`WEIGHTS_${set}`] = appendFloatAccessor(document, influence!.weights, 4);
     }
     const targets = appendMorphTargets(source, vertexCount, document);
     const indices = source.indices || [];
     const groups = materialGroups(indices, source.materialIndices, source.material, materialMap, document, source.name);
-    const primitives = groups.map((group) => ({
+    const primitives: ScenePrimitive[] = groups.map((group) => ({
         attributes,
         indices: appendAccessor(document, { bytes: bytesFromU32(group.indices), componentType: 5125, components: 1, count: group.indices.length, normalized: false }),
         mode: 4,
@@ -246,18 +290,18 @@ function appendMesh(source, materialMap, document) {
     }));
     const index = document.meshes.length;
     document.meshes.push({ name: source.name || `mesh_${index}`, weights: morphWeights(source), primitives });
-    if (source.skin?.clusters?.some((cluster) => cluster.controlPointIndices?.length > 0) && !attributes.JOINTS_0) {
+    if (source.skin?.clusters?.some((cluster: FbxJson) => cluster.controlPointIndices?.length > 0) && !attributes.JOINTS_0) {
         document.warnings.push(`FBX mesh ${source.name || index} lacks render JOINTS_0/WEIGHTS_0 expansion and cannot be skinned by the portable runtime`);
     }
     return index;
 }
 
-function expandFbxInfluences(source, vertexCount) {
+function expandFbxInfluences(source: FbxJson, vertexCount: number) {
     const clusters = source.skin?.clusters || [];
-    if (!clusters.some((cluster) => cluster.controlPointIndices?.length || cluster.renderPointIndices?.length)) return null;
-    const perVertex = Array.from({ length: vertexCount }, () => []);
+    if (!clusters.some((cluster: FbxJson) => cluster.controlPointIndices?.length || cluster.renderPointIndices?.length)) return null;
+    const perVertex: { joint: number; weight: number }[][] = Array.from({ length: vertexCount }, () => []);
     const renderByControl = buildRenderPointsByControl(source);
-    clusters.forEach((cluster, joint) => {
+    clusters.forEach((cluster: FbxJson, joint: number) => {
         const controlPoints = cluster.controlPointIndices || [];
         for (let index = 0; index < controlPoints.length; index += 1) {
             const weight = Number(cluster.weights?.[index]) || 0;
@@ -271,7 +315,7 @@ function expandFbxInfluences(source, vertexCount) {
         { joints: new Uint16Array(vertexCount * 4), weights: new Float32Array(vertexCount * 4) },
         { joints: new Uint16Array(vertexCount * 4), weights: new Float32Array(vertexCount * 4) },
     ];
-    perVertex.forEach((entries, vertex) => {
+    perVertex.forEach((entries: { joint: number; weight: number }[], vertex: number) => {
         entries.sort((left, right) => right.weight - left.weight);
         const selected = entries.slice(0, 8);
         const sum = selected.reduce((total, entry) => total + entry.weight, 0);
@@ -282,18 +326,18 @@ function expandFbxInfluences(source, vertexCount) {
             sets[set].weights[offset] = sum > 0 ? entry.weight / sum : 0;
         });
     });
-    if (sets[1].weights.every((weight) => weight === 0)) sets.pop();
+    if (sets[1].weights.every((weight: number) => weight === 0)) sets.pop();
     return sets;
 }
 
-function buildRenderPointsByControl(source) {
-    const byControl = new Map();
+function buildRenderPointsByControl(source: FbxJson) {
+    const byControl = new Map<number, number[]>();
     if (!source.polygonVertexIndices?.length) return byControl;
-    let polygon = [];
+    let polygon: number[] = [];
     let render = 0;
-    const emit = (controlPoint) => {
+    const emit = (controlPoint: number) => {
         if (!byControl.has(controlPoint)) byControl.set(controlPoint, []);
-        byControl.get(controlPoint).push(render);
+        byControl.get(controlPoint)!.push(render);
         render += 1;
     };
     for (const encoded of source.polygonVertexIndices) {
@@ -308,17 +352,17 @@ function buildRenderPointsByControl(source) {
     return byControl;
 }
 
-function expandFbxLayer(source, layer, components, vertexCount) {
+function expandFbxLayer(source: FbxJson, layer: FbxJson, components: number, vertexCount: number) {
     if (!layer || !source.controlPoints?.length || !source.polygonVertexIndices?.length) return null;
-    const output = [];
-    const emit = (controlPoint, corner) => {
+    const output: number[] = [];
+    const emit = (controlPoint: number, corner: number) => {
         const mapping = layer.mapping || 'ByControlPoint';
         const logical = mapping === 'ByPolygonVertex' ? corner : mapping === 'AllSame' ? 0 : controlPoint;
         const valueIndex = layer.reference === 'IndexToDirect' ? (layer.indices?.[logical] ?? logical) : logical;
         const start = Math.max(0, valueIndex) * components;
         output.push(...(layer.values || []).slice(start, start + components));
     };
-    let polygon = [];
+    let polygon: { controlPoint: number; corner: number }[] = [];
     let corner = 0;
     for (const encoded of source.polygonVertexIndices) {
         const controlPoint = encoded < 0 ? ~encoded : encoded;
@@ -334,12 +378,12 @@ function expandFbxLayer(source, layer, components, vertexCount) {
     return output.length === vertexCount * components ? output : null;
 }
 
-function appendSkin(sourceMesh, ownerState, state, document) {
+function appendSkin(sourceMesh: FbxJson, ownerState: FbxNodeState, state: FbxImportState, document: SceneDocument) {
     const clusters = sourceMesh.skin?.clusters || [];
     if (clusters.length === 0) return -1;
-    const bindPose = new Map((sourceMesh.skin.bindPose || []).filter((entry) => validMatrix(entry.matrix)).map((entry) => [entry.nodeId, entry.matrix]));
-    const joints = [];
-    const matrices = [];
+    const bindPose = new Map<unknown, number[]>((sourceMesh.skin.bindPose || []).filter((entry: FbxJson) => validMatrix(entry.matrix)).map((entry: FbxJson) => [entry.nodeId, entry.matrix]));
+    const joints: number[] = [];
+    const matrices: number[] = [];
     for (const cluster of clusters) {
         const jointState = state.stateById.get(cluster.jointNodeId);
         if (!jointState) {
@@ -361,8 +405,8 @@ function appendSkin(sourceMesh, ownerState, state, document) {
     return index;
 }
 
-function appendMorphTargets(source, vertexCount, document) {
-    return (source.morphTargets || []).map((target) => {
+function appendMorphTargets(source: FbxJson, vertexCount: number, document: SceneDocument) {
+    return (source.morphTargets || []).map((target: FbxJson) => {
         const position = new Float32Array(vertexCount * 3);
         const renderIndices = target.renderPointIndices || [];
         const renderDeltas = target.renderPositionDeltas || [];
@@ -371,7 +415,7 @@ function appendMorphTargets(source, vertexCount, document) {
             const delta = entry * 3;
             if (render + 2 < position.length && delta + 2 < renderDeltas.length) position.set(scaleVector3(renderDeltas.slice(delta, delta + 3)), render);
         }
-        const output = { POSITION: appendFloatAccessor(document, position, 3) };
+        const output: AttributeMap = { POSITION: appendFloatAccessor(document, position, 3) };
         if (target.renderNormalDeltas?.length) {
             const normal = new Float32Array(vertexCount * 3);
             for (let entry = 0; entry < renderIndices.length; entry += 1) {
@@ -385,7 +429,7 @@ function appendMorphTargets(source, vertexCount, document) {
     });
 }
 
-function appendFbxAnimations(clips, state, document) {
+function appendFbxAnimations(clips: FbxJson[], state: FbxImportState, document: SceneDocument) {
     for (const clip of clips) {
         const adapted = adaptFbxAnimation(clip, state.stateById, state.stateByName);
         if (!adapted) continue;
@@ -394,19 +438,21 @@ function appendFbxAnimations(clips, state, document) {
             if (!byNode.has(channel.node)) byNode.set(channel.node, []);
             byNode.get(channel.node).push(channel);
         }
-        const samplers = [];
-        const channels = [];
+        const samplers: AnimationSampler[] = [];
+        const channels: AnimationChannel[] = [];
         for (const [node, nodeChannels] of byNode) {
             const time = nodeChannels[0].sampler.input;
-            for (const path of ['translation', 'rotation', 'scale']) {
-                const sourceChannel = nodeChannels.find((channel) => channel.path === path);
+            for (const path of ['translation', 'rotation', 'scale'] as const) {
+                const sourceChannel = nodeChannels.find((channel: FbxJson) => channel.path === path);
                 const channel = sourceChannel ? scaleFbxAnimationChannel(sourceChannel) : constantFbxChannel(node, path, time);
-                const sampler = appendAnimationSampler(document, channel.sampler, path === 'weights' ? channel.targetCount : undefined);
+                // Only TRS paths reach here; weight channels are appended by
+                // the loop below, which is where a target count is meaningful.
+                const sampler = appendAnimationSampler(document, channel.sampler);
                 const samplerIndex = samplers.length;
                 samplers.push(sampler);
                 channels.push({ sampler: samplerIndex, node: node.documentNode, path });
             }
-            for (const channel of nodeChannels.filter((candidate) => candidate.path === 'weights')) {
+            for (const channel of nodeChannels.filter((candidate: FbxJson) => candidate.path === 'weights')) {
                 const samplerIndex = samplers.length;
                 samplers.push(appendAnimationSampler(document, channel.sampler, channel.targetCount));
                 channels.push({ sampler: samplerIndex, node: node.documentNode, path: 'weights' });
@@ -416,16 +462,16 @@ function appendFbxAnimations(clips, state, document) {
     }
 }
 
-function constantFbxChannel(node, path, input) {
+function constantFbxChannel(node: FbxNodeState, path: 'translation' | 'rotation' | 'scale', input: Float32Array) {
     const values = path === 'translation'
         ? node.animationTrs.translation.map((value) => value * FBX_CENTIMETERS_TO_METERS)
-        : path === 'rotation' ? node.animationTrs.rotation : node.animationTrs[path];
+        : path === 'rotation' ? node.animationTrs.rotation : node.animationTrs.scale;
     const output = new Float32Array(input.length * values.length);
     for (let index = 0; index < input.length; index += 1) output.set(values, index * values.length);
     return { path, sampler: { input, output, interpolation: 'LINEAR' } };
 }
 
-function scaleFbxAnimationChannel(channel) {
+function scaleFbxAnimationChannel(channel: FbxJson) {
     if (channel.path !== 'translation') return channel;
     return {
         ...channel,
@@ -433,14 +479,14 @@ function scaleFbxAnimationChannel(channel) {
     };
 }
 
-function appendAnimationSampler(document, sampler, targetCount) {
+function appendAnimationSampler(document: SceneDocument, sampler: FbxJson, targetCount?: number) {
     const input = appendFloatAccessor(document, sampler.input, 1);
     const components = targetCount || (sampler.output.length / (sampler.input.length * ((sampler.interpolation || 'LINEAR') === 'CUBICSPLINE' ? 3 : 1)));
     const output = appendFloatAccessor(document, sampler.output, components);
     return { input, output, interpolation: sampler.interpolation || 'LINEAR' };
 }
 
-function materialGroups(indices, materialIndices, fallback, materialMap, document, name) {
+function materialGroups(indices: FbxJson, materialIndices: FbxJson, fallback: number, materialMap: number[], document: SceneDocument, name: string) {
     const source = Array.from(indices || []);
     const groups = new Map();
     for (let offset = 0; offset + 2 < source.length; offset += 3) {
@@ -453,21 +499,21 @@ function materialGroups(indices, materialIndices, fallback, materialMap, documen
     return [...groups.entries()].map(([material, groupIndices]) => ({ material, indices: groupIndices }));
 }
 
-function morphWeights(mesh) {
-    return Array.from(mesh?.morphTargets || [], (target) => (Number(target.defaultWeight) || 0) / 100);
+function morphWeights(mesh: FbxJson): number[] {
+    return Array.from<FbxJson, number>(mesh?.morphTargets || [], (target) => (Number(target.defaultWeight) || 0) / 100);
 }
 
-function appendFloatAccessor(document, values, components) {
+function appendFloatAccessor(document: SceneDocument, values: ArrayLike<number>, components: number): number {
     return appendAccessor(document, { bytes: bytesFromF32(values), componentType: 5126, components, count: values.length / components, normalized: false });
 }
 
-function decomposeMatrix(matrix) {
+function decomposeMatrix(matrix: ArrayLike<number>): Trs {
     const scale = [Math.hypot(matrix[0], matrix[1], matrix[2]) || 1, Math.hypot(matrix[4], matrix[5], matrix[6]) || 1, Math.hypot(matrix[8], matrix[9], matrix[10]) || 1];
     const m00 = matrix[0] / scale[0], m01 = matrix[4] / scale[1], m02 = matrix[8] / scale[2];
     const m10 = matrix[1] / scale[0], m11 = matrix[5] / scale[1], m12 = matrix[9] / scale[2];
     const m20 = matrix[2] / scale[0], m21 = matrix[6] / scale[1], m22 = matrix[10] / scale[2];
     const trace = m00 + m11 + m22;
-    let rotation;
+    let rotation: number[];
     if (trace > 0) { const s = Math.sqrt(trace + 1) * 2; rotation = [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s]; }
     else if (m00 > m11 && m00 > m22) { const s = Math.sqrt(1 + m00 - m11 - m22) * 2; rotation = [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]; }
     else if (m11 > m22) { const s = Math.sqrt(1 + m11 - m00 - m22) * 2; rotation = [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]; }
@@ -476,17 +522,17 @@ function decomposeMatrix(matrix) {
     return { translation: [matrix[12], matrix[13], matrix[14]], rotation: rotation.map((value) => value / length), scale };
 }
 
-function cloneTrs(trs) {
+function cloneTrs(trs: Trs): Trs {
     return { translation: [...trs.translation], rotation: [...trs.rotation], scale: [...trs.scale] };
 }
 
-function scaleVector3(values) {
+function scaleVector3(values: ArrayLike<number>) {
     const output = new Float32Array(values.length);
     for (let index = 0; index < values.length; index += 1) output[index] = values[index] * FBX_CENTIMETERS_TO_METERS;
     return output;
 }
 
-function scaleMatrixTranslation(matrix) {
+function scaleMatrixTranslation(matrix: Float32Array): Float32Array {
     const output = Float32Array.from(matrix);
     output[12] *= FBX_CENTIMETERS_TO_METERS;
     output[13] *= FBX_CENTIMETERS_TO_METERS;
@@ -494,7 +540,7 @@ function scaleMatrixTranslation(matrix) {
     return output;
 }
 
-function validMatrix(matrix) {
+function validMatrix(matrix: unknown): boolean {
     return Array.isArray(matrix) && matrix.length === 16 && matrix.every(Number.isFinite);
 }
 
