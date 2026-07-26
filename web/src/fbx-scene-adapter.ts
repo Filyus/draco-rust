@@ -2,10 +2,15 @@
  * FBX scene export boundary for the web application.
  *
  * This module deliberately has no dependency on glTF loader code. It owns the
- * FBX representation and format-specific material/texture mapping.
+ * FBX representation and format-specific material/texture mapping — but it
+ * reads glTF material and texture JSON through the one shared interpreter, so
+ * this export route resolves extensions and defaults exactly as the preview
+ * and the portable document do.
  */
 
 import { identityMat4, invertMat4 } from './mat4.ts';
+import { readGltfMaterial, resolveSampler, resolveTextureSource } from './gltf-interpretation.ts';
+import type { InterpretedTexture } from './gltf-interpretation.ts';
 import type { ResourceMap } from './scene-resources.ts';
 import type { GltfAsset, NumericArray } from './wasm-modules.ts';
 
@@ -99,49 +104,122 @@ export function convertGltfMatrixToFbx(matrix: ArrayLike<number>): FbxMatrix {
   return multiplyMat4(multiplyMat4(FBX_TO_GLTF_BASIS, matrix), GLTF_TO_FBX_BASIS);
 }
 
-/** Convert the portable glTF PBR subset to FBX Phong material properties. */
-export function buildFbxMaterials(definitions: GltfJson[]) {
-  return definitions.map((definition, index) => {
-    const pbr = definition.pbrMetallicRoughness || {};
-    const base: number[] = pbr.baseColorFactor || [1, 1, 1, 1];
-    const textures: { slot: string; textureIndex: number }[] = [];
-    const add = (info: GltfJson, slot: string) => {
-      if (typeof info?.index === 'number') textures.push({ slot, textureIndex: info.index });
-    };
-    add(pbr.baseColorTexture, 'diffuse');
-    add(definition.normalTexture, 'normal');
-    add(definition.emissiveTexture, 'emissive');
-    add(pbr.metallicRoughnessTexture, 'roughness');
-    return {
-      name: definition.name || `material_${index}`,
-      shadingModel: 'Phong',
-      diffuse: base.slice(0, 3),
-      diffuseFactor: 1,
-      emissive: definition.emissiveFactor || [0, 0, 0],
-      emissiveFactor: 1,
-      reflectionFactor: pbr.metallicFactor ?? 0,
-      shininess: Math.max(0, Math.min(1, pbr.roughnessFactor ?? 1)) * -100 + 100,
-      opacity: base[3] ?? 1,
-      textures,
-    };
-  });
+/** The PBR values an FBX Phong material is lowered from, whatever read them. */
+export interface PhongSource {
+  name: string;
+  baseColorFactor: number[];
+  emissiveFactor: number[];
+  metallicFactor: number;
+  roughnessFactor: number;
+  textures: { slot: string; textureIndex: number }[];
 }
 
-/** Preserve embedded or external glTF image data for an FBX Texture/Video. */
+/**
+ * Lower a PBR material to FBX Phong properties.
+ *
+ * Shared by both FBX export routes — from a glTF document and from a
+ * SceneDocument — because the mapping is a property of FBX, not of whichever
+ * model happened to be read.
+ */
+export function lowerPbrToFbxPhong(source: PhongSource) {
+  return {
+    name: source.name,
+    shadingModel: 'Phong',
+    diffuse: source.baseColorFactor.slice(0, 3),
+    diffuseFactor: 1,
+    emissive: [...source.emissiveFactor],
+    emissiveFactor: 1,
+    reflectionFactor: source.metallicFactor,
+    shininess: Math.max(0, Math.min(1, source.roughnessFactor)) * -100 + 100,
+    opacity: source.baseColorFactor[3] ?? 1,
+    textures: source.textures,
+  };
+}
+
+/**
+ * Convert glTF materials to FBX Phong, reporting what FBX cannot carry.
+ *
+ * Read through the shared interpreter rather than off the JSON, so this route
+ * resolves extensions and defaults the same way the preview and the portable
+ * document do. FBX's material model is Phong plus texture slots, so the
+ * layered extensions and per-slot texture transforms have nowhere to go; the
+ * warnings say so once per kind rather than once per material.
+ */
+export function buildFbxMaterials(definitions: GltfJson[], warnings: string[] = []) {
+  let droppedLayers = false;
+  let droppedTransforms = false;
+  const materials = definitions.map((definition, index) => {
+    const source = readGltfMaterial(definition, index);
+    const textures: { slot: string; textureIndex: number }[] = [];
+    const add = (binding: InterpretedTexture | null, slot: string) => {
+      if (!binding) return;
+      textures.push({ slot, textureIndex: binding.index });
+      if (binding.transform) droppedTransforms = true;
+    };
+    add(source.baseColorTexture, 'diffuse');
+    add(source.normalTexture, 'normal');
+    add(source.emissiveTexture, 'emissive');
+    add(source.metallicRoughnessTexture, 'roughness');
+    if (source.clearcoatFactor !== 0 || source.specularFactor !== 1 || source.ior !== 1.5
+      || source.emissiveStrength !== 1 || source.unlit) {
+      droppedLayers = true;
+    }
+    return lowerPbrToFbxPhong({
+      name: source.name,
+      baseColorFactor: source.baseColorFactor,
+      emissiveFactor: source.emissiveFactor,
+      metallicFactor: source.metallicFactor,
+      roughnessFactor: source.roughnessFactor,
+      textures,
+    });
+  });
+  if (droppedLayers) {
+    warnings.push('FBX materials are Phong: clearcoat, specular, index of refraction, emissive strength and unlit were not written');
+  }
+  if (droppedTransforms) {
+    warnings.push('FBX textures carry no UV transform: KHR_texture_transform offsets and scales were not written');
+  }
+  return materials;
+}
+
+/**
+ * Preserve embedded or external glTF image data for an FBX Texture/Video.
+ *
+ * Never drops an entry: materials address this array by position, so a texture
+ * that could not be resolved has to stay as an empty slot rather than shift
+ * every later index by one.
+ */
 export function buildFbxTextures(
   asset: GltfAsset,
   document: GltfJson,
   resources: ResourceMap,
   resolveUriBytes: (uri: string, resources: ResourceMap) => Uint8Array | null,
+  warnings: string[] = [],
 ) {
   const images: GltfJson[] = document.images || [];
-  return (document.textures || []).map((texture: GltfJson, index: number) => {
-    const image = images[texture.source] || {};
+  const samplers: GltfJson[] = document.samplers || [];
+  let alternateSource = false;
+  let droppedSamplers = false;
+  const textures = (document.textures || []).map((texture: GltfJson, index: number) => {
+    const { source, extension } = resolveTextureSource(texture);
+    if (extension) alternateSource = true;
+    const sampler = resolveSampler(Number.isInteger(texture.sampler) ? samplers[texture.sampler] : null);
+    // 10497 is REPEAT, which is also what FBX assumes; anything else is a
+    // wrap mode the format has no field for.
+    if (sampler.wrapS !== 10497 || sampler.wrapT !== 10497) droppedSamplers = true;
+    const image = images[source] || {};
     const content = typeof image.bufferView === 'number'
       ? Array.from(new Uint8Array(asset.bufferViewBytes(image.bufferView)))
       : (image.uri ? Array.from(resolveUriBytes(image.uri, resources) || []) : null);
     return { name: texture.name || image.name || `texture_${index}`, content, filename: image.uri || null };
   });
+  if (alternateSource) {
+    warnings.push('Textures encoded as WebP or KTX2 were written to FBX unchanged; most importers cannot decode them');
+  }
+  if (droppedSamplers) {
+    warnings.push('FBX textures carry no wrap mode: clamp and mirror settings were not written');
+  }
+  return textures;
 }
 
 /** Convert glTF quaternion key values to FBX XYZ Euler key values. */

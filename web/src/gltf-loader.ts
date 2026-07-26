@@ -15,6 +15,7 @@
 
 import { componentByteSize, normalizeComponent, readComponent } from './component-values.ts';
 import {
+  GLTF_READER_RESOLVED_EXTENSIONS,
   gltfExtensionWarnings,
   isInterpretedGltfExtension,
   readGltfMaterial,
@@ -51,6 +52,16 @@ type GltfJson = any;
 interface ImportHooks {
   onLog?: (message: string, level: string) => void;
 }
+
+/**
+ * Extensions the FBX export route can act on.
+ *
+ * Only the ones the Rust reader resolves before JS sees them: their payload
+ * arrives as ordinary geometry, so nothing is lost by writing FBX from it.
+ * Every material and texture extension is genuinely dropped here, which is why
+ * this set is narrower than either the preview's or the document's.
+ */
+const FBX_HONORED_EXTENSIONS: ReadonlySet<string> = GLTF_READER_RESOLVED_EXTENSIONS;
 
 // Morph targets the preview can blend in one frame. Mirrors the viewer's shader
 // loop bound; a mesh may declare any number of targets as long as no single
@@ -289,10 +300,22 @@ export function buildFbxSceneFromGltf(
         children: (node.children || []).map((child: number) => buildNode(child, false)),
       };
     };
+    // FBX honors a far narrower set than the preview or the portable document:
+    // it has no unlit, no clearcoat, no specular or ior, and no UV transform.
+    // The predicate is a parameter precisely so each consumer can state its
+    // own reach rather than inherit someone else's.
+    warnings.push(...gltfExtensionWarnings(
+      document,
+      (extension) => FBX_HONORED_EXTENSIONS.has(extension),
+      {
+        ignored: (names) => `glTF extensions the FBX writer cannot express: ${names}`,
+        required: 'This model requires glTF extensions that FBX cannot express; the exported scene is incomplete',
+      },
+    ));
     return {
       rootNodes: roots.map((root: number) => buildNode(root, true)),
-      materials: buildFbxMaterials(document.materials || []),
-      textures: buildFbxTextures(asset, document, resources, resolveUriBytes),
+      materials: buildFbxMaterials(document.materials || [], warnings),
+      textures: buildFbxTextures(asset, document, resources, resolveUriBytes, warnings),
       animations: buildFbxAnimations(
         asset, document.animations || [], nodeRecords, warnings, legacyCompatibility,
       ),

@@ -14,6 +14,7 @@ import { invertMat4, multiplyMat4 } from './mat4.ts';
 import {
   convertGltfMatrixToFbx,
   convertGltfVectorArrayToFbx,
+  lowerPbrToFbxPhong,
   quaternionKeysToFbxEuler,
 } from './fbx-scene-adapter.ts';
 import { assertFbxProvenance } from './fbx-scene-provenance.ts';
@@ -64,7 +65,7 @@ export function buildFbxSceneFromDocument(document: SceneDocument, options: FbxW
       sourceUnits,
       warnings,
     )),
-    materials: buildMaterials(document),
+    materials: buildMaterials(document, warnings),
     textures: buildTextures(document),
     animations: sourceScene?.animations?.length
       ? structuredClone(sourceScene.animations)
@@ -329,30 +330,34 @@ function buildMorphTargets(document: SceneDocument, primitive: ScenePrimitive, s
   });
 }
 
-function buildMaterials(document: SceneDocument): FbxJson[] {
-  return document.materials.map((material, index) => {
-    const base = material.baseColorFactor || [1, 1, 1, 1];
-    const textures: FbxJson[] = [];
+function buildMaterials(document: SceneDocument, warnings: string[]): FbxJson[] {
+  let droppedLayers = false;
+  const materials = document.materials.map((material, index) => {
+    const textures: { slot: string; textureIndex: number }[] = [];
     const add = (info: { texture?: number } | undefined, slot: string) => {
-      if (Number.isInteger(info?.texture)) textures.push({ slot, textureIndex: info!.texture });
+      if (Number.isInteger(info?.texture)) textures.push({ slot, textureIndex: info!.texture! });
     };
     add(material.baseColorTexture, 'diffuse');
     add(material.normalTexture, 'normal');
     add(material.emissiveTexture, 'emissive');
     add(material.metallicRoughnessTexture, 'roughness');
-    return {
+    if ((material.clearcoatFactor ?? 0) !== 0 || (material.specularFactor ?? 1) !== 1
+      || (material.ior ?? 1.5) !== 1.5 || (material.emissiveStrength ?? 1) !== 1 || material.unlit) {
+      droppedLayers = true;
+    }
+    return lowerPbrToFbxPhong({
       name: material.name || `material_${index}`,
-      shadingModel: 'Phong',
-      diffuse: base.slice(0, 3),
-      diffuseFactor: 1,
-      emissive: material.emissiveFactor || [0, 0, 0],
-      emissiveFactor: 1,
-      reflectionFactor: material.metallicFactor ?? 0,
-      shininess: Math.max(0, Math.min(1, material.roughnessFactor ?? 1)) * -100 + 100,
-      opacity: base[3] ?? 1,
+      baseColorFactor: material.baseColorFactor || [1, 1, 1, 1],
+      emissiveFactor: material.emissiveFactor || [0, 0, 0],
+      metallicFactor: material.metallicFactor ?? 0,
+      roughnessFactor: material.roughnessFactor ?? 1,
       textures,
-    };
+    });
   });
+  if (droppedLayers) {
+    warnings.push('FBX materials are Phong: clearcoat, specular, index of refraction, emissive strength and unlit were not written');
+  }
+  return materials;
 }
 
 function buildTextures(document: SceneDocument): FbxJson[] {
