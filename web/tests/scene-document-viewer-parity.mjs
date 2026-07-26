@@ -31,7 +31,14 @@ const document = createSceneDocument({
             0, 0, 0, 1,
         ])), componentType: 5126, components: 16, count: 1 },
     ],
-    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1, material: 0 }] }],
+    // The second primitive deliberately declares no material: glTF says such a
+    // primitive takes the renderer's own default, never materials[0].
+    meshes: [{
+        primitives: [
+            { attributes: { POSITION: 0 }, indices: 1, material: 0 },
+            { attributes: { POSITION: 0 }, indices: 1 },
+        ],
+    }],
     nodes: [{
         name: 'Mesh', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0, skin: 0, children: [1],
     }, {
@@ -58,6 +65,12 @@ assert.deepEqual(Array.from(scene.skins[0].joints[0].inverseBind), [
 ]);
 assert.equal(scene.meshes[0].primitives[0].attributes.POSITION.count, 3);
 assert.equal(scene.materials[0].baseColorTexture, 0);
+assert.equal(scene.meshes[0].primitives[0].materialIndex, 0);
+assert.equal(
+    scene.meshes[0].primitives[1].materialIndex,
+    -1,
+    'a primitive without a material must not borrow materials[0]',
+);
 assert.equal(scene.textures[0].image, undefined, 'runtime adapter must not inject browser image handles');
 assert.ok(scene.textures[0].bytes instanceof Uint8Array);
 

@@ -103,7 +103,10 @@ function adaptPrimitive(primitive: ScenePrimitive, accessors: RuntimeAccessor[])
   } = {
     attributes,
     mode: primitive.mode ?? 4,
-    materialIndex: primitive.material ?? 0,
+    // Matches the glTF loader's convention: a primitive without a material
+    // resolves to nothing, and the renderer falls back to its own defaults.
+    // Defaulting to 0 would silently paint it with the first material instead.
+    materialIndex: primitive.material ?? -1,
   };
   if (primitive.indices !== undefined) runtime.indices = accessors[primitive.indices];
   if (primitive.targets?.length) {
