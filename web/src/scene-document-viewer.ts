@@ -7,15 +7,52 @@
  * into SceneDocument.
  */
 
-import { assertValidSceneDocument } from './scene-document.js';
+import { assertValidSceneDocument } from './scene-document.ts';
+import type {
+    SceneAccessor,
+    SceneAnimation,
+    SceneDocument,
+    SceneMaterial,
+    SceneMesh,
+    SceneNode,
+    ScenePrimitive,
+    SceneResource,
+    SceneSkin,
+    SceneTexture,
+    TextureInfo,
+} from './scene-document.ts';
+
+/**
+ * The runtime accessor keeps the document's bytes but drops everything an
+ * exporter needs and a renderer does not.
+ */
+interface RuntimeAccessor {
+    bytes: Uint8Array;
+    componentType: number;
+    components: number;
+    normalized: boolean;
+    count: number;
+}
+
+interface Trs {
+    translation: number[];
+    rotation: number[];
+    scale: number[];
+}
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-const COMPONENT_BYTES = new Map([
+const COMPONENT_BYTES = new Map<number, number>([
     [5120, 1], [5121, 1], [5122, 2], [5123, 2], [5125, 4], [5126, 4],
 ]);
 
-/** Build the current viewer's runtime Scene from a validated SceneDocument. */
-export function buildViewerSceneFromDocument(document) {
+/**
+ * Build the current viewer's runtime Scene from a validated SceneDocument.
+ *
+ * The runtime shape stays inferred: the glTF loader builds a slightly
+ * different node (it carries an `index`, not a rest/animation TRS pair), so
+ * the one type both must satisfy belongs with the viewer that consumes them.
+ */
+export function buildViewerSceneFromDocument(document: SceneDocument) {
     const validation = assertValidSceneDocument(document);
     const accessors = document.accessors.map(toRuntimeAccessor);
     const meshes = document.meshes.map((mesh, meshIndex) => ({
@@ -23,7 +60,7 @@ export function buildViewerSceneFromDocument(document) {
         primitives: mesh.primitives.map((primitive) => adaptPrimitive(primitive, accessors)),
         aabb: meshAabb(mesh, accessors),
     }));
-    const nodes = document.nodes.map((node, nodeIndex) => adaptNode(node, meshes, document));
+    const nodes = document.nodes.map((node) => adaptNode(node, document));
     const materials = document.materials.map(adaptMaterial);
     const textures = document.textures.map((texture, textureIndex) => adaptTexture(texture, document.resources, textureIndex));
     const skins = document.skins.map((skin, skinIndex) => adaptSkin(skin, nodes, accessors, skinIndex));
@@ -32,7 +69,7 @@ export function buildViewerSceneFromDocument(document) {
         const source = document.nodes[index];
         if (source.skin !== undefined) node.skinIndex = source.skin;
     });
-    const renderables = [];
+    const renderables: { node: typeof nodes[number]; meshIndex: number; skinIndex: number }[] = [];
     nodes.forEach((node) => {
         if (node.meshIndex >= 0) renderables.push({ node, meshIndex: node.meshIndex, skinIndex: node.skinIndex });
     });
@@ -59,7 +96,7 @@ export function buildViewerSceneFromDocument(document) {
     };
 }
 
-function toRuntimeAccessor(accessor) {
+function toRuntimeAccessor(accessor: SceneAccessor): RuntimeAccessor {
     return {
         bytes: new Uint8Array(accessor.bytes),
         componentType: accessor.componentType,
@@ -69,12 +106,19 @@ function toRuntimeAccessor(accessor) {
     };
 }
 
-function adaptPrimitive(primitive, accessors) {
-    const attributes = {};
+function adaptPrimitive(primitive: ScenePrimitive, accessors: RuntimeAccessor[]) {
+    const attributes: Record<string, RuntimeAccessor> = {};
     for (const [semantic, accessorIndex] of Object.entries(primitive.attributes)) {
         attributes[semantic] = accessors[accessorIndex];
     }
-    const runtime = {
+    const runtime: {
+        attributes: Record<string, RuntimeAccessor>;
+        mode: number;
+        materialIndex: number;
+        indices?: RuntimeAccessor;
+        morphPositions?: (RuntimeAccessor | null)[];
+        morphNormals?: (RuntimeAccessor | null)[];
+    } = {
         attributes,
         mode: primitive.mode ?? 4,
         materialIndex: primitive.material ?? 0,
@@ -87,7 +131,7 @@ function adaptPrimitive(primitive, accessors) {
     return runtime;
 }
 
-function adaptNode(node, meshes, document) {
+function adaptNode(node: SceneNode, document: SceneDocument) {
     const mesh = node.mesh === undefined ? null : document.meshes[node.mesh];
     const weights = node.weights || mesh?.weights || [];
     const trs = node.matrix ? decomposeMatrix(node.matrix) : {
@@ -109,7 +153,12 @@ function adaptNode(node, meshes, document) {
     };
 }
 
-function adaptSkin(skin, nodes, accessors, skinIndex) {
+function adaptSkin(
+    skin: SceneSkin,
+    nodes: ReturnType<typeof adaptNode>[],
+    accessors: RuntimeAccessor[],
+    skinIndex: number,
+) {
     const inverseBinds = skin.inverseBindMatrices === undefined
         ? null : matrixAccessor(accessors[skin.inverseBindMatrices], skin.joints.length);
     return {
@@ -121,7 +170,12 @@ function adaptSkin(skin, nodes, accessors, skinIndex) {
     };
 }
 
-function adaptAnimation(clip, nodes, accessors, clipIndex) {
+function adaptAnimation(
+    clip: SceneAnimation,
+    nodes: ReturnType<typeof adaptNode>[],
+    accessors: RuntimeAccessor[],
+    clipIndex: number,
+) {
     return {
         name: clip.name || `animation_${clipIndex}`,
         duration: clip.duration,
@@ -139,7 +193,7 @@ function adaptAnimation(clip, nodes, accessors, clipIndex) {
     };
 }
 
-function adaptMaterial(material, index) {
+function adaptMaterial(material: SceneMaterial, index: number) {
     return {
         name: material.name || `material_${index}`,
         baseColorFactor: [...(material.baseColorFactor || [1, 1, 1, 1])],
@@ -160,7 +214,7 @@ function adaptMaterial(material, index) {
     };
 }
 
-function adaptTexture(texture, resources, index) {
+function adaptTexture(texture: SceneTexture, resources: SceneResource[], index: number) {
     const resource = resources[texture.resource];
     return {
         name: texture.name || resource.name || `texture_${index}`,
@@ -171,11 +225,11 @@ function adaptTexture(texture, resources, index) {
     };
 }
 
-function textureIndex(info) {
+function textureIndex(info: TextureInfo | undefined) {
     return info ? info.texture : null;
 }
 
-function textureInfo(info) {
+function textureInfo(info: TextureInfo | undefined) {
     return info ? {
         index: info.texture,
         texCoord: info.texCoord || 0,
@@ -185,19 +239,19 @@ function textureInfo(info) {
     } : null;
 }
 
-function floatAccessor(accessor) {
+function floatAccessor(accessor: RuntimeAccessor): Float32Array {
     const view = new DataView(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength);
     const values = new Float32Array(accessor.count * accessor.components);
     for (let index = 0; index < values.length; index += 1) values[index] = view.getFloat32(index * 4, true);
     return values;
 }
 
-function matrixAccessor(accessor, count) {
+function matrixAccessor(accessor: RuntimeAccessor, count: number): Float32Array[] {
     const values = floatAccessor(accessor);
     return Array.from({ length: count }, (_, index) => Float32Array.from(values.subarray(index * 16, index * 16 + 16)));
 }
 
-function meshAabb(mesh, accessors) {
+function meshAabb(mesh: SceneMesh, accessors: RuntimeAccessor[]) {
     const aabb = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
     for (const primitive of mesh.primitives) {
         const accessor = accessors[primitive.attributes.POSITION];
@@ -213,7 +267,7 @@ function meshAabb(mesh, accessors) {
     return Number.isFinite(aabb.min[0]) ? aabb : { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] };
 }
 
-function sceneAabb(meshes) {
+function sceneAabb(meshes: { aabb: { min: number[]; max: number[] } }[]) {
     const aabb = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
     for (const mesh of meshes) for (let component = 0; component < 3; component += 1) {
         aabb.min[component] = Math.min(aabb.min[component], mesh.aabb.min[component]);
@@ -222,8 +276,9 @@ function sceneAabb(meshes) {
     return Number.isFinite(aabb.min[0]) ? aabb : { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] };
 }
 
-function readAccessor(accessor) {
-    const bytes = COMPONENT_BYTES.get(accessor.componentType);
+function readAccessor(accessor: RuntimeAccessor): number[] {
+    // Validation already rejected any component type outside the map.
+    const bytes = COMPONENT_BYTES.get(accessor.componentType)!;
     const view = new DataView(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength);
     const values = new Array(accessor.count * accessor.components);
     for (let index = 0; index < values.length; index += 1) {
@@ -238,13 +293,13 @@ function readAccessor(accessor) {
     return values;
 }
 
-function decomposeMatrix(matrix) {
+function decomposeMatrix(matrix: number[]): Trs {
     const scale = [Math.hypot(matrix[0], matrix[1], matrix[2]) || 1, Math.hypot(matrix[4], matrix[5], matrix[6]) || 1, Math.hypot(matrix[8], matrix[9], matrix[10]) || 1];
     const m00 = matrix[0] / scale[0], m01 = matrix[4] / scale[1], m02 = matrix[8] / scale[2];
     const m10 = matrix[1] / scale[0], m11 = matrix[5] / scale[1], m12 = matrix[9] / scale[2];
     const m20 = matrix[2] / scale[0], m21 = matrix[6] / scale[1], m22 = matrix[10] / scale[2];
     const trace = m00 + m11 + m22;
-    let rotation;
+    let rotation: number[];
     if (trace > 0) { const s = Math.sqrt(trace + 1) * 2; rotation = [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s]; }
     else if (m00 > m11 && m00 > m22) { const s = Math.sqrt(1 + m00 - m11 - m22) * 2; rotation = [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]; }
     else if (m11 > m22) { const s = Math.sqrt(1 + m11 - m00 - m22) * 2; rotation = [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]; }
@@ -253,6 +308,6 @@ function decomposeMatrix(matrix) {
     return { translation: [matrix[12], matrix[13], matrix[14]], rotation: rotation.map((value) => value / length), scale };
 }
 
-function cloneTrs(trs) {
+function cloneTrs(trs: Trs): Trs {
     return { translation: [...trs.translation], rotation: [...trs.rotation], scale: [...trs.scale] };
 }

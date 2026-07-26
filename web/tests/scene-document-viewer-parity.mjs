@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createSceneDocument } from '../src/scene-document.ts';
-import { buildViewerSceneFromDocument } from '../www/scene-document-viewer.js';
+import { buildViewerSceneFromDocument } from '../src/scene-document-viewer.ts';
 
 globalThis.WebGL2RenderingContext = class {};
 const { Viewer } = await import('../www/viewer.js');

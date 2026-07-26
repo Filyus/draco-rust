@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { buildFbxSceneFromDocument } from '../www/fbx-scene-document-writer.js';
 import { lowerSceneDocumentToGltf } from '../www/scene-document-gltf.js';
-import { buildViewerSceneFromDocument } from '../www/scene-document-viewer.js';
+import { buildViewerSceneFromDocument } from '../src/scene-document-viewer.ts';
 import { assertValidSceneDocument, createSceneDocument } from '../src/scene-document.ts';
 
 function bytes(values) {
