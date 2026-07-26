@@ -1,2 +1,15 @@
-# Shell scripts must keep LF endings so they run correctly on Linux CI.
-*.sh text eol=lf
+# The repository already stores every text file with LF. Saying so explicitly
+# keeps the working copy on LF as well, so a checkout on Windows does not hand
+# CRLF to editors and tools that then write it back into a diff.
+* text=auto eol=lf
+
+# Always-binary fixtures. PLY and STL are deliberately absent: those formats
+# have both an ASCII and a binary flavour, and the ASCII fixtures are text that
+# must stay normalized. Git's content heuristic already leaves the binary ones
+# alone.
+*.drc binary
+*.glb binary
+*.bin binary
+*.fbx binary
+*.png binary
+*.jpg binary

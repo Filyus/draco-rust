@@ -1,0 +1,23 @@
+# Editor defaults for the repository. Rust formatting is owned by rustfmt.toml;
+# the entries here only tell editors what to do before a formatter runs, and
+# they are what keeps the web sources at two spaces.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{ts,mjs,js,json,jsonc,html,css,yml,yaml}]
+indent_size = 2
+
+[*.rs]
+max_line_length = 100
+
+[*.md]
+# Two trailing spaces are a line break in Markdown.
+trim_trailing_whitespace = false
