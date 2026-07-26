@@ -7,9 +7,78 @@
  * reimplemented in JavaScript.
  */
 
-import { assertValidSceneDocument } from './scene-document.js';
+import { assertValidSceneDocument } from './scene-document.ts';
+import type {
+    SceneAccessor,
+    SceneAnimation,
+    SceneDocument,
+    SceneMaterial,
+    SceneMesh,
+    SceneNode,
+    SceneSkin,
+    TextureInfo,
+} from './scene-document.ts';
+import type { GltfAsset, GltfModule } from './wasm-modules.ts';
 
-const ACCESSOR_TYPES = new Map([
+/**
+ * The lowered glTF pieces. These describe what this module writes, not the
+ * whole glTF schema: anything the exporter never emits is deliberately absent.
+ */
+interface GltfBufferView {
+    buffer: number;
+    byteOffset: number;
+    byteLength: number;
+    target?: number;
+}
+
+interface GltfTextureInfo {
+    index: number;
+    texCoord: number;
+    scale?: number;
+    strength?: number;
+    extensions?: Record<string, unknown>;
+}
+
+interface GltfMaterial {
+    name: string;
+    pbrMetallicRoughness: Record<string, unknown>;
+    emissiveFactor: number[];
+    alphaMode: string;
+    doubleSided: boolean;
+    alphaCutoff?: number;
+    normalTexture?: GltfTextureInfo;
+    occlusionTexture?: GltfTextureInfo;
+    emissiveTexture?: GltfTextureInfo;
+    extensions?: Record<string, unknown>;
+}
+
+interface GltfTexture {
+    name: string;
+    sampler: number;
+    source?: number;
+    extensions?: Record<string, { source: number }>;
+}
+
+/** A node carries either a matrix or a TRS triple, never both. */
+interface GltfNode {
+    name: string;
+    children?: number[];
+    mesh?: number;
+    skin?: number;
+    weights?: number[];
+    matrix?: number[];
+    translation?: number[];
+    rotation?: number[];
+    scale?: number[];
+}
+
+interface Trs {
+    translation: number[];
+    rotation: number[];
+    scale: number[];
+}
+
+const ACCESSOR_TYPES = new Map<number, string>([
     [1, 'SCALAR'], [2, 'VEC2'], [3, 'VEC3'], [4, 'VEC4'], [9, 'MAT3'], [16, 'MAT4'],
 ]);
 
@@ -18,22 +87,22 @@ const ACCESSOR_TYPES = new Map([
  * companion resource. This is useful for callers that need a JSON bundle;
  * use {@link serializeSceneDocumentToGlb} for a self-contained GLB.
  */
-export function lowerSceneDocumentToGltf(document) {
+export function lowerSceneDocumentToGltf(document: SceneDocument) {
     const validation = assertValidSceneDocument(document);
     const warnings = [...document.warnings, ...validation.warnings];
     const animatedNodes = new Set(document.animations.flatMap((clip) => clip.channels.map((channel) => channel.node)));
     const binary = new BinaryBuilder();
-    const bufferViews = [];
+    const bufferViews: GltfBufferView[] = [];
     const positionAccessors = new Set(document.meshes.flatMap((mesh) => mesh.primitives.map((primitive) => primitive.attributes.POSITION)));
     const animationInputs = new Set(document.animations.flatMap((clip) => clip.samplers.map((sampler) => sampler.input)));
     const accessorTargets = geometryAccessorTargets(document.meshes);
     const accessors = document.accessors.map((accessor, index) => lowerAccessor(
         accessor, index, binary, bufferViews, positionAccessors.has(index), animationInputs.has(index), accessorTargets.get(index),
     ));
-    const images = [];
-    const imageByResource = new Map();
-    const samplers = [];
-    const textures = document.textures.map((texture, index) => {
+    const images: { name: string; bufferView: number; mimeType: string }[] = [];
+    const imageByResource = new Map<number, number>();
+    const samplers: Record<string, number>[] = [];
+    const textures: (GltfTexture | null)[] = document.textures.map((texture, index) => {
         const resource = document.resources[texture.resource];
         const sourceExtension = textureSourceExtension(resource?.mimeType);
         if (!resource || !sourceExtension) {
@@ -61,11 +130,11 @@ export function lowerSceneDocumentToGltf(document) {
         };
     });
     const materials = document.materials.map((material, index) => lowerMaterial(material, index, textures, warnings));
-    const meshes = document.meshes.map((mesh, index) => lowerMesh(mesh, index, accessors, materials.length, warnings));
+    const meshes = document.meshes.map((mesh, index) => lowerMesh(mesh, index, accessors.length, materials.length, warnings));
     const nodes = document.nodes.map((node, index) => lowerNode(node, index, animatedNodes, meshes.length, document.skins.length, warnings));
     const skins = document.skins.map((skin, index) => lowerSkin(skin, index, accessors.length));
     const animations = document.animations.map((clip, index) => lowerAnimation(clip, index, accessors.length, nodes.length));
-    const extensionsUsed = new Set();
+    const extensionsUsed = new Set<string>();
     if (materials.some((material) => material.extensions?.KHR_materials_unlit)) extensionsUsed.add('KHR_materials_unlit');
     if (materials.some(materialUsesTextureTransform)) extensionsUsed.add('KHR_texture_transform');
     if (textures.some((texture) => texture?.extensions?.KHR_texture_basisu)) extensionsUsed.add('KHR_texture_basisu');
@@ -98,7 +167,7 @@ export function lowerSceneDocumentToGltf(document) {
 }
 
 /** Create a typed GltfAsset from a portable document. The caller owns it. */
-export function createGltfAssetFromSceneDocument(document, gltfModule) {
+export function createGltfAssetFromSceneDocument(document: SceneDocument, gltfModule: GltfModule) {
     if (!gltfModule?.GltfAsset?.withResources) throw new Error('gltf-wasm GltfAsset.withResources is required for SceneDocument export');
     const lowered = lowerSceneDocumentToGltf(document);
     const asset = gltfModule.GltfAsset.withResources(lowered.json, lowered.resources, '2.0');
@@ -107,7 +176,7 @@ export function createGltfAssetFromSceneDocument(document, gltfModule) {
 }
 
 /** Serialize a portable scene through typed gltf-wasm into a validated GLB v2. */
-export function serializeSceneDocumentToGlb(document, gltfModule) {
+export function serializeSceneDocumentToGlb(document: SceneDocument, gltfModule: GltfModule) {
     const { asset, json, resources, warnings, capabilities } = createGltfAssetFromSceneDocument(document, gltfModule);
     try {
         return { binary: asset.glb(2), json, resources, warnings, capabilities };
@@ -116,7 +185,15 @@ export function serializeSceneDocumentToGlb(document, gltfModule) {
     }
 }
 
-function lowerAccessor(accessor, index, binary, bufferViews, isPosition, isAnimationInput, target) {
+function lowerAccessor(
+    accessor: SceneAccessor,
+    index: number,
+    binary: BinaryBuilder,
+    bufferViews: GltfBufferView[],
+    isPosition: boolean,
+    isAnimationInput: boolean,
+    target: number | undefined,
+) {
     const type = ACCESSOR_TYPES.get(accessor.components);
     if (!type) throw new Error(`SceneDocument accessor ${index} has unsupported ${accessor.components}-component shape`);
     const bufferView = appendBufferView(binary, bufferViews, accessor.bytes, target);
@@ -132,24 +209,34 @@ function lowerAccessor(accessor, index, binary, bufferViews, isPosition, isAnima
     };
 }
 
-function appendBufferView(binary, bufferViews, bytes, target) {
+function appendBufferView(
+    binary: BinaryBuilder,
+    bufferViews: GltfBufferView[],
+    bytes: Uint8Array,
+    target?: number,
+) {
     binary.align();
     const byteOffset = binary.length;
     binary.write(bytes);
-    const output = { buffer: 0, byteOffset, byteLength: bytes.byteLength };
+    const output: GltfBufferView = { buffer: 0, byteOffset, byteLength: bytes.byteLength };
     if (target !== undefined) output.target = target;
     bufferViews.push(output);
     return bufferViews.length - 1;
 }
 
-function lowerMaterial(material, index, textures, warnings) {
-    const texture = (info, label) => {
+function lowerMaterial(
+    material: SceneMaterial,
+    index: number,
+    textures: (GltfTexture | null)[],
+    warnings: string[],
+): GltfMaterial {
+    const texture = (info: TextureInfo | undefined, label: string): GltfTextureInfo | null => {
         if (!info) return null;
         if (!Number.isInteger(info.texture) || !textures[info.texture]) {
             warnings.push(`SceneDocument material ${index} ${label} texture was omitted because its source is unavailable`);
             return null;
         }
-        const output = { index: textureIndex(textures, info.texture), texCoord: info.texCoord ?? 0 };
+        const output: GltfTextureInfo = { index: textureIndex(textures, info.texture), texCoord: info.texCoord ?? 0 };
         if (info.transform) {
             output.extensions = { KHR_texture_transform: {
                 offset: [...(info.transform.offset || [0, 0])],
@@ -162,7 +249,7 @@ function lowerMaterial(material, index, textures, warnings) {
     };
     const baseColorTexture = texture(material.baseColorTexture, 'base color');
     const metallicRoughnessTexture = texture(material.metallicRoughnessTexture, 'metallic-roughness');
-    const output = {
+    const output: GltfMaterial = {
         name: material.name || `material_${index}`,
         pbrMetallicRoughness: {
             baseColorFactor: [...(material.baseColorFactor || [1, 1, 1, 1])],
@@ -181,20 +268,26 @@ function lowerMaterial(material, index, textures, warnings) {
     if (normalTexture) output.normalTexture = normalTexture;
     if (occlusionTexture) output.occlusionTexture = occlusionTexture;
     if (emissiveTexture) output.emissiveTexture = emissiveTexture;
-    if (normalTexture && material.normalTexture?.scale !== undefined) output.normalTexture.scale = material.normalTexture.scale;
-    if (occlusionTexture && material.occlusionTexture?.strength !== undefined) output.occlusionTexture.strength = material.occlusionTexture.strength;
+    if (normalTexture && material.normalTexture?.scale !== undefined) normalTexture.scale = material.normalTexture.scale;
+    if (occlusionTexture && material.occlusionTexture?.strength !== undefined) occlusionTexture.strength = material.occlusionTexture.strength;
     if (material.unlit) output.extensions = { KHR_materials_unlit: {} };
     if (output.alphaMode === 'MASK') output.alphaCutoff = material.alphaCutoff ?? 0.5;
     return output;
 }
 
-function textureIndex(textures, source) {
+function textureIndex(textures: (GltfTexture | null)[], source: number) {
     let index = 0;
     for (let current = 0; current < source; current += 1) if (textures[current]) index += 1;
     return index;
 }
 
-function lowerMesh(mesh, index, accessorCount, materialCount, warnings) {
+function lowerMesh(
+    mesh: SceneMesh,
+    index: number,
+    accessorCount: number,
+    materialCount: number,
+    warnings: string[],
+) {
     return {
         name: mesh.name || `mesh_${index}`,
         ...(mesh.weights?.length ? { weights: [...mesh.weights] } : {}),
@@ -203,7 +296,7 @@ function lowerMesh(mesh, index, accessorCount, materialCount, warnings) {
             if (primitive.indices !== undefined) assertAccessor(primitive.indices, accessorCount, `mesh ${index} primitive ${primitiveIndex} indices`);
             if (primitive.material !== undefined && (primitive.material < 0 || primitive.material >= materialCount)) throw new Error(`SceneDocument mesh ${index} primitive ${primitiveIndex} has invalid material`);
             const targets = (primitive.targets || []).map((target, targetIndex) => {
-                const output = {};
+                const output: Record<string, number> = {};
                 for (const semantic of ['POSITION', 'NORMAL', 'TANGENT']) {
                     if (target[semantic] !== undefined) {
                         assertAccessor(target[semantic], accessorCount, `mesh ${index} primitive ${primitiveIndex} target ${targetIndex}`);
@@ -225,8 +318,15 @@ function lowerMesh(mesh, index, accessorCount, materialCount, warnings) {
     };
 }
 
-function lowerNode(node, index, animatedNodes, meshCount, skinCount, warnings) {
-    const output = {
+function lowerNode(
+    node: SceneNode,
+    index: number,
+    animatedNodes: Set<number>,
+    meshCount: number,
+    skinCount: number,
+    warnings: string[],
+) {
+    const output: GltfNode = {
         name: node.name || `node_${index}`,
         ...(node.children?.length ? { children: [...node.children] } : {}),
         ...(node.mesh === undefined ? {} : { mesh: node.mesh }),
@@ -247,7 +347,7 @@ function lowerNode(node, index, animatedNodes, meshCount, skinCount, warnings) {
     return output;
 }
 
-function lowerSkin(skin, index, accessorCount) {
+function lowerSkin(skin: SceneSkin, index: number, accessorCount: number) {
     if (skin.inverseBindMatrices !== undefined) assertAccessor(skin.inverseBindMatrices, accessorCount, `skin ${index} inverse bind matrices`);
     return {
         name: skin.name || `skin_${index}`,
@@ -257,7 +357,7 @@ function lowerSkin(skin, index, accessorCount) {
     };
 }
 
-function lowerAnimation(clip, index, accessorCount, nodeCount) {
+function lowerAnimation(clip: SceneAnimation, index: number, accessorCount: number, nodeCount: number) {
     const samplers = clip.samplers.map((sampler, samplerIndex) => {
         assertAccessor(sampler.input, accessorCount, `animation ${index} sampler ${samplerIndex} input`);
         assertAccessor(sampler.output, accessorCount, `animation ${index} sampler ${samplerIndex} output`);
@@ -273,12 +373,12 @@ function lowerAnimation(clip, index, accessorCount, nodeCount) {
     };
 }
 
-function assertAccessor(index, count, label) {
+function assertAccessor(index: number, count: number, label: string) {
     if (!Number.isInteger(index) || index < 0 || index >= count) throw new Error(`SceneDocument ${label} references an invalid accessor`);
 }
 
-function geometryAccessorTargets(meshes) {
-    const targets = new Map();
+function geometryAccessorTargets(meshes: SceneMesh[]) {
+    const targets = new Map<number, number>();
     for (const mesh of meshes) for (const primitive of mesh.primitives) {
         for (const accessor of Object.values(primitive.attributes)) {
             if (!targets.has(accessor)) targets.set(accessor, 34962);
@@ -288,7 +388,7 @@ function geometryAccessorTargets(meshes) {
     return targets;
 }
 
-function accessorBounds(accessor) {
+function accessorBounds(accessor: SceneAccessor) {
     const width = componentByteWidth(accessor.componentType);
     if (!width || !Number.isInteger(accessor.components) || accessor.components < 1 || accessor.components > 4) throw new Error('glTF bounds require a scalar or vector numeric accessor');
     const view = new DataView(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength);
@@ -303,11 +403,11 @@ function accessorBounds(accessor) {
     return { min, max };
 }
 
-function componentByteWidth(componentType) {
+function componentByteWidth(componentType: number) {
     return new Map([[5120, 1], [5121, 1], [5122, 2], [5123, 2], [5125, 4], [5126, 4]]).get(componentType);
 }
 
-function readComponent(view, offset, componentType) {
+function readComponent(view: DataView, offset: number, componentType: number) {
     if (componentType === 5126) return view.getFloat32(offset, true);
     if (componentType === 5125) return view.getUint32(offset, true);
     if (componentType === 5123) return view.getUint16(offset, true);
@@ -316,25 +416,29 @@ function readComponent(view, offset, componentType) {
     return view.getInt8(offset);
 }
 
-function materialUsesTextureTransform(material) {
-    const infos = [material.pbrMetallicRoughness?.baseColorTexture, material.pbrMetallicRoughness?.metallicRoughnessTexture, material.normalTexture, material.occlusionTexture, material.emissiveTexture];
+function materialUsesTextureTransform(material: GltfMaterial) {
+    const pbr = material.pbrMetallicRoughness as {
+        baseColorTexture?: GltfTextureInfo;
+        metallicRoughnessTexture?: GltfTextureInfo;
+    };
+    const infos = [pbr.baseColorTexture, pbr.metallicRoughnessTexture, material.normalTexture, material.occlusionTexture, material.emissiveTexture];
     return infos.some((info) => Boolean(info?.extensions?.KHR_texture_transform));
 }
 
-function textureSourceExtension(mimeType) {
-    if (['image/png', 'image/jpeg'].includes(mimeType)) return 'core';
+function textureSourceExtension(mimeType: string | undefined) {
+    if (mimeType === 'image/png' || mimeType === 'image/jpeg') return 'core';
     if (mimeType === 'image/webp') return 'EXT_texture_webp';
     if (mimeType === 'image/ktx2') return 'KHR_texture_basisu';
     return null;
 }
 
-function decomposeMatrix(matrix) {
+function decomposeMatrix(matrix: number[]): Trs {
     const scale = [Math.hypot(matrix[0], matrix[1], matrix[2]) || 1, Math.hypot(matrix[4], matrix[5], matrix[6]) || 1, Math.hypot(matrix[8], matrix[9], matrix[10]) || 1];
     const m00 = matrix[0] / scale[0], m01 = matrix[4] / scale[1], m02 = matrix[8] / scale[2];
     const m10 = matrix[1] / scale[0], m11 = matrix[5] / scale[1], m12 = matrix[9] / scale[2];
     const m20 = matrix[2] / scale[0], m21 = matrix[6] / scale[1], m22 = matrix[10] / scale[2];
     const trace = m00 + m11 + m22;
-    let rotation;
+    let rotation: number[];
     if (trace > 0) { const s = Math.sqrt(trace + 1) * 2; rotation = [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s]; }
     else if (m00 > m11 && m00 > m22) { const s = Math.sqrt(1 + m00 - m11 - m22) * 2; rotation = [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]; }
     else if (m11 > m22) { const s = Math.sqrt(1 + m11 - m00 - m22) * 2; rotation = [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]; }
@@ -344,7 +448,7 @@ function decomposeMatrix(matrix) {
 }
 
 class BinaryBuilder {
-    #chunks = [];
+    #chunks: Uint8Array[] = [];
     length = 0;
 
     align() {
@@ -352,7 +456,7 @@ class BinaryBuilder {
         if (padding) this.write(new Uint8Array(padding));
     }
 
-    write(bytes) {
+    write(bytes: Uint8Array) {
         const copy = new Uint8Array(bytes);
         this.#chunks.push(copy);
         this.length += copy.byteLength;

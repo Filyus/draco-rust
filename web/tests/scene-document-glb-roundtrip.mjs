@@ -11,7 +11,7 @@ import { validateBytes } from 'gltf-validator';
 import { buildSceneDocumentFromFbx } from '../www/fbx-scene-document.js';
 import { buildSceneDocumentFromGltf } from '../www/gltf-scene-document.js';
 import { cloneSceneDocument } from '../src/scene-document.ts';
-import { lowerSceneDocumentToGltf, serializeSceneDocumentToGlb } from '../www/scene-document-gltf.js';
+import { lowerSceneDocumentToGltf, serializeSceneDocumentToGlb } from '../src/scene-document-gltf.ts';
 import { invertMat4, multiplyMat4 } from '../src/mat4.ts';
 import { here, foxBin, foxGltf, loadFbxViewerAdapter, loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.mjs';
 
