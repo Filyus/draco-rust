@@ -6,14 +6,25 @@
  *   where mXY means column X, row Y.
  */
 
+/** Destinations are always the Float32Arrays the viewer keeps around. */
+export type Mat4 = Float32Array;
+export type Vec3 = Float32Array;
+export type Quat = Float32Array;
+
+/**
+ * Read-only operand. Kept wider than the destinations because callers also
+ * pass plain arrays straight out of glTF nodes and accessors.
+ */
+type Numbers = ArrayLike<number>;
+
 export const mat4 = {
-    create() {
+    create(): Mat4 {
         const m = new Float32Array(16);
         m[0] = m[5] = m[10] = m[15] = 1;
         return m;
     },
 
-    identity(out) {
+    identity(out: Mat4): Mat4 {
         out[0] = 1; out[1] = 0; out[2] = 0; out[3] = 0;
         out[4] = 0; out[5] = 1; out[6] = 0; out[7] = 0;
         out[8] = 0; out[9] = 0; out[10] = 1; out[11] = 0;
@@ -21,13 +32,13 @@ export const mat4 = {
         return out;
     },
 
-    copy(out, a) {
+    copy(out: Mat4, a: Numbers): Mat4 {
         for (let i = 0; i < 16; i++) out[i] = a[i];
         return out;
     },
 
     /** out = a * b */
-    multiply(out, a, b) {
+    multiply(out: Mat4, a: Numbers, b: Numbers): Mat4 {
         const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
         const a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7];
         const a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
@@ -60,7 +71,7 @@ export const mat4 = {
     },
 
     /** Inverse of a general 4x4; returns null if singular. */
-    invert(out, a) {
+    invert(out: Mat4, a: Numbers): Mat4 | null {
         const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
         const a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7];
         const a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
@@ -103,7 +114,7 @@ export const mat4 = {
         return out;
     },
 
-    transpose(out, a) {
+    transpose(out: Mat4, a: Numbers): Mat4 {
         if (out === a) {
             const a01 = a[1], a02 = a[2], a03 = a[3];
             const a12 = a[6], a13 = a[7];
@@ -121,7 +132,7 @@ export const mat4 = {
         return out;
     },
 
-    perspective(out, fovy, aspect, near, far) {
+    perspective(out: Mat4, fovy: number, aspect: number, near: number, far: number): Mat4 {
         const f = 1.0 / Math.tan(fovy * 0.5);
         const nf = 1.0 / (near - far);
         out[0] = f / aspect;
@@ -137,7 +148,7 @@ export const mat4 = {
     },
 
     /** Build a view matrix looking from eye to target. */
-    lookAt(out, eye, target, up) {
+    lookAt(out: Mat4, eye: Numbers, target: Numbers, up: Numbers): Mat4 {
         let zx = eye[0] - target[0];
         let zy = eye[1] - target[1];
         let zz = eye[2] - target[2];
@@ -165,7 +176,7 @@ export const mat4 = {
     },
 
     /** Extract translation into out (vec3). */
-    getTranslation(out, a) {
+    getTranslation(out: Vec3, a: Numbers): Vec3 {
         out[0] = a[12];
         out[1] = a[13];
         out[2] = a[14];
@@ -174,25 +185,25 @@ export const mat4 = {
 };
 
 export const vec3 = {
-    create() { return new Float32Array(3); },
-    set(out, x, y, z) { out[0] = x; out[1] = y; out[2] = z; return out; },
-    copy(out, a) { out[0] = a[0]; out[1] = a[1]; out[2] = a[2]; return out; },
-    add(out, a, b) { out[0] = a[0] + b[0]; out[1] = a[1] + b[1]; out[2] = a[2] + b[2]; return out; },
-    sub(out, a, b) { out[0] = a[0] - b[0]; out[1] = a[1] - b[1]; out[2] = a[2] - b[2]; return out; },
-    scale(out, a, s) { out[0] = a[0] * s; out[1] = a[1] * s; out[2] = a[2] * s; return out; },
-    lerp(out, a, b, t) {
+    create(): Vec3 { return new Float32Array(3); },
+    set(out: Vec3, x: number, y: number, z: number): Vec3 { out[0] = x; out[1] = y; out[2] = z; return out; },
+    copy(out: Vec3, a: Numbers): Vec3 { out[0] = a[0]; out[1] = a[1]; out[2] = a[2]; return out; },
+    add(out: Vec3, a: Numbers, b: Numbers): Vec3 { out[0] = a[0] + b[0]; out[1] = a[1] + b[1]; out[2] = a[2] + b[2]; return out; },
+    sub(out: Vec3, a: Numbers, b: Numbers): Vec3 { out[0] = a[0] - b[0]; out[1] = a[1] - b[1]; out[2] = a[2] - b[2]; return out; },
+    scale(out: Vec3, a: Numbers, s: number): Vec3 { out[0] = a[0] * s; out[1] = a[1] * s; out[2] = a[2] * s; return out; },
+    lerp(out: Vec3, a: Numbers, b: Numbers, t: number): Vec3 {
         out[0] = a[0] + (b[0] - a[0]) * t;
         out[1] = a[1] + (b[1] - a[1]) * t;
         out[2] = a[2] + (b[2] - a[2]) * t;
         return out;
     },
-    length(a) { return Math.hypot(a[0], a[1], a[2]); },
-    normalize(out, a) {
+    length(a: Numbers): number { return Math.hypot(a[0], a[1], a[2]); },
+    normalize(out: Vec3, a: Numbers): Vec3 {
         const len = Math.hypot(a[0], a[1], a[2]) || 1;
         out[0] = a[0] / len; out[1] = a[1] / len; out[2] = a[2] / len;
         return out;
     },
-    cross(out, a, b) {
+    cross(out: Vec3, a: Numbers, b: Numbers): Vec3 {
         const ax = a[0], ay = a[1], az = a[2];
         const bx = b[0], by = b[1], bz = b[2];
         out[0] = ay * bz - az * by;
@@ -200,7 +211,7 @@ export const vec3 = {
         out[2] = ax * by - ay * bx;
         return out;
     },
-    transformMat4(out, a, m) {
+    transformMat4(out: Vec3, a: Numbers, m: Numbers): Vec3 {
         const x = a[0], y = a[1], z = a[2];
         let w = m[3] * x + m[7] * y + m[11] * z + m[15];
         w = w || 1;
@@ -212,15 +223,15 @@ export const vec3 = {
 };
 
 export const quat = {
-    create() { return new Float32Array([0, 0, 0, 1]); },
-    identity(out) { out[0] = 0; out[1] = 0; out[2] = 0; out[3] = 1; return out; },
-    copy(out, a) { out[0] = a[0]; out[1] = a[1]; out[2] = a[2]; out[3] = a[3]; return out; },
+    create(): Quat { return new Float32Array([0, 0, 0, 1]); },
+    identity(out: Quat): Quat { out[0] = 0; out[1] = 0; out[2] = 0; out[3] = 1; return out; },
+    copy(out: Quat, a: Numbers): Quat { out[0] = a[0]; out[1] = a[1]; out[2] = a[2]; out[3] = a[3]; return out; },
     /** Spherical linear interpolation; a, b are unit quats (x,y,z,w). */
-    slerp(out, a, b, t) {
+    slerp(out: Quat, a: Numbers, b: Numbers, t: number): Quat {
         let bx = b[0], by = b[1], bz = b[2], bw = b[3];
         let dot = a[0] * bx + a[1] * by + a[2] * bz + a[3] * bw;
         if (dot < 0) { bx = -bx; by = -by; bz = -bz; bw = -bw; dot = -dot; }
-        let s0, s1;
+        let s0: number, s1: number;
         if (dot > 0.9995) {
             // linear fallback
             s0 = 1 - t; s1 = t;
@@ -236,13 +247,13 @@ export const quat = {
         out[3] = s0 * a[3] + s1 * bw;
         return out;
     },
-    normalize(out, a) {
+    normalize(out: Quat, a: Numbers): Quat {
         const len = Math.hypot(a[0], a[1], a[2], a[3]) || 1;
         out[0] = a[0] / len; out[1] = a[1] / len; out[2] = a[2] / len; out[3] = a[3] / len;
         return out;
     },
     /** Convert quaternion to a 4x4 rotation matrix. */
-    toMat4(out, q) {
+    toMat4(out: Mat4, q: Numbers): Mat4 {
         const x = q[0], y = q[1], z = q[2], w = q[3];
         const x2 = x + x, y2 = y + y, z2 = z + z;
         const xx = x * x2, xy = x * y2, xz = x * z2;
@@ -257,7 +268,12 @@ export const quat = {
 };
 
 /** Build a 4x4 matrix from glTF TRS. All inputs optional, default to identity. */
-export function composeMatrix(out, translation, rotation, scale) {
+export function composeMatrix(
+    out: Mat4,
+    translation?: Numbers | null,
+    rotation?: Numbers | null,
+    scale?: Numbers | null,
+): Mat4 {
     const t = translation || [0, 0, 0];
     const r = rotation || [0, 0, 0, 1];
     const s = scale || [1, 1, 1];
