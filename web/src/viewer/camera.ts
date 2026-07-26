@@ -212,13 +212,16 @@ export function fitCameraToScene(host: CameraHost) {
   const aspect = host.canvas.width / Math.max(1, host.canvas.height);
   const horizontalFov = 2 * Math.atan(Math.tan(verticalFov * 0.5) * aspect);
   const fitFov = Math.min(verticalFov, horizontalFov);
-  host.camera.distance = Math.max(0.5, (safeRadius / Math.sin(fitFov * 0.5)) * 1.12);
-  const diameter = Math.max(0.001, safeRadius * 2);
-  host.camera.near = Math.max(0.001, diameter * 0.001);
+  // Every limit below is a multiple of the model's own size. An absolute floor
+  // here used to park the camera half a metre from a two-centimetre asset,
+  // which frames it as a speck no matter how far one zooms in.
+  host.camera.distance = (safeRadius / Math.sin(fitFov * 0.5)) * 1.12;
+  const diameter = safeRadius * 2;
+  host.camera.near = diameter * 0.001;
   host.camera.far = diameter * 1000 + host.camera.distance * 2;
   // Fixed limits would clamp a large asset below its own fit distance,
   // so one wheel notch would snap the camera inside the model.
-  host.camera.minDistance = Math.max(0.001, host.camera.near * 2);
+  host.camera.minDistance = host.camera.near * 2;
   host.camera.maxDistance = Math.max(host.camera.distance, safeRadius) * 100;
 }
 

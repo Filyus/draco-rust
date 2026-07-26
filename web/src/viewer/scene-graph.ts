@@ -1,6 +1,6 @@
 import { composeMatrix, mat4, vec3 } from '../math.ts';
 import type { Mat4, Vec3 } from '../math.ts';
-import type { ViewerNode, ViewerScene, ViewerSkin } from '../viewer-scene.ts';
+import type { ViewerNode, ViewerPrimitive, ViewerScene, ViewerSkin } from '../viewer-scene.ts';
 
 /** What hierarchy evaluation reads and writes on the viewer. */
 export interface SceneGraphHost {
@@ -42,14 +42,25 @@ export function updateSceneBounds(host: SceneGraphHost) {
   };
   const point = host._boundsPoint || (host._boundsPoint = vec3.create());
   for (const renderable of host.scene.renderables || []) {
-    const meshBox = host.scene.meshes[renderable.meshIndex]?.aabb;
+    const mesh = host.scene.meshes[renderable.meshIndex];
+    const meshBox = mesh?.aabb;
     if (!meshBox) continue;
+    const skin = renderable.skinIndex >= 0
+      ? host.scene.skins[renderable.skinIndex]
+      : null;
+    // A skinned draw multiplies by inverse(mesh world) * joint world * IBM, so
+    // the mesh node's own transform cancels out and the bind-pose positions are
+    // already world space. Applying node.world here anyway is what shrank a
+    // Mixamo character — mesh in metres under a 0.01-scaled armature — to a
+    // hundredth of its rendered size, taking the grid and the framing with it.
+    const skinned = !!skin?.joints.length && meshIsSkinned(mesh.primitives);
+    const world = skinned ? null : renderable.node.world;
     const { min, max } = meshBox;
     for (const x of [min[0], max[0]]) {
       for (const y of [min[1], max[1]]) {
         for (const z of [min[2], max[2]]) {
           vec3.set(point, x, y, z);
-          vec3.transformMat4(point, point, renderable.node.world);
+          if (world) vec3.transformMat4(point, point, world);
           aabb.min[0] = Math.min(aabb.min[0], point[0]);
           aabb.min[1] = Math.min(aabb.min[1], point[1]);
           aabb.min[2] = Math.min(aabb.min[2], point[2]);
@@ -61,6 +72,17 @@ export function updateSceneBounds(host: SceneGraphHost) {
     }
   }
   if (isFinite(aabb.min[0])) host.scene.aabb = aabb;
+}
+
+/**
+ * Whether the draw will actually skin: the renderer falls back to the node
+ * transform for a primitive that carries no influences, and the bounds have to
+ * agree with whichever path runs.
+ */
+function meshIsSkinned(primitives: ViewerPrimitive[] | undefined) {
+  return (primitives || []).some(
+    (primitive) => primitive.attributes?.JOINTS_0 && primitive.attributes?.WEIGHTS_0,
+  );
 }
 
 export function updateNode(host: SceneGraphHost, node: ViewerNode, parentWorld: Mat4 | null) {

@@ -379,7 +379,9 @@ export function buildSceneGrid(host: RenderHost) {
   const maxI = Math.round((cx + half) / step);
   const minJ = Math.round((cz - half) / step);
   const maxJ = Math.round((cz + half) / step);
-  const gridY = box.min[1] - Math.max(step * 0.01, 0.0001);
+  // Nudged below the model so the two never z-fight; relative to the cell size,
+  // because a fixed offset sinks a centimetre-sized asset under its own grid.
+  const gridY = box.min[1] - step * 0.01;
   for (let i = minI; i <= maxI; i++) {
     const x = i * step;
     positions.push(x, gridY, minJ * step, x, gridY, maxJ * step);
