@@ -197,7 +197,7 @@
                 <section id="viewer-section" class="card">
                     <h2>3D Preview</h2>
                     <div class="viewer-wrapper">
-                        <canvas id="viewer-canvas" class="viewer-canvas" aria-label="3D model preview"></canvas>
+                        <canvas id="viewer-canvas" class="viewer-canvas" tabindex="0" aria-label="3D model preview"></canvas>
                         <div class="viewer-placeholder" id="viewer-placeholder">
                             <div class="placeholder-icon">🖼️</div>
                             <p class="placeholder-title">No model loaded</p>
@@ -211,6 +211,14 @@
                             <button type="button" class="viewer-btn" id="viewer-base-color" title="Show base color without preview lighting" aria-pressed="false" disabled><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5"/><circle cx="8" cy="8" r="2" class="icon-fill"/></svg><span>Base color</span></button>
                             <button type="button" class="viewer-btn" id="viewer-smooth-normals" title="Use angle-weighted normals for smooth preview shading" aria-pressed="false" disabled><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="M8 3a5 5 0 0 1 0 10Z" class="icon-fill icon-muted-fill"/></svg><span>Smooth shading</span></button>
                             <button type="button" class="viewer-btn" id="viewer-grid" title="Toggle grid" aria-pressed="true" disabled><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 2.5h11v11h-11zM6.2 2.5v11M9.8 2.5v11M2.5 6.2h11M2.5 9.8h11"/></svg><span>Grid</span></button>
+                        </div>
+
+                        <div class="viewer-hints" id="viewer-hints">
+                            <span><b>LMB</b> orbit</span>
+                            <span><b>MMB / RMB</b> pan</span>
+                            <span><b>Wheel</b> zoom</span>
+                            <span><b>WASD / QE</b> move</span>
+                            <span><b>Arrows</b> orbit</span>
                         </div>
 
                         <div class="viewer-animation" id="viewer-animation" style="display: none;">

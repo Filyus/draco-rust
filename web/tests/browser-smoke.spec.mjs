@@ -346,6 +346,81 @@ test('preview Reset restores the default orbit camera direction', async ({ page 
   expect(camera.autoRotate).toBe(true);
 });
 
+test('viewport pan slides inside the camera plane and vertical orbit follows the drag', async ({ page }) => {
+  await page.goto('/index.html');
+  const state = await page.evaluate(async () => {
+    const { Viewer } = await import('/viewer.js');
+    const viewer = Object.create(Viewer.prototype);
+    viewer.camera = {
+      target: new Float32Array([0, 0, 0]),
+      distance: 10,
+      // Looking down -X: a horizontal drag must move the target along Z.
+      azimuth: Math.PI * 0.5,
+      elevation: 0,
+      fov: Math.PI * 0.5,
+    };
+    viewer.canvas = { clientHeight: 100, height: 100 };
+    viewer._basisRight = new Float32Array(3);
+    viewer._basisUp = new Float32Array(3);
+
+    // 2 * distance * tan(fov / 2) / height = 0.2 world units per pixel.
+    viewer._panBy(10, 5);
+    const panned = Array.from(viewer.camera.target);
+
+    viewer._orbitBy(0.3, 0.1);
+    return {
+      panned,
+      azimuth: viewer.camera.azimuth,
+      elevation: viewer.camera.elevation,
+    };
+  });
+
+  expect(state.panned[0]).toBeCloseTo(0);
+  expect(state.panned[1]).toBeCloseTo(1);
+  expect(state.panned[2]).toBeCloseTo(2);
+  expect(state.azimuth).toBeCloseTo(Math.PI * 0.5 - 0.3);
+  expect(state.elevation).toBeCloseTo(0.1);
+});
+
+test('viewport movement keys fly the orbit target along the ground plane', async ({ page }) => {
+  await page.goto('/index.html');
+  const state = await page.evaluate(async () => {
+    const { Viewer } = await import('/viewer.js');
+    const viewer = Object.create(Viewer.prototype);
+    viewer.camera = {
+      target: new Float32Array([0, 0, 0]),
+      distance: 10,
+      azimuth: 0,
+      elevation: Math.PI * 0.4,
+      fov: Math.PI * 0.5,
+    };
+    viewer._basisRight = new Float32Array(3);
+    viewer._basisUp = new Float32Array(3);
+    viewer._navFast = false;
+    viewer._navSlow = false;
+
+    // 1.5 * distance * dt = 1.5 world units per step, with the pitched view
+    // direction flattened onto the ground plane.
+    viewer._navKeys = new Set(['KeyW']);
+    viewer._applyKeyboardNavigation(0.1);
+    const forward = Array.from(viewer.camera.target);
+
+    viewer._navKeys = new Set(['KeyE']);
+    viewer._applyKeyboardNavigation(0.1);
+    const lifted = Array.from(viewer.camera.target);
+
+    viewer._navKeys = new Set(['ArrowRight']);
+    viewer._applyKeyboardNavigation(0.1);
+    return { forward, lifted, azimuth: viewer.camera.azimuth };
+  });
+
+  expect(state.forward[0]).toBeCloseTo(0);
+  expect(state.forward[1]).toBeCloseTo(0);
+  expect(state.forward[2]).toBeCloseTo(-1.5);
+  expect(state.lifted[1]).toBeCloseTo(1.5);
+  expect(state.azimuth).toBeCloseTo(-0.12);
+});
+
 test('preview seek applies the selected animation frame immediately', async ({ page }) => {
   await page.goto('/index.html');
   const state = await page.evaluate(async () => {

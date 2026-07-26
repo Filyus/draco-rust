@@ -12,6 +12,12 @@ import { createEnvironmentIbl } from './environment-ibl.js';
 const MAX_JOINTS = 256;
 const DEFAULT_CAMERA_AZIMUTH = Math.PI * 0.25;
 const DEFAULT_CAMERA_ELEVATION = Math.PI * 0.09;
+const ORBIT_RAD_PER_PIXEL = 0.01;
+// Keys the viewport claims while focused, so they never scroll the page.
+const NAV_KEYS = new Set([
+    'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE',
+    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+]);
 
 const VERT_SRC = `#version 300 es
 precision highp float;
@@ -595,6 +601,13 @@ export class Viewer {
             near: 0.05,
             far: 1000,
         };
+        // Scratch vectors for the camera basis used by pan and keyboard flight.
+        this._basisRight = vec3.create();
+        this._basisUp = vec3.create();
+        // Navigation keys currently held down, by KeyboardEvent.code.
+        this._navKeys = new Set();
+        this._navFast = false;
+        this._navSlow = false;
 
         // Animation
         this.animation = {
@@ -745,20 +758,14 @@ export class Viewer {
     _setupControls() {
         const el = this.canvas;
         let lastX = 0, lastY = 0;
-        let panning = false;
+        // Drag mode picked once on pointerdown: 'orbit' | 'pan' | 'zoom'.
+        let mode = null;
         const pointers = new Map();
 
         const updateFromPointers = () => {
             if (pointers.size === 1) {
                 const [ptr] = pointers.values();
-                const dx = ptr.x - lastX;
-                const dy = ptr.y - lastY;
-                this.camera.azimuth -= dx * 0.01;
-                this.camera.elevation -= dy * 0.01;
-                this.camera.elevation = Math.max(
-                    -Math.PI * 0.495,
-                    Math.min(Math.PI * 0.495, this.camera.elevation),
-                );
+                this._orbitBy((ptr.x - lastX) * ORBIT_RAD_PER_PIXEL, (ptr.y - lastY) * ORBIT_RAD_PER_PIXEL);
                 lastX = ptr.x;
                 lastY = ptr.y;
             } else if (pointers.size === 2) {
@@ -769,10 +776,8 @@ export class Viewer {
                 const midX = (pts[0].x + pts[1].x) * 0.5;
                 const midY = (pts[0].y + pts[1].y) * 0.5;
                 if (this._lastPinch) {
-                    this.camera.distance *= this._lastPinch.dist / (dist || 1);
-                    this.camera.distance = Math.max(0.05, Math.min(1000, this.camera.distance));
-                    this.camera.target[0] -= (midX - this._lastPinch.midX) * 0.002 * this.camera.distance;
-                    this.camera.target[1] += (midY - this._lastPinch.midY) * 0.002 * this.camera.distance;
+                    this._zoomBy(this._lastPinch.dist / (dist || 1));
+                    this._panBy(midX - this._lastPinch.midX, midY - this._lastPinch.midY);
                 }
                 this._lastPinch = { dist, midX, midY };
             }
@@ -783,10 +788,13 @@ export class Viewer {
             pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
             lastX = e.clientX;
             lastY = e.clientY;
-            if (e.button === 2 || pointers.size === 2) {
-                panning = true;
-            } else {
+            if (pointers.size === 1) {
+                if (e.button === 1 || e.button === 2 || e.shiftKey) mode = 'pan';
+                else if (e.ctrlKey || e.altKey || e.metaKey) mode = 'zoom';
+                else mode = 'orbit';
             }
+            // Keyboard navigation follows viewport focus.
+            el.focus({ preventScroll: true });
             this.setAutoRotate(false);
             this._lastPinch = null;
             e.preventDefault();
@@ -794,11 +802,11 @@ export class Viewer {
         el.addEventListener('pointermove', (e) => {
             if (!pointers.has(e.pointerId)) return;
             pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-            if (panning && pointers.size === 1) {
+            if (pointers.size === 1 && mode !== 'orbit') {
                 const dx = e.clientX - lastX;
                 const dy = e.clientY - lastY;
-                this.camera.target[0] -= dx * 0.002 * this.camera.distance;
-                this.camera.target[1] += dy * 0.002 * this.camera.distance;
+                if (mode === 'pan') this._panBy(dx, dy);
+                else if (mode === 'zoom') this._zoomBy(Math.exp(dy * 0.005));
                 lastX = e.clientX;
                 lastY = e.clientY;
             } else {
@@ -813,7 +821,7 @@ export class Viewer {
         const endPointer = (e) => {
             pointers.delete(e.pointerId);
             if (pointers.size < 2) this._lastPinch = null;
-            if (pointers.size === 0) panning = false;
+            if (pointers.size === 0) mode = null;
             try { el.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ }
         };
         el.addEventListener('pointerup', endPointer);
@@ -821,17 +829,106 @@ export class Viewer {
         el.addEventListener('pointerleave', endPointer);
 
         el.addEventListener('contextmenu', (e) => e.preventDefault());
+        // Keep the middle button from starting the browser's autoscroll mode.
+        el.addEventListener('auxclick', (e) => e.preventDefault());
 
         el.addEventListener(
             'wheel',
             (e) => {
                 e.preventDefault();
-                const factor = Math.exp(e.deltaY * 0.001);
-                this.camera.distance *= factor;
-                this.camera.distance = Math.max(0.05, Math.min(1000, this.camera.distance));
+                this._zoomBy(Math.exp(e.deltaY * 0.001));
             },
             { passive: false },
         );
+
+        el.addEventListener('keydown', (e) => {
+            this._navFast = e.shiftKey;
+            this._navSlow = e.altKey;
+            if (!NAV_KEYS.has(e.code)) return;
+            e.preventDefault();
+            this.setAutoRotate(false);
+            this._navKeys.add(e.code);
+        });
+        el.addEventListener('keyup', (e) => {
+            this._navFast = e.shiftKey;
+            this._navSlow = e.altKey;
+            this._navKeys.delete(e.code);
+        });
+        el.addEventListener('blur', () => this._navKeys.clear());
+    }
+
+    /** Orbit by radians; positive `dAz`/`dEl` match dragging right/down. */
+    _orbitBy(dAz, dEl) {
+        this.camera.azimuth -= dAz;
+        this.camera.elevation += dEl;
+        this.camera.elevation = Math.max(
+            -Math.PI * 0.495,
+            Math.min(Math.PI * 0.495, this.camera.elevation),
+        );
+    }
+
+    _zoomBy(factor) {
+        this.camera.distance = Math.max(
+            0.05,
+            Math.min(1000, this.camera.distance * factor),
+        );
+    }
+
+    /**
+     * Slides the orbit target inside the camera plane so the point under the
+     * cursor stays under the cursor, for any orbit angle and field of view.
+     */
+    _panBy(dx, dy) {
+        const right = this._basisRight;
+        const up = this._basisUp;
+        this._cameraBasis(right, up);
+        const height = this.canvas.clientHeight || this.canvas.height;
+        const k = (2 * this.camera.distance * Math.tan(this.camera.fov * 0.5))
+            / Math.max(1, height);
+        for (let i = 0; i < 3; i++) {
+            this.camera.target[i] += (up[i] * dy - right[i] * dx) * k;
+        }
+    }
+
+    /**
+     * Applies the held navigation keys for one frame: WASD moves the orbit
+     * target along the ground plane, Q/E along world up, arrows orbit.
+     */
+    _applyKeyboardNavigation(dt) {
+        const keys = this._navKeys;
+        if (keys.size === 0) return;
+
+        let scale = 1;
+        if (this._navFast) scale *= 4;
+        if (this._navSlow) scale *= 0.25;
+
+        const orbitStep = 1.2 * dt * scale;
+        let dAz = 0, dEl = 0;
+        if (keys.has('ArrowLeft')) dAz -= 1;
+        if (keys.has('ArrowRight')) dAz += 1;
+        if (keys.has('ArrowUp')) dEl -= 1;
+        if (keys.has('ArrowDown')) dEl += 1;
+        if (dAz || dEl) this._orbitBy(dAz * orbitStep, dEl * orbitStep);
+
+        let fwd = 0, side = 0, lift = 0;
+        if (keys.has('KeyW')) fwd += 1;
+        if (keys.has('KeyS')) fwd -= 1;
+        if (keys.has('KeyD')) side += 1;
+        if (keys.has('KeyA')) side -= 1;
+        if (keys.has('KeyE')) lift += 1;
+        if (keys.has('KeyQ')) lift -= 1;
+        if (!fwd && !side && !lift) return;
+
+        const speed = 1.5 * this.camera.distance * dt * scale;
+        const right = this._basisRight;
+        const up = this._basisUp;
+        this._cameraBasis(right, up);
+        // Ground-plane forward: the view direction with its vertical part dropped.
+        const fx = -Math.sin(this.camera.azimuth);
+        const fz = -Math.cos(this.camera.azimuth);
+        this.camera.target[0] += (fx * fwd + right[0] * side) * speed;
+        this.camera.target[1] += lift * speed;
+        this.camera.target[2] += (fz * fwd + right[2] * side) * speed;
     }
 
     _log(msg, type = 'info') {
@@ -1045,6 +1142,24 @@ export class Viewer {
         this.camera.far = diameter * 1000 + this.camera.distance * 2;
     }
 
+    /**
+     * Right and up axes of the camera plane, from the same angles
+     * `_cameraPosition` uses: right = normalize(forward x worldUp),
+     * up = right x forward. cos(elevation) stays positive under the clamp.
+     */
+    _cameraBasis(right, up) {
+        const ce = Math.cos(this.camera.elevation);
+        const se = Math.sin(this.camera.elevation);
+        const ca = Math.cos(this.camera.azimuth);
+        const sa = Math.sin(this.camera.azimuth);
+        right[0] = ca;
+        right[1] = 0;
+        right[2] = -sa;
+        up[0] = -sa * se;
+        up[1] = ce;
+        up[2] = -ca * se;
+    }
+
     _cameraPosition(out) {
         const ce = Math.cos(this.camera.elevation);
         const se = Math.sin(this.camera.elevation);
@@ -1063,6 +1178,7 @@ export class Viewer {
         this._lastTime = now;
 
         if (this.autoRotate) this.camera.azimuth += dt * 0.4;
+        this._applyKeyboardNavigation(dt);
 
         if (this.animation.playing && this.scene?.animations?.length) {
             this._advanceAnimation(dt);

@@ -407,6 +407,8 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 .viewer-wrapper::before { display: none; }
 .viewer-canvas { position: relative; z-index: 1; display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
 .viewer-canvas:active { cursor: grabbing; }
+.viewer-canvas:focus { outline: none; }
+.viewer-canvas:focus-visible { outline: 1px solid rgba(113, 156, 224, 0.75); outline-offset: -1px; }
 
 .viewer-placeholder {
     position: absolute;
@@ -449,6 +451,34 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     background: rgba(7, 17, 30, 0.74);
     backdrop-filter: blur(9px);
     transform: translateX(-50%);
+}
+
+.viewer-hints {
+    position: absolute;
+    z-index: 4;
+    left: 10px;
+    bottom: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px 10px;
+    padding: 4px 8px;
+    border-radius: 7px;
+    color: #7f93b0;
+    font-size: 0.63rem;
+    line-height: 1.5;
+    background: rgba(7, 17, 30, 0.6);
+    backdrop-filter: blur(9px);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 180ms ease;
+}
+
+#viewer-section.loaded .viewer-hints { opacity: 1; }
+.viewer-hints b { color: #b3c6e0; font-weight: 650; }
+/* Narrow viewports are touch-driven, and the legend would fight the
+   animation bar for the bottom edge. */
+@media (max-width: 720px) {
+    .viewer-hints { display: none; }
 }
 
 .viewer-btn {
