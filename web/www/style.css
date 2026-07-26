@@ -460,11 +460,11 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     bottom: 10px;
     display: flex;
     flex-wrap: wrap;
-    gap: 3px 10px;
-    padding: 4px 8px;
+    gap: 3px 12px;
+    padding: 5px 9px;
     border-radius: 7px;
-    color: #7f93b0;
-    font-size: 0.63rem;
+    color: #8da0bb;
+    font-size: 0.71rem;
     line-height: 1.5;
     background: rgba(7, 17, 30, 0.6);
     backdrop-filter: blur(9px);

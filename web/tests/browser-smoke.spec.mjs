@@ -278,6 +278,36 @@ test('clicking the animated preview keeps focus on the viewport, not the clip pi
   expect(await page.evaluate(() => document.activeElement?.id)).toBe('anim-clip-trigger');
 });
 
+test('Space toggles playback from the viewport but not from a focused control', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const fox = path.join(repoRoot, 'testdata', 'Fox', 'glTF');
+  await page.locator('#file-input').setInputFiles([
+    path.join(fox, 'Fox.gltf'),
+    path.join(fox, 'Fox.bin'),
+  ]);
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#viewer-animation')).toBeVisible();
+
+  // The play button label tracks `viewer.animation.playing`.
+  const play = page.locator('#anim-play');
+  await expect(play).toHaveAttribute('aria-label', 'Pause animation');
+
+  await page.locator('#viewer-canvas').click();
+  await page.keyboard.press('Space');
+  await expect(play).toHaveAttribute('aria-label', 'Play animation');
+  await page.keyboard.press('Space');
+  await expect(play).toHaveAttribute('aria-label', 'Pause animation');
+
+  // On the Loop checkbox, Space belongs to the checkbox.
+  const loop = page.locator('#anim-loop');
+  await loop.focus();
+  const checked = await loop.isChecked();
+  await page.keyboard.press('Space');
+  expect(await loop.isChecked()).toBe(!checked);
+  await expect(play).toHaveAttribute('aria-label', 'Pause animation');
+});
+
 test('scene details stays hidden before load and exposes a hierarchy tree after load', async ({ page }) => {
   await page.goto('/index.html');
   await expect(page.locator('#scene-section')).toBeHidden();

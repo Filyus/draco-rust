@@ -371,14 +371,7 @@ function setupEventListeners() {
     });
 
     // Animation controls
-    animPlayBtn.addEventListener('click', () => {
-        if (!viewer || !viewer.scene?.animations?.length) return;
-        viewer.animation.playing = !viewer.animation.playing;
-        if (viewer.animation.playing && viewer.animation.time >= viewer.scene.animations[viewer.animation.clipIndex].duration) {
-            viewer.seekAnimation(0);
-        }
-        updateAnimationPlayButton();
-    });
+    animPlayBtn.addEventListener('click', toggleAnimationPlayback);
     animClipSelect.addEventListener('change', () => {
         if (!viewer) return;
         const idx = Number(animClipSelect.value);
@@ -402,6 +395,7 @@ function setupEventListeners() {
     document.addEventListener('keydown', (event) => {
         if (event.key === 'Escape') closeAnimationClipMenu();
     });
+    document.addEventListener('keydown', handlePlaybackShortcut);
     animLoopCheckbox.addEventListener('change', () => {
         if (viewer) viewer.animation.loop = animLoopCheckbox.checked;
     });
@@ -1599,6 +1593,31 @@ function handleAnimationClipMenuKeydown(event) {
         animClipSelect.value = options[next].dataset.value;
         animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
     }
+}
+
+function toggleAnimationPlayback() {
+    if (!viewer || !viewer.scene?.animations?.length) return false;
+    viewer.animation.playing = !viewer.animation.playing;
+    if (viewer.animation.playing && viewer.animation.time >= viewer.scene.animations[viewer.animation.clipIndex].duration) {
+        viewer.seekAnimation(0);
+    }
+    updateAnimationPlayButton();
+    return true;
+}
+
+/** Space plays and pauses, unless it belongs to the focused control. */
+function handlePlaybackShortcut(event) {
+    if (event.code !== 'Space' || event.repeat) return;
+    if (event.ctrlKey || event.altKey || event.metaKey) return;
+    const target = event.target;
+    if (target instanceof HTMLElement) {
+        if (target.isContentEditable) return;
+        // Space is the activation key for buttons, checkboxes and text fields,
+        // and the clip listbox picks a clip with it.
+        if (/^(BUTTON|INPUT|SELECT|TEXTAREA)$/.test(target.tagName)) return;
+        if (!animClipMenu.hidden && animClipMenu.contains(target)) return;
+    }
+    if (toggleAnimationPlayback()) event.preventDefault();
 }
 
 function updateAnimationPlayButton() {
