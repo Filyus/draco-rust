@@ -177,21 +177,30 @@ vec3 acesToneMap(vec3 color) {
 }
 
 /**
- * Bend N by a tangent-space normal map sample. The tangent frame is derived
- * from screen-space derivatives because the preview does not upload TANGENT;
- * a degenerate frame (no UV gradient) leaves the normal untouched.
+ * Bend N by a tangent-space normal map sample.
+ *
+ * The frame is derived from screen-space derivatives because the preview does
+ * not upload TANGENT. It is built from vectors perpendicular to N (the
+ * cotangent frame) so it stays orthogonal to the shading normal, and both axes
+ * are scaled by one common factor: the raw derivatives are world units *per
+ * pixel* times UV per pixel, so their magnitude says nothing about whether the
+ * frame is usable — testing them against a fixed epsilon silently switches
+ * normal mapping off on small models and at high resolutions.
  */
 vec3 applyTangentNormal(vec3 N, vec2 uv, vec3 tangentNormal) {
     vec3 dpdx = dFdx(vWorldPos);
     vec3 dpdy = dFdy(vWorldPos);
     vec2 duvdx = dFdx(uv);
     vec2 duvdy = dFdy(uv);
-    vec3 T = dpdx * duvdy.y - dpdy * duvdx.y;
-    vec3 B = -dpdx * duvdy.x + dpdy * duvdx.x;
-    if (dot(T, T) > 0.000001 && dot(B, B) > 0.000001) {
-        return normalize(mat3(normalize(T), normalize(B), N) * tangentNormal);
-    }
-    return N;
+    vec3 dpdxPerp = cross(N, dpdx);
+    vec3 dpdyPerp = cross(dpdy, N);
+    vec3 T = dpdyPerp * duvdx.x + dpdxPerp * duvdy.x;
+    vec3 B = dpdyPerp * duvdx.y + dpdxPerp * duvdy.y;
+    float longest = max(dot(T, T), dot(B, B));
+    // Only a genuinely absent UV gradient leaves the normal untouched.
+    if (longest <= 0.0) return N;
+    float invMax = inversesqrt(longest);
+    return normalize(mat3(T * invMax, B * invMax, N) * tangentNormal);
 }
 
 void main() {

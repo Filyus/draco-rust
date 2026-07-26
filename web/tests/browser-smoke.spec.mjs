@@ -8,6 +8,7 @@ import {
   animatedTranslation,
   embeddedTriangle,
   externalTriangle,
+  normalMappedQuad,
   triangleBytes,
 } from './smoke-fixtures.mjs';
 import { decodeFirstDracoPrimitive } from './draco-interop.mjs';
@@ -1423,4 +1424,74 @@ test('converter applies a selected OBJ map_Kd texture', async ({ page }) => {
   await expect(page.locator('#console')).not.toContainText('OBJ texture not selected: black.png');
   await expect(page.locator('#console')).not.toContainText('OBJ texture black.png ignored');
   await expect(page.locator('#console')).not.toContainText('Failed to decode OBJ texture black.png');
+});
+
+/**
+ * A normal map must reach the surface on a centimetre-sized model.
+ *
+ * The preview has no TANGENT attribute, so the tangent frame comes from
+ * screen-space derivatives, whose magnitude is world units per pixel. Judging
+ * that frame by an absolute threshold makes normal mapping vanish on small
+ * models while leaving large ones intact — silently, and only in the shading.
+ * Rendering the same quad with and without the map is what exposes it.
+ */
+test('normal maps shade a model far smaller than one unit', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  const shot = async (name, gltf) => {
+    await page.locator('#file-input').setInputFiles({
+      name,
+      mimeType: 'model/gltf+json',
+      buffer: Buffer.from(gltf),
+    });
+    await expect(page.locator('#console')).toContainText(`Successfully parsed ${name}`);
+    await expect(page.locator('#console')).toContainText('Preview ready');
+    const image = await page.locator('#viewer-canvas').screenshot();
+    await page.locator('#clear-file').click();
+    return image.toString('base64');
+  };
+
+  const mapped = await shot('normal-mapped.gltf', normalMappedQuad({ normalMap: true }));
+  const flat = await shot('flat.gltf', normalMappedQuad({ normalMap: false }));
+
+  // Both frames are decoded in the page: the screenshots are PNGs, and the
+  // browser is the only PNG decoder this suite has.
+  const difference = await page.evaluate(async ([a, b]) => {
+    const decode = async (base64) => {
+      const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const context = canvas.getContext('2d');
+      context.drawImage(bitmap, 0, 0);
+      return context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+    };
+    const [left, right] = await Promise.all([decode(a), decode(b)]);
+    if (left.length !== right.length) return { sameSize: false, meanAbsolute: 0 };
+    let total = 0;
+    for (let index = 0; index < left.length; index += 4) {
+      total += Math.abs(left[index] - right[index])
+        + Math.abs(left[index + 1] - right[index + 1])
+        + Math.abs(left[index + 2] - right[index + 2]);
+    }
+    let changed = 0;
+    let peak = 0;
+    for (let index = 0; index < left.length; index += 4) {
+      const delta = Math.max(
+        Math.abs(left[index] - right[index]),
+        Math.abs(left[index + 1] - right[index + 1]),
+        Math.abs(left[index + 2] - right[index + 2]),
+      );
+      if (delta > 8) changed += 1;
+      peak = Math.max(peak, delta);
+    }
+    return { sameSize: true, meanAbsolute: total / (left.length / 4) / 3, changedFraction: changed / (left.length / 4), peak };
+  }, [mapped, flat]);
+
+  expect(difference.sameSize).toBe(true);
+  // Losing the tangent frame makes the two frames identical, so the gate only
+  // has to separate "the map shades the surface" from "nothing happened"; the
+  // measured difference on a working build is several times these bounds.
+  expect(difference.meanAbsolute).toBeGreaterThan(2);
+  expect(difference.changedFraction).toBeGreaterThan(0.05);
 });
