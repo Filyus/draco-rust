@@ -12,7 +12,7 @@ import type {
   SceneNode, ScenePrimitive, TextureInfo,
 } from './scene-document.ts';
 import {
-  appendAccessor, basename, mimeFromUri, resolveResource, sniffMime,
+  appendAccessor, basename, bytesFromF32, mimeFromUri, resolveResource, sniffMime,
 } from './scene-resources.ts';
 import type { ResourceMap } from './scene-resources.ts';
 import type { GltfAsset, GltfModule } from './wasm-modules.ts';
@@ -267,7 +267,11 @@ function collectAnimations(
       let samplerIndex = samplerBySource.get(channel.sampler);
       if (samplerIndex === undefined) {
         const input = sourceAccessor(asset, source.input, document, accessorBySource);
-        let output = sourceAccessor(asset, source.output, document, accessorBySource);
+        let output = dequantizedOutput(document, sourceAccessor(asset, source.output, document, accessorBySource));
+        if (output < 0) {
+          document.warnings.push(`glTF animation ${animation.name || animationIndex} stores its output in an unsupported component type and it was omitted`);
+          continue;
+        }
         if (target.path === 'weights') {
           const targetCount = document.nodes[target.node]?.weights?.length || 0;
           const sourceOutput = document.accessors[output];
@@ -291,6 +295,46 @@ function collectAnimations(
     const duration = Math.max(0, ...samplers.map((sampler) => lastTime(document.accessors[sampler.input])));
     return { name: animation.name || `animation_${animationIndex}`, duration, samplers, channels };
   }).filter((animation) => animation.channels.length > 0));
+}
+
+/** Normalized integer ranges glTF allows for animation sampler outputs. */
+const NORMALIZED_RANGES: Record<number, { max: number; signed: boolean }> = {
+  5120: { max: 127, signed: true },
+  5121: { max: 255, signed: false },
+  5122: { max: 32767, signed: true },
+  5123: { max: 65535, signed: false },
+};
+
+/**
+ * Expands a normalized sampler output to float, or returns -1 when the
+ * component type has no defined float meaning.
+ *
+ * glTF stores rotations and morph weights as normalized integers too, while a
+ * SceneDocument sampler is always float.
+ */
+function dequantizedOutput(document: SceneDocument, index: number): number {
+  const accessor = document.accessors[index];
+  if (accessor.componentType === 5126) return index;
+  const range = NORMALIZED_RANGES[accessor.componentType];
+  if (!range || !accessor.normalized) return -1;
+  const size = range.max > 255 ? 2 : 1;
+  const total = accessor.count * accessor.components;
+  const view = new DataView(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength);
+  if (total * size > accessor.bytes.byteLength) return -1;
+  const values = new Float32Array(total);
+  for (let i = 0; i < total; i += 1) {
+    const raw = size === 1
+      ? (range.signed ? view.getInt8(i) : view.getUint8(i))
+      : (range.signed ? view.getInt16(i * 2, true) : view.getUint16(i * 2, true));
+    values[i] = range.signed ? Math.max(raw / range.max, -1) : raw / range.max;
+  }
+  return appendAccessor(document, {
+    bytes: bytesFromF32(values),
+    componentType: 5126,
+    components: accessor.components,
+    count: accessor.count,
+    normalized: false,
+  });
 }
 
 function sourceAccessor(

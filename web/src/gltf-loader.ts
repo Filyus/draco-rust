@@ -53,6 +53,11 @@ const SUPPORTED_EXTENSIONS = new Set([
   // Consumed by the wasm reader: readPrimitive materializes Draco geometry,
   // and fails the load outright when it cannot. Nothing reaches here to ignore.
   'KHR_draco_mesh_compression',
+  // Also consumed by the wasm reader: buffer views arrive already decoded.
+  'EXT_meshopt_compression',
+  // Quantized attributes are uploaded in their storage type, and quantized
+  // morph deltas are expanded to float when the morph texture is built.
+  'KHR_mesh_quantization',
 ]);
 // Extensions whose only effect is naming an alternate image source, in the
 // order the preview prefers them. Whether one of these is honored depends on a
@@ -573,16 +578,17 @@ function buildMeshes(asset: GltfAsset, defs: GltfJson[], warnings: string[]): Vi
             primitive.morphPositions.push(null);
             continue;
           }
-          const target = readAccessorAsTyped(asset, accessorIndex);
-          if (target.componentType !== 5126 || target.components !== 3
-            || target.count !== attributes.POSITION.count) {
+          const target = morphDeltas(
+            readAccessorAsTyped(asset, accessorIndex), attributes.POSITION.count,
+          );
+          if (!target) {
             warnings.push(
               `Morph target ${targetIndex} on mesh ${meshIndex} primitive ${p} has an unsupported POSITION accessor and was ignored`,
             );
             primitive.morphPositions.push(null);
             continue;
           }
-            primitive.morphPositions.push(target);
+          primitive.morphPositions.push(target);
         }
         for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
           const accessorIndex = targets[targetIndex].NORMAL;
@@ -590,9 +596,10 @@ function buildMeshes(asset: GltfAsset, defs: GltfJson[], warnings: string[]): Vi
             primitive.morphNormals.push(null);
             continue;
           }
-          const target = readAccessorAsTyped(asset, accessorIndex);
-          if (target.componentType !== 5126 || target.components !== 3
-            || target.count !== attributes.POSITION.count) {
+          const target = morphDeltas(
+            readAccessorAsTyped(asset, accessorIndex), attributes.POSITION.count,
+          );
+          if (!target) {
             warnings.push(
               `Morph normal ${targetIndex} on mesh ${meshIndex} primitive ${p} has an unsupported accessor and was ignored`,
             );
@@ -646,6 +653,61 @@ function initializeMorphWeights(nodes: ViewerNode[], meshes: ViewerMesh[], warni
       );
     }
   }
+}
+
+/** Largest magnitude of each integer component type, for normalized reads. */
+const COMPONENT_MAX: Record<number, number> = {
+  5120: 127, 5121: 255, 5122: 32767, 5123: 65535,
+};
+
+/**
+ * Read animation sampler values as unit-range floats.
+ *
+ * glTF stores rotations and morph weights as normalized integers as well, and
+ * every consumer downstream — interpolation, weight sorting, FBX export —
+ * assumes the float spelling.
+ */
+function samplerValues(accessor: ReturnType<typeof readAccessorAsTyped>) {
+  const max = COMPONENT_MAX[accessor.componentType];
+  if (accessor.componentType === 5126 || !max || !accessor.normalized) return accessor.data;
+  const values = new Float32Array(accessor.data.length);
+  for (let i = 0; i < values.length; i++) {
+    values[i] = Math.max(accessor.data[i] / max, -1);
+  }
+  return values;
+}
+
+/**
+ * Materialize morph deltas as float triples, or null when the accessor cannot
+ * describe deltas for this primitive.
+ *
+ * `KHR_mesh_quantization` stores deltas as integers in the same space as the
+ * base attribute — normalized ones as unit fractions, plain ones as raw counts
+ * that the node scale turns back into model units — while the morph texture is
+ * float only.
+ */
+function morphDeltas(
+  target: ReturnType<typeof readAccessorAsTyped>,
+  vertexCount: number,
+): ReturnType<typeof readAccessorAsTyped> | null {
+  if (target.components !== 3 || target.count !== vertexCount) return null;
+  if (target.componentType === 5126) return target;
+  const max = COMPONENT_MAX[target.componentType];
+  if (!max) return null;
+  const source = target.data;
+  const values = new Float32Array(target.count * 3);
+  if (values.length > source.length) return null;
+  for (let i = 0; i < values.length; i++) {
+    values[i] = target.normalized ? Math.max(source[i] / max, -1) : source[i];
+  }
+  return {
+    componentType: 5126,
+    components: 3,
+    count: target.count,
+    normalized: false,
+    bytes: new Uint8Array(values.buffer),
+    data: values,
+  };
 }
 
 export function readAccessorAsTyped(asset: GltfAsset, index: number) {
@@ -905,7 +967,7 @@ export function buildAnimations(asset: GltfAsset, defs: GltfJson[], nodes: Viewe
       const output = readAccessorAsTyped(asset, s.output);
       return {
         input: input.data,
-        output: output.data,
+        output: samplerValues(output),
         interpolation: s.interpolation || 'LINEAR',
       };
     });
