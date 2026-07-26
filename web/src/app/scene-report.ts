@@ -159,9 +159,13 @@ export function renderSceneCompanions(sceneDocument: SceneDocument) {
 // Display mesh information
 export function displayMeshInfo(result: any) {
   if (result.document) {
-    meshStatFields.meshes.textContent = result.meshCount.toLocaleString();
-    meshStatFields.vertices.textContent = result.vertexCount.toLocaleString();
-    meshStatFields.triangles.textContent = result.triangleCount.toLocaleString();
+    // The geometry figures are counted from the SceneDocument, so a file whose
+    // document could not be built shows a dash rather than crashing the panel
+    // that was about to explain why.
+    const count = (value: unknown) => (typeof value === 'number' ? value.toLocaleString() : '—');
+    meshStatFields.meshes.textContent = count(result.meshCount);
+    meshStatFields.vertices.textContent = count(result.vertexCount);
+    meshStatFields.triangles.textContent = count(result.triangleCount);
     meshStatFields.hasNormals.textContent = result.hasNormals ? 'Yes' : 'No';
     meshStatFields.hasUvs.textContent = result.hasUvs ? 'Yes' : 'No';
     setWarningSource('mesh', result.warnings || []);

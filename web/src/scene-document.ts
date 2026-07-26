@@ -235,6 +235,46 @@ const ATTRIBUTE_COMPONENTS = new Map<string, number>([
 const ANIMATION_PATHS = new Set(['translation', 'rotation', 'scale', 'weights']);
 const INTERPOLATIONS = new Set(['STEP', 'LINEAR', 'CUBICSPLINE']);
 
+/** Triangles a primitive of `mode` draws from `elementCount` vertices or indices. */
+export function triangleCountForMode(mode: number, elementCount: number) {
+  switch (mode) {
+    case 4: // TRIANGLES
+      return Math.floor(elementCount / 3);
+    case 5: // TRIANGLE_STRIP
+    case 6: // TRIANGLE_FAN
+      return Math.max(0, elementCount - 2);
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Count what the summary panel reports about a document's geometry.
+ *
+ * A pure query over the document rather than over the source file: the same
+ * numbers used to come from a second full walk of the asset, opened only to
+ * recount what the document already holds.
+ */
+export function summarizeSceneDocumentGeometry(document: SceneDocument) {
+  let vertexCount = 0;
+  let triangleCount = 0;
+  let hasNormals = false;
+  let hasUvs = false;
+  for (const mesh of document.meshes) {
+    for (const primitive of mesh.primitives) {
+      const position = document.accessors[primitive.attributes.POSITION];
+      const indices = primitive.indices === undefined ? undefined : document.accessors[primitive.indices];
+      vertexCount += position?.count ?? 0;
+      triangleCount += triangleCountForMode(primitive.mode ?? 4, indices?.count ?? position?.count ?? 0);
+      for (const semantic of Object.keys(primitive.attributes)) {
+        if (semantic === 'NORMAL') hasNormals = true;
+        else if (semantic.startsWith('TEXCOORD_')) hasUvs = true;
+      }
+    }
+  }
+  return { vertexCount, triangleCount, hasNormals, hasUvs };
+}
+
 /** Return an empty, transferable SceneDocument. */
 export function createSceneDocument(overrides: Partial<SceneDocument> = {}): SceneDocument {
   return {

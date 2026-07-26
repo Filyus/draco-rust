@@ -94,76 +94,22 @@ export async function parsePlyFile(data: Uint8Array) {
   return result;
 }
 
-// Parse glTF/GLB file
-export async function parseGltfFile(data: Uint8Array, extension: string, resources = Object.create(null)) {
+/**
+ * Parse a glTF/GLB file for the summary panel.
+ *
+ * Only the container-level summary comes from here. The geometry figures are
+ * counted from the SceneDocument by `summarizeSceneDocumentGeometry`, because
+ * that document is built from the same bytes moments later anyway and counting
+ * them here meant opening — and fully walking — the asset a second time for
+ * numbers already in hand.
+ */
+export async function parseGltfFile(data: Uint8Array, extension: string) {
   if (!modules.gltf.loaded) {
     return { success: false, error: 'glTF module not loaded' };
   }
 
   const summary = modules.gltf.module.inspect_gltf(data);
-  if (!summary.success) {
-    return { ...summary, document: true, format: extension };
-  }
-
-  const asset = modules.gltf.module.GltfAsset.withResources(data, resources, '2.1');
-  let vertexCount = 0;
-  let triangleCount = 0;
-  let hasNormals = false;
-  let hasUvs = false;
-
-  try {
-    for (let mesh = 0; mesh < asset.meshCount(); mesh += 1) {
-      const primitiveCount = asset.primitiveCount(mesh);
-      for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
-        const geometry = asset.readPrimitive(mesh, primitive);
-        try {
-          let primitiveVertexCount = 0;
-          for (let attribute = 0; attribute < geometry.attributeCount(); attribute += 1) {
-            const semantic = geometry.attributeSemantic(attribute);
-            if (semantic === 'POSITION') {
-              primitiveVertexCount = geometry.attributeElementCount(attribute);
-            } else if (semantic === 'NORMAL') {
-              hasNormals = true;
-            } else if (semantic.startsWith('TEXCOORD_')) {
-              hasUvs = true;
-            }
-          }
-
-          vertexCount += primitiveVertexCount;
-          const elementCount = geometry.hasIndices()
-            ? geometry.indexCount()
-            : primitiveVertexCount;
-          triangleCount += triangleCountForMode(geometry.mode(), elementCount);
-        } finally {
-          geometry.free();
-        }
-      }
-    }
-  } finally {
-    asset.free();
-  }
-
-  return {
-    ...summary,
-    document: true,
-    format: extension,
-    vertexCount,
-    triangleCount,
-    hasNormals,
-    hasUvs,
-  };
-}
-
-export function triangleCountForMode(mode: number, elementCount: number) {
-  switch (mode) {
-    case 4: // TRIANGLES
-      return Math.floor(elementCount / 3);
-    case 5: // TRIANGLE_STRIP
-    case 6: // TRIANGLE_FAN
-      return Math.max(0, elementCount - 2);
-    default:
-      return 0;
-  }
+  return { ...summary, document: true, format: extension };
 }
 
 // Parse FBX file

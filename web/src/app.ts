@@ -19,7 +19,7 @@ import { buildSceneFromFbx, buildSceneFromMeshes } from './mesh-loader.ts';
 import { buildSceneDocumentWithFbxProvenance } from './fbx-scene-document.ts';
 import { buildFbxSceneFromDocument } from './fbx-scene-document-writer.ts';
 import { serializeSceneDocumentToGlb } from './scene-document-gltf.ts';
-import { assertValidSceneDocument } from './scene-document.ts';
+import { assertValidSceneDocument, summarizeSceneDocumentGeometry } from './scene-document.ts';
 import { basename } from './scene-resources.ts';
 import {
   animClipMenu,
@@ -320,11 +320,20 @@ async function handleFile(file: File, companionFiles: File[] = []) {
         break;
       case 'gltf':
       case 'glb':
-        result = await parseGltfFile(data, extension, state.currentSourceResources);
+        result = await parseGltfFile(data, extension);
         if (result?.success && result.document) {
           try {
             state.currentSceneDocument = buildSceneDocumentFromGltf(data, state.currentSourceResources as Record<string, Uint8Array>, modules.gltf.module);
+            // The geometry figures come from the document rather than from a
+            // second walk of the same asset; when it could not be built there
+            // is nothing to count, and the panel says so below.
+            Object.assign(result, summarizeSceneDocumentGeometry(state.currentSceneDocument));
           } catch (error) {
+            // A document that merely fails the portability rules still
+            // previews, so that stays a warning. Missing companion files are
+            // different: nothing can be read at all, and the outer handler is
+            // the one that tells the user which files to select.
+            if (errorMessage(error).includes('External resource denied:')) throw error;
             log(`Scene details unavailable: ${errorMessage(error)}`, 'warning');
           }
         }
