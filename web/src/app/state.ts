@@ -12,40 +12,40 @@ import type { Viewer } from '../viewer.ts';
  */
 /** One lazily loaded wasm-pack module and whether its init has completed. */
 interface ModuleSlot {
-    loaded: boolean;
-    module: any;
+  loaded: boolean;
+  module: any;
 }
 
 /** The lazily loaded wasm-pack modules, by format key. */
 export const modules: Record<string, ModuleSlot> = {
-    obj: { loaded: false, module: null },
-    ply: { loaded: false, module: null },
-    gltf: { loaded: false, module: null },
-    fbx: { loaded: false, module: null },
+  obj: { loaded: false, module: null },
+  ply: { loaded: false, module: null },
+  gltf: { loaded: false, module: null },
+  fbx: { loaded: false, module: null },
 };
 
 export interface AppState {
-    /** Parse result for the loaded file, in whatever shape its reader returns. */
-    currentMeshData: any;
-    currentFileType: string | null;
-    currentSourceData: Uint8Array | null;
-    currentSourceResources: ResourceMap;
-    /**
-     * FBX uses the source-neutral SceneDocument for cross-format GLB export.
-     * Direct glTF/GLB inputs continue to use their lossless source-byte route.
-     */
-    currentSceneDocument: SceneDocument | null;
-    currentFbxProvenance: FbxSceneProvenance | null;
-    /** The 3D preview, created lazily on first use. */
-    viewer: Viewer | null;
+  /** Parse result for the loaded file, in whatever shape its reader returns. */
+  currentMeshData: any;
+  currentFileType: string | null;
+  currentSourceData: Uint8Array | null;
+  currentSourceResources: ResourceMap;
+  /**
+   * FBX uses the source-neutral SceneDocument for cross-format GLB export.
+   * Direct glTF/GLB inputs continue to use their lossless source-byte route.
+   */
+  currentSceneDocument: SceneDocument | null;
+  currentFbxProvenance: FbxSceneProvenance | null;
+  /** The 3D preview, created lazily on first use. */
+  viewer: Viewer | null;
 }
 
 export const state: AppState = {
-    currentMeshData: null,
-    currentFileType: null,
-    currentSourceData: null,
-    currentSourceResources: Object.create(null),
-    currentSceneDocument: null,
-    currentFbxProvenance: null,
-    viewer: null,
+  currentMeshData: null,
+  currentFileType: null,
+  currentSourceData: null,
+  currentSourceResources: Object.create(null),
+  currentSceneDocument: null,
+  currentFbxProvenance: null,
+  viewer: null,
 };

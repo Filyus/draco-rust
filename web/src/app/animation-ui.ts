@@ -9,168 +9,168 @@ import { state } from './state.ts';
  */
 
 export function updateAnimationUi(scene: any) {
-    const clips = state.currentSceneDocument?.animations?.length
-        ? state.currentSceneDocument.animations
-        : (scene.animations || []);
-    resetAnimationUi();
-    if (clips.length === 0) return;
-    viewerAnimation.style.display = 'flex';
-    for (let i = 0; i < clips.length; i++) {
-        const option = document.createElement('option');
-        option.value = String(i);
-        option.textContent = clips[i].name || `Clip ${i + 1}`;
-        animClipSelect.appendChild(option);
-    }
-    animClipSelect.value = String(state.viewer!.animation.clipIndex);
-    rebuildAnimationClipMenu();
-    updateAnimationPlayButton();
-    updateAnimationScrub();
+  const clips = state.currentSceneDocument?.animations?.length
+    ? state.currentSceneDocument.animations
+    : (scene.animations || []);
+  resetAnimationUi();
+  if (clips.length === 0) return;
+  viewerAnimation.style.display = 'flex';
+  for (let i = 0; i < clips.length; i++) {
+    const option = document.createElement('option');
+    option.value = String(i);
+    option.textContent = clips[i].name || `Clip ${i + 1}`;
+    animClipSelect.appendChild(option);
+  }
+  animClipSelect.value = String(state.viewer!.animation.clipIndex);
+  rebuildAnimationClipMenu();
+  updateAnimationPlayButton();
+  updateAnimationScrub();
 }
 
 export function resetAnimationUi() {
-    lastTimeLabel = '';
-    lastScrubValue = '';
-    viewerAnimation.style.display = 'none';
-    animClipSelect.innerHTML = '';
-    animClipMenu.replaceChildren();
-    animClipLabel.textContent = 'Animation';
-    closeAnimationClipMenu();
-    animTimeLabel.textContent = '0.00s';
-    animScrub.value = '0';
-    animSpeedValue.textContent = '1.00×';
-    animSpeed.value = '100';
-    animPlayBtn.classList.remove('active');
-    animPlayBtn.title = 'Play';
-    animPlayBtn.setAttribute('aria-label', 'Play animation');
+  lastTimeLabel = '';
+  lastScrubValue = '';
+  viewerAnimation.style.display = 'none';
+  animClipSelect.innerHTML = '';
+  animClipMenu.replaceChildren();
+  animClipLabel.textContent = 'Animation';
+  closeAnimationClipMenu();
+  animTimeLabel.textContent = '0.00s';
+  animScrub.value = '0';
+  animSpeedValue.textContent = '1.00×';
+  animSpeed.value = '100';
+  animPlayBtn.classList.remove('active');
+  animPlayBtn.title = 'Play';
+  animPlayBtn.setAttribute('aria-label', 'Play animation');
 }
 
 export function rebuildAnimationClipMenu() {
-    animClipMenu.replaceChildren();
-    for (const option of animClipSelect.options) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'anim-clip-option';
-        button.dataset.value = option.value;
-        button.id = `anim-clip-option-${option.value}`;
-        button.tabIndex = -1;
-        button.setAttribute('role', 'option');
-        button.textContent = option.textContent;
-        button.addEventListener('click', () => {
-            animClipSelect.value = option.value;
-            animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
-            closeAnimationClipMenu(true);
-        });
-        animClipMenu.appendChild(button);
-    }
-    syncAnimationClipSelection();
+  animClipMenu.replaceChildren();
+  for (const option of animClipSelect.options) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'anim-clip-option';
+    button.dataset.value = option.value;
+    button.id = `anim-clip-option-${option.value}`;
+    button.tabIndex = -1;
+    button.setAttribute('role', 'option');
+    button.textContent = option.textContent;
+    button.addEventListener('click', () => {
+      animClipSelect.value = option.value;
+      animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      closeAnimationClipMenu(true);
+    });
+    animClipMenu.appendChild(button);
+  }
+  syncAnimationClipSelection();
 }
 
 export function syncAnimationClipSelection() {
-    const selected = animClipSelect.selectedOptions[0];
-    animClipLabel.textContent = selected?.textContent || 'Animation';
-    for (const option of animClipMenu.querySelectorAll<HTMLElement>('.anim-clip-option')) {
-        const active = option.dataset.value === animClipSelect.value;
-        option.classList.toggle('selected', active);
-        option.setAttribute('aria-selected', String(active));
-        if (active) animClipTrigger.setAttribute('aria-activedescendant', option.id);
-    }
+  const selected = animClipSelect.selectedOptions[0];
+  animClipLabel.textContent = selected?.textContent || 'Animation';
+  for (const option of animClipMenu.querySelectorAll<HTMLElement>('.anim-clip-option')) {
+    const active = option.dataset.value === animClipSelect.value;
+    option.classList.toggle('selected', active);
+    option.setAttribute('aria-selected', String(active));
+    if (active) animClipTrigger.setAttribute('aria-activedescendant', option.id);
+  }
 }
 
 export function openAnimationClipMenu() {
-    animClipTrigger.setAttribute('aria-expanded', 'true');
-    animClipMenu.hidden = false;
-    const selected = animClipMenu.querySelector<HTMLElement>('.anim-clip-option.selected')
-        || animClipMenu.querySelector<HTMLElement>('.anim-clip-option');
-    selected?.focus();
+  animClipTrigger.setAttribute('aria-expanded', 'true');
+  animClipMenu.hidden = false;
+  const selected = animClipMenu.querySelector<HTMLElement>('.anim-clip-option.selected')
+    || animClipMenu.querySelector<HTMLElement>('.anim-clip-option');
+  selected?.focus();
 }
 
 export function closeAnimationClipMenu(restoreFocus = false) {
-    // Hiding the menu while one of its options holds focus would drop focus to
-    // the body, so the trigger takes it back — but only then, otherwise closing
-    // would steal focus from whatever the user just clicked.
-    const hadFocus = animClipMenu.contains(document.activeElement);
-    animClipTrigger.setAttribute('aria-expanded', 'false');
-    animClipMenu.hidden = true;
-    if (restoreFocus || hadFocus) animClipTrigger.focus();
+  // Hiding the menu while one of its options holds focus would drop focus to
+  // the body, so the trigger takes it back — but only then, otherwise closing
+  // would steal focus from whatever the user just clicked.
+  const hadFocus = animClipMenu.contains(document.activeElement);
+  animClipTrigger.setAttribute('aria-expanded', 'false');
+  animClipMenu.hidden = true;
+  if (restoreFocus || hadFocus) animClipTrigger.focus();
 }
 
 export function selectAnimationClipAt(index: number) {
-    const options = [...animClipSelect.options];
-    if (options.length === 0) return;
-    const wrapped = (index + options.length) % options.length;
-    animClipSelect.value = options[wrapped].value;
-    animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  const options = [...animClipSelect.options];
+  if (options.length === 0) return;
+  const wrapped = (index + options.length) % options.length;
+  animClipSelect.value = options[wrapped].value;
+  animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
 export function handleAnimationClipTriggerKeydown(event: KeyboardEvent) {
-    const options = [...animClipSelect.options];
-    if (options.length === 0) return;
-    const current = Math.max(0, options.findIndex(option => option.value === animClipSelect.value));
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault();
-        selectAnimationClipAt(current + (event.key === 'ArrowDown' ? 1 : -1));
-    } else if (event.key === 'Home' || event.key === 'End') {
-        event.preventDefault();
-        selectAnimationClipAt(event.key === 'Home' ? 0 : options.length - 1);
-    } else if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        openAnimationClipMenu();
-    }
+  const options = [...animClipSelect.options];
+  if (options.length === 0) return;
+  const current = Math.max(0, options.findIndex(option => option.value === animClipSelect.value));
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    selectAnimationClipAt(current + (event.key === 'ArrowDown' ? 1 : -1));
+  } else if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault();
+    selectAnimationClipAt(event.key === 'Home' ? 0 : options.length - 1);
+  } else if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    openAnimationClipMenu();
+  }
 }
 
 export function handleAnimationClipMenuKeydown(event: KeyboardEvent) {
-    const options = [...animClipMenu.querySelectorAll<HTMLElement>('.anim-clip-option')];
-    const current = options.indexOf(document.activeElement as HTMLElement);
-    if (event.key === 'Escape') {
-        event.preventDefault();
-        closeAnimationClipMenu(true);
-        return;
-    }
-    let next = current;
-    if (event.key === 'ArrowDown') next = (current + 1) % options.length;
-    else if (event.key === 'ArrowUp') next = (current - 1 + options.length) % options.length;
-    else if (event.key === 'Home') next = 0;
-    else if (event.key === 'End') next = options.length - 1;
-    else return;
+  const options = [...animClipMenu.querySelectorAll<HTMLElement>('.anim-clip-option')];
+  const current = options.indexOf(document.activeElement as HTMLElement);
+  if (event.key === 'Escape') {
     event.preventDefault();
-    options[next]?.focus();
-    if (options[next]) {
-        animClipSelect.value = options[next].dataset.value!;
-        animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
-    }
+    closeAnimationClipMenu(true);
+    return;
+  }
+  let next = current;
+  if (event.key === 'ArrowDown') next = (current + 1) % options.length;
+  else if (event.key === 'ArrowUp') next = (current - 1 + options.length) % options.length;
+  else if (event.key === 'Home') next = 0;
+  else if (event.key === 'End') next = options.length - 1;
+  else return;
+  event.preventDefault();
+  options[next]?.focus();
+  if (options[next]) {
+    animClipSelect.value = options[next].dataset.value!;
+    animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  }
 }
 
 export function toggleAnimationPlayback() {
-    if (!state.viewer || !state.viewer.scene?.animations?.length) return false;
-    state.viewer.animation.playing = !state.viewer.animation.playing;
-    if (state.viewer.animation.playing && state.viewer.animation.time >= state.viewer.scene.animations[state.viewer.animation.clipIndex].duration) {
-        state.viewer.seekAnimation(0);
-    }
-    updateAnimationPlayButton();
-    return true;
+  if (!state.viewer || !state.viewer.scene?.animations?.length) return false;
+  state.viewer.animation.playing = !state.viewer.animation.playing;
+  if (state.viewer.animation.playing && state.viewer.animation.time >= state.viewer.scene.animations[state.viewer.animation.clipIndex].duration) {
+    state.viewer.seekAnimation(0);
+  }
+  updateAnimationPlayButton();
+  return true;
 }
 
 /** Space plays and pauses, unless it belongs to the focused control. */
 export function handlePlaybackShortcut(event: KeyboardEvent) {
-    if (event.code !== 'Space' || event.repeat) return;
-    if (event.ctrlKey || event.altKey || event.metaKey) return;
-    const target = event.target;
-    if (target instanceof HTMLElement) {
-        if (target.isContentEditable) return;
-        // Space is the activation key for buttons, checkboxes and text fields,
-        // and the clip listbox picks a clip with it.
-        if (/^(BUTTON|INPUT|SELECT|TEXTAREA)$/.test(target.tagName)) return;
-        if (!animClipMenu.hidden && animClipMenu.contains(target)) return;
-    }
-    if (toggleAnimationPlayback()) event.preventDefault();
+  if (event.code !== 'Space' || event.repeat) return;
+  if (event.ctrlKey || event.altKey || event.metaKey) return;
+  const target = event.target;
+  if (target instanceof HTMLElement) {
+    if (target.isContentEditable) return;
+    // Space is the activation key for buttons, checkboxes and text fields,
+    // and the clip listbox picks a clip with it.
+    if (/^(BUTTON|INPUT|SELECT|TEXTAREA)$/.test(target.tagName)) return;
+    if (!animClipMenu.hidden && animClipMenu.contains(target)) return;
+  }
+  if (toggleAnimationPlayback()) event.preventDefault();
 }
 
 export function updateAnimationPlayButton() {
-    if (!state.viewer || !state.viewer.scene?.animations?.length) return;
-    const playing = state.viewer.animation.playing;
-    animPlayBtn.classList.toggle('active', playing);
-    animPlayBtn.title = playing ? 'Pause' : 'Play';
-    animPlayBtn.setAttribute('aria-label', playing ? 'Pause animation' : 'Play animation');
+  if (!state.viewer || !state.viewer.scene?.animations?.length) return;
+  const playing = state.viewer.animation.playing;
+  animPlayBtn.classList.toggle('active', playing);
+  animPlayBtn.title = playing ? 'Pause' : 'Play';
+  animPlayBtn.setAttribute('aria-label', playing ? 'Pause animation' : 'Play animation');
 }
 
 /**
@@ -181,28 +181,28 @@ export function updateAnimationPlayButton() {
  * refresh the bar themselves. Idle frames therefore touch no DOM at all.
  */
 export function animationTick() {
-    if (state.viewer?.animation.playing) updateAnimationScrub();
-    requestAnimationFrame(animationTick);
+  if (state.viewer?.animation.playing) updateAnimationScrub();
+  requestAnimationFrame(animationTick);
 }
 
 let lastTimeLabel = '';
 let lastScrubValue = '';
 
 export function updateAnimationScrub() {
-    if (!state.viewer || !state.viewer.scene?.animations?.length) return;
-    const clip = state.viewer.scene.animations[state.viewer.animation.clipIndex];
-    if (!clip) return;
-    // Written only on change: at 60 Hz and above most frames land on the same
-    // hundredth of a second, and assigning an input's value moves the caret
-    // and invalidates layout whether or not the text differs.
-    const label = `${state.viewer.animation.time.toFixed(2)}s / ${clip.duration.toFixed(2)}s`;
-    if (label !== lastTimeLabel) {
-        animTimeLabel.textContent = label;
-        lastTimeLabel = label;
-    }
-    const scrub = String(Math.round((state.viewer.animation.time / Math.max(clip.duration, 0.0001)) * 1000));
-    if (scrub !== lastScrubValue) {
-        animScrub.value = scrub;
-        lastScrubValue = scrub;
-    }
+  if (!state.viewer || !state.viewer.scene?.animations?.length) return;
+  const clip = state.viewer.scene.animations[state.viewer.animation.clipIndex];
+  if (!clip) return;
+  // Written only on change: at 60 Hz and above most frames land on the same
+  // hundredth of a second, and assigning an input's value moves the caret
+  // and invalidates layout whether or not the text differs.
+  const label = `${state.viewer.animation.time.toFixed(2)}s / ${clip.duration.toFixed(2)}s`;
+  if (label !== lastTimeLabel) {
+    animTimeLabel.textContent = label;
+    lastTimeLabel = label;
+  }
+  const scrub = String(Math.round((state.viewer.animation.time / Math.max(clip.duration, 0.0001)) * 1000));
+  if (scrub !== lastScrubValue) {
+    animScrub.value = scrub;
+    lastScrubValue = scrub;
+  }
 }

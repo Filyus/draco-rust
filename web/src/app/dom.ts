@@ -16,11 +16,11 @@
  * guards at the point of use.
  */
 export function element<T extends HTMLElement = HTMLElement>(id: string): T {
-    return document.getElementById(id) as T;
+  return document.getElementById(id) as T;
 }
 
 export function query<T extends HTMLElement = HTMLElement>(selector: string): T {
-    return document.querySelector(selector) as T;
+  return document.querySelector(selector) as T;
 }
 
 // DOM Elements
@@ -66,12 +66,12 @@ export const animScrub = element<HTMLInputElement>('anim-scrub');
 export const animSpeed = element<HTMLInputElement>('anim-speed');
 export const animSpeedValue = element('anim-speed-value');
 export const viewerControls = [
-    viewerResetBtn,
-    viewerAutoRotateBtn,
-    viewerWireframeBtn,
-    viewerBaseColorBtn,
-    viewerSmoothNormalsBtn,
-    viewerGridBtn,
+  viewerResetBtn,
+  viewerAutoRotateBtn,
+  viewerWireframeBtn,
+  viewerBaseColorBtn,
+  viewerSmoothNormalsBtn,
+  viewerGridBtn,
 ];
 export const scenePanel = element('scene-panel');
 export const sceneSection = element('scene-section');
@@ -83,29 +83,29 @@ export const sceneResourceList = element('scene-resource-list');
 export const sceneMaterialList = element('scene-material-list');
 export const sceneClipList = element('scene-clip-list');
 export const sceneStatFields = {
-    nodes: element('scene-node-stat'),
-    meshes: element('mesh-count'),
-    materials: element('scene-material-stat'),
-    skins: element('scene-skin-stat'),
-    morphs: element('scene-morph-stat'),
-    clips: element('scene-clip-stat'),
+  nodes: element('scene-node-stat'),
+  meshes: element('mesh-count'),
+  materials: element('scene-material-stat'),
+  skins: element('scene-skin-stat'),
+  morphs: element('scene-morph-stat'),
+  clips: element('scene-clip-stat'),
 };
 /** The geometry readout under the viewport, shared by both mesh summaries. */
 export const meshStatFields = {
-    meshes: element('mesh-count'),
-    vertices: element('vertex-count'),
-    triangles: element('triangle-count'),
-    hasNormals: element('has-normals'),
-    hasUvs: element('has-uvs'),
+  meshes: element('mesh-count'),
+  vertices: element('vertex-count'),
+  triangles: element('triangle-count'),
+  hasNormals: element('has-normals'),
+  hasUvs: element('has-uvs'),
 };
 
 /** The Draco compression report, shown only after an encode. */
 export const compressionStats = element('compression-stats');
 export const compressionStatFields = {
-    method: element('stats-method'),
-    speed: element('stats-speed'),
-    prediction: element('stats-prediction'),
-    size: element('stats-size'),
+  method: element('stats-method'),
+  speed: element('stats-speed'),
+  prediction: element('stats-prediction'),
+  size: element('stats-size'),
 };
 
 export const sceneCapabilitySummary = element('scene-capability-summary');
@@ -118,7 +118,7 @@ export const sceneTreeExpandButton = element<HTMLButtonElement>('scene-tree-expa
 export const sceneTreeCollapseButton = element<HTMLButtonElement>('scene-tree-collapse');
 
 const setSceneTreeExpanded = (expanded: boolean) => {
-    for (const branch of sceneTree.querySelectorAll<HTMLDetailsElement>('details.scene-tree-node')) branch.open = expanded;
+  for (const branch of sceneTree.querySelectorAll<HTMLDetailsElement>('details.scene-tree-node')) branch.open = expanded;
 };
 sceneTreeExpandButton?.addEventListener('click', () => setSceneTreeExpanded(true));
 sceneTreeCollapseButton?.addEventListener('click', () => setSceneTreeExpanded(false));
@@ -126,16 +126,16 @@ sceneTreeCollapseButton?.addEventListener('click', () => setSceneTreeExpanded(fa
 // Keep the workflow columns source-neutral: import + hierarchy on the left,
 // export/report on the right. The existing viewport statistics stay in place.
 if (sidebar && sceneSection && sceneSection.parentElement !== sidebar) {
-    sidebar.append(sceneSection);
+  sidebar.append(sceneSection);
 }
 // Contents is its own card below the scene card, so it cannot squeeze the tree.
 if (sidebar && sceneInfo && sceneInfo.parentElement !== sidebar) {
-    sidebar.append(sceneInfo);
+  sidebar.append(sceneInfo);
 }
 if (exportSidebar && exportSection && exportSection.parentElement !== exportSidebar) {
-    exportSidebar.append(exportSection);
+  exportSidebar.append(exportSection);
 }
 // Every warning the app produces lands in this one card, directly under Export.
 if (exportSidebar && sceneWarningsSection && sceneWarningsSection.parentElement !== exportSidebar) {
-    exportSidebar.append(sceneWarningsSection);
+  exportSidebar.append(sceneWarningsSection);
 }

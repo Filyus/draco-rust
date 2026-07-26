@@ -8,9 +8,9 @@
  */
 
 export interface Trs {
-    translation: number[];
-    rotation: number[];
-    scale: number[];
+  translation: number[];
+  rotation: number[];
+  scale: number[];
 }
 
 /**
@@ -21,38 +21,38 @@ export interface Trs {
  * byteView before upload.
  */
 export interface RuntimeAccessor {
-    bytes: ArrayBufferView;
-    componentType: number;
-    components: number;
-    normalized: boolean;
-    count: number;
+  bytes: ArrayBufferView;
+  componentType: number;
+  components: number;
+  normalized: boolean;
+  count: number;
 }
 
 export interface ViewerNode {
-    name: string;
-    trs: Trs;
-    children: number[];
-    /** Absent on flat OBJ/PLY meshes, which have no source transform at all. */
-    localMatrix?: Float32Array | null;
-    /** Absent wherever the importer knows the node carries no morph weights. */
-    weights?: Float32Array | number[];
-    meshIndex: number;
-    skinIndex: number;
-    world: Float32Array;
-    /** FBX only: the bind-rest pose the animation adapter rebases against. */
-    restTrs?: Trs;
-    /** FBX only: the static basis authored rotation keys compose with. */
-    animationTrs?: Trs;
-    /** FBX only: set when Model TRS keys are already in their local space. */
-    usesAuthoredModelTrs?: boolean;
-    /** FBX only: the source object id, which skin clusters reference. */
-    id?: number | null;
-    /** FBX only: the BindPose-derived basis the rest pose was built from. */
-    bindTrs?: Trs;
-    /** FBX only: set for nodes carrying pre/post rotation or pivot terms. */
-    hasComplexTransformStack?: boolean;
-    /** glTF loader only: the node's own index in the source document. */
-    index?: number;
+  name: string;
+  trs: Trs;
+  children: number[];
+  /** Absent on flat OBJ/PLY meshes, which have no source transform at all. */
+  localMatrix?: Float32Array | null;
+  /** Absent wherever the importer knows the node carries no morph weights. */
+  weights?: Float32Array | number[];
+  meshIndex: number;
+  skinIndex: number;
+  world: Float32Array;
+  /** FBX only: the bind-rest pose the animation adapter rebases against. */
+  restTrs?: Trs;
+  /** FBX only: the static basis authored rotation keys compose with. */
+  animationTrs?: Trs;
+  /** FBX only: set when Model TRS keys are already in their local space. */
+  usesAuthoredModelTrs?: boolean;
+  /** FBX only: the source object id, which skin clusters reference. */
+  id?: number | null;
+  /** FBX only: the BindPose-derived basis the rest pose was built from. */
+  bindTrs?: Trs;
+  /** FBX only: set for nodes carrying pre/post rotation or pivot terms. */
+  hasComplexTransformStack?: boolean;
+  /** glTF loader only: the node's own index in the source document. */
+  index?: number;
 }
 
 /**
@@ -63,82 +63,82 @@ export interface ViewerNode {
  * matrix because nothing ever renders it. This is their common ground.
  */
 export interface AnimationTarget {
-    weights?: Float32Array | number[];
-    restTrs?: Trs;
-    animationTrs?: Trs;
-    usesAuthoredModelTrs?: boolean;
+  weights?: Float32Array | number[];
+  restTrs?: Trs;
+  animationTrs?: Trs;
+  usesAuthoredModelTrs?: boolean;
 }
 
 export interface ViewerPrimitive {
-    attributes: Record<string, RuntimeAccessor>;
-    mode: number;
-    materialIndex: number;
-    indices?: RuntimeAccessor;
-    morphPositions?: (RuntimeAccessor | null)[];
-    morphNormals?: (RuntimeAccessor | null)[];
+  attributes: Record<string, RuntimeAccessor>;
+  mode: number;
+  materialIndex: number;
+  indices?: RuntimeAccessor;
+  morphPositions?: (RuntimeAccessor | null)[];
+  morphNormals?: (RuntimeAccessor | null)[];
 }
 
 export interface Aabb {
-    min: number[];
-    max: number[];
+  min: number[];
+  max: number[];
 }
 
 export interface ViewerMesh {
-    name: string;
-    primitives: ViewerPrimitive[];
-    aabb: Aabb;
-    /** Mesh-level morph defaults, when the source document carried them. */
-    weights?: number[];
+  name: string;
+  primitives: ViewerPrimitive[];
+  aabb: Aabb;
+  /** Mesh-level morph defaults, when the source document carried them. */
+  weights?: number[];
 }
 
 export interface ViewerJoint {
-    node: ViewerNode;
-    inverseBind: Float32Array;
+  node: ViewerNode;
+  inverseBind: Float32Array;
 }
 
 export interface ViewerSkin {
-    name: string;
-    joints: ViewerJoint[];
+  name: string;
+  joints: ViewerJoint[];
 }
 
 export type AnimationPath = 'translation' | 'rotation' | 'scale' | 'weights';
 
 export interface ViewerSampler {
-    input: Float32Array;
-    output: Float32Array;
-    interpolation: string;
+  input: Float32Array;
+  output: Float32Array;
+  interpolation: string;
 }
 
 export interface ViewerChannel {
-    node: ViewerNode;
-    path: AnimationPath;
-    /** Component count per key: 3 for TRS, the morph count for weights. */
-    targetCount: number;
-    sampler: ViewerSampler;
+  node: ViewerNode;
+  path: AnimationPath;
+  /** Component count per key: 3 for TRS, the morph count for weights. */
+  targetCount: number;
+  sampler: ViewerSampler;
 }
 
 export interface ViewerClip {
-    name: string;
-    duration: number;
-    channels: ViewerChannel[];
+  name: string;
+  duration: number;
+  channels: ViewerChannel[];
 }
 
 /** The whole runtime scene, as the viewer holds it between frames. */
 export interface ViewerScene {
-    nodes: ViewerNode[];
-    rootIndices: number[];
-    meshes: ViewerMesh[];
-    skins: ViewerSkin[];
-    materials: any[];
-    textures: any[];
-    animations: ViewerClip[];
-    renderables: Renderable[];
-    aabb: Aabb;
-    warnings: string[];
+  nodes: ViewerNode[];
+  rootIndices: number[];
+  meshes: ViewerMesh[];
+  skins: ViewerSkin[];
+  materials: any[];
+  textures: any[];
+  animations: ViewerClip[];
+  renderables: Renderable[];
+  aabb: Aabb;
+  warnings: string[];
 }
 
 export interface Renderable {
-    node: ViewerNode;
-    meshIndex: number;
-    skinIndex: number;
+  node: ViewerNode;
+  meshIndex: number;
+  skinIndex: number;
 }

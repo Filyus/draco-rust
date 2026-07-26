@@ -217,234 +217,234 @@ void main() {
 
 /** The render-target format the environment passes write into. */
 interface TargetFormat {
-    internal: number;
-    type: number;
+  internal: number;
+  type: number;
 }
 
 /** Everything the viewer binds for image-based lighting. */
 export interface EnvironmentIbl {
-    environment: WebGLTexture;
-    irradiance: WebGLTexture;
-    prefiltered: WebGLTexture;
-    brdfLut: WebGLTexture;
-    maxLod: number;
-    hdr: boolean;
-    dispose(): void;
+  environment: WebGLTexture;
+  irradiance: WebGLTexture;
+  prefiltered: WebGLTexture;
+  brdfLut: WebGLTexture;
+  maxLod: number;
+  hdr: boolean;
+  dispose(): void;
 }
 
 // The GL object factories below return null only on a lost context, where the
 // original code already failed at the next call. Asserting keeps that
 // behaviour rather than inventing a new error path.
 function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
-    const shader = gl.createShader(type)!;
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        const message = gl.getShaderInfoLog(shader);
-        gl.deleteShader(shader);
-        throw new Error(`environment shader compile error: ${message}`);
-    }
-    return shader;
+  const shader = gl.createShader(type)!;
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const message = gl.getShaderInfoLog(shader);
+    gl.deleteShader(shader);
+    throw new Error(`environment shader compile error: ${message}`);
+  }
+  return shader;
 }
 
 function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
-    const result = gl.createProgram()!;
-    const vertex = compile(gl, gl.VERTEX_SHADER, FULLSCREEN_VERTEX);
-    const pixel = compile(gl, gl.FRAGMENT_SHADER, fragment);
-    gl.attachShader(result, vertex);
-    gl.attachShader(result, pixel);
-    gl.linkProgram(result);
-    gl.deleteShader(vertex);
-    gl.deleteShader(pixel);
-    if (!gl.getProgramParameter(result, gl.LINK_STATUS)) {
-        const message = gl.getProgramInfoLog(result);
-        gl.deleteProgram(result);
-        throw new Error(`environment program link error: ${message}`);
-    }
-    return result;
+  const result = gl.createProgram()!;
+  const vertex = compile(gl, gl.VERTEX_SHADER, FULLSCREEN_VERTEX);
+  const pixel = compile(gl, gl.FRAGMENT_SHADER, fragment);
+  gl.attachShader(result, vertex);
+  gl.attachShader(result, pixel);
+  gl.linkProgram(result);
+  gl.deleteShader(vertex);
+  gl.deleteShader(pixel);
+  if (!gl.getProgramParameter(result, gl.LINK_STATUS)) {
+    const message = gl.getProgramInfoLog(result);
+    gl.deleteProgram(result);
+    throw new Error(`environment program link error: ${message}`);
+  }
+  return result;
 }
 
 function cubeTexture(gl: WebGL2RenderingContext, size: number, levels: number, format: TargetFormat): WebGLTexture {
-    const texture = gl.createTexture()!;
-    gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
-    for (let level = 0; level < levels; level++) {
-        const dimension = Math.max(1, size >> level);
-        for (let face = 0; face < 6; face++) {
-            gl.texImage2D(
-                gl.TEXTURE_CUBE_MAP_POSITIVE_X + face,
-                level,
-                format.internal,
-                dimension,
-                dimension,
-                0,
-                gl.RGBA,
-                format.type,
-                null,
-            );
-        }
+  const texture = gl.createTexture()!;
+  gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+  for (let level = 0; level < levels; level++) {
+    const dimension = Math.max(1, size >> level);
+    for (let face = 0; face < 6; face++) {
+      gl.texImage2D(
+        gl.TEXTURE_CUBE_MAP_POSITIVE_X + face,
+        level,
+        format.internal,
+        dimension,
+        dimension,
+        0,
+        gl.RGBA,
+        format.type,
+        null,
+      );
     }
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(
-        gl.TEXTURE_CUBE_MAP,
-        gl.TEXTURE_MIN_FILTER,
-        levels > 1 ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR,
-    );
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAX_LEVEL, levels - 1);
-    return texture;
+  }
+  gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(
+    gl.TEXTURE_CUBE_MAP,
+    gl.TEXTURE_MIN_FILTER,
+    levels > 1 ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR,
+  );
+  gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAX_LEVEL, levels - 1);
+  return texture;
 }
 
 function renderCube(
-    gl: WebGL2RenderingContext,
-    framebuffer: WebGLFramebuffer,
-    vao: WebGLVertexArrayObject,
-    target: WebGLTexture,
-    size: number,
-    levels: number,
-    renderLevel: (level: number, levels: number, face?: number) => void,
+  gl: WebGL2RenderingContext,
+  framebuffer: WebGLFramebuffer,
+  vao: WebGLVertexArrayObject,
+  target: WebGLTexture,
+  size: number,
+  levels: number,
+  renderLevel: (level: number, levels: number, face?: number) => void,
 ) {
-    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-    gl.bindVertexArray(vao);
-    for (let level = 0; level < levels; level++) {
-        const dimension = Math.max(1, size >> level);
-        gl.viewport(0, 0, dimension, dimension);
-        renderLevel(level, levels);
-        for (let face = 0; face < 6; face++) {
-            gl.framebufferTexture2D(
-                gl.FRAMEBUFFER,
-                gl.COLOR_ATTACHMENT0,
-                gl.TEXTURE_CUBE_MAP_POSITIVE_X + face,
-                target,
-                level,
-            );
-            if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
-                throw new Error('environment cubemap framebuffer is incomplete');
-            }
-            renderLevel(level, levels, face);
-            gl.drawArrays(gl.TRIANGLES, 0, 3);
-        }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+  gl.bindVertexArray(vao);
+  for (let level = 0; level < levels; level++) {
+    const dimension = Math.max(1, size >> level);
+    gl.viewport(0, 0, dimension, dimension);
+    renderLevel(level, levels);
+    for (let face = 0; face < 6; face++) {
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0,
+        gl.TEXTURE_CUBE_MAP_POSITIVE_X + face,
+        target,
+        level,
+      );
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+        throw new Error('environment cubemap framebuffer is incomplete');
+      }
+      renderLevel(level, levels, face);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
+  }
 }
 
 export function createEnvironmentIbl(
-    gl: WebGL2RenderingContext,
-    onLog: (message: string, level: string) => void = () => {},
+  gl: WebGL2RenderingContext,
+  onLog: (message: string, level: string) => void = () => {},
 ): EnvironmentIbl {
-    const hdr = !!gl.getExtension('EXT_color_buffer_float');
-    if (!hdr) onLog('Float render targets unavailable; environment IBL uses LDR precision', 'warning');
-    const format = hdr
-        ? { internal: gl.RGBA16F, type: gl.HALF_FLOAT }
-        : { internal: gl.RGBA8, type: gl.UNSIGNED_BYTE };
-    const resources: {
-        textures: WebGLTexture[];
-        programs: WebGLProgram[];
-        framebuffer?: WebGLFramebuffer;
-        vao?: WebGLVertexArrayObject;
-    } = { textures: [], programs: [] };
+  const hdr = !!gl.getExtension('EXT_color_buffer_float');
+  if (!hdr) onLog('Float render targets unavailable; environment IBL uses LDR precision', 'warning');
+  const format = hdr
+    ? { internal: gl.RGBA16F, type: gl.HALF_FLOAT }
+    : { internal: gl.RGBA8, type: gl.UNSIGNED_BYTE };
+  const resources: {
+    textures: WebGLTexture[];
+    programs: WebGLProgram[];
+    framebuffer?: WebGLFramebuffer;
+    vao?: WebGLVertexArrayObject;
+  } = { textures: [], programs: [] };
 
-    try {
-        const framebuffer = gl.createFramebuffer()!;
-        const vao = gl.createVertexArray()!;
-        resources.framebuffer = framebuffer;
-        resources.vao = vao;
+  try {
+    const framebuffer = gl.createFramebuffer()!;
+    const vao = gl.createVertexArray()!;
+    resources.framebuffer = framebuffer;
+    resources.vao = vao;
 
-        const environmentSize = 256;
-        const prefilteredSize = 128;
-        const environmentLevels = Math.floor(Math.log2(environmentSize)) + 1;
-        const environment = cubeTexture(gl, environmentSize, environmentLevels, format);
-        const irradiance = cubeTexture(gl, 32, 1, format);
-        // Keep the roughest cubemap at 4x4 per face. A 1x1 face stores six
-        // unrelated directional averages and exposes cube-face transitions as
-        // star-shaped bands on smooth, high-roughness surfaces.
-        const prefilteredLevels = 6;
-        const prefiltered = cubeTexture(gl, prefilteredSize, prefilteredLevels, format);
-        resources.textures.push(environment, irradiance, prefiltered);
+    const environmentSize = 256;
+    const prefilteredSize = 128;
+    const environmentLevels = Math.floor(Math.log2(environmentSize)) + 1;
+    const environment = cubeTexture(gl, environmentSize, environmentLevels, format);
+    const irradiance = cubeTexture(gl, 32, 1, format);
+    // Keep the roughest cubemap at 4x4 per face. A 1x1 face stores six
+    // unrelated directional averages and exposes cube-face transitions as
+    // star-shaped bands on smooth, high-roughness surfaces.
+    const prefilteredLevels = 6;
+    const prefiltered = cubeTexture(gl, prefilteredSize, prefilteredLevels, format);
+    resources.textures.push(environment, irradiance, prefiltered);
 
-        const environmentProgram = program(gl, ENVIRONMENT_FRAGMENT);
-        const irradianceProgram = program(gl, IRRADIANCE_FRAGMENT);
-        const prefilterProgram = program(gl, PREFILTER_FRAGMENT);
-        const brdfProgram = program(gl, BRDF_FRAGMENT);
-        resources.programs.push(environmentProgram, irradianceProgram, prefilterProgram, brdfProgram);
+    const environmentProgram = program(gl, ENVIRONMENT_FRAGMENT);
+    const irradianceProgram = program(gl, IRRADIANCE_FRAGMENT);
+    const prefilterProgram = program(gl, PREFILTER_FRAGMENT);
+    const brdfProgram = program(gl, BRDF_FRAGMENT);
+    resources.programs.push(environmentProgram, irradianceProgram, prefilterProgram, brdfProgram);
 
-        gl.disable(gl.DEPTH_TEST);
-        gl.depthMask(false);
-        renderCube(gl, framebuffer, vao, environment, environmentSize, 1, (_level, _levels, face) => {
-            gl.useProgram(environmentProgram);
-            if (face !== undefined) gl.uniform1i(gl.getUniformLocation(environmentProgram, 'uFace'), face);
-        });
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    renderCube(gl, framebuffer, vao, environment, environmentSize, 1, (_level, _levels, face) => {
+      gl.useProgram(environmentProgram);
+      if (face !== undefined) gl.uniform1i(gl.getUniformLocation(environmentProgram, 'uFace'), face);
+    });
 
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.bindTexture(gl.TEXTURE_CUBE_MAP, environment);
-        gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, environment);
+    gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
 
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_CUBE_MAP, environment);
-        gl.useProgram(irradianceProgram);
-        gl.uniform1i(gl.getUniformLocation(irradianceProgram, 'uEnvironment'), 0);
-        renderCube(gl, framebuffer, vao, irradiance, 32, 1, (_level, _levels, face) => {
-            gl.useProgram(irradianceProgram);
-            if (face !== undefined) gl.uniform1i(gl.getUniformLocation(irradianceProgram, 'uFace'), face);
-        });
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, environment);
+    gl.useProgram(irradianceProgram);
+    gl.uniform1i(gl.getUniformLocation(irradianceProgram, 'uEnvironment'), 0);
+    renderCube(gl, framebuffer, vao, irradiance, 32, 1, (_level, _levels, face) => {
+      gl.useProgram(irradianceProgram);
+      if (face !== undefined) gl.uniform1i(gl.getUniformLocation(irradianceProgram, 'uFace'), face);
+    });
 
-        gl.useProgram(prefilterProgram);
-        gl.uniform1i(gl.getUniformLocation(prefilterProgram, 'uEnvironment'), 0);
-        gl.uniform1f(
-            gl.getUniformLocation(prefilterProgram, 'uEnvironmentResolution'),
-            environmentSize,
-        );
-        renderCube(gl, framebuffer, vao, prefiltered, prefilteredSize, prefilteredLevels, (level, levels, face) => {
-            gl.useProgram(prefilterProgram);
-            gl.uniform1f(gl.getUniformLocation(prefilterProgram, 'uRoughness'), level / (levels - 1));
-            if (face !== undefined) gl.uniform1i(gl.getUniformLocation(prefilterProgram, 'uFace'), face);
-        });
+    gl.useProgram(prefilterProgram);
+    gl.uniform1i(gl.getUniformLocation(prefilterProgram, 'uEnvironment'), 0);
+    gl.uniform1f(
+      gl.getUniformLocation(prefilterProgram, 'uEnvironmentResolution'),
+      environmentSize,
+    );
+    renderCube(gl, framebuffer, vao, prefiltered, prefilteredSize, prefilteredLevels, (level, levels, face) => {
+      gl.useProgram(prefilterProgram);
+      gl.uniform1f(gl.getUniformLocation(prefilterProgram, 'uRoughness'), level / (levels - 1));
+      if (face !== undefined) gl.uniform1i(gl.getUniformLocation(prefilterProgram, 'uFace'), face);
+    });
 
-        const brdfLut = gl.createTexture()!;
-        resources.textures.push(brdfLut);
-        gl.bindTexture(gl.TEXTURE_2D, brdfLut);
-        gl.texImage2D(gl.TEXTURE_2D, 0, format.internal, 128, 128, 0, gl.RGBA, format.type, null);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, brdfLut, 0);
-        if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
-            throw new Error('environment BRDF framebuffer is incomplete');
-        }
-        gl.viewport(0, 0, 128, 128);
-        gl.useProgram(brdfProgram);
-        gl.bindVertexArray(vao);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const brdfLut = gl.createTexture()!;
+    resources.textures.push(brdfLut);
+    gl.bindTexture(gl.TEXTURE_2D, brdfLut);
+    gl.texImage2D(gl.TEXTURE_2D, 0, format.internal, 128, 128, 0, gl.RGBA, format.type, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, brdfLut, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error('environment BRDF framebuffer is incomplete');
+    }
+    gl.viewport(0, 0, 128, 128);
+    gl.useProgram(brdfProgram);
+    gl.bindVertexArray(vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.bindVertexArray(null);
-        gl.depthMask(true);
-        gl.enable(gl.DEPTH_TEST);
-        return {
-            environment,
-            irradiance,
-            prefiltered,
-            brdfLut,
-            maxLod: prefilteredLevels - 1,
-            hdr,
-            dispose() {
-                for (const texture of resources.textures) gl.deleteTexture(texture);
-                for (const shaderProgram of resources.programs) gl.deleteProgram(shaderProgram);
-                gl.deleteFramebuffer(framebuffer);
-                gl.deleteVertexArray(vao);
-            },
-        };
-    } catch (error) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindVertexArray(null);
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+    return {
+      environment,
+      irradiance,
+      prefiltered,
+      brdfLut,
+      maxLod: prefilteredLevels - 1,
+      hdr,
+      dispose() {
         for (const texture of resources.textures) gl.deleteTexture(texture);
         for (const shaderProgram of resources.programs) gl.deleteProgram(shaderProgram);
-        if (resources.framebuffer) gl.deleteFramebuffer(resources.framebuffer);
-        if (resources.vao) gl.deleteVertexArray(resources.vao);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.bindVertexArray(null);
-        gl.depthMask(true);
-        gl.enable(gl.DEPTH_TEST);
-        throw error;
-    }
+        gl.deleteFramebuffer(framebuffer);
+        gl.deleteVertexArray(vao);
+      },
+    };
+  } catch (error) {
+    for (const texture of resources.textures) gl.deleteTexture(texture);
+    for (const shaderProgram of resources.programs) gl.deleteProgram(shaderProgram);
+    if (resources.framebuffer) gl.deleteFramebuffer(resources.framebuffer);
+    if (resources.vao) gl.deleteVertexArray(resources.vao);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindVertexArray(null);
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+    throw error;
+  }
 }
