@@ -64,6 +64,12 @@ Cargo.lock
 # WASM build output
 web/www/pkg/
 
+# TypeScript build output (sources live in web/src; index.html and style.css
+# stay tracked here). Modules still awaiting conversion are already tracked and
+# so keep showing up despite this pattern.
+web/www/*.js
+web/www/*.js.map
+
 # Temporary/debug Python scripts (at root level)
 /analyze_*.py
 /compare_drc.py

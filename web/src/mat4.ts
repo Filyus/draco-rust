@@ -1,13 +1,16 @@
 /** Small, dependency-free 4×4 matrix helpers shared by format adapters. */
 
-export function identityMat4() {
+export function identityMat4(): number[] {
     return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 }
 
 /** Multiply two column-major 4×4 matrices. */
-export function multiplyMat4(left, right) {
+export function multiplyMat4(
+    left: ArrayLike<number> | null | undefined,
+    right: ArrayLike<number> | null | undefined,
+): number[] | null {
     if (!left || !right || left.length !== 16 || right.length !== 16) return null;
-    const result = new Array(16);
+    const result: number[] = new Array(16);
     for (let column = 0; column < 4; column += 1) {
         for (let row = 0; row < 4; row += 1) {
             result[column * 4 + row] =
@@ -21,7 +24,7 @@ export function multiplyMat4(left, right) {
 }
 
 /** Return the inverse of a column-major 4×4 matrix, or null when singular. */
-export function invertMat4(values) {
+export function invertMat4(values: ArrayLike<number> | null | undefined): number[] | null {
     if (!values || values.length !== 16) return null;
     const a = Array.from(values, Number);
     const inverse = identityMat4();

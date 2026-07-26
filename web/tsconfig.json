@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "rootDir": "src",
+    "outDir": "www",
+
+    "strict": true,
+
+    // Modules still awaiting conversion stay in src as .js and compile through
+    // untouched. Flip both back off once the last one becomes .ts.
+    "allowJs": true,
+    "checkJs": false,
+
+    // Sources import each other with .ts so Node can run them directly through
+    // its native type stripping; tsc rewrites the specifiers to .js on emit.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+
+    // Node strips types but does not transform code: keep the syntax erasable.
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+
+    "sourceMap": true
+  },
+  "include": ["src"]
+}

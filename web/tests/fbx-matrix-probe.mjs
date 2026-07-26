@@ -8,7 +8,7 @@ if (skipUnless([mixamoFbx], 'Mixamo FBX matrix probe')) process.exit(0);
 const fbx = await loadWasm('fbx');
 const { buildSceneFromFbx } = await loadFbxViewerAdapter();
 const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'www', 'viewer.js')));
-const { multiplyMat4, invertMat4 } = await import(pathToFileURL(resolve(here, '..', 'www', 'mat4.js')));
+const { multiplyMat4, invertMat4 } = await import(pathToFileURL(resolve(here, '..', 'src', 'mat4.ts')));
 const parsed = fbx.parse_fbx(await readBytes(mixamoFbx));
 if (!parsed || (parsed.meshes?.length || parsed.scene?.rootNodes?.length || 0) === 0) {
     throw new Error(`Mixamo parse failed: ${JSON.stringify(parsed).slice(0, 300)}`);

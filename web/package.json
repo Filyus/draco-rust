@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:ts": "tsc",
+    "watch:ts": "tsc --watch",
     "test:node": "node tests/node-smoke.mjs",
     "test:scene-document": "node tests/scene-document-contract.mjs",
     "test:scene-document-viewer": "node tests/scene-document-viewer-parity.mjs",
@@ -30,6 +33,7 @@
   "devDependencies": {
     "@playwright/test": "1.61.1",
     "draco3d": "1.5.7",
-    "gltf-validator": "2.0.0-dev.3.10"
+    "gltf-validator": "2.0.0-dev.3.10",
+    "typescript": "^7.0.2"
   }
 }
