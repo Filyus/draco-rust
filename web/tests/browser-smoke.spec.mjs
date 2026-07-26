@@ -634,6 +634,67 @@ test('manual camera interaction synchronizes the Auto-rotate button', async ({ p
   await expect(autoRotate).not.toHaveClass(/active/);
 });
 
+test('the viewer redraws on its own when the scene or a display flag changes', async ({ page }) => {
+  await page.goto('/index.html');
+  const result = await page.evaluate(async () => {
+    const [{ Viewer }, { buildSceneFromMeshes }] = await Promise.all([
+      import('/viewer.js'),
+      import('/mesh-loader.js'),
+    ]);
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
+    document.body.appendChild(canvas);
+    const viewer = new Viewer(canvas);
+    const scene = await buildSceneFromMeshes({
+      meshes: [{
+        positions: [-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0],
+        normals: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1],
+        indices: [0, 1, 2, 0, 2, 3],
+      }],
+    });
+
+    // Deliberately never calls viewer._render(): the loop has to notice each
+    // change by itself, which is what makes idle frames skippable.
+    const nextFrames = (count) => new Promise((resolve) => {
+      let remaining = count;
+      const step = () => (remaining-- > 0 ? requestAnimationFrame(step) : resolve());
+      step();
+    });
+    const sample = async () => {
+      await nextFrames(3);
+      const rgba = new Uint8Array(4);
+      viewer.gl.readPixels(32, 32, 1, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, rgba);
+      return Array.from(rgba);
+    };
+
+    viewer.setScene(scene);
+    viewer.showGrid = false;
+    viewer.camera.target.set([0, 0, 0]);
+    viewer.camera.distance = 3;
+    viewer.camera.azimuth = 0;
+    viewer.camera.elevation = 0;
+    viewer.invalidate();
+    const afterScene = await sample();
+
+    viewer.baseColorOnly = true;
+    const afterFlag = await sample();
+
+    // An idle viewer must keep the last frame rather than clearing it.
+    const whileIdle = await sample();
+
+    viewer.dispose();
+    canvas.remove();
+    return { afterScene, afterFlag, whileIdle };
+  });
+
+  // The quad is lit and facing the camera, so the sampled texel is opaque.
+  expect(result.afterScene[3]).toBe(255);
+  expect(Math.max(...result.afterScene.slice(0, 3))).toBeGreaterThan(0);
+  // Base color bypasses the preview lighting, so the same texel changes.
+  expect(result.afterFlag).not.toEqual(result.afterScene);
+  expect(result.whileIdle).toEqual(result.afterFlag);
+});
+
 test('preview Base color bypasses environment lighting and studio IBL has usable exposure', async ({ page }) => {
   await page.goto('/index.html');
   const pixels = await page.evaluate(async () => {

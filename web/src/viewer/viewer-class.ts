@@ -21,6 +21,12 @@ export interface AnimationState {
     loop: boolean;
 }
 import { applyAnimation } from './animation.ts';
+
+/**
+ * Longest step the loop will advance in one frame. A browser tab that was in
+ * the background can return with many seconds of wall clock elapsed.
+ */
+const MAX_FRAME_SECONDS = 1 / 15;
 import {
     applyKeyboardNavigation,
     cameraBasis,
@@ -76,11 +82,37 @@ export class Viewer {
     declare backgroundVao: WebGLVertexArrayObject | null;
     declare environmentIbl: any;
 
-    declare wireframe: boolean;
-    declare showGrid: boolean;
-    declare baseColorOnly: boolean;
-    declare smoothNormals: boolean;
     declare autoRotate: boolean;
+
+    /**
+     * Display flags are accessors so that `viewer.wireframe = true` schedules a
+     * frame. Callers — the toolbar and the tests alike — keep assigning them
+     * as plain fields.
+     */
+    declare _wireframe: boolean;
+    declare _showGrid: boolean;
+    declare _baseColorOnly: boolean;
+    declare _smoothNormals: boolean;
+
+    /** Set whenever something that affects the image changes. */
+    declare _dirty: boolean;
+
+    get wireframe() { return this._wireframe; }
+    set wireframe(value: boolean) { this._wireframe = value; this.invalidate(); }
+
+    get showGrid() { return this._showGrid; }
+    set showGrid(value: boolean) { this._showGrid = value; this.invalidate(); }
+
+    get baseColorOnly() { return this._baseColorOnly; }
+    set baseColorOnly(value: boolean) { this._baseColorOnly = value; this.invalidate(); }
+
+    get smoothNormals() { return this._smoothNormals; }
+    set smoothNormals(value: boolean) { this._smoothNormals = value; this.invalidate(); }
+
+    /** Schedule one frame. Cheap and idempotent; call it whenever in doubt. */
+    invalidate() {
+        this._dirty = true;
+    }
 
     declare _projection: Mat4;
     declare _view: Mat4;
@@ -234,8 +266,9 @@ export class Viewer {
         if (this.canvas.width !== w || this.canvas.height !== h) {
             this.canvas.width = w;
             this.canvas.height = h;
+            this.gl.viewport(0, 0, w, h);
+            this.invalidate();
         }
-        this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     }
 
     _setupControls() {
@@ -278,6 +311,7 @@ export class Viewer {
         const next = Boolean(enabled);
         if (this.autoRotate === next) return;
         this.autoRotate = next;
+        this.invalidate();
         this.hooks.onAutoRotateChange?.(next);
     }
 
@@ -378,6 +412,7 @@ export class Viewer {
         this.animation.speed = 1;
         this.animation.loop = true;
 
+        this.invalidate();
         this.hooks.onSceneLoaded?.(scene);
     }
 
@@ -397,6 +432,7 @@ export class Viewer {
         this.animation.clipIndex = -1;
         this.animation.time = 0;
         this.animation.playing = false;
+        this.invalidate();
     }
 
     _disposeGrid() {
@@ -445,6 +481,7 @@ export class Viewer {
     }
 
     resetView() {
+        this.invalidate();
         this.camera.azimuth = DEFAULT_CAMERA_AZIMUTH;
         this.camera.elevation = DEFAULT_CAMERA_ELEVATION;
         if (this.scene) {
@@ -473,7 +510,11 @@ export class Viewer {
 
     _loop(now: number) {
         if (!this._running) return;
-        const dt = (now - this._lastTime) / 1000;
+        // Clamped because the browser stops delivering frames to a background
+        // tab: without this, coming back would jump the animation and spin the
+        // camera by however many seconds elapsed. A stall simply loses time
+        // rather than teleporting the scene.
+        const dt = Math.min((now - this._lastTime) / 1000, MAX_FRAME_SECONDS);
         this._lastTime = now;
 
         // Through `_orbitBy` so auto-rotation circles the model, not the target.
@@ -484,8 +525,13 @@ export class Viewer {
             this._advanceAnimation(dt);
         }
 
-        this._resize();
-        this._render();
+        // Everything that changes the image marks the viewer dirty, so a still
+        // scene costs one callback per frame instead of a full redraw. The
+        // frame rate then follows the scene, not the display.
+        if (this._dirty) {
+            this._dirty = false;
+            this._render();
+        }
         requestAnimationFrame(this._loop);
     }
 
@@ -510,6 +556,7 @@ export class Viewer {
         if (!clip) return false;
         this.animation.time = Math.max(0, Math.min(clip.duration, Number(time) || 0));
         applyAnimation(this.scene, this.animation.clipIndex, this.animation.time);
+        this.invalidate();
         return true;
     }
 

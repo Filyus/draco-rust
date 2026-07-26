@@ -28,6 +28,8 @@ export interface CameraHost {
     _navKeys: Set<string>;
     _navFast: boolean;
     _navSlow: boolean;
+    /** Schedules a frame; every operation below moves what is on screen. */
+    invalidate(): void;
 }
 
 /** Orbit camera: an eye on a sphere around `target`. */
@@ -53,6 +55,9 @@ export const FLY_DISTANCE_PER_SECOND = 0.4;
 export const ORBIT_RAD_PER_SECOND = 1.2;
 
 export function orbitBy(host: CameraHost, dAz: number, dEl: number) {
+    // Invalidated up front rather than at the end: the paths below have early
+    // returns that leave the camera already moved.
+    host.invalidate();
     const right = host._basisRight;
     const up = host._basisUp;
     const forward = host._basisForward;
@@ -100,6 +105,7 @@ export function orbitPivot(host: CameraHost, out: Vec3): Vec3 | null {
  * in just buries the camera inside the geometry.
  */
 export function zoomBy(host: CameraHost, factor: number, clientX?: number, clientY?: number) {
+    host.invalidate();
     const before = host.camera.distance;
     host.camera.distance = Math.max(
         host.camera.minDistance,
@@ -131,6 +137,7 @@ export function zoomBy(host: CameraHost, factor: number, clientX?: number, clien
  * cursor stays under the cursor, for any orbit angle and field of view.
  */
 export function panBy(host: CameraHost, dx: number, dy: number) {
+    host.invalidate();
     const right = host._basisRight;
     const up = host._basisUp;
     cameraBasis(host, right, up);
@@ -180,9 +187,11 @@ export function applyKeyboardNavigation(host: CameraHost, dt: number) {
         host.camera.target[i] +=
             (forward[i] * fwd + right[i] * side + up[i] * lift) * speed;
     }
+    host.invalidate();
 }
 
 export function fitCameraToScene(host: CameraHost) {
+    host.invalidate();
     const box = host.scene?.aabb;
     if (!box) return;
     const cx = (box.min[0] + box.max[0]) * 0.5;
