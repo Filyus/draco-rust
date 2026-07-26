@@ -600,6 +600,9 @@ export class Viewer {
             fov: Math.PI / 4,
             near: 0.05,
             far: 1000,
+            // Dolly limits track the scene size; see `_fitCameraToScene`.
+            minDistance: 0.05,
+            maxDistance: 1000,
         };
         // Scratch vectors for the camera basis used by pan and keyboard flight.
         this._basisRight = vec3.create();
@@ -776,7 +779,7 @@ export class Viewer {
                 const midX = (pts[0].x + pts[1].x) * 0.5;
                 const midY = (pts[0].y + pts[1].y) * 0.5;
                 if (this._lastPinch) {
-                    this._zoomBy(this._lastPinch.dist / (dist || 1));
+                    this._zoomBy(this._lastPinch.dist / (dist || 1), midX, midY);
                     this._panBy(midX - this._lastPinch.midX, midY - this._lastPinch.midY);
                 }
                 this._lastPinch = { dist, midX, midY };
@@ -836,7 +839,12 @@ export class Viewer {
             'wheel',
             (e) => {
                 e.preventDefault();
-                this._zoomBy(Math.exp(e.deltaY * 0.001));
+                // Firefox reports lines (and pages) rather than pixels; without
+                // this the same notch would barely move the camera there.
+                let dy = e.deltaY;
+                if (e.deltaMode === 1) dy *= 16;
+                else if (e.deltaMode === 2) dy *= this.canvas.clientHeight || 400;
+                this._zoomBy(Math.exp(dy * 0.001), e.clientX, e.clientY);
             },
             { passive: false },
         );
@@ -867,11 +875,36 @@ export class Viewer {
         );
     }
 
-    _zoomBy(factor) {
+    /**
+     * Dollies the camera by `factor`. With client coordinates, the orbit target
+     * also slides toward the cursor so the point under it keeps its screen
+     * position — without that the target stays at the model centre and zooming
+     * in just buries the camera inside the geometry.
+     */
+    _zoomBy(factor, clientX, clientY) {
+        const before = this.camera.distance;
         this.camera.distance = Math.max(
-            0.05,
-            Math.min(1000, this.camera.distance * factor),
+            this.camera.minDistance,
+            Math.min(this.camera.maxDistance, before * factor),
         );
+        if (clientX === undefined) return;
+
+        // The clamp may have swallowed part of the requested dolly.
+        const applied = this.camera.distance / before;
+        const rect = this.canvas.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const right = this._basisRight;
+        const up = this._basisUp;
+        this._cameraBasis(right, up);
+        // Offset of the cursor from the view centre, in world units on the
+        // plane through the target.
+        const k = (2 * before * Math.tan(this.camera.fov * 0.5)) / rect.height;
+        const ax = (clientX - (rect.left + rect.width * 0.5)) * k;
+        const ay = -(clientY - (rect.top + rect.height * 0.5)) * k;
+        const shift = 1 - applied;
+        for (let i = 0; i < 3; i++) {
+            this.camera.target[i] += (right[i] * ax + up[i] * ay) * shift;
+        }
     }
 
     /**
@@ -1140,6 +1173,10 @@ export class Viewer {
         const diameter = Math.max(0.001, safeRadius * 2);
         this.camera.near = Math.max(0.001, diameter * 0.001);
         this.camera.far = diameter * 1000 + this.camera.distance * 2;
+        // Fixed limits would clamp a large asset below its own fit distance,
+        // so one wheel notch would snap the camera inside the model.
+        this.camera.minDistance = Math.max(0.001, this.camera.near * 2);
+        this.camera.maxDistance = Math.max(this.camera.distance, safeRadius) * 100;
     }
 
     /**

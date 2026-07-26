@@ -382,6 +382,48 @@ test('viewport pan slides inside the camera plane and vertical orbit follows the
   expect(state.elevation).toBeCloseTo(0.1);
 });
 
+test('viewport wheel zoom keeps the point under the cursor and scales its limits to the scene', async ({ page }) => {
+  await page.goto('/index.html');
+  const state = await page.evaluate(async () => {
+    const { Viewer } = await import('/viewer.js');
+    const viewer = Object.create(Viewer.prototype);
+    viewer.camera = {
+      target: new Float32Array([0, 0, 0]),
+      distance: 10,
+      azimuth: 0,
+      elevation: 0,
+      fov: Math.PI * 0.5,
+      minDistance: 0.05,
+      maxDistance: 1000,
+    };
+    viewer.canvas = {
+      clientHeight: 100,
+      height: 100,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 100 }),
+    };
+    viewer._basisRight = new Float32Array(3);
+    viewer._basisUp = new Float32Array(3);
+
+    // The cursor sits 50 px right of centre, which is 10 world units out on
+    // the target plane; halving the distance must halve that offset.
+    viewer._zoomBy(0.5, 150, 50);
+    const zoomed = { target: Array.from(viewer.camera.target), distance: viewer.camera.distance };
+
+    // A scene far larger than the old fixed 1000 clamp.
+    viewer.scene = { aabb: { min: [-3000, -3000, -3000], max: [3000, 3000, 3000] } };
+    viewer.canvas.width = 200;
+    viewer._fitCameraToScene();
+    const fitted = viewer.camera.distance;
+    viewer._zoomBy(1.2);
+    return { zoomed, fitted, zoomedOut: viewer.camera.distance };
+  });
+
+  expect(state.zoomed.distance).toBeCloseTo(5);
+  expect(state.zoomed.target[0]).toBeCloseTo(5);
+  expect(state.zoomed.target[1]).toBeCloseTo(0);
+  expect(state.zoomedOut).toBeCloseTo(state.fitted * 1.2);
+});
+
 test('viewport movement keys fly the orbit target along the ground plane', async ({ page }) => {
   await page.goto('/index.html');
   const state = await page.evaluate(async () => {
