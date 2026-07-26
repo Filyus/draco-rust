@@ -215,8 +215,28 @@ void main() {
 }
 `;
 
-function compile(gl, type, source) {
-    const shader = gl.createShader(type);
+/** The render-target format the environment passes write into. */
+interface TargetFormat {
+    internal: number;
+    type: number;
+}
+
+/** Everything the viewer binds for image-based lighting. */
+export interface EnvironmentIbl {
+    environment: WebGLTexture;
+    irradiance: WebGLTexture;
+    prefiltered: WebGLTexture;
+    brdfLut: WebGLTexture;
+    maxLod: number;
+    hdr: boolean;
+    dispose(): void;
+}
+
+// The GL object factories below return null only on a lost context, where the
+// original code already failed at the next call. Asserting keeps that
+// behaviour rather than inventing a new error path.
+function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
+    const shader = gl.createShader(type)!;
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
@@ -227,8 +247,8 @@ function compile(gl, type, source) {
     return shader;
 }
 
-function program(gl, fragment) {
-    const result = gl.createProgram();
+function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
+    const result = gl.createProgram()!;
     const vertex = compile(gl, gl.VERTEX_SHADER, FULLSCREEN_VERTEX);
     const pixel = compile(gl, gl.FRAGMENT_SHADER, fragment);
     gl.attachShader(result, vertex);
@@ -244,8 +264,8 @@ function program(gl, fragment) {
     return result;
 }
 
-function cubeTexture(gl, size, levels, format) {
-    const texture = gl.createTexture();
+function cubeTexture(gl: WebGL2RenderingContext, size: number, levels: number, format: TargetFormat): WebGLTexture {
+    const texture = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
     for (let level = 0; level < levels; level++) {
         const dimension = Math.max(1, size >> level);
@@ -276,7 +296,15 @@ function cubeTexture(gl, size, levels, format) {
     return texture;
 }
 
-function renderCube(gl, framebuffer, vao, target, size, levels, renderLevel) {
+function renderCube(
+    gl: WebGL2RenderingContext,
+    framebuffer: WebGLFramebuffer,
+    vao: WebGLVertexArrayObject,
+    target: WebGLTexture,
+    size: number,
+    levels: number,
+    renderLevel: (level: number, levels: number, face?: number) => void,
+) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
     gl.bindVertexArray(vao);
     for (let level = 0; level < levels; level++) {
@@ -300,17 +328,25 @@ function renderCube(gl, framebuffer, vao, target, size, levels, renderLevel) {
     }
 }
 
-export function createEnvironmentIbl(gl, onLog = () => {}) {
+export function createEnvironmentIbl(
+    gl: WebGL2RenderingContext,
+    onLog: (message: string, level: string) => void = () => {},
+): EnvironmentIbl {
     const hdr = !!gl.getExtension('EXT_color_buffer_float');
     if (!hdr) onLog('Float render targets unavailable; environment IBL uses LDR precision', 'warning');
     const format = hdr
         ? { internal: gl.RGBA16F, type: gl.HALF_FLOAT }
         : { internal: gl.RGBA8, type: gl.UNSIGNED_BYTE };
-    const resources = { textures: [], programs: [] };
+    const resources: {
+        textures: WebGLTexture[];
+        programs: WebGLProgram[];
+        framebuffer?: WebGLFramebuffer;
+        vao?: WebGLVertexArrayObject;
+    } = { textures: [], programs: [] };
 
     try {
-        const framebuffer = gl.createFramebuffer();
-        const vao = gl.createVertexArray();
+        const framebuffer = gl.createFramebuffer()!;
+        const vao = gl.createVertexArray()!;
         resources.framebuffer = framebuffer;
         resources.vao = vao;
 
@@ -364,7 +400,7 @@ export function createEnvironmentIbl(gl, onLog = () => {}) {
             if (face !== undefined) gl.uniform1i(gl.getUniformLocation(prefilterProgram, 'uFace'), face);
         });
 
-        const brdfLut = gl.createTexture();
+        const brdfLut = gl.createTexture()!;
         resources.textures.push(brdfLut);
         gl.bindTexture(gl.TEXTURE_2D, brdfLut);
         gl.texImage2D(gl.TEXTURE_2D, 0, format.internal, 128, 128, 0, gl.RGBA, format.type, null);
