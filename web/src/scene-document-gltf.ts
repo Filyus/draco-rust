@@ -31,6 +31,7 @@ interface GltfBufferView {
   byteOffset: number;
   byteLength: number;
   target?: number;
+  byteStride?: number;
 }
 
 interface GltfTextureInfo {
@@ -89,11 +90,17 @@ export function lowerSceneDocumentToGltf(document: SceneDocument) {
   const animatedNodes = new Set(document.animations.flatMap((clip) => clip.channels.map((channel) => channel.node)));
   const binary = new BinaryBuilder();
   const bufferViews: GltfBufferView[] = [];
-  const positionAccessors = new Set(document.meshes.flatMap((mesh) => mesh.primitives.map((primitive) => primitive.attributes.POSITION)));
+  // Morph target positions carry bounds too, not just the base attribute.
+  const positionAccessors = new Set(document.meshes.flatMap((mesh) => mesh.primitives.flatMap((primitive) => [
+    primitive.attributes.POSITION,
+    ...(primitive.targets || []).map((target) => target.POSITION),
+  ])));
   const animationInputs = new Set(document.animations.flatMap((clip) => clip.samplers.map((sampler) => sampler.input)));
   const accessorTargets = geometryAccessorTargets(document.meshes);
+  const vertexAttributes = vertexAttributeAccessors(document.meshes);
   const accessors = document.accessors.map((accessor, index) => lowerAccessor(
-    accessor, index, binary, bufferViews, positionAccessors.has(index), animationInputs.has(index), accessorTargets.get(index),
+    accessor, index, binary, bufferViews, positionAccessors.has(index), animationInputs.has(index),
+    accessorTargets.get(index), vertexAttributes.has(index),
   ));
   const images: { name: string; bufferView: number; mimeType: string }[] = [];
   const imageByResource = new Map<number, number>();
@@ -130,11 +137,22 @@ export function lowerSceneDocumentToGltf(document: SceneDocument) {
   const nodes = document.nodes.map((node, index) => lowerNode(node, index, animatedNodes, meshes.length, document.skins.length, warnings));
   const skins = document.skins.map((skin, index) => lowerSkin(skin, index, accessors.length));
   const animations = document.animations.map((clip, index) => lowerAnimation(clip, index, accessors.length, nodes.length));
+  // Declared from what was actually written, not from a hand-kept list: a
+  // material extension that reaches lowerMaterial but not extensionsUsed
+  // produces a file readers are entitled to ignore.
   const extensionsUsed = new Set<string>();
-  if (materials.some((material) => material.extensions?.KHR_materials_unlit)) extensionsUsed.add('KHR_materials_unlit');
+  for (const material of materials) {
+    for (const extension of Object.keys(material.extensions || {})) extensionsUsed.add(extension);
+  }
   if (materials.some(materialUsesTextureTransform)) extensionsUsed.add('KHR_texture_transform');
   if (textures.some((texture) => texture?.extensions?.KHR_texture_basisu)) extensionsUsed.add('KHR_texture_basisu');
   if (textures.some((texture) => texture?.extensions?.EXT_texture_webp)) extensionsUsed.add('EXT_texture_webp');
+  // Vertex attributes keep the component type they arrived in, so an asset that
+  // came from gltfpack goes back out quantized. Core glTF allows only float for
+  // most semantics; without this declaration the file is invalid, and the
+  // accessors were already being written this way before it was added.
+  const quantized = usesQuantizedAttributes(document);
+  if (quantized) extensionsUsed.add('KHR_mesh_quantization');
 
   const manifest = {
     asset: { version: '2.0', generator: 'draco-rust SceneDocument exporter' },
@@ -152,6 +170,10 @@ export function lowerSceneDocumentToGltf(document: SceneDocument) {
     scenes: [{ nodes: [...document.rootNodes] }],
     scene: 0,
     ...(extensionsUsed.size > 0 ? { extensionsUsed: [...extensionsUsed] } : {}),
+    // Quantization is the one extension here a reader may not skip: ignoring it
+    // means misreading the vertex data outright, so glTF forbids declaring it
+    // optional. The material layers, by contrast, degrade to plain PBR.
+    ...(quantized ? { extensionsRequired: ['KHR_mesh_quantization'] } : {}),
   };
   const json = new TextEncoder().encode(JSON.stringify(manifest));
   return {
@@ -189,10 +211,18 @@ function lowerAccessor(
   isPosition: boolean,
   isAnimationInput: boolean,
   target: number | undefined,
+  isVertexAttribute: boolean,
 ) {
   const type = ACCESSOR_TYPES.get(accessor.components);
   if (!type) throw new Error(`SceneDocument accessor ${index} has unsupported ${accessor.components}-component shape`);
-  const bufferView = appendBufferView(binary, bufferViews, accessor.bytes, target);
+  // glTF requires every vertex attribute element to start on a 4-byte
+  // boundary. Quantized attributes break that on their own — a vec3 of shorts
+  // is six bytes — so they go out strided rather than tightly packed.
+  const elementSize = (componentByteWidth(accessor.componentType) || 0) * accessor.components;
+  const strided = isVertexAttribute && elementSize > 0 && elementSize % 4 !== 0;
+  const byteStride = strided ? Math.ceil(elementSize / 4) * 4 : undefined;
+  const bytes = byteStride ? padElements(accessor.bytes, accessor.count, elementSize, byteStride) : accessor.bytes;
+  const bufferView = appendBufferView(binary, bufferViews, bytes, target, byteStride);
   const bounds = (isPosition || isAnimationInput) && !accessor.min && !accessor.max ? accessorBounds(accessor) : null;
   return {
     bufferView,
@@ -210,14 +240,25 @@ function appendBufferView(
   bufferViews: GltfBufferView[],
   bytes: Uint8Array,
   target?: number,
+  byteStride?: number,
 ) {
   binary.align();
   const byteOffset = binary.length;
   binary.write(bytes);
   const output: GltfBufferView = { buffer: 0, byteOffset, byteLength: bytes.byteLength };
   if (target !== undefined) output.target = target;
+  if (byteStride !== undefined) output.byteStride = byteStride;
   bufferViews.push(output);
   return bufferViews.length - 1;
+}
+
+/** Re-lay elements at `byteStride`, leaving the padding zeroed. */
+function padElements(bytes: Uint8Array, count: number, elementSize: number, byteStride: number) {
+  const padded = new Uint8Array(count * byteStride);
+  for (let element = 0; element < count; element += 1) {
+    padded.set(bytes.subarray(element * elementSize, (element + 1) * elementSize), element * byteStride);
+  }
+  return padded;
 }
 
 function lowerMaterial(
@@ -266,9 +307,68 @@ function lowerMaterial(
   if (emissiveTexture) output.emissiveTexture = emissiveTexture;
   if (normalTexture && material.normalTexture?.scale !== undefined) normalTexture.scale = material.normalTexture.scale;
   if (occlusionTexture && material.occlusionTexture?.strength !== undefined) occlusionTexture.strength = material.occlusionTexture.strength;
-  if (material.unlit) output.extensions = { KHR_materials_unlit: {} };
+  // Merged, never assigned: a coated unlit material has to keep both, and the
+  // layered extensions below add to whatever came before them.
+  const extensions = { ...materialExtensions(material, texture) };
+  if (material.unlit) extensions.KHR_materials_unlit = {};
+  if (Object.keys(extensions).length > 0) output.extensions = extensions;
   if (output.alphaMode === 'MASK') output.alphaCutoff = material.alphaCutoff ?? 0.5;
   return output;
+}
+
+/**
+ * The layered material extensions a portable material asks for.
+ *
+ * Each is emitted only when the material states something other than what the
+ * core model already implies: writing KHR_materials_ior with the default 1.5
+ * onto every material would declare an extension no reader needs to honor and
+ * grow extensionsUsed for nothing.
+ */
+function materialExtensions(
+  material: SceneMaterial,
+  texture: (info: TextureInfo | undefined, label: string) => GltfTextureInfo | null,
+): Record<string, Record<string, unknown>> {
+  const extensions: Record<string, Record<string, unknown>> = {};
+
+  if (material.emissiveStrength !== undefined && material.emissiveStrength !== 1) {
+    extensions.KHR_materials_emissive_strength = { emissiveStrength: material.emissiveStrength };
+  }
+  if (material.ior !== undefined && material.ior !== 1.5) {
+    extensions.KHR_materials_ior = { ior: material.ior };
+  }
+
+  const specularTexture = texture(material.specularTexture, 'specular');
+  const specularColorTexture = texture(material.specularColorTexture, 'specular color');
+  const specularColor = material.specularColorFactor;
+  const specular: Record<string, unknown> = {
+    ...(material.specularFactor !== undefined && material.specularFactor !== 1
+      ? { specularFactor: material.specularFactor } : {}),
+    ...(specularColor && specularColor.some((value) => value !== 1)
+      ? { specularColorFactor: [...specularColor] } : {}),
+    ...(specularTexture ? { specularTexture } : {}),
+    ...(specularColorTexture ? { specularColorTexture } : {}),
+  };
+  if (Object.keys(specular).length > 0) extensions.KHR_materials_specular = specular;
+
+  const clearcoatTexture = texture(material.clearcoatTexture, 'clearcoat');
+  const clearcoatRoughnessTexture = texture(material.clearcoatRoughnessTexture, 'clearcoat roughness');
+  const clearcoatNormalTexture = texture(material.clearcoatNormalTexture, 'clearcoat normal');
+  const coated = (material.clearcoatFactor ?? 0) !== 0
+    || (material.clearcoatRoughnessFactor ?? 0) !== 0
+    || clearcoatTexture || clearcoatRoughnessTexture || clearcoatNormalTexture;
+  if (coated) {
+    if (clearcoatNormalTexture && material.clearcoatNormalTexture?.scale !== undefined) {
+      clearcoatNormalTexture.scale = material.clearcoatNormalTexture.scale;
+    }
+    extensions.KHR_materials_clearcoat = {
+      clearcoatFactor: material.clearcoatFactor ?? 0,
+      clearcoatRoughnessFactor: material.clearcoatRoughnessFactor ?? 0,
+      ...(clearcoatTexture ? { clearcoatTexture } : {}),
+      ...(clearcoatRoughnessTexture ? { clearcoatRoughnessTexture } : {}),
+      ...(clearcoatNormalTexture ? { clearcoatNormalTexture } : {}),
+    };
+  }
+  return extensions;
 }
 
 function textureIndex(textures: (GltfTexture | null)[], source: number) {
@@ -384,6 +484,18 @@ function geometryAccessorTargets(meshes: SceneMesh[]) {
   return targets;
 }
 
+/** Accessors read as vertex attributes, morph target deltas included. */
+function vertexAttributeAccessors(meshes: SceneMesh[]) {
+  const attributes = new Set<number>();
+  for (const mesh of meshes) for (const primitive of mesh.primitives) {
+    for (const accessor of Object.values(primitive.attributes)) attributes.add(accessor);
+    for (const target of primitive.targets || []) {
+      for (const accessor of Object.values(target)) attributes.add(accessor);
+    }
+  }
+  return attributes;
+}
+
 function accessorBounds(accessor: SceneAccessor) {
   const width = componentByteWidth(accessor.componentType);
   if (!width || !Number.isInteger(accessor.components) || accessor.components < 1 || accessor.components > 4) throw new Error('glTF bounds require a scalar or vector numeric accessor');
@@ -400,12 +512,67 @@ function accessorBounds(accessor: SceneAccessor) {
 }
 
 function materialUsesTextureTransform(material: GltfMaterial) {
+  return loweredTextureInfos(material).some((info) => Boolean(info?.extensions?.KHR_texture_transform));
+}
+
+/** Every textureInfo a lowered material carries, layered extensions included. */
+function loweredTextureInfos(material: GltfMaterial): (GltfTextureInfo | undefined)[] {
   const pbr = material.pbrMetallicRoughness as {
     baseColorTexture?: GltfTextureInfo;
     metallicRoughnessTexture?: GltfTextureInfo;
   };
-  const infos = [pbr.baseColorTexture, pbr.metallicRoughnessTexture, material.normalTexture, material.occlusionTexture, material.emissiveTexture];
-  return infos.some((info) => Boolean(info?.extensions?.KHR_texture_transform));
+  const layered = Object.values(material.extensions || {})
+    .flatMap((extension) => Object.values(extension as Record<string, unknown>))
+    .filter((value): value is GltfTextureInfo => (
+      Boolean(value) && typeof value === 'object' && Number.isInteger((value as GltfTextureInfo).index)
+    ));
+  return [
+    pbr.baseColorTexture,
+    pbr.metallicRoughnessTexture,
+    material.normalTexture,
+    material.occlusionTexture,
+    material.emissiveTexture,
+    ...layered,
+  ];
+}
+
+/**
+ * Component types core glTF 2.0 accepts for a vertex attribute.
+ *
+ * Anything outside them is what KHR_mesh_quantization exists to permit. An
+ * unknown semantic is nobody's business here and passes.
+ */
+function isCoreAttributeAccessor(semantic: string, accessor: SceneAccessor | undefined) {
+  if (!accessor) return true;
+  const type = accessor.componentType;
+  const normalized = Boolean(accessor.normalized);
+  const smallNormalized = (type === 5121 || type === 5123) && normalized;
+  if (semantic === 'POSITION' || semantic === 'NORMAL' || semantic === 'TANGENT') return type === 5126;
+  if (semantic.startsWith('TEXCOORD_') || semantic.startsWith('COLOR_') || semantic.startsWith('WEIGHTS_')) {
+    return type === 5126 || smallNormalized;
+  }
+  if (semantic.startsWith('JOINTS_')) return type === 5121 || type === 5123;
+  return true;
+}
+
+/**
+ * Whether any vertex attribute needs KHR_mesh_quantization to be legal.
+ *
+ * Only attributes: indices are integer in core glTF, and skin joints are
+ * unsigned byte or short by definition, so neither implies the extension.
+ */
+function usesQuantizedAttributes(document: SceneDocument) {
+  for (const mesh of document.meshes) for (const primitive of mesh.primitives) {
+    for (const [semantic, accessor] of Object.entries(primitive.attributes)) {
+      if (!isCoreAttributeAccessor(semantic, document.accessors[accessor])) return true;
+    }
+    for (const target of primitive.targets || []) {
+      for (const [semantic, accessor] of Object.entries(target)) {
+        if (!isCoreAttributeAccessor(semantic, document.accessors[accessor])) return true;
+      }
+    }
+  }
+  return false;
 }
 
 function textureSourceExtension(mimeType: string | undefined) {
