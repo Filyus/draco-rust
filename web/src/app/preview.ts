@@ -39,8 +39,18 @@ export async function loadPreview(extension: string) {
     viewerSection.classList.add('loaded');
     setViewerControlsEnabled(false);
 
-    // Yield to the browser so the section layout settles before measuring the canvas.
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    // Yield so the section layout settles before the canvas is measured. A
+    // background tab is served no animation frames at all, so give up waiting
+    // after a moment rather than leaving the file parsed but never previewed;
+    // the resize observer corrects the canvas once the tab is shown again.
+    await new Promise<void>((resolve) => {
+        const proceed = () => {
+            clearTimeout(timer);
+            resolve();
+        };
+        const timer = setTimeout(proceed, 100);
+        requestAnimationFrame(proceed);
+    });
 
     if (!ensureViewer()) {
         log('Preview unavailable', 'error');
