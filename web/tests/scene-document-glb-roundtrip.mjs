@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { validateBytes } from 'gltf-validator';
 
 import { buildSceneDocumentFromFbx } from '../www/fbx-scene-document.js';
-import { buildSceneDocumentFromGltf } from '../www/gltf-scene-document.js';
+import { buildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
 import { cloneSceneDocument } from '../src/scene-document.ts';
 import { lowerSceneDocumentToGltf, serializeSceneDocumentToGlb } from '../src/scene-document-gltf.ts';
 import { invertMat4, multiplyMat4 } from '../src/mat4.ts';

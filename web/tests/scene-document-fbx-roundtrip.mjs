@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 
 import { buildSceneDocumentFromFbx, buildSceneDocumentWithFbxProvenance } from '../www/fbx-scene-document.js';
-import { buildSceneDocumentFromGltf } from '../www/gltf-scene-document.js';
+import { buildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
 import { buildFbxSceneFromDocument } from '../www/fbx-scene-document-writer.js';
 import { loadWasm, mixamoFbx, readBytes, sambaFbx, foxBin, foxGltf, skipUnless } from './fbx-test-utils.mjs';
 

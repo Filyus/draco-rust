@@ -6,10 +6,32 @@
  * images nor imports any FBX compatibility policy.
  */
 
-import { assertValidSceneDocument, createSceneDocument } from './scene-document.js';
+import { assertValidSceneDocument, createSceneDocument } from './scene-document.ts';
+import type {
+    AnimationChannel, AnimationSampler, AttributeMap, ComponentType, SceneAccessor, SceneDocument,
+    SceneNode, ScenePrimitive, TextureInfo,
+} from './scene-document.ts';
 import {
-    appendAccessor, basename, decodeDataUri, mimeFromUri, resolveResource, sniffMime,
-} from './scene-resources.js';
+    appendAccessor, basename, mimeFromUri, resolveResource, sniffMime,
+} from './scene-resources.ts';
+import type { ResourceMap } from './scene-resources.ts';
+import type { GltfAsset, GltfModule } from './wasm-modules.ts';
+
+/**
+ * Anything read out of the parsed glTF manifest is external JSON: it is
+ * inspected field by field rather than trusted, so it stays loosely typed here
+ * the same way SceneDocument validation treats its input.
+ */
+type GltfJson = any;
+
+/**
+ * The packed readers hand back a plain number. Any width outside the contract
+ * is rejected by assertValidSceneDocument before the document is returned, so
+ * this narrows a boundary value rather than assuming one.
+ */
+function componentType(value: number): ComponentType {
+    return value as ComponentType;
+}
 
 const SUPPORTED_EXTENSIONS = new Set([
     'KHR_materials_unlit', 'KHR_texture_transform',
@@ -20,12 +42,16 @@ const SUPPORTED_EXTENSIONS = new Set([
 ]);
 
 /** Extract a portable SceneDocument from an existing GltfAsset-capable module. */
-export function buildSceneDocumentFromGltf(sourceData, resources, gltfModule) {
+export function buildSceneDocumentFromGltf(
+    sourceData: Uint8Array,
+    resources: Record<string, Uint8Array>,
+    gltfModule: GltfModule,
+): SceneDocument {
     const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
     try {
-        const manifest = JSON.parse(new TextDecoder().decode(asset.json()));
+        const manifest: GltfJson = JSON.parse(new TextDecoder().decode(asset.json()));
         const document = createSceneDocument({ warnings: extensionWarnings(manifest) });
-        const accessorBySource = new Map();
+        const accessorBySource = new Map<number, number>();
         const imageResources = collectImageResources(asset, manifest.images || [], resources, document);
         const textureBySource = collectTextures(manifest.textures || [], manifest.samplers || [], imageResources, document);
         collectMaterials(manifest.materials || [], textureBySource, document);
@@ -40,9 +66,14 @@ export function buildSceneDocumentFromGltf(sourceData, resources, gltfModule) {
     }
 }
 
-function collectImageResources(asset, images, resources, document) {
+function collectImageResources(
+    asset: GltfAsset,
+    images: GltfJson[],
+    resources: ResourceMap,
+    document: SceneDocument,
+): number[] {
     return images.map((image, imageIndex) => {
-        let bytes = null;
+        let bytes: Uint8Array | null = null;
         if (typeof image.bufferView === 'number') bytes = new Uint8Array(asset.bufferViewBytes(image.bufferView));
         else if (typeof image.uri === 'string') bytes = resolveResource(image.uri, resources);
         if (!bytes) {
@@ -59,7 +90,12 @@ function collectImageResources(asset, images, resources, document) {
     });
 }
 
-function collectTextures(textures, samplers, imageResources, document) {
+function collectTextures(
+    textures: GltfJson[],
+    samplers: GltfJson[],
+    imageResources: number[],
+    document: SceneDocument,
+): number[] {
     return textures.map((texture, textureIndex) => {
         const source = textureSource(texture);
         const resource = imageResources[source];
@@ -83,7 +119,7 @@ function collectTextures(textures, samplers, imageResources, document) {
     });
 }
 
-function collectMaterials(materials, textureBySource, document) {
+function collectMaterials(materials: GltfJson[], textureBySource: number[], document: SceneDocument) {
     document.materials.push(...materials.map((material, materialIndex) => {
         const pbr = material.pbrMetallicRoughness || {};
         const baseColor = textureInfo(pbr.baseColorTexture, textureBySource);
@@ -93,10 +129,10 @@ function collectMaterials(materials, textureBySource, document) {
         const occlusion = textureInfo(material.occlusionTexture, textureBySource);
         return {
             name: material.name || `material_${materialIndex}`,
-            baseColorFactor: Array.from(pbr.baseColorFactor || [1, 1, 1, 1]),
+            baseColorFactor: Array.from<number>(pbr.baseColorFactor || [1, 1, 1, 1]),
             metallicFactor: pbr.metallicFactor ?? 1,
             roughnessFactor: pbr.roughnessFactor ?? 1,
-            emissiveFactor: Array.from(material.emissiveFactor || [0, 0, 0]),
+            emissiveFactor: Array.from<number>(material.emissiveFactor || [0, 0, 0]),
             ...(baseColor ? { baseColorTexture: baseColor } : {}),
             ...(metallicRoughness ? { metallicRoughnessTexture: metallicRoughness } : {}),
             ...(normal ? { normalTexture: normal } : {}),
@@ -110,31 +146,36 @@ function collectMaterials(materials, textureBySource, document) {
     }));
 }
 
-function collectMeshes(asset, meshes, document, accessorBySource) {
+function collectMeshes(
+    asset: GltfAsset,
+    meshes: GltfJson[],
+    document: SceneDocument,
+    accessorBySource: Map<number, number>,
+) {
     document.meshes.push(...meshes.map((mesh, meshIndex) => ({
         name: mesh.name || `mesh_${meshIndex}`,
-        weights: Array.from(mesh.weights || []),
-        primitives: (mesh.primitives || []).map((primitive, primitiveIndex) => {
+        weights: Array.from<number>(mesh.weights || []),
+        primitives: (mesh.primitives || []).map((primitive: GltfJson, primitiveIndex: number) => {
             const packed = asset.readPrimitive(meshIndex, primitiveIndex);
             try {
-                const attributes = {};
+                const attributes: AttributeMap = {};
                 for (let index = 0; index < packed.attributeCount(); index += 1) {
                     attributes[packed.attributeSemantic(index)] = appendAccessor(document, {
                         bytes: new Uint8Array(packed.attributeBytes(index)),
-                        componentType: packed.attributeComponentType(index),
+                        componentType: componentType(packed.attributeComponentType(index)),
                         components: packed.attributeComponents(index),
                         count: packed.attributeElementCount(index),
                         normalized: packed.attributeNormalized(index),
                     });
                 }
-                const targets = (primitive.targets || []).map((target) => {
-                    const converted = {};
+                const targets = (primitive.targets || []).map((target: GltfJson) => {
+                    const converted: AttributeMap = {};
                     for (const semantic of ['POSITION', 'NORMAL', 'TANGENT']) {
                         if (typeof target[semantic] === 'number') converted[semantic] = sourceAccessor(asset, target[semantic], document, accessorBySource);
                     }
                     return converted;
                 });
-                const result = {
+                const result: ScenePrimitive = {
                     attributes,
                     mode: packed.mode(),
                     ...(typeof primitive.material === 'number' ? { material: primitive.material } : {}),
@@ -143,7 +184,7 @@ function collectMeshes(asset, meshes, document, accessorBySource) {
                 if (packed.hasIndices()) {
                     result.indices = appendAccessor(document, {
                         bytes: new Uint8Array(packed.indexBytes()),
-                        componentType: packed.indexComponentType(),
+                        componentType: componentType(packed.indexComponentType()),
                         components: 1,
                         count: packed.indexCount(),
                         normalized: false,
@@ -157,12 +198,12 @@ function collectMeshes(asset, meshes, document, accessorBySource) {
     })));
 }
 
-function collectNodes(manifest, document) {
-    const meshes = manifest.meshes || [];
-    document.nodes.push(...(manifest.nodes || []).map((node, nodeIndex) => {
-        const output = {
+function collectNodes(manifest: GltfJson, document: SceneDocument) {
+    const meshes: GltfJson[] = manifest.meshes || [];
+    document.nodes.push(...(manifest.nodes || []).map((node: GltfJson, nodeIndex: number) => {
+        const output: SceneNode = {
             name: node.name || `node_${nodeIndex}`,
-            children: Array.from(node.children || []),
+            children: Array.from<number>(node.children || []),
             ...(typeof node.mesh === 'number' ? { mesh: node.mesh } : {}),
             ...(typeof node.skin === 'number' ? { skin: node.skin } : {}),
         };
@@ -173,7 +214,7 @@ function collectNodes(manifest, document) {
             output.scale = Array.from(node.scale || [1, 1, 1]);
         }
         const targetCount = typeof node.mesh === 'number'
-            ? Math.max(0, ...(meshes[node.mesh]?.primitives || []).map((primitive) => primitive.targets?.length || 0))
+            ? Math.max(0, ...(meshes[node.mesh]?.primitives || []).map((primitive: GltfJson) => primitive.targets?.length || 0))
             : 0;
         if (targetCount > 0) {
             const source = node.weights || meshes[node.mesh]?.weights || [];
@@ -186,10 +227,15 @@ function collectNodes(manifest, document) {
     document.rootNodes.push(...(configured || rootNodes(document.nodes)));
 }
 
-function collectSkins(asset, skins, document, accessorBySource) {
+function collectSkins(
+    asset: GltfAsset,
+    skins: GltfJson[],
+    document: SceneDocument,
+    accessorBySource: Map<number, number>,
+) {
     document.skins.push(...skins.map((skin, skinIndex) => ({
         name: skin.name || `skin_${skinIndex}`,
-        joints: Array.from(skin.joints || []),
+        joints: Array.from<number>(skin.joints || []),
         ...(typeof skin.inverseBindMatrices === 'number'
             ? { inverseBindMatrices: sourceAccessor(asset, skin.inverseBindMatrices, document, accessorBySource) }
             : {}),
@@ -197,11 +243,16 @@ function collectSkins(asset, skins, document, accessorBySource) {
     })));
 }
 
-function collectAnimations(asset, animations, document, accessorBySource) {
+function collectAnimations(
+    asset: GltfAsset,
+    animations: GltfJson[],
+    document: SceneDocument,
+    accessorBySource: Map<number, number>,
+) {
     document.animations.push(...animations.map((animation, animationIndex) => {
-        const samplers = [];
-        const samplerBySource = new Map();
-        const channels = [];
+        const samplers: AnimationSampler[] = [];
+        const samplerBySource = new Map<number, number>();
+        const channels: AnimationChannel[] = [];
         for (const channel of animation.channels || []) {
             const target = channel.target || {};
             if (!['translation', 'rotation', 'scale', 'weights'].includes(target.path) || !Number.isInteger(target.node)) {
@@ -242,14 +293,19 @@ function collectAnimations(asset, animations, document, accessorBySource) {
     }).filter((animation) => animation.channels.length > 0));
 }
 
-function sourceAccessor(asset, sourceIndex, document, cache) {
+function sourceAccessor(
+    asset: GltfAsset,
+    sourceIndex: number,
+    document: SceneDocument,
+    cache: Map<number, number>,
+): number {
     const cached = cache.get(sourceIndex);
     if (cached !== undefined) return cached;
     const packed = asset.readAccessor(sourceIndex);
     try {
         const index = appendAccessor(document, {
             bytes: new Uint8Array(packed.bytes()),
-            componentType: packed.componentType(),
+            componentType: componentType(packed.componentType()),
             components: packed.components(),
             count: packed.count(),
             normalized: packed.normalized(),
@@ -261,11 +317,11 @@ function sourceAccessor(asset, sourceIndex, document, cache) {
     }
 }
 
-function textureInfo(info, textureBySource) {
+function textureInfo(info: GltfJson, textureBySource: number[]): TextureInfo | null {
     if (!info || !Number.isInteger(info.index)) return null;
     const texture = textureBySource[info.index];
     if (!Number.isInteger(texture) || texture < 0) return null;
-    const result = { texture, texCoord: info.texCoord ?? 0 };
+    const result: TextureInfo = { texture, texCoord: info.texCoord ?? 0 };
     const transform = info.extensions?.KHR_texture_transform;
     if (transform) {
         result.texCoord = transform.texCoord ?? result.texCoord;
@@ -281,7 +337,7 @@ function textureInfo(info, textureBySource) {
     return result;
 }
 
-function textureSource(texture) {
+function textureSource(texture: GltfJson): number {
     if (Number.isInteger(texture.source)) return texture.source;
     for (const extension of ['KHR_texture_basisu', 'EXT_texture_webp']) {
         const source = texture.extensions?.[extension]?.source;
@@ -290,21 +346,21 @@ function textureSource(texture) {
     return -1;
 }
 
-function lastTime(accessor) {
+function lastTime(accessor: SceneAccessor | undefined): number {
     if (!accessor || accessor.componentType !== 5126 || accessor.components !== 1 || accessor.count === 0) return 0;
     const view = new DataView(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength);
     return view.getFloat32((accessor.count - 1) * 4, true);
 }
 
-function extensionWarnings(manifest) {
-    const warnings = [];
-    const unsupported = (manifest.extensionsUsed || []).filter((extension) => !SUPPORTED_EXTENSIONS.has(extension));
+function extensionWarnings(manifest: GltfJson): string[] {
+    const warnings: string[] = [];
+    const unsupported = (manifest.extensionsUsed || []).filter((extension: string) => !SUPPORTED_EXTENSIONS.has(extension));
     if (unsupported.length > 0) warnings.push(`Unsupported glTF extensions omitted from SceneDocument: ${unsupported.join(', ')}`);
-    if ((manifest.extensionsRequired || []).some((extension) => !SUPPORTED_EXTENSIONS.has(extension))) warnings.push('glTF requires extensions outside the portable SceneDocument subset');
+    if ((manifest.extensionsRequired || []).some((extension: string) => !SUPPORTED_EXTENSIONS.has(extension))) warnings.push('glTF requires extensions outside the portable SceneDocument subset');
     return warnings;
 }
 
-function rootNodes(nodes) {
+function rootNodes(nodes: SceneNode[]): number[] {
     const children = new Set(nodes.flatMap((node) => node.children || []));
     return nodes.map((_, index) => index).filter((index) => !children.has(index));
 }
