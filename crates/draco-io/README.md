@@ -44,19 +44,23 @@ Writers do not claim to preserve data that their target cannot represent.
 
 ### FBX support
 
-Both containers are read. Binary is accepted for versions 6000 through 8000 in
-either byte order — a non-zero endian marker selects big-endian, as `ufbx` does
-— and ASCII for 7000 and later. Output is always binary FBX 7500
-little-endian.
+Both containers are read and both are written. Binary is accepted for versions
+6000 through 8000 in either byte order — a non-zero endian marker selects
+big-endian, as `ufbx` does — and ASCII for 7000 and later. Output is FBX 7500
+little-endian, binary by default;
+`FbxWriter::with_format(FbxFormat::Ascii)` or `FbxScene::to_ascii_bytes`
+selects the text container.
 
 That sharing is structural, not a convention. `fbx_container` decodes the
 binary container and `fbx_ascii` the text one; both produce a tree of
 `FbxNode`, and `fbx_reader` reads only that tree, so it is unaware of which
-container it was given. `fbx_ascii_syntax` holds what the two containers
-disagree about — the name/class separator, the array element-type schema, the
-`Properties70` type table — in one place the writer shares, and records what an
-ASCII writer would owe the reader. `fbx_transform` composes the FBX transform
-stack into a local matrix.
+container it was given. Writing mirrors it: `FbxWriter::build_document` decides
+what records the file contains and returns the same `FbxNode` tree, which
+`fbx_encoder` spells as records and `fbx_ascii_writer` as text.
+`fbx_ascii_syntax` holds what the two containers disagree about — the
+name/class separator, the array element-type schema, the `Properties70` type
+table — in one place, with each convention next to its inverse.
+`fbx_transform` composes the FBX transform stack into a local matrix.
 
 The ASCII reader produces the same node tree as the binary one, so everything
 above it is shared and the two containers cannot drift apart semantically. Two
@@ -76,6 +80,19 @@ not pairs at all -- the two exports were taken at different points on the
 timeline -- and one prints `f64` too coarsely to survive narrowing to `f32`.
 `cargo run --example fbx_twin_diff -- <ascii.fbx>` prints the same field-by-field
 comparison for a single pair, which is how those were established.
+
+Writing text costs precision in two places, and neither can be recovered by
+trying harder. ASCII does not record an integer's width, so an `i64` small
+enough to fit comes back an `i32`; every reader here accepts either. And a
+quotation mark in an object's name is written `&quot;`, which is not
+reversible — one corpus file holds an object named `"` and another named
+literally `&quot;`, and both are spelled the same way. The same applies to any
+string that merely happens to contain `::`, which the reader splits into a name
+and a class; `ufbx` reads it that way too. Three shapes are refused outright
+rather than written wrong: a node with two array properties, a non-finite
+float, and raw bytes outside a `Content` node. Everything else round-trips: the
+corpus test writes all 565 comparable files both ways and compares the node
+trees they read back as, record by record.
 
 Scene content, however, is read only from **FBX 7000 and later**. Earlier
 versions use a different object model: objects are identified by a
@@ -107,6 +124,7 @@ version 6100 and fall in this category.
 | Skins, bind poses, and influences | Yes | Yes |
 | Blend shapes / morph targets | Yes | Yes |
 | `Definitions` property templates | Yes | n/a |
+| ASCII container | Yes | Yes |
 
 An exporter that gives a whole class the same value writes it once as a
 `Definitions/PropertyTemplate` and leaves it off the objects, so those values
@@ -296,7 +314,7 @@ For format-agnostic use, `Reader`, `Writer`, `ReadFromBytes`, and
 | `all-readers` / `all-writers` | Yes | Enable all OBJ, PLY, and FBX readers or writers. |
 | `obj-reader` / `obj-writer` | Yes | Wavefront OBJ support. |
 | `ply-reader` / `ply-writer` | Yes | Stanford PLY support. |
-| `fbx-reader` / `fbx-writer` | Yes | Binary FBX support. |
+| `fbx-reader` / `fbx-writer` | Yes | FBX support, binary and ASCII. |
 | `gltf-container` | No | Parse glTF/GLB and load referenced buffers; no mesh decoding. |
 | `gltf-geometry` | No | Convert ordinary glTF accessors into `draco-core` meshes. |
 | `draco-decode` | No | Add `KHR_draco_mesh_compression` primitive decoding. |

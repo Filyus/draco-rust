@@ -74,17 +74,3 @@ items:
     next_steps:
       - "Compare the written NodeAttribute/Skeleton and its Model chain against the source: Size, LimbLength and the parent connections are the usual reasons a chain does not form."
 
-  - id: fbx-ascii-writer
-    area: draco-io/fbx
-    priority: low
-    status: open
-    summary: "ASCII FBX is read but not written. The blocker is gone; what remains is a printer, and a decision about whether it is wanted."
-    evidence:
-      - path: "crates/draco-io/src/fbx_writer.rs"
-        note: "FbxWriter::build_document returns Vec<FbxNode> and knows nothing about bytes. fbx_encoder::encode_node is the only thing that spells a record, so a second backend is a second printer over the same tree rather than a second document builder."
-      - path: "crates/draco-io/src/fbx_ascii_syntax.rs"
-        note: "The direction-independent conventions are extracted and the writer's obligations are enumerated in the module doc, including the one that cannot be met: the &quot; escape is not reversible, so a document with an object named `\"` cannot survive an ASCII round trip in either direction."
-    impact: "Low. Round-tripping our own output is a weaker check than the 110 externally-authored ascii/binary pairs the reader is already validated against, and it cannot be exact. The real argument for ASCII output is diffability, not testing."
-    next_steps:
-      - "Decide whether readable FBX output is wanted at all before writing it; nothing currently needs it."
-      - "If so: an ASCII printer over Vec<FbxNode>, honouring the obligations listed in fbx_ascii_syntax -- F64 printed with a decimal point or exponent, -0.0 kept signed, KeyAttrDataFloat printed as integer bit patterns, arrays shaped `Name: *N { a: v,v,v }`, Content as base64."

@@ -54,8 +54,17 @@ use crate::traits::{WriteToBytes, Writer};
 /// Both spell the same tree of records; they differ only in how one record is
 /// written down. Binary is what every tool reads fastest and what this crate
 /// writes unless told otherwise. ASCII is text, so a document can be read and
-/// diffed -- at the cost of size, and of the few spellings the text container
-/// records less precisely, which [`crate::fbx_ascii_writer`] lists.
+/// diffed.
+///
+/// The text container costs precision in two places, neither recoverable. It
+/// does not record an integer's width, so an `i64` small enough to fit comes
+/// back an `i32`. And a quotation mark in an object's name is written
+/// `&quot;`, which is not reversible: an object named `"` and one named
+/// literally `&quot;` are spelled the same way. The same applies to any string
+/// that happens to contain `::`, which a reader splits into a name and a
+/// class. Writing ASCII fails, rather than writing something wrong, for a
+/// non-finite float, a node with two array properties, and raw bytes on a node
+/// no reader decodes as base64.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FbxFormat {
     /// The binary container, with 64-bit record headers and optional array
