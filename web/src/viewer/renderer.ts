@@ -13,6 +13,9 @@ import { MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS } from './shaders.ts';
  * programs and their uniform locations, the uploaded GL resources, and the
  * display flags the user toggles.
  */
+/** World up, shared by every view matrix; hoisted out of the frame. */
+const WORLD_UP = new Float32Array([0, 1, 0]);
+
 export interface RenderHost extends CameraHost, SceneGraphHost {
     gl: WebGL2RenderingContext;
     glResources: any;
@@ -67,8 +70,7 @@ export function render(host: RenderHost) {
     mat4.perspective(host._projection, host.camera.fov, aspect, host.camera.near, host.camera.far);
 
     const eye = cameraPosition(host, host._eye || (host._eye = vec3.create()));
-    const up = vec3.set(vec3.create(), 0, 1, 0);
-    mat4.lookAt(host._view, eye, host.camera.target, up);
+    mat4.lookAt(host._view, eye, host.camera.target, WORLD_UP);
 
     updateWorldMatrices(host);
 
