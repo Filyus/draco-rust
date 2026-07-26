@@ -213,13 +213,17 @@
                             <button type="button" class="viewer-btn" id="viewer-grid" title="Toggle grid" aria-pressed="true" disabled><svg class="viewer-btn-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 2.5h11v11h-11zM6.2 2.5v11M9.8 2.5v11M2.5 6.2h11M2.5 9.8h11"/></svg><span>Grid</span></button>
                         </div>
 
-                        <div class="viewer-hints" id="viewer-hints">
-                            <span><b>LMB</b> orbit</span>
-                            <span><b>MMB / RMB</b> pan</span>
-                            <span><b>Wheel</b> zoom</span>
-                            <span><b>WASD / QE</b> move</span>
-                            <span><b>Arrows</b> orbit</span>
-                            <span><b>Space</b> play / pause</span>
+                        <div class="viewer-hints" id="viewer-hints" aria-label="Viewport controls">
+                            <div class="stats-grid">
+                                <div class="stat-box"><span class="stat-label">Left drag</span><span class="stat-value">Orbit</span></div>
+                                <div class="stat-box"><span class="stat-label">Middle drag</span><span class="stat-value">Pan</span></div>
+                                <div class="stat-box"><span class="stat-label">Right drag</span><span class="stat-value">Pan</span></div>
+                                <div class="stat-box"><span class="stat-label">Wheel</span><span class="stat-value">Zoom</span></div>
+                                <div class="stat-box"><span class="stat-label">W A S D</span><span class="stat-value">Move</span></div>
+                                <div class="stat-box"><span class="stat-label">Q E</span><span class="stat-value">Up / Down</span></div>
+                                <div class="stat-box"><span class="stat-label">Arrows</span><span class="stat-value">Orbit</span></div>
+                                <div class="stat-box"><span class="stat-label">Space</span><span class="stat-value">Play</span></div>
+                            </div>
                         </div>
 
                         <div class="viewer-animation" id="viewer-animation" style="display: none;">
