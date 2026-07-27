@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use miniz_oxide::deflate::compress_to_vec;
 
-const MODULES: &[&str] = &["obj-wasm", "ply-wasm", "gltf-wasm", "fbx-wasm"];
+const MODULES: &[&str] = &["obj-wasm", "ply-wasm", "gltf-wasm", "fbx-wasm", "ktx2-wasm"];
 
 const WASM_OPT_ARGS: &[&str] = &[
     "-Oz",
@@ -27,6 +27,13 @@ const WASM_OPT_ARGS: &[&str] = &[
 /// A ceiling to catch drift, not a target: the module sits a little under it,
 /// and a change that needs more should say why rather than raise this quietly.
 const GLTF_GZIP_BUDGET: usize = 115 * 1024;
+/// Gzip ceiling for the KTX2 transcoder module.
+///
+/// Its own ceiling rather than a share of the glTF one, because it is fetched
+/// only when a file actually carries a KTX2 texture: nothing here is on the
+/// path of a page that opens an ordinary model. Raising it is a decision to
+/// state, the same as the glTF budget.
+const KTX2_GZIP_BUDGET: usize = 48 * 1024;
 
 #[derive(Clone, Debug)]
 struct Config {
@@ -149,6 +156,21 @@ fn run() -> Result<(), String> {
                     eprintln!("Error: {error}");
                     failed.push("gltf-size".to_string());
                 }
+            }
+        }
+    }
+
+    if failed.is_empty() && !config.debug && !config.no_optimize && modules.contains(&"ktx2-wasm") {
+        let ktx2_wasm = config.output_dir.join("ktx2_bg.wasm");
+        match check_wasm_size(&ktx2_wasm, KTX2_GZIP_BUDGET, "KTX2") {
+            Ok((raw_size, gzip_size)) => println!(
+                "KTX2 size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB / {:.0} KiB budget)",
+                gzip_size as f64 / 1024.0,
+                KTX2_GZIP_BUDGET as f64 / 1024.0
+            ),
+            Err(error) => {
+                eprintln!("Error: {error}");
+                failed.push("ktx2-size".to_string());
             }
         }
     }

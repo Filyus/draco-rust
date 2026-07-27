@@ -1,0 +1,24 @@
+[package]
+name = "ktx2-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "KTX2 reading and Basis Universal transcoding for WebAssembly"
+repository = "https://github.com/Filyus/draco-rust"
+license = "Apache-2.0"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = { workspace = true }
+console_error_panic_hook = { workspace = true, optional = true }
+draco-texture = { path = "../../crates/draco-texture", default-features = false }
+
+[features]
+default = ["etc1s"]
+console_error_panic_hook = ["dep:console_error_panic_hook"]
+etc1s = ["draco-texture/ktx2", "draco-texture/etc1s"]
+uastc = ["draco-texture/ktx2", "draco-texture/uastc"]

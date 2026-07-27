@@ -213,6 +213,16 @@ jobs:
           npm run test:scene-document-fbx
         working-directory: web
 
+      # The transcoder is compared against Binomial's own build of the Basis
+      # transcoder, which lives outside this repository. Without it the gate
+      # skips and says so, so what this step proves on a runner is that the
+      # module still builds and still fits its size budget.
+      - name: Build and smoke the KTX2 transcoder
+        run: |
+          cargo run --manifest-path build-tool/Cargo.toml -- --module ktx2-wasm --force
+          npm run test:ktx2-etc1s
+        working-directory: web
+
       - name: Build and smoke raw glTF writer
         run: |
           cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-wasm --features write --force
