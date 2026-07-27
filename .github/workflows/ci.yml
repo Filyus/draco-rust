@@ -202,6 +202,7 @@ jobs:
           npm run test:gltf-build-profile
           npm run test:viewer-limit-warnings
           npm run test:gltf-scene-provenance
+          npm run test:gltf-extension-support
           npm run test:export-helpers
           npm run test:scene-document-attributes
           npm run test:scene-document-fbx

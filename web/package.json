@@ -39,6 +39,7 @@
     "test:gltf-build-profile": "node tests/gltf-build-profile.mjs",
     "test:viewer-limit-warnings": "node tests/viewer-limit-warnings.mjs",
     "test:gltf-scene-provenance": "node tests/gltf-scene-provenance.mjs",
+    "test:gltf-extension-support": "node tests/gltf-extension-support.mjs",
     "test:export-helpers": "node tests/export-helpers.mjs",
     "test:gltf-quantized-morph": "node tests/gltf-quantized-morph.mjs",
     "test:gltf-write": "node tests/gltf-write-smoke.mjs",
