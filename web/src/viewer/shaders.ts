@@ -184,6 +184,18 @@ uniform float uOcclusionStrength;
 uniform float uIor;
 uniform float uSpecularFactor;
 uniform vec3 uSpecularColorFactor;
+// KHR_materials_transmission / KHR_materials_volume: what passes through the
+// surface, and the interior it crosses on the way.
+uniform float uTransmissionFactor;
+uniform float uThicknessFactor;
+uniform float uAttenuationDistance;
+uniform vec3 uAttenuationColor;
+// The opaque half of the frame, which the transmitted ray reads out of.
+uniform sampler2D uFrameSnapshot;
+uniform vec2 uFrameSize;
+uniform float uFrameMaxLod;
+uniform mat4 uProjection;
+uniform mat4 uView;
 // KHR_materials_iridescence: a thin film over the specular lobe, whose
 // thickness in nanometres decides which wavelengths it reinforces.
 uniform float uIridescenceFactor;
@@ -303,6 +315,39 @@ vec3 iridescentFresnel(float filmIor, float cosTheta1, float thickness, vec3 bas
         sum += 2.0 * cm * filmSensitivity(float(m) * opd, float(m) * phi);
     }
     return max(sum, vec3(0.0));
+}
+
+/**
+ * What the frame behind this surface looks like through it.
+ *
+ * The ray is refracted at the surface and followed for the volume's thickness,
+ * and where it comes out is projected back onto the frame that was captured
+ * before any of this drew. That is a screen-space approximation - it can only
+ * show what the opaque pass left visible - but it is the one the extension is
+ * written for, and it moves correctly with the index of refraction, which a
+ * plain alpha blend does not.
+ *
+ * Roughness picks the mip level: a rough transmissive surface scatters, and
+ * the mip chain is the blur that stands in for it.
+ */
+vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness) {
+    vec3 refracted = refract(-view, normal, 1.0 / max(ior, 1.0001));
+    vec3 exitPoint = position + normalize(refracted) * thickness;
+    vec4 clip = uProjection * uView * vec4(exitPoint, 1.0);
+    vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+    return textureLod(uFrameSnapshot, uv, roughness * uFrameMaxLod).rgb;
+}
+
+/**
+ * Beer-Lambert absorption over a distance inside the volume.
+ *
+ * An attenuation distance of zero is the extension's "infinite": the medium
+ * takes nothing out, which is also what a material with no volume at all does.
+ */
+vec3 attenuate(vec3 radiance, float distance) {
+    if (uAttenuationDistance <= 0.0 || distance <= 0.0) return radiance;
+    vec3 density = -log(clamp(uAttenuationColor, 1e-4, 1.0)) / uAttenuationDistance;
+    return radiance * exp(-density * distance);
 }
 
 /**
@@ -463,7 +508,24 @@ void main() {
     vec3 prefiltered = textureLod(uPrefilteredMap, reflected, roughness * uEnvironmentMaxLod).rgb;
     vec2 brdf = texture(uBrdfLut, vec2(nDotV, roughness)).rg;
     vec3 specularIbl = prefiltered * (f0 * brdf.x + brdf.y) * mix(specularWeight, 1.0, metallic);
-    vec3 color = (diffuseWeight * diffuseIbl + specularIbl) * occlusion;
+
+    // KHR_materials_transmission: what the surface lets through replaces what
+    // it would have scattered, rather than adding to it. The specular lobe
+    // above is untouched - a pane of glass still has a highlight.
+    vec3 diffuseTerm = diffuseWeight * diffuseIbl;
+    float transmission = uTransmissionFactor;
+    #ifdef HAS_TRANSMISSION
+    transmission *= texture(uTransmissionTexture, slotUv(SLOT_TRANSMISSION)).r;
+    #endif
+    if (transmission > 0.0) {
+        float thickness = uThicknessFactor;
+        #ifdef HAS_THICKNESS
+        thickness *= texture(uThicknessTexture, slotUv(SLOT_THICKNESS)).g;
+        #endif
+        vec3 transmitted = transmittedRadiance(vWorldPos, N, V, uIor, thickness, roughness);
+        diffuseTerm = mix(diffuseTerm, diffuseWeight * attenuate(transmitted, thickness), transmission);
+    }
+    vec3 color = (diffuseTerm + specularIbl) * occlusion;
     vec3 emissive = uEmissiveFactor;
     #ifdef HAS_EMISSIVE
     emissive *= pow(texture(uEmissive, slotUv(SLOT_EMISSIVE)).rgb, vec3(2.2));

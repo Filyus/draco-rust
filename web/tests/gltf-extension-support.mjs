@@ -70,6 +70,24 @@ const INTERPRETED = {
     material: { extensions: { KHR_materials_emissive_strength: { emissiveStrength: 4 } } },
     effect: (read) => assert.equal(read.emissiveStrength, 4),
   },
+  KHR_materials_transmission: {
+    material: { extensions: { KHR_materials_transmission: { transmissionFactor: 0.9 } } },
+    effect: (read) => assert.equal(read.transmissionFactor, 0.9),
+  },
+  KHR_materials_volume: {
+    material: {
+      extensions: {
+        KHR_materials_volume: {
+          thicknessFactor: 0.4, attenuationDistance: 2.5, attenuationColor: [0.9, 0.3, 0.1],
+        },
+      },
+    },
+    effect: (read) => {
+      assert.equal(read.thicknessFactor, 0.4);
+      assert.equal(read.attenuationDistance, 2.5);
+      assert.deepEqual(read.attenuationColor, [0.9, 0.3, 0.1]);
+    },
+  },
   KHR_materials_iridescence: {
     material: {
       extensions: {
@@ -210,6 +228,10 @@ const stated = {
     KHR_materials_ior: { ior: 1.9 },
     KHR_materials_specular: { specularFactor: 0.4, specularColorFactor: [0.5, 0.6, 0.7] },
     KHR_materials_sheen: { sheenColorFactor: [0.2, 0.3, 0.4], sheenRoughnessFactor: 0.6 },
+    KHR_materials_transmission: { transmissionFactor: 0.9 },
+    KHR_materials_volume: {
+      thicknessFactor: 0.4, attenuationDistance: 2.5, attenuationColor: [0.9, 0.3, 0.1],
+    },
     KHR_materials_iridescence: {
       iridescenceFactor: 0.7, iridescenceIor: 1.8,
       iridescenceThicknessMinimum: 200, iridescenceThicknessMaximum: 550,

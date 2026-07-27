@@ -31,6 +31,7 @@ const SURFACE_UNIFORMS = [
   'uNormalScale', 'uOcclusionStrength',
   'uClearcoatNormalScale',
   'uIrradianceMap', 'uPrefilteredMap', 'uBrdfLut', 'uEnvironmentMaxLod',
+  'uFrameSnapshot', 'uFrameSize', 'uFrameMaxLod',
   'uCameraPos',
 ] as const;
 

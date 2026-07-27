@@ -1735,6 +1735,100 @@ test('one surface program per set of texture slots, not per material', async ({ 
   expect(observed.sources[1]).toEqual({ slots: 1, samplers: 1 });
 });
 
+test('KHR_materials_transmission shows what is behind the surface', async ({ page }) => {
+  await page.goto('/index.html');
+  // Transmission is the one extension that cannot be shaded from the material
+  // alone: it reads the frame the opaque pass produced. So the fixture puts a
+  // coloured opaque quad behind a transmissive one and asks whether its colour
+  // arrives - which fails both if the surface does not refract and if it
+  // refracts a frame that was captured at the wrong moment.
+  const observed = await page.evaluate(async () => {
+    const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
+      import('/viewer.js'),
+      import('/scene-document.js'),
+      import('/scene-document-viewer.js'),
+    ]);
+
+    const bytes = (values) => new Uint8Array(
+      values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
+    );
+    const accessor = (values, components, componentType = 5126) => ({
+      bytes: bytes(values), componentType, components, count: values.length / components,
+    });
+    const document_ = (front) => createSceneDocument({
+      materials: [
+        // Behind: a green emitter, so what shows through is unmistakably it.
+        { baseColorFactor: [0, 0, 0, 1], metallicFactor: 0, roughnessFactor: 1, emissiveFactor: [0, 1, 0] },
+        { baseColorFactor: [0, 0, 0, 1], metallicFactor: 0, roughnessFactor: 0.05, ...front },
+      ],
+      accessors: [
+        // The far quad, larger, and the near one in front of it.
+        accessor(new Float32Array([-2, -2, -1, 2, -2, -1, 2, 2, -1, -2, 2, -1]), 3),
+        accessor(new Float32Array([-1, -1, 0.5, 1, -1, 0.5, 1, 1, 0.5, -1, 1, 0.5]), 3),
+        accessor(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]), 3),
+        accessor(new Uint16Array([0, 1, 2, 0, 2, 3]), 1, 5123),
+      ],
+      meshes: [{
+        primitives: [
+          { attributes: { POSITION: 0, NORMAL: 2 }, indices: 3, material: 0 },
+          { attributes: { POSITION: 1, NORMAL: 2 }, indices: 3, material: 1 },
+        ],
+      }],
+      nodes: [{ name: 'Quads', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 }],
+      rootNodes: [0],
+    });
+
+    // A viewer of its own per sample: a snapshot survives between frames, so a
+    // reused one would let the previous frame stand in for this one's opaque
+    // pass - and then drawing the transmissive quad too early would still look
+    // right.
+    let glError = 0;
+    const sample = (front) => {
+      const canvas = document.createElement('canvas');
+      canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
+      document.body.appendChild(canvas);
+      const viewer = new Viewer(canvas);
+      viewer.showGrid = false;
+      viewer.setScene(buildViewerSceneFromDocument(document_(front)));
+      viewer.camera.target.set([0, 0, 0]);
+      viewer.camera.distance = 4;
+      viewer.camera.azimuth = 0;
+      viewer.camera.elevation = 0;
+      viewer._render();
+      const rgba = new Uint8Array(4);
+      viewer.gl.readPixels(
+        Math.floor(viewer.gl.drawingBufferWidth / 2),
+        Math.floor(viewer.gl.drawingBufferHeight / 2),
+        1, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, rgba,
+      );
+      glError = glError || viewer.gl.getError();
+      viewer.dispose();
+      canvas.remove();
+      return Array.from(rgba);
+    };
+
+    const opaque = sample({});
+    const clear = sample({ transmissionFactor: 1 });
+    // The same glass filled with a green-absorbing medium: what comes through
+    // is what the volume left of it.
+    const tinted = sample({
+      transmissionFactor: 1,
+      thicknessFactor: 1,
+      attenuationDistance: 0.35,
+      attenuationColor: [1, 0.1, 0.1],
+    });
+    return { opaque, clear, tinted, glError };
+  });
+
+  expect(observed.glError).toBe(0);
+  // Opaque: the near quad hides the emitter entirely.
+  expect(observed.opaque[1]).toBeLessThan(60);
+  // Transmissive: the green behind it arrives.
+  expect(observed.clear[1]).toBeGreaterThan(observed.opaque[1] + 40);
+  // With a volume that absorbs green, less of it does.
+  expect(observed.tinted[1]).toBeLessThan(observed.clear[1] - 20);
+});
+
 test('KHR_materials_iridescence tints the specular lobe by film thickness', async ({ page }) => {
   await page.goto('/index.html');
   // A thin film reinforces the wavelengths its thickness suits, so the same

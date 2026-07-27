@@ -31,6 +31,8 @@ export const MAX_TEXTURE_UNITS = 16;
  * enough to reach them — which `assertTextureUnitBudget` refuses.
  */
 export const SHARED_TEXTURE_UNITS = {
+  /** The opaque half of the frame, which a transmissive surface refracts. */
+  frameSnapshot: MAX_TEXTURE_UNITS - 5,
   morphDeltas: MAX_TEXTURE_UNITS - 4,
   irradiance: MAX_TEXTURE_UNITS - 3,
   prefiltered: MAX_TEXTURE_UNITS - 2,

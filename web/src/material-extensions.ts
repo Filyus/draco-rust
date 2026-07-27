@@ -84,6 +84,24 @@ export const MATERIAL_EXTENSIONS = [
     textures: [{ property: 'specularTexture', slot: 'SPECULAR' }, { property: 'specularColorTexture', slot: 'SPECULAR_COLOR' }],
   },
   {
+    // What passes through the surface rather than reflecting off it. Zero is
+    // opaque, which is what every material without the extension is.
+    name: 'KHR_materials_transmission',
+    fields: [{ property: 'transmissionFactor', default: 0 }],
+    textures: [{ property: 'transmissionTexture', slot: 'TRANSMISSION' }],
+  },
+  {
+    // The interior the transmitted light crosses. A thickness of zero is a
+    // thin surface with no volume, so the attenuation defaults never apply.
+    name: 'KHR_materials_volume',
+    fields: [
+      { property: 'thicknessFactor', default: 0 },
+      { property: 'attenuationDistance', default: 0 },
+      { property: 'attenuationColor', default: [1, 1, 1] },
+    ],
+    textures: [{ property: 'thicknessTexture', slot: 'THICKNESS' }],
+  },
+  {
     // Thicknesses are nanometres, and the defaults are the extension's own:
     // a film of 100..400 nm at an index of 1.3, weighted by a factor that
     // starts at zero, so an absent extension changes nothing.

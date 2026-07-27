@@ -88,6 +88,19 @@ function enabledMaterialSlots(
 }
 
 /**
+ * Whether this material has to wait for the opaque half of the frame.
+ *
+ * Two reasons to defer a primitive, and they are not the same one: alpha
+ * blending needs what is behind it already drawn, and transmission needs the
+ * snapshot taken between the passes. A transmissive material is usually
+ * OPAQUE, so asking only about the alpha mode would draw it too early and
+ * refract a frame that was still empty.
+ */
+function needsCompletedFrame(material: ViewerMaterial | undefined): boolean {
+  return material?.alphaMode === 'BLEND' || (material?.transmissionFactor ?? 0) > 0;
+}
+
+/**
  * Bind the surface program this slot set needs, and re-state what the frame
  * told the last one.
  *
@@ -107,6 +120,7 @@ function useSurfaceProgram(host: RenderHost, slots: readonly TextureSlotName[]) 
   host.gl.uniformMatrix4fv(surface.uniforms.uView, false, host._view);
   host.gl.uniform3fv(surface.uniforms.uCameraPos, host._eye!);
   bindEnvironmentIbl(host);
+  bindFrameSnapshot(host);
   return surface;
 }
 
@@ -230,6 +244,10 @@ export function render(host: RenderHost) {
     gl, host._frameTarget ?? null, gl.drawingBufferWidth, gl.drawingBufferHeight,
   );
   captureFrameTarget(gl, host._frameTarget);
+  // Force the next draw to re-state the frame uniforms: a program bound during
+  // the opaque pass has not been told about the snapshot, which did not exist
+  // when it was chosen.
+  host._surfaceProgram = null;
   drawSurfaces(host, true);
 
   gl.depthMask(true);
@@ -238,13 +256,13 @@ export function render(host: RenderHost) {
 }
 
 /**
- * One pass over the scene's renderables, drawing either what is opaque or what
- * blends over it.
+ * One pass over the scene's renderables: either what can be drawn straight
+ * away, or what had to wait for the rest of the frame.
  *
  * The two halves differ only in which primitives they take, so they share
  * every uniform decision below rather than being written twice.
  */
-function drawSurfaces(host: RenderHost, blended: boolean) {
+function drawSurfaces(host: RenderHost, deferred: boolean) {
   const gl = host.gl;
   for (const renderable of host.scene!.renderables) {
     const node = renderable.node;
@@ -265,7 +283,7 @@ function drawSurfaces(host: RenderHost, blended: boolean) {
     for (let i = 0; i < primitives.length; i++) {
       const { uploaded, materialIndex } = primitives[i];
       const material = host.scene!.materials[materialIndex];
-      if ((material?.alphaMode === 'BLEND') !== blended) continue;
+      if (needsCompletedFrame(material) !== deferred) continue;
       // Which program draws this primitive is settled first: everything below
       // writes uniforms, and uniforms belong to whichever program is bound.
       const surface = useSurfaceProgram(host, enabledMaterialSlots(host, material, uploaded));
@@ -479,6 +497,26 @@ export function drawBackground(host: RenderHost) {
   gl.bindVertexArray(null);
   gl.depthMask(true);
   gl.enable(gl.DEPTH_TEST);
+}
+
+/**
+ * Offer the snapshot of the opaque frame to the program now bound.
+ *
+ * Every program takes it, because whether a given material refracts is a
+ * runtime question and the sampler costs a unit either way. Before the first
+ * capture there is nothing to bind, and no material that would read it has
+ * been drawn.
+ */
+export function bindFrameSnapshot(host: RenderHost) {
+  const gl = host.gl;
+  const frame = host._frameTarget;
+  if (!frame) return;
+  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.frameSnapshot);
+  gl.bindTexture(gl.TEXTURE_2D, frame.color);
+  gl.uniform1i(host.uniforms.uFrameSnapshot, SHARED_TEXTURE_UNITS.frameSnapshot);
+  gl.uniform2f(host.uniforms.uFrameSize, frame.width, frame.height);
+  // The mip chain is the blur a rough transmissive surface reads through.
+  gl.uniform1f(host.uniforms.uFrameMaxLod, Math.log2(Math.max(frame.width, frame.height)));
 }
 
 export function bindEnvironmentIbl(host: RenderHost) {
