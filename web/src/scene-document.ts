@@ -9,7 +9,8 @@
  */
 
 import { componentByteWidth } from './component-values.ts';
-import { MATERIAL_EXTENSION_DEFAULTS } from './material-extensions.ts';
+import { MATERIAL_EXTENSION_DEFAULTS, MATERIAL_EXTENSION_TEXTURE_SLOTS } from './material-extensions.ts';
+import type { MaterialExtensionValues } from './material-extensions.ts';
 
 export const SCENE_DOCUMENT_VERSION = 1;
 
@@ -65,7 +66,7 @@ export interface TextureInfo {
  * document from a format that has no such concept — FBX — is unchanged by
  * their existence.
  */
-export interface SceneMaterial {
+export interface SceneMaterial extends MaterialExtensionValues<TextureInfo> {
   name?: string;
   baseColorFactor?: number[];
   metallicFactor?: number;
@@ -79,22 +80,6 @@ export interface SceneMaterial {
   alphaMode?: AlphaMode;
   alphaCutoff?: number;
   doubleSided?: boolean;
-  unlit?: boolean;
-  /** KHR_materials_emissive_strength; 1 leaves the emissive factor alone. */
-  emissiveStrength?: number;
-  /** KHR_materials_ior; 1.5 is the index of refraction the core model implies. */
-  ior?: number;
-  /** KHR_materials_specular: weight and tint on the dielectric lobe. */
-  specularFactor?: number;
-  specularColorFactor?: number[];
-  specularTexture?: TextureInfo;
-  specularColorTexture?: TextureInfo;
-  /** KHR_materials_clearcoat; factor 0 means no coat at all. */
-  clearcoatFactor?: number;
-  clearcoatRoughnessFactor?: number;
-  clearcoatTexture?: TextureInfo;
-  clearcoatRoughnessTexture?: TextureInfo;
-  clearcoatNormalTexture?: TextureInfo;
 }
 
 /**
@@ -102,9 +87,9 @@ export interface SceneMaterial {
  *
  * Validation, the glTF writer and the texture-transform survey all walk this
  * list; spelled out separately in each, a new slot reaches one of them and not
- * the others. The extension slots repeat what `MATERIAL_EXTENSIONS` declares,
- * so that indexing a material by one of these stays type-checked; the gate in
- * `gltf-extension-support` holds the two in step.
+ * the others. Only the core slots are named here — the rest come from the
+ * extension table, so a new layered extension reaches all three by being
+ * declared once.
  */
 export const MATERIAL_TEXTURE_SLOTS = [
   'baseColorTexture',
@@ -112,11 +97,7 @@ export const MATERIAL_TEXTURE_SLOTS = [
   'normalTexture',
   'emissiveTexture',
   'occlusionTexture',
-  'specularTexture',
-  'specularColorTexture',
-  'clearcoatTexture',
-  'clearcoatRoughnessTexture',
-  'clearcoatNormalTexture',
+  ...MATERIAL_EXTENSION_TEXTURE_SLOTS,
 ] as const;
 
 export interface SceneAccessor {

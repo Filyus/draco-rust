@@ -7,6 +7,8 @@
  * importer fills are optional and say so.
  */
 
+import type { MaterialExtensionValues } from './material-extensions.ts';
+
 export interface Trs {
   translation: number[];
   rotation: number[];
@@ -146,7 +148,7 @@ export interface ViewerTextureBinding {
  * anyway: it is the contract the glTF loader and the SceneDocument adapter both
  * have to satisfy, and the one place to look for what the preview understands.
  */
-export interface ViewerMaterial {
+export interface ViewerMaterial extends MaterialExtensionValues<ViewerTextureBinding | null> {
   name?: string;
   baseColorFactor?: number[];
   /** Flattened: the renderer addresses base color through its own uniforms. */
@@ -157,24 +159,12 @@ export interface ViewerMaterial {
   roughness?: number;
   metallicRoughnessTexture?: ViewerTextureBinding | null;
   emissiveFactor?: number[];
-  emissiveStrength?: number;
   emissiveTexture?: ViewerTextureBinding | null;
   normalTexture?: ViewerTextureBinding | null;
   occlusionTexture?: ViewerTextureBinding | null;
-  ior?: number;
-  specularFactor?: number;
-  specularColorFactor?: number[];
-  specularTexture?: ViewerTextureBinding | null;
-  specularColorTexture?: ViewerTextureBinding | null;
-  clearcoatFactor?: number;
-  clearcoatRoughnessFactor?: number;
-  clearcoatTexture?: ViewerTextureBinding | null;
-  clearcoatRoughnessTexture?: ViewerTextureBinding | null;
-  clearcoatNormalTexture?: ViewerTextureBinding | null;
   doubleSided?: boolean;
   alphaMode?: string;
   alphaCutoff?: number;
-  unlit?: boolean;
   /** OBJ only: the companion file a texture still has to be resolved from. */
   baseColorTextureUri?: string;
 }

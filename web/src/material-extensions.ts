@@ -48,7 +48,7 @@ export interface MaterialExtensionSpec {
   textures?: MaterialExtensionTexture[];
 }
 
-export const MATERIAL_EXTENSIONS: readonly MaterialExtensionSpec[] = [
+export const MATERIAL_EXTENSIONS = [
   { name: 'KHR_materials_unlit', presence: 'unlit' },
   {
     name: 'KHR_materials_emissive_strength',
@@ -81,14 +81,58 @@ export const MATERIAL_EXTENSIONS: readonly MaterialExtensionSpec[] = [
       { property: 'clearcoatNormalTexture', scale: true },
     ],
   },
-] as const;
+] as const satisfies readonly MaterialExtensionSpec[];
+
+/**
+ * What the table says a material carries, as a type.
+ *
+ * Derived rather than written down: `SceneMaterial` and the viewer's material
+ * both spelled these fields out by hand, so adding an extension meant adding
+ * it to the table and then to two interfaces that could quietly disagree with
+ * it. The binding type is a parameter because the portable document and the
+ * renderer bind a texture differently — the property names are what they share.
+ */
+type Spec = (typeof MATERIAL_EXTENSIONS)[number];
+type FieldOf<S> = S extends { fields: readonly (infer F)[] } ? F : never;
+type TextureOf<S> = S extends { textures: readonly (infer T)[] } ? T : never;
+type PropertyOf<T> = T extends { property: infer P extends string } ? P : never;
+
+/** Scalars and vectors: a vector default means a vector value. */
+export type MaterialExtensionFactors = {
+  [F in FieldOf<Spec> as PropertyOf<F>]?: F extends { default: readonly number[] } ? number[] : number;
+};
+
+/** Presence flags — extensions whose mere appearance is the value. */
+export type MaterialExtensionFlags = {
+  [S in Spec as S extends { presence: infer P extends string } ? P : never]?: boolean;
+};
+
+/** The texture slots the extensions contribute, bound however the caller binds. */
+export type MaterialExtensionTextures<Binding> = {
+  [T in TextureOf<Spec> as PropertyOf<T>]?: Binding;
+};
+
+export type MaterialExtensionValues<Binding> =
+  MaterialExtensionFactors & MaterialExtensionFlags & MaterialExtensionTextures<Binding>;
+
+/** Every texture slot property the extensions contribute. */
+export type MaterialExtensionTextureSlot = PropertyOf<TextureOf<Spec>>;
+
+/**
+ * The same table, widened.
+ *
+ * The literal form above is what the types are derived from; every loop below
+ * wants the declared shape, where `presence`, `fields` and `textures` are
+ * optional on each entry rather than present on some.
+ */
+const SPECS: readonly MaterialExtensionSpec[] = MATERIAL_EXTENSIONS;
 
 /** Every extension name the table covers. */
-export const MATERIAL_EXTENSION_NAMES: readonly string[] = MATERIAL_EXTENSIONS.map((spec) => spec.name);
+export const MATERIAL_EXTENSION_NAMES: readonly string[] = SPECS.map((spec) => spec.name);
 
 /** Every texture slot the extensions contribute, in table order. */
-export const MATERIAL_EXTENSION_TEXTURE_SLOTS: readonly string[] = MATERIAL_EXTENSIONS
-  .flatMap((spec) => (spec.textures ?? []).map((texture) => texture.property));
+export const MATERIAL_EXTENSION_TEXTURE_SLOTS: readonly MaterialExtensionTextureSlot[] = SPECS
+  .flatMap((spec) => (spec.textures ?? []).map((texture) => texture.property as MaterialExtensionTextureSlot));
 
 /**
  * What every extension property means when nobody set it.
@@ -98,7 +142,7 @@ export const MATERIAL_EXTENSION_TEXTURE_SLOTS: readonly string[] = MATERIAL_EXTE
  * them again.
  */
 export const MATERIAL_EXTENSION_DEFAULTS: Readonly<Record<string, number | number[] | false>> =
-  Object.freeze(Object.fromEntries(MATERIAL_EXTENSIONS.flatMap((spec) => [
+  Object.freeze(Object.fromEntries(SPECS.flatMap((spec) => [
     ...(spec.presence ? [[spec.presence, false] as const] : []),
     ...(spec.fields ?? []).map((field) => [field.property, field.default] as const),
   ])));
@@ -130,7 +174,7 @@ export function readMaterialExtensions<Binding>(
 ): Record<string, unknown> {
   const source = extensions || {};
   const material: Record<string, unknown> = {};
-  for (const spec of MATERIAL_EXTENSIONS) {
+  for (const spec of SPECS) {
     const declared = source[spec.name];
     if (spec.presence) material[spec.presence] = Boolean(declared);
     for (const field of spec.fields ?? []) {
@@ -166,7 +210,7 @@ export function writeMaterialExtensions<Info>(
   writeTexture: (property: string, scale: boolean) => Info | null,
 ): Record<string, Record<string, unknown>> {
   const extensions: Record<string, Record<string, unknown>> = {};
-  for (const spec of MATERIAL_EXTENSIONS) {
+  for (const spec of SPECS) {
     if (spec.presence) {
       if (material[spec.presence]) extensions[spec.name] = {};
       continue;
@@ -215,7 +259,7 @@ export function materialExtensionFactors(
  * export dropped something" is one question with one answer.
  */
 export function hasMaterialExtensionValues(material: Record<string, any>): boolean {
-  return MATERIAL_EXTENSIONS.some((spec) => {
+  return SPECS.some((spec) => {
     if (spec.presence && material[spec.presence]) return true;
     if ((spec.fields ?? []).some((field) => !isMaterialExtensionDefault(field.property, material[field.property]))) {
       return true;

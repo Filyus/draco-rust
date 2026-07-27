@@ -95,13 +95,20 @@ const INTERPRETED = {
   },
 };
 
-// The portable contract spells its texture slots out as literal types, so
-// indexing a material by one stays checked; that list has to contain every slot
-// the extension table brings, or a slot reaches the writer and not validation.
+// The slot list validation and the writer walk is the core slots plus whatever
+// the extension table brings; the extension half needs no checking because it
+// is spliced in rather than repeated, but the core half is written out by hand
+// and a slot dropped from it silently stops being validated.
 assert.deepEqual(
-  MATERIAL_EXTENSION_TEXTURE_SLOTS.filter((slot) => !MATERIAL_TEXTURE_SLOTS.includes(slot)),
-  [],
-  'every extension texture slot must appear in MATERIAL_TEXTURE_SLOTS',
+  MATERIAL_TEXTURE_SLOTS.filter((slot) => !MATERIAL_EXTENSION_TEXTURE_SLOTS.includes(slot)),
+  [
+    'baseColorTexture',
+    'metallicRoughnessTexture',
+    'normalTexture',
+    'emissiveTexture',
+    'occlusionTexture',
+  ],
+  'the core metallic-roughness slots must all be in MATERIAL_TEXTURE_SLOTS',
 );
 
 // A name in the set with no case here is the failure this gate exists for: it
