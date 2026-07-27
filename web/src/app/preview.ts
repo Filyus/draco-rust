@@ -39,7 +39,18 @@ export function ensureViewer() {
   return state.viewer;
 }
 
+/**
+ * Which preview run is the current one.
+ *
+ * Loading is asynchronous - a frame is yielded for layout, textures are
+ * decoded - so two runs can overlap: opening a file while one is in flight, or
+ * picking a material variant before the first finished. Without this the last
+ * one to *finish* wins, which is not the last one asked for.
+ */
+let previewGeneration = 0;
+
 export async function loadPreview(extension: string) {
+  const generation = ++previewGeneration;
   viewerSection.classList.add('loaded');
   setViewerControlsEnabled(false);
 
@@ -84,6 +95,10 @@ export async function loadPreview(extension: string) {
       throw new Error('No geometry available to preview');
     }
 
+    // A newer run has taken over; showing this one would put back what the
+    // user just moved away from.
+    if (generation !== previewGeneration) return;
+
     for (const warning of scene.warnings || []) {
       log(warning, 'warning');
     }
@@ -96,6 +111,7 @@ export async function loadPreview(extension: string) {
     syncViewerToolbar();
     log('Preview ready', 'success');
   } catch (error) {
+    if (generation !== previewGeneration) return;
     state.viewer!.clear();
     setViewerControlsEnabled(false);
     log(`Preview failed: ${errorMessage(error)}`, 'error');
@@ -154,15 +170,25 @@ function syncVariantPicker(scene: ViewerScene) {
   viewerVariantPicker.hidden = variants.length === 0;
   if (variants.length === 0) {
     state.currentVariant = null;
+    viewerVariantSelect.replaceChildren();
     return;
   }
-  viewerVariantSelect.replaceChildren(...['Default', ...variants].map((name, index) => {
-    const option = window.document.createElement('option');
-    option.value = String(index - 1);
-    option.textContent = name;
-    return option;
-  }));
-  viewerVariantSelect.value = String(state.currentVariant ?? -1);
+  // Rebuilt only when the list itself changed. Replacing the options resets
+  // the control's value on the way, and doing that on every preview means
+  // doing it in response to the choice the user just made - which is a loop:
+  // the picker reloads the preview, the preview rebuilds the picker.
+  const wanted = ['Default', ...variants];
+  const current = [...viewerVariantSelect.options].map((option) => option.textContent);
+  if (current.length !== wanted.length || wanted.some((name, index) => current[index] !== name)) {
+    viewerVariantSelect.replaceChildren(...wanted.map((name, index) => {
+      const option = window.document.createElement('option');
+      option.value = String(index - 1);
+      option.textContent = name;
+      return option;
+    }));
+  }
+  const selected = String(state.currentVariant ?? -1);
+  if (viewerVariantSelect.value !== selected) viewerVariantSelect.value = selected;
 }
 
 /** Re-read the document under the chosen variant; only materials change. */

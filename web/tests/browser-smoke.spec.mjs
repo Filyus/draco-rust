@@ -1848,11 +1848,10 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   const plain = await emissiveOf();
   await page.locator('#viewer-variant').selectOption('1');
   // Waiting on the console would be satisfied by the "Preview ready" the first
-  // load already printed, so wait for the scene the picker rebuilds instead.
-  await page.waitForFunction(async () => {
-    const { state } = await import('/app/state.js');
-    return state.viewer?.scene?.meshes[0]?.primitives[0]?.materialIndex === 2;
-  }, null, { timeout: 10000 });
+  // load already printed, so wait for the scene the picker rebuilds. It has to
+  // be expect.poll rather than waitForFunction: the latter takes the promise an
+  // async callback returns as its truthy result and stops waiting at once.
+  await expect.poll(async () => (await emissiveOf()).index, { timeout: 10000 }).toBe(2);
   const emerald = await emissiveOf();
 
   // The primitive took a different material, and the one the variant names.
