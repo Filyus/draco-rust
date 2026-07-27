@@ -617,6 +617,42 @@ mod compression_tests {
         assert_eq!(accessor.value()["max"].as_array().unwrap().len(), 3);
     }
 
+    /// One document, two extensions, two answers.
+    ///
+    /// The safety check is whole-document, so an extension on a *material*
+    /// decides whether the *geometry* may be compressed. That is right when
+    /// nobody has read the extension's specification and wrong when someone
+    /// has, and this pins both halves of the distinction: a registered
+    /// binary-free layer compresses, an unknown vendor name still refuses.
+    /// Without the second assertion the first one would be satisfied by simply
+    /// deleting the check.
+    #[cfg(feature = "draco-encode")]
+    #[test]
+    fn compression_allows_binary_free_extensions_and_still_refuses_unknown_ones() {
+        let document = |extension: &str| {
+            format!(
+                r#"{{"asset":{{"version":"2.0"}},"buffers":[{{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}}],"bufferViews":[{{"buffer":0,"byteLength":36}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}}],"materials":[{{"extensions":{{"{extension}":{{}}}}}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},"material":0}}]}}],"extensionsUsed":["{extension}"]}}"#
+            )
+        };
+        let compress = |extension: &str| {
+            parse(document(extension).as_bytes(), ValidationProfile::Gltf20)
+                .unwrap()
+                .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+        };
+
+        for extension in crate::BINARY_FREE_EXTENSIONS {
+            let report = compress(extension)
+                .unwrap_or_else(|error| panic!("{extension} must not block compression: {error}"));
+            assert_eq!(report.compressed_primitives, 1);
+        }
+
+        let error = compress("VENDOR_unheard_of").unwrap_err().to_string();
+        assert!(
+            error.contains("VENDOR_unheard_of") && error.contains("transform-safe"),
+            "an unregistered extension must still refuse by name, got {error}"
+        );
+    }
+
     #[cfg(feature = "draco-encode")]
     #[test]
     fn compression_uses_the_encoded_topology_for_accessor_metadata() {

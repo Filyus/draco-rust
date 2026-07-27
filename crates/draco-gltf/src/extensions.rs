@@ -50,6 +50,67 @@ pub fn meshopt_extension_mut(extensions: Option<&mut Value>) -> Option<(&'static
     extensions.get_mut(name).map(|value| (name, value))
 }
 
+/// Extensions whose specifications name no accessor and no buffer view.
+///
+/// Every entry is an assertion about a published specification, not a guess
+/// from the extension's prefix: the JSON these define is factors, colors,
+/// names, enum values and indices into `materials`, `textures` or their own
+/// root arrays — never into `accessors` or `bufferViews`. A binary transform
+/// therefore cannot invalidate them, and nothing has to be remapped.
+///
+/// The list matters because the safety check in `Import` is whole-document: an
+/// unregistered extension anywhere refuses Draco compression for the entire
+/// file. Before this list existed that refused 21 of the 70 corpus assets over
+/// extensions that describe how a surface is lit.
+pub const BINARY_FREE_EXTENSIONS: &[&str] = &[
+    // The layered material model. None of these reach past `materials`.
+    "KHR_materials_unlit",
+    "KHR_materials_emissive_strength",
+    "KHR_materials_ior",
+    "KHR_materials_specular",
+    "KHR_materials_anisotropy",
+    "KHR_materials_transmission",
+    "KHR_materials_dispersion",
+    "KHR_materials_volume",
+    "KHR_materials_iridescence",
+    "KHR_materials_sheen",
+    "KHR_materials_clearcoat",
+    // Archived by Khronos, still present in assets, and equally binary-free.
+    "KHR_materials_pbrSpecularGlossiness",
+    // Rides on a texture binding: offset, scale, rotation and a texCoord set.
+    "KHR_texture_transform",
+    // Name an alternate `images[]` entry; the image itself is an ordinary one.
+    "EXT_texture_webp",
+    "KHR_texture_basisu",
+    // Scene-level, and both stay in their own index spaces: lights[] and
+    // variants[] are root arrays this crate never compacts.
+    "KHR_lights_punctual",
+    "KHR_materials_variants",
+    // A permission rather than a payload: it widens the component types an
+    // accessor may use, and names none of them.
+    "KHR_mesh_quantization",
+    // A Cesium vendor extension holding one origin offset, `center: [x, y, z]`.
+    "CESIUM_RTC",
+];
+
+/// An extension that owns no binary references.
+///
+/// Opting into binary transforms with the trait's own empty
+/// [`ExtensionHandler::collect_binary_references`] and
+/// [`ExtensionHandler::remap_binary_references`] is exactly the statement
+/// "this extension participates and owns nothing": there is nothing to keep
+/// alive and nothing to rewrite.
+#[derive(Clone, Copy, Debug)]
+pub struct BinaryFreeExtension(pub &'static str);
+impl ExtensionHandler for BinaryFreeExtension {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+    fn allows_binary_transform(&self) -> bool {
+        true
+    }
+}
+
 /// Resolved binary resources indexed by glTF buffer index.
 #[derive(Clone, Debug, Default)]
 pub struct ResourceStore {
@@ -442,6 +503,11 @@ impl Default for ExtensionRegistry {
         registry
             .register(DracoExtension)
             .expect("built-in extension names are unique");
+        for name in BINARY_FREE_EXTENSIONS {
+            registry
+                .register(BinaryFreeExtension(name))
+                .expect("built-in extension names are unique");
+        }
         registry
     }
 }
