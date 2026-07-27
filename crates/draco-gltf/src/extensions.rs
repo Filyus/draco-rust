@@ -103,6 +103,190 @@ pub const BINARY_FREE_EXTENSIONS: &[&str] = &[
     "EXT_mesh_features",
 ];
 
+/// Extension name for per-node GPU instancing.
+pub const EXT_MESH_GPU_INSTANCING: &str = "EXT_mesh_gpu_instancing";
+
+/// Extension name for the structural metadata contract.
+pub const EXT_STRUCTURAL_METADATA: &str = "EXT_structural_metadata";
+
+/// The three keys a property-table property may use to address a buffer view.
+const PROPERTY_TABLE_SLOTS: [&str; 3] = ["values", "arrayOffsets", "stringOffsets"];
+
+/// Every accessor reference `EXT_mesh_gpu_instancing` owns.
+///
+/// One per instanced node per semantic: `TRANSLATION`, `ROTATION` and `SCALE`
+/// each name an accessor of one element per instance. Every semantic is
+/// collected rather than those three by name, because an unrecognized one
+/// still holds an accessor index, and skipping it would leave a live reference
+/// pointing at whatever landed in that slot after compaction.
+///
+/// This and [`instancing_accessors_mut`] walk the same places and must keep
+/// doing so: a reference one of them keeps alive and the other does not
+/// rewrite ends up pointing at a slot that moved.
+fn instancing_accessors(root: &Value) -> impl Iterator<Item = &Value> {
+    root.get("nodes")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|node| {
+            node.get("extensions")?
+                .get(EXT_MESH_GPU_INSTANCING)?
+                .get("attributes")?
+                .as_object()
+        })
+        .flatten()
+        .map(|(_, value)| value)
+}
+
+/// The mutable form of [`instancing_accessors`].
+fn instancing_accessors_mut(root: &mut Value) -> impl Iterator<Item = &mut Value> {
+    root.get_mut("nodes")
+        .and_then(Value::as_array_mut)
+        .map(|nodes| nodes.iter_mut())
+        .into_iter()
+        .flatten()
+        .filter_map(|node| {
+            node.get_mut("extensions")?
+                .get_mut(EXT_MESH_GPU_INSTANCING)?
+                .get_mut("attributes")?
+                .as_object_mut()
+        })
+        .flatten()
+        .map(|(_, value)| value)
+}
+
+/// Every buffer-view reference `EXT_structural_metadata` owns.
+///
+/// Property tables hold their columns as raw buffer views rather than as
+/// accessors: a column of strings is a byte range plus a range of offsets into
+/// it, which no accessor can describe. Those are the only binary references
+/// the extension makes — property attributes name vertex attributes by string,
+/// and property textures name textures — so they are also the only thing a
+/// binary transform can invalidate.
+fn property_table_views(root: &Value) -> impl Iterator<Item = &Value> {
+    root.get("extensions")
+        .and_then(|extensions| extensions.get(EXT_STRUCTURAL_METADATA))
+        .and_then(|metadata| metadata.get("propertyTables"))
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|table| table.get("properties")?.as_object())
+        .flatten()
+        .flat_map(|(_, property)| {
+            PROPERTY_TABLE_SLOTS
+                .iter()
+                .filter_map(|slot| property.get(slot))
+        })
+}
+
+/// The mutable form of [`property_table_views`].
+fn property_table_views_mut(root: &mut Value) -> impl Iterator<Item = &mut Value> {
+    root.get_mut("extensions")
+        .and_then(|extensions| extensions.get_mut(EXT_STRUCTURAL_METADATA))
+        .and_then(|metadata| metadata.get_mut("propertyTables"))
+        .and_then(Value::as_array_mut)
+        .map(|tables| tables.iter_mut())
+        .into_iter()
+        .flatten()
+        .filter_map(|table| table.get_mut("properties")?.as_object_mut())
+        .flatten()
+        .flat_map(|(_, property)| {
+            property
+                .as_object_mut()
+                .map(|entries| {
+                    entries
+                        .iter_mut()
+                        .filter(|(key, _)| PROPERTY_TABLE_SLOTS.contains(&key.as_str()))
+                        .map(|(_, value)| value)
+                })
+                .into_iter()
+                .flatten()
+        })
+}
+
+/// Marks one index as still in use, or reports that it never was valid.
+fn keep_reference(value: &Value, used: &mut [bool], kind: &str) -> Result<()> {
+    let index = value
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|index| *index < used.len())
+        .ok_or_else(|| Error::Extension(format!("{kind} is invalid")))?;
+    used[index] = true;
+    Ok(())
+}
+
+/// Instance transforms, which are accessors like any vertex attribute.
+///
+/// They differ in that no primitive names them, so compaction sees them as
+/// unreferenced and would drop the instances rather than the metadata about
+/// them. Keeping them alive and rewriting their indices is the whole handler.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MeshGpuInstancingExtension;
+impl ExtensionHandler for MeshGpuInstancingExtension {
+    fn name(&self) -> &'static str {
+        EXT_MESH_GPU_INSTANCING
+    }
+    fn allows_binary_transform(&self) -> bool {
+        true
+    }
+    fn collect_binary_references(
+        &self,
+        document: &Document,
+        accessors: &mut [bool],
+        _buffer_views: &mut [bool],
+    ) -> Result<()> {
+        for value in instancing_accessors(document.as_value()) {
+            keep_reference(value, accessors, "EXT_mesh_gpu_instancing accessor")?;
+        }
+        Ok(())
+    }
+    fn remap_binary_references(
+        &self,
+        document: &mut Document,
+        accessors: &[Option<usize>],
+        _buffer_views: &[Option<usize>],
+    ) -> Result<()> {
+        for value in instancing_accessors_mut(document.as_value_mut()) {
+            remap_reference(value, accessors, "EXT_mesh_gpu_instancing accessor")?;
+        }
+        Ok(())
+    }
+}
+
+/// Property tables, whose columns are buffer views rather than accessors.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StructuralMetadataExtension;
+impl ExtensionHandler for StructuralMetadataExtension {
+    fn name(&self) -> &'static str {
+        EXT_STRUCTURAL_METADATA
+    }
+    fn allows_binary_transform(&self) -> bool {
+        true
+    }
+    fn collect_binary_references(
+        &self,
+        document: &Document,
+        _accessors: &mut [bool],
+        buffer_views: &mut [bool],
+    ) -> Result<()> {
+        for value in property_table_views(document.as_value()) {
+            keep_reference(value, buffer_views, "EXT_structural_metadata bufferView")?;
+        }
+        Ok(())
+    }
+    fn remap_binary_references(
+        &self,
+        document: &mut Document,
+        _accessors: &[Option<usize>],
+        buffer_views: &[Option<usize>],
+    ) -> Result<()> {
+        for value in property_table_views_mut(document.as_value_mut()) {
+            remap_reference(value, buffer_views, "EXT_structural_metadata bufferView")?;
+        }
+        Ok(())
+    }
+}
+
 /// An extension that owns no binary references.
 ///
 /// Opting into binary transforms with the trait's own empty
@@ -512,6 +696,12 @@ impl Default for ExtensionRegistry {
         };
         registry
             .register(DracoExtension)
+            .expect("built-in extension names are unique");
+        registry
+            .register(MeshGpuInstancingExtension)
+            .expect("built-in extension names are unique");
+        registry
+            .register(StructuralMetadataExtension)
             .expect("built-in extension names are unique");
         for name in BINARY_FREE_EXTENSIONS {
             registry

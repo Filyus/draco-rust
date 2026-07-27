@@ -45,15 +45,13 @@ const KNOWN = new Map(Object.entries({
   'testdata/bun_zipper.glb': 'primitive uses Draco compression',
   'testdata/SphereTwoMaterials/sphere_two_materials_mesh_and_point_cloud.gltf': 'only TRIANGLES',
   'testdata/SphereTwoMaterials/sphere_two_materials_point_cloud.gltf': 'only TRIANGLES',
-  // Property tables address buffer views, and instancing addresses accessors;
-  // both need a handler that keeps those slots alive and rewrites them.
-  'testdata/BoxMeta/glTF/BoxMeta.gltf': 'EXT_structural_metadata',
-  'testdata/BoxesMeta/glTF/BoxesMeta.gltf': 'EXT_structural_metadata',
-  'testdata/ZeroLengthBufferView/ZeroLengthBufferView.gltf': 'EXT_structural_metadata',
-  'testdata/InstancedQuads.gltf': 'EXT_mesh_gpu_instancing',
-  // Decoded eagerly into the fallback buffers on import, but the now-stale
-  // extension object stays in the document and keeps describing a state that
-  // no longer exists.
+  // Two compressions describing the same bytes. Import decodes meshopt into
+  // the fallback buffers, but the compressed ranges stay in the document and
+  // the writer rebases them, so a re-export comes out compressed again -- the
+  // extension object is live, not stale. What it addresses is a range inside a
+  // *buffer*, and the maps a handler is handed cover accessors and buffer
+  // views. There is nothing to remap it with, so this refusal is correct until
+  // meshopt is decompressed on the way in rather than carried through.
   'testdata/KhronosSampleModels/MeshoptCubeTest/glTF_Meshopt/MeshoptCubeTest.gltf': 'meshopt_compression',
 }));
 

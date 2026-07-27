@@ -32,17 +32,8 @@ if (typeof gltfModule.GltfAsset?.prototype?.compressPrimitive !== 'function') {
   process.exit(0);
 }
 
-const manifest = JSON.parse(new TextDecoder().decode(await readFile(model)));
-// BoxMeta carries EXT_structural_metadata beside the feature IDs, and that one
-// does own buffer views, so it refuses compression until its own handler
-// exists. Dropped here so this gate measures the encoder rather than waiting on
-// an unrelated extension; everything the assertions below touch is untouched.
-delete manifest.extensions;
-manifest.extensionsUsed = (manifest.extensionsUsed || []).filter((name) => name !== 'EXT_structural_metadata');
-for (const mesh of manifest.meshes) {
-  for (const primitive of mesh.primitives) delete primitive.extensions?.EXT_structural_metadata;
-}
-const data = new TextEncoder().encode(JSON.stringify(manifest));
+const data = new Uint8Array(await readFile(model));
+const manifest = JSON.parse(new TextDecoder().decode(data));
 const resources = Object.create(null);
 for (const entry of [...(manifest.buffers || []), ...(manifest.images || [])]) {
   if (typeof entry.uri !== 'string' || entry.uri.startsWith('data:')) continue;

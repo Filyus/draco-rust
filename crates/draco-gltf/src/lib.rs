@@ -41,8 +41,10 @@ pub use writer::{GeometryEncoding, GeometryWriteOptions, GeometryWriteReport, Pr
 pub mod extensions;
 pub use extensions::{
     BinaryFreeExtension, DracoExtension, ExtensionHandler, ExtensionRegistry,
-    ExtensionValidationContext, ResourceStore, BINARY_FREE_EXTENSIONS, EXT_MESHOPT_COMPRESSION,
-    KHR_DRACO_MESH_COMPRESSION, KHR_MESHOPT_COMPRESSION,
+    ExtensionValidationContext, MeshGpuInstancingExtension, ResourceStore,
+    StructuralMetadataExtension, BINARY_FREE_EXTENSIONS, EXT_MESHOPT_COMPRESSION,
+    EXT_MESH_GPU_INSTANCING, EXT_STRUCTURAL_METADATA, KHR_DRACO_MESH_COMPRESSION,
+    KHR_MESHOPT_COMPRESSION,
 };
 mod import;
 #[cfg(not(target_arch = "wasm32"))]
