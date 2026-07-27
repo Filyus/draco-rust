@@ -95,12 +95,47 @@ async function companions(model, data) {
 }
 
 /**
+ * A cheap order-sensitive fold over accessor bytes.
+ *
+ * Not a cryptographic digest and not meant to be one: it stands in for the
+ * payload in a structural comparison, over a corpus of 73 MB that has to stay
+ * inside a minute. Two different payloads colliding here is a missed finding,
+ * not a wrong one.
+ */
+function digest(accessor) {
+  if (!accessor) return null;
+  const bytes = ArrayBuffer.isView(accessor.bytes)
+    ? new Uint8Array(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength)
+    : new Uint8Array(0);
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < bytes.length; index += 1) {
+    hash = Math.imul(hash ^ bytes[index], 0x01000193);
+  }
+  return `${accessor.componentType}:${accessor.components}:${accessor.count}:${bytes.length}:${(hash >>> 0).toString(16)}`;
+}
+
+/**
  * What both adapters must agree on.
  *
  * Not the material count: the preview appends one fallback record and
  * addresses material-less primitives through it, while the document leaves
  * them at index -1 for the renderer's own default. So materials are compared
  * where it matters — by the name each primitive actually resolves to.
+ *
+ * Positions and morph deltas are compared by their bytes, not only by their
+ * counts. Counting alone let a real defect through: the document keeps morph
+ * deltas quantized, the preview expands them, and both paths still reported
+ * one target per primitive while only one of them could be blended.
+ *
+ * That particular defect stays pinned by `gltf-quantized-morph.mjs` rather than
+ * here, because no asset in the corpus carries quantized morph deltas — every
+ * morph target in testdata is already float, so the two paths agree on them
+ * whether or not the expansion exists. Said out loud so the byte comparison is
+ * not mistaken for covering a class it cannot reach.
+ *
+ * Indices and the remaining attributes stay uncompared for now. A Draco
+ * primitive's bytes come out of the codec rather than out of a named accessor,
+ * so byte equality there needs an argument before it becomes an assertion.
  */
 function observe(scene) {
   const materialName = (primitive) => {
@@ -121,7 +156,10 @@ function observe(scene) {
       vertices: primitive.attributes.POSITION?.count ?? 0,
       elements: primitive.indices?.count ?? null,
       attributes: Object.keys(primitive.attributes).sort().join(','),
+      positions: digest(primitive.attributes.POSITION),
       morphs: primitive.morphPositions?.length ?? 0,
+      morphPositions: (primitive.morphPositions ?? []).map(digest),
+      morphNormals: (primitive.morphNormals ?? []).map(digest),
       material: materialName(primitive),
     }))),
   };
