@@ -276,6 +276,45 @@ test('clicking the animated preview keeps focus on the viewport, not the clip pi
   // trigger rather than dropping it on the body.
   await page.locator('#anim-clip-trigger').click();
   await expect(page.locator('#anim-clip-menu')).toBeVisible();
+
+  // The same control as the sidebar's variant picker, on a different surface,
+  // and it has to hold the same two things there: the chosen row renders as
+  // the field, and the list is the lower half of that control rather than a
+  // popup that floated in over the viewport. Both are stated here as well as
+  // on the variant picker, because each surface names its own colours and a
+  // gate on one of them lets the other drift.
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(300);
+  const clipPaint = await page.evaluate(() => {
+    const rendered = (element) => {
+      const layers = [];
+      for (let node = element; node; node = node.parentElement) {
+        const match = getComputedStyle(node).backgroundColor.match(/rgba?\(([^)]+)\)/);
+        if (!match) continue;
+        const [red, green, blue, alpha = 1] = match[1].split(',').map(Number.parseFloat);
+        if (alpha === 0) continue;
+        layers.push([red, green, blue, alpha]);
+        if (alpha === 1) break;
+      }
+      let [red, green, blue] = layers.pop() ?? [0, 0, 0];
+      while (layers.length > 0) {
+        const [r, g, b, a] = layers.pop();
+        red = r * a + red * (1 - a);
+        green = g * a + green * (1 - a);
+        blue = b * a + blue * (1 - a);
+      }
+      return [red, green, blue].map(Math.round).join(',');
+    };
+    const menu = document.querySelector('#anim-clip-menu');
+    return {
+      field: rendered(document.querySelector('#anim-clip-trigger')),
+      selected: rendered(menu.querySelector('.menu-picker-option.selected')),
+      shadow: getComputedStyle(menu).boxShadow,
+    };
+  });
+  expect(clipPaint.selected).toBe(clipPaint.field);
+  expect(clipPaint.shadow).toBe('none');
+
   await page.keyboard.press('Escape');
   await expect(page.locator('#anim-clip-menu')).toBeHidden();
   expect(await page.evaluate(() => document.activeElement?.id)).toBe('anim-clip-trigger');
@@ -2102,6 +2141,9 @@ test('the variant list stays within its control and its panel', async ({ page })
     return `${style.backgroundColor}|${style.color}`;
   });
   expect(hovered).not.toBe(selectedDeclared);
+  // Not lifted off the surface either: a shadow is what makes a list read as a
+  // popup that arrived over the page rather than as part of what opened it.
+  expect(await page.evaluate(() => getComputedStyle(document.querySelector('#viewer-variant-menu')).boxShadow)).toBe('none');
   await page.mouse.move(0, 0);
 
   expect(geometry.menu.left).toBe(geometry.trigger.left);

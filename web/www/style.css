@@ -597,7 +597,10 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
    value; only its rendering is replaced. Shared by the playback bar and the
    viewport toolbar, which differ in the trigger's look and in which way the
    menu opens, and in nothing else. */
-.menu-picker { position: relative; }
+/* Each picker states the radius of the field it belongs to; the list takes it
+   for the two corners it does not share with the field. */
+.menu-picker { position: relative; --menu-radius: 6px; }
+.anim-clip-picker { --menu-radius: 7px; }
 .menu-picker-native { display: none; }
 .anim-clip-picker {
     min-width: 140px;
@@ -660,21 +663,25 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
        and thinning it only made the border thinner. */
     padding: 0;
     display: grid;
-    border: 1px solid rgba(123, 153, 194, 0.24);
-    border-top: 0;
-    border-radius: 9px;
-    /* The panel's own colour, so a translucent row fill composites to exactly
-       what the same fill composites to on the field. Anything else and the
-       chosen row and the field are declared identical and still render a
-       shade apart, which is what a fill tuned to look like the field did. */
-    background: var(--surface);
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+    /* Border and radius follow the field, per context below. They belong to how
+       that field looks, not to the list: carried here, the list wore an outline
+       in the panel, where the field has one, and the same outline over the
+       playback bar, where it does not -- one component looking like two. */
+    border: 0;
+    border-radius: 0 0 var(--menu-radius) var(--menu-radius);
+    /* No shadow. A list lifted off the surface with one reads as a popup that
+       floated in over the page, when it is the lower half of the control that
+       opened it. The border and the shared edge are what define it.
+
+       Its fill is the control's own surface, set per context below: a
+       translucent row fill has to composite to the same colour on the row as
+       it does on the field, and it cannot if the two sit on different
+       backdrops. */
 }
 
 .menu-picker-menu[hidden] { display: none; }
 /* Joined to the control rather than floating near it: the edge they share is
    square, the outer one keeps the control's radius. */
-.menu-picker-menu { border-top-left-radius: 0; border-top-right-radius: 0; }
 .menu-picker-trigger[aria-expanded="true"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .menu-picker-option {
     min-height: 30px;
@@ -703,10 +710,22 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
    Hover is deliberately not that colour. It answers a different question --
    where the pointer is, not what is chosen -- and the two have to be told
    apart while both are on screen. */
-.menu-picker-option.selected { color: #eaf2ff; background: rgba(93, 129, 178, 0.2); }
 .menu-picker-option:hover,
 .menu-picker-option:focus,
 .menu-picker-option.selected:hover { color: #fff; background: rgba(109, 145, 197, 0.32); }
+
+/* Each picker sits on its own surface, so each says what its list is made of
+   and what the chosen row wears -- which is whatever its own field wears while
+   the list is open. */
+.scene-variant .menu-picker-menu {
+    background: var(--surface);
+    border: 1px solid rgba(123, 153, 194, 0.24);
+    border-top: 0;
+}
+.scene-variant .menu-picker-option.selected { color: #eaf2ff; background: rgba(93, 129, 178, 0.2); }
+
+.anim-clip-picker .menu-picker-menu { background: var(--control); backdrop-filter: blur(10px); }
+.anim-clip-picker .menu-picker-option.selected { color: #fff; background: var(--control-hover); }
 /* An outline rather than a box-shadow, which the selected row already spends
    on its edge mark; two shadows on one element would cancel each other. */
 .menu-picker-option:focus-visible { outline: 1px solid rgba(124, 169, 235, 0.72); outline-offset: -1px; }
