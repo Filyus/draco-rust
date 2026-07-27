@@ -45,6 +45,36 @@ contract. Ordinary and Draco primitives both read into `PackedGeometry`.
   A transform fails when an unknown extension may own binary references that
   cannot be remapped safely.
 
+### Which extensions a transform tolerates
+
+The refusal above is whole-document: one unregistered extension anywhere stops
+the file being compressed. That is deliberate — rewriting accessor indices
+inside JSON nobody has read produces a broken file rather than an honest error
+— but it only holds up if the extensions someone *has* read are declared.
+`ExtensionRegistry::default()` therefore registers three kinds of handler.
+
+- **Binary-free** (`BINARY_FREE_EXTENSIONS`): the layered `KHR_materials_*`
+  set, `KHR_texture_transform`, `KHR_lights_punctual`,
+  `KHR_materials_variants`, `KHR_mesh_quantization`, `EXT_texture_webp`,
+  `KHR_texture_basisu`, `CESIUM_RTC` and `EXT_mesh_features`. Each names no
+  accessor and no buffer view, so there is nothing to keep alive and nothing
+  to rewrite. `EXT_mesh_features` belongs here despite appearances: its
+  `featureIds[].attribute: N` selects the attribute *named* `_FEATURE_ID_N`,
+  and the encoder was measured to return those attributes unchanged.
+- **Reference-owning**: `EXT_mesh_gpu_instancing` marks and rewrites the
+  accessors its instance transforms name — no primitive names them, so
+  compaction would otherwise drop them — and `EXT_structural_metadata` does
+  the same for the buffer views holding property-table columns.
+- **Geometry-owning**: `KHR_draco_mesh_compression` itself.
+
+`EXT_meshopt_compression` is registered for none of these and still refuses.
+Its compressed ranges are live rather than stale — import decodes them into the
+fallback buffers, but the document keeps them and the writer rebases them, so a
+re-export comes out compressed again — and what they address is a range inside
+a *buffer*, while the maps a handler receives cover accessors and buffer views.
+Making it compressible means decompressing meshopt on the way in instead of
+carrying it through.
+
 ## API profiles
 
 The default `full` feature includes all document, read, write and Draco
