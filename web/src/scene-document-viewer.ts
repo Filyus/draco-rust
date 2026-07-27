@@ -38,8 +38,14 @@ const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
  * the one type both must satisfy belongs with the viewer that consumes them.
  */
 export function buildViewerSceneFromDocument(document: SceneDocument) {
-  const validation = assertValidSceneDocument(document);
-  const viewerWarnings = [...document.warnings, ...validation.warnings];
+  assertValidSceneDocument(document);
+  // Only what the renderer cannot show. The document's own warnings — what the
+  // portable form cost the asset — are a different question with a different
+  // answer, and the scene report already presents them under their own source.
+  // Repeating them here would tell someone looking at a frame that something
+  // was "omitted from SceneDocument", which is true of the export and not of
+  // what they are looking at.
+  const viewerWarnings: string[] = [];
   const accessors = document.accessors.map(toRuntimeAccessor);
   const meshes = document.meshes.map((mesh, meshIndex) => ({
     name: mesh.name || `mesh_${meshIndex}`,

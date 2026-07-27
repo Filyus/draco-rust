@@ -83,6 +83,30 @@ assert.ok(Math.abs(scene.nodes[0].trs.translation[0] - 1) < 1e-6);
 assert.ok(Math.abs(scene.nodes[0].world[12] - 1) < 1e-6);
 assert.ok(Math.abs(scene.nodes[1].world[12] - 1) < 1e-6, 'child world transform must retain the parent animation');
 
+// What the portable form cost the asset and what the renderer cannot show are
+// different questions. The scene report presents the first under its own
+// warning source; a scene handed to the viewer carries only the second, so
+// nobody looking at a frame is told something was "omitted from SceneDocument".
+const documented = createSceneDocument({
+    warnings: ['Unsupported glTF extensions omitted from SceneDocument: KHR_materials_sheen'],
+    accessors: [
+        { bytes: bytes(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0])), componentType: 5126, components: 3, count: 3 },
+    ],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+    nodes: [{ name: 'Mesh', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 }],
+    rootNodes: [0],
+});
+assert.deepEqual(
+    buildViewerSceneFromDocument(documented).warnings,
+    [],
+    'the preview scene must not repeat what the document says about the portable subset',
+);
+assert.deepEqual(
+    documented.warnings,
+    ['Unsupported glTF extensions omitted from SceneDocument: KHR_materials_sheen'],
+    'and the document must keep saying it, since the scene report is what shows it',
+);
+
 // A node no scene reaches draws nothing in glTF, so it must not become a
 // renderable here and must not widen the frame either. The document contract
 // permits it — only a root is required to have no parent — and the glTF loader
