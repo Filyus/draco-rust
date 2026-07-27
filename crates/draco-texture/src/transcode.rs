@@ -44,6 +44,9 @@ pub enum Target {
     /// ETC2 RGBA, sixteen bytes per 4x4 block, alpha in an EAC block.
     #[cfg(feature = "block-formats")]
     Etc2,
+    /// ASTC 4x4, sixteen bytes per block, colour and alpha together.
+    #[cfg(feature = "block-formats")]
+    Astc,
 }
 
 /// One decoded image, either as pixels or as GPU-ready blocks.
@@ -211,6 +214,8 @@ impl Transcoder {
                     Target::Rgba8 => uastc::decode_rgba(image_data, width, height)?,
                     #[cfg(feature = "block-formats")]
                     Target::Bc7 => uastc::decode_bc7(image_data, width, height)?,
+                    #[cfg(feature = "block-formats")]
+                    Target::Astc => uastc::decode_astc(image_data, width, height)?,
                     #[allow(unreachable_patterns)]
                     other => {
                         return Err(TranscodeError::NoSuchTarget {

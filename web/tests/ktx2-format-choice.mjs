@@ -44,7 +44,11 @@ const CASES = [
   // family, so before these targets existed every one of these was pixels.
   [MOBILE, 'etc1s', false, 'etc1', 'ETC1 is the cheapest thing ETC1S can be on a phone'],
   [MOBILE, 'etc1s', true, 'etc2', 'alpha needs ETC2 and its EAC block'],
+  [MOBILE, 'uastc', false, 'astc', 'ASTC is the format UASTC is a profile of, so nothing is lost'],
+  [MOBILE, 'uastc', true, 'astc', 'and it carries alpha too'],
   [ETC, 'etc1s', false, 'etc1', 'ETC alone is enough for an ETC1S texture'],
+  [ETC, 'uastc', false, 'pixels', 'UASTC has no ETC target, so ETC alone leaves it as pixels'],
+  [ASTC, 'etc1s', false, 'pixels', 'and ETC1S has no ASTC target'],
   // No compressed format at all.
   [[], 'etc1s', false, 'pixels', 'no compressed format at all'],
   [[], 'uastc', true, 'pixels', 'nor for UASTC'],
@@ -59,5 +63,7 @@ for (const [extensions, codec, hasAlpha, expected, why] of CASES) {
 assert.equal(chooseCompressedTarget(S3TC, 'etc1s', false).bytesPerBlock, 8);
 assert.equal(chooseCompressedTarget(S3TC, 'etc1s', true).bytesPerBlock, 16);
 assert.equal(chooseCompressedTarget(BPTC, 'uastc', false).bytesPerBlock, 16);
+assert.equal(chooseCompressedTarget(MOBILE, 'etc1s', false).bytesPerBlock, 8);
+assert.equal(chooseCompressedTarget(MOBILE, 'uastc', false).bytesPerBlock, 16);
 
 console.log(`ktx2-format-choice: ${CASES.length} cases OK`);

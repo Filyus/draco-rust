@@ -319,6 +319,29 @@ pub fn decode_rgba(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uast
     Ok(pixels)
 }
 
+/// Transcode a whole mip level into ASTC 4x4 blocks, sixteen bytes each.
+///
+/// UASTC is a restricted profile of ASTC, so this rewrites each block into
+/// ASTC's bit layout without approximating anything.
+#[cfg(feature = "block-formats")]
+pub fn decode_astc(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, UastcError> {
+    let blocks_x = width.div_ceil(4) as usize;
+    let blocks_y = height.div_ceil(4) as usize;
+    if data.len() < blocks_x * blocks_y * BLOCK_SIZE {
+        return Err(UastcError::Truncated(data.len()));
+    }
+
+    let mut blocks = vec![0u8; blocks_x * blocks_y * 16];
+    for index in 0..blocks_x * blocks_y {
+        let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
+        let mut unpacked = unpack_block(block, index)?;
+        apply_blue_contract(&mut unpacked);
+        blocks[index * 16..index * 16 + 16]
+            .copy_from_slice(&crate::uastc_to_astc::convert(&unpacked));
+    }
+    Ok(blocks)
+}
+
 /// Transcode a whole mip level into BC7 blocks, sixteen bytes each.
 ///
 /// BC7 is the one target UASTC reaches without loss worth naming: the format
@@ -642,6 +665,76 @@ fn read_weights(
         *weight = read_bits(block, &mut offset, count) as u8;
     }
     weights
+}
+
+/// Turn any subset whose endpoints run dark-to-light the other way round.
+///
+/// ASTC reads a subset whose low endpoint sums higher than its high one as
+/// "blue contract", a mode that rescales the colour rather than interpolating
+/// it plainly. UASTC does not mean that, so before a block is written out as
+/// ASTC any such subset is restated the other way: its endpoints swap and its
+/// weights invert, which names the same colours without tripping the rule.
+///
+/// Only ASTC needs this. Decoding to pixels or to BC7 interprets the endpoints
+/// directly, where the order carries no such meaning.
+#[cfg(feature = "block-formats")]
+pub(crate) fn apply_blue_contract(unpacked: &mut Unpacked) {
+    let mode = unpacked.mode;
+    let components = MODE_COMPONENTS[mode] as usize;
+    if mode == MODE_SOLID_COLOR || components < 3 {
+        return;
+    }
+    let range = MODE_ENDPOINT_RANGES[mode] as usize;
+    let subsets = MODE_SUBSETS[mode] as usize;
+
+    let mut inverted = [false; 3];
+    let mut any = false;
+    for (subset, flag) in inverted.iter_mut().enumerate().take(subsets) {
+        let base = subset * components * 2;
+        let sum = |offset: usize| -> u32 {
+            (0..3)
+                .map(|channel| {
+                    unquantize(
+                        unpacked.endpoints[base + channel * 2 + offset] as u32,
+                        range,
+                    )
+                })
+                .sum()
+        };
+        if sum(1) < sum(0) {
+            for channel in 0..components {
+                unpacked
+                    .endpoints
+                    .swap(base + channel * 2, base + channel * 2 + 1);
+            }
+            *flag = true;
+            any = true;
+        }
+    }
+    if !any {
+        return;
+    }
+
+    let planes = planes_of(mode);
+    let mask = (1u8 << MODE_WEIGHT_BITS[mode]) - 1;
+    for texel in 0..16 {
+        if !inverted[unpacked.partition[texel] as usize] {
+            continue;
+        }
+        unpacked.weights[texel * planes] = mask - unpacked.weights[texel * planes];
+        if planes == 2 {
+            unpacked.weights[texel * planes + 1] = mask - unpacked.weights[texel * planes + 1];
+        }
+    }
+}
+
+/// The bits, trits and quints of one ASTC quantization range.
+pub(crate) fn bise_range(range: usize) -> (u32, bool, bool) {
+    (
+        BISE_RANGES[range][0] as u32,
+        BISE_RANGES[range][1] != 0,
+        BISE_RANGES[range][2] != 0,
+    )
 }
 
 /// Undo one endpoint value's quantization, per the ASTC specification.

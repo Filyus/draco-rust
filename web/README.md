@@ -94,18 +94,36 @@ per texture:
 |---|---|---|
 | ETC1S, no alpha | BC1, 8 bytes per block | `WEBGL_compressed_texture_s3tc` |
 | ETC1S with alpha | BC3, 16 bytes per block | `WEBGL_compressed_texture_s3tc` |
+| ETC1S, no alpha | ETC1, 8 bytes per block | `WEBGL_compressed_texture_etc` |
+| ETC1S with alpha | ETC2, 16 bytes per block | `WEBGL_compressed_texture_etc` |
 | UASTC | BC7, 16 bytes per block | `EXT_texture_compression_bptc` |
+| UASTC | ASTC 4×4, 16 bytes per block | `WEBGL_compressed_texture_astc` |
 
 A texture that reaches one of those is uploaded compressed, at about an eighth
 of the video memory the pixels would take, and its mip chain comes from the
-file because a compressed texture cannot have mips generated for it. Anything
-else — a context with none of those extensions, which on a phone is the usual
-case — decodes to RGBA8 and uploads as an ordinary image. ETC2 and ASTC targets
-are not transcoded to yet, so a phone takes that fallback today.
+file because a compressed texture cannot have mips generated for it. A context
+offering none of them decodes to RGBA8 and uploads as an ordinary image.
 
-Five of UASTC's nineteen block modes appear in none of the fixtures, so the
-transcoder is written from the reference for those and verified by nothing; the
-UASTC gate names them rather than leaving the gap unstated.
+The two families barely overlap, which is why this is a ranking rather than a
+constant. Published survey figures:
+
+|      | Windows | macOS | Android |  iOS |
+|------|--------:|------:|--------:|-----:|
+| s3tc |   99.9% | 88.1% |   28.6% | 39.8% |
+| ETC2 |    2.1% | 88.0% |   99.9% |  100% |
+| ASTC |    2.1% | 88.0% |   99.9% |  100% |
+
+So a desktop takes the BC path and a phone the ETC or ASTC one, and the phone —
+the machine that can least afford eight times the video memory — is the reason
+the second half of that table is worth transcoding to at all.
+
+Two gaps are worth stating. Five of UASTC's nineteen block modes appear in none
+of the fixtures, so the transcoder is written from the reference for those and
+verified by nothing; the UASTC gate names them rather than leaving it unsaid.
+And the ETC and ASTC uploads cannot be exercised on a desktop, which offers
+neither — their transcoding is checked byte for byte against the reference in
+Node, but the `compressedTexImage2D` call itself is only covered where the
+browser has the extension.
 
 Exported glTF and GLB carry the KTX2 bytes through unchanged either way; OBJ,
 PLY and FBX carry them too, and no importer of those formats can read them,

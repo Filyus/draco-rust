@@ -35,6 +35,8 @@ export const COMPRESSED_FORMAT = {
   etc1: 0x9274,
   /** `COMPRESSED_RGBA8_ETC2_EAC` */
   etc2: 0x9278,
+  /** `COMPRESSED_RGBA_ASTC_4x4_KHR` */
+  astc: 0x93b0,
 } as const;
 
 /** A source codec, as the KTX2 module names it. */
@@ -43,7 +45,7 @@ export type TextureCodec = 'etc1s' | 'uastc';
 /** What to ask the transcoder for, and how to upload the result. */
 export interface CompressedTarget {
   /** The transcoder's name for the target. */
-  name: 'bc1' | 'bc3' | 'bc7' | 'etc1' | 'etc2';
+  name: 'bc1' | 'bc3' | 'bc7' | 'etc1' | 'etc2' | 'astc';
   /** The GL internal format to pass to `compressedTexImage2D`. */
   format: number;
   /** Bytes each 4×4 block occupies. */
@@ -88,6 +90,15 @@ const TARGETS: { target: CompressedTarget; extension: string; codecs: TextureCod
     target: { name: 'etc2', format: COMPRESSED_FORMAT.etc2, bytesPerBlock: 16 },
     extension: 'WEBGL_compressed_texture_etc',
     codecs: ['etc1s'],
+    alpha: true,
+  },
+  {
+    // What UASTC reaches on a phone. ASTC is the format UASTC is a restricted
+    // profile of, so this loses nothing at all - the block is rewritten, not
+    // approximated.
+    target: { name: 'astc', format: COMPRESSED_FORMAT.astc, bytesPerBlock: 16 },
+    extension: 'WEBGL_compressed_texture_astc',
+    codecs: ['uastc'],
     alpha: true,
   },
 ];
