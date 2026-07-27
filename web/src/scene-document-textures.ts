@@ -35,6 +35,34 @@ export async function hydrateSceneTextures(scene: ViewerScene): Promise<ViewerSc
   return scene;
 }
 
+/**
+ * glTF reaches these codecs only through their extension, so the codec a
+ * resource is stored in says which extension named it. The document does not
+ * record that on the texture, and it should not have to: it carries the bytes
+ * whatever the codec, and only a consumer that has to decode them cares.
+ */
+const SOURCE_EXTENSION_BY_MIME: Record<string, string> = {
+  'image/webp': 'EXT_texture_webp',
+  'image/ktx2': 'KHR_texture_basisu',
+};
+
+/**
+ * Per alternate-source extension, whether every texture that used it decoded.
+ *
+ * An observation about this browser, not a support claim: the codec belongs to
+ * the host. Read off a hydrated scene, because before hydration the answer is
+ * "not yet" for all of them and after it the scene holds the outcome.
+ */
+export function honoredTextureSources(scene: ViewerScene): Map<string, boolean> {
+  const honored = new Map<string, boolean>();
+  for (const texture of scene.textures) {
+    const extension = SOURCE_EXTENSION_BY_MIME[texture?.mimeType ?? ''];
+    if (!extension) continue;
+    honored.set(extension, (honored.get(extension) ?? true) && Boolean(texture.image));
+  }
+  return honored;
+}
+
 /** @returns The warning to report, or null when the image decoded. */
 async function decodeInto(texture: ViewerTexture, index: number): Promise<string | null> {
   const bytes = texture.bytes!;

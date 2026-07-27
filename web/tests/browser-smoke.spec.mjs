@@ -1733,3 +1733,75 @@ test('a SceneDocument texture only reaches the GPU once it is hydrated', async (
   expect(samples.wet[1]).toBeGreaterThan(200);
   expect(samples.wet[0]).toBeLessThan(samples.wet[1] / 2);
 });
+
+test('the glTF preview comes from the scene document the export reads', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  // The document is built when the file is opened and drives the summary and
+  // every export; before this it was built and then ignored, while the preview
+  // opened the same bytes with a second reader. A textured fixture is used
+  // because texture bytes only reach the GPU through the hydration step that
+  // exists solely for this path — a white frame would mean the switch happened
+  // without it.
+  await page.locator('#file-input').setInputFiles({
+    name: 'emissive.gltf',
+    mimeType: 'model/gltf+json',
+    buffer: Buffer.from(emissiveTransformQuad({ offset: 0 })),
+  });
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).not.toContainText('previewing through the direct glTF reader');
+
+  const source = await page.evaluate(async () => {
+    const { state } = await import('/app/state.js');
+    const scene = state.viewer.scene;
+    return {
+      document: !!state.currentSceneDocument,
+      textures: scene.textures.length,
+      // Only the document adapter hands over the source bytes; the direct
+      // reader arrives with a decoded image and no bytes at all.
+      carriesBytes: scene.textures.every((texture) => texture.bytes instanceof Uint8Array),
+      hydrated: scene.textures.every((texture) => !!texture.image),
+    };
+  });
+  expect(source.document).toBe(true);
+  expect(source.textures).toBeGreaterThan(0);
+  expect(source.carriesBytes).toBe(true);
+  expect(source.hydrated).toBe(true);
+});
+
+test('a file the document cannot be built from still previews, and says so', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  await page.locator('#file-input').setInputFiles({
+    name: 'emissive.gltf',
+    mimeType: 'model/gltf+json',
+    buffer: Buffer.from(emissiveTransformQuad({ offset: 0 })),
+  });
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  // Every glTF in testdata survives the document route, so there is no fixture
+  // that fails it — that is a measured fact, not an assumption. The branch is
+  // therefore driven directly: with no document in hand the preview has to
+  // fall back to the reader that used to be the only path, and say why.
+  const fallback = await page.evaluate(async () => {
+    const { state } = await import('/app/state.js');
+    const { loadPreview } = await import('/app/preview.js');
+    state.currentSceneDocument = null;
+    await loadPreview('gltf');
+    const scene = state.viewer.scene;
+    return {
+      textures: scene.textures.length,
+      // The direct reader decodes during the load and never carries bytes.
+      hydrated: scene.textures.every((texture) => !!texture.image),
+      carriesBytes: scene.textures.some((texture) => texture.bytes instanceof Uint8Array),
+    };
+  });
+
+  await expect(page.locator('#console')).toContainText('previewing through the direct glTF reader');
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  expect(fallback.textures).toBeGreaterThan(0);
+  expect(fallback.hydrated).toBe(true);
+  expect(fallback.carriesBytes).toBe(false);
+});

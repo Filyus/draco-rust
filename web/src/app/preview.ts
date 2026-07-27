@@ -1,7 +1,10 @@
 import type { ViewerScene } from '../viewer-scene.ts';
 import { Viewer } from '../viewer.ts';
 import { buildSceneFromFbx, buildSceneFromMeshes } from '../mesh-loader.ts';
-import { buildSceneFromGltf } from '../gltf-loader.ts';
+import { buildSceneFromGltf, extensionWarnings } from '../gltf-loader.ts';
+import { buildViewerSceneFromDocument } from '../scene-document-viewer.ts';
+import { hydrateSceneTextures, honoredTextureSources } from '../scene-document-textures.ts';
+import type { SceneDocument } from '../scene-document.ts';
 import { errorMessage, log } from './log.ts';
 import { modules, state } from './state.ts';
 import { renderSceneDocumentSummary } from './scene-report.ts';
@@ -62,12 +65,9 @@ export async function loadPreview(extension: string) {
     let scene: ViewerScene;
     if (extension === 'gltf' || extension === 'glb') {
       if (!modules.gltf.loaded) throw new Error('glTF module is not loaded');
-      scene = await buildSceneFromGltf(
-        state.currentSourceData!,
-        state.currentSourceResources,
-        modules.gltf.module,
-        { onLog: (msg: string, type: string) => log(msg, type) },
-      );
+      scene = state.currentSceneDocument
+        ? await previewFromDocument(state.currentSceneDocument)
+        : await previewFromLoader();
     } else if (extension === 'fbx' && state.currentMeshData?.scene) {
       scene = await buildSceneFromFbx(
         state.currentMeshData,
@@ -99,6 +99,44 @@ export async function loadPreview(extension: string) {
     setViewerControlsEnabled(false);
     log(`Preview failed: ${errorMessage(error)}`, 'error');
   }
+}
+
+/**
+ * Build the preview from the document the summary and every export already
+ * read.
+ *
+ * The document is built once when the file is opened; before this, the preview
+ * opened the same bytes again with a second reader, and the two could disagree
+ * about what the file contained without anything saying so. What the renderer
+ * cannot show comes from the adapter; what the file claimed and this browser
+ * could not honor is stated here, because only after hydration is the answer
+ * known.
+ */
+async function previewFromDocument(document: SceneDocument): Promise<ViewerScene> {
+  const scene = await hydrateSceneTextures(buildViewerSceneFromDocument(document) as ViewerScene);
+  scene.warnings.push(...extensionWarnings(
+    state.currentGltfProvenance ?? {},
+    honoredTextureSources(scene),
+  ));
+  return scene;
+}
+
+/**
+ * The reader that used to be the only path, kept for the files the portable
+ * document cannot be built from.
+ *
+ * Every glTF in `testdata` survives the document route, so this is rare rather
+ * than routine — but a user's file is not bounded by that corpus, and showing
+ * nothing is worse than showing it through the older reader and saying so.
+ */
+async function previewFromLoader(): Promise<ViewerScene> {
+  log('Scene document unavailable; previewing through the direct glTF reader instead', 'warning');
+  return buildSceneFromGltf(
+    state.currentSourceData!,
+    state.currentSourceResources,
+    modules.gltf.module,
+    { onLog: (msg: string, type: string) => log(msg, type) },
+  );
 }
 
 export function setViewerControlsEnabled(enabled: boolean) {
