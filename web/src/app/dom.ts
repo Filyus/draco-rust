@@ -89,6 +89,7 @@ export const sceneStatFields = {
   skins: element('scene-skin-stat'),
   morphs: element('scene-morph-stat'),
   clips: element('scene-clip-stat'),
+  lights: element('scene-light-stat'),
 };
 /** The geometry readout under the viewport, shared by both mesh summaries. */
 export const meshStatFields = {

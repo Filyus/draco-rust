@@ -15,6 +15,7 @@ import type {
   SceneAnimation,
   SceneDocument,
   SceneMaterial,
+  SceneLight,
   SceneMesh,
   SceneNode,
   SceneSkin,
@@ -66,6 +67,7 @@ interface GltfTexture {
 /** A node carries either a matrix or a TRS triple, never both. */
 interface GltfNode {
   name: string;
+  extensions?: Record<string, unknown>;
   children?: number[];
   mesh?: number;
   skin?: number;
@@ -178,8 +180,14 @@ export function lowerSceneDocumentToGltf(document: SceneDocument) {
     extensionsRequired.add('KHR_mesh_quantization');
   }
 
+  // KHR_lights_punctual keeps the lights at the root and has nodes point at
+  // them, which is how the document holds them too.
+  const lights = (document.lights ?? []).map(lowerLight);
+  if (lights.length > 0) extensionsUsed.add('KHR_lights_punctual');
+
   const manifest = {
     asset: { version: '2.0', generator: 'draco-rust SceneDocument exporter' },
+    ...(lights.length > 0 ? { extensions: { KHR_lights_punctual: { lights } } } : {}),
     buffers: [{ uri: 'scene.bin', byteLength: binary.length }],
     bufferViews,
     accessors,
@@ -352,6 +360,31 @@ function lowerMaterial(
  * the way the glTF spec names it, so `clearcoatNormalTexture` reads back as
  * "clearcoat normal".
  */
+/**
+ * One light, in the shape the extension states.
+ *
+ * A spot's cone lives in a nested object there but flat on the portable light,
+ * because only spots have one and a nested object of two angles is a shape
+ * every consumer would have to unwrap. Defaults are omitted: the extension's
+ * own are what an absent field means.
+ */
+function lowerLight(light: SceneLight, index: number) {
+  const output: Record<string, unknown> = {
+    type: light.type,
+    name: light.name || `light_${index}`,
+    color: [...(light.color || [1, 1, 1])],
+    intensity: light.intensity ?? 1,
+  };
+  if (light.range !== undefined) output.range = light.range;
+  if (light.type === 'spot') {
+    output.spot = {
+      innerConeAngle: light.innerConeAngle ?? 0,
+      outerConeAngle: light.outerConeAngle ?? Math.PI / 4,
+    };
+  }
+  return output;
+}
+
 function slotLabel(property: string): string {
   return property
     .replace(/Texture$/, '')
@@ -416,6 +449,8 @@ function lowerNode(
     ...(node.mesh === undefined ? {} : { mesh: node.mesh }),
     ...(node.skin === undefined ? {} : { skin: node.skin }),
     ...(node.weights?.length ? { weights: [...node.weights] } : {}),
+    // The node is what places and aims a light; the light itself is at the root.
+    ...(node.light === undefined ? {} : { extensions: { KHR_lights_punctual: { light: node.light } } }),
   };
   if (node.mesh !== undefined && (node.mesh < 0 || node.mesh >= meshCount)) throw new Error(`SceneDocument node ${index} has invalid mesh`);
   if (node.skin !== undefined && (node.skin < 0 || node.skin >= skinCount)) throw new Error(`SceneDocument node ${index} has invalid skin`);

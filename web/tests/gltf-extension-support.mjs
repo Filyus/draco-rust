@@ -134,6 +134,29 @@ const INTERPRETED = {
       assert.equal(read.clearcoatRoughnessFactor, 0.2);
     },
   },
+  KHR_lights_punctual: {
+    // The only interpreted extension that is not on a material at all: it
+    // states the scene's lights at the root and has nodes place them, so its
+    // case reads a whole document rather than one materials[] entry.
+    material: null,
+    effect: () => {},
+    document: {
+      extensions: {
+        KHR_lights_punctual: {
+          lights: [{ type: 'spot', color: [1, 0.5, 0], intensity: 3, range: 12, spot: { outerConeAngle: 0.5 } }],
+        },
+      },
+      nodes: [{ mesh: 0, extensions: { KHR_lights_punctual: { light: 0 } } }],
+    },
+    documentEffect: (built) => {
+      assert.equal(built.lights?.length, 1, 'a placed light must reach the document');
+      assert.deepEqual(built.lights[0].color, [1, 0.5, 0]);
+      assert.equal(built.lights[0].intensity, 3);
+      assert.equal(built.lights[0].range, 12);
+      assert.equal(built.lights[0].outerConeAngle, 0.5);
+      assert.equal(built.nodes[0].light, 0, 'the node that placed it must keep pointing at it');
+    },
+  },
   KHR_texture_transform: {
     material: {
       pbrMetallicRoughness: {
@@ -174,8 +197,14 @@ assert.deepEqual(
   'every interpreted extension needs a case showing what it does to the reading',
 );
 
-/** A triangle carrying `material`, declared as using `extensions`. */
-function assetWith(extensions, material) {
+/**
+ * A triangle carrying `material`, declared as using `extensions`.
+ *
+ * `overrides` is merged last, for the cases that live outside a materials[]
+ * entry: a scene's lights are stated at the root and placed by a node, and no
+ * amount of material JSON expresses that.
+ */
+function assetWith(extensions, material, overrides = {}) {
   return new TextEncoder().encode(JSON.stringify({
     asset: { version: '2.0' },
     extensionsUsed: extensions,
@@ -190,12 +219,13 @@ function assetWith(extensions, material) {
     nodes: [{ mesh: 0 }],
     scenes: [{ nodes: [0] }],
     scene: 0,
+    ...overrides,
   }));
 }
 
 /** Whether either consumer names `extension` in what it could not act on. */
-function reported(extension, material = null) {
-  const bytes = assetWith([extension], material);
+function reported(extension, material = null, overrides = {}) {
+  const bytes = assetWith([extension], material, overrides);
   const manifest = JSON.parse(new TextDecoder().decode(bytes));
   const preview = extensionWarnings(manifest, new Map());
   const document = buildSceneDocumentFromGltf(bytes, Object.create(null), gltfModule);
@@ -203,11 +233,14 @@ function reported(extension, material = null) {
   return { preview: names(preview), document: names(document.warnings) };
 }
 
-for (const [extension, { material, effect }] of Object.entries(INTERPRETED)) {
+for (const [extension, { material, effect, document: overrides, documentEffect }] of Object.entries(INTERPRETED)) {
   // The material a texture-transform case needs a texture for is read without
   // one: readGltfMaterial works in glTF index space and never resolves it.
   effect(readGltfMaterial(material, 0));
-  const seen = reported(extension, null);
+  if (documentEffect) {
+    documentEffect(buildSceneDocumentFromGltf(assetWith([extension], null, overrides), Object.create(null), gltfModule));
+  }
+  const seen = reported(extension, null, overrides ?? {});
   assert.equal(seen.preview, false, `${extension} is interpreted, so the preview must not report it as ignored`);
   assert.equal(seen.document, false, `${extension} is interpreted, so the document must not report it as omitted`);
 }

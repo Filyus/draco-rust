@@ -12,7 +12,7 @@ import { cloneTrs, decomposeMat4 } from './mat4.ts';
 import {
   MAX_ACTIVE_MORPH_TARGETS, VIEWER_LIMIT_WARNINGS, peakActiveMorphWeights,
 } from './viewer-scene.ts';
-import type { RuntimeAccessor } from './viewer-scene.ts';
+import type { RuntimeAccessor, ViewerLight } from './viewer-scene.ts';
 import { assertValidSceneDocument } from './scene-document.ts';
 import {
   MATERIAL_EXTENSION_TEXTURE_SLOTS, materialExtensionFactors,
@@ -21,6 +21,7 @@ import type {
   SceneAccessor,
   SceneAnimation,
   SceneDocument,
+  SceneLight,
   SceneMaterial,
   SceneMesh,
   SceneNode,
@@ -78,8 +79,17 @@ export function buildViewerSceneFromDocument(document: SceneDocument) {
       break;
     }
   }
+  // Only lights a node places: an unplaced one has no position to shine from,
+  // and the document said so when it read them.
+  const lights = document.nodes.flatMap((source, index) => {
+    if (source.light === undefined) return [];
+    const light = document.lights?.[source.light];
+    return light ? [adaptLight(light, nodes[index])] : [];
+  });
+
   return {
     nodes,
+    lights,
     rootIndices: [...document.rootNodes],
     meshes,
     skins,
@@ -297,6 +307,25 @@ function adaptMaterial(material: SceneMaterial, index: number) {
  * megabytes of identical buffers, so the scene points at the document's bytes.
  * Nothing on this path writes to them.
  */
+/**
+ * A document light bound to the node that places it.
+ *
+ * Every optional field is resolved here rather than in the shader: the
+ * renderer sends fixed-size arrays, and "absent" has no representation in
+ * them. A range of zero is the extension's infinite - the light never stops.
+ */
+function adaptLight(light: SceneLight, node: ReturnType<typeof adaptNode>): ViewerLight {
+  return {
+    type: light.type,
+    node,
+    color: [...(light.color || [1, 1, 1])],
+    intensity: light.intensity ?? 1,
+    range: light.range ?? 0,
+    innerConeAngle: light.innerConeAngle ?? 0,
+    outerConeAngle: light.outerConeAngle ?? Math.PI / 4,
+  };
+}
+
 function adaptTexture(texture: SceneTexture, resources: SceneResource[], index: number) {
   const resource = resources[texture.resource];
   return {

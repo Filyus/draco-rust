@@ -34,6 +34,7 @@ export function renderSceneDocumentSummary(sceneDocument: SceneDocument, extraWa
     sceneStatFields.skins.textContent = sceneDocument.skins.length.toLocaleString();
     sceneStatFields.morphs.textContent = morphs.toLocaleString();
     sceneStatFields.clips.textContent = sceneDocument.animations.length.toLocaleString();
+    sceneStatFields.lights.textContent = (sceneDocument.lights?.length ?? 0).toLocaleString();
     renderSceneTree(sceneDocument);
     renderSceneCompanions(sceneDocument);
     sceneSection.style.display = 'flex';

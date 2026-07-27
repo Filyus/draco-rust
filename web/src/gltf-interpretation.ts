@@ -33,7 +33,10 @@ type GltfJson = any;
  */
 export const GLTF_INTERPRETED_EXTENSIONS: ReadonlySet<string> = new Set([
   ...MATERIAL_EXTENSION_NAMES,
+  // Neither of these is a material layer: one rides on a texture binding and
+  // one on the scene, so they are named here and read where they live.
   'KHR_texture_transform',
+  'KHR_lights_punctual',
 ]);
 
 /**

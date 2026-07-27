@@ -190,8 +190,27 @@ export interface ViewerTexture {
 }
 
 /** The whole runtime scene, as the viewer holds it between frames. */
+/**
+ * A punctual light the renderer can shade with, already placed.
+ *
+ * The node that carries it is kept rather than its world matrix, because the
+ * matrix changes every frame an animation touches that node and the renderer
+ * reads it there anyway.
+ */
+export interface ViewerLight {
+  type: 'directional' | 'point' | 'spot';
+  node: ViewerNode;
+  color: number[];
+  intensity: number;
+  range: number;
+  innerConeAngle: number;
+  outerConeAngle: number;
+}
+
 export interface ViewerScene {
   nodes: ViewerNode[];
+  /** Placed punctual lights; empty for a scene that declares none. */
+  lights?: ViewerLight[];
   rootIndices: number[];
   meshes: ViewerMesh[];
   skins: ViewerSkin[];

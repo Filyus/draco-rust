@@ -17,7 +17,9 @@ import type { GlResources, UploadedPrimitive } from './primitive-upload.ts';
 import type { SurfaceProgram, SurfaceProgramCache, SurfaceUniforms } from './programs.ts';
 import { computeJointMatrices, updateWorldMatrices } from './scene-graph.ts';
 import type { SceneGraphHost } from './scene-graph.ts';
-import { MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS, TEXTURE_SLOTS, TEXTURE_SLOT_SAMPLERS } from './shaders.ts';
+import {
+  MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS, MAX_PUNCTUAL_LIGHTS, TEXTURE_SLOTS, TEXTURE_SLOT_SAMPLERS,
+} from './shaders.ts';
 import type { TextureSlotName } from './shaders.ts';
 import type { ViewerMaterial, ViewerTextureBinding } from '../viewer-scene.ts';
 
@@ -121,6 +123,7 @@ function useSurfaceProgram(host: RenderHost, slots: readonly TextureSlotName[]) 
   host.gl.uniform3fv(surface.uniforms.uCameraPos, host._eye!);
   bindEnvironmentIbl(host);
   bindFrameSnapshot(host);
+  bindPunctualLights(host);
   return surface;
 }
 
@@ -194,6 +197,12 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   _morphLayers?: Int32Array;
   /** Reused ordering buffer for the per-frame morph target pick. */
   _morphOrder?: number[];
+  /** Reused per-frame light uniforms, resolved from the nodes that place them. */
+  _lightTypes?: Int32Array;
+  _lightColors?: Float32Array;
+  _lightPositions?: Float32Array;
+  _lightDirections?: Float32Array;
+  _lightParams?: Float32Array;
   /** Reused per-material slot uniforms: UV set and texture transform. */
   _texCoordSlots?: Int32Array;
   _texMatrices?: Float32Array;
@@ -517,6 +526,46 @@ export function bindFrameSnapshot(host: RenderHost) {
   gl.uniform2f(host.uniforms.uFrameSize, frame.width, frame.height);
   // The mip chain is the blur a rough transmissive surface reads through.
   gl.uniform1f(host.uniforms.uFrameMaxLod, Math.log2(Math.max(frame.width, frame.height)));
+}
+
+/**
+ * Hand the program the scene's punctual lights, in world space.
+ *
+ * Resolved from the node that places each one, every frame: the node's world
+ * matrix is what an animation moves, so a light baked once would stay behind.
+ * A light's forward is -Z, which is what every format that has lights means by
+ * the direction of a spot or a sun.
+ */
+export function bindPunctualLights(host: RenderHost) {
+  const gl = host.gl;
+  const lights = host.scene?.lights ?? [];
+  const count = Math.min(lights.length, MAX_PUNCTUAL_LIGHTS);
+  gl.uniform1i(host.uniforms.uLightCount, count);
+  if (count === 0) return;
+
+  const types = host._lightTypes ??= new Int32Array(MAX_PUNCTUAL_LIGHTS);
+  const colors = host._lightColors ??= new Float32Array(MAX_PUNCTUAL_LIGHTS * 3);
+  const positions = host._lightPositions ??= new Float32Array(MAX_PUNCTUAL_LIGHTS * 3);
+  const directions = host._lightDirections ??= new Float32Array(MAX_PUNCTUAL_LIGHTS * 3);
+  const params = host._lightParams ??= new Float32Array(MAX_PUNCTUAL_LIGHTS * 4);
+  for (let index = 0; index < count; index += 1) {
+    const light = lights[index];
+    const world = light.node.world;
+    types[index] = light.type === 'directional' ? 0 : light.type === 'point' ? 1 : 2;
+    colors.set(light.color.slice(0, 3), index * 3);
+    // Column-major: the translation is the fourth column, and -Z of the
+    // rotation is where the light looks.
+    positions.set([world[12], world[13], world[14]], index * 3);
+    const forward = [-world[8], -world[9], -world[10]];
+    const length = Math.hypot(...forward) || 1;
+    directions.set(forward.map((value) => value / length), index * 3);
+    params.set([light.intensity, light.range, light.innerConeAngle, light.outerConeAngle], index * 4);
+  }
+  gl.uniform1iv(host.uniforms.uLightType, types);
+  gl.uniform3fv(host.uniforms.uLightColor, colors);
+  gl.uniform3fv(host.uniforms.uLightPosition, positions);
+  gl.uniform3fv(host.uniforms.uLightDirection, directions);
+  gl.uniform4fv(host.uniforms.uLightParams, params);
 }
 
 export function bindEnvironmentIbl(host: RenderHost) {

@@ -11,6 +11,14 @@ export const MAX_JOINTS = 256;
 export const MAX_ACTIVE_MORPH_TARGETS = 32;
 
 /**
+ * How many punctual lights one draw can shade with.
+ *
+ * A loop bound rather than a hardware one, like the morph bound above: a scene
+ * may declare any number, and the renderer sends the ones nearest the model.
+ */
+export const MAX_PUNCTUAL_LIGHTS = 8;
+
+/**
  * Every material texture slot the surface shader knows how to sample.
  *
  * This is the vocabulary, not the layout: a given program declares only the
@@ -218,6 +226,14 @@ uniform samplerCube uPrefilteredMap;
 uniform sampler2D uBrdfLut;
 uniform float uEnvironmentMaxLod;
 uniform vec3 uCameraPos;
+// KHR_lights_punctual, resolved to world space by the renderer. Type 0 is
+// directional, 1 point, 2 spot; a range of zero never falls off.
+uniform int uLightCount;
+uniform int uLightType[${MAX_PUNCTUAL_LIGHTS}];
+uniform vec3 uLightColor[${MAX_PUNCTUAL_LIGHTS}];
+uniform vec3 uLightPosition[${MAX_PUNCTUAL_LIGHTS}];
+uniform vec3 uLightDirection[${MAX_PUNCTUAL_LIGHTS}];
+uniform vec4 uLightParams[${MAX_PUNCTUAL_LIGHTS}];
 
 out vec4 outColor;
 
@@ -235,6 +251,58 @@ ${slotDeclarations(slots)}
 
 vec3 fresnelSchlickRoughness(float cosTheta, vec3 f0, float roughness) {
     return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - cosTheta, 5.0);
+}
+
+/** GGX normal distribution, the microfacet term of the direct lobe. */
+float distributionGgx(float nDotH, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float d = nDotH * nDotH * (a2 - 1.0) + 1.0;
+    return a2 / max(PI * d * d, 1e-7);
+}
+
+/** Smith visibility, height-correlated, already divided by the 4 NdotL NdotV. */
+float visibilitySmith(float nDotL, float nDotV, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float v = nDotL * sqrt(nDotV * nDotV * (1.0 - a2) + a2);
+    float l = nDotV * sqrt(nDotL * nDotL * (1.0 - a2) + a2);
+    return 0.5 / max(v + l, 1e-7);
+}
+
+/**
+ * What one punctual light delivers here: its direction and its radiance.
+ *
+ * The three types differ only in how the two are found. Distance attenuation
+ * is the extension's own: inverse square, cut off by the range when it states
+ * one, with the window term that takes it smoothly to nothing at the edge.
+ */
+void punctualLight(int index, vec3 position, out vec3 lightDir, out vec3 radiance) {
+    int type = uLightType[index];
+    vec3 color = uLightColor[index] * uLightParams[index].x;
+    if (type == 0) {
+        lightDir = -uLightDirection[index];
+        radiance = color;
+        return;
+    }
+    vec3 toLight = uLightPosition[index] - position;
+    float distance = length(toLight);
+    lightDir = toLight / max(distance, 1e-6);
+    float attenuation = 1.0 / max(distance * distance, 1e-6);
+    float range = uLightParams[index].y;
+    if (range > 0.0) {
+        float ratio = distance / range;
+        float window = clamp(1.0 - ratio * ratio * ratio * ratio, 0.0, 1.0);
+        attenuation *= window * window;
+    }
+    if (type == 2) {
+        // The cone: full inside the inner angle, nothing outside the outer one.
+        float cosOuter = cos(uLightParams[index].w);
+        float cosInner = cos(uLightParams[index].z);
+        float cosAngle = dot(-lightDir, uLightDirection[index]);
+        attenuation *= clamp((cosAngle - cosOuter) / max(cosInner - cosOuter, 1e-4), 0.0, 1.0);
+    }
+    radiance = color * attenuation;
 }
 
 /**
@@ -585,6 +653,25 @@ void main() {
         diffuseTerm = mix(diffuseTerm, diffuseWeight * attenuate(transmitted, thickness), transmission);
     }
     vec3 color = (diffuseTerm + specularIbl) * occlusion;
+
+    // Direct light on top of the environment. The same f0 and roughness the
+    // image-based terms used, so a material shaded by both does not change
+    // character between them.
+    for (int i = 0; i < uLightCount; i += 1) {
+        vec3 L;
+        vec3 radiance;
+        punctualLight(i, vWorldPos, L, radiance);
+        float nDotL = max(dot(N, L), 0.0);
+        if (nDotL <= 0.0) continue;
+        vec3 H = normalize(L + V);
+        vec3 fresnel = fresnelSchlickRoughness(max(dot(V, H), 0.0), f0, roughness);
+        vec3 specular = fresnel
+            * distributionGgx(max(dot(N, H), 0.0), roughness)
+            * visibilitySmith(nDotL, nDotV, roughness)
+            * mix(specularWeight, 1.0, metallic);
+        vec3 diffuse = (vec3(1.0) - fresnel) * (1.0 - metallic) * baseColor / PI;
+        color += (diffuse + specular) * radiance * nDotL;
+    }
     vec3 emissive = uEmissiveFactor;
     #ifdef HAS_EMISSIVE
     emissive *= pow(texture(uEmissive, slotUv(SLOT_EMISSIVE)).rgb, vec3(2.2));

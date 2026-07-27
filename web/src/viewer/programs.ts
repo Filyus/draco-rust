@@ -32,11 +32,15 @@ const SURFACE_UNIFORMS = [
   'uClearcoatNormalScale',
   'uIrradianceMap', 'uPrefilteredMap', 'uBrdfLut', 'uEnvironmentMaxLod',
   'uFrameSnapshot', 'uFrameSize', 'uFrameMaxLod',
+  'uLightCount',
   'uCameraPos',
 ] as const;
 
 /** Array uniforms are addressed by their first element. */
-const SURFACE_ARRAY_UNIFORMS = ['uJointMatrix', 'uMorphWeights', 'uMorphLayers', 'uTexCoordSlot', 'uTexMatrix'] as const;
+const SURFACE_ARRAY_UNIFORMS = [
+  'uJointMatrix', 'uMorphWeights', 'uMorphLayers', 'uTexCoordSlot', 'uTexMatrix',
+  'uLightType', 'uLightColor', 'uLightPosition', 'uLightDirection', 'uLightParams',
+] as const;
 
 export type SurfaceUniforms = Record<string, WebGLUniformLocation | null>;
 

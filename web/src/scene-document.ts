@@ -127,8 +127,35 @@ export interface SceneMesh {
   weights?: number[];
 }
 
+/**
+ * A punctual light: a point, a spot or a direction, placed by a node.
+ *
+ * Source-neutral on purpose. glTF states these through KHR_lights_punctual and
+ * FBX has its own light nodes; what they agree on is a colour, an intensity
+ * and how the light falls off, which is what the contract carries. The node
+ * gives it its place and, for the two directional kinds, its aim: -Z, as every
+ * format that has lights defines it.
+ */
+export type SceneLightType = 'directional' | 'point' | 'spot';
+
+export interface SceneLight {
+  type: SceneLightType;
+  name?: string;
+  /** Linear RGB; 1,1,1 when the source says nothing. */
+  color?: number[];
+  /** Candela for point and spot, lux for directional. */
+  intensity?: number;
+  /** Where the light stops reaching; absent means it does not. */
+  range?: number;
+  /** Spot only, radians from the axis. */
+  innerConeAngle?: number;
+  outerConeAngle?: number;
+}
+
 export interface SceneNode {
   name?: string;
+  /** Index into `SceneDocument.lights`; the node places and aims it. */
+  light?: number;
   /** Mutually exclusive with translation/rotation/scale. */
   matrix?: number[];
   translation?: number[];
@@ -169,6 +196,13 @@ export interface SceneAnimation {
 export interface SceneDocument {
   version: number;
   resources: SceneResource[];
+  /**
+   * Punctual lights, placed by the nodes that reference them.
+   *
+   * Optional so that every document written before lights existed is still a
+   * valid one, and so that a format with no lights produces no empty array.
+   */
+  lights?: SceneLight[];
   textures: SceneTexture[];
   materials: SceneMaterial[];
   accessors: SceneAccessor[];
@@ -306,6 +340,7 @@ export function validateSceneDocument(input: unknown): ValidationResult {
   document.resources.forEach((resource: Untrusted, index: number) => validateResource(resource, index, errors));
   document.textures.forEach((texture: Untrusted, index: number) => validateTexture(texture, index, document.resources.length, errors));
   document.materials.forEach((material: Untrusted, index: number) => validateMaterial(material, index, document.textures.length, errors));
+  (document.lights ?? []).forEach((light: Untrusted, index: number) => validateLight(light, index, errors));
   document.accessors.forEach((accessor: Untrusted, index: number) => validateAccessor(accessor, index, errors));
 
   document.meshes.forEach((mesh: Untrusted, meshIndex: number) => {
@@ -413,6 +448,35 @@ function validateTexture(texture: Untrusted, index: number, resourceCount: numbe
   validateIndex(texture.resource, resourceCount, `${label}.resource`, errors);
   if (texture.name !== undefined && typeof texture.name !== 'string') errors.push(`${label}.name must be a string when present`);
   if (texture.sampler !== undefined && (!texture.sampler || typeof texture.sampler !== 'object')) errors.push(`${label}.sampler must be an object when present`);
+}
+
+const LIGHT_TYPES = new Set(['directional', 'point', 'spot']);
+
+/**
+ * One light.
+ *
+ * A spot's cone is the only part with a relationship between its fields: the
+ * inner angle has to be inside the outer one, and a viewer that trusted the
+ * pair blindly would divide by zero where they meet.
+ */
+function validateLight(light: Untrusted, index: number, errors: string[]) {
+  const label = `lights[${index}]`;
+  if (!light || typeof light !== 'object') return errors.push(`${label} must be an object`);
+  if (!LIGHT_TYPES.has(light.type)) errors.push(`${label}.type must be directional, point or spot`);
+  validateNumberArray(light.color, 3, `${label}.color`, errors, [1, 1, 1]);
+  validateFiniteNumber(light.intensity, `${label}.intensity`, errors, 1);
+  if (light.range !== undefined) {
+    validateFiniteNumber(light.range, `${label}.range`, errors, 0);
+    if (!(light.range > 0)) errors.push(`${label}.range must be positive when present`);
+  }
+  if (light.type !== 'spot') return;
+  const inner = light.innerConeAngle ?? 0;
+  const outer = light.outerConeAngle ?? Math.PI / 4;
+  validateFiniteNumber(light.innerConeAngle, `${label}.innerConeAngle`, errors, 0);
+  validateFiniteNumber(light.outerConeAngle, `${label}.outerConeAngle`, errors, Math.PI / 4);
+  if (!(inner >= 0 && inner < outer && outer <= Math.PI / 2)) {
+    errors.push(`${label} cone must satisfy 0 <= innerConeAngle < outerConeAngle <= PI/2`);
+  }
 }
 
 function validateMaterial(material: Untrusted, index: number, textureCount: number, errors: string[]) {
@@ -541,6 +605,7 @@ function validateNode(
     validateNumberArray(node.scale, 3, `${label}.scale`, errors, [1, 1, 1]);
   }
   if (node.mesh !== undefined) validateIndex(node.mesh, document.meshes.length, `${label}.mesh`, errors);
+  if (node.light !== undefined) validateIndex(node.light, (document.lights ?? []).length, `${label}.light`, errors);
   if (node.skin !== undefined) validateIndex(node.skin, document.skins.length, `${label}.skin`, errors);
   if (node.weights !== undefined) validateWeights(node.weights, `${label}.weights`, errors);
   if (node.children !== undefined) {

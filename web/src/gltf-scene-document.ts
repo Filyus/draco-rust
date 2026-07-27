@@ -11,7 +11,7 @@ import {
 } from './scene-document.ts';
 import type {
   AnimationChannel, AnimationSampler, AttributeMap, ComponentType, SceneAccessor, SceneDocument,
-  SceneMaterial, SceneNode, ScenePrimitive, TextureInfo,
+  SceneLight, SceneMaterial, SceneNode, ScenePrimitive, TextureInfo,
 } from './scene-document.ts';
 import {
   GLTF_TEXTURE_SOURCE_EXTENSIONS,
@@ -79,6 +79,7 @@ export function buildSceneDocumentWithGltfProvenance(
     const textureBySource = collectTextures(manifest.textures || [], manifest.samplers || [], imageResources, document);
     collectMaterials(manifest.materials || [], textureBySource, document);
     collectMeshes(asset, manifest.meshes || [], document, accessorBySource);
+    collectLights(manifest, document);
     collectNodes(manifest, document);
     collectSkins(asset, manifest.skins || [], document, accessorBySource);
     collectAnimations(asset, manifest.animations || [], document, accessorBySource);
@@ -262,6 +263,50 @@ function collectMeshes(
   })));
 }
 
+/** The light a node places, as KHR_lights_punctual states it. */
+function lightIndex(node: GltfJson): number | null {
+  const index = node?.extensions?.KHR_lights_punctual?.light;
+  return Number.isInteger(index) ? index : null;
+}
+
+/**
+ * The scene's punctual lights.
+ *
+ * glTF keeps them in a root extension and has nodes point at them, which is
+ * already the shape the portable document wants: the light says what it emits,
+ * the node says where from. Only lights a node actually places are carried -
+ * an unplaced one lights nothing, and keeping it would make the export write
+ * a light no reader could position.
+ */
+function collectLights(manifest: GltfJson, document: SceneDocument) {
+  const declared: GltfJson[] = manifest.extensions?.KHR_lights_punctual?.lights || [];
+  if (declared.length === 0) return;
+  const used = new Set<number>();
+  for (const node of manifest.nodes || []) {
+    const index = lightIndex(node);
+    if (index !== null) used.add(index);
+  }
+  document.lights = declared.map((light: GltfJson, index: number) => {
+    const type = ['directional', 'point', 'spot'].includes(light?.type) ? light.type : 'point';
+    const output: SceneLight = {
+      type,
+      name: light?.name || `light_${index}`,
+      color: Array.from(light?.color || [1, 1, 1], Number),
+      intensity: Number.isFinite(light?.intensity) ? light.intensity : 1,
+    };
+    if (Number.isFinite(light?.range) && light.range > 0) output.range = light.range;
+    if (type === 'spot') {
+      output.innerConeAngle = Number.isFinite(light?.spot?.innerConeAngle) ? light.spot.innerConeAngle : 0;
+      output.outerConeAngle = Number.isFinite(light?.spot?.outerConeAngle) ? light.spot.outerConeAngle : Math.PI / 4;
+    }
+    return output;
+  });
+  const unplaced = document.lights.length - used.size;
+  if (unplaced > 0) {
+    document.warnings.push(`${unplaced} of ${document.lights.length} punctual lights are not placed by any node and light nothing`);
+  }
+}
+
 function collectNodes(manifest: GltfJson, document: SceneDocument) {
   const meshes: GltfJson[] = manifest.meshes || [];
   document.nodes.push(...(manifest.nodes || []).map((node: GltfJson, nodeIndex: number) => {
@@ -270,6 +315,7 @@ function collectNodes(manifest: GltfJson, document: SceneDocument) {
       children: Array.from<number>(node.children || []),
       ...(typeof node.mesh === 'number' ? { mesh: node.mesh } : {}),
       ...(typeof node.skin === 'number' ? { skin: node.skin } : {}),
+      ...(lightIndex(node) === null ? {} : { light: lightIndex(node)! }),
     };
     if (Array.isArray(node.matrix) && node.matrix.length === 16) output.matrix = Array.from(node.matrix);
     else {

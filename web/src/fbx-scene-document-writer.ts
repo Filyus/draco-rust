@@ -54,6 +54,11 @@ export function buildFbxSceneFromDocument(document: SceneDocument, options: FbxW
   const sourceUnits = Boolean(provenance);
   const worlds = buildDocumentWorlds(document);
   const warnings = [...document.warnings];
+  // FBX has light nodes of its own, but this writer emits geometry and
+  // materials only, so a lit scene arrives dark and has to say so.
+  if (document.lights?.length) {
+    warnings.push(`${document.lights.length} punctual lights were not written: the FBX writer emits geometry and materials only`);
+  }
 
   const scene = {
     ...(sourceScene?.globalSettings ? { globalSettings: sourceScene.globalSettings } : {}),

@@ -1735,6 +1735,90 @@ test('one surface program per set of texture slots, not per material', async ({ 
   expect(observed.sources[1]).toEqual({ slots: 1, samplers: 1 });
 });
 
+test('KHR_lights_punctual lights the scene from the node that places it', async ({ page }) => {
+  await page.goto('/index.html');
+  // A light is the first thing the portable document carries that is neither
+  // geometry nor material, and the node it hangs on is what gives it a place.
+  // So the fixture moves the node rather than the light: if the renderer baked
+  // the position once, the second frame would look like the first.
+  const observed = await page.evaluate(async () => {
+    const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
+      import('/viewer.js'),
+      import('/scene-document.js'),
+      import('/scene-document-viewer.js'),
+    ]);
+
+    const bytes = (values) => new Uint8Array(
+      values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
+    );
+    const accessor = (values, components, componentType = 5126) => ({
+      bytes: bytes(values), componentType, components, count: values.length / components,
+    });
+    // A white rough quad facing the camera, lit by nothing but the light.
+    const document_ = (lights, lightNode) => createSceneDocument({
+      ...(lights ? { lights } : {}),
+      materials: [{ baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 0.9 }],
+      accessors: [
+        accessor(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3),
+        accessor(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]), 3),
+        accessor(new Uint16Array([0, 1, 2, 0, 2, 3]), 1, 5123),
+      ],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, indices: 2, material: 0 }] }],
+      nodes: [
+        { name: 'Quad', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 },
+        ...(lightNode ? [lightNode] : []),
+      ],
+      rootNodes: lightNode ? [0, 1] : [0],
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
+    document.body.appendChild(canvas);
+    const viewer = new Viewer(canvas);
+    viewer.showGrid = false;
+    const sample = (lights, lightNode) => {
+      viewer.setScene(buildViewerSceneFromDocument(document_(lights, lightNode)));
+      viewer.camera.target.set([0, 0, 0]);
+      viewer.camera.distance = 3;
+      viewer.camera.azimuth = 0;
+      viewer.camera.elevation = 0;
+      viewer._render();
+      const rgba = new Uint8Array(4);
+      viewer.gl.readPixels(
+        Math.floor(viewer.gl.drawingBufferWidth / 2),
+        Math.floor(viewer.gl.drawingBufferHeight / 2),
+        1, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, rgba,
+      );
+      return Array.from(rgba);
+    };
+
+    const placed = (translation) => ({
+      name: 'Lamp', translation, rotation: [0, 0, 0, 1], scale: [1, 1, 1], light: 0,
+    });
+    const unlit = sample(null, null);
+    const near = sample([{ type: 'point', color: [1, 0.2, 0.2], intensity: 12 }], placed([0, 0, 1]));
+    const far = sample([{ type: 'point', color: [1, 0.2, 0.2], intensity: 12 }], placed([0, 0, 6]));
+    // A spot aimed away from the quad reaches none of it: -Z is a light's
+    // forward, so a lamp at +Z pointing at +Z looks the other way.
+    const aimedAway = sample(
+      [{ type: 'spot', color: [1, 0.2, 0.2], intensity: 12, innerConeAngle: 0, outerConeAngle: 0.3 }],
+      { name: 'Lamp', translation: [0, 0, 1], rotation: [0, 1, 0, 0], scale: [1, 1, 1], light: 0 },
+    );
+    const glError = viewer.gl.getError();
+    viewer.dispose();
+    canvas.remove();
+    return { unlit, near, far, aimedAway, glError };
+  });
+
+  expect(observed.glError).toBe(0);
+  // The light reaches the surface.
+  expect(observed.near[0]).toBeGreaterThan(observed.unlit[0] + 30);
+  // And falls off with the square of the distance, so the node's place matters.
+  expect(observed.far[0]).toBeLessThan(observed.near[0] - 30);
+  // A cone pointed away delivers nothing, which is the node's rotation being read.
+  expect(observed.aimedAway[0]).toBeLessThan(observed.unlit[0] + 10);
+});
+
 test('KHR_materials_anisotropy stretches the specular lobe along its rotation', async ({ page }) => {
   await page.goto('/index.html');
   // No asset in the corpus carries this one, so the fixture is built here: a

@@ -271,6 +271,43 @@ assert.equal(roundtripMaterial.occlusionTexture.strength, 0.4);
 assert.equal(texturedRoundtrip.resources.some((resource) => resource.mimeType === 'image/ktx2'), true);
 assert.equal(texturedRoundtrip.resources.some((resource) => resource.mimeType === 'image/webp'), true);
 
+// Punctual lights are the first thing the contract carries that is neither
+// geometry nor material, and the writer has to put them back where the
+// extension states them: at the root, with the placing node pointing at one.
+const lightsSource = new Uint8Array(await readFile(resolve(
+    here, '..', '..', 'testdata', 'KhronosSampleModels', 'PointLightIntensityTest',
+    'glTF_Binary', 'PointLightIntensityTest.glb',
+)));
+const litDocument = buildSceneDocumentFromGltf(lightsSource, {}, gltf);
+assert.equal(litDocument.lights.length, 8, 'the asset declares eight punctual lights');
+assert.equal(
+    litDocument.nodes.filter((node) => node.light !== undefined).length,
+    8,
+    'each light is placed by a node',
+);
+const litOutput = serializeSceneDocumentToGlb(litDocument, gltf);
+await assertValidGlb(litOutput.binary, 'punctual-lights');
+const litManifest = JSON.parse(new TextDecoder().decode(lowerSceneDocumentToGltf(litDocument).json));
+assert.ok(
+    litManifest.extensionsUsed.includes('KHR_lights_punctual'),
+    'a scene with lights declares the extension it needs to be read back',
+);
+assert.equal(litManifest.extensions.KHR_lights_punctual.lights.length, 8);
+const litRoundtrip = buildSceneDocumentFromGltf(litOutput.binary, {}, gltf);
+// Against the asset's own numbers rather than against the document that was
+// just written: comparing a reader with itself passes even when both halves
+// have dropped the same field.
+assert.deepEqual(
+    litRoundtrip.lights.map((light) => [light.type, light.intensity, light.range]),
+    Array.from({ length: 8 }, () => ['point', 1, 1.125]),
+    'every light survives the round trip with the values the asset states',
+);
+assert.equal(
+    litRoundtrip.nodes.filter((node) => node.light !== undefined).length,
+    8,
+    'and each is still placed by the node that placed it',
+);
+
 for (const [label, path] of [['Mixamo', mixamoFbx], ['Samba', sambaFbx]]) {
     const parsed = fbx.parse_fbx(await readBytes(path));
     if (!parsed.success || !parsed.scene) throw new Error(`${label} semantic FBX parse failed`);
