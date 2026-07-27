@@ -74,6 +74,32 @@ The preview is intentionally a diagnostic renderer, not a replacement for a
 full PBR glTF runtime: unsupported material and texture extensions are reported
 as warnings instead of changing exported assets.
 
+### KTX2 textures
+
+`KHR_texture_basisu` points a texture at a KTX2 file holding Basis Universal
+data, which no GPU and no browser image decoder reads directly. `ktx2-wasm`
+transcodes it, and the preview fetches that module the first time a file turns
+out to need it — it carries baked conversion tables and is several times the
+size of the others, so a page that never meets a KTX2 texture never loads it.
+
+Both Basis codecs are decoded: ETC1S, which most glTF assets use, and UASTC
+LDR, including Zstd supercompression. Each is a Rust port of Binomial's
+transcoder and is gated byte for byte against Binomial's own build, every mip
+level of every fixture.
+
+What the texture is turned into depends on the machine. Where the context
+offers `WEBGL_compressed_texture_s3tc`, an ETC1S texture without alpha is
+transcoded to BC1 and uploaded compressed, keeping about an eighth of the video
+memory the pixels would take; its mip chain comes from the file, because a
+compressed texture cannot have mips generated for it. Everything else — UASTC,
+ETC1S with alpha, or a context with no block format — decodes to RGBA8 and
+uploads as an ordinary image. BC3 for alpha and BC7 for UASTC are not
+transcoded yet.
+
+Exported glTF and GLB carry the KTX2 bytes through unchanged either way; OBJ,
+PLY and FBX carry them too, and no importer of those formats can read them,
+which is what the extension report and the FBX export warning say.
+
 ### Source-neutral scene conversion
 
 Loaded glTF/GLB and semantic FBX inputs are normalized into a serializable

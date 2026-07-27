@@ -73,6 +73,19 @@ assert.doesNotMatch(lines[0], /neither shown nor exported/);
 assert.match(lines[1], /clearcoat.*lights_punctual|lights_punctual.*clearcoat/);
 assert.match(lines[2], /draco.*\(required\)/);
 
+// The alternate image codecs are read and shown, so the report may not say
+// they are not understood. That was true of KHR_texture_basisu until the
+// transcoder existed, and saying it now would send a user looking for a
+// problem that is no longer there.
+for (const name of ['KHR_texture_basisu', 'EXT_texture_webp']) {
+  const [outcome] = reportExtensionReach({ extensionsUsed: [name] });
+  assert.equal(
+    outcome.reach,
+    'gltf-only',
+    `${name} names an image codec this converter decodes and shows, and which only glTF can carry back out`,
+  );
+}
+
 // A file that claimed nothing gets no section at all: "nothing to report" about
 // a plain glTF is noise.
 assert.deepEqual(describeExtensionReach(reportExtensionReach(null)), []);

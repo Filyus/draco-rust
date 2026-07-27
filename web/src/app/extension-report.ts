@@ -13,7 +13,11 @@
  * understood at all.
  */
 
-import { GLTF_INTERPRETED_EXTENSIONS, GLTF_READER_RESOLVED_EXTENSIONS } from '../gltf-interpretation.ts';
+import {
+  GLTF_INTERPRETED_EXTENSIONS,
+  GLTF_READER_RESOLVED_EXTENSIONS,
+  GLTF_TEXTURE_SOURCE_EXTENSIONS,
+} from '../gltf-interpretation.ts';
 import { MATERIAL_EXTENSION_NAMES } from '../material-extensions.ts';
 import type { GltfSceneProvenance } from '../gltf-scene-provenance.ts';
 
@@ -65,6 +69,11 @@ const GLTF_ONLY = new Set<string>([
   'KHR_lights_punctual',
   'KHR_materials_variants',
   'EXT_mesh_gpu_instancing',
+  // The alternate image codecs belong here too. Both are read - WebP by the
+  // browser, KTX2 by the transcoder - and both are shown; what they lose is
+  // the same thing every entry here loses, which is that OBJ, PLY and FBX
+  // carry the image bytes on and no importer of those formats can read them.
+  ...GLTF_TEXTURE_SOURCE_EXTENSIONS,
 ]);
 
 /**

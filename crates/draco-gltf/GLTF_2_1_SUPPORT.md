@@ -67,6 +67,12 @@ inside JSON nobody has read produces a broken file rather than an honest error
   the same for the buffer views holding property-table columns.
 - **Geometry-owning**: `KHR_draco_mesh_compression` itself.
 
+Declaring an image codec binary-free says only that compression may move the
+geometry around it. Whether its pixels can be *seen* is a separate crate:
+`draco-texture` reads KTX2 and transcodes both Basis codecs, which is what
+lets the web converter show a `KHR_texture_basisu` texture rather than carry
+it blind. Nothing in this crate decodes an image.
+
 `EXT_meshopt_compression` is registered for none of these and still refuses.
 Its compressed ranges are live rather than stale — import decodes them into the
 fallback buffers, but the document keeps them and the writer rebases them, so a
