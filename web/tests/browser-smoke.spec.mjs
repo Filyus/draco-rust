@@ -2052,12 +2052,35 @@ test('the variant list stays within its control and its panel', async ({ page })
   // not what is chosen, and both are on screen together.
   await page.mouse.move(0, 0);
   await page.waitForTimeout(300);
+  // Composited, not declared. Comparing the two declarations passed while the
+  // field and its chosen row rendered a shade apart, because the same
+  // translucent fill sat on different backdrops -- the field on the panel, the
+  // row on a menu tinted to look like the field. Only the colour that reaches
+  // the screen settles it.
   const paints = await page.evaluate(() => {
-    const of = (element) => {
-      const style = getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return { paint: `${style.backgroundColor}|${style.color}`, height: Math.round(rect.height) };
+    const rendered = (element) => {
+      const layers = [];
+      for (let node = element; node; node = node.parentElement) {
+        const match = getComputedStyle(node).backgroundColor.match(/rgba?\(([^)]+)\)/);
+        if (!match) continue;
+        const [red, green, blue, alpha = 1] = match[1].split(',').map(Number.parseFloat);
+        if (alpha === 0) continue;
+        layers.push([red, green, blue, alpha]);
+        if (alpha === 1) break;
+      }
+      let [red, green, blue] = layers.pop() ?? [0, 0, 0];
+      while (layers.length > 0) {
+        const [r, g, b, a] = layers.pop();
+        red = r * a + red * (1 - a);
+        green = g * a + green * (1 - a);
+        blue = b * a + blue * (1 - a);
+      }
+      return [red, green, blue].map(Math.round).join(',');
     };
+    const of = (element) => ({
+      paint: `${rendered(element)}|${getComputedStyle(element).color}`,
+      height: Math.round(element.getBoundingClientRect().height),
+    });
     return {
       field: of(document.querySelector('#viewer-variant-trigger')),
       selected: of(document.querySelector('.menu-picker-option.selected')),
@@ -2072,7 +2095,13 @@ test('the variant list stays within its control and its panel', async ({ page })
     const style = getComputedStyle(document.querySelector('#viewer-variant-option-1'));
     return `${style.backgroundColor}|${style.color}`;
   });
-  expect(hovered).not.toBe(paints.selected.paint);
+  // Compared against the chosen row's own declaration, since both sit on the
+  // same backdrop; what matters here is only that they are not the same fill.
+  const selectedDeclared = await page.evaluate(() => {
+    const style = getComputedStyle(document.querySelector('.menu-picker-option.selected'));
+    return `${style.backgroundColor}|${style.color}`;
+  });
+  expect(hovered).not.toBe(selectedDeclared);
   await page.mouse.move(0, 0);
 
   expect(geometry.menu.left).toBe(geometry.trigger.left);

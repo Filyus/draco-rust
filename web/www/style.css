@@ -663,9 +663,12 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     border: 1px solid rgba(123, 153, 194, 0.24);
     border-top: 0;
     border-radius: 9px;
-    background: #19273d;
+    /* The panel's own colour, so a translucent row fill composites to exactly
+       what the same fill composites to on the field. Anything else and the
+       chosen row and the field are declared identical and still render a
+       shade apart, which is what a fill tuned to look like the field did. */
+    background: var(--surface);
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
-    backdrop-filter: blur(10px);
 }
 
 .menu-picker-menu[hidden] { display: none; }
