@@ -692,16 +692,18 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     background: transparent;
     transition: color 130ms ease, background 130ms ease;
 }
-/* One emphasis for "the row you are on", whether the pointer, the keyboard or
-   the current value puts you there -- three shades for one idea was the reason
-   the list looked like it was highlighting two different things at once. What
-   separates the value in force is the mark at its edge, not a brighter fill. */
+/* The row holding the current value is painted exactly as the field is, so
+   with the list open the two read as the same thing seen twice -- which they
+   are. It carries no mark of its own: an accent bar down its edge was one more
+   vocabulary for something the fill already says.
+
+   Hover is deliberately not that colour. It answers a different question --
+   where the pointer is, not what is chosen -- and the two have to be told
+   apart while both are on screen. */
+.menu-picker-option.selected { color: #eaf2ff; background: rgba(93, 129, 178, 0.2); }
 .menu-picker-option:hover,
 .menu-picker-option:focus,
-.menu-picker-option.selected { color: #eaf2ff; background: rgba(109, 145, 197, 0.16); }
-.menu-picker-option.selected { box-shadow: inset 2px 0 0 var(--accent-hover); }
-.menu-picker-option:hover,
-.menu-picker-option:focus { color: #fff; }
+.menu-picker-option.selected:hover { color: #fff; background: rgba(109, 145, 197, 0.32); }
 /* An outline rather than a box-shadow, which the selected row already spends
    on its edge mark; two shadows on one element would cancel each other. */
 .menu-picker-option:focus-visible { outline: 1px solid rgba(124, 169, 235, 0.72); outline-offset: -1px; }
@@ -801,10 +803,22 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     outline: 0;
     color: #eaf2ff;
     border-color: rgba(126, 169, 232, 0.55);
-    background: rgba(93, 129, 178, 0.18);
+    /* The same fill the open state and the selected row use: opening the list
+       is a focus event too, so a separate value here meant the field and its
+       chosen row were a shade apart at exactly the moment both are visible. */
+    background: rgba(93, 129, 178, 0.2);
 }
 .scene-variant-trigger:focus-visible { box-shadow: 0 0 0 1px var(--accent-hover); }
-.scene-variant .menu-picker-option { font-size: 0.68rem; }
+/* The same metrics as the field above it: it was three pixels taller and its
+   text sat further in, so the list looked like a different control stacked
+   under the one that opened it. The extra pixel of inset is the field's
+   border, which the rows do not have. */
+.scene-variant .menu-picker-option {
+    min-height: 27px;
+    padding: 3px 10px;
+    font-size: 0.68rem;
+    font-weight: 620;
+}
 /* The chosen name may be longer than the control; it truncates rather than
    wrapping, and the full text stays reachable through the list and the title. */
 .scene-variant-trigger > span:first-child {

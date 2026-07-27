@@ -2044,6 +2044,37 @@ test('the variant list stays within its control and its panel', async ({ page })
     };
   });
 
+  // The row holding the current value is the field seen twice, so with the list
+  // open the two are painted the same and stand the same height. They drifted
+  // apart in three ways at once: the rows were taller, their text sat further
+  // in, and the chosen one wore an accent bar the field had no counterpart for.
+  // Hover has to stay distinct from both -- it answers where the pointer is,
+  // not what is chosen, and both are on screen together.
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(300);
+  const paints = await page.evaluate(() => {
+    const of = (element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return { paint: `${style.backgroundColor}|${style.color}`, height: Math.round(rect.height) };
+    };
+    return {
+      field: of(document.querySelector('#viewer-variant-trigger')),
+      selected: of(document.querySelector('.menu-picker-option.selected')),
+    };
+  });
+  expect(paints.selected.paint).toBe(paints.field.paint);
+  expect(paints.selected.height).toBe(paints.field.height);
+
+  await page.locator('#viewer-variant-option-1').hover();
+  await page.waitForTimeout(300);
+  const hovered = await page.evaluate(() => {
+    const style = getComputedStyle(document.querySelector('#viewer-variant-option-1'));
+    return `${style.backgroundColor}|${style.color}`;
+  });
+  expect(hovered).not.toBe(paints.selected.paint);
+  await page.mouse.move(0, 0);
+
   expect(geometry.menu.left).toBe(geometry.trigger.left);
   expect(geometry.menu.right).toBe(geometry.trigger.right);
   expect(geometry.menu.bottom).toBeLessThanOrEqual(geometry.sidebar.bottom);
