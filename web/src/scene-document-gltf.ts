@@ -20,6 +20,7 @@ import type {
   SceneSkin,
   TextureInfo,
 } from './scene-document.ts';
+import { writeMaterialExtensions } from './material-extensions.ts';
 import type { GltfAsset, GltfModule } from './wasm-modules.ts';
 
 /**
@@ -331,68 +332,31 @@ function lowerMaterial(
   if (emissiveTexture) output.emissiveTexture = emissiveTexture;
   if (normalTexture && material.normalTexture?.scale !== undefined) normalTexture.scale = material.normalTexture.scale;
   if (occlusionTexture && material.occlusionTexture?.strength !== undefined) occlusionTexture.strength = material.occlusionTexture.strength;
-  // Merged, never assigned: a coated unlit material has to keep both, and the
-  // layered extensions below add to whatever came before them.
-  const extensions = { ...materialExtensions(material, texture) };
-  if (material.unlit) extensions.KHR_materials_unlit = {};
+  const extensions = writeMaterialExtensions(material, (property, scale) => {
+    const source = material[property as keyof SceneMaterial] as TextureInfo | undefined;
+    const info = texture(source, slotLabel(property));
+    // A normal map's scale sits beside the binding rather than inside it, and
+    // clearcoat is the one extension that brings a normal map of its own.
+    if (info && scale && source?.scale !== undefined) info.scale = source.scale;
+    return info;
+  });
   if (Object.keys(extensions).length > 0) output.extensions = extensions;
   if (output.alphaMode === 'MASK') output.alphaCutoff = material.alphaCutoff ?? 0.5;
   return output;
 }
 
 /**
- * The layered material extensions a portable material asks for.
+ * The human wording a texture-slot warning uses.
  *
- * Each is emitted only when the material states something other than what the
- * core model already implies: writing KHR_materials_ior with the default 1.5
- * onto every material would declare an extension no reader needs to honor and
- * grow extensionsUsed for nothing.
+ * The property name is the table's key; a reader of the warning wants the slot
+ * the way the glTF spec names it, so `clearcoatNormalTexture` reads back as
+ * "clearcoat normal".
  */
-function materialExtensions(
-  material: SceneMaterial,
-  texture: (info: TextureInfo | undefined, label: string) => GltfTextureInfo | null,
-): Record<string, Record<string, unknown>> {
-  const extensions: Record<string, Record<string, unknown>> = {};
-
-  if (material.emissiveStrength !== undefined && material.emissiveStrength !== 1) {
-    extensions.KHR_materials_emissive_strength = { emissiveStrength: material.emissiveStrength };
-  }
-  if (material.ior !== undefined && material.ior !== 1.5) {
-    extensions.KHR_materials_ior = { ior: material.ior };
-  }
-
-  const specularTexture = texture(material.specularTexture, 'specular');
-  const specularColorTexture = texture(material.specularColorTexture, 'specular color');
-  const specularColor = material.specularColorFactor;
-  const specular: Record<string, unknown> = {
-    ...(material.specularFactor !== undefined && material.specularFactor !== 1
-      ? { specularFactor: material.specularFactor } : {}),
-    ...(specularColor && specularColor.some((value) => value !== 1)
-      ? { specularColorFactor: [...specularColor] } : {}),
-    ...(specularTexture ? { specularTexture } : {}),
-    ...(specularColorTexture ? { specularColorTexture } : {}),
-  };
-  if (Object.keys(specular).length > 0) extensions.KHR_materials_specular = specular;
-
-  const clearcoatTexture = texture(material.clearcoatTexture, 'clearcoat');
-  const clearcoatRoughnessTexture = texture(material.clearcoatRoughnessTexture, 'clearcoat roughness');
-  const clearcoatNormalTexture = texture(material.clearcoatNormalTexture, 'clearcoat normal');
-  const coated = (material.clearcoatFactor ?? 0) !== 0
-    || (material.clearcoatRoughnessFactor ?? 0) !== 0
-    || clearcoatTexture || clearcoatRoughnessTexture || clearcoatNormalTexture;
-  if (coated) {
-    if (clearcoatNormalTexture && material.clearcoatNormalTexture?.scale !== undefined) {
-      clearcoatNormalTexture.scale = material.clearcoatNormalTexture.scale;
-    }
-    extensions.KHR_materials_clearcoat = {
-      clearcoatFactor: material.clearcoatFactor ?? 0,
-      clearcoatRoughnessFactor: material.clearcoatRoughnessFactor ?? 0,
-      ...(clearcoatTexture ? { clearcoatTexture } : {}),
-      ...(clearcoatRoughnessTexture ? { clearcoatRoughnessTexture } : {}),
-      ...(clearcoatNormalTexture ? { clearcoatNormalTexture } : {}),
-    };
-  }
-  return extensions;
+function slotLabel(property: string): string {
+  return property
+    .replace(/Texture$/, '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .toLowerCase();
 }
 
 function textureIndex(textures: (GltfTexture | null)[], source: number) {

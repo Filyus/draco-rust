@@ -14,19 +14,24 @@
  * lets node tests import it without stubbing WebGL.
  */
 
+import { MATERIAL_EXTENSION_NAMES, readMaterialExtensions } from './material-extensions.ts';
+
 /**
  * Loosely typed on purpose: everything here is external JSON, inspected field
  * by field rather than trusted.
  */
 type GltfJson = any;
 
-/** Extensions both consumers interpret from the JSON themselves. */
+/**
+ * Extensions both consumers interpret from the JSON themselves.
+ *
+ * The material layers come from the table that also defines how they are read,
+ * so the list cannot claim one the reader does not act on. `KHR_texture_transform`
+ * is added by hand because it rides on a texture binding rather than on a
+ * material, and `readTexture` below is where it is read.
+ */
 export const GLTF_INTERPRETED_EXTENSIONS: ReadonlySet<string> = new Set([
-  'KHR_materials_unlit',
-  'KHR_materials_clearcoat',
-  'KHR_materials_ior',
-  'KHR_materials_specular',
-  'KHR_materials_emissive_strength',
+  ...MATERIAL_EXTENSION_NAMES,
   'KHR_texture_transform',
 ]);
 
@@ -117,39 +122,24 @@ export interface InterpretedMaterial {
 export function readGltfMaterial(def: GltfJson, index: number): InterpretedMaterial {
   const material = def || {};
   const pbr = material.pbrMetallicRoughness || {};
-  const extensions = material.extensions || {};
-  const clearcoat = extensions.KHR_materials_clearcoat || {};
-  const specular = extensions.KHR_materials_specular || {};
   return {
     name: material.name || `material_${index}`,
     baseColorFactor: numbers(pbr.baseColorFactor, [1, 1, 1, 1]),
     metallicFactor: pbr.metallicFactor ?? 1,
     roughnessFactor: pbr.roughnessFactor ?? 1,
     emissiveFactor: numbers(material.emissiveFactor, [0, 0, 0]),
-    emissiveStrength: extensions.KHR_materials_emissive_strength?.emissiveStrength ?? 1,
-    // 1.5 is the index of refraction the core model implies (f0 = 0.04), so a
-    // material without KHR_materials_ior is shaded exactly as before.
-    ior: extensions.KHR_materials_ior?.ior ?? 1.5,
-    specularFactor: specular.specularFactor ?? 1,
-    specularColorFactor: numbers(specular.specularColorFactor, [1, 1, 1]),
-    // Absent clearcoat means no coat at all, not a coat of default roughness.
-    clearcoatFactor: clearcoat.clearcoatFactor ?? 0,
-    clearcoatRoughnessFactor: clearcoat.clearcoatRoughnessFactor ?? 0,
     alphaMode: material.alphaMode || 'OPAQUE',
     alphaCutoff: material.alphaCutoff ?? 0.5,
     doubleSided: Boolean(material.doubleSided),
-    unlit: Boolean(extensions.KHR_materials_unlit),
     baseColorTexture: readTexture(pbr.baseColorTexture),
     metallicRoughnessTexture: readTexture(pbr.metallicRoughnessTexture),
     normalTexture: readTexture(material.normalTexture, { scale: true }),
     emissiveTexture: readTexture(material.emissiveTexture),
     occlusionTexture: readTexture(material.occlusionTexture, { strength: true }),
-    specularTexture: readTexture(specular.specularTexture),
-    specularColorTexture: readTexture(specular.specularColorTexture),
-    clearcoatTexture: readTexture(clearcoat.clearcoatTexture),
-    clearcoatRoughnessTexture: readTexture(clearcoat.clearcoatRoughnessTexture),
-    clearcoatNormalTexture: readTexture(clearcoat.clearcoatNormalTexture, { scale: true }),
-  };
+    // The layered extensions, their fields and their defaults come from the
+    // one table that also drives writing them back out.
+    ...readMaterialExtensions(material.extensions, readTexture),
+  } as InterpretedMaterial;
 }
 
 /**

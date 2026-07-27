@@ -1,4 +1,5 @@
 import type { EnvironmentIbl } from '../environment-ibl.ts';
+import { materialExtensionFactors } from '../material-extensions.ts';
 import { mat4, vec3 } from '../math.ts';
 import type { Mat4, Vec3 } from '../math.ts';
 import { cameraPosition } from './camera.ts';
@@ -386,8 +387,12 @@ export function applyMaterial(
   gl.uniform1f(host.uniforms.uRoughness, material?.roughness ?? 1);
   // KHR_materials_emissive_strength scales the factor rather than reaching the
   // shader on its own: the two are always multiplied together anyway.
+  // OBJ, PLY and FBX materials never had these properties, and the portable
+  // form drops any that equal the core model's value, so the defaults come
+  // from the table that decided what "equal to the core model" means.
+  const layered = materialExtensionFactors(material) as Record<string, any>;
   const emissive = material?.emissiveFactor || [0, 0, 0];
-  const emissiveStrength = material?.emissiveStrength ?? 1;
+  const emissiveStrength = layered.emissiveStrength;
   gl.uniform3f(
     host.uniforms.uEmissiveFactor,
     emissive[0] * emissiveStrength,
@@ -396,12 +401,12 @@ export function applyMaterial(
   );
   gl.uniform1f(host.uniforms.uNormalScale, material?.normalTexture?.scale ?? 1);
   gl.uniform1f(host.uniforms.uOcclusionStrength, material?.occlusionTexture?.strength ?? 1);
-  gl.uniform1f(host.uniforms.uIor, material?.ior ?? 1.5);
-  gl.uniform1f(host.uniforms.uSpecularFactor, material?.specularFactor ?? 1);
-  const specularColor = material?.specularColorFactor || [1, 1, 1];
+  gl.uniform1f(host.uniforms.uIor, layered.ior);
+  gl.uniform1f(host.uniforms.uSpecularFactor, layered.specularFactor);
+  const specularColor = layered.specularColorFactor;
   gl.uniform3f(host.uniforms.uSpecularColorFactor, specularColor[0], specularColor[1], specularColor[2]);
-  gl.uniform1f(host.uniforms.uClearcoatFactor, material?.clearcoatFactor ?? 0);
-  gl.uniform1f(host.uniforms.uClearcoatRoughnessFactor, material?.clearcoatRoughnessFactor ?? 0);
+  gl.uniform1f(host.uniforms.uClearcoatFactor, layered.clearcoatFactor);
+  gl.uniform1f(host.uniforms.uClearcoatRoughnessFactor, layered.clearcoatRoughnessFactor);
   gl.uniform1f(host.uniforms.uClearcoatNormalScale, material?.clearcoatNormalTexture?.scale ?? 1);
 }
 

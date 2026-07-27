@@ -9,6 +9,7 @@
  */
 
 import { componentByteWidth } from './component-values.ts';
+import { MATERIAL_EXTENSION_DEFAULTS } from './material-extensions.ts';
 
 export const SCENE_DOCUMENT_VERSION = 1;
 
@@ -101,7 +102,9 @@ export interface SceneMaterial {
  *
  * Validation, the glTF writer and the texture-transform survey all walk this
  * list; spelled out separately in each, a new slot reaches one of them and not
- * the others.
+ * the others. The extension slots repeat what `MATERIAL_EXTENSIONS` declares,
+ * so that indexing a material by one of these stays type-checked; the gate in
+ * `gltf-extension-support` holds the two in step.
  */
 export const MATERIAL_TEXTURE_SLOTS = [
   'baseColorTexture',
@@ -438,12 +441,16 @@ function validateMaterial(material: Untrusted, index: number, textureCount: numb
   validateFiniteNumber(material.metallicFactor, `${label}.metallicFactor`, errors, 1);
   validateFiniteNumber(material.roughnessFactor, `${label}.roughnessFactor`, errors, 1);
   validateNumberArray(material.emissiveFactor, 3, `${label}.emissiveFactor`, errors, [0, 0, 0]);
-  validateFiniteNumber(material.emissiveStrength, `${label}.emissiveStrength`, errors, 1);
-  validateFiniteNumber(material.ior, `${label}.ior`, errors, 1.5);
-  validateFiniteNumber(material.specularFactor, `${label}.specularFactor`, errors, 1);
-  validateNumberArray(material.specularColorFactor, 3, `${label}.specularColorFactor`, errors, [1, 1, 1]);
-  validateFiniteNumber(material.clearcoatFactor, `${label}.clearcoatFactor`, errors, 0);
-  validateFiniteNumber(material.clearcoatRoughnessFactor, `${label}.clearcoatRoughnessFactor`, errors, 0);
+  // The layered extension fields and what absence means for each come from
+  // the one table the readers and writers share.
+  for (const [property, fallback] of Object.entries(MATERIAL_EXTENSION_DEFAULTS)) {
+    if (typeof fallback === 'boolean') continue;
+    if (Array.isArray(fallback)) {
+      validateNumberArray(material[property], fallback.length, `${label}.${property}`, errors, fallback);
+    } else {
+      validateFiniteNumber(material[property], `${label}.${property}`, errors, fallback);
+    }
+  }
   for (const key of MATERIAL_TEXTURE_SLOTS) {
     if (material[key] !== undefined && material[key] !== null) validateTextureInfo(material[key], `${label}.${key}`, textureCount, errors);
   }

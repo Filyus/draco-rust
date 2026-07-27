@@ -14,6 +14,9 @@ import {
 } from './viewer-scene.ts';
 import type { RuntimeAccessor } from './viewer-scene.ts';
 import { assertValidSceneDocument } from './scene-document.ts';
+import {
+  MATERIAL_EXTENSION_TEXTURE_SLOTS, materialExtensionFactors,
+} from './material-extensions.ts';
 import type {
   SceneAccessor,
   SceneAnimation,
@@ -274,20 +277,15 @@ function adaptMaterial(material: SceneMaterial, index: number) {
     emissiveTexture: textureInfo(material.emissiveTexture),
     normalTexture: textureInfo(material.normalTexture),
     occlusionTexture: textureInfo(material.occlusionTexture),
-    ior: material.ior ?? 1.5,
-    specularFactor: material.specularFactor ?? 1,
-    specularColorFactor: [...(material.specularColorFactor || [1, 1, 1])],
-    specularTexture: textureInfo(material.specularTexture),
-    specularColorTexture: textureInfo(material.specularColorTexture),
-    clearcoatFactor: material.clearcoatFactor ?? 0,
-    clearcoatRoughnessFactor: material.clearcoatRoughnessFactor ?? 0,
-    clearcoatTexture: textureInfo(material.clearcoatTexture),
-    clearcoatRoughnessTexture: textureInfo(material.clearcoatRoughnessTexture),
-    clearcoatNormalTexture: textureInfo(material.clearcoatNormalTexture),
     doubleSided: Boolean(material.doubleSided),
     alphaMode: material.alphaMode || 'OPAQUE',
     alphaCutoff: material.alphaCutoff ?? 0.5,
-    unlit: Boolean(material.unlit),
+    // The portable form omits anything the core model already implies, so the
+    // defaults come from the table that decided to omit them.
+    ...materialExtensionFactors(material),
+    ...Object.fromEntries(MATERIAL_EXTENSION_TEXTURE_SLOTS.map((slot) => [
+      slot, textureInfo(material[slot as keyof SceneMaterial] as TextureInfo | undefined),
+    ])),
   };
 }
 

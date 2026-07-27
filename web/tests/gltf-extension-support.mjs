@@ -32,6 +32,10 @@ const {
   GLTF_TEXTURE_SOURCE_EXTENSIONS,
   readGltfMaterial,
 } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-interpretation.ts')).href);
+const {
+  MATERIAL_EXTENSION_DEFAULTS, MATERIAL_EXTENSION_TEXTURE_SLOTS, writeMaterialExtensions,
+} = await import(pathToFileURL(resolve(here, '..', 'src', 'material-extensions.ts')).href);
+const { MATERIAL_TEXTURE_SLOTS } = await import(pathToFileURL(resolve(here, '..', 'src', 'scene-document.ts')).href);
 const { extensionWarnings } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href);
 const { buildSceneDocumentFromGltf } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'gltf-scene-document.ts')).href
@@ -91,6 +95,15 @@ const INTERPRETED = {
   },
 };
 
+// The portable contract spells its texture slots out as literal types, so
+// indexing a material by one stays checked; that list has to contain every slot
+// the extension table brings, or a slot reaches the writer and not validation.
+assert.deepEqual(
+  MATERIAL_EXTENSION_TEXTURE_SLOTS.filter((slot) => !MATERIAL_TEXTURE_SLOTS.includes(slot)),
+  [],
+  'every extension texture slot must appear in MATERIAL_TEXTURE_SLOTS',
+);
+
 // A name in the set with no case here is the failure this gate exists for: it
 // claims an interpretation nobody demonstrated.
 assert.deepEqual(
@@ -135,6 +148,45 @@ for (const [extension, { material, effect }] of Object.entries(INTERPRETED)) {
   const seen = reported(extension, null);
   assert.equal(seen.preview, false, `${extension} is interpreted, so the preview must not report it as ignored`);
   assert.equal(seen.document, false, `${extension} is interpreted, so the document must not report it as omitted`);
+}
+
+// Reading and writing are both derived from the table now, so a wrong default
+// no longer shows up as a difference between two paths - both are wrong
+// together. What the values must actually be is stated in `gltf-materials`,
+// against literals; what is checked here is that a material at those values
+// reads back as them and declares nothing.
+const bare = readGltfMaterial({}, 0);
+for (const [property, fallback] of Object.entries(MATERIAL_EXTENSION_DEFAULTS)) {
+  assert.deepEqual(
+    bare[property],
+    fallback,
+    `a material without extensions must read ${property} as what the core model implies`,
+  );
+}
+assert.deepEqual(
+  writeMaterialExtensions(bare, () => null),
+  {},
+  'a material at its defaults must declare no extension at all',
+);
+
+// Read and write are two directions of one table, and a field that survives one
+// but not the other loses data on every export. Round-tripping distinctive
+// values through both is what says they agree.
+const stated = {
+  extensions: {
+    KHR_materials_unlit: {},
+    KHR_materials_emissive_strength: { emissiveStrength: 3.5 },
+    KHR_materials_ior: { ior: 1.9 },
+    KHR_materials_specular: { specularFactor: 0.4, specularColorFactor: [0.5, 0.6, 0.7] },
+    KHR_materials_clearcoat: { clearcoatFactor: 0.8, clearcoatRoughnessFactor: 0.1 },
+  },
+};
+const read = readGltfMaterial(stated, 0);
+const written = writeMaterialExtensions(read, () => null);
+assert.deepEqual(written, stated.extensions, 'the table must write back exactly what it read');
+for (const [property, fallback] of Object.entries(MATERIAL_EXTENSION_DEFAULTS)) {
+  assert.notDeepEqual(read[property], fallback, `${property} must be exercised away from its default here`);
+  assert.deepEqual(readGltfMaterial({ extensions: written }, 0)[property], read[property]);
 }
 
 // The reader resolves these before either consumer runs - decoded payloads and

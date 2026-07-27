@@ -22,6 +22,7 @@ import {
   resolveTextureSource,
 } from './gltf-interpretation.ts';
 import type { InterpretedTexture } from './gltf-interpretation.ts';
+import { MATERIAL_EXTENSION_DEFAULTS, isMaterialExtensionDefault } from './material-extensions.ts';
 import {
   appendAccessor, basename, bytesFromF32, mimeFromUri, resolveResource, sniffMime,
 } from './scene-resources.ts';
@@ -159,18 +160,16 @@ function collectMaterials(materials: GltfJson[], textureBySource: number[], docu
       unlit: source.unlit,
     };
     for (const key of MATERIAL_TEXTURE_SLOTS) {
-      const info = slot(source[key]);
+      const info = slot(source[key as keyof typeof source] as InterpretedTexture | null);
       if (info) material[key] = info;
     }
-    if (source.emissiveStrength !== 1) material.emissiveStrength = source.emissiveStrength;
-    if (source.ior !== 1.5) material.ior = source.ior;
-    if (source.specularFactor !== 1) material.specularFactor = source.specularFactor;
-    if (source.specularColorFactor.some((value) => value !== 1)) {
-      material.specularColorFactor = [...source.specularColorFactor];
-    }
-    if (source.clearcoatFactor !== 0) material.clearcoatFactor = source.clearcoatFactor;
-    if (source.clearcoatRoughnessFactor !== 0) {
-      material.clearcoatRoughnessFactor = source.clearcoatRoughnessFactor;
+    // Only what the material states beyond the core model is carried, so a
+    // document from a format with no layered materials is unchanged by their
+    // existence. Which value counts as "beyond" is the table's to say.
+    for (const [property, value] of Object.entries(source)) {
+      if (!(property in MATERIAL_EXTENSION_DEFAULTS)) continue;
+      if (isMaterialExtensionDefault(property, value)) continue;
+      (material as Record<string, unknown>)[property] = Array.isArray(value) ? [...value] : value;
     }
     return material;
   }));

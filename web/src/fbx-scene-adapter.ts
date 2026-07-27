@@ -9,6 +9,7 @@
  */
 
 import { identityMat4, invertMat4 } from './mat4.ts';
+import { hasMaterialExtensionValues } from './material-extensions.ts';
 import { readGltfMaterial, resolveSampler, resolveTextureSource } from './gltf-interpretation.ts';
 import type { InterpretedTexture } from './gltf-interpretation.ts';
 import type { ResourceMap } from './scene-resources.ts';
@@ -160,10 +161,9 @@ export function buildFbxMaterials(definitions: GltfJson[], warnings: string[] = 
     add(source.normalTexture, 'normal');
     add(source.emissiveTexture, 'emissive');
     add(source.metallicRoughnessTexture, 'roughness');
-    if (source.clearcoatFactor !== 0 || source.specularFactor !== 1 || source.ior !== 1.5
-      || source.emissiveStrength !== 1 || source.unlit) {
-      droppedLayers = true;
-    }
+    // One question with one answer: what the material states beyond the core
+    // metallic-roughness model is exactly what a Phong material cannot carry.
+    if (hasMaterialExtensionValues(source)) droppedLayers = true;
     return lowerPbrToFbxPhong({
       name: source.name,
       baseColorFactor: source.baseColorFactor,

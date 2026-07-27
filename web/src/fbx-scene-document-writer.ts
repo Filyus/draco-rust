@@ -8,6 +8,7 @@
  */
 
 import { assertValidSceneDocument } from './scene-document.ts';
+import { hasMaterialExtensionValues } from './material-extensions.ts';
 import type { SceneDocument, ScenePrimitive } from './scene-document.ts';
 import { componentByteWidth, normalizeComponent, readComponent } from './component-values.ts';
 import { invertMat4, multiplyMat4 } from './mat4.ts';
@@ -341,10 +342,7 @@ function buildMaterials(document: SceneDocument, warnings: string[]): FbxJson[] 
     add(material.normalTexture, 'normal');
     add(material.emissiveTexture, 'emissive');
     add(material.metallicRoughnessTexture, 'roughness');
-    if ((material.clearcoatFactor ?? 0) !== 0 || (material.specularFactor ?? 1) !== 1
-      || (material.ior ?? 1.5) !== 1.5 || (material.emissiveStrength ?? 1) !== 1 || material.unlit) {
-      droppedLayers = true;
-    }
+    if (hasMaterialExtensionValues(material)) droppedLayers = true;
     return lowerPbrToFbxPhong({
       name: material.name || `material_${index}`,
       baseColorFactor: material.baseColorFactor || [1, 1, 1, 1],
