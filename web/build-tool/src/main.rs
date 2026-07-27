@@ -33,7 +33,12 @@ const GLTF_GZIP_BUDGET: usize = 115 * 1024;
 /// only when a file actually carries a KTX2 texture: nothing here is on the
 /// path of a page that opens an ordinary model. Raising it is a decision to
 /// state, the same as the glTF budget.
-const KTX2_GZIP_BUDGET: usize = 48 * 1024;
+///
+/// Two thirds of this is the baked ETC1S-to-BC1 endpoint tables, and they are
+/// the reason the number went from 48 KiB to 120. What they buy is the
+/// compressed upload path on every desktop GPU: without them an ETC1S texture
+/// can only be uploaded as RGBA8, at eight times the video memory.
+const KTX2_GZIP_BUDGET: usize = 120 * 1024;
 
 #[derive(Clone, Debug)]
 struct Config {

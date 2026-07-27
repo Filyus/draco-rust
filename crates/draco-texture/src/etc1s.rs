@@ -332,7 +332,12 @@ impl Etc1sDecoder {
         // alone when there is an alpha slice, and writes 255 when there is not.
         if desc.alpha_length != 0 {
             let data = slice(desc.alpha_offset, desc.alpha_length)?;
-            self.decode_slice(data, width, height, &mut pixels, SliceKind::Alpha)?;
+            self.walk_blocks(
+                data,
+                width,
+                height,
+                block_writer(width, height, &mut pixels, SliceKind::Alpha),
+            )?;
         }
         let data = slice(desc.rgb_offset, desc.rgb_length)?;
         let kind = if desc.alpha_length != 0 {
@@ -340,18 +345,66 @@ impl Etc1sDecoder {
         } else {
             SliceKind::Color { opaque: true }
         };
-        self.decode_slice(data, width, height, &mut pixels, kind)?;
+        self.walk_blocks(
+            data,
+            width,
+            height,
+            block_writer(width, height, &mut pixels, kind),
+        )?;
         Ok(pixels)
     }
 
+    /// Decode one image's colour slice into BC1 blocks, eight bytes each.
+    ///
+    /// Blocks in raster order, which is the layout `compressedTexImage2D`
+    /// wants. Alpha is not part of BC1: a file that has an alpha slice needs
+    /// BC3, which pairs these blocks with an alpha block of its own.
+    ///
+    /// `three_color` is passed through to the block conversion, where it says
+    /// whether BC1's punch-through mode may be used.
+    #[cfg(feature = "block-formats")]
+    pub fn decode_bc1(
+        &self,
+        level_data: &[u8],
+        desc: ImageDesc,
+        width: u32,
+        height: u32,
+        three_color: bool,
+    ) -> Result<Vec<u8>, Etc1sError> {
+        let converter = crate::etc1s_to_bc1::Bc1Converter::new();
+        let blocks_x = width.div_ceil(4) as usize;
+        let mut blocks = vec![0u8; blocks_x * height.div_ceil(4) as usize * 8];
+        let start = desc.rgb_offset as usize;
+        let end = start
+            .checked_add(desc.rgb_length as usize)
+            .ok_or(Etc1sError::Truncated)?;
+        let data = level_data.get(start..end).ok_or(Etc1sError::Truncated)?;
+
+        self.walk_blocks(
+            data,
+            width,
+            height,
+            |block_x, block_y, color5, inten5, selectors| {
+                let at = (block_y as usize * blocks_x + block_x as usize) * 8;
+                let block = converter.convert(color5, inten5, selectors, three_color);
+                blocks[at..at + 8].copy_from_slice(&block.to_bytes());
+            },
+        )?;
+        Ok(blocks)
+    }
+
     /// Walk one slice's blocks, resolving each block's two codebook indices.
-    fn decode_slice(
+    ///
+    /// What to do with a resolved block is the caller's: the same walk feeds
+    /// pixels, BC1 blocks and anything added later. Only the walk is subtle -
+    /// the prediction state, the selector history, the run lengths - and it
+    /// exists once so a new output format cannot get it subtly different.
+    fn walk_blocks(
         &self,
         data: &[u8],
         width: u32,
         height: u32,
-        pixels: &mut [u8],
-        kind: SliceKind,
+        mut visit: impl FnMut(u32, u32, [u8; 3], u8, [u8; 4]),
     ) -> Result<(), Etc1sError> {
         let blocks_x = width.div_ceil(4);
         let blocks_y = height.div_ceil(4);
@@ -510,15 +563,14 @@ impl Etc1sDecoder {
                     });
                 }
 
-                write_block(
-                    &self.endpoints[endpoint_index as usize],
-                    &self.selectors[selector_index as usize],
+                let endpoint = self.endpoints[endpoint_index as usize];
+                let selector = self.selectors[selector_index as usize];
+                visit(
                     block_x,
                     block_y,
-                    width,
-                    height,
-                    pixels,
-                    kind,
+                    endpoint.color5,
+                    endpoint.inten5,
+                    selector.rows,
                 );
             }
         }
@@ -588,56 +640,53 @@ impl MoveToFront {
     }
 }
 
-/// Expand one ETC1S block into up to sixteen pixels.
-#[allow(clippy::too_many_arguments)]
-fn write_block(
-    endpoint: &Endpoint,
-    selector: &Selector,
-    block_x: u32,
-    block_y: u32,
+/// A visitor that expands each ETC1S block into up to sixteen pixels.
+///
+/// The last block of a row or column hangs off the edge when the image is not
+/// a multiple of four, and those pixels are simply not written.
+fn block_writer(
     width: u32,
     height: u32,
     pixels: &mut [u8],
     kind: SliceKind,
-) {
-    // The last block of a row or column hangs off the edge when the image is
-    // not a multiple of four, and those pixels are simply not written.
-    let max_x = 4.min(width.saturating_sub(block_x * 4));
-    let max_y = 4.min(height.saturating_sub(block_y * 4));
-
-    let colors = block_colors(endpoint);
-    for y in 0..max_y {
-        let row = selector.rows[y as usize];
-        let base = (((block_y * 4 + y) * width) + block_x * 4) as usize * 4;
-        for x in 0..max_x {
-            let color = colors[((row >> (x * 2)) & 3) as usize];
-            let at = base + x as usize * 4;
-            match kind {
-                SliceKind::Color { opaque } => {
-                    pixels[at] = color[0];
-                    pixels[at + 1] = color[1];
-                    pixels[at + 2] = color[2];
-                    if opaque {
-                        pixels[at + 3] = 255;
+) -> impl FnMut(u32, u32, [u8; 3], u8, [u8; 4]) + '_ {
+    move |block_x, block_y, color5, inten5, selectors| {
+        let max_x = 4.min(width.saturating_sub(block_x * 4));
+        let max_y = 4.min(height.saturating_sub(block_y * 4));
+        let colors = block_colors5(color5, inten5);
+        for y in 0..max_y {
+            let row = selectors[y as usize];
+            let base = (((block_y * 4 + y) * width) + block_x * 4) as usize * 4;
+            for x in 0..max_x {
+                let color = colors[((row >> (x * 2)) & 3) as usize];
+                let at = base + x as usize * 4;
+                match kind {
+                    SliceKind::Color { opaque } => {
+                        pixels[at] = color[0];
+                        pixels[at + 1] = color[1];
+                        pixels[at + 2] = color[2];
+                        if opaque {
+                            pixels[at + 3] = 255;
+                        }
                     }
+                    // Alpha rides in the green channel of its own ETC1S image.
+                    SliceKind::Alpha => pixels[at + 3] = color[1],
                 }
-                // Alpha rides in the green channel of its own ETC1S image.
-                SliceKind::Alpha => pixels[at + 3] = color[1],
             }
         }
     }
 }
 
 /// The four colours an ETC1S block can use: its base colour plus each modifier.
-fn block_colors(endpoint: &Endpoint) -> [[u8; 3]; 4] {
+pub(crate) fn block_colors5(color5: [u8; 3], inten5: u8) -> [[u8; 3]; 4] {
     // 5 bits per channel expanded to 8 by repeating the top bits, which is what
     // ETC1 specifies rather than a multiply.
     let base = [
-        ((endpoint.color5[0] << 3) | (endpoint.color5[0] >> 2)) as i32,
-        ((endpoint.color5[1] << 3) | (endpoint.color5[1] >> 2)) as i32,
-        ((endpoint.color5[2] << 3) | (endpoint.color5[2] >> 2)) as i32,
+        ((color5[0] << 3) | (color5[0] >> 2)) as i32,
+        ((color5[1] << 3) | (color5[1] >> 2)) as i32,
+        ((color5[2] << 3) | (color5[2] >> 2)) as i32,
     ];
-    let table = INTEN_TABLES[(endpoint.inten5 & 7) as usize];
+    let table = INTEN_TABLES[(inten5 & 7) as usize];
     let mut colors = [[0u8; 3]; 4];
     for (color, modifier) in colors.iter_mut().zip(table.iter()) {
         for (channel, value) in color.iter_mut().zip(base.iter()) {
@@ -645,4 +694,9 @@ fn block_colors(endpoint: &Endpoint) -> [[u8; 3]; 4] {
         }
     }
     colors
+}
+
+/// The one colour a given selector picks out of the four.
+pub(crate) fn block_color5(color5: [u8; 3], inten5: u8, selector: u8) -> [u8; 3] {
+    block_colors5(color5, inten5)[(selector & 3) as usize]
 }

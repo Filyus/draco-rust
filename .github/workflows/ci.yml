@@ -112,6 +112,22 @@ jobs:
           cargo doc --manifest-path crates/Cargo.toml -p draco-io --all-features --no-deps
           cargo doc --manifest-path crates/Cargo.toml -p draco-gltf --all-features --no-deps
 
+      # The texture crate is split so a consumer can take one codec, or the
+      # pixel path without the baked block-format tables, which are most of
+      # its compiled size. Each slice has to keep building on its own.
+      - name: Check draco-texture feature combinations
+        env:
+          RUSTFLAGS: -D warnings
+        run: |
+          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features etc1s
+          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features uastc
+          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features etc1s,uastc
+          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features etc1s,block-formats
+          cargo check --manifest-path crates/Cargo.toml -p draco-texture --target wasm32-unknown-unknown
+
+      - name: Test draco-texture
+        run: cargo test --manifest-path crates/Cargo.toml -p draco-texture
+
       - name: Check fuzz targets compile
         run: cargo check --manifest-path fuzz/Cargo.toml --bins
 
@@ -222,6 +238,7 @@ jobs:
           cargo run --manifest-path build-tool/Cargo.toml -- --module ktx2-wasm --force
           npm run test:ktx2-etc1s
           npm run test:ktx2-uastc
+          npm run test:ktx2-block-formats
         working-directory: web
 
       - name: Build and smoke raw glTF writer

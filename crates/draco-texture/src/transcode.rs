@@ -19,6 +19,34 @@ pub struct Image {
     pub rgba: Vec<u8>,
 }
 
+/// What the caller wants the image in.
+///
+/// A GPU samples a block format directly, so transcoding into one keeps the
+/// texture compressed in video memory instead of expanding it eightfold. Which
+/// of these a machine can take depends on its extensions, so the caller picks
+/// and this says whether the file's codec can reach it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// Eight bits per channel, in raster order. Every codec reaches this.
+    Rgba8,
+    /// BC1, eight bytes per 4x4 block, no alpha.
+    #[cfg(feature = "block-formats")]
+    Bc1,
+}
+
+/// One decoded image, either as pixels or as GPU-ready blocks.
+#[derive(Debug, Clone)]
+pub struct Decoded {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// The format the bytes are in.
+    pub target: Target,
+    /// Pixels in raster order, or blocks in raster order.
+    pub bytes: Vec<u8>,
+}
+
 /// Anything that can stop a file from being turned into pixels.
 #[derive(Debug, thiserror::Error)]
 pub enum TranscodeError {
@@ -34,6 +62,14 @@ pub enum TranscodeError {
     /// The file holds something no codec here reads.
     #[error("this KTX2 file cannot be transcoded: {0}")]
     Unsupported(String),
+    /// The file's codec cannot reach the format that was asked for.
+    #[error("a {codec} file cannot be transcoded to {target:?}")]
+    NoSuchTarget {
+        /// Which Basis codec the file holds.
+        codec: &'static str,
+        /// The format that was asked for.
+        target: Target,
+    },
     /// A level, layer or face that the file does not have.
     #[error("no such image: level {level}, layer {layer}, face {face}")]
     NoSuchImage {
@@ -91,6 +127,23 @@ impl Transcoder {
         layer: u32,
         face: u32,
     ) -> Result<Image, TranscodeError> {
+        let decoded = self.decode(file, level, layer, face, Target::Rgba8)?;
+        Ok(Image {
+            width: decoded.width,
+            height: decoded.height,
+            rgba: decoded.bytes,
+        })
+    }
+
+    /// Decode one image into `target`.
+    pub fn decode(
+        &self,
+        file: &Ktx2<'_>,
+        level: u32,
+        layer: u32,
+        face: u32,
+        target: Target,
+    ) -> Result<Decoded, TranscodeError> {
         if level >= file.level_count() || layer >= file.layer_count() || face >= file.face_count() {
             return Err(TranscodeError::NoSuchImage { level, layer, face });
         }
@@ -106,11 +159,16 @@ impl Transcoder {
                     .image_desc(index)
                     .ok_or(TranscodeError::NoSuchImage { level, layer, face })?;
                 let level_data = file.level_bytes(level)?;
-                let rgba = decoder.decode_rgba(&level_data, desc, width, height)?;
-                Ok(Image {
+                let bytes = match target {
+                    Target::Rgba8 => decoder.decode_rgba(&level_data, desc, width, height)?,
+                    #[cfg(feature = "block-formats")]
+                    Target::Bc1 => decoder.decode_bc1(&level_data, desc, width, height, true)?,
+                };
+                Ok(Decoded {
                     width,
                     height,
-                    rgba,
+                    target,
+                    bytes,
                 })
             }
             Ktx2Format::UastcLdr4x4 { .. } => {
@@ -124,11 +182,21 @@ impl Transcoder {
                 let image_data = level_data
                     .get(start..start + image_size)
                     .ok_or(TranscodeError::NoSuchImage { level, layer, face })?;
-                let rgba = uastc::decode_rgba(image_data, width, height)?;
-                Ok(Image {
+                let bytes = match target {
+                    Target::Rgba8 => uastc::decode_rgba(image_data, width, height)?,
+                    #[allow(unreachable_patterns)]
+                    other => {
+                        return Err(TranscodeError::NoSuchTarget {
+                            codec: "UASTC",
+                            target: other,
+                        })
+                    }
+                };
+                Ok(Decoded {
                     width,
                     height,
-                    rgba,
+                    target,
+                    bytes,
                 })
             }
             Ktx2Format::Plain { vk_format, .. } => Err(TranscodeError::Unsupported(format!(

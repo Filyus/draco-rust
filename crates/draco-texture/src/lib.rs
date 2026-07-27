@@ -15,11 +15,22 @@
 #![deny(missing_docs)]
 
 /// Basis Universal ETC1S decoding.
+#[cfg(feature = "etc1s")]
 pub mod etc1s;
+/// Turning ETC1S blocks into BC1, for a GPU that takes block formats.
+#[cfg(all(feature = "etc1s", feature = "block-formats"))]
+pub mod etc1s_to_bc1;
+#[cfg(any(feature = "etc1s", feature = "uastc"))]
 mod huffman;
 /// KTX2 container reading.
 pub mod ktx2;
 /// Decoding a KTX2 file's payload into pixels.
+///
+/// Needs both codecs: its whole job is to answer "whatever this file holds",
+/// and a build with one of them could not. A consumer that wants only one
+/// reaches for that codec's module directly.
+#[cfg(all(feature = "etc1s", feature = "uastc"))]
 pub mod transcode;
 /// Basis Universal UASTC LDR decoding.
+#[cfg(feature = "uastc")]
 pub mod uastc;

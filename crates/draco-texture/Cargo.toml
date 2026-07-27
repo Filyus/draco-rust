@@ -19,7 +19,17 @@ thiserror = "2.0"
 # Pure Rust and allocation-only, so it survives the wasm32 target unchanged.
 ruzstd = { version = "0.7", default-features = false, features = ["std"] }
 
-# No feature flags. `KHR_texture_basisu` allows a KTX2 file to hold either
-# Basis codec, so a build with one of them is a build that refuses half the
-# files it is pointed at - the split would only create combinations nobody
-# ships and nobody tests.
+[features]
+# Everything, which is what a build for the web converter wants:
+# `KHR_texture_basisu` lets a KTX2 file hold either Basis codec, so a reader
+# with one of them refuses half the files it is pointed at.
+default = ["etc1s", "uastc", "block-formats"]
+# Basis Universal ETC1S decoding.
+etc1s = []
+# Basis Universal UASTC LDR decoding.
+uastc = []
+# Transcoding to the block formats a GPU can sample directly, rather than
+# decoding to pixels. This is what carries the baked endpoint tables, which
+# are most of the crate's compiled size - a consumer that only wants pixels
+# should leave it off.
+block-formats = []

@@ -126,7 +126,7 @@ export async function compareAllLevels(ktx2, reference, files, codec) {
     for (let level = 0; level < file.levels; level++) {
       const want = await reference.transcode(name, level, TARGET.RGBA32);
       const image = file.decodeRgba(level);
-      const got = image.rgba();
+      const got = image.bytes();
 
       assert.equal(
         got.length,

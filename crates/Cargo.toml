@@ -17,6 +17,15 @@ codegen-units = 1
 opt-level = 3
 codegen-units = 1
 
+# The texture crate bakes its BC1 tables by exhaustive search, and a test
+# reruns that search to prove the committed tables still match it. Unoptimized
+# that is minutes rather than seconds.
+[profile.dev.package.draco-texture]
+opt-level = 3
+
+[profile.test.package.draco-texture]
+opt-level = 3
+
 [profile.dev.package.draco-io]
 opt-level = 2
 

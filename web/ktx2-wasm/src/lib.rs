@@ -8,7 +8,7 @@
 use wasm_bindgen::prelude::*;
 
 use draco_texture::ktx2::{Ktx2, Ktx2Format};
-use draco_texture::transcode::Transcoder;
+use draco_texture::transcode::{Target, Transcoder};
 
 /// Initialize panic hook for better error messages in browser console.
 #[wasm_bindgen(start)]
@@ -23,12 +23,12 @@ pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// One decoded mip level.
+/// One decoded mip level, as pixels or as GPU-ready blocks.
 #[wasm_bindgen]
 pub struct Ktx2Image {
     width: u32,
     height: u32,
-    rgba: Vec<u8>,
+    bytes: Vec<u8>,
 }
 
 #[wasm_bindgen]
@@ -45,9 +45,10 @@ impl Ktx2Image {
         self.height
     }
 
-    /// `width * height * 4` bytes, R, G, B, A, in raster order.
-    pub fn rgba(&self) -> Vec<u8> {
-        self.rgba.clone()
+    /// The decoded bytes: pixels in raster order, or blocks in raster order,
+    /// depending on the target the caller asked for.
+    pub fn bytes(&self) -> Vec<u8> {
+        self.bytes.clone()
     }
 }
 
@@ -129,15 +130,30 @@ impl Ktx2File {
     /// Decode one mip level to RGBA8.
     #[wasm_bindgen(js_name = decodeRgba)]
     pub fn decode_rgba(&self, level: u32) -> Result<Ktx2Image, JsError> {
+        self.decode(level, "rgba8")
+    }
+
+    /// Decode one mip level into a named target: `"rgba8"` or `"bc1"`.
+    ///
+    /// Named rather than numbered because the caller picks the target from
+    /// what the GL context reports, and a string survives that round trip
+    /// without either side owning an enum the other has to mirror.
+    #[wasm_bindgen(js_name = decode)]
+    pub fn decode(&self, level: u32, target: &str) -> Result<Ktx2Image, JsError> {
+        let target = match target {
+            "rgba8" => Target::Rgba8,
+            "bc1" => Target::Bc1,
+            other => return Err(JsError::new(&format!("unknown target format {other}"))),
+        };
         let file = Ktx2::parse(&self.data).map_err(to_js)?;
-        let image = self
+        let decoded = self
             .transcoder
-            .decode_rgba(&file, level, 0, 0)
+            .decode(&file, level, 0, 0, target)
             .map_err(to_js)?;
         Ok(Ktx2Image {
-            width: image.width,
-            height: image.height,
-            rgba: image.rgba,
+            width: decoded.width,
+            height: decoded.height,
+            bytes: decoded.bytes,
         })
     }
 }
