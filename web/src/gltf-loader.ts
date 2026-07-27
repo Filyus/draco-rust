@@ -40,6 +40,9 @@ import {
 } from './fbx-scene-adapter.ts';
 import { assertConverterProfile } from './wasm-modules.ts';
 import type { GltfAsset, GltfModule, PackedAccessor, PackedGeometry } from './wasm-modules.ts';
+import {
+  MAX_ACTIVE_MORPH_TARGETS, VIEWER_LIMIT_WARNINGS, peakActiveMorphWeights,
+} from './viewer-scene.ts';
 import type {
   Aabb, Renderable, RuntimeAccessor, ViewerClip, ViewerMesh, ViewerNode, ViewerSkin,
 } from './viewer-scene.ts';
@@ -66,10 +69,6 @@ interface ImportHooks {
  */
 const FBX_HONORED_EXTENSIONS: ReadonlySet<string> = GLTF_READER_RESOLVED_EXTENSIONS;
 
-// Morph targets the preview can blend in one frame. Mirrors the viewer's shader
-// loop bound; a mesh may declare any number of targets as long as no single
-// frame drives more than this many at once.
-const MAX_ACTIVE_MORPH_TARGETS = 32;
 
 /**
  * Build a Scene from a parsed glTF document.
@@ -594,9 +593,7 @@ function buildMeshes(asset: GltfAsset, defs: GltfJson[], warnings: string[]): Vi
             readAccessorAsTyped(asset, accessorIndex), attributes.POSITION.count,
           );
           if (!target) {
-            warnings.push(
-              `Morph target ${targetIndex} on mesh ${meshIndex} primitive ${p} has an unsupported POSITION accessor and was ignored`,
-            );
+            warnings.push(VIEWER_LIMIT_WARNINGS.morphTarget(targetIndex, meshIndex, p));
             primitive.morphPositions.push(null);
             continue;
           }
@@ -612,18 +609,14 @@ function buildMeshes(asset: GltfAsset, defs: GltfJson[], warnings: string[]): Vi
             readAccessorAsTyped(asset, accessorIndex), attributes.POSITION.count,
           );
           if (!target) {
-            warnings.push(
-              `Morph normal ${targetIndex} on mesh ${meshIndex} primitive ${p} has an unsupported accessor and was ignored`,
-            );
+            warnings.push(VIEWER_LIMIT_WARNINGS.morphNormal(targetIndex, meshIndex, p));
             primitive.morphNormals.push(null);
             continue;
           }
           primitive.morphNormals.push(target);
         }
         if (targets.some((target: GltfJson) => typeof target.TANGENT === 'number')) {
-          warnings.push(
-            `Morph tangents on mesh ${meshIndex} primitive ${p} are ignored because the preview derives its tangent frame from deformed geometry and UVs`,
-          );
+          warnings.push(VIEWER_LIMIT_WARNINGS.morphTangents(meshIndex, p));
         }
         if (packed.hasIndices()) {
           primitive.indices = {
@@ -660,9 +653,7 @@ function initializeMorphWeights(nodes: ViewerNode[], meshes: ViewerMesh[], warni
     // target list is fine as long as few of them are active at once.
     const activeTargets = node.weights.reduce((total, weight) => total + (weight ? 1 : 0), 0);
     if (activeTargets > MAX_ACTIVE_MORPH_TARGETS) {
-      warnings.push(
-        `Morph mesh ${mesh.name} holds ${activeTargets} non-zero weights; the preview blends the ${MAX_ACTIVE_MORPH_TARGETS} strongest`,
-      );
+      warnings.push(VIEWER_LIMIT_WARNINGS.morphMeshWeights(mesh.name, activeTargets));
     }
   }
 }
@@ -881,37 +872,6 @@ async function loadImageBytes(bytes: Uint8Array, mime: string, hooks: ImportHook
 /** Re-exported under its historical name for existing importers. */
 export const resolveUriBytes = resolveResource;
 
-/**
- * Most morph weights a weights sampler ever holds at once. Cubic keyframes store
- * [inTangent, value, outTangent], so only their middle block is a pose, and an
- * interpolated segment can carry both of its endpoint poses at the same time.
- */
-function peakActiveMorphWeights(sampler: GltfJson, targetCount: number): number {
-  if (targetCount <= 0 || !sampler.output) return 0;
-  const interpolation = String(sampler.interpolation || 'LINEAR').toUpperCase();
-  const cubic = interpolation === 'CUBICSPLINE';
-  const stride = cubic ? targetCount * 3 : targetCount;
-  const offset = cubic ? targetCount : 0;
-  const keyframes = Math.floor(sampler.output.length / stride);
-  const poses = [];
-  for (let key = 0; key < keyframes; key++) {
-    const pose = [];
-    for (let i = 0; i < targetCount; i++) {
-      if (sampler.output[key * stride + offset + i]) pose.push(i);
-    }
-    poses.push(pose);
-  }
-  const blends = interpolation !== 'STEP';
-  let peak = 0;
-  for (let key = 0; key < poses.length; key++) {
-    const segment = blends && key + 1 < poses.length
-      ? new Set([...poses[key], ...poses[key + 1]])
-      : new Set(poses[key]);
-    if (segment.size > peak) peak = segment.size;
-  }
-  return peak;
-}
-
 export function buildAnimations(asset: GltfAsset, defs: GltfJson[], nodes: ViewerNode[], warnings: string[]): GltfJson[] {
   return defs.map((def, animIndex) => {
     const name = def.name || `animation_${animIndex}`;
@@ -941,9 +901,7 @@ export function buildAnimations(asset: GltfAsset, defs: GltfJson[], nodes: Viewe
       if (target.path === 'weights') {
         const active = peakActiveMorphWeights(sampler, targetCount);
         if (active > MAX_ACTIVE_MORPH_TARGETS) {
-          warnings.push(
-            `Animation ${name}: a weights keyframe drives ${active} targets at once; the preview blends the ${MAX_ACTIVE_MORPH_TARGETS} strongest`,
-          );
+          warnings.push(VIEWER_LIMIT_WARNINGS.morphKeyframeWeights(name, active));
         }
       }
       return {

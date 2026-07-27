@@ -9,6 +9,9 @@
 
 import { componentByteSize, morphDeltaAccessor, readComponent } from './component-values.ts';
 import { cloneTrs, decomposeMat4 } from './mat4.ts';
+import {
+  MAX_ACTIVE_MORPH_TARGETS, VIEWER_LIMIT_WARNINGS, peakActiveMorphWeights,
+} from './viewer-scene.ts';
 import type { RuntimeAccessor } from './viewer-scene.ts';
 import { assertValidSceneDocument } from './scene-document.ts';
 import type {
@@ -40,7 +43,9 @@ export function buildViewerSceneFromDocument(document: SceneDocument) {
   const accessors = document.accessors.map(toRuntimeAccessor);
   const meshes = document.meshes.map((mesh, meshIndex) => ({
     name: mesh.name || `mesh_${meshIndex}`,
-    primitives: mesh.primitives.map((primitive) => adaptPrimitive(primitive, accessors, viewerWarnings)),
+    primitives: mesh.primitives.map((primitive, primitiveIndex) => adaptPrimitive(
+      primitive, accessors, viewerWarnings, meshIndex, primitiveIndex,
+    )),
     aabb: meshAabb(mesh, accessors),
   }));
   const nodes = document.nodes.map((node) => adaptNode(node, document));
@@ -54,7 +59,10 @@ export function buildViewerSceneFromDocument(document: SceneDocument) {
   });
   const { renderables, aabb } = collectRenderables(nodes, meshes, document.rootNodes);
 
-  const animations = document.animations.map((clip, clipIndex) => adaptAnimation(clip, nodes, accessors, clipIndex));
+  const animations = document.animations.map(
+    (clip, clipIndex) => adaptAnimation(clip, nodes, accessors, clipIndex, viewerWarnings),
+  );
+  reportMorphWeightLimits(document, meshes, nodes, viewerWarnings);
   for (const mesh of document.meshes) for (const primitive of mesh.primitives) {
     if (primitive.attributes.JOINTS_1 !== undefined || primitive.attributes.WEIGHTS_1 !== undefined) {
       viewerWarnings.push('Preview skinning uses the first four influences; additional influence sets remain available to exporters.');
@@ -85,7 +93,13 @@ function toRuntimeAccessor(accessor: SceneAccessor): RuntimeAccessor {
   };
 }
 
-function adaptPrimitive(primitive: ScenePrimitive, accessors: RuntimeAccessor[], warnings: string[]) {
+function adaptPrimitive(
+  primitive: ScenePrimitive,
+  accessors: RuntimeAccessor[],
+  warnings: string[],
+  meshIndex: number,
+  primitiveIndex: number,
+) {
   const attributes: Record<string, RuntimeAccessor> = {};
   for (const [semantic, accessorIndex] of Object.entries(primitive.attributes)) {
     attributes[semantic] = accessors[accessorIndex];
@@ -112,17 +126,24 @@ function adaptPrimitive(primitive: ScenePrimitive, accessors: RuntimeAccessor[],
     // the preview blends through is float only, so the expansion belongs here —
     // without it a quantized asset silently renders at its rest pose.
     const vertexCount = attributes.POSITION?.count ?? 0;
-    const deltas = (semantic: 'POSITION' | 'NORMAL') => primitive.targets!.map((target, index) => {
+    const deltas = (
+      semantic: 'POSITION' | 'NORMAL',
+      report: (target: number, mesh: number, primitive: number) => string,
+    ) => primitive.targets!.map((target, index) => {
       const accessorIndex = target[semantic];
       if (accessorIndex === undefined) return null;
       const expanded = morphDeltaAccessor(accessors[accessorIndex], vertexCount);
-      if (!expanded) {
-        warnings.push(`Morph ${semantic === 'POSITION' ? 'target' : 'normal'} ${index} has an accessor the preview cannot use as deltas and was ignored`);
-      }
+      if (!expanded) warnings.push(report(index, meshIndex, primitiveIndex));
       return expanded;
     });
-    runtime.morphPositions = deltas('POSITION');
-    runtime.morphNormals = deltas('NORMAL');
+    runtime.morphPositions = deltas('POSITION', VIEWER_LIMIT_WARNINGS.morphTarget);
+    runtime.morphNormals = deltas('NORMAL', VIEWER_LIMIT_WARNINGS.morphNormal);
+    // The document keeps TANGENT deltas because an exporter can still write
+    // them; the preview derives its tangent frame from deformed geometry and
+    // UVs instead, so it says so rather than dropping them silently.
+    if (primitive.targets.some((target) => target.TANGENT !== undefined)) {
+      warnings.push(VIEWER_LIMIT_WARNINGS.morphTangents(meshIndex, primitiveIndex));
+    }
   }
   return runtime;
 }
@@ -171,22 +192,57 @@ function adaptAnimation(
   nodes: ReturnType<typeof adaptNode>[],
   accessors: RuntimeAccessor[],
   clipIndex: number,
+  warnings: string[],
 ) {
+  const name = clip.name || `animation_${clipIndex}`;
   return {
-    name: clip.name || `animation_${clipIndex}`,
+    name,
     duration: clip.duration,
     channels: clip.channels.map((channel) => {
       const sampler = clip.samplers[channel.sampler];
       const input = floatAccessor(accessors[sampler.input]);
       const output = floatAccessor(accessors[sampler.output]);
+      const targetCount = channel.path === 'weights' ? accessors[sampler.output].components : 3;
+      const runtime = { input, output, interpolation: sampler.interpolation || 'LINEAR' };
+      if (channel.path === 'weights') {
+        const active = peakActiveMorphWeights(runtime, targetCount);
+        if (active > MAX_ACTIVE_MORPH_TARGETS) {
+          warnings.push(VIEWER_LIMIT_WARNINGS.morphKeyframeWeights(name, active));
+        }
+      }
       return {
         node: nodes[channel.node],
         path: channel.path,
-        targetCount: channel.path === 'weights' ? accessors[sampler.output].components : 3,
-        sampler: { input, output, interpolation: sampler.interpolation || 'LINEAR' },
+        targetCount,
+        sampler: runtime,
       };
     }),
   };
+}
+
+/**
+ * Report meshes whose rest pose already drives more targets than one frame
+ * blends.
+ *
+ * The document sizes `node.weights` to the target count on import, so unlike
+ * the glTF loader this only has to count them — there is no pose to
+ * reconstruct first.
+ */
+function reportMorphWeightLimits(
+  document: SceneDocument,
+  meshes: { name: string }[],
+  nodes: ReturnType<typeof adaptNode>[],
+  warnings: string[],
+) {
+  nodes.forEach((node, index) => {
+    const mesh = meshes[node.meshIndex];
+    if (!mesh || document.nodes[index] === undefined) return;
+    let active = 0;
+    for (const weight of node.weights) if (weight) active += 1;
+    if (active > MAX_ACTIVE_MORPH_TARGETS) {
+      warnings.push(VIEWER_LIMIT_WARNINGS.morphMeshWeights(mesh.name, active));
+    }
+  });
 }
 
 /**

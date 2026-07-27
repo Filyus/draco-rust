@@ -218,3 +218,67 @@ export interface Renderable {
   meshIndex: number;
   skinIndex: number;
 }
+
+/**
+ * Morph targets the preview can blend in one frame.
+ *
+ * Mirrors the viewer's shader loop bound; a mesh may declare any number of
+ * targets as long as no single frame drives more than this many at once.
+ */
+export const MAX_ACTIVE_MORPH_TARGETS = 32;
+
+/**
+ * What a producer of this scene says when the renderer cannot show something.
+ *
+ * These are statements about the preview, not about the file, so they belong
+ * with the shape the preview consumes rather than with any one importer. Two
+ * importers reach the same renderer through the same limits, and a user who
+ * loads one asset through both must not be told two different things about it.
+ */
+export const VIEWER_LIMIT_WARNINGS = {
+  morphTarget: (target: number, mesh: number, primitive: number) =>
+    `Morph target ${target} on mesh ${mesh} primitive ${primitive} has an unsupported POSITION accessor and was ignored`,
+  morphNormal: (target: number, mesh: number, primitive: number) =>
+    `Morph normal ${target} on mesh ${mesh} primitive ${primitive} has an unsupported accessor and was ignored`,
+  morphTangents: (mesh: number, primitive: number) =>
+    `Morph tangents on mesh ${mesh} primitive ${primitive} are ignored because the preview derives its tangent frame from deformed geometry and UVs`,
+  morphMeshWeights: (mesh: string, active: number) =>
+    `Morph mesh ${mesh} holds ${active} non-zero weights; the preview blends the ${MAX_ACTIVE_MORPH_TARGETS} strongest`,
+  morphKeyframeWeights: (animation: string, active: number) =>
+    `Animation ${animation}: a weights keyframe drives ${active} targets at once; the preview blends the ${MAX_ACTIVE_MORPH_TARGETS} strongest`,
+} as const;
+
+/**
+ * Most morph weights a weights sampler ever holds at once.
+ *
+ * Cubic keyframes store [inTangent, value, outTangent], so only their middle
+ * block is a pose, and an interpolated segment can carry both of its endpoint
+ * poses at the same time.
+ */
+export function peakActiveMorphWeights(
+  sampler: { output: ArrayLike<number>; interpolation?: string },
+  targetCount: number,
+): number {
+  if (targetCount <= 0 || !sampler.output) return 0;
+  const cubic = String(sampler.interpolation || 'LINEAR').toUpperCase() === 'CUBICSPLINE';
+  const stride = cubic ? targetCount * 3 : targetCount;
+  const offset = cubic ? targetCount : 0;
+  const keyframes = Math.floor(sampler.output.length / stride);
+  const poses: number[][] = [];
+  for (let key = 0; key < keyframes; key += 1) {
+    const pose: number[] = [];
+    for (let target = 0; target < targetCount; target += 1) {
+      if (sampler.output[key * stride + offset + target]) pose.push(target);
+    }
+    poses.push(pose);
+  }
+  const blends = String(sampler.interpolation || 'LINEAR').toUpperCase() !== 'STEP';
+  let peak = 0;
+  for (let key = 0; key < poses.length; key += 1) {
+    const segment = blends && key + 1 < poses.length
+      ? new Set([...poses[key], ...poses[key + 1]])
+      : new Set(poses[key]);
+    if (segment.size > peak) peak = segment.size;
+  }
+  return peak;
+}
