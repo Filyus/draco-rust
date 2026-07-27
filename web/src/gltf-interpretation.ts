@@ -15,6 +15,7 @@
  */
 
 import { MATERIAL_EXTENSION_NAMES, readMaterialExtensions } from './material-extensions.ts';
+import type { MaterialExtensionValues } from './material-extensions.ts';
 
 /**
  * Loosely typed on purpose: everything here is external JSON, inspected field
@@ -93,32 +94,20 @@ export interface InterpretedTexture {
  * metallic-roughness model exactly, so a consumer never needs to ask whether an
  * extension was present.
  */
-export interface InterpretedMaterial {
+export interface InterpretedMaterial extends Required<MaterialExtensionValues<InterpretedTexture | null>> {
   name: string;
   baseColorFactor: number[];
   metallicFactor: number;
   roughnessFactor: number;
   emissiveFactor: number[];
-  emissiveStrength: number;
-  ior: number;
-  specularFactor: number;
-  specularColorFactor: number[];
-  clearcoatFactor: number;
-  clearcoatRoughnessFactor: number;
   alphaMode: string;
   alphaCutoff: number;
   doubleSided: boolean;
-  unlit: boolean;
   baseColorTexture: InterpretedTexture | null;
   metallicRoughnessTexture: InterpretedTexture | null;
   normalTexture: InterpretedTexture | null;
   emissiveTexture: InterpretedTexture | null;
   occlusionTexture: InterpretedTexture | null;
-  specularTexture: InterpretedTexture | null;
-  specularColorTexture: InterpretedTexture | null;
-  clearcoatTexture: InterpretedTexture | null;
-  clearcoatRoughnessTexture: InterpretedTexture | null;
-  clearcoatNormalTexture: InterpretedTexture | null;
 }
 
 /** Read one `materials[]` entry, extensions included. */

@@ -33,8 +33,8 @@ const binary = new Uint8Array(positions.buffer);
 // ignores, and a required list that is not the same list as the used one.
 const manifest = {
   asset: { version: '2.0' },
-  extensionsUsed: ['KHR_materials_unlit', 'KHR_materials_sheen', 'KHR_texture_transform'],
-  extensionsRequired: ['KHR_materials_sheen'],
+  extensionsUsed: ['KHR_materials_unlit', 'KHR_materials_pbrSpecularGlossiness', 'KHR_texture_transform'],
+  extensionsRequired: ['KHR_materials_pbrSpecularGlossiness'],
   scene: 0,
   scenes: [{ nodes: [0] }],
   nodes: [{ mesh: 0 }],
@@ -55,12 +55,12 @@ assert.equal(provenance.version, GLTF_SCENE_PROVENANCE_VERSION);
 assert.equal(provenance.format, 'gltf');
 assert.deepEqual(
   provenance.extensionsUsed,
-  ['KHR_materials_unlit', 'KHR_materials_sheen', 'KHR_texture_transform'],
+  ['KHR_materials_unlit', 'KHR_materials_pbrSpecularGlossiness', 'KHR_texture_transform'],
   'extensionsUsed must arrive verbatim and in document order',
 );
 assert.deepEqual(
   provenance.extensionsRequired,
-  ['KHR_materials_sheen'],
+  ['KHR_materials_pbrSpecularGlossiness'],
   'extensionsRequired is its own list and must not be conflated with extensionsUsed',
 );
 
@@ -81,7 +81,7 @@ assert.equal(
   'the document must not start carrying the file claims it deliberately omits',
 );
 assert.ok(
-  document.warnings.some((warning) => warning.includes('KHR_materials_sheen')),
+  document.warnings.some((warning) => warning.includes('KHR_materials_pbrSpecularGlossiness')),
   'the document still reports what the portable subset could not take',
 );
 

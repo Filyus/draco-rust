@@ -184,6 +184,9 @@ uniform float uOcclusionStrength;
 uniform float uIor;
 uniform float uSpecularFactor;
 uniform vec3 uSpecularColorFactor;
+// KHR_materials_sheen: a retroreflective lobe for cloth, over the base layer.
+uniform vec3 uSheenColorFactor;
+uniform float uSheenRoughnessFactor;
 // KHR_materials_clearcoat: a second specular lobe over the whole material.
 uniform float uClearcoatFactor;
 uniform float uClearcoatRoughnessFactor;
@@ -210,6 +213,27 @@ ${slotDeclarations(slots)}
 
 vec3 fresnelSchlickRoughness(float cosTheta, vec3 f0, float roughness) {
     return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - cosTheta, 5.0);
+}
+
+/**
+ * How much of the environment a Charlie sheen lobe returns at this angle.
+ *
+ * KHR_materials_sheen is defined against the Charlie distribution, whose
+ * directional albedo has no closed form; the extension ships a lookup texture
+ * for it. This is the published analytic fit of that same term (Estevez and
+ * Kulla, "Production Friendly Microfacet Sheen BRDF"), which the glTF sample
+ * viewer and three.js both use in place of the texture. Two curves, because
+ * the fit changes shape below a quarter roughness.
+ */
+float sheenDirectionalAlbedo(float nDotV, float roughness) {
+    float r2 = roughness * roughness;
+    bool smooth_ = roughness < 0.25;
+    float a = smooth_ ? -339.2 * r2 + 161.4 * roughness - 25.9
+                      : -8.48 * r2 + 14.3 * roughness - 9.95;
+    float b = smooth_ ? 44.0 * r2 - 23.7 * roughness + 3.26
+                      : 1.97 * r2 - 3.27 * roughness + 0.72;
+    float fit = exp(a * nDotV + b) + (smooth_ ? 0.0 : 0.1 * (roughness - 0.25));
+    return clamp(fit / PI, 0.0, 1.0);
 }
 
 vec3 acesToneMap(vec3 color) {
@@ -339,6 +363,29 @@ void main() {
     emissive *= pow(texture(uEmissive, slotUv(SLOT_EMISSIVE)).rgb, vec3(2.2));
     #endif
     color += emissive;
+
+    // KHR_materials_sheen: a broad retroreflective lobe for cloth. It is
+    // energy-conserving against the layer underneath rather than added on top,
+    // so what the sheen returns is taken out of the base first — a velvet rim
+    // that also brightened the whole surface would read as emission.
+    vec3 sheenColor = uSheenColorFactor;
+    #ifdef HAS_SHEEN_COLOR
+    sheenColor *= pow(texture(uSheenColorTexture, slotUv(SLOT_SHEEN_COLOR)).rgb, vec3(2.2));
+    #endif
+    if (sheenColor.r + sheenColor.g + sheenColor.b > 0.0) {
+        float sheenRoughness = uSheenRoughnessFactor;
+        #ifdef HAS_SHEEN_ROUGHNESS
+        sheenRoughness *= texture(uSheenRoughnessTexture, slotUv(SLOT_SHEEN_ROUGHNESS)).a;
+        #endif
+        sheenRoughness = clamp(sheenRoughness, 0.07, 1.0);
+        float sheenAlbedo = sheenDirectionalAlbedo(nDotV, sheenRoughness);
+        // Sheen is a wide lobe, so it gathers the environment far off the
+        // mirror direction: the surface normal at a roughness-driven level is
+        // closer to what it integrates than the reflection is.
+        vec3 sheenIbl = textureLod(uPrefilteredMap, N, sheenRoughness * uEnvironmentMaxLod).rgb;
+        color *= 1.0 - max(max(sheenColor.r, sheenColor.g), sheenColor.b) * sheenAlbedo;
+        color += sheenIbl * sheenColor * sheenAlbedo * occlusion;
+    }
 
     // Clearcoat sits on top of everything below, emission included: the layer
     // reflects its own share of the environment and dims what shows through it.

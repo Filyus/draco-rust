@@ -1735,6 +1735,85 @@ test('one surface program per set of texture slots, not per material', async ({ 
   expect(observed.sources[1]).toEqual({ slots: 1, samplers: 1 });
 });
 
+test('KHR_materials_sheen shows on the surface it is set on', async ({ page }) => {
+  await page.goto('/index.html');
+  // Reading an extension and shading it are separate claims, and the gates so
+  // far only made the first. This one renders the same quad twice, alike but
+  // for the sheen colour, and requires the frame to differ: a table entry with
+  // no GLSL behind it passes every other check in the suite.
+  const observed = await page.evaluate(async () => {
+    const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
+      import('/viewer.js'),
+      import('/scene-document.js'),
+      import('/scene-document-viewer.js'),
+    ]);
+
+    const bytes = (values) => new Uint8Array(
+      values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
+    );
+    const accessor = (values, components, componentType = 5126) => ({
+      bytes: bytes(values), componentType, components, count: values.length / components,
+    });
+    // Rough and black: everything the frame shows comes from the sheen lobe,
+    // and a lit dielectric would drown it.
+    const document_ = (sheen) => createSceneDocument({
+      materials: [{
+        baseColorFactor: [0, 0, 0, 1],
+        metallicFactor: 0,
+        roughnessFactor: 1,
+        ...sheen,
+      }],
+      accessors: [
+        accessor(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3),
+        accessor(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]), 3),
+        accessor(new Uint16Array([0, 1, 2, 0, 2, 3]), 1, 5123),
+      ],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, indices: 2, material: 0 }] }],
+      nodes: [{ name: 'Quad', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 }],
+      rootNodes: [0],
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
+    document.body.appendChild(canvas);
+    const viewer = new Viewer(canvas);
+    viewer.showGrid = false;
+    // Off-axis, because a sheen lobe is retroreflective: head-on it returns
+    // the least it ever will.
+    const sample = (sheen) => {
+      viewer.setScene(buildViewerSceneFromDocument(document_(sheen)));
+      viewer.camera.target.set([0, 0, 0]);
+      viewer.camera.distance = 3;
+      viewer.camera.azimuth = 1.35;
+      viewer.camera.elevation = 0.15;
+      viewer._render();
+      const rgba = new Uint8Array(4);
+      viewer.gl.readPixels(
+        Math.floor(viewer.gl.drawingBufferWidth / 2),
+        Math.floor(viewer.gl.drawingBufferHeight / 2),
+        1, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, rgba,
+      );
+      return Array.from(rgba);
+    };
+
+    const plain = sample({});
+    const sheened = sample({ sheenColorFactor: [1, 0.2, 0.2], sheenRoughnessFactor: 0.4 });
+    const rougher = sample({ sheenColorFactor: [1, 0.2, 0.2], sheenRoughnessFactor: 1 });
+    const glError = viewer.gl.getError();
+    viewer.dispose();
+    canvas.remove();
+    return { plain, sheened, rougher, glError };
+  });
+
+  expect(observed.glError).toBe(0);
+  // The sheen is red, and it is the only thing on a black rough surface that
+  // could be.
+  expect(observed.sheened[0]).toBeGreaterThan(observed.plain[0] + 10);
+  expect(observed.sheened[0]).toBeGreaterThan(observed.sheened[1] + 5);
+  // Roughness drives the lobe, so it is read rather than defaulted.
+  expect(Math.abs(observed.sheened[0] - observed.rougher[0])).toBeGreaterThan(4);
+});
+
 test('the opaque half of the frame is snapshotted before what blends over it', async ({ page }) => {
   await page.goto('/index.html');
   // A transmissive surface has to sample the scene behind it, and the only

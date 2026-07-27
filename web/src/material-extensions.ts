@@ -84,6 +84,19 @@ export const MATERIAL_EXTENSIONS = [
     textures: [{ property: 'specularTexture', slot: 'SPECULAR' }, { property: 'specularColorTexture', slot: 'SPECULAR_COLOR' }],
   },
   {
+    // A black sheen colour is no sheen at all, which is why the default is the
+    // colour rather than a separate weight: the extension has none.
+    name: 'KHR_materials_sheen',
+    fields: [
+      { property: 'sheenColorFactor', default: [0, 0, 0] },
+      { property: 'sheenRoughnessFactor', default: 0 },
+    ],
+    textures: [
+      { property: 'sheenColorTexture', slot: 'SHEEN_COLOR' },
+      { property: 'sheenRoughnessTexture', slot: 'SHEEN_ROUGHNESS' },
+    ],
+  },
+  {
     // Absent clearcoat means no coat at all, not a coat of default roughness.
     name: 'KHR_materials_clearcoat',
     fields: [

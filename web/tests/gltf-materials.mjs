@@ -88,6 +88,7 @@ assert.equal(list[1].clearcoatFactor ?? 0, 0);
 // The extensions above are now acted on, so they must stop being reported as
 // ignored — the warning is what tells a user the preview is incomplete.
 const supported = [
+  'KHR_materials_sheen',
   'KHR_materials_clearcoat',
   'KHR_materials_ior',
   'KHR_materials_specular',
@@ -97,8 +98,8 @@ const supported = [
 ];
 assert.deepEqual(extensionWarnings({ extensionsUsed: supported }, new Map()), []);
 assert.deepEqual(
-  extensionWarnings({ extensionsUsed: [...supported, 'KHR_materials_sheen'] }, new Map()),
-  ['Unsupported glTF extensions ignored: KHR_materials_sheen'],
+  extensionWarnings({ extensionsUsed: [...supported, 'KHR_materials_pbrSpecularGlossiness'] }, new Map()),
+  ['Unsupported glTF extensions ignored: KHR_materials_pbrSpecularGlossiness'],
 );
 
 console.log('glTF material extension smoke passed');

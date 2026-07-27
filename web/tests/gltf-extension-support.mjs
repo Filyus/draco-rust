@@ -70,6 +70,15 @@ const INTERPRETED = {
     material: { extensions: { KHR_materials_emissive_strength: { emissiveStrength: 4 } } },
     effect: (read) => assert.equal(read.emissiveStrength, 4),
   },
+  KHR_materials_sheen: {
+    material: {
+      extensions: { KHR_materials_sheen: { sheenColorFactor: [0.8, 0.6, 0.4], sheenRoughnessFactor: 0.6 } },
+    },
+    effect: (read) => {
+      assert.deepEqual(read.sheenColorFactor, [0.8, 0.6, 0.4]);
+      assert.equal(read.sheenRoughnessFactor, 0.6);
+    },
+  },
   KHR_materials_clearcoat: {
     material: {
       extensions: { KHR_materials_clearcoat: { clearcoatFactor: 1, clearcoatRoughnessFactor: 0.2 } },
@@ -185,6 +194,7 @@ const stated = {
     KHR_materials_emissive_strength: { emissiveStrength: 3.5 },
     KHR_materials_ior: { ior: 1.9 },
     KHR_materials_specular: { specularFactor: 0.4, specularColorFactor: [0.5, 0.6, 0.7] },
+    KHR_materials_sheen: { sheenColorFactor: [0.2, 0.3, 0.4], sheenRoughnessFactor: 0.6 },
     KHR_materials_clearcoat: { clearcoatFactor: 0.8, clearcoatRoughnessFactor: 0.1 },
   },
 };
@@ -226,7 +236,9 @@ for (const extension of GLTF_TEXTURE_SOURCE_EXTENSIONS) {
 
 // The control: an extension nobody claims must be named by both, or the
 // assertions above would hold trivially for a predicate that honors everything.
-const unclaimed = 'KHR_materials_sheen';
+// Archived by Khronos and deliberately out of scope, so it will not quietly
+// become interpreted and turn this check into a tautology.
+const unclaimed = 'KHR_materials_pbrSpecularGlossiness';
 assert.equal(GLTF_INTERPRETED_EXTENSIONS.has(unclaimed), false, 'pick a control the code really does not read');
 const control = reported(unclaimed);
 assert.equal(control.preview, true, 'an uninterpreted extension must be reported by the preview');

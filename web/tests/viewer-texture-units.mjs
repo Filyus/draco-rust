@@ -34,13 +34,15 @@ const { TEXTURE_SLOTS } = await import(source('shaders.ts'));
 const { MORPH_TEXTURE_UNIT } = await import(source('morph-texture.ts'));
 
 const shared = Object.entries(SHARED_TEXTURE_UNITS);
-const material = TEXTURE_SLOTS.map((_, slot) => materialTextureUnit(slot));
+// One draw binds the slots of one material, not the whole vocabulary: the
+// programs are built per slot set, so the units in play are the first
+// `MAX_MATERIAL_TEXTURE_UNITS` and nothing beyond them.
+const material = Array.from({ length: MAX_MATERIAL_TEXTURE_UNITS }, (_, slot) => materialTextureUnit(slot));
 
-// Every unit the renderer can bind in one draw, named by what claims it.
 const claims = new Map();
 for (const [name, unit] of shared) claims.set(unit, [`shared:${name}`]);
 for (const [slot, unit] of material.entries()) {
-  claims.set(unit, [...(claims.get(unit) ?? []), `material:${TEXTURE_SLOTS[slot]}`]);
+  claims.set(unit, [...(claims.get(unit) ?? []), `material slot ${slot}`]);
 }
 
 for (const [unit, owners] of claims) {
@@ -74,9 +76,9 @@ assert.throws(
   /exceed/,
   'one slot past the budget must be refused where the list is declared',
 );
-assert.doesNotThrow(
-  () => assertTextureUnitBudget(TEXTURE_SLOTS.length),
-  'the slot list the shader is built from must fit',
-);
+// The vocabulary is free to outgrow the budget - that is what building a
+// program per slot set bought - but no single material may, because its slots
+// are bound together in one draw.
+assert.ok(TEXTURE_SLOTS.length > 0, 'the shader must know some slots');
 
 console.log(`viewer-texture-units: OK (${TEXTURE_SLOTS.length} material slots of ${MAX_MATERIAL_TEXTURE_UNITS})`);

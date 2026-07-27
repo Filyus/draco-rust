@@ -38,6 +38,7 @@ import {
   extractGltfCubicSegment,
   quaternionKeysToFbxEuler,
 } from './fbx-scene-adapter.ts';
+import { MATERIAL_EXTENSION_SLOTS, materialExtensionFactors } from './material-extensions.ts';
 import { assertConverterProfile } from './wasm-modules.ts';
 import type { GltfAsset, GltfModule, PackedAccessor, PackedGeometry } from './wasm-modules.ts';
 import {
@@ -751,7 +752,8 @@ export function buildMaterials(defs: GltfJson[]): GltfJson[] {
     baseColorFactor: [1, 1, 1, 1],
     doubleSided: false,
     alphaMode: 'OPAQUE',
-    unlit: false,
+    ...materialExtensionFactors(null),
+    ...Object.fromEntries(MATERIAL_EXTENSION_SLOTS.map(({ property }) => [property, null])),
   };
   const list: GltfJson[] = defs.map((def, idx) => {
     const material = readGltfMaterial(def, idx);
@@ -772,20 +774,14 @@ export function buildMaterials(defs: GltfJson[]): GltfJson[] {
       emissiveTexture: material.emissiveTexture,
       normalTexture: material.normalTexture,
       occlusionTexture: material.occlusionTexture,
-      ior: material.ior,
-      specularFactor: material.specularFactor,
-      specularColorFactor: material.specularColorFactor,
-      specularTexture: material.specularTexture,
-      specularColorTexture: material.specularColorTexture,
-      clearcoatFactor: material.clearcoatFactor,
-      clearcoatRoughnessFactor: material.clearcoatRoughnessFactor,
-      clearcoatTexture: material.clearcoatTexture,
-      clearcoatRoughnessTexture: material.clearcoatRoughnessTexture,
-      clearcoatNormalTexture: material.clearcoatNormalTexture,
       doubleSided: material.doubleSided,
       alphaMode: material.alphaMode,
       alphaCutoff: material.alphaCutoff,
-      unlit: material.unlit,
+      // The layered extensions pass through by the names the table gives them,
+      // so this producer and the SceneDocument adapter cannot end up carrying
+      // different sets - which is what `gltf-material-parity` compares.
+      ...materialExtensionFactors(material),
+      ...Object.fromEntries(MATERIAL_EXTENSION_SLOTS.map(({ property }) => [property, material[property]])),
     };
   });
   list.push(fallback);
