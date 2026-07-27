@@ -31,6 +31,9 @@ export const modules: Record<string, ModuleSlot> = {
   ply: { loaded: false, module: null },
   gltf: { loaded: false, module: null },
   fbx: { loaded: false, module: null },
+  // Fetched only when a file turns out to carry a KTX2 texture: it is the
+  // largest of the modules and the rarest to be needed.
+  ktx2: { loaded: false, module: null },
 };
 
 /**

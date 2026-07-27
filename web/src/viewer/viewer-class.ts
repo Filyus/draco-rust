@@ -49,6 +49,7 @@ import {
   render,
   selectMorphTargets,
 } from './renderer.ts';
+import { enableCompressedFormats } from './compressed-formats.ts';
 import { setSampler, uploadImage } from './textures.ts';
 import { uploadPrimitive } from './primitive-upload.ts';
 import type { GlResources, UploadedPrimitive } from './primitive-upload.ts';
@@ -72,6 +73,8 @@ export class Viewer {
   declare canvas: HTMLCanvasElement;
   declare hooks: ViewerHooks;
   declare gl: WebGL2RenderingContext;
+  /** Which compressed texture extensions this context offers, enabled once at startup. */
+  declare compressedTextureExtensions: string[];
   declare scene: ViewerScene | null;
   declare glResources: GlResources | null;
   declare camera: OrbitCamera;
@@ -167,6 +170,9 @@ export class Viewer {
     });
     if (!gl) throw new Error('WebGL2 is not supported in this browser');
     this.gl = gl;
+    // Asked once, at startup: the answer is a property of the machine, and
+    // the formats are not legal to upload until their extension is enabled.
+    this.compressedTextureExtensions = enableCompressedFormats(gl);
 
     this._setupGl();
     this._buildPrograms();
@@ -401,11 +407,15 @@ export class Viewer {
       // Absent means "not uploaded yet"; null is a texture that has no
       // image at all. Collapsing the two skips every upload.
       let glTexture: WebGLTexture | null | undefined = null;
-      if (tex && tex.image) {
-        let perImage = uploaded.get(tex.image);
+      // A transcoded KTX2 texture has mip levels instead of a bitmap, and
+      // sharing keys on whichever it has: two textures reading one image
+      // share it either way.
+      const source = tex && (tex.image || tex.compressed);
+      if (source) {
+        let perImage = uploaded.get(source);
         if (!perImage) {
           perImage = new Map();
-          uploaded.set(tex.image, perImage);
+          uploaded.set(source, perImage);
         }
         const key = `${!!tex.flipY}|${tex.wrapS}|${tex.wrapT}|${tex.minFilter}|${tex.magFilter}`;
         glTexture = perImage.get(key);

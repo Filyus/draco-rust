@@ -4,8 +4,10 @@ import { buildSceneFromFbx, buildSceneFromMeshes } from '../mesh-loader.ts';
 import { buildSceneFromGltf, extensionWarnings } from '../gltf-loader.ts';
 import { buildViewerSceneFromDocument } from '../scene-document-viewer.ts';
 import { hydrateSceneTextures, honoredTextureSources } from '../scene-document-textures.ts';
+import { chooseCompressedTarget } from '../viewer/compressed-formats.ts';
 import type { SceneDocument } from '../scene-document.ts';
 import { errorMessage, log } from './log.ts';
+import { loadKtx2Module } from './modules.ts';
 import { modules, state } from './state.ts';
 import { renderSceneDocumentSummary } from './scene-report.ts';
 import { setWarningSource } from './warnings.ts';
@@ -131,6 +133,17 @@ export async function loadPreview(extension: string, { keepView = false } = {}) 
 async function previewFromDocument(document: SceneDocument): Promise<ViewerScene> {
   const scene = await hydrateSceneTextures(
     buildViewerSceneFromDocument(document, state.currentVariant) as ViewerScene,
+    {
+      load: loadKtx2Module,
+      // The viewer's context decides, because it is the one that will be
+      // handed the result: what a machine can sample is not a property of
+      // the file.
+      target: (codec, hasAlpha) => chooseCompressedTarget(
+        state.viewer?.compressedTextureExtensions ?? [],
+        codec,
+        hasAlpha,
+      ),
+    },
   );
   scene.warnings.push(...extensionWarnings(
     state.currentGltfProvenance ?? {},

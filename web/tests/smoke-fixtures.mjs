@@ -285,3 +285,94 @@ export function animatedTranslation() {
     }],
   });
 }
+
+/**
+ * A GLB whose one quad is textured through `KHR_texture_basisu`.
+ *
+ * Built here rather than checked in because the interesting bytes are the
+ * KTX2 file's, which `testdata/ktx2` already holds: everything around them is
+ * the smallest glTF that can point a material at one.
+ *
+ * The quad faces the camera and fills the view, so what the viewport shows is
+ * the texture rather than a lit surface at an angle.
+ */
+export function basisTexturedGlb(ktx2Bytes) {
+  const positions = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
+  const uvs = new Float32Array([0, 1, 1, 1, 1, 0, 0, 0]);
+  const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]);
+  const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+
+  const parts = [positions, uvs, normals, indices, ktx2Bytes];
+  const views = [];
+  let offset = 0;
+  const chunks = [];
+  for (const part of parts) {
+    const bytes = new Uint8Array(part.buffer ? part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) : part);
+    views.push({ buffer: 0, byteOffset: offset, byteLength: bytes.length });
+    chunks.push(bytes);
+    offset += bytes.length;
+    // Every view starts on a four-byte boundary, which glTF requires of
+    // accessors and which keeps the image view aligned too.
+    const padding = (4 - (offset % 4)) % 4;
+    if (padding) {
+      chunks.push(new Uint8Array(padding));
+      offset += padding;
+    }
+  }
+
+  const json = {
+    asset: { version: '2.0' },
+    extensionsUsed: ['KHR_texture_basisu'],
+    extensionsRequired: ['KHR_texture_basisu'],
+    buffers: [{ byteLength: offset }],
+    bufferViews: views,
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 4, type: 'VEC3', min: [-1, -1, 0], max: [1, 1, 0] },
+      { bufferView: 1, componentType: 5126, count: 4, type: 'VEC2' },
+      { bufferView: 2, componentType: 5126, count: 4, type: 'VEC3' },
+      { bufferView: 3, componentType: 5123, count: 6, type: 'SCALAR' },
+    ],
+    images: [{ bufferView: 4, mimeType: 'image/ktx2' }],
+    textures: [{ extensions: { KHR_texture_basisu: { source: 0 } } }],
+    materials: [{
+      pbrMetallicRoughness: {
+        baseColorTexture: { index: 0 },
+        metallicFactor: 0,
+        roughnessFactor: 1,
+      },
+      // Emissive as well as base colour, so what the viewport shows is the
+      // texture itself rather than the texture times whatever the light does.
+      emissiveFactor: [1, 1, 1],
+      emissiveTexture: { index: 0 },
+    }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1, NORMAL: 2 }, indices: 3, material: 0 }] }],
+    nodes: [{ mesh: 0 }],
+    scenes: [{ nodes: [0] }],
+    scene: 0,
+  };
+
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(json));
+  const jsonPadded = new Uint8Array(jsonBytes.length + ((4 - (jsonBytes.length % 4)) % 4)).fill(0x20);
+  jsonPadded.set(jsonBytes);
+
+  const binary = new Uint8Array(offset);
+  let at = 0;
+  for (const chunk of chunks) {
+    binary.set(chunk, at);
+    at += chunk.length;
+  }
+
+  const total = 12 + 8 + jsonPadded.length + 8 + binary.length;
+  const glb = new Uint8Array(total);
+  const view = new DataView(glb.buffer);
+  view.setUint32(0, 0x46546c67, true);
+  view.setUint32(4, 2, true);
+  view.setUint32(8, total, true);
+  view.setUint32(12, jsonPadded.length, true);
+  view.setUint32(16, 0x4e4f534a, true);
+  glb.set(jsonPadded, 20);
+  view.setUint32(20 + jsonPadded.length, binary.length, true);
+  view.setUint32(24 + jsonPadded.length, 0x004e4942, true);
+  glb.set(binary, 28 + jsonPadded.length);
+  return glb;
+}

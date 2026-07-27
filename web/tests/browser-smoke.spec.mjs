@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   animatedTranslation,
+  basisTexturedGlb,
   embeddedTriangle,
   emissiveTransformQuad,
   externalTriangle,
@@ -3208,4 +3209,101 @@ test('a file the document cannot be built from still previews, and says so', asy
   expect(fallback.textures).toBeGreaterThan(0);
   expect(fallback.hydrated).toBe(true);
   expect(fallback.carriesBytes).toBe(false);
+});
+
+test('a KTX2 texture reaches the GPU without being decoded to pixels', async ({ page }) => {
+  // What this proves depends on the machine, and it says which: a context that
+  // offers a block format has to take the compressed upload, and one that does
+  // not has to fall back to pixels rather than to the white placeholder. The
+  // failure this guards against is the third outcome, where the texture is
+  // read, transcoded, and then quietly never uploaded at all.
+  const ktx2 = Array.from(await readFile(path.join(repoRoot, 'testdata', 'ktx2', '2d_etc1s.ktx2')));
+  const glb = Array.from(basisTexturedGlb(Uint8Array.from(ktx2)));
+
+  await page.addInitScript(() => {
+    window.__textureUploads = { compressed: [], plain: 0 };
+    const compressed = WebGL2RenderingContext.prototype.compressedTexImage2D;
+    WebGL2RenderingContext.prototype.compressedTexImage2D = function (target, level, format, width, height, border, data) {
+      window.__textureUploads.compressed.push({ level, format, width, height, bytes: data ? data.byteLength : 0 });
+      return compressed.apply(this, arguments);
+    };
+    const plain = WebGL2RenderingContext.prototype.texImage2D;
+    WebGL2RenderingContext.prototype.texImage2D = function (target, level, internalFormat, ...rest) {
+      // The one-texel white placeholder every texture starts with is not an
+      // upload of anything; counting it would hide the case being tested.
+      const source = rest[rest.length - 1];
+      if (source instanceof ImageBitmap || source instanceof HTMLImageElement) window.__textureUploads.plain++;
+      return plain.apply(this, arguments);
+    };
+  });
+
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles({
+    name: 'basis.glb',
+    mimeType: 'model/gltf-binary',
+    buffer: Buffer.from(glb),
+  });
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).not.toContainText('requires a transcoder');
+  await expect(page.locator('#console')).not.toContainText('could not be decoded');
+
+  const uploads = await page.evaluate(() => window.__textureUploads);
+  const supportsBlockFormat = await page.evaluate(() => {
+    const gl = document.createElement('canvas').getContext('webgl2');
+    return Boolean(gl && gl.getExtension('WEBGL_compressed_texture_s3tc'));
+  });
+
+  if (supportsBlockFormat) {
+    // Every level, not just the base: a compressed texture cannot have its
+    // mips generated, so an incomplete chain samples as black.
+    expect(uploads.compressed.length).toBe(10);
+    expect(uploads.compressed[0]).toMatchObject({ level: 0, width: 512, height: 512, bytes: 131072 });
+    expect(uploads.compressed.at(-1)).toMatchObject({ level: 9, width: 1, height: 1 });
+    console.log(`ktx2 upload: ${uploads.compressed.length} BC1 levels`);
+  } else {
+    expect(uploads.compressed.length).toBe(0);
+    expect(uploads.plain).toBeGreaterThan(0);
+    console.log('ktx2 upload: no block format on this context, uploaded as pixels');
+  }
+
+  // And it has to be on screen, not merely uploaded. The placeholder is
+  // opaque white, so a textured quad filling the viewport cannot be white.
+  //
+  // Sampled from inside the draw rather than from a screenshot, because the
+  // context does not preserve its drawing buffer: anything looking at it
+  // between frames sees it already cleared. The viewer only redraws when
+  // something marks it dirty, so the frame has to be provoked - resizing the
+  // viewport is the least invasive way to ask for one.
+  await page.evaluate(() => {
+    window.__frameSamples = [];
+    window.__frameOriginals = {};
+    for (const name of ['drawElements', 'drawElementsInstanced', 'drawArrays', 'drawArraysInstanced']) {
+      const original = WebGL2RenderingContext.prototype[name];
+      window.__frameOriginals[name] = original;
+      WebGL2RenderingContext.prototype[name] = function (...args) {
+        const result = original.apply(this, args);
+        if (window.__frameSamples.length < 64) {
+          const pixel = new Uint8Array(4);
+          this.readPixels(
+            Math.floor(this.drawingBufferWidth / 2),
+            Math.floor(this.drawingBufferHeight / 2),
+            1, 1, this.RGBA, this.UNSIGNED_BYTE, pixel,
+          );
+          window.__frameSamples.push([...pixel]);
+        }
+        return result;
+      };
+    }
+  });
+  await page.setViewportSize({ width: 1180, height: 820 });
+  await expect.poll(() => page.evaluate(() => window.__frameSamples.length)).toBeGreaterThan(0);
+  const drawn = await page.evaluate(() => {
+    for (const [name, original] of Object.entries(window.__frameOriginals)) {
+      WebGL2RenderingContext.prototype[name] = original;
+    }
+    return window.__frameSamples;
+  });
+
+  expect(drawn.some((pixel) => pixel[0] !== 255 || pixel[1] !== 255 || pixel[2] !== 255)).toBe(true);
 });

@@ -83,6 +83,30 @@ export async function loadModule({ key, path, statusId }: { key: string; path: s
   }
 }
 
+/**
+ * Load the KTX2 transcoder, the first time a file needs one.
+ *
+ * Not part of `loadAllModules`: it carries the baked block-format tables and
+ * is several times the size of the others, and most files never meet a KTX2
+ * texture. A failure here is reported by the caller as a texture that could
+ * not be decoded, which is what it means to the user.
+ */
+export async function loadKtx2Module() {
+  if (modules.ktx2.loaded) return modules.ktx2.module;
+  try {
+    const path = new URL('pkg/ktx2.js', document.baseURI).href;
+    const module = await import(path);
+    await module.default({ module_or_path: new URL('pkg/ktx2_bg.wasm', document.baseURI) });
+    modules.ktx2.module = module;
+    modules.ktx2.loaded = true;
+    log(`ktx2 v${module.version ? module.version() : '?'} loaded`, 'success');
+    return module;
+  } catch (error) {
+    log(`Failed to load ktx2: ${errorMessage(error)}`, 'error');
+    return null;
+  }
+}
+
 export function updateDracoEncoderAvailability() {
   const prototype = modules.gltf.module?.GltfAsset?.prototype;
   const available = typeof prototype?.compressPrimitive === 'function';

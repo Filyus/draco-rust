@@ -181,6 +181,14 @@ export interface ViewerMaterial extends MaterialExtensionValues<ViewerTextureBin
 export interface ViewerTexture {
   name?: string;
   image?: ImageBitmap | HTMLImageElement | null;
+  /**
+   * Mip levels already in a format the GPU samples directly.
+   *
+   * Set instead of `image` when a KTX2 texture was transcoded into a block
+   * format this machine takes, which is the whole point of transcoding it:
+   * uploaded this way it keeps its compression in video memory.
+   */
+  compressed?: { format: number; levels: { width: number; height: number; bytes: Uint8Array }[] } | null;
   bytes?: Uint8Array;
   mimeType?: string;
   resource?: number;
