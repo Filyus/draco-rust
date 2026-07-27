@@ -1,3 +1,4 @@
+import type { ViewerScene } from '../viewer-scene.ts';
 import { Viewer } from '../viewer.ts';
 import { buildSceneFromFbx, buildSceneFromMeshes } from '../mesh-loader.ts';
 import { buildSceneFromGltf } from '../gltf-loader.ts';
@@ -21,7 +22,7 @@ export function ensureViewer() {
   try {
     state.viewer = new Viewer(viewerCanvas, {
       onLog: (msg: string, type: string) => log(msg, type),
-      onSceneLoaded: (scene: any) => {
+      onSceneLoaded: (scene: ViewerScene) => {
         if (scene) updateAnimationUi(scene);
       },
       onAnimationEnded: () => updateAnimationPlayButton(),
@@ -58,7 +59,7 @@ export async function loadPreview(extension: string) {
   }
 
   try {
-    let scene: any;
+    let scene: ViewerScene;
     if (extension === 'gltf' || extension === 'glb') {
       if (!modules.gltf.loaded) throw new Error('glTF module is not loaded');
       scene = await buildSceneFromGltf(

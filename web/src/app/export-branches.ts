@@ -1,7 +1,9 @@
-import type { SceneDocument } from '../scene-document.ts';
+import type { LoadedLayerSet, LoadedMesh } from '../mesh-loader.ts';
+import type { SceneCapabilities, SceneDocument } from '../scene-document.ts';
 import { buildFbxSceneFromDocument } from '../fbx-scene-document-writer.ts';
 import { buildFbxSceneFromGltf, buildFlatMeshesFromGltf } from '../gltf-loader.ts';
 import { serializeSceneDocumentToGlb } from '../scene-document-gltf.ts';
+import type { FbxSceneData, LoadedFile } from './state.ts';
 import { modules, state } from './state.ts';
 
 /**
@@ -19,11 +21,39 @@ import { modules, state } from './state.ts';
  * did not survive.
  */
 
+/**
+ * What a writer handed back.
+ *
+ * The three payload fields are mutually exclusive and format-dependent: the
+ * binary writers fill `binary_data`, the glTF document route fills `json_data`,
+ * and OBJ and PLY fill `data`. The downloader picks whichever is present.
+ */
+export interface ExportResult {
+  success: boolean;
+  error?: string;
+  data?: string;
+  json_data?: string;
+  binary_data?: ArrayLike<number>;
+  /** What the route did, for the console. */
+  message?: string;
+  /** Set only by the Draco pass on the raw glTF route. */
+  draco_stats?: DracoStats | null;
+}
+
+/** What the Draco encoder reported about the pass, summed over primitives. */
+export interface DracoStats {
+  speed: number;
+  compressed_size: number;
+  primitives: number;
+  method?: string;
+  prediction_scheme?: string;
+}
+
 /** What one export route produced, and what it cost to produce it. */
 export interface ExportOutcome {
-  result: any;
+  result: ExportResult;
   warnings: string[];
-  capabilities?: Record<string, unknown>;
+  capabilities?: Partial<SceneCapabilities> & Record<string, boolean | number>;
 }
 
 /** The export controls, read once by the caller so this stays DOM-free. */
@@ -40,11 +70,15 @@ export async function runExport(settings: ExportSettings): Promise<ExportOutcome
   const { format } = settings;
   const legacyFbx = format === 'fbx-legacy';
   const isFbxTarget = format === 'fbx' || legacyFbx;
+  // export.ts checks this before offering the controls; repeated here because
+  // every route below reads the parse result and none of them can invent one.
+  const loaded = state.currentMeshData;
+  if (!loaded) throw new Error('No parsed file to export');
 
   if (format === 'glb' && state.currentFileType === 'fbx' && state.currentSceneDocument) {
     return exportSceneDocumentToGlb(state.currentSceneDocument);
   }
-  if (state.currentMeshData.document && (format === 'gltf' || format === 'glb')) {
+  if (loaded.document && (format === 'gltf' || format === 'glb')) {
     return exportGltfDocument(settings);
   }
   if (isFbxTarget && state.currentFileType === 'fbx' && state.currentSceneDocument) {
@@ -56,14 +90,14 @@ export async function runExport(settings: ExportSettings): Promise<ExportOutcome
       warnings: [...(scene.warnings || [])],
     };
   }
-  if (isFbxTarget && state.currentMeshData.scene) {
-    const scene = prepareFbxSceneForExport(state.currentMeshData.scene, settings, legacyFbx);
+  if (isFbxTarget && loaded.scene) {
+    const scene = prepareFbxSceneForExport(loaded.scene, settings, legacyFbx);
     return {
       result: await exportToFbxScene(scene, legacyFbx),
       warnings: [...(scene.warnings || [])],
     };
   }
-  if (state.currentMeshData.document && isFbxTarget) {
+  if (loaded.document && isFbxTarget) {
     const source = buildFbxSceneFromGltf(
       state.currentSourceData!,
       state.currentSourceResources,
@@ -76,7 +110,7 @@ export async function runExport(settings: ExportSettings): Promise<ExportOutcome
       warnings: [...(scene.warnings || [])],
     };
   }
-  return exportFlattenedMeshes(settings);
+  return exportFlattenedMeshes(settings, loaded);
 }
 
 /** GLB from the portable document — the route every non-glTF source takes. */
@@ -180,17 +214,17 @@ export function exportGltfDocument(settings: ExportSettings): ExportOutcome {
  * simply the format. Coming from a glTF document or an FBX scene it is a real
  * loss, and the warning says so rather than leaving the user to notice.
  */
-async function exportFlattenedMeshes(settings: ExportSettings): Promise<ExportOutcome> {
+async function exportFlattenedMeshes(settings: ExportSettings, loaded: LoadedFile): Promise<ExportOutcome> {
   const { format } = settings;
   const warnings: string[] = [];
-  const sourceMeshes = state.currentMeshData.document
+  const sourceMeshes = loaded.document
     ? buildFlatMeshesFromGltf(
       state.currentSourceData!,
       state.currentSourceResources,
       modules.gltf.module,
     )
-    : state.currentMeshData.meshes;
-  if (state.currentMeshData.document || state.currentMeshData.scene) {
+    : loaded.meshes || [];
+  if (loaded.document || loaded.scene) {
     warnings.push(
       `Exporting to ${format.toUpperCase()} flattens the scene: materials, textures, skins, `
       + 'animation and the node hierarchy are not written',
@@ -220,16 +254,26 @@ async function exportFlattenedMeshes(settings: ExportSettings): Promise<ExportOu
   }
 }
 
+/**
+ * One mesh in the shape the flat writers accept: the reader's arrays copied
+ * into real ones, with excluded channels nulled out. Inferred from the function
+ * that produces it so the two cannot disagree.
+ */
+export type PreparedMesh = ReturnType<typeof prepareMeshesForExport>[number];
+
 /** Flatten source meshes into the shape the OBJ/PLY/FBX writers accept. */
-export function prepareMeshesForExport(meshes: any[], settings: Pick<ExportSettings, 'includeNormals' | 'includeUvs'>) {
-  const layerSets = (sets: any[]) => (sets || []).map((set: any) => ({
+export function prepareMeshesForExport(
+  meshes: LoadedMesh[],
+  settings: Pick<ExportSettings, 'includeNormals' | 'includeUvs'>,
+) {
+  const layerSets = (sets: LoadedLayerSet[] | undefined) => (sets || []).map((set) => ({
     name: set.name,
     mapping: set.mapping,
     reference: set.reference,
     values: Array.from(set.values || []),
     indices: Array.from(set.indices || []),
   }));
-  return meshes.map((mesh: any, idx) => ({
+  return meshes.map((mesh, idx) => ({
     name: mesh.name || `mesh_${idx}`,
     positions: Array.from(mesh.positions || []),
     indices: Array.from(mesh.indices || []),
@@ -246,7 +290,7 @@ export function prepareMeshesForExport(meshes: any[], settings: Pick<ExportSetti
 }
 
 export function prepareFbxSceneForExport(
-  scene: any,
+  scene: FbxSceneData,
   settings: Pick<ExportSettings, 'includeNormals' | 'includeUvs'>,
   legacyCompatibility = false,
 ) {
@@ -328,7 +372,10 @@ export function prepareFbxAnimationForExport(animation: any, legacyCompatibility
   };
 }
 
-export async function exportToObj(meshes: any[], settings: Pick<ExportSettings, 'includeNormals' | 'includeUvs'>) {
+export async function exportToObj(
+  meshes: PreparedMesh[],
+  settings: Pick<ExportSettings, 'includeNormals' | 'includeUvs'>,
+) {
   if (!modules.obj.loaded) {
     return { success: false, error: 'OBJ module not loaded' };
   }
@@ -341,7 +388,7 @@ export async function exportToObj(meshes: any[], settings: Pick<ExportSettings, 
   return modules.obj.module.create_obj_multi(meshes, options);
 }
 
-export async function exportToPly(meshes: any[], settings: Pick<ExportSettings, 'includeNormals'>) {
+export async function exportToPly(meshes: PreparedMesh[], settings: Pick<ExportSettings, 'includeNormals'>) {
   if (!modules.ply.loaded) {
     return { success: false, error: 'PLY module not loaded' };
   }
@@ -363,14 +410,14 @@ export async function exportToGltf(format: string) {
   };
 }
 
-export async function exportToFbx(meshes: any[]) {
+export async function exportToFbx(meshes: PreparedMesh[]) {
   if (!modules.fbx.loaded) {
     return { success: false, error: 'FBX module not loaded' };
   }
   return modules.fbx.module.create_fbx(meshes, { version: 7500 });
 }
 
-export async function exportToFbxScene(scene: any, legacyCompatibility = false) {
+export async function exportToFbxScene(scene: FbxSceneData, legacyCompatibility = false) {
   if (!modules.fbx.loaded) {
     return { success: false, error: 'FBX module not loaded' };
   }
@@ -378,7 +425,7 @@ export async function exportToFbxScene(scene: any, legacyCompatibility = false) 
 }
 
 /** Merge multiple meshes into one. */
-export function mergeMeshes(meshes: any[]) {
+export function mergeMeshes(meshes: PreparedMesh[]) {
   if (meshes.length === 1) return meshes[0];
 
   const merged = {

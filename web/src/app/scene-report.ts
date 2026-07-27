@@ -1,7 +1,8 @@
-import type { SceneDocument } from '../scene-document.ts';
+import type { SceneCapabilities, SceneDocument } from '../scene-document.ts';
 import { assertValidSceneDocument } from '../scene-document.ts';
 import { exportSidebar, meshStatFields, sceneCapabilitySummary, sceneClipList, sceneInfo, sceneMaterialList, scenePanel, sceneResourceList, sceneSection, sceneStatFields, sceneTree, workspace } from './dom.ts';
 import { errorMessage, log } from './log.ts';
+import type { LoadedFile } from './state.ts';
 import { setWarningSource } from './warnings.ts';
 
 /**
@@ -24,7 +25,7 @@ export function renderSceneDocumentSummary(sceneDocument: SceneDocument, extraWa
   try {
     const validation = assertValidSceneDocument(sceneDocument);
     const morphs = sceneDocument.meshes.reduce(
-      (total: number, mesh: any) => total + mesh.primitives.reduce((count: number, primitive: any) => count + (primitive.targets?.length || 0), 0),
+      (total, mesh) => total + mesh.primitives.reduce((count, primitive) => count + (primitive.targets?.length || 0), 0),
       0,
     );
     sceneStatFields.nodes.textContent = sceneDocument.nodes.length.toLocaleString();
@@ -53,7 +54,7 @@ export function renderSceneDocumentSummary(sceneDocument: SceneDocument, extraWa
   }
 }
 
-export function describeSceneCapabilities(capabilities: any = {}) {
+export function describeSceneCapabilities(capabilities: Partial<SceneCapabilities> = {}) {
   const preserved: string[] = [];
   if (capabilities.resources) preserved.push('resources');
   if (capabilities.textures) preserved.push('textures');
@@ -76,12 +77,12 @@ export function renderSceneTree(sceneDocument: SceneDocument) {
     sceneTree.appendChild(empty);
     return;
   }
-  const animatedNodes = new Set(sceneDocument.animations.flatMap((clip: any) => clip.channels.map((channel: any) => channel.node)));
+  const animatedNodes = new Set(sceneDocument.animations.flatMap((clip) => clip.channels.map((channel) => channel.node)));
   const appendNode = (nodeIndex: number, depth: number, visited: Set<number>, target: any) => {
     if (visited.has(nodeIndex)) return;
     visited.add(nodeIndex);
     const node = sceneDocument.nodes[nodeIndex] || {};
-    const children = (node.children || []).filter((child: any) => Number.isInteger(child) && child >= 0 && child < sceneDocument.nodes.length);
+    const children = (node.children || []).filter((child) => Number.isInteger(child) && child >= 0 && child < sceneDocument.nodes.length);
     const branching = children.length > 0;
     const wrapper = branching
       ? document.createElement('details')
@@ -121,7 +122,7 @@ export function renderSceneTree(sceneDocument: SceneDocument) {
       childList.className = 'scene-tree-children';
       childList.setAttribute('role', 'group');
       wrapper.appendChild(childList);
-      children.forEach((child: any, position) => {
+      children.forEach((child, position) => {
         const before = childList.childElementCount;
         appendNode(child, depth + 1, visited, childList);
         // Mark the visually last child so its guide line can stop at the elbow.
@@ -146,7 +147,7 @@ export function renderSceneTree(sceneDocument: SceneDocument) {
 }
 
 export function renderSceneCompanions(sceneDocument: SceneDocument) {
-  const formatNames = (items: any[], fallback: string) => {
+  const formatNames = (items: { name?: string }[], fallback: string) => {
     if (!items.length) return fallback;
     const names = items.map((item, index: number) => item.name || `${fallback} ${index + 1}`);
     return names.length > 3 ? `${names.slice(0, 3).join(', ')} +${names.length - 3}` : names.join(', ');
@@ -157,7 +158,7 @@ export function renderSceneCompanions(sceneDocument: SceneDocument) {
 }
 
 // Display mesh information
-export function displayMeshInfo(result: any) {
+export function displayMeshInfo(result: LoadedFile) {
   if (result.document) {
     // The geometry figures are counted from the SceneDocument, so a file whose
     // document could not be built shows a dash rather than crashing the panel
@@ -181,8 +182,8 @@ export function displayMeshInfo(result: any) {
   for (const mesh of meshes) {
     totalVertices += (mesh.positions?.length || 0) / 3;
     totalTriangles += (mesh.indices?.length || 0) / 3;
-    if (mesh.normals?.length > 0) hasNormals = true;
-    if (mesh.uvs?.length > 0) hasUvs = true;
+    if ((mesh.normals?.length ?? 0) > 0) hasNormals = true;
+    if ((mesh.uvs?.length ?? 0) > 0) hasUvs = true;
   }
   
   meshStatFields.meshes.textContent = String(meshes.length);

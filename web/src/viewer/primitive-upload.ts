@@ -6,8 +6,55 @@ import type { RuntimeAccessor, ViewerPrimitive } from '../viewer-scene.ts';
 /** Attribute slot -> shader location, as the program layout reports it. */
 type LocationMap = Record<string, number>;
 
-/** What the renderer needs to draw this primitive later. */
-type UploadedPrimitive = any;
+/**
+ * What the renderer needs to draw this primitive later.
+ *
+ * The `has*` flags answer questions the shader asks per material, so they are
+ * recorded once at upload instead of re-derived per frame. `morph` and
+ * `indexType` are optional because they are filled in after the literal, and
+ * only when the primitive has targets or an index buffer at all.
+ */
+export interface UploadedPrimitive {
+  vao: WebGLVertexArrayObject | null;
+  buffers: (WebGLBuffer | null)[];
+  hasNormals: boolean;
+  hasSmoothNormals: boolean;
+  hasTexCoords0: boolean;
+  hasTexCoords1: boolean;
+  hasColors: boolean;
+  hasJoints: boolean;
+  hasWeights: boolean;
+  /** How many WEIGHTS_0 vertices had to be renormalized on upload. */
+  driftedWeights: number;
+  mode: number;
+  elementCount: number;
+  /**
+   * The element type of the index buffer, and the sole record of whether the
+   * primitive has one: present means indexed, absent means drawArrays.
+   */
+  indexType?: number;
+  morph?: ReturnType<typeof uploadMorphTexture>;
+  morphTargetCount?: number;
+}
+
+/** One drawable: its GPU buffers, and the material the scene paired it with. */
+export interface UploadedPrimitiveSlot {
+  uploaded: UploadedPrimitive;
+  materialIndex: number;
+}
+
+/**
+ * Everything the viewer holds on the GPU for the current scene.
+ *
+ * Parallel to the scene it was built from: `primitives[mesh][primitive]` and
+ * `textures[index]` index the same arrays `ViewerScene` does. Null until a
+ * scene is uploaded, and released wholesale when one is replaced.
+ */
+export interface GlResources {
+  primitives: UploadedPrimitiveSlot[][];
+  textures: (WebGLTexture | null)[];
+  jointMatrices: Float32Array[] | null;
+}
 
 /** One primitive's VAO, buffers and attribute layout. */
 
@@ -79,7 +126,6 @@ export function uploadPrimitive(
     driftedWeights: skinWeights.drifted,
     mode: primitive.mode,
     elementCount: 0,
-    indexed: false,
   };
 
   bindAttribute('POSITION', layout.position);
@@ -95,12 +141,10 @@ export function uploadPrimitive(
     indexBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, bytes, gl.STATIC_DRAW);
-    info.indexed = true;
     info.elementCount = idx.count;
     info.indexType = idx.componentType;
     buffers.push(indexBuffer);
   } else {
-    info.indexed = false;
     info.elementCount = positions.count;
   }
 

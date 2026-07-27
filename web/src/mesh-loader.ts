@@ -8,10 +8,75 @@
 import { buildSceneFromFbx as buildSemanticFbxScene } from './fbx-import-scene.ts';
 import { basename, mimeFromUri, resolveResource } from './scene-resources.ts';
 import type { ResourceMap } from './scene-resources.ts';
-import type { Aabb, Renderable, RuntimeAccessor, Trs, ViewerNode } from './viewer-scene.ts';
+import type {
+  Aabb, Renderable, RuntimeAccessor, Trs, ViewerMesh, ViewerNode, ViewerPrimitive, ViewerTexture,
+} from './viewer-scene.ts';
+
+/**
+ * One FBX layer element as the reader hands it over: UVs, normals or colours
+ * addressed by the file's own mapping and reference modes. Carried through the
+ * export path untouched, which is why nothing here is interpreted.
+ */
+export interface LoadedLayerSet {
+  name?: string;
+  mapping?: string;
+  reference?: string;
+  values?: ArrayLike<number>;
+  indices?: ArrayLike<number>;
+}
+
+/**
+ * One mesh as the flat readers hand it over.
+ *
+ * Numeric fields cross the wasm boundary as plain or typed arrays depending on
+ * the reader, so they are read as `ArrayLike` and copied wherever a real array
+ * is needed. Everything is optional: PLY has no material name, OBJ has no layer
+ * elements, and a mesh may legitimately be non-indexed.
+ */
+export interface LoadedMesh {
+  name?: string;
+  positions?: ArrayLike<number>;
+  indices?: ArrayLike<number> | null;
+  normals?: ArrayLike<number> | null;
+  uvs?: ArrayLike<number> | null;
+  colors?: ArrayLike<number> | null;
+  /** Skin influences; the preview uses the first set and warns about a second. */
+  joints0?: ArrayLike<number> | null;
+  weights0?: ArrayLike<number> | null;
+  joints1?: ArrayLike<number> | null;
+  weights1?: ArrayLike<number> | null;
+  /** OBJ only: the `usemtl` name to look up in the companion library. */
+  material?: string;
+  /** FBX only, and passed straight back out to the FBX writer. */
+  controlPoints?: ArrayLike<number> | null;
+  polygonVertexIndices?: ArrayLike<number> | null;
+  materialIndices?: number[];
+  skin?: unknown;
+  morphTargets?: unknown[];
+  uvSets?: LoadedLayerSet[];
+  normalSets?: LoadedLayerSet[];
+  colorSets?: LoadedLayerSet[];
+}
+
+/** A material as the OBJ companion-library reader builds it. */
+export interface LoadedObjMaterial {
+  diffuse?: number[];
+  alpha?: number;
+  baseColorTextureUri?: string;
+}
 
 /** Flat mesh output from the OBJ, PLY and legacy FBX readers. */
-type ParsedMeshes = any;
+export interface ParsedMeshes {
+  meshes?: LoadedMesh[];
+  materials?: Record<string, LoadedObjMaterial>;
+  warnings?: string[];
+}
+
+/** A viewer mesh plus the two fields only this flat path attaches to it. */
+interface FlatSceneMesh extends ViewerMesh {
+  morphTargets: unknown[];
+  _defaultMaterial: FlatMaterial;
+}
 
 /** Diagnostics sink shared with the rest of the import path. */
 interface ImportHooks {
@@ -48,7 +113,7 @@ export async function buildSceneFromMeshes(
 ) {
   const meshes = parsed?.meshes || [];
   if (meshes.length === 0) throw new Error('No meshes were decoded from this file');
-  const sceneMeshes: ParsedMeshes[] = [];
+  const sceneMeshes: FlatSceneMesh[] = [];
   const box: Aabb = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
 
   for (const mesh of meshes) {
@@ -57,7 +122,7 @@ export async function buildSceneFromMeshes(
     const indices = mesh.indices ? Uint32Array.from(mesh.indices) : null;
     const normals = mesh.normals?.length === positions.length ? Float32Array.from(mesh.normals) : null;
     const uvs = mesh.uvs?.length === vertexCount * 2 ? Float32Array.from(mesh.uvs) : null;
-    const colors = mesh.colors?.length > 0 ? Uint8Array.from(mesh.colors) : null;
+    const colors = mesh.colors && mesh.colors.length > 0 ? Uint8Array.from(mesh.colors) : null;
     const joints = mesh.joints0?.length === vertexCount * 4 ? Uint16Array.from(mesh.joints0) : null;
     const weights = mesh.weights0?.length === vertexCount * 4 ? Float32Array.from(mesh.weights0) : null;
     if (mesh.joints1?.length === vertexCount * 4 || mesh.weights1?.length === vertexCount * 4) {
@@ -83,12 +148,14 @@ export async function buildSceneFromMeshes(
       attributes.JOINTS_0 = { bytes: joints, componentType: 5123, components: 4, normalized: false, count: vertexCount };
       attributes.WEIGHTS_0 = { bytes: weights, componentType: 5126, components: 4, normalized: false, count: vertexCount };
     }
-    // The index accessor omits `components`/`normalized`, which the viewer
-    // never reads for an element buffer.
-    const primitive: ParsedMeshes = { attributes, mode: 4, materialIndex: 0 };
-    if (indices) primitive.indices = { bytes: indices, componentType: 5125, count: indices.length };
+    const primitive: ViewerPrimitive = { attributes, mode: 4, materialIndex: 0 };
+    if (indices) {
+      primitive.indices = {
+        bytes: indices, componentType: 5125, components: 1, normalized: false, count: indices.length,
+      };
+    }
 
-    const sourceMaterial = parsed.materials?.[mesh.material];
+    const sourceMaterial = mesh.material === undefined ? undefined : parsed.materials?.[mesh.material];
     const material: FlatMaterial = {
       baseColorFactor: colors ? [1, 1, 1, 1] : [...(sourceMaterial?.diffuse || [1, 1, 1]), sourceMaterial?.alpha ?? 1],
       doubleSided: true,
@@ -126,7 +193,7 @@ export async function buildSceneFromMeshes(
     world: new Float32Array(16),
   }));
   const materials = sceneMeshes.map((mesh) => mesh._defaultMaterial);
-  sceneMeshes.forEach((mesh, meshIndex) => mesh.primitives.forEach((primitive: ParsedMeshes) => { primitive.materialIndex = meshIndex; }));
+  sceneMeshes.forEach((mesh, meshIndex) => mesh.primitives.forEach((primitive) => { primitive.materialIndex = meshIndex; }));
   const renderables: Renderable[] = nodes.map((node, meshIndex) => ({ node, meshIndex, skinIndex: -1 }));
   const textures = await buildObjTextures(materials, resources, parsed.warnings || (parsed.warnings = []), hooks);
   return {
@@ -158,7 +225,7 @@ async function buildObjTextures(
   warnings: string[],
   hooks: ImportHooks,
 ) {
-  const textures: ParsedMeshes[] = [];
+  const textures: ViewerTexture[] = [];
   const byUri = new Map<string, number>();
   for (const material of materials) {
     const uri = material.baseColorTextureUri;

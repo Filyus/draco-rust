@@ -1,9 +1,11 @@
+import type { EnvironmentIbl } from '../environment-ibl.ts';
 import { mat4, vec3 } from '../math.ts';
 import type { Mat4, Vec3 } from '../math.ts';
 import { cameraPosition } from './camera.ts';
 import type { CameraHost } from './camera.ts';
 import { GL } from './gl-utils.ts';
 import { MORPH_TEXTURE_UNIT } from './morph-texture.ts';
+import type { GlResources, UploadedPrimitive } from './primitive-upload.ts';
 import { computeJointMatrices, updateWorldMatrices } from './scene-graph.ts';
 import type { SceneGraphHost } from './scene-graph.ts';
 import { MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS, TEXTURE_SLOTS } from './shaders.ts';
@@ -135,7 +137,7 @@ function writeTextureMatrix(
 
 export interface RenderHost extends CameraHost, SceneGraphHost {
   gl: WebGL2RenderingContext;
-  glResources: any;
+  glResources: GlResources | null;
   program: WebGLProgram;
   lineProgram: WebGLProgram;
   backgroundProgram: WebGLProgram;
@@ -143,7 +145,7 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   lineUniforms: Record<string, WebGLUniformLocation | null>;
   backgroundUniforms: Record<string, WebGLUniformLocation | null>;
   backgroundVao: WebGLVertexArrayObject | null;
-  environmentIbl: any;
+  environmentIbl: EnvironmentIbl;
   wireframe: boolean;
   showGrid: boolean;
   baseColorOnly: boolean;
@@ -214,7 +216,7 @@ export function render(host: RenderHost) {
 
     const skin = renderable.skinIndex >= 0 ? host.scene.skins[renderable.skinIndex] : null;
     const jointMatrices = skin
-      ? computeJointMatrices(host, skin, node.world, host.glResources.jointMatrices[renderable.skinIndex])
+      ? computeJointMatrices(host, skin, node.world, host.glResources.jointMatrices?.[renderable.skinIndex] ?? null)
       : null;
 
     // Normal matrix = inverse-transpose(model)
@@ -261,7 +263,7 @@ export function render(host: RenderHost) {
       }
 
       const mode = glMode(host, uploaded.mode, host.wireframe);
-      if (uploaded.indexed) {
+      if (uploaded.indexType !== undefined) {
         gl.drawElements(mode, uploaded.elementCount, uploaded.indexType, 0);
       } else {
         gl.drawArrays(mode, 0, uploaded.elementCount);
@@ -283,7 +285,11 @@ export function render(host: RenderHost) {
  * weight track blends two neighbouring poses at a time, and even a facial
  * rig drives only a handful of shapes at once.
  */
-export function selectMorphTargets(host: RenderHost, morph: any, weights: ArrayLike<number> | undefined) {
+export function selectMorphTargets(
+  host: RenderHost,
+  morph: UploadedPrimitive['morph'],
+  weights: ArrayLike<number> | undefined,
+) {
   const staged = host._morphWeights
     || (host._morphWeights = new Float32Array(MAX_ACTIVE_MORPH_TARGETS));
   const layers = host._morphLayers
@@ -342,7 +348,7 @@ export function glMode(host: RenderHost, mode: number, wireframe: boolean) {
 export function applyMaterial(
   host: RenderHost,
   material: ViewerMaterial | undefined,
-  uploaded: any,
+  uploaded: UploadedPrimitive,
   useSmoothNormals: boolean,
 ) {
   const gl = host.gl;
@@ -360,7 +366,7 @@ export function applyMaterial(
     const texCoord = binding?.texCoord ?? 0;
     const hasUv = texCoord === 0 ? uploaded.hasTexCoords0
       : texCoord === 1 ? uploaded.hasTexCoords1 : false;
-    const texture = host.glResources.textures[binding?.index ?? -1];
+    const texture = host.glResources?.textures[binding?.index ?? -1];
     const enabled = !!texture && hasUv;
     gl.uniform1i(host.uniforms[hasUniform], enabled ? 1 : 0);
     texCoordSlots[slot] = texCoord;

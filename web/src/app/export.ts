@@ -3,7 +3,7 @@ import { errorMessage, log } from './log.ts';
 import { compressionStatFields, compressionStats, dracoOptions, element, encodingSpeed, exportFormat, useDraco } from './dom.ts';
 import { state } from './state.ts';
 import { runExport } from './export-branches.ts';
-import type { ExportSettings } from './export-branches.ts';
+import type { DracoStats, ExportOutcome, ExportResult, ExportSettings } from './export-branches.ts';
 import { setWarningSource } from './warnings.ts';
 
 /**
@@ -71,7 +71,7 @@ export async function exportFile() {
   }
 }
 
-export function logSceneDocumentCapabilities(capabilities: any = {}) {
+export function logSceneDocumentCapabilities(capabilities: ExportOutcome['capabilities'] = {}) {
   const supported = Object.entries(capabilities || {})
     .filter(([, value]) => value === true)
     .map(([key]) => key);
@@ -79,7 +79,7 @@ export function logSceneDocumentCapabilities(capabilities: any = {}) {
 }
 
 // Download the export result
-export function downloadResult(result: any, format: string) {
+export function downloadResult(result: ExportResult, format: string) {
   let blob;
   const extension = format === 'fbx-legacy' ? 'fbx' : format;
   let filename = `export.${extension}`;
@@ -111,7 +111,7 @@ export function downloadResult(result: any, format: string) {
  * Only the encoder knows which method and prediction scheme it chose, and the
  * binding reports neither, so those read as unknown rather than as a guess.
  */
-export function displayCompressionStats(stats: any) {
+export function displayCompressionStats(stats: DracoStats) {
   compressionStatFields.method.textContent = stats.method || '—';
   compressionStatFields.speed.textContent = `${stats.speed} (${stats.speed === 0 ? 'best compression' : stats.speed === 10 ? 'fastest' : 'balanced'})`;
   compressionStatFields.prediction.textContent = stats.prediction_scheme || '—';

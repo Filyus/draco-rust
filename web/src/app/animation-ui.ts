@@ -1,4 +1,5 @@
 import { animClipLabel, animClipMenu, animClipSelect, animClipTrigger, animPlayBtn, animScrub, animSpeed, animSpeedValue, animTimeLabel, viewerAnimation } from './dom.ts';
+import type { ViewerScene } from '../viewer-scene.ts';
 import { state } from './state.ts';
 
 /**
@@ -8,7 +9,7 @@ import { state } from './state.ts';
  * the bar and the viewport can never disagree about what is playing.
  */
 
-export function updateAnimationUi(scene: any) {
+export function updateAnimationUi(scene: ViewerScene) {
   const clips = state.currentSceneDocument?.animations?.length
     ? state.currentSceneDocument.animations
     : (scene.animations || []);

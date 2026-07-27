@@ -1,6 +1,7 @@
+import type { EnvironmentIbl } from '../environment-ibl.ts';
 import { mat4, vec3 } from '../math.ts';
 import type { Mat4, Vec3 } from '../math.ts';
-import type { ViewerMaterial, ViewerNode, ViewerScene } from '../viewer-scene.ts';
+import type { ViewerMaterial, ViewerNode, ViewerScene, ViewerSkin, ViewerTexture } from '../viewer-scene.ts';
 import type { OrbitCamera } from './camera.ts';
 
 /** Callbacks the embedding page supplies. */
@@ -50,6 +51,7 @@ import {
 } from './renderer.ts';
 import { setSampler, uploadImage } from './textures.ts';
 import { uploadPrimitive } from './primitive-upload.ts';
+import type { GlResources, UploadedPrimitive } from './primitive-upload.ts';
 import {
   computeJointMatrices,
   updateNode,
@@ -68,7 +70,7 @@ export class Viewer {
   declare hooks: ViewerHooks;
   declare gl: WebGL2RenderingContext;
   declare scene: ViewerScene | null;
-  declare glResources: any;
+  declare glResources: GlResources | null;
   declare camera: OrbitCamera;
   declare animation: AnimationState;
 
@@ -80,7 +82,7 @@ export class Viewer {
   declare backgroundUniforms: Record<string, WebGLUniformLocation | null>;
   declare locations: Record<string, number>;
   declare backgroundVao: WebGLVertexArrayObject | null;
-  declare environmentIbl: any;
+  declare environmentIbl: EnvironmentIbl;
 
   declare autoRotate: boolean;
 
@@ -326,11 +328,7 @@ export class Viewer {
     }
 
     const gl = this.gl;
-    const resources: {
-      primitives: { uploaded: any; materialIndex: number }[][];
-      textures: (WebGLTexture | null)[];
-      jointMatrices: Float32Array[] | null;
-    } = {
+    const resources: GlResources = {
       primitives: [],
       textures: [],
       jointMatrices: null,
@@ -342,9 +340,9 @@ export class Viewer {
       for (const primitive of mesh.primitives) {
         try {
           const uploaded = uploadPrimitive(gl, primitive, this.locations);
-          if (uploaded.morph?.dropped > 0) {
+          if ((uploaded.morph?.dropped ?? 0) > 0) {
             this._log(
-              `Mesh ${mesh.name}: ${uploaded.morph.dropped} morph targets exceed this GPU's array texture layers and were ignored`,
+              `Mesh ${mesh.name}: ${uploaded.morph?.dropped} morph targets exceed this GPU's array texture layers and were ignored`,
               'warning',
             );
           }
@@ -421,11 +419,11 @@ export class Viewer {
     this.hooks.onSceneLoaded?.(scene);
   }
 
-  _uploadImage(tex: any) {
+  _uploadImage(tex: ViewerTexture) {
     return uploadImage(this.gl, tex);
   }
 
-  _setSampler(gl: WebGL2RenderingContext, tex: any) {
+  _setSampler(gl: WebGL2RenderingContext, tex: ViewerTexture) {
     setSampler(gl, tex);
   }
 
@@ -586,11 +584,11 @@ export class Viewer {
     render(this);
   }
 
-  _selectMorphTargets(morph: any, weights: ArrayLike<number> | undefined) {
+  _selectMorphTargets(morph: UploadedPrimitive['morph'], weights: ArrayLike<number> | undefined) {
     return selectMorphTargets(this, morph, weights);
   }
 
-  _applyMaterial(material: ViewerMaterial | undefined, uploaded: any, useSmoothNormals: boolean) {
+  _applyMaterial(material: ViewerMaterial | undefined, uploaded: UploadedPrimitive, useSmoothNormals: boolean) {
     applyMaterial(this, material, uploaded, useSmoothNormals);
   }
 
@@ -607,7 +605,7 @@ export class Viewer {
   }
 
 
-  _computeJointMatrices(skin: any, meshWorld: Mat4, jointOut: Float32Array | null) {
+  _computeJointMatrices(skin: ViewerSkin | null, meshWorld: Mat4, jointOut: Float32Array | null) {
     return computeJointMatrices(this, skin, meshWorld, jointOut);
   }
 }
