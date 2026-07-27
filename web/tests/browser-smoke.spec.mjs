@@ -1734,6 +1734,74 @@ test('a SceneDocument texture only reaches the GPU once it is hydrated', async (
   expect(samples.wet[0]).toBeLessThan(samples.wet[1] / 2);
 });
 
+test('textures reading one image are hydrated into one bitmap', async ({ page }) => {
+  await page.goto('/index.html');
+  // A glTF routinely names the same image from many textures — the same map
+  // through different sampler settings, or simply the same map on many
+  // materials. The document records that as several textures over one resource,
+  // and hydration has to preserve it: the viewer keys its GPU uploads on bitmap
+  // identity, so a bitmap per texture means an upload per texture. On a real
+  // asset (24 textures over one 4096² JPEG) that was ~1.7 GB of texture memory
+  // and roughly a second of upload for one image's worth of pixels.
+  const observed = await page.evaluate(async (pngBytes) => {
+    const [{ createSceneDocument }, { buildViewerSceneFromDocument }, { hydrateSceneTextures }] =
+      await Promise.all([
+        import('/scene-document.js'),
+        import('/scene-document-viewer.js'),
+        import('/scene-document-textures.js'),
+      ]);
+
+    const sampler = (wrap) => ({ wrapS: wrap, wrapT: wrap, minFilter: 9728, magFilter: 9728 });
+    const document_ = createSceneDocument({
+      resources: [
+        { mimeType: 'image/png', bytes: new Uint8Array(pngBytes), name: 'shared.png' },
+        { mimeType: 'image/png', bytes: new Uint8Array(pngBytes), name: 'other.png' },
+      ],
+      // Three textures, two resources: the first two differ only in how they
+      // are sampled, which is a GPU parameter and not a reason to decode twice.
+      textures: [
+        { resource: 0, sampler: sampler(33071) },
+        { resource: 0, sampler: sampler(10497) },
+        { resource: 1, sampler: sampler(33071) },
+      ],
+      materials: [{ baseColorFactor: [1, 1, 1, 1], baseColorTexture: { texture: 0 } }],
+      accessors: [{
+        bytes: new Uint8Array(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]).buffer),
+        componentType: 5126,
+        components: 3,
+        count: 3,
+      }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      nodes: [{ name: 'Tri', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 }],
+      rootNodes: [0],
+    });
+
+    const scene = buildViewerSceneFromDocument(document_);
+    // The bytes travel as the document holds them; a copy per texture is the
+    // same duplication one step earlier.
+    const shareBytes = scene.textures.every((texture, index) => (
+      texture.bytes === document_.resources[document_.textures[index].resource].bytes
+    ));
+    await hydrateSceneTextures(scene);
+    return {
+      shareBytes,
+      images: scene.textures.map((texture) => Boolean(texture.image)),
+      distinctImages: new Set(scene.textures.map((texture) => texture.image)).size,
+      sharedPair: scene.textures[0].image === scene.textures[1].image,
+      separatePair: scene.textures[0].image === scene.textures[2].image,
+      warnings: scene.warnings,
+    };
+  }, Array.from(solidColorPng()));
+
+  expect(observed.warnings).not.toContainEqual(expect.stringContaining('Failed to decode texture'));
+  expect(observed.images).toEqual([true, true, true]);
+  expect(observed.shareBytes).toBe(true);
+  // Two resources, so two decodes — not three.
+  expect(observed.distinctImages).toBe(2);
+  expect(observed.sharedPair).toBe(true);
+  expect(observed.separatePair).toBe(false);
+});
+
 test('the glTF preview comes from the scene document the export reads', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);

@@ -18,19 +18,41 @@ import type { ViewerScene, ViewerTexture } from './viewer-scene.ts';
 /**
  * Decode every texture in `scene` that arrived as bytes.
  *
- * Textures are decoded concurrently and the scene is mutated in place: the
+ * Decoding is per *image*, not per texture: several textures reading one
+ * resource share a single `ImageBitmap`, the way the glTF loader's own
+ * `decodeImages` does. That sharing is not a micro-optimization — the viewer
+ * keys its GPU uploads on bitmap identity, so one bitmap per image is what
+ * keeps a model whose 24 textures name the same 4096² JPEG at one GL texture
+ * instead of 24. Decoding per texture costs the decode again *and* the upload
+ * again, and the upload is the larger of the two.
+ *
+ * Images are decoded concurrently and the scene is mutated in place: the
  * caller already holds it, and returning a copy would mean rebuilding the
  * material indices that point into it.
  *
- * A texture that cannot be decoded keeps `image` null and reports itself. That
- * matches the glTF loader, which also warns and carries on: one unreadable
+ * An image that cannot be decoded leaves every texture reading it with a null
+ * `image` and is reported once, named after the first of them. That matches
+ * the glTF loader, which also warns per image and carries on: one unreadable
  * image is not a reason to refuse the model.
  */
 export async function hydrateSceneTextures(scene: ViewerScene): Promise<ViewerScene> {
-  await Promise.all(scene.textures.map(async (texture, index) => {
+  const groups = new Map<unknown, number[]>();
+  scene.textures.forEach((texture, index) => {
     if (!texture || texture.image || !texture.bytes) return;
-    const warning = await decodeInto(texture, index);
+    // A scene built without resource indices — anything but the SceneDocument
+    // adapter — has no way to say two textures are one image, so each stands
+    // alone and the behaviour is what it was.
+    const key = texture.resource ?? `texture:${index}`;
+    const group = groups.get(key);
+    if (group) group.push(index);
+    else groups.set(key, [index]);
+  });
+
+  await Promise.all([...groups.values()].map(async (indices) => {
+    const first = scene.textures[indices[0]];
+    const warning = await decodeInto(first, indices[0]);
     if (warning) scene.warnings.push(warning);
+    for (const index of indices.slice(1)) scene.textures[index].image = first.image;
   }));
   return scene;
 }

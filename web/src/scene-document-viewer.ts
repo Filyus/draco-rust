@@ -291,13 +291,21 @@ function adaptMaterial(material: SceneMaterial, index: number) {
   };
 }
 
+/**
+ * One glTF image is routinely read by many textures — the same map through
+ * different sampler settings, or simply the same map on many materials. The
+ * document records that faithfully: several textures, one resource. Copying the
+ * bytes per texture would undo it, and on a real asset that is tens of
+ * megabytes of identical buffers, so the scene points at the document's bytes.
+ * Nothing on this path writes to them.
+ */
 function adaptTexture(texture: SceneTexture, resources: SceneResource[], index: number) {
   const resource = resources[texture.resource];
   return {
     name: texture.name || resource.name || `texture_${index}`,
     resource: texture.resource,
     mimeType: resource.mimeType,
-    bytes: new Uint8Array(resource.bytes),
+    bytes: resource.bytes,
     ...texture.sampler,
   };
 }
