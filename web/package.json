@@ -38,6 +38,7 @@
     "test:gltf-corpus": "node tests/gltf-corpus-parity.mjs",
     "test:gltf-build-profile": "node tests/gltf-build-profile.mjs",
     "test:viewer-limit-warnings": "node tests/viewer-limit-warnings.mjs",
+    "test:gltf-scene-provenance": "node tests/gltf-scene-provenance.mjs",
     "test:export-helpers": "node tests/export-helpers.mjs",
     "test:gltf-quantized-morph": "node tests/gltf-quantized-morph.mjs",
     "test:gltf-write": "node tests/gltf-write-smoke.mjs",

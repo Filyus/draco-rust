@@ -1,4 +1,5 @@
 import type { FbxSceneProvenance } from '../fbx-scene-provenance.ts';
+import type { GltfSceneProvenance } from '../gltf-scene-provenance.ts';
 import type { LoadedMesh, LoadedObjMaterial } from '../mesh-loader.ts';
 import type { SceneDocument } from '../scene-document.ts';
 import type { ResourceMap } from '../scene-resources.ts';
@@ -82,6 +83,13 @@ export interface AppState {
    */
   currentSceneDocument: SceneDocument | null;
   currentFbxProvenance: FbxSceneProvenance | null;
+  /**
+   * What the loaded glTF claimed about its own extensions.
+   *
+   * Kept because the preview has to report what it did not act on, and the
+   * document deliberately does not record the file's claims about itself.
+   */
+  currentGltfProvenance: GltfSceneProvenance | null;
   /** The 3D preview, created lazily on first use. */
   viewer: Viewer | null;
 }
@@ -93,5 +101,6 @@ export const state: AppState = {
   currentSourceResources: Object.create(null),
   currentSceneDocument: null,
   currentFbxProvenance: null,
+  currentGltfProvenance: null,
   viewer: null,
 };

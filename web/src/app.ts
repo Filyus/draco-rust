@@ -14,7 +14,7 @@ import type { SceneDocument } from './scene-document.ts';
 import type { ResourceMap } from './scene-resources.ts';
 import type { FbxSceneProvenance } from './fbx-scene-provenance.ts';
 import { buildFbxSceneFromGltf, buildFlatMeshesFromGltf, buildSceneFromGltf } from './gltf-loader.ts';
-import { buildSceneDocumentFromGltf } from './gltf-scene-document.ts';
+import { buildSceneDocumentWithGltfProvenance } from './gltf-scene-document.ts';
 import { buildSceneFromFbx, buildSceneFromMeshes } from './mesh-loader.ts';
 import { buildSceneDocumentWithFbxProvenance } from './fbx-scene-document.ts';
 import { buildFbxSceneFromDocument } from './fbx-scene-document-writer.ts';
@@ -301,6 +301,7 @@ async function handleFile(file: File, companionFiles: File[] = []) {
     state.currentSourceResources = Object.create(null);
     state.currentSceneDocument = null;
     state.currentFbxProvenance = null;
+    state.currentGltfProvenance = null;
     clearWarningPanel();
     for (const companion of companionFiles) {
       if (Object.prototype.hasOwnProperty.call(state.currentSourceResources, companion.name)) {
@@ -323,7 +324,9 @@ async function handleFile(file: File, companionFiles: File[] = []) {
         result = await parseGltfFile(data, extension);
         if (result?.success && result.document) {
           try {
-            state.currentSceneDocument = buildSceneDocumentFromGltf(data, state.currentSourceResources as Record<string, Uint8Array>, modules.gltf.module);
+            const adapted = buildSceneDocumentWithGltfProvenance(data, state.currentSourceResources as Record<string, Uint8Array>, modules.gltf.module);
+            state.currentSceneDocument = adapted.document;
+            state.currentGltfProvenance = adapted.provenance;
             // The geometry figures come from the document rather than from a
             // second walk of the same asset; when it could not be built there
             // is nothing to count, and the panel says so below.
@@ -427,6 +430,7 @@ function clearFile() {
   state.currentSourceResources = Object.create(null);
   state.currentSceneDocument = null;
   state.currentFbxProvenance = null;
+  state.currentGltfProvenance = null;
   
   fileInfo.style.display = 'none';
   dropZone.style.display = 'grid';

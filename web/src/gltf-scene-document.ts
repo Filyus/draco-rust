@@ -26,6 +26,8 @@ import {
   appendAccessor, basename, bytesFromF32, mimeFromUri, resolveResource, sniffMime,
 } from './scene-resources.ts';
 import type { ResourceMap } from './scene-resources.ts';
+import { createGltfSceneProvenance } from './gltf-scene-provenance.ts';
+import type { GltfSceneProvenance } from './gltf-scene-provenance.ts';
 import { assertConverterProfile } from './wasm-modules.ts';
 import type { GltfAsset, GltfModule } from './wasm-modules.ts';
 
@@ -51,6 +53,21 @@ export function buildSceneDocumentFromGltf(
   resources: Record<string, Uint8Array>,
   gltfModule: GltfModule,
 ): SceneDocument {
+  return buildSceneDocumentWithGltfProvenance(sourceData, resources, gltfModule).document;
+}
+
+/**
+ * The same document, plus the extension claims the file made about itself.
+ *
+ * Paired the way `buildSceneDocumentWithFbxProvenance` is: the document stays
+ * source-neutral, and the caller that has to report what it did not act on
+ * gets those claims without opening the asset a second time.
+ */
+export function buildSceneDocumentWithGltfProvenance(
+  sourceData: Uint8Array,
+  resources: Record<string, Uint8Array>,
+  gltfModule: GltfModule,
+): { document: SceneDocument; provenance: GltfSceneProvenance } {
   const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
   try {
     assertConverterProfile(asset);
@@ -65,7 +82,7 @@ export function buildSceneDocumentFromGltf(
     collectSkins(asset, manifest.skins || [], document, accessorBySource);
     collectAnimations(asset, manifest.animations || [], document, accessorBySource);
     assertValidSceneDocument(document);
-    return document;
+    return { document, provenance: createGltfSceneProvenance(manifest) };
   } finally {
     asset.free();
   }
