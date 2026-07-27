@@ -1498,6 +1498,59 @@ test('normal maps shade a model far smaller than one unit', async ({ page }) => 
 });
 
 /**
+ * The Khronos material-extension comparisons open and shade.
+ *
+ * The synthetic fixtures elsewhere in this file pin one behaviour each; these
+ * are the reference assets for the four extensions the preview grew, authored
+ * to make the extension's effect the visible difference between rows. Loading
+ * them is the check that the shading path holds up on real content rather than
+ * on quads built to suit it.
+ */
+const MATERIAL_COMPARISONS = {
+  CompareClearcoat: 'KHR_materials_clearcoat',
+  CompareIor: 'KHR_materials_ior',
+  CompareSpecular: 'KHR_materials_specular',
+  CompareEmissiveStrength: 'KHR_materials_emissive_strength',
+};
+
+for (const [model, extension] of Object.entries(MATERIAL_COMPARISONS)) {
+  test(`preview opens ${model}`, async ({ page }) => {
+    await page.goto('/index.html');
+    await waitForConverterReady(page);
+    await page.locator('#file-input').setInputFiles(
+      path.join(repoRoot, 'testdata', 'KhronosSampleModels', model, 'glTF_Binary', `${model}.glb`),
+    );
+
+    await expect(page.locator('#console')).toContainText('Preview ready');
+    await expect(page.locator('#console')).not.toContainText('Preview failed');
+    await expect(page.locator('#console')).not.toContainText('Skipped primitive');
+    // Named rather than blanket: CompareIor also carries transmission and
+    // volume, which the preview really does ignore and says so honestly. The
+    // claim here is only about the extension the model exists to compare.
+    await expect(page.locator('#console')).not.toContainText(`ignored: ${extension}`);
+    await expect(page.locator('#console')).not.toContainText(`, ${extension}`);
+    // The frame must not be a flat backdrop: something was shaded into it.
+    // Read back through a screenshot, because the viewer's context does not
+    // preserve its drawing buffer and reads back blank between frames.
+    const shot = (await page.locator('#viewer-canvas').screenshot()).toString('base64');
+    const distinct = await page.evaluate(async (base64) => {
+      const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const context = canvas.getContext('2d');
+      context.drawImage(bitmap, 0, 0);
+      const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+      const seen = new Set();
+      for (let index = 0; index < data.length; index += 4) {
+        seen.add((data[index] >> 3 << 10) | (data[index + 1] >> 3 << 5) | (data[index + 2] >> 3));
+      }
+      return seen.size;
+    }, shot);
+    expect(distinct).toBeGreaterThan(8);
+  });
+}
+
+/**
  * KHR_texture_transform reaches slots other than base color.
  *
  * The reader has always handed the transform over for every textureInfo, and

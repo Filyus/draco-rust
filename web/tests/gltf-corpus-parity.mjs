@@ -33,10 +33,17 @@ const SKIPPED_DIRECTORIES = new Set(['fuzz_regressions', 'speed', 'production_dr
 /**
  * What each known-imperfect file does, one line each.
  *
- * These are findings, not accepted behaviour. Anything here is a file the
- * portable document route could not carry today, and the reason is the note.
+ * These are findings, not accepted behaviour. Anything here is a file that
+ * does not survive the route today, and the value says why.
  */
 const KNOWN = new Map(Object.entries({
+  // KHR_meshopt_compression is a newer extension than the
+  // EXT_meshopt_compression the reader decodes, with its own codec version
+  // rather than a rename. It marks its fallback buffer under the KHR name, so
+  // the reader sees a URI-less buffer it has no reason to accept and refuses
+  // the file outright. Kept in the corpus as the marker for that gap.
+  'testdata/KhronosSampleModels/MeshoptCubeTest/glTF_Meshopt/MeshoptCubeTest.gltf':
+    'not readable by either path: KHR_meshopt_compression, which the reader does not decode',
 }));
 
 const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href);
@@ -120,11 +127,16 @@ function observe(scene) {
   };
 }
 
+/** A one-line reason, short enough to sit next to a path in the summary. */
+function reason(error) {
+  return (error.message || String(error)).split('\n')[0].slice(0, 120);
+}
+
 const models = await collect(corpusRoot);
 assert.ok(models.length >= 60, `the corpus shrank to ${models.length} files; expected the whole testdata tree`);
 
+/** Every file that did not come through, and what stopped it. */
 const problems = new Map();
-const unopenable = [];
 let carried = 0;
 for (const model of models) {
   const name = relative(repoRoot, model).replace(/\\/g, '/');
@@ -135,10 +147,10 @@ for (const model of models) {
   try {
     preview = await buildSceneFromGltf(data, resources, gltfModule);
   } catch (error) {
-    // A file the preview itself cannot open is not a document problem; there
-    // is nothing to compare against. Counted rather than dropped in silence,
-    // so the headline figure is never mistaken for the whole corpus.
-    unopenable.push(name);
+    // A file the preview itself cannot open is a different finding from one
+    // only the document route drops, but it is recorded the same way: skipping
+    // it would let a reader regression pass here as a clean run.
+    problems.set(name, `not readable by either path: ${reason(error)}`);
     continue;
   }
 
@@ -148,16 +160,12 @@ for (const model of models) {
     assert.deepEqual(observe(buildViewerSceneFromDocument(document)), observe(preview));
     carried += 1;
   } catch (error) {
-    problems.set(name, error.message.split('\n')[0].slice(0, 120));
+    problems.set(name, reason(error));
   }
 }
 
-console.log(
-  `glTF corpus: ${carried}/${carried + problems.size} files carried by the portable document`
-  + ` (${unopenable.length} of ${models.length} the preview could not open either)`,
-);
-for (const [name, reason] of problems) console.log(`  ${name}: ${reason}`);
-for (const name of unopenable) console.log(`  ${name}: not readable by either path`);
+console.log(`glTF corpus: ${carried}/${models.length} files carried by the portable document`);
+for (const [name, note] of problems) console.log(`  ${name}: ${note}`);
 
 const unexpected = [...problems.keys()].filter((name) => !KNOWN.has(name));
 const fixed = [...KNOWN.keys()].filter((name) => !problems.has(name));
