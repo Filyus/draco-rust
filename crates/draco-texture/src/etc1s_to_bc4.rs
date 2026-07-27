@@ -1086,7 +1086,7 @@ impl Bc4Block {
 /// The alpha value is the block colour's red channel: an alpha slice is a grey
 /// ETC1S image, so its three channels hold the same number.
 pub fn convert(color5: [u8; 3], inten5: u8, selectors: [u8; 4]) -> Bc4Block {
-    let (lowest, highest) = crate::etc1s_to_bc1::selector_extremes(selectors);
+    let (lowest, highest) = crate::etc1s::selector_extremes(selectors);
     let colors = crate::etc1s::block_colors5(color5, inten5);
 
     // One value everywhere: both endpoints land on it and every selector is 0.

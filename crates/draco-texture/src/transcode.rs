@@ -30,22 +30,22 @@ pub enum Target {
     /// Eight bits per channel, in raster order. Every codec reaches this.
     Rgba8,
     /// BC1, eight bytes per 4x4 block, no alpha.
-    #[cfg(feature = "block-formats")]
+    #[cfg(feature = "bc")]
     Bc1,
     /// BC3, sixteen bytes per 4x4 block, alpha in a BC4 block of its own.
-    #[cfg(feature = "block-formats")]
+    #[cfg(feature = "bc")]
     Bc3,
     /// BC7, sixteen bytes per 4x4 block, colour and alpha together.
-    #[cfg(feature = "block-formats")]
+    #[cfg(feature = "bc")]
     Bc7,
     /// ETC1, eight bytes per 4x4 block, no alpha.
-    #[cfg(feature = "block-formats")]
+    #[cfg(feature = "etc")]
     Etc1,
     /// ETC2 RGBA, sixteen bytes per 4x4 block, alpha in an EAC block.
-    #[cfg(feature = "block-formats")]
+    #[cfg(feature = "etc")]
     Etc2,
     /// ASTC 4x4, sixteen bytes per block, colour and alpha together.
-    #[cfg(feature = "block-formats")]
+    #[cfg(feature = "astc")]
     Astc,
 }
 
@@ -176,15 +176,15 @@ impl Transcoder {
                 let level_data = file.level_bytes(level)?;
                 let bytes = match target {
                     Target::Rgba8 => decoder.decode_rgba(&level_data, desc, width, height)?,
-                    #[cfg(feature = "block-formats")]
+                    #[cfg(feature = "bc")]
                     Target::Bc1 => decoder.decode_bc1(&level_data, desc, width, height)?,
-                    #[cfg(feature = "block-formats")]
+                    #[cfg(feature = "bc")]
                     Target::Bc3 => decoder.decode_bc3(&level_data, desc, width, height)?,
-                    #[cfg(feature = "block-formats")]
+                    #[cfg(feature = "etc")]
                     Target::Etc1 => decoder.decode_etc1(&level_data, desc, width, height)?,
-                    #[cfg(feature = "block-formats")]
+                    #[cfg(feature = "etc")]
                     Target::Etc2 => decoder.decode_etc2(&level_data, desc, width, height)?,
-                    #[cfg(feature = "block-formats")]
+                    #[allow(unreachable_patterns)]
                     other => {
                         return Err(TranscodeError::NoSuchTarget {
                             codec: "ETC1S",
@@ -212,9 +212,9 @@ impl Transcoder {
                     .ok_or(TranscodeError::NoSuchImage { level, layer, face })?;
                 let bytes = match target {
                     Target::Rgba8 => uastc::decode_rgba(image_data, width, height)?,
-                    #[cfg(feature = "block-formats")]
+                    #[cfg(feature = "bc")]
                     Target::Bc7 => uastc::decode_bc7(image_data, width, height)?,
-                    #[cfg(feature = "block-formats")]
+                    #[cfg(feature = "astc")]
                     Target::Astc => uastc::decode_astc(image_data, width, height)?,
                     #[allow(unreachable_patterns)]
                     other => {

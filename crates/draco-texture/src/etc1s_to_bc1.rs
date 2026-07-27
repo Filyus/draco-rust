@@ -250,7 +250,7 @@ impl Bc1Converter {
         selectors: [u8; 4],
         three_color: bool,
     ) -> Bc1Block {
-        let (lowest, highest) = selector_extremes(selectors);
+        let (lowest, highest) = crate::etc1s::selector_extremes(selectors);
 
         if lowest == highest {
             return self.uniform_block(color5, inten5, lowest, three_color);
@@ -431,19 +431,6 @@ impl Bc1Converter {
 }
 
 /// The lowest and highest selector value a block uses.
-pub(crate) fn selector_extremes(selectors: [u8; 4]) -> (u8, u8) {
-    let mut lowest = 3u8;
-    let mut highest = 0u8;
-    for row in selectors {
-        for texel in 0..4 {
-            let value = (row >> (texel * 2)) & 3;
-            lowest = lowest.min(value);
-            highest = highest.max(value);
-        }
-    }
-    (lowest, highest)
-}
-
 /// How many distinct selector values a block uses.
 pub(crate) fn unique_selectors(selectors: [u8; 4]) -> u32 {
     let mut seen = 0u8;

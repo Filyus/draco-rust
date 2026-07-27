@@ -117,6 +117,24 @@ So a desktop takes the BC path and a phone the ETC or ASTC one, and the phone �
 the machine that can least afford eight times the video memory — is the reason
 the second half of that table is worth transcoding to at all.
 
+Each of those three families is a Cargo feature, so a build can carry only the
+one its machines have. The axis is deliberate: a target ages out when the
+hardware taking it does, and hardware ages by family — BC1 and BC3 arrive and
+leave together, so a flag per target would cut where nothing ever changes.
+Measured, gzipped, built with `--no-default-features`:
+
+| built for | module |
+|---|--:|
+| every family (what is served) | 129 KiB |
+| `bc` — desktop | 123 KiB |
+| `etc,astc` — phones | 55 KiB |
+| `astc` alone | 51 KiB |
+
+Almost all of the weight is the baked ETC1S-to-BC endpoint tables, which is why
+dropping the desktop family more than halves the module and dropping the mobile
+ones barely registers. Nothing about the container or either codec is optional:
+a KTX2 file is read and decoded to pixels whatever the module was built for.
+
 Two gaps are worth stating. Five of UASTC's nineteen block modes appear in none
 of the fixtures, so the transcoder is written from the reference for those and
 verified by nothing; the UASTC gate names them rather than leaving it unsaid.

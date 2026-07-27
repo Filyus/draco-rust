@@ -31,5 +31,23 @@ uastc = []
 # Transcoding to the block formats a GPU can sample directly, rather than
 # decoding to pixels. This is what carries the baked endpoint tables, which
 # are most of the crate's compiled size - a consumer that only wants pixels
-# should leave it off.
-block-formats = []
+# should leave all three off.
+#
+# Split by the family of hardware each one serves, because that is the axis
+# along which they go out of date: a target is worth carrying for exactly as
+# long as machines that take it are worth serving, and every one of these
+# will one day stop being. The alternative axis - one flag per target - cuts
+# where nothing ever changes, since BC1 and BC3 arrive and leave together.
+#
+# Desktop: BC1 and BC3 for ETC1S, BC7 for UASTC. `WEBGL_compressed_texture_s3tc`
+# and `EXT_texture_compression_bptc`. Carries the baked BC1 and BC4 tables.
+bc = []
+# Older mobile: ETC1 and ETC2 for ETC1S. `WEBGL_compressed_texture_etc`. Every
+# machine with ASTC also has this, so this is the flag that ages out first -
+# it exists for the ones that have ETC and not ASTC.
+etc = []
+# Modern mobile: ASTC 4x4 for UASTC. `WEBGL_compressed_texture_astc`.
+astc = []
+# All three, for a build that does not know what it will be run on. This is
+# what the web converter takes, since a browser can be any of them.
+block-formats = ["bc", "etc", "astc"]

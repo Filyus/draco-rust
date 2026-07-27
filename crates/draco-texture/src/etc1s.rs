@@ -352,7 +352,7 @@ impl Etc1sDecoder {
     /// Blocks in raster order, which is the layout `compressedTexImage2D`
     /// wants. Alpha is not part of BC1: a file that has an alpha slice needs
     /// BC3, which pairs these blocks with an alpha block of its own.
-    #[cfg(feature = "block-formats")]
+    #[cfg(feature = "bc")]
     pub fn decode_bc1(
         &self,
         level_data: &[u8],
@@ -384,7 +384,7 @@ impl Etc1sDecoder {
     ///
     /// The cheapest target there is: an ETC1S block already is an ETC1 block,
     /// so this fills in the two bits ETC1S leaves implicit and copies the rest.
-    #[cfg(feature = "block-formats")]
+    #[cfg(feature = "etc")]
     pub fn decode_etc1(
         &self,
         level_data: &[u8],
@@ -413,7 +413,7 @@ impl Etc1sDecoder {
     /// An EAC alpha block followed by the ETC1 colour block, which is how
     /// ETC2 carries alpha. A file with no alpha slice gets opaque alpha
     /// blocks, so the caller can choose this whatever the file holds.
-    #[cfg(feature = "block-formats")]
+    #[cfg(feature = "etc")]
     pub fn decode_etc2(
         &self,
         level_data: &[u8],
@@ -471,7 +471,7 @@ impl Etc1sDecoder {
     ///
     /// A file with no alpha slice gets fully opaque alpha blocks, so the
     /// caller can choose BC3 whatever the file holds.
-    #[cfg(feature = "block-formats")]
+    #[cfg(feature = "bc")]
     pub fn decode_bc3(
         &self,
         level_data: &[u8],
@@ -835,7 +835,23 @@ pub(crate) fn block_colors5(color5: [u8; 3], inten5: u8) -> [[u8; 3]; 4] {
     colors
 }
 
+/// The lowest and highest selector a block uses.
+#[cfg(any(feature = "bc", feature = "etc"))]
+pub(crate) fn selector_extremes(selectors: [u8; 4]) -> (u8, u8) {
+    let mut lowest = 3u8;
+    let mut highest = 0u8;
+    for row in selectors {
+        for texel in 0..4 {
+            let value = (row >> (texel * 2)) & 3;
+            lowest = lowest.min(value);
+            highest = highest.max(value);
+        }
+    }
+    (lowest, highest)
+}
+
 /// The one colour a given selector picks out of the four.
+#[cfg(feature = "bc")]
 pub(crate) fn block_color5(color5: [u8; 3], inten5: u8, selector: u8) -> [u8; 3] {
     block_colors5(color5, inten5)[(selector & 3) as usize]
 }

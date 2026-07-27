@@ -38,7 +38,12 @@ const GLTF_GZIP_BUDGET: usize = 115 * 1024;
 /// are the reason the number went from 48 KiB to 120; BC7 took it to 130. What
 /// they buy is the compressed upload path on every desktop GPU: without them a
 /// KTX2 texture can only be uploaded as RGBA8, at eight times the video memory.
-const KTX2_GZIP_BUDGET: usize = 130 * 1024;
+///
+/// This measures the full module, which carries every hardware family because
+/// a browser can be any machine. A build that knows its audience trims by
+/// family and lands far below: measured here, `--no-default-features
+/// --features etc,astc` is 55 KiB, since the BC tables are what the weight is.
+const KTX2_GZIP_BUDGET: usize = 135 * 1024;
 
 #[derive(Clone, Debug)]
 struct Config {
@@ -46,6 +51,7 @@ struct Config {
     debug: bool,
     no_optimize: bool,
     features: Vec<String>,
+    no_default_features: bool,
     modules: Vec<String>,
     serve: bool,
     port: u16,
@@ -250,6 +256,7 @@ fn parse_args() -> Result<Config, String> {
         debug: false,
         no_optimize: false,
         features: Vec::new(),
+        no_default_features: false,
         modules: Vec::new(),
         serve: false,
         port: 8080,
@@ -292,6 +299,7 @@ fn parse_args() -> Result<Config, String> {
                     .parse()
                     .map_err(|_| format!("invalid --jobs value: {value}"))?;
             }
+            "--no-default-features" => config.no_default_features = true,
             "--features" => {
                 let value = args.next().ok_or("--features requires a value")?;
                 for feature in value.split(',').filter(|feature| !feature.is_empty()) {
@@ -317,6 +325,7 @@ fn print_help() {
     println!("  --debug                  Build with wasm-pack --dev");
     println!("  --no-optimize            Skip manual wasm-opt");
     println!("  --features <list>        Comma-separated cargo features");
+    println!("  --no-default-features    Build with only the features named by --features");
     println!("  --module <crate>         Build one module; may be repeated");
     println!("  --serve                  Start the local web server after building; implies --app");
     println!("  --port <port>            Server port (default: 8080)");
@@ -481,10 +490,15 @@ fn wasm_pack_args(
         log.push("Debug build: enabling feature 'console_error_panic_hook'".to_string());
     }
 
-    if !features.is_empty() {
+    if !features.is_empty() || config.no_default_features {
         args.push("--".into());
-        args.push("--features".into());
-        args.push(features.join(",").into());
+        if config.no_default_features {
+            args.push("--no-default-features".into());
+        }
+        if !features.is_empty() {
+            args.push("--features".into());
+            args.push(features.join(",").into());
+        }
     }
 
     args

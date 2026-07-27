@@ -1143,7 +1143,7 @@ impl EacBlock {
 
 /// Convert one block of an ETC1S alpha slice into an EAC alpha block.
 pub fn convert_eac_alpha(color5: [u8; 3], inten5: u8, selectors: [u8; 4]) -> EacBlock {
-    let (lowest, highest) = crate::etc1s_to_bc1::selector_extremes(selectors);
+    let (lowest, highest) = crate::etc1s::selector_extremes(selectors);
     let colors = crate::etc1s::block_colors5(color5, inten5);
 
     if lowest == highest {

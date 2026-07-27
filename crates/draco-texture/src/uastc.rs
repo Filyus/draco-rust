@@ -323,7 +323,7 @@ pub fn decode_rgba(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uast
 ///
 /// UASTC is a restricted profile of ASTC, so this rewrites each block into
 /// ASTC's bit layout without approximating anything.
-#[cfg(feature = "block-formats")]
+#[cfg(feature = "astc")]
 pub fn decode_astc(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, UastcError> {
     let blocks_x = width.div_ceil(4) as usize;
     let blocks_y = height.div_ceil(4) as usize;
@@ -347,7 +347,7 @@ pub fn decode_astc(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uast
 /// BC7 is the one target UASTC reaches without loss worth naming: the format
 /// was drawn up so its modes land on BC7's, so this restates each block rather
 /// than searching for a nearest one.
-#[cfg(feature = "block-formats")]
+#[cfg(feature = "bc")]
 pub fn decode_bc7(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, UastcError> {
     let blocks_x = width.div_ceil(4) as usize;
     let blocks_y = height.div_ceil(4) as usize;
@@ -388,6 +388,7 @@ fn read_bits(block: &[u8], offset: &mut usize, count: u32) -> u32 {
 #[derive(Debug, Clone)]
 pub(crate) struct Unpacked {
     pub mode: usize,
+    #[cfg(any(feature = "bc", feature = "astc"))]
     pub common_pattern: u32,
     pub solid_color: [u8; 4],
     /// Endpoint values as stored, still quantized to the mode's range.
@@ -449,6 +450,7 @@ pub(crate) fn unpack_block(block: &[u8], index: usize) -> Result<Unpacked, Uastc
     if mode == MODE_SOLID_COLOR {
         return Ok(Unpacked {
             mode,
+            #[cfg(any(feature = "bc", feature = "astc"))]
             common_pattern: 0,
             solid_color: [
                 read_bits(block, &mut offset, 8) as u8,
@@ -528,6 +530,7 @@ pub(crate) fn unpack_block(block: &[u8], index: usize) -> Result<Unpacked, Uastc
 
     Ok(Unpacked {
         mode,
+        #[cfg(any(feature = "bc", feature = "astc"))]
         common_pattern,
         solid_color: [0; 4],
         endpoints,
@@ -677,7 +680,7 @@ fn read_weights(
 ///
 /// Only ASTC needs this. Decoding to pixels or to BC7 interprets the endpoints
 /// directly, where the order carries no such meaning.
-#[cfg(feature = "block-formats")]
+#[cfg(feature = "astc")]
 pub(crate) fn apply_blue_contract(unpacked: &mut Unpacked) {
     let mode = unpacked.mode;
     let components = MODE_COMPONENTS[mode] as usize;
@@ -729,6 +732,7 @@ pub(crate) fn apply_blue_contract(unpacked: &mut Unpacked) {
 }
 
 /// The bits, trits and quints of one ASTC quantization range.
+#[cfg(feature = "astc")]
 pub(crate) fn bise_range(range: usize) -> (u32, bool, bool) {
     (
         BISE_RANGES[range][0] as u32,

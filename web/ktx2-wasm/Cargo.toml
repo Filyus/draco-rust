@@ -15,8 +15,19 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 wasm-bindgen = { workspace = true }
 console_error_panic_hook = { workspace = true, optional = true }
-draco-texture = { path = "../../crates/draco-texture" }
+draco-texture = { path = "../../crates/draco-texture", default-features = false, features = [
+    "etc1s",
+    "uastc",
+] }
 
 [features]
+# A browser can be any machine, so a module served to all of them carries
+# every target. A deployment that knows its audience - a desktop tool, a
+# kiosk - can drop a family and the tables that come with it; see the feature
+# comments in `draco-texture`, which these forward to.
+default = ["bc", "etc", "astc"]
+bc = ["draco-texture/bc"]
+etc = ["draco-texture/etc"]
+astc = ["draco-texture/astc"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
 

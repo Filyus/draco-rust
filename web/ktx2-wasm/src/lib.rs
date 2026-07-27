@@ -168,13 +168,26 @@ impl Ktx2File {
     pub fn decode(&self, level: u32, target: &str) -> Result<Ktx2Image, JsError> {
         let target = match target {
             "rgba8" => Target::Rgba8,
+            #[cfg(feature = "bc")]
             "bc1" => Target::Bc1,
+            #[cfg(feature = "bc")]
             "bc3" => Target::Bc3,
+            #[cfg(feature = "bc")]
             "bc7" => Target::Bc7,
+            #[cfg(feature = "etc")]
             "etc1" => Target::Etc1,
+            #[cfg(feature = "etc")]
             "etc2" => Target::Etc2,
+            #[cfg(feature = "astc")]
             "astc" => Target::Astc,
-            other => return Err(JsError::new(&format!("unknown target format {other}"))),
+            // Naming what this build does carry, because a module trimmed to
+            // one hardware family is indistinguishable from a typo otherwise.
+            other => {
+                return Err(JsError::new(&format!(
+                    "this build cannot decode to {other}; it carries {}",
+                    targets().join(", ")
+                )))
+            }
         };
         let file = Ktx2::parse(&self.data).map_err(to_js)?;
         let decoded = self
@@ -187,6 +200,25 @@ impl Ktx2File {
             bytes: decoded.bytes,
         })
     }
+}
+
+/// Which targets this build can decode to.
+///
+/// The block-format targets are compiled in by hardware family, so a trimmed
+/// module reaches fewer of them than the codecs themselves allow. A caller
+/// that picks its target from the GL extensions should intersect with this,
+/// rather than learn the answer from a failed decode.
+#[wasm_bindgen]
+pub fn targets() -> Vec<String> {
+    #[allow(unused_mut)]
+    let mut names = vec!["rgba8"];
+    #[cfg(feature = "bc")]
+    names.extend(["bc1", "bc3", "bc7"]);
+    #[cfg(feature = "etc")]
+    names.extend(["etc1", "etc2"]);
+    #[cfg(feature = "astc")]
+    names.push("astc");
+    names.into_iter().map(String::from).collect()
 }
 
 fn to_js<E: std::fmt::Display>(error: E) -> JsError {
