@@ -161,10 +161,26 @@ export interface SceneLight {
   outerConeAngle?: number;
 }
 
+/**
+ * Copies of a node's mesh, each with its own transform.
+ *
+ * The attributes are accessor indices in the document's own space, exactly as
+ * a primitive's are: TRANSLATION, ROTATION and SCALE, any subset, all of the
+ * same length. An instanced node's own transform still applies - each instance
+ * is placed relative to it.
+ */
+export interface SceneInstancing {
+  attributes: AttributeMap;
+  /** How many copies; every attribute accessor holds this many elements. */
+  count: number;
+}
+
 export interface SceneNode {
   name?: string;
   /** Index into `SceneDocument.lights`; the node places and aims it. */
   light?: number;
+  /** Copies of this node's mesh, each transformed by its own entry. */
+  instancing?: SceneInstancing;
   /** Mutually exclusive with translation/rotation/scale. */
   matrix?: number[];
   translation?: number[];
@@ -242,6 +258,8 @@ export interface SceneCapabilities {
   cubicAnimation: boolean;
   maxSkinJoints: number;
   maxMorphTargets: number;
+  /** Whether any node draws its mesh more than once. */
+  instancing: boolean;
 }
 
 export interface ValidationResult {
@@ -448,6 +466,7 @@ function emptyCapabilities(): SceneCapabilities {
     cubicAnimation: false,
     maxSkinJoints: 0,
     maxMorphTargets: 0,
+    instancing: false,
   };
 }
 
@@ -466,6 +485,51 @@ function validateTexture(texture: Untrusted, index: number, resourceCount: numbe
   if (texture.name !== undefined && typeof texture.name !== 'string') errors.push(`${label}.name must be a string when present`);
   if (texture.sampler !== undefined && (!texture.sampler || typeof texture.sampler !== 'object')) errors.push(`${label}.sampler must be an object when present`);
 }
+
+/**
+ * A node's instance transforms.
+ *
+ * Every attribute has to hold the same number of elements as the node claims
+ * instances of, because the three are read together per instance: a shorter
+ * one would place copies from whatever followed it in the buffer.
+ */
+function validateInstancing(
+  instancing: Untrusted,
+  label: string,
+  document: Untrusted,
+  errors: string[],
+  capabilities: SceneCapabilities,
+) {
+  if (!instancing || typeof instancing !== 'object') return errors.push(`${label}.instancing must be an object`);
+  if (!Number.isInteger(instancing.count) || instancing.count <= 0) {
+    errors.push(`${label}.instancing.count must be a positive integer`);
+  }
+  if (!instancing.attributes || typeof instancing.attributes !== 'object') {
+    return errors.push(`${label}.instancing.attributes must be an object`);
+  }
+  const semantics = Object.keys(instancing.attributes);
+  if (semantics.length === 0) errors.push(`${label}.instancing must name at least one attribute`);
+  for (const semantic of semantics) {
+    if (!INSTANCE_SEMANTICS.has(semantic)) {
+      errors.push(`${label}.instancing.${semantic} is not a TRANSLATION, ROTATION or SCALE attribute`);
+      continue;
+    }
+    const index = instancing.attributes[semantic];
+    validateIndex(index, document.accessors.length, `${label}.instancing.${semantic}`, errors);
+    const accessor = document.accessors[index];
+    if (!accessor) continue;
+    if (accessor.count !== instancing.count) {
+      errors.push(`${label}.instancing.${semantic} holds ${accessor.count} elements for ${instancing.count} instances`);
+    }
+    const components = semantic === 'ROTATION' ? 4 : 3;
+    if (accessor.components !== components) {
+      errors.push(`${label}.instancing.${semantic} must have ${components} components`);
+    }
+  }
+  capabilities.instancing = true;
+}
+
+const INSTANCE_SEMANTICS = new Set(['TRANSLATION', 'ROTATION', 'SCALE']);
 
 /** A variant is a name and nothing else; what it selects lives on primitives. */
 function validateVariant(variant: Untrusted, index: number, errors: string[]) {
@@ -641,6 +705,7 @@ function validateNode(
   }
   if (node.mesh !== undefined) validateIndex(node.mesh, document.meshes.length, `${label}.mesh`, errors);
   if (node.light !== undefined) validateIndex(node.light, (document.lights ?? []).length, `${label}.light`, errors);
+  if (node.instancing !== undefined) validateInstancing(node.instancing, label, document, errors, capabilities);
   if (node.skin !== undefined) validateIndex(node.skin, document.skins.length, `${label}.skin`, errors);
   if (node.weights !== undefined) validateWeights(node.weights, `${label}.weights`, errors);
   if (node.children !== undefined) {

@@ -1860,6 +1860,66 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   expect(emerald.emissive[1]).toBeGreaterThan(0.5);
 });
 
+test('EXT_mesh_gpu_instancing draws the mesh once per instance transform', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  // The fixture is authored rather than borrowed - no asset in the corpus uses
+  // this extension - and it places four copies of one quad in a row. What the
+  // gate asks is whether the copies are where their transforms put them: a
+  // renderer that ignored the instancing would draw one quad at the centre and
+  // leave the outer positions empty.
+  await page.locator('#file-input').setInputFiles(
+    path.join(repoRoot, 'testdata', 'InstancedQuads.gltf'),
+  );
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  const samples = await page.evaluate(async () => {
+    const { state } = await import('/app/state.js');
+    const viewer = state.viewer;
+    viewer.showGrid = false;
+    viewer.camera.target.set([0, 0, 0]);
+    viewer.camera.distance = 9;
+    viewer.camera.azimuth = 0;
+    viewer.camera.elevation = 0;
+    viewer._render();
+    const width = viewer.gl.drawingBufferWidth;
+    const height = viewer.gl.drawingBufferHeight;
+    const row = new Uint8Array(width * 4);
+    viewer.gl.readPixels(0, Math.floor(height / 2), width, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, row);
+    // The quads emit green, so a covered column is one where green leads.
+    const covered = [];
+    let run = null;
+    for (let x = 0; x < width; x += 1) {
+      const green = row[x * 4 + 1] > row[x * 4] + 20;
+      if (green && !run) run = { start: x };
+      if (!green && run) {
+        covered.push({ ...run, end: x });
+        run = null;
+      }
+    }
+    if (run) covered.push({ ...run, end: width });
+    return {
+      count: state.currentSceneDocument.nodes[0].instancing?.count,
+      instancing: state.viewer.scene.nodes[0].instancing?.count,
+      bands: covered.map((band) => band.end - band.start),
+      centres: covered.map((band) => (band.start + band.end) / 2),
+      width,
+    };
+  });
+
+  expect(samples.count).toBe(4);
+  expect(samples.instancing).toBe(4);
+  // Four separated copies across the row, evenly spaced: the fixture puts them
+  // 1.5 apart, so what the frame must show is four bands whose centres are as
+  // far from each other as the transforms say. A renderer that ignored the
+  // instancing would draw one band in the middle.
+  expect(samples.bands).toHaveLength(4);
+  const gaps = samples.centres.slice(1).map((centre, index) => centre - samples.centres[index]);
+  for (const gap of gaps) expect(Math.abs(gap - gaps[0])).toBeLessThan(gaps[0] * 0.15);
+  // And centred on the node, which is where the copies were placed around.
+  expect(Math.abs((samples.centres[0] + samples.centres[3]) / 2 - samples.width / 2)).toBeLessThan(4);
+});
+
 test('KHR_lights_punctual lights the scene from the node that places it', async ({ page }) => {
   await page.goto('/index.html');
   // A light is the first thing the portable document carries that is neither

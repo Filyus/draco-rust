@@ -38,6 +38,7 @@ export const GLTF_INTERPRETED_EXTENSIONS: ReadonlySet<string> = new Set([
   'KHR_texture_transform',
   'KHR_lights_punctual',
   'KHR_materials_variants',
+  'EXT_mesh_gpu_instancing',
 ]);
 
 /**

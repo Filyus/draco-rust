@@ -31,6 +31,8 @@ export interface RuntimeAccessor {
 }
 
 export interface ViewerNode {
+  /** Copies of this node's mesh, each with its own transform. */
+  instancing?: ViewerInstancing;
   name: string;
   trs: Trs;
   children: number[];
@@ -222,6 +224,19 @@ export interface ViewerScene {
   renderables: Renderable[];
   aabb: Aabb;
   warnings: string[];
+}
+
+/**
+ * Copies of a node's mesh, ready for the GPU.
+ *
+ * Flattened to matrices here rather than kept as TRS: the renderer sends one
+ * mat4 per instance, and doing the composition per frame would redo work that
+ * never changes - instance transforms are not animated.
+ */
+export interface ViewerInstancing {
+  /** Column-major mat4 per instance, packed end to end. */
+  matrices: Float32Array;
+  count: number;
 }
 
 export interface Renderable {

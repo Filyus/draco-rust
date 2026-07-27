@@ -11,7 +11,7 @@ import {
 } from './scene-document.ts';
 import type {
   AnimationChannel, AnimationSampler, AttributeMap, ComponentType, SceneAccessor, SceneDocument,
-  SceneLight, SceneMaterial, SceneNode, ScenePrimitive, TextureInfo,
+  SceneInstancing, SceneLight, SceneMaterial, SceneNode, ScenePrimitive, TextureInfo,
 } from './scene-document.ts';
 import {
   GLTF_TEXTURE_SOURCE_EXTENSIONS,
@@ -83,7 +83,7 @@ export function buildSceneDocumentWithGltfProvenance(
     collectVariants(manifest, document);
     collectMeshes(asset, manifest.meshes || [], document, accessorBySource);
     collectLights(manifest, document);
-    collectNodes(manifest, document);
+    collectNodes(asset, manifest, document, accessorBySource);
     collectSkins(asset, manifest.skins || [], document, accessorBySource);
     collectAnimations(asset, manifest.animations || [], document, accessorBySource);
     assertValidSceneDocument(document);
@@ -298,6 +298,34 @@ function variantMaterials(primitive: GltfJson, variantCount: number): Record<num
   return Object.keys(selected).length > 0 ? selected : null;
 }
 
+/**
+ * The instance transforms a node carries, as EXT_mesh_gpu_instancing states
+ * them.
+ *
+ * The accessors come across into the document's own space the same way a
+ * primitive's attributes do, so the instances travel as data rather than as a
+ * reference into the source file.
+ */
+function collectInstancing(
+  asset: GltfAsset,
+  node: GltfJson,
+  document: SceneDocument,
+  accessorBySource: Map<string, number>,
+): SceneInstancing | null {
+  const declared = node?.extensions?.EXT_mesh_gpu_instancing?.attributes;
+  if (!declared || typeof declared !== 'object') return null;
+  const attributes: AttributeMap = {};
+  let count = 0;
+  for (const semantic of ['TRANSLATION', 'ROTATION', 'SCALE']) {
+    const source = declared[semantic];
+    if (!Number.isInteger(source)) continue;
+    const index = sourceAccessor(asset, source, document, accessorBySource);
+    attributes[semantic] = index;
+    count = Math.max(count, document.accessors[index].count);
+  }
+  return count > 0 && Object.keys(attributes).length > 0 ? { attributes, count } : null;
+}
+
 /** The light a node places, as KHR_lights_punctual states it. */
 function lightIndex(node: GltfJson): number | null {
   const index = node?.extensions?.KHR_lights_punctual?.light;
@@ -342,7 +370,12 @@ function collectLights(manifest: GltfJson, document: SceneDocument) {
   }
 }
 
-function collectNodes(manifest: GltfJson, document: SceneDocument) {
+function collectNodes(
+  asset: GltfAsset,
+  manifest: GltfJson,
+  document: SceneDocument,
+  accessorBySource: Map<string, number>,
+) {
   const meshes: GltfJson[] = manifest.meshes || [];
   document.nodes.push(...(manifest.nodes || []).map((node: GltfJson, nodeIndex: number) => {
     const output: SceneNode = {
@@ -352,6 +385,8 @@ function collectNodes(manifest: GltfJson, document: SceneDocument) {
       ...(typeof node.skin === 'number' ? { skin: node.skin } : {}),
       ...(lightIndex(node) === null ? {} : { light: lightIndex(node)! }),
     };
+    const instancing = collectInstancing(asset, node, document, accessorBySource);
+    if (instancing) output.instancing = instancing;
     if (Array.isArray(node.matrix) && node.matrix.length === 16) output.matrix = Array.from(node.matrix);
     else {
       output.translation = Array.from(node.translation || [0, 0, 0]);

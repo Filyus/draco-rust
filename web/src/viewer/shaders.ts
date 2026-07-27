@@ -91,6 +91,13 @@ layout(location=3) in vec4 aColor;
 layout(location=4) in vec4 aJoints;
 layout(location=5) in vec4 aWeights;
 layout(location=15) in vec3 aSmoothNormal;
+// EXT_mesh_gpu_instancing: one mat4 per copy, as four columns. A draw that is
+// not instanced leaves these disabled, and the constant attribute the renderer
+// sets is the identity - so the same program draws both.
+layout(location=7) in vec4 aInstanceColumn0;
+layout(location=8) in vec4 aInstanceColumn1;
+layout(location=9) in vec4 aInstanceColumn2;
+layout(location=10) in vec4 aInstanceColumn3;
 
 uniform mat4 uProjection;
 uniform mat4 uView;
@@ -120,6 +127,7 @@ vec3 morphDelta(int texel, int layer) {
 }
 
 void main() {
+    mat4 instance = mat4(aInstanceColumn0, aInstanceColumn1, aInstanceColumn2, aInstanceColumn3);
     vec3 morphedPosition = aPosition;
     vec3 morphedNormal = uUseSmoothNormals == 1 ? aSmoothNormal : aNormal;
     for (int i = 0; i < uMorphCount; i++) {
@@ -149,8 +157,11 @@ void main() {
         skinned = vec4(morphedPosition, 1.0);
         vNormal = normalize((uNormalMatrix * vec4(morphedNormal, 0.0)).xyz);
     }
+    vNormal = normalize(mat3(instance) * vNormal);
 
-    vec4 worldPos = uModel * skinned;
+    // The instance transform sits under the node's own: each copy is placed
+    // relative to the node, which is what the extension means.
+    vec4 worldPos = uModel * instance * skinned;
     vWorldPos = worldPos.xyz;
     vTexCoord = aTexCoord;
     vTexCoord1 = aTexCoord1;

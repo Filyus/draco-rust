@@ -56,6 +56,7 @@ const GLTF_ONLY = new Set<string>([
   'KHR_texture_transform',
   'KHR_lights_punctual',
   'KHR_materials_variants',
+  'EXT_mesh_gpu_instancing',
 ]);
 
 /**

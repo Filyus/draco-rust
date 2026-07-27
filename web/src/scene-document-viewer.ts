@@ -8,11 +8,11 @@
  */
 
 import { componentByteSize, morphDeltaAccessor, readComponent } from './component-values.ts';
-import { cloneTrs, decomposeMat4 } from './mat4.ts';
+import { cloneTrs, composeTrs, decomposeMat4 } from './mat4.ts';
 import {
   MAX_ACTIVE_MORPH_TARGETS, VIEWER_LIMIT_WARNINGS, peakActiveMorphWeights,
 } from './viewer-scene.ts';
-import type { RuntimeAccessor, ViewerLight } from './viewer-scene.ts';
+import type { RuntimeAccessor, ViewerInstancing, ViewerLight } from './viewer-scene.ts';
 import { assertValidSceneDocument } from './scene-document.ts';
 import {
   MATERIAL_EXTENSION_TEXTURE_SLOTS, materialExtensionFactors,
@@ -73,7 +73,10 @@ export function buildViewerSceneFromDocument(document: SceneDocument, variant: n
     )),
     aabb: meshAabb(mesh, accessors),
   }));
-  const nodes = document.nodes.map((node) => adaptNode(node, document));
+  const nodes = document.nodes.map((node) => ({
+    ...adaptNode(node, document),
+    ...(adaptInstancing(node, accessors) ? { instancing: adaptInstancing(node, accessors)! } : {}),
+  }));
   const materials = document.materials.map(adaptMaterial);
   const textures = document.textures.map((texture, textureIndex) => adaptTexture(texture, document.resources, textureIndex));
   const skins = document.skins.map((skin, skinIndex) => adaptSkin(skin, nodes, accessors, skinIndex));
@@ -182,6 +185,37 @@ function adaptPrimitive(
     }
   }
   return runtime;
+}
+
+/**
+ * The instance transforms of a node, composed into matrices.
+ *
+ * Composed once here rather than per frame: EXT_mesh_gpu_instancing has no
+ * animation, so the matrices never change after the scene is built. An
+ * attribute the node left out takes the identity value for its part, which is
+ * what "any subset" means in the extension.
+ */
+function adaptInstancing(node: SceneNode, accessors: RuntimeAccessor[]): ViewerInstancing | undefined {
+  const source = node.instancing;
+  if (!source) return undefined;
+  const read = (semantic: string, components: number) => {
+    const index = source.attributes[semantic];
+    void components;
+    return index === undefined ? null : floatAccessor(accessors[index]);
+  };
+  const translations = read('TRANSLATION', 3);
+  const rotations = read('ROTATION', 4);
+  const scales = read('SCALE', 3);
+  const matrices = new Float32Array(source.count * 16);
+  for (let index = 0; index < source.count; index += 1) {
+    const trs = {
+      translation: translations ? [...translations.subarray(index * 3, index * 3 + 3)] : [0, 0, 0],
+      rotation: rotations ? [...rotations.subarray(index * 4, index * 4 + 4)] : [0, 0, 0, 1],
+      scale: scales ? [...scales.subarray(index * 3, index * 3 + 3)] : [1, 1, 1],
+    };
+    matrices.set(composeTrs(trs), index * 16);
+  }
+  return { matrices, count: source.count };
 }
 
 function adaptNode(node: SceneNode, document: SceneDocument) {

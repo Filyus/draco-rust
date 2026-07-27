@@ -134,6 +134,26 @@ const INTERPRETED = {
       assert.equal(read.clearcoatRoughnessFactor, 0.2);
     },
   },
+  EXT_mesh_gpu_instancing: {
+    // On the node, like the light, but its payload is accessors rather than a
+    // root record: the copies travel as data in the document's own space.
+    material: null,
+    effect: () => {},
+    document: {
+      nodes: [{
+        mesh: 0,
+        extensions: { EXT_mesh_gpu_instancing: { attributes: { TRANSLATION: 1 } } },
+      }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      ],
+    },
+    documentEffect: (built) => {
+      assert.equal(built.nodes[0].instancing?.count, 3);
+      assert.equal(typeof built.nodes[0].instancing?.attributes.TRANSLATION, 'number');
+    },
+  },
   KHR_materials_variants: {
     // Also not a material extension: the names are at the root and the choices
     // are on the primitives, so its case reads a document too.
@@ -147,7 +167,27 @@ const INTERPRETED = {
           attributes: { POSITION: 0 },
           material: 0,
           extensions: {
-            KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }] },
+            EXT_mesh_gpu_instancing: {
+    // On the node, like the light, but its payload is accessors rather than a
+    // root record: the copies travel as data in the document's own space.
+    material: null,
+    effect: () => {},
+    document: {
+      nodes: [{
+        mesh: 0,
+        extensions: { EXT_mesh_gpu_instancing: { attributes: { TRANSLATION: 1 } } },
+      }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      ],
+    },
+    documentEffect: (built) => {
+      assert.equal(built.nodes[0].instancing?.count, 3);
+      assert.equal(typeof built.nodes[0].instancing?.attributes.TRANSLATION, 'number');
+    },
+  },
+  KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }] },
           },
         }],
       }],
@@ -166,7 +206,27 @@ const INTERPRETED = {
     effect: () => {},
     document: {
       extensions: {
-        KHR_materials_variants: {
+        EXT_mesh_gpu_instancing: {
+    // On the node, like the light, but its payload is accessors rather than a
+    // root record: the copies travel as data in the document's own space.
+    material: null,
+    effect: () => {},
+    document: {
+      nodes: [{
+        mesh: 0,
+        extensions: { EXT_mesh_gpu_instancing: { attributes: { TRANSLATION: 1 } } },
+      }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      ],
+    },
+    documentEffect: (built) => {
+      assert.equal(built.nodes[0].instancing?.count, 3);
+      assert.equal(typeof built.nodes[0].instancing?.attributes.TRANSLATION, 'number');
+    },
+  },
+  KHR_materials_variants: {
     // Also not a material extension: the names are at the root and the choices
     // are on the primitives, so its case reads a document too.
     material: null,
@@ -179,7 +239,27 @@ const INTERPRETED = {
           attributes: { POSITION: 0 },
           material: 0,
           extensions: {
-            KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }] },
+            EXT_mesh_gpu_instancing: {
+    // On the node, like the light, but its payload is accessors rather than a
+    // root record: the copies travel as data in the document's own space.
+    material: null,
+    effect: () => {},
+    document: {
+      nodes: [{
+        mesh: 0,
+        extensions: { EXT_mesh_gpu_instancing: { attributes: { TRANSLATION: 1 } } },
+      }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      ],
+    },
+    documentEffect: (built) => {
+      assert.equal(built.nodes[0].instancing?.count, 3);
+      assert.equal(typeof built.nodes[0].instancing?.attributes.TRANSLATION, 'number');
+    },
+  },
+  KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }] },
           },
         }],
       }],

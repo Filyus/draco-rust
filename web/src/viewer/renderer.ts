@@ -21,7 +21,7 @@ import {
   MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS, MAX_PUNCTUAL_LIGHTS, TEXTURE_SLOTS, TEXTURE_SLOT_SAMPLERS,
 } from './shaders.ts';
 import type { TextureSlotName } from './shaders.ts';
-import type { ViewerMaterial, ViewerTextureBinding } from '../viewer-scene.ts';
+import type { ViewerMaterial, ViewerNode, ViewerTextureBinding } from '../viewer-scene.ts';
 
 /**
  * What drawing a frame needs from the viewer: the context, the linked
@@ -197,6 +197,8 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   _morphLayers?: Int32Array;
   /** Reused ordering buffer for the per-frame morph target pick. */
   _morphOrder?: number[];
+  /** Instance transform buffers, keyed by the scene's own instancing records. */
+  _instanceBuffers?: WeakMap<object, WebGLBuffer>;
   /** Reused per-frame light uniforms, resolved from the nodes that place them. */
   _lightTypes?: Int32Array;
   _lightColors?: Float32Array;
@@ -333,8 +335,12 @@ function drawSurfaces(host: RenderHost, deferred: boolean) {
       }
 
       const mode = glMode(host, uploaded.mode, host.wireframe);
+      const instances = bindInstances(host, node);
       if (uploaded.indexType !== undefined) {
-        gl.drawElements(mode, uploaded.elementCount, uploaded.indexType, 0);
+        if (instances > 0) gl.drawElementsInstanced(mode, uploaded.elementCount, uploaded.indexType, 0, instances);
+        else gl.drawElements(mode, uploaded.elementCount, uploaded.indexType, 0);
+      } else if (instances > 0) {
+        gl.drawArraysInstanced(mode, 0, uploaded.elementCount, instances);
       } else {
         gl.drawArrays(mode, 0, uploaded.elementCount);
       }
@@ -536,6 +542,48 @@ export function bindFrameSnapshot(host: RenderHost) {
  * A light's forward is -Z, which is what every format that has lights means by
  * the direction of a spot or a sun.
  */
+/** The four attribute locations one instance matrix occupies, as columns. */
+const INSTANCE_COLUMNS = [7, 8, 9, 10];
+
+/**
+ * Point the instance attributes at this node's copies, or at the identity.
+ *
+ * Attribute pointers and divisors belong to the bound VAO, and a VAO is shared
+ * by every node that draws the same mesh - so leaving them set would instance
+ * the next node that did not ask for it. Both branches therefore write all
+ * four columns: a node with copies binds its buffer, one without disables the
+ * arrays and leaves the constant identity the shader multiplies by.
+ *
+ * @returns The instance count, or 0 to draw once.
+ */
+function bindInstances(host: RenderHost, node: ViewerNode): number {
+  const gl = host.gl;
+  const instancing = node.instancing;
+  if (!instancing) {
+    for (const [column, location] of INSTANCE_COLUMNS.entries()) {
+      gl.disableVertexAttribArray(location);
+      gl.vertexAttrib4f(location, column === 0 ? 1 : 0, column === 1 ? 1 : 0, column === 2 ? 1 : 0, column === 3 ? 1 : 0);
+    }
+    return 0;
+  }
+  const buffers = host._instanceBuffers ??= new WeakMap();
+  let buffer = buffers.get(instancing);
+  if (!buffer) {
+    buffer = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, instancing.matrices, gl.STATIC_DRAW);
+    buffers.set(instancing, buffer);
+  } else {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  }
+  for (const [column, location] of INSTANCE_COLUMNS.entries()) {
+    gl.enableVertexAttribArray(location);
+    gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 64, column * 16);
+    gl.vertexAttribDivisor(location, 1);
+  }
+  return instancing.count;
+}
+
 export function bindPunctualLights(host: RenderHost) {
   const gl = host.gl;
   const lights = host.scene?.lights ?? [];

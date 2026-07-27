@@ -188,6 +188,9 @@ export function lowerSceneDocumentToGltf(document: SceneDocument) {
   // primitives, which is where the document keeps them too.
   const variants = (document.variants ?? []).map((name) => ({ name }));
   if (variants.length > 0) extensionsUsed.add('KHR_materials_variants');
+  // EXT_mesh_gpu_instancing lives entirely on the node, so declaring it is the
+  // only root-level trace it leaves.
+  if (document.nodes.some((node) => node.instancing)) extensionsUsed.add('EXT_mesh_gpu_instancing');
 
   const manifest = {
     asset: { version: '2.0', generator: 'draco-rust SceneDocument exporter' },
@@ -481,8 +484,16 @@ function lowerNode(
     ...(node.mesh === undefined ? {} : { mesh: node.mesh }),
     ...(node.skin === undefined ? {} : { skin: node.skin }),
     ...(node.weights?.length ? { weights: [...node.weights] } : {}),
-    // The node is what places and aims a light; the light itself is at the root.
-    ...(node.light === undefined ? {} : { extensions: { KHR_lights_punctual: { light: node.light } } }),
+    // Both node extensions share one object: a node may well place a light and
+    // draw its mesh many times.
+    ...(node.light === undefined && !node.instancing ? {} : {
+      extensions: {
+        ...(node.light === undefined ? {} : { KHR_lights_punctual: { light: node.light } }),
+        ...(node.instancing
+          ? { EXT_mesh_gpu_instancing: { attributes: { ...node.instancing.attributes } } }
+          : {}),
+      },
+    }),
   };
   if (node.mesh !== undefined && (node.mesh < 0 || node.mesh >= meshCount)) throw new Error(`SceneDocument node ${index} has invalid mesh`);
   if (node.skin !== undefined && (node.skin < 0 || node.skin >= skinCount)) throw new Error(`SceneDocument node ${index} has invalid skin`);
