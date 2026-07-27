@@ -1,9 +1,11 @@
 import type { SceneCapabilities, SceneDocument } from '../scene-document.ts';
 import { assertValidSceneDocument } from '../scene-document.ts';
-import { exportSidebar, meshStatFields, sceneCapabilitySummary, sceneClipList, sceneInfo, sceneMaterialList, scenePanel, sceneResourceList, sceneSection, sceneStatFields, sceneTree, workspace } from './dom.ts';
+import { sceneExtensionReach, exportSidebar, meshStatFields, sceneCapabilitySummary, sceneClipList, sceneInfo, sceneMaterialList, scenePanel, sceneResourceList, sceneSection, sceneStatFields, sceneTree, workspace } from './dom.ts';
 import { errorMessage, log } from './log.ts';
 import type { LoadedFile } from './state.ts';
 import { setWarningSource } from './warnings.ts';
+import { describeExtensionReach, reportExtensionReach } from './extension-report.ts';
+import { state } from './state.ts';
 
 /**
  * Everything the panels display about a loaded scene: the statistics row, the
@@ -40,6 +42,7 @@ export function renderSceneDocumentSummary(sceneDocument: SceneDocument, extraWa
     sceneSection.style.display = 'flex';
     workspace.classList.add('scene-loaded');
     sceneCapabilitySummary.textContent = describeSceneCapabilities(validation.capabilities);
+    renderExtensionReach();
     setWarningSource('scene', [...sceneDocument.warnings, ...validation.warnings, ...extraWarnings]);
     scenePanel.hidden = false;
     sceneInfo.hidden = false;
@@ -53,6 +56,22 @@ export function renderSceneDocumentSummary(sceneDocument: SceneDocument, extraWa
     workspace.classList.remove('export-loaded');
     log(`Scene details unavailable: ${errorMessage(error)}`, 'warning');
   }
+}
+
+/**
+ * What became of each extension the file declared.
+ *
+ * Only for glTF sources: the provenance is where the file's own claims
+ * survive, and no other format makes any.
+ */
+function renderExtensionReach() {
+  const lines = describeExtensionReach(reportExtensionReach(state.currentGltfProvenance));
+  sceneExtensionReach.hidden = lines.length === 0;
+  sceneExtensionReach.replaceChildren(...lines.map((line) => {
+    const item = document.createElement('li');
+    item.textContent = line;
+    return item;
+  }));
 }
 
 export function describeSceneCapabilities(capabilities: Partial<SceneCapabilities> = {}) {

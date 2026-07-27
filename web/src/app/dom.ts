@@ -60,6 +60,7 @@ export const animClipSelect = element<HTMLSelectElement>('anim-clip');
 export const animClipTrigger = element<HTMLButtonElement>('anim-clip-trigger');
 export const animClipLabel = element('anim-clip-label');
 export const animClipMenu = element('anim-clip-menu');
+export const sceneExtensionReach = element('scene-extension-reach');
 export const viewerVariantPicker = element('viewer-variant-picker');
 export const viewerVariantSelect = element('viewer-variant') as HTMLSelectElement;
 export const animLoopCheckbox = element<HTMLInputElement>('anim-loop');

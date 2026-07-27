@@ -1735,6 +1735,63 @@ test('one surface program per set of texture slots, not per material', async ({ 
   expect(observed.sources[1]).toEqual({ slots: 1, samplers: 1 });
 });
 
+test('the summary says what became of every extension the file declared', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  // Three fates in one file: a material layer glTF can carry back out, a scene
+  // extension the same, and one nothing acts on. Each was reported somewhere
+  // already - in a preview warning, a document warning, an export warning -
+  // and the point of the section is that they are one answer about one file.
+  await page.locator('#file-input').setInputFiles({
+    name: 'mixed-extensions.gltf',
+    mimeType: 'model/gltf+json',
+    buffer: Buffer.from(JSON.stringify({
+      asset: { version: '2.0' },
+      extensionsUsed: ['KHR_materials_clearcoat', 'KHR_lights_punctual', 'KHR_materials_pbrSpecularGlossiness'],
+      extensionsRequired: ['KHR_materials_pbrSpecularGlossiness'],
+      extensions: {
+        KHR_lights_punctual: { lights: [{ type: 'point', color: [1, 1, 1], intensity: 2 }] },
+      },
+      buffers: [{
+        byteLength: 36,
+        uri: 'data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA',
+      }],
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] }],
+      materials: [{ extensions: { KHR_materials_clearcoat: { clearcoatFactor: 1 } } }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      nodes: [{ mesh: 0 }, { extensions: { KHR_lights_punctual: { light: 0 } } }],
+      scenes: [{ nodes: [0, 1] }],
+      scene: 0,
+    })),
+  });
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  const lines = await page.locator('#scene-extension-reach li').allTextContents();
+  expect(lines).toHaveLength(2);
+  // Worst first, and the file's own "you may not skip this" carried through:
+  // it is the difference between a poorer export and a wrong one.
+  expect(lines[0]).toContain('KHR_materials_pbrSpecularGlossiness (required)');
+  expect(lines[0]).toContain('not understood');
+  expect(lines[1]).toContain('KHR_materials_clearcoat');
+  expect(lines[1]).toContain('KHR_lights_punctual');
+  expect(lines[1]).toContain('OBJ, PLY and FBX cannot state it');
+});
+
+test('a file that declares no extensions gets no reach section', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles({
+    name: 'plain.gltf',
+    mimeType: 'model/gltf+json',
+    buffer: Buffer.from(embeddedTriangle()),
+  });
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  // "Nothing to report" about a plain glTF is noise, so the section is absent
+  // rather than empty.
+  await expect(page.locator('#scene-extension-reach')).toBeHidden();
+});
+
 test('KHR_materials_variants offers every choice and shows the one picked', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);
@@ -1790,7 +1847,12 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
 
   const plain = await emissiveOf();
   await page.locator('#viewer-variant').selectOption('1');
-  await expect(page.locator('#console')).toContainText('Preview ready');
+  // Waiting on the console would be satisfied by the "Preview ready" the first
+  // load already printed, so wait for the scene the picker rebuilds instead.
+  await page.waitForFunction(async () => {
+    const { state } = await import('/app/state.js');
+    return state.viewer?.scene?.meshes[0]?.primitives[0]?.materialIndex === 2;
+  }, null, { timeout: 10000 });
   const emerald = await emissiveOf();
 
   // The primitive took a different material, and the one the variant names.

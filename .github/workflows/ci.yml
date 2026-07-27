@@ -204,6 +204,7 @@ jobs:
           npm run test:viewer-texture-units
           npm run test:gltf-scene-provenance
           npm run test:gltf-extension-support
+          npm run test:extension-reach
           npm run test:export-helpers
           npm run test:scene-document-attributes
           npm run test:scene-document-fbx
