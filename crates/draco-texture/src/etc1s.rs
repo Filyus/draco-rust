@@ -518,6 +518,66 @@ impl Etc1sDecoder {
         Ok(blocks)
     }
 
+    /// Decode one image into ASTC 4x4 blocks, sixteen bytes each.
+    ///
+    /// Unlike every other target here, this one needs both slices at once: an
+    /// ASTC block carries colour and alpha on two planes of the same block, so
+    /// the alpha slice is walked first into per-block descriptions and the
+    /// colour walk then converts the pair. A file with no alpha slice gets
+    /// opaque blocks, so the caller can choose this whatever the file holds.
+    #[cfg(feature = "astc")]
+    pub fn decode_astc(
+        &self,
+        level_data: &[u8],
+        desc: ImageDesc,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, Etc1sError> {
+        use crate::etc1s_to_astc::{AstcConverter, Block};
+
+        let converter = AstcConverter::new();
+        let blocks_x = width.div_ceil(4) as usize;
+        let blocks_y = height.div_ceil(4) as usize;
+        let mut blocks = vec![0u8; blocks_x * blocks_y * 16];
+
+        let mut alpha_blocks = Vec::new();
+        if desc.alpha_length != 0 {
+            alpha_blocks = vec![Block::default(); blocks_x * blocks_y];
+            let data = self.slice(level_data, desc.alpha_offset, desc.alpha_length)?;
+            self.walk_blocks(
+                data,
+                width,
+                height,
+                |block_x, block_y, color5, inten5, selectors| {
+                    alpha_blocks[block_y as usize * blocks_x + block_x as usize] = Block {
+                        color5,
+                        inten5,
+                        selectors,
+                    };
+                },
+            )?;
+        }
+
+        let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
+        self.walk_blocks(
+            data,
+            width,
+            height,
+            |block_x, block_y, color5, inten5, selectors| {
+                let index = block_y as usize * blocks_x + block_x as usize;
+                let color = Block {
+                    color5,
+                    inten5,
+                    selectors,
+                };
+                let alpha = alpha_blocks.get(index).copied();
+                blocks[index * 16..index * 16 + 16]
+                    .copy_from_slice(&converter.convert(color, alpha));
+            },
+        )?;
+        Ok(blocks)
+    }
+
     /// One slice's bytes out of the level, bounds-checked.
     fn slice<'a>(
         &self,
@@ -836,7 +896,7 @@ pub(crate) fn block_colors5(color5: [u8; 3], inten5: u8) -> [[u8; 3]; 4] {
 }
 
 /// The lowest and highest selector a block uses.
-#[cfg(any(feature = "bc", feature = "etc"))]
+#[cfg(any(feature = "bc", feature = "etc", feature = "astc"))]
 pub(crate) fn selector_extremes(selectors: [u8; 4]) -> (u8, u8) {
     let mut lowest = 3u8;
     let mut highest = 0u8;

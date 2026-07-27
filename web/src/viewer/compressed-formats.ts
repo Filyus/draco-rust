@@ -102,6 +102,16 @@ const TARGETS: { target: CompressedTarget; extension: string; codecs: TextureCod
     codecs: ['etc1s', 'uastc'],
     alpha: true,
   },
+  {
+    // ASTC again, and last, because for ETC1S it is the opposite of what it is
+    // for UASTC: four colours on a line have to be solved into two endpoints
+    // and a weight, which lands slightly below BC1, where ETC1 is nearly
+    // lossless and half the size. This is for a machine with ASTC and no ETC.
+    target: { name: 'astc', format: COMPRESSED_FORMAT.astc, bytesPerBlock: 16 },
+    extension: 'WEBGL_compressed_texture_astc',
+    codecs: ['etc1s'],
+    alpha: true,
+  },
 ];
 
 /**

@@ -20,6 +20,7 @@ pub(crate) const TRIT_ENCODE: [u8; 243] = [
 ];
 
 /// The seven-bit encoding of each of the 125 three-quint groups.
+#[cfg(feature = "uastc")]
 pub(crate) const QUINT_ENCODE: [u8; 125] = [
     0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 16, 17, 18, 19, 20, 24, 25, 26, 27, 28, 5, 13, 21, 29, 6, 32,
     33, 34, 35, 36, 40, 41, 42, 43, 44, 48, 49, 50, 51, 52, 56, 57, 58, 59, 60, 37, 45, 53, 61, 14,
@@ -30,27 +31,32 @@ pub(crate) const QUINT_ENCODE: [u8; 125] = [
 ];
 
 /// The ASTC block mode word each UASTC mode maps onto.
+#[cfg(feature = "uastc")]
 pub(crate) const UASTC_MODE_ASTC_BLOCK_MODE: [u16; 19] = [
     0x242, 0x42, 0x53, 0x42, 0x42, 0x53, 0x442, 0x42, 0x0, 0x42, 0x242, 0x442, 0x53, 0x441, 0x42,
     0x242, 0x42, 0x442, 0x253,
 ];
 
 /// The ASTC colour endpoint mode each UASTC mode uses.
+#[cfg(feature = "uastc")]
 pub(crate) const UASTC_MODE_CEM: [u8; 19] = [
     8, 8, 8, 8, 8, 8, 8, 8, 0, 12, 12, 12, 12, 12, 12, 4, 4, 4, 8,
 ];
 
 /// The ASTC partition seed of each UASTC two-subset pattern.
+#[cfg(feature = "uastc")]
 pub(crate) const ASTC_PARTITION_SEED2: [u16; 30] = [
     28, 20, 16, 29, 91, 9, 107, 72, 149, 204, 50, 114, 496, 17, 78, 39, 252, 828, 43, 156, 116,
     210, 476, 273, 684, 359, 246, 195, 694, 524,
 ];
 
 /// The same for the three-subset patterns.
+#[cfg(feature = "uastc")]
 pub(crate) const ASTC_PARTITION_SEED3: [u16; 11] =
     [260, 74, 32, 156, 183, 15, 745, 0, 335, 902, 254];
 
 /// The same for mode 7, whose two subsets ride a three-subset BC7 pattern.
+#[cfg(feature = "uastc")]
 pub(crate) const ASTC_PARTITION_SEED7: [u16; 19] = [
     36, 48, 61, 137, 161, 183, 226, 281, 302, 307, 479, 495, 593, 594, 605, 799, 812, 988, 993,
 ];

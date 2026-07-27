@@ -41,9 +41,10 @@ const GLTF_GZIP_BUDGET: usize = 115 * 1024;
 ///
 /// This measures the full module, which carries every hardware family because
 /// a browser can be any machine. A build that knows its audience trims by
-/// family and lands far below: measured here, `--no-default-features
-/// --features etc,astc` is 55 KiB, since the BC tables are what the weight is.
-const KTX2_GZIP_BUDGET: usize = 135 * 1024;
+/// family and lands far below, since what the weight is is the baked tables:
+/// BC1 and BC4 for the desktop family, and now a third of the same size for
+/// ETC1S to ASTC, which is what took this from 135 to 175.
+const KTX2_GZIP_BUDGET: usize = 175 * 1024;
 
 #[derive(Clone, Debug)]
 struct Config {

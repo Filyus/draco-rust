@@ -49,7 +49,8 @@ const CASES = [
   [ETC, 'etc1s', false, 'etc1', 'ETC alone is enough for an ETC1S texture'],
   [ETC, 'uastc', false, 'etc1', 'UASTC reaches ETC too, which is what a phone without ASTC takes'],
   [ETC, 'uastc', true, 'etc2', 'and ETC2 when it carries alpha'],
-  [ASTC, 'etc1s', false, 'pixels', 'and ETC1S has no ASTC target'],
+  [ASTC, 'etc1s', false, 'astc', 'ETC1S reaches ASTC too, for a machine with no ETC'],
+  [MOBILE, 'etc1s', false, 'etc1', 'but where both are offered ETC1 wins: half the size and nearly lossless'],
   // No compressed format at all.
   [[], 'etc1s', false, 'pixels', 'no compressed format at all'],
   [[], 'uastc', true, 'pixels', 'nor for UASTC'],

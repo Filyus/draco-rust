@@ -184,6 +184,8 @@ impl Transcoder {
                     Target::Etc1 => decoder.decode_etc1(&level_data, desc, width, height)?,
                     #[cfg(feature = "etc")]
                     Target::Etc2 => decoder.decode_etc2(&level_data, desc, width, height)?,
+                    #[cfg(feature = "astc")]
+                    Target::Astc => decoder.decode_astc(&level_data, desc, width, height)?,
                     #[allow(unreachable_patterns)]
                     other => {
                         return Err(TranscodeError::NoSuchTarget {

@@ -96,8 +96,18 @@ per texture:
 | ETC1S with alpha | BC3, 16 bytes per block | `WEBGL_compressed_texture_s3tc` |
 | ETC1S, no alpha | ETC1, 8 bytes per block | `WEBGL_compressed_texture_etc` |
 | ETC1S with alpha | ETC2, 16 bytes per block | `WEBGL_compressed_texture_etc` |
+| ETC1S | ASTC 4×4, 16 bytes per block | `WEBGL_compressed_texture_astc` |
+| UASTC | ETC1, 8 bytes per block | `WEBGL_compressed_texture_etc` |
+| UASTC | ETC2, 16 bytes per block | `WEBGL_compressed_texture_etc` |
 | UASTC | BC7, 16 bytes per block | `EXT_texture_compression_bptc` |
 | UASTC | ASTC 4×4, 16 bytes per block | `WEBGL_compressed_texture_astc` |
+
+Every pair either codec can reach is there, so what a machine takes is decided
+by its extensions alone. Where a codec reaches two targets the ranking prefers
+the one that loses less, and that is not the same answer for both: ASTC is what
+UASTC is a restricted profile of, so it wins there, while for ETC1S it has to
+solve four colours into two endpoints and lands below ETC1, which is nearly
+lossless and half the size.
 
 A texture that reaches one of those is uploaded compressed, at about an eighth
 of the video memory the pixels would take, and its mip chain comes from the
@@ -125,27 +135,25 @@ Measured, gzipped, built with `--no-default-features`:
 
 | built for | module |
 |---|--:|
-| every family (what is served) | 129 KiB |
+| every family (what is served) | 167 KiB |
 | `bc` — desktop | 123 KiB |
-| `etc,astc` — phones | 55 KiB |
-| `astc` alone | 51 KiB |
+| `etc,astc` — phones | 93 KiB |
+| `astc` alone | 86 KiB |
+| `etc` alone | 56 KiB |
 
-Almost all of the weight is the baked ETC1S-to-BC endpoint tables, which is why
-dropping the desktop family more than halves the module and dropping the mobile
-ones barely registers. Nothing about the container or either codec is optional:
-a KTX2 file is read and decoded to pixels whatever the module was built for.
+Almost all of the weight is baked tables of solved endpoints, one set for BC and
+one for ASTC, at about 60 KiB each; ETC needs none, which is why it is the
+cheapest family by a wide margin. Nothing about the container or either codec is
+optional: a KTX2 file is read and decoded to pixels whatever the module was
+built for.
 
-None of the three can be retired today, and `etc` least of all, which is the
-opposite of how it looks. By the survey it reads as the aging one: every machine
-with ASTC also has ETC, so the family appears to serve only the difference
-between them — nil on Android, about six points on Linux. But ETC1S has no ASTC
-target here, only ETC. So `etc` is not the gap between two mobile formats; it is
-the only compressed path the codec most glTF assets use has on any phone at all,
-and dropping it would send that codec to RGBA8 on the machines least able to
-afford eight times the video memory.
-
-Transcoding ETC1S to ASTC is what would change that, and it is the reason to
-build that pair — not matrix symmetry, which was the reason it looked pointless.
+`etc` is now the one that could be retired, which it was not before this table
+was full: every machine with ASTC also has ETC, and both codecs now reach ASTC,
+so dropping the family costs the difference between the two — nil on Android,
+about six points on Linux — rather than every ETC1S texture on every phone.
+What it would cost in quality is the ETC1S half: ASTC lands below ETC1 there and
+takes twice the space. That is the trade, and it is a decision rather than a
+formality, which is why there is no flag pretending otherwise.
 
 Two gaps are worth stating. Five of UASTC's nineteen block modes appear in none
 of the fixtures, so the transcoder is written from the reference for those and

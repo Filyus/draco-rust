@@ -22,16 +22,21 @@
 //! goes out of date: a target is worth carrying for as long as machines that
 //! take it are, and every one of these will one day stop being.
 //!
-//! None of the three is retirable today, `etc` least of all despite looking
-//! the oldest: ETC1S has no ASTC target here, so `etc` is not the gap between
-//! two mobile formats but the only compressed path the common codec has on a
-//! phone. Transcoding ETC1S to ASTC is what would change that.
+//! `etc` is the one that could now be retired, which was not true before both
+//! codecs reached ASTC: every machine with ASTC also has ETC, so dropping the
+//! family costs the difference between the two rather than every ETC1S texture
+//! on every phone. What it would cost in quality is that ETC1S falls back to
+//! ASTC, which lands below ETC1 and takes twice the space - a decision, not a
+//! formality, so there is no flag here pretending to have made it.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 
+/// Writing values into an ASTC block, which both sources share.
+#[cfg(feature = "astc")]
+mod astc_pack;
 /// The fixed tables ASTC packing reads.
-#[cfg(all(feature = "uastc", feature = "astc"))]
+#[cfg(feature = "astc")]
 mod astc_tables;
 /// Packing a BC7 block, and the tables it and the UASTC mapping share.
 #[cfg(all(feature = "uastc", feature = "bc"))]
@@ -41,6 +46,9 @@ mod bc7_tables;
 /// Basis Universal ETC1S decoding.
 #[cfg(feature = "etc1s")]
 pub mod etc1s;
+/// Turning ETC1S blocks into ASTC 4x4.
+#[cfg(all(feature = "etc1s", feature = "astc"))]
+pub mod etc1s_to_astc;
 /// Turning ETC1S blocks into BC1, for a GPU that takes block formats.
 #[cfg(all(feature = "etc1s", feature = "bc"))]
 pub mod etc1s_to_bc1;
