@@ -83,4 +83,37 @@ assert.ok(Math.abs(scene.nodes[0].trs.translation[0] - 1) < 1e-6);
 assert.ok(Math.abs(scene.nodes[0].world[12] - 1) < 1e-6);
 assert.ok(Math.abs(scene.nodes[1].world[12] - 1) < 1e-6, 'child world transform must retain the parent animation');
 
+// A node no scene reaches draws nothing in glTF, so it must not become a
+// renderable here and must not widen the frame either. The document contract
+// permits it — only a root is required to have no parent — and the glTF loader
+// has always walked from the roots, so this is the rule the two paths share.
+const orphaned = createSceneDocument({
+    accessors: [
+        { bytes: bytes(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0])), componentType: 5126, components: 3, count: 3 },
+        { bytes: bytes(new Float32Array([0, 0, 0, 50, 0, 0, 0, 50, 0])), componentType: 5126, components: 3, count: 3 },
+    ],
+    meshes: [
+        { primitives: [{ attributes: { POSITION: 0 } }] },
+        { primitives: [{ attributes: { POSITION: 1 } }] },
+    ],
+    nodes: [
+        { name: 'Drawn', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 },
+        { name: 'Stranded', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 1 },
+    ],
+    rootNodes: [0],
+});
+
+const orphanedScene = buildViewerSceneFromDocument(orphaned);
+assert.equal(orphanedScene.nodes.length, 2, 'an unreachable node still belongs to the scene it came from');
+assert.deepEqual(
+    orphanedScene.renderables.map((renderable) => renderable.node.name),
+    ['Drawn'],
+    'a node no scene reaches must not be drawn',
+);
+assert.deepEqual(
+    orphanedScene.aabb.max,
+    [1, 1, 0],
+    'the frame must come from what is drawn, not from every mesh in the document',
+);
+
 console.log('SceneDocument viewer parity passed');

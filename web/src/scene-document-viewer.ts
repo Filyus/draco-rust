@@ -52,10 +52,7 @@ export function buildViewerSceneFromDocument(document: SceneDocument) {
     const source = document.nodes[index];
     if (source.skin !== undefined) node.skinIndex = source.skin;
   });
-  const renderables: { node: typeof nodes[number]; meshIndex: number; skinIndex: number }[] = [];
-  nodes.forEach((node) => {
-    if (node.meshIndex >= 0) renderables.push({ node, meshIndex: node.meshIndex, skinIndex: node.skinIndex });
-  });
+  const { renderables, aabb } = collectRenderables(nodes, meshes, document.rootNodes);
 
   const animations = document.animations.map((clip, clipIndex) => adaptAnimation(clip, nodes, accessors, clipIndex));
   for (const mesh of document.meshes) for (const primitive of mesh.primitives) {
@@ -73,7 +70,7 @@ export function buildViewerSceneFromDocument(document: SceneDocument) {
     textures,
     animations,
     renderables,
-    aabb: sceneAabb(meshes),
+    aabb,
     warnings: viewerWarnings,
   };
 }
@@ -285,13 +282,49 @@ function meshAabb(mesh: SceneMesh, accessors: RuntimeAccessor[]) {
   return Number.isFinite(aabb.min[0]) ? aabb : { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] };
 }
 
-function sceneAabb(meshes: { aabb: { min: number[]; max: number[] } }[]) {
+/**
+ * Walk the scene from its roots, collecting what is drawn and how big it is.
+ *
+ * From the roots rather than over every node, because a document may hold
+ * nodes no scene reaches — a mesh left behind by an authoring tool draws
+ * nothing in glTF and must not widen the frame here either. The glTF loader
+ * has always walked this way; the two rules agreed on every asset in the
+ * corpus, which is exactly why the difference could sit here unnoticed.
+ *
+ * `visited` guards against a cycle in `children`. A document that reaches the
+ * viewer has passed validation, but this walk is cheap insurance against
+ * hanging the tab over a malformed one.
+ */
+function collectRenderables(
+  nodes: ReturnType<typeof adaptNode>[],
+  meshes: { aabb: { min: number[]; max: number[] } }[],
+  rootNodes: number[],
+) {
   const aabb = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
-  for (const mesh of meshes) for (let component = 0; component < 3; component += 1) {
-    aabb.min[component] = Math.min(aabb.min[component], mesh.aabb.min[component]);
-    aabb.max[component] = Math.max(aabb.max[component], mesh.aabb.max[component]);
-  }
-  return Number.isFinite(aabb.min[0]) ? aabb : { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] };
+  const renderables: { node: typeof nodes[number]; meshIndex: number; skinIndex: number }[] = [];
+  const visited = new Set<number>();
+
+  const walk = (nodeIndex: number) => {
+    if (visited.has(nodeIndex)) return;
+    visited.add(nodeIndex);
+    const node = nodes[nodeIndex];
+    if (!node) return;
+    const mesh = meshes[node.meshIndex];
+    if (node.meshIndex >= 0 && mesh) {
+      renderables.push({ node, meshIndex: node.meshIndex, skinIndex: node.skinIndex });
+      for (let component = 0; component < 3; component += 1) {
+        aabb.min[component] = Math.min(aabb.min[component], mesh.aabb.min[component]);
+        aabb.max[component] = Math.max(aabb.max[component], mesh.aabb.max[component]);
+      }
+    }
+    for (const child of node.children) walk(child);
+  };
+  for (const root of rootNodes) walk(root);
+
+  return {
+    renderables,
+    aabb: Number.isFinite(aabb.min[0]) ? aabb : { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] },
+  };
 }
 
 function readAccessor(accessor: RuntimeAccessor): number[] {
