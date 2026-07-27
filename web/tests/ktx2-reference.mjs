@@ -102,6 +102,46 @@ export async function loadKtx2Module() {
 }
 
 /**
+ * Compare every mip level of every named file against the reference.
+ *
+ * One implementation for both codecs. What differs between ETC1S and UASTC is
+ * which files to open and what the file should call itself; the check itself —
+ * all of it, every level, byte for byte — is the same question either way, and
+ * writing it twice would let the two drift.
+ *
+ * @returns {Promise<number>} how many levels were compared.
+ */
+export async function compareAllLevels(ktx2, reference, files, codec) {
+  const assert = (await import('node:assert/strict')).default;
+  const { readFile } = await import('node:fs/promises');
+  let compared = 0;
+
+  for (const name of files) {
+    const bytes = await readFile(resolve(FIXTURES, `${name}.ktx2`));
+    const file = new ktx2.Ktx2File(new Uint8Array(bytes));
+
+    assert.equal(file.codec, codec, `${name} should be read as ${codec}`);
+    assert.equal(file.levels, await reference.levels(name), `${name} level count`);
+
+    for (let level = 0; level < file.levels; level++) {
+      const want = await reference.transcode(name, level, TARGET.RGBA32);
+      const image = file.decodeRgba(level);
+      const got = image.rgba();
+
+      assert.equal(
+        got.length,
+        image.width * image.height * 4,
+        `${name} level ${level} is not width × height × 4 bytes`,
+      );
+      const difference = firstDifference(want, got);
+      assert.equal(difference, null, `${name} level ${level}: ${difference}`);
+      compared++;
+    }
+  }
+  return compared;
+}
+
+/**
  * Where two byte strings first differ, worded so the failure names a pixel.
  *
  * @returns {string | null} null when they are identical.

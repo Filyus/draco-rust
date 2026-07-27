@@ -14,14 +14,12 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 
-#[cfg(feature = "etc1s")]
 /// Basis Universal ETC1S decoding.
 pub mod etc1s;
-#[cfg(any(feature = "etc1s", feature = "uastc"))]
 mod huffman;
-#[cfg(feature = "ktx2")]
 /// KTX2 container reading.
 pub mod ktx2;
-#[cfg(all(feature = "ktx2", feature = "etc1s"))]
 /// Decoding a KTX2 file's payload into pixels.
 pub mod transcode;
+/// Basis Universal UASTC LDR decoding.
+pub mod uastc;

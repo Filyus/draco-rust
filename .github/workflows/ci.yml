@@ -221,6 +221,7 @@ jobs:
         run: |
           cargo run --manifest-path build-tool/Cargo.toml -- --module ktx2-wasm --force
           npm run test:ktx2-etc1s
+          npm run test:ktx2-uastc
         working-directory: web
 
       - name: Build and smoke raw glTF writer

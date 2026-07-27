@@ -17,14 +17,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 thiserror = "2.0"
 # Zstd supercompression, which every UASTC file written by `toktx --zstd` uses.
 # Pure Rust and allocation-only, so it survives the wasm32 target unchanged.
-ruzstd = { version = "0.7", default-features = false, features = ["std"], optional = true }
+ruzstd = { version = "0.7", default-features = false, features = ["std"] }
 
-[features]
-default = ["ktx2", "etc1s"]
-# KTX2 container reading: header, level index, data format descriptor, key
-# values, and Zstd supercompression.
-ktx2 = ["dep:ruzstd"]
-# Basis Universal ETC1S decoding.
-etc1s = []
-# Basis Universal UASTC LDR decoding.
-uastc = []
+# No feature flags. `KHR_texture_basisu` allows a KTX2 file to hold either
+# Basis codec, so a build with one of them is a build that refuses half the
+# files it is pointed at - the split would only create combinations nobody
+# ships and nobody tests.

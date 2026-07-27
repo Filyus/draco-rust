@@ -12,9 +12,7 @@
  * cases live. A 2×2 image is one block with twelve pixels hanging off its
  * edges, and the last three levels of a 1024² texture are four bytes each.
  */
-import assert from 'node:assert/strict';
-
-import { firstDifference, loadKtx2Module, loadReference, TARGET } from './ktx2-reference.mjs';
+import { compareAllLevels, loadKtx2Module, loadReference } from './ktx2-reference.mjs';
 
 /** ETC1S fixtures, with and without an alpha slice. */
 const FILES = ['facecap', '2d_etc1s', 'sample_etc1s'];
@@ -26,30 +24,6 @@ if (!reference) {
 }
 
 const ktx2 = await loadKtx2Module();
-let compared = 0;
-
-for (const name of FILES) {
-  const bytes = await import('node:fs/promises')
-    .then(({ readFile }) => readFile(new URL(`../../testdata/ktx2/${name}.ktx2`, import.meta.url)));
-  const file = new ktx2.Ktx2File(new Uint8Array(bytes));
-
-  assert.equal(file.codec, 'etc1s', `${name} should be read as ETC1S`);
-  assert.equal(file.levels, await reference.levels(name), `${name} level count`);
-
-  for (let level = 0; level < file.levels; level++) {
-    const want = await reference.transcode(name, level, TARGET.RGBA32);
-    const image = file.decodeRgba(level);
-    const got = image.rgba();
-
-    assert.equal(
-      got.length,
-      image.width * image.height * 4,
-      `${name} level ${level} is not width × height × 4 bytes`,
-    );
-    const difference = firstDifference(want, got);
-    assert.equal(difference, null, `${name} level ${level}: ${difference}`);
-    compared++;
-  }
-}
+const compared = await compareAllLevels(ktx2, reference, FILES, 'etc1s');
 
 console.log(`ktx2-etc1s: ${compared} mip levels match the reference transcoder byte for byte`);

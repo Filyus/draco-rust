@@ -15,10 +15,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 wasm-bindgen = { workspace = true }
 console_error_panic_hook = { workspace = true, optional = true }
-draco-texture = { path = "../../crates/draco-texture", default-features = false }
+draco-texture = { path = "../../crates/draco-texture" }
 
 [features]
-default = ["etc1s"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
-etc1s = ["draco-texture/ktx2", "draco-texture/etc1s"]
-uastc = ["draco-texture/ktx2", "draco-texture/uastc"]
+

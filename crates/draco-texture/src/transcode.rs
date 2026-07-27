@@ -6,6 +6,7 @@
 
 use crate::etc1s::{Etc1sDecoder, Etc1sError};
 use crate::ktx2::{Ktx2, Ktx2Error, Ktx2Format};
+use crate::uastc::{self, UastcError};
 
 /// One decoded mip level, in raster order, four bytes per pixel.
 #[derive(Debug, Clone)]
@@ -27,6 +28,9 @@ pub enum TranscodeError {
     /// The ETC1S payload could not be decoded.
     #[error(transparent)]
     Etc1s(#[from] Etc1sError),
+    /// The UASTC payload could not be decoded.
+    #[error(transparent)]
+    Uastc(#[from] UastcError),
     /// The file holds something no codec here reads.
     #[error("this KTX2 file cannot be transcoded: {0}")]
     Unsupported(String),
@@ -109,9 +113,24 @@ impl Transcoder {
                     rgba,
                 })
             }
-            Ktx2Format::UastcLdr4x4 { .. } => Err(TranscodeError::Unsupported(
-                "UASTC is not decoded yet".into(),
-            )),
+            Ktx2Format::UastcLdr4x4 { .. } => {
+                let level_data = file.level_bytes(level)?;
+                // A UASTC level holds every layer and face back to back, all
+                // the same size, so the image's own blocks are one slice of it.
+                let image_size = (width.div_ceil(4) as usize)
+                    * (height.div_ceil(4) as usize)
+                    * uastc::BLOCK_SIZE;
+                let start = image_index(file, 0, layer, face) * image_size;
+                let image_data = level_data
+                    .get(start..start + image_size)
+                    .ok_or(TranscodeError::NoSuchImage { level, layer, face })?;
+                let rgba = uastc::decode_rgba(image_data, width, height)?;
+                Ok(Image {
+                    width,
+                    height,
+                    rgba,
+                })
+            }
             Ktx2Format::Plain { vk_format, .. } => Err(TranscodeError::Unsupported(format!(
                 "it holds plain vkFormat {vk_format} rather than Basis Universal"
             ))),

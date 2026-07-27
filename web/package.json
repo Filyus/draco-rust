@@ -42,6 +42,7 @@
     "test:gltf-draco-references": "node tests/gltf-draco-extension-references.mjs",
     "test:gltf-build-profile": "node tests/gltf-build-profile.mjs",
     "test:ktx2-etc1s": "node tests/ktx2-etc1s.mjs",
+    "test:ktx2-uastc": "node tests/ktx2-uastc.mjs",
     "test:viewer-limit-warnings": "node tests/viewer-limit-warnings.mjs",
     "test:gltf-scene-provenance": "node tests/gltf-scene-provenance.mjs",
     "test:gltf-extension-support": "node tests/gltf-extension-support.mjs",
