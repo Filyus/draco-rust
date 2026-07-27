@@ -6,6 +6,7 @@ import { cameraPosition } from './camera.ts';
 import type { CameraHost } from './camera.ts';
 import { GL } from './gl-utils.ts';
 import { MORPH_TEXTURE_UNIT } from './morph-texture.ts';
+import { SHARED_TEXTURE_UNITS, assertTextureUnitBudget, materialTextureUnit } from './texture-units.ts';
 import type { GlResources, UploadedPrimitive } from './primitive-upload.ts';
 import { computeJointMatrices, updateWorldMatrices } from './scene-graph.ts';
 import type { SceneGraphHost } from './scene-graph.ts';
@@ -21,10 +22,14 @@ import type { ViewerMaterial, ViewerTextureBinding } from '../viewer-scene.ts';
 /** World up, shared by every view matrix; hoisted out of the frame. */
 const WORLD_UP = new Float32Array([0, 1, 0]);
 
-/** How one material texture slot reaches the GPU. */
+/**
+ * How one material texture slot reaches the GPU.
+ *
+ * The unit is not stated here: it follows from the slot's position in
+ * `TEXTURE_SLOTS`, which is also the index the shader addresses it by. A slot
+ * that carried its own number could disagree with both.
+ */
 interface TextureSlotBinding {
-  /** Texture unit. Units 5..8 belong to the backdrop and the IBL maps. */
-  unit: number;
   textureUniform: string;
   hasUniform: string;
   read(material: ViewerMaterial | undefined): ViewerTextureBinding | null | undefined;
@@ -35,7 +40,6 @@ const SLOT_BINDINGS: Record<TextureSlotName, TextureSlotBinding> = {
   // carry a bare companion-file URI there. Rebuilding the binding here is what
   // lets it travel the same path as the other nine.
   BASE_COLOR: {
-    unit: 0,
     textureUniform: 'uBaseColor',
     hasUniform: 'uHasTexture',
     read: (material) => (material?.baseColorTexture == null ? null : {
@@ -45,55 +49,46 @@ const SLOT_BINDINGS: Record<TextureSlotName, TextureSlotBinding> = {
     }),
   },
   METALLIC_ROUGHNESS: {
-    unit: 1,
     textureUniform: 'uMetallicRoughness',
     hasUniform: 'uHasMetallicRoughnessTexture',
     read: (material) => material?.metallicRoughnessTexture,
   },
   EMISSIVE: {
-    unit: 2,
     textureUniform: 'uEmissive',
     hasUniform: 'uHasEmissiveTexture',
     read: (material) => material?.emissiveTexture,
   },
   NORMAL: {
-    unit: 3,
     textureUniform: 'uNormalTexture',
     hasUniform: 'uHasNormalTexture',
     read: (material) => material?.normalTexture,
   },
   OCCLUSION: {
-    unit: 4,
     textureUniform: 'uOcclusionTexture',
     hasUniform: 'uHasOcclusionTexture',
     read: (material) => material?.occlusionTexture,
   },
   SPECULAR: {
-    unit: 9,
     textureUniform: 'uSpecularTexture',
     hasUniform: 'uHasSpecularTexture',
     read: (material) => material?.specularTexture,
   },
   SPECULAR_COLOR: {
-    unit: 10,
     textureUniform: 'uSpecularColorTexture',
     hasUniform: 'uHasSpecularColorTexture',
     read: (material) => material?.specularColorTexture,
   },
   CLEARCOAT: {
-    unit: 11,
     textureUniform: 'uClearcoatTexture',
     hasUniform: 'uHasClearcoatTexture',
     read: (material) => material?.clearcoatTexture,
   },
   CLEARCOAT_ROUGHNESS: {
-    unit: 12,
     textureUniform: 'uClearcoatRoughnessTexture',
     hasUniform: 'uHasClearcoatRoughnessTexture',
     read: (material) => material?.clearcoatRoughnessTexture,
   },
   CLEARCOAT_NORMAL: {
-    unit: 13,
     textureUniform: 'uClearcoatNormalTexture',
     hasUniform: 'uHasClearcoatNormalTexture',
     read: (material) => material?.clearcoatNormalTexture,
@@ -106,6 +101,7 @@ const SLOT_BINDINGS: Record<TextureSlotName, TextureSlotBinding> = {
  * cannot drift apart. Fourteen samplers total, inside the WebGL2 floor of 16.
  */
 const MATERIAL_TEXTURE_SLOTS = TEXTURE_SLOTS.map((name) => SLOT_BINDINGS[name]);
+assertTextureUnitBudget(MATERIAL_TEXTURE_SLOTS.length);
 
 /**
  * Write one slot's `KHR_texture_transform` as a column-major mat3.
@@ -362,7 +358,8 @@ export function applyMaterial(
   // the UV set and transform the shader will sample it with.
   const texCoordSlots = host._texCoordSlots ??= new Int32Array(MATERIAL_TEXTURE_SLOTS.length);
   const texMatrices = host._texMatrices ??= new Float32Array(MATERIAL_TEXTURE_SLOTS.length * 9);
-  for (const [slot, { unit, textureUniform, hasUniform, read }] of MATERIAL_TEXTURE_SLOTS.entries()) {
+  for (const [slot, { textureUniform, hasUniform, read }] of MATERIAL_TEXTURE_SLOTS.entries()) {
+    const unit = materialTextureUnit(slot);
     const binding = read(material);
     const texCoord = binding?.texCoord ?? 0;
     const hasUv = texCoord === 0 ? uploaded.hasTexCoords0
@@ -446,15 +443,15 @@ export function drawBackground(host: RenderHost) {
 
 export function bindEnvironmentIbl(host: RenderHost) {
   const gl = host.gl;
-  gl.activeTexture(gl.TEXTURE6);
+  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.irradiance);
   gl.bindTexture(gl.TEXTURE_CUBE_MAP, host.environmentIbl.irradiance);
-  gl.uniform1i(host.uniforms.uIrradianceMap, 6);
-  gl.activeTexture(gl.TEXTURE7);
+  gl.uniform1i(host.uniforms.uIrradianceMap, SHARED_TEXTURE_UNITS.irradiance);
+  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.prefiltered);
   gl.bindTexture(gl.TEXTURE_CUBE_MAP, host.environmentIbl.prefiltered);
-  gl.uniform1i(host.uniforms.uPrefilteredMap, 7);
-  gl.activeTexture(gl.TEXTURE8);
+  gl.uniform1i(host.uniforms.uPrefilteredMap, SHARED_TEXTURE_UNITS.prefiltered);
+  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.brdfLut);
   gl.bindTexture(gl.TEXTURE_2D, host.environmentIbl.brdfLut);
-  gl.uniform1i(host.uniforms.uBrdfLut, 8);
+  gl.uniform1i(host.uniforms.uBrdfLut, SHARED_TEXTURE_UNITS.brdfLut);
   gl.uniform1f(host.uniforms.uEnvironmentMaxLod, host.environmentIbl.maxLod);
 }
 

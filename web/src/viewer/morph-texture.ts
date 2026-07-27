@@ -1,9 +1,9 @@
 import { byteView } from './gl-utils.ts';
+import { SHARED_TEXTURE_UNITS } from './texture-units.ts';
 import type { RuntimeAccessor, ViewerPrimitive } from '../viewer-scene.ts';
 
-// Texture unit for the morph delta array. Units 0..4 are material maps and
-// 5..8 belong to the environment IBL.
-export const MORPH_TEXTURE_UNIT = 9;
+/** Texture unit for the morph delta array; see `texture-units.ts`. */
+export const MORPH_TEXTURE_UNIT = SHARED_TEXTURE_UNITS.morphDeltas;
 
 /** Morph target deltas, packed into an array texture for the shader loop. */
 

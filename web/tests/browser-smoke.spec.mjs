@@ -1643,6 +1643,91 @@ test('exporting a scene to a flat format says what it costs', async ({ page }) =
   await expect(page.locator('#scene-warning-list')).toContainText('flattens the scene');
 });
 
+test('a morphed mesh keeps its material textures', async ({ page }) => {
+  await page.goto('/index.html');
+  // The morph deltas are a sampler2DArray and the material maps are sampler2D,
+  // and GL forbids one texture unit being addressed as both in a single draw.
+  // Nothing in the code said which units were free, so the morph array and the
+  // KHR_materials_specular slot both took unit 9 — legal to bind, invalid to
+  // draw with. A mesh that morphs *and* carries a specular map is the only
+  // arrangement where the two meet.
+  const observed = await page.evaluate(async (pngBytes) => {
+    const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }, { hydrateSceneTextures }] =
+      await Promise.all([
+        import('/viewer.js'),
+        import('/scene-document.js'),
+        import('/scene-document-viewer.js'),
+        import('/scene-document-textures.js'),
+      ]);
+
+    const bytes = (values) => new Uint8Array(
+      values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
+    );
+    const accessor = (values, components, componentType = 5126) => ({
+      bytes: bytes(values), componentType, components, count: values.length / components,
+    });
+
+    const document_ = createSceneDocument({
+      resources: [{ mimeType: 'image/png', bytes: new Uint8Array(pngBytes), name: 'specular.png' }],
+      textures: [{ resource: 0, sampler: {} }],
+      materials: [{
+        baseColorFactor: [0, 0, 0, 1],
+        metallicFactor: 0,
+        roughnessFactor: 1,
+        // Emissive reads back as an exact colour whatever the environment does,
+        // so "the draw happened" and "the draw was skipped" are two numbers
+        // rather than two shades.
+        emissiveFactor: [1, 0, 0],
+        specularFactor: 0.5,
+        specularTexture: { texture: 0 },
+      }],
+      accessors: [
+        // At rest the quad sits behind the camera target's left edge; the morph
+        // target is what brings it over the centre, so a draw that never ran
+        // leaves the background there.
+        accessor(new Float32Array([-3, -1, 0, -1, -1, 0, -1, 1, 0, -3, 1, 0]), 3),
+        accessor(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]), 3),
+        accessor(new Float32Array([2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0]), 3),
+        accessor(new Uint16Array([0, 1, 2, 0, 2, 3]), 1, 5123),
+      ],
+      meshes: [{
+        weights: [1],
+        primitives: [{
+          attributes: { POSITION: 0, NORMAL: 1 },
+          targets: [{ POSITION: 2 }],
+          indices: 3,
+          material: 0,
+        }],
+      }],
+      nodes: [{ name: 'Quad', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0, weights: [1] }],
+      rootNodes: [0],
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
+    document.body.appendChild(canvas);
+    const viewer = new Viewer(canvas);
+    viewer.setScene(await hydrateSceneTextures(buildViewerSceneFromDocument(document_)));
+    viewer.showGrid = false;
+    viewer.camera.target.set([0, 0, 0]);
+    viewer.camera.distance = 4;
+    viewer.camera.azimuth = 0;
+    viewer.camera.elevation = 0;
+    viewer._render();
+    const rgba = new Uint8Array(4);
+    viewer.gl.readPixels(32, 32, 1, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, rgba);
+    const glError = viewer.gl.getError();
+    viewer.dispose();
+    canvas.remove();
+    return { pixel: Array.from(rgba), glError };
+  }, Array.from(solidColorPng()));
+
+  expect(observed.glError).toBe(0);
+  // The morphed quad covers the centre and emits red.
+  expect(observed.pixel[0]).toBeGreaterThan(200);
+  expect(observed.pixel[1]).toBeLessThan(80);
+});
+
 test('a SceneDocument texture only reaches the GPU once it is hydrated', async ({ page }) => {
   await page.goto('/index.html');
   // The document carries texture bytes and no decoded image, because the

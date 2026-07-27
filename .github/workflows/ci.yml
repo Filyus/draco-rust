@@ -201,6 +201,7 @@ jobs:
           npm run test:gltf-corpus
           npm run test:gltf-build-profile
           npm run test:viewer-limit-warnings
+          npm run test:viewer-texture-units
           npm run test:gltf-scene-provenance
           npm run test:gltf-extension-support
           npm run test:export-helpers
