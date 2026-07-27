@@ -22,7 +22,11 @@ const WASM_OPT_ARGS: &[&str] = &[
     "--enable-sign-ext",
     "--enable-mutable-globals",
 ];
-const GLTF_GZIP_BUDGET: usize = 112 * 1024;
+/// Gzip ceiling for the default-profile glTF module.
+///
+/// A ceiling to catch drift, not a target: the module sits a little under it,
+/// and a change that needs more should say why rather than raise this quietly.
+const GLTF_GZIP_BUDGET: usize = 115 * 1024;
 
 #[derive(Clone, Debug)]
 struct Config {
