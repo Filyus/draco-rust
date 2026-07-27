@@ -25,15 +25,9 @@ draco-texture = { path = "../../crates/draco-texture", default-features = false,
 # every target. A deployment that knows its audience - a desktop tool, a
 # kiosk - can drop a family and the tables that come with it; see the feature
 # comments in `draco-texture`, which these forward to.
-default = ["modern", "legacy"]
+default = ["bc", "etc", "astc"]
 bc = ["draco-texture/bc"]
 etc = ["draco-texture/etc"]
 astc = ["draco-texture/astc"]
-# See `draco-texture`. `modern` is what hardware sold today takes; `legacy` is
-# what is carried only for machines with no current alternative, and serving
-# the app drops it the day ETC-without-ASTC stops being something anyone opens
-# a model on.
-modern = ["bc", "astc"]
-legacy = ["etc"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
 

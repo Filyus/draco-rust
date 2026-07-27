@@ -23,7 +23,7 @@ ruzstd = { version = "0.7", default-features = false, features = ["std"] }
 # Everything, which is what a build for the web converter wants:
 # `KHR_texture_basisu` lets a KTX2 file hold either Basis codec, so a reader
 # with one of them refuses half the files it is pointed at.
-default = ["etc1s", "uastc", "modern", "legacy"]
+default = ["etc1s", "uastc", "block-formats"]
 # Basis Universal ETC1S decoding.
 etc1s = []
 # Basis Universal UASTC LDR decoding.
@@ -42,38 +42,25 @@ uastc = []
 # Desktop: BC1 and BC3 for ETC1S, BC7 for UASTC. `WEBGL_compressed_texture_s3tc`
 # and `EXT_texture_compression_bptc`. Carries the baked BC1 and BC4 tables.
 bc = []
-# Older mobile: ETC1 and ETC2 for ETC1S. `WEBGL_compressed_texture_etc`. Every
-# machine with ASTC also has this, so this is the flag that ages out first -
-# it exists for the ones that have ETC and not ASTC.
+# Mobile: ETC1 and ETC2 for ETC1S. `WEBGL_compressed_texture_etc`. Load-bearing
+# rather than old, for the reason set out below the umbrella.
 etc = []
-# Modern mobile: ASTC 4x4 for UASTC. `WEBGL_compressed_texture_astc`.
+# Mobile: ASTC 4x4 for UASTC, and only UASTC. `WEBGL_compressed_texture_astc`.
 astc = []
 # All three, for a build that does not know what it will be run on. This is
 # what the web converter takes, since a browser can be any of them.
 block-formats = ["bc", "etc", "astc"]
 
-# The two above say what a target is; these two say why it is still here. A
-# family's membership changes as hardware turns over, so the names carry the
-# policy and the lists carry today's answer - which is the only part that has
-# to be revisited when the figures move.
+# There is deliberately no `legacy` flag over these yet, though the shape of
+# one is obvious and I built it before checking what it would retire.
 #
-# What a machine sold today takes. Both halves of the desktop-mobile split,
-# because "modern" is about the hardware being current, not about it being
-# one kind: s3tc is on 99.9% of Windows and ASTC on essentially every phone.
-modern = ["bc", "astc"]
-# What is carried only for hardware with no current alternative. Today that is
-# `etc` and only `etc`: every machine with ASTC also has ETC, so the family
-# serves exactly the devices that have one and not the other. On Android that
-# difference is nil - both are at 99.9% - and where it exists is Linux, 93.9%
-# ETC against 87.6% ASTC. `bc` is old by date and nowhere near legacy by use.
+# `etc` looks legacy by the survey: every machine with ASTC also has ETC, so
+# the family appears to serve only the gap between them, which is nil on
+# Android and about six points on Linux. But ETC1S - the codec most glTF
+# assets use - has no ASTC target here, only ETC. So `etc` is not the gap
+# between two mobile formats: it is the only compressed path ETC1S has on any
+# phone at all, and dropping it would send the common codec to RGBA8 on the
+# machines least able to afford eight times the video memory.
 #
-# Those are marginals, and what actually falls back is an intersection: a
-# UASTC texture goes to pixels only where there is ETC and neither ASTC nor
-# BC7. No survey reports that joint, so 6% of Linux is a ceiling on it and
-# almost certainly well above the truth.
-#
-# Cargo features add, they do not subtract, so this cannot be a flag that
-# default turns off. It is in default instead, and retiring the family means
-# deleting the word from that line - one edit, in the place the reasoning for
-# it is written. The CI slice that builds without it keeps that edit honest.
-legacy = ["etc"]
+# Transcoding ETC1S to ASTC is what would make the split true, and until that
+# exists a policy layer here would only encode an answer that is wrong.

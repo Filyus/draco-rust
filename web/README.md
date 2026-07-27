@@ -135,25 +135,17 @@ dropping the desktop family more than halves the module and dropping the mobile
 ones barely registers. Nothing about the container or either codec is optional:
 a KTX2 file is read and decoded to pixels whatever the module was built for.
 
-Two more flags sit over those and say not what a target is but why it is still
-here:
+None of the three can be retired today, and `etc` least of all, which is the
+opposite of how it looks. By the survey it reads as the aging one: every machine
+with ASTC also has ETC, so the family appears to serve only the difference
+between them — nil on Android, about six points on Linux. But ETC1S has no ASTC
+target here, only ETC. So `etc` is not the gap between two mobile formats; it is
+the only compressed path the codec most glTF assets use has on any phone at all,
+and dropping it would send that codec to RGBA8 on the machines least able to
+afford eight times the video memory.
 
-- `modern` — what hardware sold today takes: `bc` and `astc` both, since being
-  current is not the same as being one kind of machine. s3tc is on 99.9% of
-  Windows, ASTC on essentially every phone.
-- `legacy` — what is carried only for hardware with no current alternative.
-  Today that is `etc` and nothing else: every machine with ASTC also has ETC,
-  so the family serves precisely the devices that have one and not the other.
-  On Android that difference is nil, as the table above shows; where it exists
-  is Linux, at 93.9% ETC against 87.6% ASTC. `bc` is old by date and nowhere
-  near legacy by use.
-
-Cargo features add and never subtract, so `legacy` cannot be a flag the default
-set turns off; it is *in* the default set, and retiring the family means
-deleting that one word. CI builds both ways, so it stays a one-line edit rather
-than a day's work when the figures say it is time. Doing it today would save
-4 KiB — which is the point: the reason to drop it will be that it serves nobody,
-not that it costs anything.
+Transcoding ETC1S to ASTC is what would change that, and it is the reason to
+build that pair — not matrix symmetry, which was the reason it looked pointless.
 
 Two gaps are worth stating. Five of UASTC's nineteen block modes appear in none
 of the fixtures, so the transcoder is written from the reference for those and
