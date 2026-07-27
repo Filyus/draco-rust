@@ -622,7 +622,8 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     background: var(--control);
     transition: color 140ms ease, background 140ms ease;
 }
-.anim-clip-trigger:focus-visible { outline: 0; box-shadow: inset 0 0 0 1px var(--accent-hover); }
+.anim-clip-trigger:focus { outline: 0; color: #fff; background: var(--control-hover); }
+.anim-clip-trigger:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-hover); }
 
 .anim-clip-trigger:hover,
 .anim-clip-trigger[aria-expanded="true"] { color: #fff; background: var(--control-hover); }
@@ -644,7 +645,7 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     z-index: 8;
     /* Opens downward by default and upward where the control sits at the
        bottom of the viewport; either way the list stays inside the canvas. */
-    top: calc(100% + 6px);
+    top: 100%;
     right: 0;
     left: 0;
     /* Exactly as wide as the control. Sized to its longest entry it grew past
@@ -663,6 +664,10 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 }
 
 .menu-picker-menu[hidden] { display: none; }
+/* Joined to the control rather than floating near it: the edge they share is
+   square, the outer one keeps the control's radius. */
+.menu-picker-menu { border-top-left-radius: 0; border-top-right-radius: 0; }
+.menu-picker-trigger[aria-expanded="true"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .menu-picker-option {
     min-height: 30px;
     padding: 5px 14px;
@@ -772,7 +777,17 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     border-color: rgba(126, 169, 232, 0.6);
     background: rgba(93, 129, 178, 0.2);
 }
-.scene-variant-trigger:focus-visible { outline: 0; box-shadow: 0 0 0 1px var(--accent-hover); }
+/* Held for as long as the field is the focused one, not only while its list is
+   open. Styling focus-visible alone meant a field clicked with the mouse went
+   back to looking untouched the moment the list closed, while still being what
+   the keyboard would act on. */
+.scene-variant-trigger:focus {
+    outline: 0;
+    color: #eaf2ff;
+    border-color: rgba(126, 169, 232, 0.55);
+    background: rgba(93, 129, 178, 0.18);
+}
+.scene-variant-trigger:focus-visible { box-shadow: 0 0 0 1px var(--accent-hover); }
 .scene-variant .menu-picker-option { font-size: 0.68rem; }
 /* The chosen name may be longer than the control; it truncates rather than
    wrapping, and the full text stays reachable through the list and the title. */

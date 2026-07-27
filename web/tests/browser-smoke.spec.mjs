@@ -1918,13 +1918,49 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   expect(emerald.index).toBe(2);
   expect(emerald.emissive[1]).toBeGreaterThan(0.5);
 
+  // The field keeps looking like the focused one afterwards. Styling only
+  // focus-visible meant a field chosen with the mouse went back to looking
+  // untouched the moment its list closed, while still being what the keyboard
+  // would act on -- focus that is real but invisible.
+  // Only what is on screen. Whether the field holds focus is asserted on its
+  // own; folding it into this string would make the comparison differ for a
+  // reason that has nothing to do with what the user can see.
+  const paint = () => page.evaluate(() => {
+    const style = getComputedStyle(document.querySelector('#viewer-variant-trigger'));
+    return `${style.borderColor}|${style.backgroundColor}`;
+  });
+  // Pointer away and focus dropped, then left to settle: these colours are
+  // transitioned, so reading either end of the comparison too early samples a
+  // value part way between and the comparison stops meaning anything.
+  await page.mouse.move(0, 0);
+  await page.evaluate(() => document.querySelector('#viewer-variant-trigger').blur());
+  await page.waitForTimeout(300);
+  const resting = await paint();
+  await page.locator('#viewer-variant-trigger').click();
+  // The variant already in force, so what is under test is the click itself.
+  await page.locator('#viewer-variant-menu .menu-picker-option[data-value="1"]').click();
+  // Pointer away, or this measures :hover -- the cursor stays over the field a
+  // click landed on, and hover paints it the same way focus does.
+  await page.mouse.move(0, 0);
+  // Compared once it has settled, not polled: `not.toBe` is satisfied by the
+  // first sample that differs, and every sample during the fade back toward
+  // resting differs. The transition is 140ms.
+  await page.waitForTimeout(300);
+  expect(await paint()).not.toBe(resting);
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe('viewer-variant-trigger');
+
   // Keyboard use must survive the reload the choice kicks off. Arrowing in the
   // open list commits on every step, the commit rebuilds the preview, the
   // preview re-renders the panel and the panel syncs the picker -- which used
   // to replace the option buttons unconditionally, destroying the one holding
   // focus. A user pressing Down once landed on the body with a dead control.
-  await page.locator('#viewer-variant-trigger').click();
+  // Opened from the keyboard, which is the path that puts focus into the list;
+  // a mouse-opened list leaves focus on the field, so arrows are the field's to
+  // handle and there is no ring to jump around under the pointer.
+  await page.locator('#viewer-variant-trigger').focus();
+  await page.keyboard.press('Enter');
   await expect(page.locator('#viewer-variant-menu')).toBeVisible();
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe('viewer-variant-option-1');
   await page.keyboard.press('ArrowUp');
   await expect.poll(async () => (await emissiveOf()).index, { timeout: 10000 }).toBe(1);
   expect(await page.evaluate(() => document.activeElement?.id)).toBe('viewer-variant-option-0');

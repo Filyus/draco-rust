@@ -19,7 +19,13 @@ export interface MenuPicker {
   rebuild(): void;
   /** Reflect the select's value into the trigger label and the option list. */
   sync(): void;
-  open(): void;
+  /**
+   * `focusOption` moves focus into the list, which is what a keyboard user
+   * needs and what a mouse user must not get: a focus ring appearing under the
+   * pointer, then jumping back to the trigger on the way out, is the control
+   * flickering for no reason the user caused.
+   */
+  open(focusOption?: boolean): void;
   close(restoreFocus?: boolean): void;
   /** Move the selection by absolute index, wrapping at both ends. */
   selectAt(index: number): void;
@@ -48,8 +54,13 @@ export interface MenuPickerElements {
   optionId: string;
 }
 
-/** Gap between the control and its list, matching the CSS default. */
-const MENU_GAP = 6;
+/**
+ * Distance between the control and its list.
+ *
+ * Zero: the list belongs to the control that opened it, and a gap makes it
+ * read as a separate floating thing that happens to be nearby.
+ */
+const MENU_GAP = 0;
 
 /**
  * The nearest ancestor that clips its overflow, or the viewport.
@@ -130,7 +141,11 @@ export function createMenuPicker({
         button.title = option.textContent ?? '';
         button.addEventListener('click', () => {
           commit(option.value);
-          picker.close(true);
+          // Not `close(true)`: forcing focus back onto the trigger after a
+          // mouse click draws a focus ring the pointer never asked for. The
+          // keyboard path is covered anyway, because closing a menu that holds
+          // focus hands it back on its own.
+          picker.close();
         });
         return button;
       }));
@@ -148,10 +163,11 @@ export function createMenuPicker({
       }
     },
 
-    open() {
+    open(focusOption = false) {
       trigger.setAttribute('aria-expanded', 'true');
       menu.hidden = false;
       placeMenu(trigger, menu);
+      if (!focusOption) return;
       (menu.querySelector<HTMLElement>('.menu-picker-option.selected')
         || menu.querySelector<HTMLElement>('.menu-picker-option'))?.focus();
     },
@@ -187,7 +203,7 @@ export function createMenuPicker({
         picker.selectAt(event.key === 'Home' ? 0 : all.length - 1);
       } else if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
-        picker.open();
+        picker.open(true);
       }
     },
 
