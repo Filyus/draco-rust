@@ -126,8 +126,12 @@ reproducing the lightweight glTF release artifact and its size budget.
 ./build.ps1 -ReleaseProfile -Modules gltf-wasm -Features write,draco-encode
 ```
 
-The build tool itself defaults to the lightweight release profile. Pass
-`--app` to select the converter profile directly.
+The build tool itself — and therefore `build.sh`, which passes its arguments
+straight through — defaults to the lightweight release profile, the opposite of
+`build.ps1`. Pass `--app` to select the converter profile directly; `--serve`
+implies it, because the release profile omits `readAccessor` and
+`bufferViewBytes` and the front-end calls both on every skinned, animated or
+morphed asset.
 
 ```sh
 cargo run --manifest-path web/build-tool/Cargo.toml --
@@ -136,6 +140,11 @@ cargo test --manifest-path web/Cargo.toml --workspace
 npm install --prefix web
 npm run --prefix web test:node
 ```
+
+The gzip budget is enforced only on the release profile, since that is the
+artifact it describes; a build carrying features reports its size instead. So
+`bash ./build.sh` stays the budget gate, and anything that runs the front-end —
+the Node scene gates included — needs `--app` built over it afterwards.
 
 Optimized packages are written to `web/www/pkg/`.
 

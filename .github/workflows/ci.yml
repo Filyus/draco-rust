@@ -167,6 +167,14 @@ jobs:
         run: bash ./build.sh
         working-directory: web
 
+      # The step above builds the release profile, which is what the size
+      # budget is measured against and therefore has to stay feature-less. The
+      # front-end calls readAccessor and bufferViewBytes, which only exist in
+      # the converter profile, so the gates below need it built first.
+      - name: Build converter glTF profile for the Node gates
+        run: cargo run --manifest-path build-tool/Cargo.toml -- --app --module gltf-wasm --force
+        working-directory: web
+
       - name: Run Node binding smoke
         run: npm run test:node
         working-directory: web

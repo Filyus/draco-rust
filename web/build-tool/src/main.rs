@@ -243,7 +243,14 @@ fn parse_args() -> Result<Config, String> {
             "--debug" => config.debug = true,
             "--app" => config.app_profile = true,
             "--no-optimize" => config.no_optimize = true,
-            "--serve" => config.serve = true,
+            // Serving means running the converter, and the release profile
+            // leaves out the accessor and raw-resource reads the front-end
+            // calls on every skinned, animated or morphed asset. Measuring the
+            // release artifact is what a build without --serve is for.
+            "--serve" => {
+                config.serve = true;
+                config.app_profile = true;
+            }
             "--verbose-build" => config.verbose = true,
             "--force" => config.force = true,
             "--port" => {
@@ -284,7 +291,7 @@ fn print_help() {
     println!("  --no-optimize            Skip manual wasm-opt");
     println!("  --features <list>        Comma-separated cargo features");
     println!("  --module <crate>         Build one module; may be repeated");
-    println!("  --serve                  Start the local web server after building");
+    println!("  --serve                  Start the local web server after building; implies --app");
     println!("  --port <port>            Server port (default: 8080)");
     println!("  --jobs <n>               Parallel module builds");
     println!("  --verbose-build          Print wasm-pack and wasm-opt output");
