@@ -1,3 +1,6 @@
+import { MATERIAL_EXTENSION_SLOTS } from '../material-extensions.ts';
+import type { MaterialExtensionShaderSlot } from '../material-extensions.ts';
+
 /**
  * These two bound uniform array lengths declared below, so they belong with the
  * GLSL that spells them out. The morph bound is a shader loop length rather
@@ -16,34 +19,30 @@ export const MAX_ACTIVE_MORPH_TARGETS = 32;
  * its binding table by mapping over this list, so reordering it moves both
  * sides at once, which is the point.
  */
-export const TEXTURE_SLOTS = [
-  'BASE_COLOR',
-  'METALLIC_ROUGHNESS',
-  'EMISSIVE',
-  'NORMAL',
-  'OCCLUSION',
-  'SPECULAR',
-  'SPECULAR_COLOR',
-  'CLEARCOAT',
-  'CLEARCOAT_ROUGHNESS',
-  'CLEARCOAT_NORMAL',
-] as const;
-
-export type TextureSlotName = (typeof TEXTURE_SLOTS)[number];
-
-/** The sampler uniform each slot is declared as, when the program has it. */
-export const TEXTURE_SLOT_SAMPLERS: Record<TextureSlotName, string> = {
+/**
+ * The core metallic-roughness slots, whose sampler names predate any
+ * convention and so are spelled out.
+ */
+const CORE_TEXTURE_SLOT_SAMPLERS = {
   BASE_COLOR: 'uBaseColor',
   METALLIC_ROUGHNESS: 'uMetallicRoughness',
   EMISSIVE: 'uEmissive',
   NORMAL: 'uNormalTexture',
   OCCLUSION: 'uOcclusionTexture',
-  SPECULAR: 'uSpecularTexture',
-  SPECULAR_COLOR: 'uSpecularColorTexture',
-  CLEARCOAT: 'uClearcoatTexture',
-  CLEARCOAT_ROUGHNESS: 'uClearcoatRoughnessTexture',
-  CLEARCOAT_NORMAL: 'uClearcoatNormalTexture',
-};
+} as const;
+
+export const TEXTURE_SLOTS = [
+  ...(Object.keys(CORE_TEXTURE_SLOT_SAMPLERS) as (keyof typeof CORE_TEXTURE_SLOT_SAMPLERS)[]),
+  ...MATERIAL_EXTENSION_SLOTS.map((entry) => entry.slot),
+] as const;
+
+export type TextureSlotName = keyof typeof CORE_TEXTURE_SLOT_SAMPLERS | MaterialExtensionShaderSlot;
+
+/** The sampler uniform each slot is declared as, when the program has it. */
+export const TEXTURE_SLOT_SAMPLERS: Record<TextureSlotName, string> = {
+  ...CORE_TEXTURE_SLOT_SAMPLERS,
+  ...Object.fromEntries(MATERIAL_EXTENSION_SLOTS.map((entry) => [entry.slot, entry.sampler])),
+} as Record<TextureSlotName, string>;
 
 /**
  * The per-slot declarations one surface program carries.

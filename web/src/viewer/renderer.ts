@@ -1,5 +1,7 @@
 import type { EnvironmentIbl } from '../environment-ibl.ts';
-import { MATERIAL_EXTENSION_UNIFORMS, materialExtensionFactors } from '../material-extensions.ts';
+import {
+  MATERIAL_EXTENSION_SLOTS, MATERIAL_EXTENSION_UNIFORMS, materialExtensionFactors,
+} from '../material-extensions.ts';
 import { mat4, vec3 } from '../math.ts';
 import type { Mat4, Vec3 } from '../math.ts';
 import { cameraPosition } from './camera.ts';
@@ -30,75 +32,36 @@ const WORLD_UP = new Float32Array([0, 1, 0]);
 /**
  * How one material texture slot reaches the GPU.
  *
- * The unit is not stated here: it follows from the slot's position in
- * `TEXTURE_SLOTS`, which is also the index the shader addresses it by. A slot
- * that carried its own number could disagree with both.
+ * Neither the unit nor the sampler is stated here: the unit follows from the
+ * slot's position in `TEXTURE_SLOTS`, which is also the index the shader
+ * addresses it by, and the sampler comes from the same place the shader
+ * declares it. What is left is where on the material the binding lives.
  */
 interface TextureSlotBinding {
-  textureUniform: string;
-  hasUniform: string;
   read(material: ViewerMaterial | undefined): ViewerTextureBinding | null | undefined;
 }
 
 const SLOT_BINDINGS: Record<TextureSlotName, TextureSlotBinding> = {
   // Base color is the one slot ViewerMaterial keeps flattened, because OBJ can
   // carry a bare companion-file URI there. Rebuilding the binding here is what
-  // lets it travel the same path as the other nine.
+  // lets it travel the same path as every other slot.
   BASE_COLOR: {
-    textureUniform: 'uBaseColor',
-    hasUniform: 'uHasTexture',
     read: (material) => (material?.baseColorTexture == null ? null : {
       index: material.baseColorTexture,
       texCoord: material.baseColorTexCoord ?? 0,
       transform: material.baseColorTextureTransform,
     }),
   },
-  METALLIC_ROUGHNESS: {
-    textureUniform: 'uMetallicRoughness',
-    hasUniform: 'uHasMetallicRoughnessTexture',
-    read: (material) => material?.metallicRoughnessTexture,
-  },
-  EMISSIVE: {
-    textureUniform: 'uEmissive',
-    hasUniform: 'uHasEmissiveTexture',
-    read: (material) => material?.emissiveTexture,
-  },
-  NORMAL: {
-    textureUniform: 'uNormalTexture',
-    hasUniform: 'uHasNormalTexture',
-    read: (material) => material?.normalTexture,
-  },
-  OCCLUSION: {
-    textureUniform: 'uOcclusionTexture',
-    hasUniform: 'uHasOcclusionTexture',
-    read: (material) => material?.occlusionTexture,
-  },
-  SPECULAR: {
-    textureUniform: 'uSpecularTexture',
-    hasUniform: 'uHasSpecularTexture',
-    read: (material) => material?.specularTexture,
-  },
-  SPECULAR_COLOR: {
-    textureUniform: 'uSpecularColorTexture',
-    hasUniform: 'uHasSpecularColorTexture',
-    read: (material) => material?.specularColorTexture,
-  },
-  CLEARCOAT: {
-    textureUniform: 'uClearcoatTexture',
-    hasUniform: 'uHasClearcoatTexture',
-    read: (material) => material?.clearcoatTexture,
-  },
-  CLEARCOAT_ROUGHNESS: {
-    textureUniform: 'uClearcoatRoughnessTexture',
-    hasUniform: 'uHasClearcoatRoughnessTexture',
-    read: (material) => material?.clearcoatRoughnessTexture,
-  },
-  CLEARCOAT_NORMAL: {
-    textureUniform: 'uClearcoatNormalTexture',
-    hasUniform: 'uHasClearcoatNormalTexture',
-    read: (material) => material?.clearcoatNormalTexture,
-  },
-};
+  METALLIC_ROUGHNESS: { read: (material) => material?.metallicRoughnessTexture },
+  EMISSIVE: { read: (material) => material?.emissiveTexture },
+  NORMAL: { read: (material) => material?.normalTexture },
+  OCCLUSION: { read: (material) => material?.occlusionTexture },
+  // The layered extensions bind by the property the table names, so a new one
+  // reaches the renderer without a line here.
+  ...Object.fromEntries(MATERIAL_EXTENSION_SLOTS.map(({ slot, property }) => [slot, {
+    read: (material: ViewerMaterial | undefined) => material?.[property] as ViewerTextureBinding | null | undefined,
+  }])),
+} as Record<TextureSlotName, TextureSlotBinding>;
 
 /**
  * Which slots this material can actually sample on this primitive.

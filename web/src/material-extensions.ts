@@ -38,6 +38,15 @@ export interface MaterialExtensionField {
 export interface MaterialExtensionTexture {
   property: string;
   json?: string;
+  /**
+   * The name the fragment shader addresses this slot by.
+   *
+   * Spelled out rather than derived from `property` so that the shader's
+   * vocabulary stays readable and type-checked; the sampler uniform is
+   * derived, because `sheenColorTexture` is `uSheenColorTexture` without
+   * exception.
+   */
+  slot: string;
   /** Normal maps carry a `scale` beside the binding. */
   scale?: boolean;
 }
@@ -72,7 +81,7 @@ export const MATERIAL_EXTENSIONS = [
       { property: 'specularFactor', default: 1 },
       { property: 'specularColorFactor', default: [1, 1, 1] },
     ],
-    textures: [{ property: 'specularTexture' }, { property: 'specularColorTexture' }],
+    textures: [{ property: 'specularTexture', slot: 'SPECULAR' }, { property: 'specularColorTexture', slot: 'SPECULAR_COLOR' }],
   },
   {
     // Absent clearcoat means no coat at all, not a coat of default roughness.
@@ -82,9 +91,9 @@ export const MATERIAL_EXTENSIONS = [
       { property: 'clearcoatRoughnessFactor', default: 0 },
     ],
     textures: [
-      { property: 'clearcoatTexture' },
-      { property: 'clearcoatRoughnessTexture' },
-      { property: 'clearcoatNormalTexture', scale: true },
+      { property: 'clearcoatTexture', slot: 'CLEARCOAT' },
+      { property: 'clearcoatRoughnessTexture', slot: 'CLEARCOAT_ROUGHNESS' },
+      { property: 'clearcoatNormalTexture', slot: 'CLEARCOAT_NORMAL', scale: true },
     ],
   },
 ] as const satisfies readonly MaterialExtensionSpec[];
@@ -123,6 +132,10 @@ export type MaterialExtensionValues<Binding> =
 
 /** Every texture slot property the extensions contribute. */
 export type MaterialExtensionTextureSlot = PropertyOf<TextureOf<Spec>>;
+
+/** The shader slot names the extensions contribute. */
+export type MaterialExtensionShaderSlot =
+  TextureOf<Spec> extends { slot: infer S extends string } ? S : never;
 
 /**
  * The same table, widened.
@@ -174,6 +187,25 @@ export const MATERIAL_EXTENSION_UNIFORMS: readonly { property: string; uniform: 
       uniform: materialExtensionUniform(field.property),
       components: Array.isArray(field.default) ? field.default.length : 1,
     })));
+
+/**
+ * Every texture the extensions contribute: the shader slot that samples it, the
+ * material property that names it, and the sampler uniform it binds to.
+ *
+ * The renderer builds its binding table from this and the shader declares these
+ * slots, so an extension that brings a map reaches both by being declared once.
+ */
+export const MATERIAL_EXTENSION_SLOTS: readonly {
+  slot: MaterialExtensionShaderSlot;
+  property: MaterialExtensionTextureSlot;
+  sampler: string;
+  scale: boolean;
+}[] = SPECS.flatMap((spec) => (spec.textures ?? []).map((texture) => ({
+  slot: texture.slot as MaterialExtensionShaderSlot,
+  property: texture.property as MaterialExtensionTextureSlot,
+  sampler: materialExtensionUniform(texture.property),
+  scale: Boolean(texture.scale),
+})));
 
 /** Whether `value` is what the core model implies for `property`. */
 export function isMaterialExtensionDefault(property: string, value: unknown): boolean {
