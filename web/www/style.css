@@ -654,14 +654,16 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
        the room it has, so `placeMenu` sets those on opening. */
     overflow-y: auto;
     overscroll-behavior: contain;
-    /* Little more than the rows themselves. At 6px of padding around a much
-       darker fill than the panel, the frame read as a band of empty space
-       rather than as the edge of a list. */
-    padding: 3px;
+    /* No frame at all: the rows reach the edges and the fill is the one the
+       field already has, so the open control reads as one shape. Any padding
+       over a fill darker than the panel showed up as a border of empty space,
+       and thinning it only made the border thinner. */
+    padding: 0;
     display: grid;
-    gap: 1px;
+    border: 1px solid rgba(123, 153, 194, 0.24);
+    border-top: 0;
     border-radius: 9px;
-    background: rgba(14, 27, 45, 0.98);
+    background: #19273d;
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
     backdrop-filter: blur(10px);
 }
@@ -680,7 +682,9 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     white-space: nowrap;
     text-overflow: ellipsis;
     border: 0;
-    border-radius: 6px;
+    /* Square, because the rows are the menu now: it clips them to its own
+       corners and there is nothing between them and its edge. */
+    border-radius: 0;
     color: #aebed5;
     font-size: var(--viewer-ui-font);
     font-weight: 580;
@@ -688,19 +692,19 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     background: transparent;
     transition: color 130ms ease, background 130ms ease;
 }
-.menu-picker-option:hover { color: #fff; background: rgba(109, 145, 197, 0.16); }
-/* The row and the field say the same thing -- this is the value in force -- so
-   the row does not shout it. A solid accent fill made the list entry louder
-   than the control it belongs to, which inverted the two. Marked instead, and
-   hover stays the strongest thing on screen because that one tracks the
-   pointer. */
-.menu-picker-option.selected {
-    color: #eaf2ff;
-    background: rgba(93, 129, 178, 0.2);
-    box-shadow: inset 2px 0 0 var(--accent-hover);
-}
-.menu-picker-option.selected:hover { color: #fff; background: rgba(109, 145, 197, 0.26); }
-.menu-picker-option:focus-visible { outline: 0; box-shadow: inset 0 0 0 1px rgba(124, 169, 235, 0.72); }
+/* One emphasis for "the row you are on", whether the pointer, the keyboard or
+   the current value puts you there -- three shades for one idea was the reason
+   the list looked like it was highlighting two different things at once. What
+   separates the value in force is the mark at its edge, not a brighter fill. */
+.menu-picker-option:hover,
+.menu-picker-option:focus,
+.menu-picker-option.selected { color: #eaf2ff; background: rgba(109, 145, 197, 0.16); }
+.menu-picker-option.selected { box-shadow: inset 2px 0 0 var(--accent-hover); }
+.menu-picker-option:hover,
+.menu-picker-option:focus { color: #fff; }
+/* An outline rather than a box-shadow, which the selected row already spends
+   on its edge mark; two shadows on one element would cancel each other. */
+.menu-picker-option:focus-visible { outline: 1px solid rgba(124, 169, 235, 0.72); outline-offset: -1px; }
 .anim-loop,
 .anim-speed-label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--viewer-ui-font); }
 .anim-time { margin-left: auto; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: var(--viewer-ui-font); }
