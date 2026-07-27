@@ -186,6 +186,9 @@ uniform float uSpecularFactor;
 uniform vec3 uSpecularColorFactor;
 // KHR_materials_transmission / KHR_materials_volume: what passes through the
 // surface, and the interior it crosses on the way.
+// KHR_materials_anisotropy: a specular lobe stretched along a tangent.
+uniform float uAnisotropyStrength;
+uniform float uAnisotropyRotation;
 uniform float uTransmissionFactor;
 uniform float uDispersion;
 uniform float uThicknessFactor;
@@ -528,7 +531,40 @@ void main() {
     vec3 irradiance = texture(uIrradianceMap, N).rgb;
     vec3 diffuseIbl = irradiance * baseColor / PI;
     vec3 reflected = reflect(-V, N);
-    vec3 prefiltered = textureLod(uPrefilteredMap, reflected, roughness * uEnvironmentMaxLod).rgb;
+    vec3 prefiltered;
+    // KHR_materials_anisotropy stretches the lobe along a tangent, which in a
+    // split-sum renderer shows as a bent reflection vector and a roughness
+    // that differs along it: the direction the surface is combed reflects more
+    // sharply than the one across it.
+    float anisotropy = uAnisotropyStrength;
+    vec2 anisotropyDirection = vec2(cos(uAnisotropyRotation), sin(uAnisotropyRotation));
+    #ifdef HAS_ANISOTROPY
+    vec3 anisotropySample = texture(uAnisotropyTexture, slotUv(SLOT_ANISOTROPY)).rgb;
+    vec2 sampledDirection = anisotropySample.rg * 2.0 - 1.0;
+    anisotropyDirection = mat2(
+        anisotropyDirection.x, anisotropyDirection.y,
+        -anisotropyDirection.y, anisotropyDirection.x
+    ) * normalize(sampledDirection);
+    anisotropy *= anisotropySample.b;
+    #endif
+    if (abs(anisotropy) > 0.0) {
+        // The tangent frame comes from the same screen-space derivatives the
+        // normal map uses, so an asset with no TANGENT still bends correctly.
+        vec3 dpdx = dFdx(vWorldPos);
+        vec3 dpdy = dFdy(vWorldPos);
+        vec3 tangent = normalize(dpdx * anisotropyDirection.x + dpdy * anisotropyDirection.y);
+        vec3 bitangent = normalize(cross(N, tangent));
+        // Reflect about the axis the lobe is stretched along: at full strength
+        // the highlight runs the length of it.
+        vec3 bentNormal = normalize(mix(N, bitangent * dot(V, bitangent) + N, abs(anisotropy)));
+        reflected = reflect(-V, bentNormal);
+        prefiltered = textureLod(
+            uPrefilteredMap, reflected,
+            mix(roughness, 1.0, abs(anisotropy) * 0.5) * uEnvironmentMaxLod
+        ).rgb;
+    } else {
+        prefiltered = textureLod(uPrefilteredMap, reflected, roughness * uEnvironmentMaxLod).rgb;
+    }
     vec2 brdf = texture(uBrdfLut, vec2(nDotV, roughness)).rg;
     vec3 specularIbl = prefiltered * (f0 * brdf.x + brdf.y) * mix(specularWeight, 1.0, metallic);
 

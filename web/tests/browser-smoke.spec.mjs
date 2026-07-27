@@ -1735,6 +1735,74 @@ test('one surface program per set of texture slots, not per material', async ({ 
   expect(observed.sources[1]).toEqual({ slots: 1, samplers: 1 });
 });
 
+test('KHR_materials_anisotropy stretches the specular lobe along its rotation', async ({ page }) => {
+  await page.goto('/index.html');
+  // No asset in the corpus carries this one, so the fixture is built here: a
+  // smooth metal quad whose lobe is combed in two different directions. If
+  // the rotation were ignored, the two would be the same frame.
+  const observed = await page.evaluate(async () => {
+    const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
+      import('/viewer.js'),
+      import('/scene-document.js'),
+      import('/scene-document-viewer.js'),
+    ]);
+
+    const bytes = (values) => new Uint8Array(
+      values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
+    );
+    const accessor = (values, components, componentType = 5126) => ({
+      bytes: bytes(values), componentType, components, count: values.length / components,
+    });
+    const document_ = (comb) => createSceneDocument({
+      materials: [{ baseColorFactor: [1, 1, 1, 1], metallicFactor: 1, roughnessFactor: 0.15, ...comb }],
+      accessors: [
+        accessor(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3),
+        accessor(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]), 3),
+        accessor(new Uint16Array([0, 1, 2, 0, 2, 3]), 1, 5123),
+      ],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, indices: 2, material: 0 }] }],
+      nodes: [{ name: 'Quad', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 }],
+      rootNodes: [0],
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
+    document.body.appendChild(canvas);
+    const viewer = new Viewer(canvas);
+    viewer.showGrid = false;
+    const sample = (comb) => {
+      viewer.setScene(buildViewerSceneFromDocument(document_(comb)));
+      viewer.camera.target.set([0, 0, 0]);
+      viewer.camera.distance = 3;
+      viewer.camera.azimuth = 0.5;
+      viewer.camera.elevation = 0.35;
+      viewer._render();
+      const rgba = new Uint8Array(4);
+      viewer.gl.readPixels(
+        Math.floor(viewer.gl.drawingBufferWidth / 2),
+        Math.floor(viewer.gl.drawingBufferHeight / 2),
+        1, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, rgba,
+      );
+      return Array.from(rgba);
+    };
+
+    const isotropic = sample({});
+    const combedAcross = sample({ anisotropyStrength: 0.9, anisotropyRotation: 0 });
+    const combedAlong = sample({ anisotropyStrength: 0.9, anisotropyRotation: 1.5708 });
+    const glError = viewer.gl.getError();
+    viewer.dispose();
+    canvas.remove();
+    return { isotropic, combedAcross, combedAlong, glError };
+  });
+
+  const brightness = (pixel) => pixel[0] + pixel[1] + pixel[2];
+  expect(observed.glError).toBe(0);
+  // Combing the surface changes what the lobe gathers.
+  expect(Math.abs(brightness(observed.combedAcross) - brightness(observed.isotropic))).toBeGreaterThan(6);
+  // And which way it is combed matters, which is the rotation being read.
+  expect(Math.abs(brightness(observed.combedAcross) - brightness(observed.combedAlong))).toBeGreaterThan(6);
+});
+
 test('KHR_materials_transmission shows what is behind the surface', async ({ page }) => {
   await page.goto('/index.html');
   // Transmission is the one extension that cannot be shaded from the material

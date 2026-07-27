@@ -84,6 +84,16 @@ export const MATERIAL_EXTENSIONS = [
     textures: [{ property: 'specularTexture', slot: 'SPECULAR' }, { property: 'specularColorTexture', slot: 'SPECULAR_COLOR' }],
   },
   {
+    // Stretches the specular lobe along a direction in tangent space. A
+    // strength of zero is the isotropic lobe every other material has.
+    name: 'KHR_materials_anisotropy',
+    fields: [
+      { property: 'anisotropyStrength', default: 0 },
+      { property: 'anisotropyRotation', default: 0 },
+    ],
+    textures: [{ property: 'anisotropyTexture', slot: 'ANISOTROPY' }],
+  },
+  {
     // What passes through the surface rather than reflecting off it. Zero is
     // opaque, which is what every material without the extension is.
     name: 'KHR_materials_transmission',

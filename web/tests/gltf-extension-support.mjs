@@ -70,6 +70,15 @@ const INTERPRETED = {
     material: { extensions: { KHR_materials_emissive_strength: { emissiveStrength: 4 } } },
     effect: (read) => assert.equal(read.emissiveStrength, 4),
   },
+  KHR_materials_anisotropy: {
+    material: {
+      extensions: { KHR_materials_anisotropy: { anisotropyStrength: 0.8, anisotropyRotation: 1.2 } },
+    },
+    effect: (read) => {
+      assert.equal(read.anisotropyStrength, 0.8);
+      assert.equal(read.anisotropyRotation, 1.2);
+    },
+  },
   KHR_materials_transmission: {
     material: { extensions: { KHR_materials_transmission: { transmissionFactor: 0.9 } } },
     effect: (read) => assert.equal(read.transmissionFactor, 0.9),
@@ -232,6 +241,7 @@ const stated = {
     KHR_materials_ior: { ior: 1.9 },
     KHR_materials_specular: { specularFactor: 0.4, specularColorFactor: [0.5, 0.6, 0.7] },
     KHR_materials_sheen: { sheenColorFactor: [0.2, 0.3, 0.4], sheenRoughnessFactor: 0.6 },
+    KHR_materials_anisotropy: { anisotropyStrength: 0.8, anisotropyRotation: 1.2 },
     KHR_materials_transmission: { transmissionFactor: 0.9 },
     KHR_materials_dispersion: { dispersion: 0.05 },
     KHR_materials_volume: {
