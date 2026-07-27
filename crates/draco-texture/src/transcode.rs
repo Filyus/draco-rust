@@ -38,6 +38,12 @@ pub enum Target {
     /// BC7, sixteen bytes per 4x4 block, colour and alpha together.
     #[cfg(feature = "block-formats")]
     Bc7,
+    /// ETC1, eight bytes per 4x4 block, no alpha.
+    #[cfg(feature = "block-formats")]
+    Etc1,
+    /// ETC2 RGBA, sixteen bytes per 4x4 block, alpha in an EAC block.
+    #[cfg(feature = "block-formats")]
+    Etc2,
 }
 
 /// One decoded image, either as pixels or as GPU-ready blocks.
@@ -171,6 +177,10 @@ impl Transcoder {
                     Target::Bc1 => decoder.decode_bc1(&level_data, desc, width, height)?,
                     #[cfg(feature = "block-formats")]
                     Target::Bc3 => decoder.decode_bc3(&level_data, desc, width, height)?,
+                    #[cfg(feature = "block-formats")]
+                    Target::Etc1 => decoder.decode_etc1(&level_data, desc, width, height)?,
+                    #[cfg(feature = "block-formats")]
+                    Target::Etc2 => decoder.decode_etc2(&level_data, desc, width, height)?,
                     #[cfg(feature = "block-formats")]
                     other => {
                         return Err(TranscodeError::NoSuchTarget {

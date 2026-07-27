@@ -8,9 +8,19 @@
  * property of the machine, not of the file, so the answer is read off the
  * context's extension list.
  *
- * Measured on a desktop with an NVIDIA GPU: Chrome offers the BC family and
- * nothing else — no ETC, no ASTC. A phone would be the other way round. That
- * asymmetry is the whole reason this is a ranking rather than a constant.
+ * The asymmetry is the whole reason this is a ranking rather than a constant.
+ * Measured on a desktop with an NVIDIA GPU, Chrome offers the BC family and
+ * nothing else; the published survey figures say the same across platforms,
+ * and say how lopsided it is:
+ *
+ * |        | Windows | macOS | Android |  iOS |
+ * |--------|--------:|------:|--------:|-----:|
+ * | s3tc   |   99.9% | 88.1% |   28.6% | 39.8% |
+ * | ETC2   |    2.1% | 88.0% |   99.9% | 100%  |
+ * | ASTC   |    2.1% | 88.0% |   99.9% | 100%  |
+ *
+ * So a phone is precisely the machine that has no BC format and precisely the
+ * one that can least afford eight times the video memory.
  */
 
 /** The GL enum for each block format, so nothing here needs a live context. */
@@ -21,6 +31,10 @@ export const COMPRESSED_FORMAT = {
   bc3: 0x83f3,
   /** `COMPRESSED_RGBA_BPTC_UNORM_EXT` */
   bc7: 0x8e8c,
+  /** `COMPRESSED_RGB8_ETC2` */
+  etc1: 0x9274,
+  /** `COMPRESSED_RGBA8_ETC2_EAC` */
+  etc2: 0x9278,
 } as const;
 
 /** A source codec, as the KTX2 module names it. */
@@ -29,7 +43,7 @@ export type TextureCodec = 'etc1s' | 'uastc';
 /** What to ask the transcoder for, and how to upload the result. */
 export interface CompressedTarget {
   /** The transcoder's name for the target. */
-  name: 'bc1' | 'bc3' | 'bc7';
+  name: 'bc1' | 'bc3' | 'bc7' | 'etc1' | 'etc2';
   /** The GL internal format to pass to `compressedTexImage2D`. */
   format: number;
   /** Bytes each 4×4 block occupies. */
@@ -53,13 +67,27 @@ const TARGETS: { target: CompressedTarget; extension: string; codecs: TextureCod
     alpha: true,
   },
   {
-    // UASTC goes to BC7 and nowhere else. The two formats were designed to
-    // correspond, so the transcode keeps what UASTC was chosen for - the
-    // precision that makes it worth using over ETC1S on normal maps - which
-    // BC1 or BC3 would throw away.
+    // UASTC goes to BC7 and nowhere else among the BC family. The two formats
+    // were designed to correspond, so the transcode keeps what UASTC is chosen
+    // for - the precision that makes it worth using over ETC1S on normal maps
+    // - which BC1 or BC3 would throw away.
     target: { name: 'bc7', format: COMPRESSED_FORMAT.bc7, bytesPerBlock: 16 },
     extension: 'EXT_texture_compression_bptc',
     codecs: ['uastc'],
+    alpha: true,
+  },
+  {
+    // ETC comes after BC only because the two never appear together in
+    // practice; where they do, either is a fine answer.
+    target: { name: 'etc1', format: COMPRESSED_FORMAT.etc1, bytesPerBlock: 8 },
+    extension: 'WEBGL_compressed_texture_etc',
+    codecs: ['etc1s'],
+    alpha: false,
+  },
+  {
+    target: { name: 'etc2', format: COMPRESSED_FORMAT.etc2, bytesPerBlock: 16 },
+    extension: 'WEBGL_compressed_texture_etc',
+    codecs: ['etc1s'],
     alpha: true,
   },
 ];

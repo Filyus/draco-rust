@@ -380,6 +380,87 @@ impl Etc1sDecoder {
         Ok(blocks)
     }
 
+    /// Decode one image's colour slice into ETC1 blocks, eight bytes each.
+    ///
+    /// The cheapest target there is: an ETC1S block already is an ETC1 block,
+    /// so this fills in the two bits ETC1S leaves implicit and copies the rest.
+    #[cfg(feature = "block-formats")]
+    pub fn decode_etc1(
+        &self,
+        level_data: &[u8],
+        desc: ImageDesc,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, Etc1sError> {
+        let blocks_x = width.div_ceil(4) as usize;
+        let mut blocks = vec![0u8; blocks_x * height.div_ceil(4) as usize * 8];
+        let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
+        self.walk_blocks(
+            data,
+            width,
+            height,
+            |block_x, block_y, color5, inten5, selectors| {
+                let at = (block_y as usize * blocks_x + block_x as usize) * 8;
+                let block = crate::etc1s_to_etc::convert_etc1(color5, inten5, selectors);
+                blocks[at..at + 8].copy_from_slice(&block.to_bytes());
+            },
+        )?;
+        Ok(blocks)
+    }
+
+    /// Decode one image into ETC2 RGBA blocks, sixteen bytes each.
+    ///
+    /// An EAC alpha block followed by the ETC1 colour block, which is how
+    /// ETC2 carries alpha. A file with no alpha slice gets opaque alpha
+    /// blocks, so the caller can choose this whatever the file holds.
+    #[cfg(feature = "block-formats")]
+    pub fn decode_etc2(
+        &self,
+        level_data: &[u8],
+        desc: ImageDesc,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, Etc1sError> {
+        let blocks_x = width.div_ceil(4) as usize;
+        let blocks_y = height.div_ceil(4) as usize;
+        let mut blocks = vec![0u8; blocks_x * blocks_y * 16];
+
+        if desc.alpha_length != 0 {
+            let data = self.slice(level_data, desc.alpha_offset, desc.alpha_length)?;
+            self.walk_blocks(
+                data,
+                width,
+                height,
+                |block_x, block_y, color5, inten5, selectors| {
+                    let at = (block_y as usize * blocks_x + block_x as usize) * 16;
+                    let block = crate::etc1s_to_etc::convert_eac_alpha(color5, inten5, selectors);
+                    blocks[at..at + 8].copy_from_slice(&block.to_bytes());
+                },
+            )?;
+        } else {
+            // Base 255 on table 13 with every texel on the middle step is a
+            // fully opaque EAC block, which is what an alpha-less file means.
+            for block in blocks.chunks_exact_mut(16) {
+                block[0] = 255;
+                block[1] = (1 << 4) | 13;
+                block[2..8].copy_from_slice(&[0x92, 0x49, 0x24, 0x92, 0x49, 0x24]);
+            }
+        }
+
+        let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
+        self.walk_blocks(
+            data,
+            width,
+            height,
+            |block_x, block_y, color5, inten5, selectors| {
+                let at = (block_y as usize * blocks_x + block_x as usize) * 16 + 8;
+                let block = crate::etc1s_to_etc::convert_etc1(color5, inten5, selectors);
+                blocks[at..at + 8].copy_from_slice(&block.to_bytes());
+            },
+        )?;
+        Ok(blocks)
+    }
+
     /// Decode one image into BC3 blocks, sixteen bytes each.
     ///
     /// A BC3 block is a BC4 alpha block followed by a BC1 colour block, and

@@ -158,8 +158,8 @@ impl Ktx2File {
         self.decode(level, "rgba8")
     }
 
-    /// Decode one mip level into a named target: `"rgba8"`, `"bc1"`, `"bc3"`
-    /// or `"bc7"`.
+    /// Decode one mip level into a named target: `"rgba8"`, `"bc1"`, `"bc3"`,
+    /// `"bc7"`, `"etc1"` or `"etc2"`.
     ///
     /// Named rather than numbered because the caller picks the target from
     /// what the GL context reports, and a string survives that round trip
@@ -171,6 +171,8 @@ impl Ktx2File {
             "bc1" => Target::Bc1,
             "bc3" => Target::Bc3,
             "bc7" => Target::Bc7,
+            "etc1" => Target::Etc1,
+            "etc2" => Target::Etc2,
             other => return Err(JsError::new(&format!("unknown target format {other}"))),
         };
         let file = Ktx2::parse(&self.data).map_err(to_js)?;

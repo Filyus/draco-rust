@@ -30,6 +30,8 @@ const PAIRS = [
   { codec: 'etc1s', target: 'bc1', reference: TARGET.BC1_RGB, bytesPerBlock: 8, files: ['facecap', '2d_etc1s', 'sample_etc1s'] },
   { codec: 'etc1s', target: 'bc3', reference: TARGET.BC3_RGBA, bytesPerBlock: 16, files: ['facecap', '2d_etc1s', 'sample_etc1s'] },
   { codec: 'uastc', target: 'bc7', reference: TARGET.BC7_RGBA, bytesPerBlock: 16, files: ['2d_uastc', 'sample_uastc_zstd'] },
+  { codec: 'etc1s', target: 'etc1', reference: TARGET.ETC1_RGB, bytesPerBlock: 8, files: ['facecap', '2d_etc1s', 'sample_etc1s'] },
+  { codec: 'etc1s', target: 'etc2', reference: TARGET.ETC2_RGBA, bytesPerBlock: 16, files: ['facecap', '2d_etc1s', 'sample_etc1s'] },
 ];
 
 const reference = await loadReference();

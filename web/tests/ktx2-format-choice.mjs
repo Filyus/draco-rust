@@ -22,6 +22,10 @@ const { chooseCompressedTarget } = await import(
 
 const S3TC = ['WEBGL_compressed_texture_s3tc'];
 const BPTC = ['EXT_texture_compression_bptc'];
+const ETC = ['WEBGL_compressed_texture_etc'];
+const ASTC = ['WEBGL_compressed_texture_astc'];
+/** What a phone reports: no BC family at all.  */
+const MOBILE = [...ETC, ...ASTC];
 
 const name = (target) => (target ? target.name : 'pixels');
 
@@ -36,11 +40,14 @@ const CASES = [
   [BPTC, 'uastc', true, 'bc7', 'BC7 carries alpha, so the answer does not change'],
   [S3TC, 'uastc', false, 'pixels', 'without bptc there is nothing for UASTC to become'],
   [BPTC, 'etc1s', false, 'pixels', 'ETC1S has no BC7 path, and bptc alone offers nothing else'],
-  // A machine with no compressed formats at all, or one that offers only
-  // families nothing here targets.
+  // A phone, which is where the whole ETC and ASTC question comes from: no BC
+  // family, so before these targets existed every one of these was pixels.
+  [MOBILE, 'etc1s', false, 'etc1', 'ETC1 is the cheapest thing ETC1S can be on a phone'],
+  [MOBILE, 'etc1s', true, 'etc2', 'alpha needs ETC2 and its EAC block'],
+  [ETC, 'etc1s', false, 'etc1', 'ETC alone is enough for an ETC1S texture'],
+  // No compressed format at all.
   [[], 'etc1s', false, 'pixels', 'no compressed format at all'],
-  [['WEBGL_compressed_texture_astc', 'WEBGL_compressed_texture_etc'], 'etc1s', false, 'pixels',
-    'ASTC and ETC are not transcoded to yet, so a phone falls back to pixels'],
+  [[], 'uastc', true, 'pixels', 'nor for UASTC'],
 ];
 
 for (const [extensions, codec, hasAlpha, expected, why] of CASES) {
