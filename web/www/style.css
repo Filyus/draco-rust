@@ -654,12 +654,15 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
        the room it has, so `placeMenu` sets those on opening. */
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: 6px;
+    /* Little more than the rows themselves. At 6px of padding around a much
+       darker fill than the panel, the frame read as a band of empty space
+       rather than as the edge of a list. */
+    padding: 3px;
     display: grid;
-    gap: 2px;
+    gap: 1px;
     border-radius: 9px;
-    background: rgba(8, 19, 34, 0.98);
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32);
+    background: rgba(14, 27, 45, 0.98);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
     backdrop-filter: blur(10px);
 }
 
@@ -685,9 +688,18 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     background: transparent;
     transition: color 130ms ease, background 130ms ease;
 }
-.menu-picker-option:hover { color: #fff; background: rgba(109, 145, 197, 0.14); }
-.menu-picker-option.selected { color: #fff; background: rgba(71, 127, 220, 0.82); }
-.menu-picker-option.selected:hover { background: rgba(82, 136, 223, 0.92); }
+.menu-picker-option:hover { color: #fff; background: rgba(109, 145, 197, 0.16); }
+/* The row and the field say the same thing -- this is the value in force -- so
+   the row does not shout it. A solid accent fill made the list entry louder
+   than the control it belongs to, which inverted the two. Marked instead, and
+   hover stays the strongest thing on screen because that one tracks the
+   pointer. */
+.menu-picker-option.selected {
+    color: #eaf2ff;
+    background: rgba(93, 129, 178, 0.2);
+    box-shadow: inset 2px 0 0 var(--accent-hover);
+}
+.menu-picker-option.selected:hover { color: #fff; background: rgba(109, 145, 197, 0.26); }
 .menu-picker-option:focus-visible { outline: 0; box-shadow: inset 0 0 0 1px rgba(124, 169, 235, 0.72); }
 .anim-loop,
 .anim-speed-label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--viewer-ui-font); }

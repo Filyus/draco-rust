@@ -101,6 +101,12 @@ function placeMenu(trigger: HTMLElement, menu: HTMLElement) {
   menu.style.top = openUp ? 'auto' : `calc(100% + ${MENU_GAP}px)`;
   menu.style.bottom = openUp ? `calc(100% + ${MENU_GAP}px)` : 'auto';
   menu.style.maxHeight = `${Math.max(80, Math.floor(openUp ? above : below))}px`;
+  // A tooltip repeating a name that is fully visible is noise; one on a name
+  // the row had to cut is the only way to read it.
+  for (const option of menu.querySelectorAll<HTMLElement>('.menu-picker-option')) {
+    if (option.scrollWidth > option.clientWidth) option.title = option.textContent ?? '';
+    else option.removeAttribute('title');
+  }
 }
 
 export function createMenuPicker({
@@ -136,9 +142,6 @@ export function createMenuPicker({
         button.tabIndex = -1;
         button.setAttribute('role', 'option');
         button.textContent = option.textContent;
-        // The row truncates rather than wrapping, so the full name has to stay
-        // readable somewhere.
-        button.title = option.textContent ?? '';
         button.addEventListener('click', () => {
           commit(option.value);
           // Not `close(true)`: forcing focus back onto the trigger after a
