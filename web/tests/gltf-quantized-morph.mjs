@@ -166,6 +166,32 @@ const output = sceneDocument.accessors[sceneDocument.animations[0].samplers[0].o
 assert.equal(output.componentType, 5126);
 assert.deepEqual(Array.from(new Float32Array(output.bytes.buffer, output.bytes.byteOffset, 2)), [0, 1]);
 
+// The document keeps morph deltas in the component type they arrived in — it
+// has to, being a lossless record — so the expansion the preview needs has to
+// happen in the adapter instead. Without it the morph texture rejects every
+// layer and the mesh renders at its rest pose while the clip plays: the same
+// bug this file was written for, reached through the other path.
+const { buildViewerSceneFromDocument } = await import(
+  pathToFileURL(resolve(here, '..', 'src', 'scene-document-viewer.ts')).href
+);
+const adapted = buildViewerSceneFromDocument(sceneDocument).meshes[0].primitives[0];
+
+assert.ok(adapted.morphPositions[0], 'the adapter dropped quantized morph positions');
+assert.equal(adapted.morphPositions[0].componentType, 5126);
+assert.equal(adapted.morphPositions[0].components, 3);
+assert.deepEqual(
+  Array.from(new Float32Array(adapted.morphPositions[0].bytes.buffer, adapted.morphPositions[0].bytes.byteOffset, 9)),
+  Array.from(morphPositions, Number),
+  'the adapter must keep plain quantized counts, as the preview path does',
+);
+
+assert.ok(adapted.morphNormals[0], 'the adapter dropped quantized morph normals');
+assert.deepEqual(
+  Array.from(new Float32Array(adapted.morphNormals[0].bytes.buffer, adapted.morphNormals[0].bytes.byteOffset, 9)),
+  Array.from(morphNormals, (value) => Math.max(value / 127, -1)),
+  'the adapter must expand normalized deltas to unit range, as the preview path does',
+);
+
 // Attributes go back out in the component type they arrived in, so the export
 // has to declare the extension that makes those types legal. Asserted on the
 // manifest as well as through the validator, so a validator that stops

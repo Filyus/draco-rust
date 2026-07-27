@@ -5,6 +5,10 @@
  * of them needs the same three facts about a component type: how wide it is,
  * how to read it, and how a normalized integer maps back to its float range.
  * Keeping one copy here means a new width is added in one place.
+ *
+ * The one payload-shaped reader here, `morphDeltaAccessor`, is here for the
+ * same reason: two importers need the identical expansion, and neither may
+ * depend on the other.
  */
 
 const COMPONENT_BYTES = new Map<number, number>([
@@ -51,4 +55,77 @@ export function normalizeComponent(value: number, componentType: number): number
     case 5123: return value / 65535;
     default: return value;
   }
+}
+
+/** Whether `normalized` on this component type means anything. */
+export function isNormalizedIntegerType(componentType: number): boolean {
+  return componentType === 5120 || componentType === 5121
+    || componentType === 5122 || componentType === 5123;
+}
+
+/**
+ * The fields any accessor payload has to expose to be read component-wise.
+ *
+ * `bytes` is an `ArrayBufferView` rather than a `Uint8Array` because the FBX
+ * morph path hands over dense float deltas directly; only the buffer, offset
+ * and length matter here.
+ */
+export interface AccessorBytes {
+  bytes: ArrayBufferView;
+  componentType: number;
+  components: number;
+  normalized?: boolean;
+  count: number;
+}
+
+/** One morph target expanded to float triples. */
+export interface FloatDeltaAccessor {
+  componentType: 5126;
+  components: 3;
+  count: number;
+  normalized: false;
+  bytes: Uint8Array;
+  data: Float32Array;
+}
+
+/**
+ * Materialize morph deltas as float triples, or null when the accessor cannot
+ * describe deltas for a primitive of `vertexCount` vertices.
+ *
+ * `KHR_mesh_quantization` stores deltas as integers in the same space as the
+ * base attribute — normalized ones as unit fractions, plain ones as raw counts
+ * that the node scale turns back into model units — while the morph texture the
+ * preview blends through is float only.
+ *
+ * It lives here rather than with either importer because both of them need it:
+ * the glTF loader expands on the way in, and the SceneDocument adapter expands
+ * on the way out of a document that is required to keep the source spelling.
+ * While only the loader had it, the same asset animated through one path and
+ * stood in its rest pose through the other.
+ */
+export function morphDeltaAccessor<T extends AccessorBytes>(
+  target: T,
+  vertexCount: number,
+): T | FloatDeltaAccessor | null {
+  if (target.components !== 3 || target.count !== vertexCount) return null;
+  if (target.componentType === 5126) return target;
+  const width = componentByteWidth(target.componentType);
+  if (width === undefined || target.componentType === 5125) return null;
+  const length = target.count * 3;
+  if (target.bytes.byteLength < length * width) return null;
+  const view = new DataView(target.bytes.buffer, target.bytes.byteOffset, target.bytes.byteLength);
+  const values = new Float32Array(length);
+  const normalized = Boolean(target.normalized) && isNormalizedIntegerType(target.componentType);
+  for (let index = 0; index < length; index += 1) {
+    const value = readComponent(view, index * width, target.componentType);
+    values[index] = normalized ? normalizeComponent(value, target.componentType) : value;
+  }
+  return {
+    componentType: 5126,
+    components: 3,
+    count: target.count,
+    normalized: false,
+    bytes: new Uint8Array(values.buffer),
+    data: values,
+  };
 }

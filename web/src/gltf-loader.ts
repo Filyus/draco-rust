@@ -13,7 +13,9 @@
  * because support policy and fallback behavior are specific to the preview.
  */
 
-import { componentByteSize, normalizeComponent, readComponent } from './component-values.ts';
+import {
+  componentByteSize, isNormalizedIntegerType, morphDeltaAccessor, normalizeComponent, readComponent,
+} from './component-values.ts';
 import {
   GLTF_READER_RESOLVED_EXTENSIONS,
   gltfExtensionWarnings,
@@ -588,7 +590,7 @@ function buildMeshes(asset: GltfAsset, defs: GltfJson[], warnings: string[]): Vi
             primitive.morphPositions.push(null);
             continue;
           }
-          const target = morphDeltas(
+          const target = morphDeltaAccessor(
             readAccessorAsTyped(asset, accessorIndex), attributes.POSITION.count,
           );
           if (!target) {
@@ -606,7 +608,7 @@ function buildMeshes(asset: GltfAsset, defs: GltfJson[], warnings: string[]): Vi
             primitive.morphNormals.push(null);
             continue;
           }
-          const target = morphDeltas(
+          const target = morphDeltaAccessor(
             readAccessorAsTyped(asset, accessorIndex), attributes.POSITION.count,
           );
           if (!target) {
@@ -665,11 +667,6 @@ function initializeMorphWeights(nodes: ViewerNode[], meshes: ViewerMesh[], warni
   }
 }
 
-/** Largest magnitude of each integer component type, for normalized reads. */
-const COMPONENT_MAX: Record<number, number> = {
-  5120: 127, 5121: 255, 5122: 32767, 5123: 65535,
-};
-
 /**
  * Read animation sampler values as unit-range floats.
  *
@@ -678,46 +675,12 @@ const COMPONENT_MAX: Record<number, number> = {
  * assumes the float spelling.
  */
 function samplerValues(accessor: ReturnType<typeof readAccessorAsTyped>) {
-  const max = COMPONENT_MAX[accessor.componentType];
-  if (accessor.componentType === 5126 || !max || !accessor.normalized) return accessor.data;
+  if (!accessor.normalized || !isNormalizedIntegerType(accessor.componentType)) return accessor.data;
   const values = new Float32Array(accessor.data.length);
   for (let i = 0; i < values.length; i++) {
-    values[i] = Math.max(accessor.data[i] / max, -1);
+    values[i] = normalizeComponent(accessor.data[i], accessor.componentType);
   }
   return values;
-}
-
-/**
- * Materialize morph deltas as float triples, or null when the accessor cannot
- * describe deltas for this primitive.
- *
- * `KHR_mesh_quantization` stores deltas as integers in the same space as the
- * base attribute — normalized ones as unit fractions, plain ones as raw counts
- * that the node scale turns back into model units — while the morph texture is
- * float only.
- */
-function morphDeltas(
-  target: ReturnType<typeof readAccessorAsTyped>,
-  vertexCount: number,
-): ReturnType<typeof readAccessorAsTyped> | null {
-  if (target.components !== 3 || target.count !== vertexCount) return null;
-  if (target.componentType === 5126) return target;
-  const max = COMPONENT_MAX[target.componentType];
-  if (!max) return null;
-  const source = target.data;
-  const values = new Float32Array(target.count * 3);
-  if (values.length > source.length) return null;
-  for (let i = 0; i < values.length; i++) {
-    values[i] = target.normalized ? Math.max(source[i] / max, -1) : source[i];
-  }
-  return {
-    componentType: 5126,
-    components: 3,
-    count: target.count,
-    normalized: false,
-    bytes: new Uint8Array(values.buffer),
-    data: values,
-  };
 }
 
 export function readAccessorAsTyped(asset: GltfAsset, index: number) {

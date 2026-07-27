@@ -7,7 +7,7 @@
  * into SceneDocument.
  */
 
-import { componentByteSize, readComponent } from './component-values.ts';
+import { componentByteSize, morphDeltaAccessor, readComponent } from './component-values.ts';
 import { cloneTrs, decomposeMat4 } from './mat4.ts';
 import type { RuntimeAccessor } from './viewer-scene.ts';
 import { assertValidSceneDocument } from './scene-document.ts';
@@ -36,10 +36,11 @@ const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
  */
 export function buildViewerSceneFromDocument(document: SceneDocument) {
   const validation = assertValidSceneDocument(document);
+  const viewerWarnings = [...document.warnings, ...validation.warnings];
   const accessors = document.accessors.map(toRuntimeAccessor);
   const meshes = document.meshes.map((mesh, meshIndex) => ({
     name: mesh.name || `mesh_${meshIndex}`,
-    primitives: mesh.primitives.map((primitive) => adaptPrimitive(primitive, accessors)),
+    primitives: mesh.primitives.map((primitive) => adaptPrimitive(primitive, accessors, viewerWarnings)),
     aabb: meshAabb(mesh, accessors),
   }));
   const nodes = document.nodes.map((node) => adaptNode(node, document));
@@ -57,7 +58,6 @@ export function buildViewerSceneFromDocument(document: SceneDocument) {
   });
 
   const animations = document.animations.map((clip, clipIndex) => adaptAnimation(clip, nodes, accessors, clipIndex));
-  const viewerWarnings = [...document.warnings, ...validation.warnings];
   for (const mesh of document.meshes) for (const primitive of mesh.primitives) {
     if (primitive.attributes.JOINTS_1 !== undefined || primitive.attributes.WEIGHTS_1 !== undefined) {
       viewerWarnings.push('Preview skinning uses the first four influences; additional influence sets remain available to exporters.');
@@ -88,7 +88,7 @@ function toRuntimeAccessor(accessor: SceneAccessor): RuntimeAccessor {
   };
 }
 
-function adaptPrimitive(primitive: ScenePrimitive, accessors: RuntimeAccessor[]) {
+function adaptPrimitive(primitive: ScenePrimitive, accessors: RuntimeAccessor[], warnings: string[]) {
   const attributes: Record<string, RuntimeAccessor> = {};
   for (const [semantic, accessorIndex] of Object.entries(primitive.attributes)) {
     attributes[semantic] = accessors[accessorIndex];
@@ -110,8 +110,22 @@ function adaptPrimitive(primitive: ScenePrimitive, accessors: RuntimeAccessor[])
   };
   if (primitive.indices !== undefined) runtime.indices = accessors[primitive.indices];
   if (primitive.targets?.length) {
-    runtime.morphPositions = primitive.targets.map((target) => target.POSITION === undefined ? null : accessors[target.POSITION]);
-    runtime.morphNormals = primitive.targets.map((target) => target.NORMAL === undefined ? null : accessors[target.NORMAL]);
+    // A SceneDocument keeps morph deltas in the component type they arrived in,
+    // because it has to stay a lossless record of the source. The morph texture
+    // the preview blends through is float only, so the expansion belongs here —
+    // without it a quantized asset silently renders at its rest pose.
+    const vertexCount = attributes.POSITION?.count ?? 0;
+    const deltas = (semantic: 'POSITION' | 'NORMAL') => primitive.targets!.map((target, index) => {
+      const accessorIndex = target[semantic];
+      if (accessorIndex === undefined) return null;
+      const expanded = morphDeltaAccessor(accessors[accessorIndex], vertexCount);
+      if (!expanded) {
+        warnings.push(`Morph ${semantic === 'POSITION' ? 'target' : 'normal'} ${index} has an accessor the preview cannot use as deltas and was ignored`);
+      }
+      return expanded;
+    });
+    runtime.morphPositions = deltas('POSITION');
+    runtime.morphNormals = deltas('NORMAL');
   }
   return runtime;
 }
