@@ -26,6 +26,7 @@ import {
   appendAccessor, basename, bytesFromF32, mimeFromUri, resolveResource, sniffMime,
 } from './scene-resources.ts';
 import type { ResourceMap } from './scene-resources.ts';
+import { assertConverterProfile } from './wasm-modules.ts';
 import type { GltfAsset, GltfModule } from './wasm-modules.ts';
 
 /**
@@ -52,6 +53,7 @@ export function buildSceneDocumentFromGltf(
 ): SceneDocument {
   const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
   try {
+    assertConverterProfile(asset);
     const manifest: GltfJson = JSON.parse(new TextDecoder().decode(asset.json()));
     const document = createSceneDocument({ warnings: extensionWarnings(manifest) });
     const accessorBySource = new Map<string, number>();

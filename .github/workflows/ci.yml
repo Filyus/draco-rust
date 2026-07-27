@@ -199,6 +199,7 @@ jobs:
           npm run test:scene-document-samplers
           npm run test:gltf-accessor-dedup
           npm run test:gltf-corpus
+          npm run test:gltf-build-profile
           npm run test:export-helpers
           npm run test:scene-document-attributes
           npm run test:scene-document-fbx

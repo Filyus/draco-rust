@@ -36,6 +36,7 @@ import {
   extractGltfCubicSegment,
   quaternionKeysToFbxEuler,
 } from './fbx-scene-adapter.ts';
+import { assertConverterProfile } from './wasm-modules.ts';
 import type { GltfAsset, GltfModule, PackedAccessor, PackedGeometry } from './wasm-modules.ts';
 import type {
   Aabb, Renderable, RuntimeAccessor, ViewerClip, ViewerMesh, ViewerNode, ViewerSkin,
@@ -86,6 +87,7 @@ export async function buildSceneFromGltf(
 
   const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
   try {
+    assertConverterProfile(asset);
     const document: GltfJson = JSON.parse(new TextDecoder().decode(asset.json()));
     const warnings: string[] = [];
     const nodes = buildNodes(document.nodes || []);
@@ -216,6 +218,7 @@ export function buildFbxSceneFromGltf(
   const legacyCompatibility = options.legacyCompatibility === true;
   const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
   try {
+    assertConverterProfile(asset);
     const document = JSON.parse(new TextDecoder().decode(asset.json()));
     const definitions = document.meshes || [];
     const flatMeshes = buildFlatMeshesFromGltf(sourceData, resources, gltfModule);

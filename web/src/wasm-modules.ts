@@ -51,9 +51,36 @@ export interface GltfAsset {
   minifiedJson(): Uint8Array;
   meshCount(): number;
   primitiveCount(mesh: number): number;
+  /**
+   * Raw view bytes, for embedded images. Built only under the
+   * `raw-resources` feature; see `assertConverterProfile`.
+   */
   bufferViewBytes(index: number): Uint8Array;
+  /**
+   * Non-primitive accessors: animation, skins, morph targets. Built only
+   * under the `accessors` feature; see `assertConverterProfile`.
+   */
   readAccessor(index: number): PackedAccessor;
   readPrimitive(mesh: number, primitive: number): PackedGeometry;
+}
+
+/**
+ * Reject a glTF module built without the converter profile.
+ *
+ * `accessors` and `raw-resources` are cargo features, so a release-profile
+ * module satisfies this interface at compile time and then lacks half of it at
+ * run time. Without this check the first skinned, animated or morphed asset
+ * fails deep inside the loader as `asset.readAccessor is not a function`,
+ * which names neither the cause nor the cure.
+ */
+export function assertConverterProfile(asset: GltfAsset) {
+  const missing = (['readAccessor', 'bufferViewBytes'] as const)
+    .filter((method) => typeof asset[method] !== 'function');
+  if (missing.length === 0) return;
+  throw new Error(
+    `The glTF WASM module was built without the converter profile and is missing ${missing.join(' and ')}. `
+    + 'Rebuild it with `--app` (./build.ps1, or ./build.sh --serve).',
+  );
 }
 
 export interface GltfModule {
