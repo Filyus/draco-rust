@@ -3,11 +3,14 @@ import { linkProgram } from './gl-utils.ts';
 import {
   BACKGROUND_FRAG_SRC,
   BACKGROUND_VERT_SRC,
-  FRAG_SRC,
   LINE_FRAG_SRC,
   LINE_VERT_SRC,
+  TEXTURE_SLOTS,
+  TEXTURE_SLOT_SAMPLERS,
   VERT_SRC,
+  buildSurfaceFragmentSource,
 } from './shaders.ts';
+import type { TextureSlotName } from './shaders.ts';
 
 /**
  * Shader programs and the uniform/attribute locations that address them.
@@ -17,74 +20,90 @@ import {
  * program is current.
  */
 
+/** The uniform names every surface program declares, whatever its slots. */
+const SURFACE_UNIFORMS = [
+  'uProjection', 'uView', 'uModel', 'uNormalMatrix',
+  'uUseSkin', 'uJointCount', 'uUseSmoothNormals',
+  'uMorphDeltas', 'uMorphCount', 'uMorphStride', 'uMorphWidth',
+  'uHasNormals', 'uHasVertexColors', 'uUnlit', 'uBaseColorOnly',
+  'uBaseColorFactor', 'uMetallic', 'uRoughness', 'uEmissiveFactor',
+  'uNormalScale', 'uOcclusionStrength',
+  'uIor', 'uSpecularFactor', 'uSpecularColorFactor',
+  'uClearcoatFactor', 'uClearcoatRoughnessFactor', 'uClearcoatNormalScale',
+  'uIrradianceMap', 'uPrefilteredMap', 'uBrdfLut', 'uEnvironmentMaxLod',
+  'uCameraPos',
+] as const;
+
+/** Array uniforms are addressed by their first element. */
+const SURFACE_ARRAY_UNIFORMS = ['uJointMatrix', 'uMorphWeights', 'uMorphLayers', 'uTexCoordSlot', 'uTexMatrix'] as const;
+
+export type SurfaceUniforms = Record<string, WebGLUniformLocation | null>;
+
+export interface SurfaceProgram {
+  program: WebGLProgram;
+  uniforms: SurfaceUniforms;
+  /** The slots this program declares, in the order it indexes them. */
+  slots: readonly TextureSlotName[];
+}
+
+/**
+ * One surface program per set of texture slots, built on demand.
+ *
+ * A material that binds a base colour map and nothing else gets a program with
+ * one sampler; one that also carries clearcoat gets its own. That is what
+ * keeps the sampler count a property of a material rather than of the whole
+ * supported feature set — the alternative is one program declaring every slot,
+ * which stops fitting in the sixteen units WebGL2 guarantees.
+ *
+ * Programs are cached by the slot set and live for the viewer's lifetime:
+ * scenes reuse them, and a real asset settles on a handful.
+ */
+export interface SurfaceProgramCache {
+  get(slots: readonly TextureSlotName[]): SurfaceProgram;
+  /** How many distinct programs have been linked; read by tests. */
+  readonly size: number;
+  dispose(): void;
+}
+
+export function createSurfaceProgramCache(gl: WebGL2RenderingContext): SurfaceProgramCache {
+  const cache = new Map<number, SurfaceProgram>();
+  const key = (slots: readonly TextureSlotName[]) => slots
+    .reduce((bits, name) => bits | (1 << TEXTURE_SLOTS.indexOf(name)), 0);
+
+  return {
+    get(slots) {
+      const bits = key(slots);
+      let entry = cache.get(bits);
+      if (entry) return entry;
+      const program = linkProgram(gl, VERT_SRC, buildSurfaceFragmentSource(slots));
+      const uniforms: SurfaceUniforms = {};
+      for (const name of SURFACE_UNIFORMS) uniforms[name] = gl.getUniformLocation(program, name);
+      for (const name of SURFACE_ARRAY_UNIFORMS) uniforms[name] = gl.getUniformLocation(program, `${name}[0]`);
+      for (const slot of slots) {
+        const sampler = TEXTURE_SLOT_SAMPLERS[slot];
+        uniforms[sampler] = gl.getUniformLocation(program, sampler);
+      }
+      entry = { program, uniforms, slots: [...slots] };
+      cache.set(bits, entry);
+      return entry;
+    },
+    get size() {
+      return cache.size;
+    },
+    dispose() {
+      for (const { program } of cache.values()) gl.deleteProgram(program);
+      cache.clear();
+    },
+  };
+}
+
 export function buildViewerPrograms(
   gl: WebGL2RenderingContext,
   onLog: (message: string, level: string) => void,
 ) {
-  const program = linkProgram(gl, VERT_SRC, FRAG_SRC);
   const lineProgram = linkProgram(gl, LINE_VERT_SRC, LINE_FRAG_SRC);
   const backgroundProgram = linkProgram(gl, BACKGROUND_VERT_SRC, BACKGROUND_FRAG_SRC);
 
-  const p = program;
-  const uniforms = {
-    uProjection: gl.getUniformLocation(p, 'uProjection'),
-    uView: gl.getUniformLocation(p, 'uView'),
-    uModel: gl.getUniformLocation(p, 'uModel'),
-    uNormalMatrix: gl.getUniformLocation(p, 'uNormalMatrix'),
-    uUseSkin: gl.getUniformLocation(p, 'uUseSkin'),
-    uJointCount: gl.getUniformLocation(p, 'uJointCount'),
-    uJointMatrix: gl.getUniformLocation(p, `uJointMatrix[0]`),
-    uMorphDeltas: gl.getUniformLocation(p, 'uMorphDeltas'),
-    uMorphCount: gl.getUniformLocation(p, 'uMorphCount'),
-    uMorphStride: gl.getUniformLocation(p, 'uMorphStride'),
-    uMorphWidth: gl.getUniformLocation(p, 'uMorphWidth'),
-    uMorphWeights: gl.getUniformLocation(p, 'uMorphWeights[0]'),
-    uMorphLayers: gl.getUniformLocation(p, 'uMorphLayers[0]'),
-    uUseSmoothNormals: gl.getUniformLocation(p, 'uUseSmoothNormals'),
-    uHasTexture: gl.getUniformLocation(p, 'uHasTexture'),
-    uHasNormals: gl.getUniformLocation(p, 'uHasNormals'),
-    uHasVertexColors: gl.getUniformLocation(p, 'uHasVertexColors'),
-    uUnlit: gl.getUniformLocation(p, 'uUnlit'),
-    uBaseColorOnly: gl.getUniformLocation(p, 'uBaseColorOnly'),
-    uBaseColor: gl.getUniformLocation(p, 'uBaseColor'),
-    uBaseColorFactor: gl.getUniformLocation(p, 'uBaseColorFactor'),
-    uTexCoordSlot: gl.getUniformLocation(p, 'uTexCoordSlot[0]'),
-    uTexMatrix: gl.getUniformLocation(p, 'uTexMatrix[0]'),
-    uHasMetallicRoughnessTexture: gl.getUniformLocation(p, 'uHasMetallicRoughnessTexture'),
-    uMetallicRoughness: gl.getUniformLocation(p, 'uMetallicRoughness'),
-    uMetallic: gl.getUniformLocation(p, 'uMetallic'),
-    uRoughness: gl.getUniformLocation(p, 'uRoughness'),
-    uHasEmissiveTexture: gl.getUniformLocation(p, 'uHasEmissiveTexture'),
-    uEmissive: gl.getUniformLocation(p, 'uEmissive'),
-    uEmissiveFactor: gl.getUniformLocation(p, 'uEmissiveFactor'),
-    uHasNormalTexture: gl.getUniformLocation(p, 'uHasNormalTexture'),
-    uNormalTexture: gl.getUniformLocation(p, 'uNormalTexture'),
-    uNormalScale: gl.getUniformLocation(p, 'uNormalScale'),
-    uHasOcclusionTexture: gl.getUniformLocation(p, 'uHasOcclusionTexture'),
-    uOcclusionTexture: gl.getUniformLocation(p, 'uOcclusionTexture'),
-    uOcclusionStrength: gl.getUniformLocation(p, 'uOcclusionStrength'),
-    uIor: gl.getUniformLocation(p, 'uIor'),
-    uSpecularFactor: gl.getUniformLocation(p, 'uSpecularFactor'),
-    uSpecularColorFactor: gl.getUniformLocation(p, 'uSpecularColorFactor'),
-    uHasSpecularTexture: gl.getUniformLocation(p, 'uHasSpecularTexture'),
-    uSpecularTexture: gl.getUniformLocation(p, 'uSpecularTexture'),
-    uHasSpecularColorTexture: gl.getUniformLocation(p, 'uHasSpecularColorTexture'),
-    uSpecularColorTexture: gl.getUniformLocation(p, 'uSpecularColorTexture'),
-    uClearcoatFactor: gl.getUniformLocation(p, 'uClearcoatFactor'),
-    uClearcoatRoughnessFactor: gl.getUniformLocation(p, 'uClearcoatRoughnessFactor'),
-    uHasClearcoatTexture: gl.getUniformLocation(p, 'uHasClearcoatTexture'),
-    uClearcoatTexture: gl.getUniformLocation(p, 'uClearcoatTexture'),
-    uHasClearcoatRoughnessTexture: gl.getUniformLocation(p, 'uHasClearcoatRoughnessTexture'),
-    uClearcoatRoughnessTexture: gl.getUniformLocation(p, 'uClearcoatRoughnessTexture'),
-    uHasClearcoatNormalTexture: gl.getUniformLocation(p, 'uHasClearcoatNormalTexture'),
-    uClearcoatNormalTexture: gl.getUniformLocation(p, 'uClearcoatNormalTexture'),
-    uClearcoatNormalScale: gl.getUniformLocation(p, 'uClearcoatNormalScale'),
-    uIrradianceMap: gl.getUniformLocation(p, 'uIrradianceMap'),
-    uPrefilteredMap: gl.getUniformLocation(p, 'uPrefilteredMap'),
-    uBrdfLut: gl.getUniformLocation(p, 'uBrdfLut'),
-    uEnvironmentMaxLod: gl.getUniformLocation(p, 'uEnvironmentMaxLod'),
-    uCameraPos: gl.getUniformLocation(p, 'uCameraPos'),
-  };
   const locations = {
     position: 0,
     normal: 1,
@@ -109,10 +128,9 @@ export function buildViewerPrograms(
   const environmentIbl = createEnvironmentIbl(gl, onLog);
 
   return {
-    program,
+    surfacePrograms: createSurfaceProgramCache(gl),
     lineProgram,
     backgroundProgram,
-    uniforms,
     locations,
     lineUniforms,
     backgroundUniforms,

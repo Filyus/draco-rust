@@ -6,11 +6,14 @@ import { cameraPosition } from './camera.ts';
 import type { CameraHost } from './camera.ts';
 import { GL } from './gl-utils.ts';
 import { MORPH_TEXTURE_UNIT } from './morph-texture.ts';
-import { SHARED_TEXTURE_UNITS, assertTextureUnitBudget, materialTextureUnit } from './texture-units.ts';
+import {
+  MAX_MATERIAL_TEXTURE_UNITS, SHARED_TEXTURE_UNITS, assertTextureUnitBudget, materialTextureUnit,
+} from './texture-units.ts';
 import type { GlResources, UploadedPrimitive } from './primitive-upload.ts';
+import type { SurfaceProgram, SurfaceProgramCache, SurfaceUniforms } from './programs.ts';
 import { computeJointMatrices, updateWorldMatrices } from './scene-graph.ts';
 import type { SceneGraphHost } from './scene-graph.ts';
-import { MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS, TEXTURE_SLOTS } from './shaders.ts';
+import { MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS, TEXTURE_SLOTS, TEXTURE_SLOT_SAMPLERS } from './shaders.ts';
 import type { TextureSlotName } from './shaders.ts';
 import type { ViewerMaterial, ViewerTextureBinding } from '../viewer-scene.ts';
 
@@ -96,12 +99,51 @@ const SLOT_BINDINGS: Record<TextureSlotName, TextureSlotBinding> = {
 };
 
 /**
- * The slots in shader index order: position here is the `SLOT_*` constant the
- * fragment program uses. Built by mapping over `TEXTURE_SLOTS` so the two
- * cannot drift apart. Fourteen samplers total, inside the WebGL2 floor of 16.
+ * Which slots this material can actually sample on this primitive.
+ *
+ * A slot counts only when the material names a texture that was uploaded *and*
+ * the primitive carries the UV set that texture reads: sampling a slot whose
+ * UVs are absent would read garbage, and declaring one whose texture never
+ * arrived would spend a unit on nothing. The answer is the program's identity,
+ * so it is computed before anything is bound.
  */
-const MATERIAL_TEXTURE_SLOTS = TEXTURE_SLOTS.map((name) => SLOT_BINDINGS[name]);
-assertTextureUnitBudget(MATERIAL_TEXTURE_SLOTS.length);
+function enabledMaterialSlots(
+  host: RenderHost,
+  material: ViewerMaterial | undefined,
+  uploaded: UploadedPrimitive,
+): TextureSlotName[] {
+  return TEXTURE_SLOTS.filter((name) => {
+    const binding = SLOT_BINDINGS[name].read(material);
+    if (!binding) return false;
+    const texCoord = binding.texCoord ?? 0;
+    const hasUv = texCoord === 0 ? uploaded.hasTexCoords0
+      : texCoord === 1 ? uploaded.hasTexCoords1 : false;
+    return hasUv && !!host.glResources?.textures[binding.index];
+  });
+}
+
+/**
+ * Bind the surface program this slot set needs, and re-state what the frame
+ * told the last one.
+ *
+ * Uniforms belong to a program, so every switch loses the camera and the
+ * environment. Re-uploading them on a switch is a few calls against a handful
+ * of distinct programs; tracking which program has seen which frame would cost
+ * more to keep honest than it saves.
+ */
+function useSurfaceProgram(host: RenderHost, slots: readonly TextureSlotName[]) {
+  assertTextureUnitBudget(slots.length);
+  const surface = host.surfacePrograms.get(slots);
+  if (host._surfaceProgram === surface.program) return surface;
+  host._surfaceProgram = surface.program;
+  host.uniforms = surface.uniforms;
+  host.gl.useProgram(surface.program);
+  host.gl.uniformMatrix4fv(surface.uniforms.uProjection, false, host._projection);
+  host.gl.uniformMatrix4fv(surface.uniforms.uView, false, host._view);
+  host.gl.uniform3fv(surface.uniforms.uCameraPos, host._eye!);
+  bindEnvironmentIbl(host);
+  return surface;
+}
 
 /**
  * Write one slot's `KHR_texture_transform` as a column-major mat3.
@@ -135,10 +177,20 @@ function writeTextureMatrix(
 export interface RenderHost extends CameraHost, SceneGraphHost {
   gl: WebGL2RenderingContext;
   glResources: GlResources | null;
-  program: WebGLProgram;
+  surfacePrograms: SurfaceProgramCache;
   lineProgram: WebGLProgram;
   backgroundProgram: WebGLProgram;
-  uniforms: Record<string, WebGLUniformLocation | null>;
+  /**
+   * The uniform locations of the surface program currently bound.
+   *
+   * There is no longer one surface program, so this is state of the frame
+   * rather than of the viewer: `useSurfaceProgram` replaces it, and reading it
+   * before that has been called for the draw in hand reads someone else's
+   * locations.
+   */
+  uniforms: SurfaceUniforms;
+  /** The surface program bound right now, or null before the first draw. */
+  _surfaceProgram: WebGLProgram | null;
   lineUniforms: Record<string, WebGLUniformLocation | null>;
   backgroundUniforms: Record<string, WebGLUniformLocation | null>;
   backgroundVao: WebGLVertexArrayObject | null;
@@ -198,11 +250,9 @@ export function render(host: RenderHost) {
   // Grid (drawn first, depth-disabled so it sits behind everything)
   if (host.showGrid) drawGrid(host);
 
-  gl.useProgram(host.program);
-  gl.uniformMatrix4fv(host.uniforms.uProjection, false, host._projection);
-  gl.uniformMatrix4fv(host.uniforms.uView, false, host._view);
-  gl.uniform3fv(host.uniforms.uCameraPos, eye);
-  bindEnvironmentIbl(host);
+  // The surface program is chosen per primitive, so no program is current
+  // until the first one asks for one.
+  host._surfaceProgram = null;
 
   for (const renderable of host.scene.renderables) {
     const node = renderable.node;
@@ -219,11 +269,15 @@ export function render(host: RenderHost) {
     // Normal matrix = inverse-transpose(model)
     mat4.invert(host._normalMatrix, host._model);
     mat4.transpose(host._normalMatrix, host._normalMatrix);
-    gl.uniformMatrix4fv(host.uniforms.uModel, false, host._model);
-    gl.uniformMatrix4fv(host.uniforms.uNormalMatrix, false, host._normalMatrix);
 
     for (let i = 0; i < primitives.length; i++) {
       const { uploaded, materialIndex } = primitives[i];
+      const material = host.scene.materials[materialIndex];
+      // Which program draws this primitive is settled first: everything below
+      // writes uniforms, and uniforms belong to whichever program is bound.
+      const surface = useSurfaceProgram(host, enabledMaterialSlots(host, material, uploaded));
+      gl.uniformMatrix4fv(host.uniforms.uModel, false, host._model);
+      gl.uniformMatrix4fv(host.uniforms.uNormalMatrix, false, host._normalMatrix);
       const usesSkin = !!(jointMatrices && uploaded.hasJoints && uploaded.hasWeights);
       gl.uniform1i(host.uniforms.uUseSkin, usesSkin ? 1 : 0);
       gl.uniform1i(host.uniforms.uJointCount, usesSkin ? jointMatrices.length / 16 : 0);
@@ -244,8 +298,7 @@ export function render(host: RenderHost) {
         host.uniforms.uUseSmoothNormals,
         useSmoothNormals ? 1 : 0,
       );
-      const material = host.scene.materials[materialIndex];
-      applyMaterial(host, material, uploaded, useSmoothNormals);
+      applyMaterial(host, surface, material, uploaded, useSmoothNormals);
 
       if (material?.doubleSided) gl.disable(gl.CULL_FACE);
       else gl.enable(gl.CULL_FACE);
@@ -344,6 +397,7 @@ export function glMode(host: RenderHost, mode: number, wireframe: boolean) {
 
 export function applyMaterial(
   host: RenderHost,
+  surface: SurfaceProgram,
   material: ViewerMaterial | undefined,
   uploaded: UploadedPrimitive,
   useSmoothNormals: boolean,
@@ -354,29 +408,24 @@ export function applyMaterial(
   gl.uniform1i(host.uniforms.uUnlit, material?.unlit ? 1 : 0);
   gl.uniform1i(host.uniforms.uBaseColorOnly, host.baseColorOnly ? 1 : 0);
 
-  // Every slot at once: bind its texture, say whether it is usable, and record
-  // the UV set and transform the shader will sample it with.
-  const texCoordSlots = host._texCoordSlots ??= new Int32Array(MATERIAL_TEXTURE_SLOTS.length);
-  const texMatrices = host._texMatrices ??= new Float32Array(MATERIAL_TEXTURE_SLOTS.length * 9);
-  for (const [slot, { textureUniform, hasUniform, read }] of MATERIAL_TEXTURE_SLOTS.entries()) {
+  // Only the slots this program declares: it was built for exactly the ones
+  // the material can sample, so there is no "absent" case left to report, and
+  // the units are dense over them.
+  const texCoordSlots = host._texCoordSlots ??= new Int32Array(MAX_MATERIAL_TEXTURE_UNITS);
+  const texMatrices = host._texMatrices ??= new Float32Array(MAX_MATERIAL_TEXTURE_UNITS * 9);
+  for (const [slot, name] of surface.slots.entries()) {
     const unit = materialTextureUnit(slot);
-    const binding = read(material);
-    const texCoord = binding?.texCoord ?? 0;
-    const hasUv = texCoord === 0 ? uploaded.hasTexCoords0
-      : texCoord === 1 ? uploaded.hasTexCoords1 : false;
-    const texture = host.glResources?.textures[binding?.index ?? -1];
-    const enabled = !!texture && hasUv;
-    gl.uniform1i(host.uniforms[hasUniform], enabled ? 1 : 0);
-    texCoordSlots[slot] = texCoord;
-    writeTextureMatrix(texMatrices, slot * 9, binding?.transform);
-    if (enabled) {
-      gl.activeTexture(gl.TEXTURE0 + unit);
-      gl.bindTexture(gl.TEXTURE_2D, texture);
-      gl.uniform1i(host.uniforms[textureUniform], unit);
-    }
+    const binding = SLOT_BINDINGS[name].read(material)!;
+    texCoordSlots[slot] = binding.texCoord ?? 0;
+    writeTextureMatrix(texMatrices, slot * 9, binding.transform);
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, host.glResources!.textures[binding.index]);
+    gl.uniform1i(host.uniforms[TEXTURE_SLOT_SAMPLERS[name]], unit);
   }
-  gl.uniform1iv(host.uniforms.uTexCoordSlot, texCoordSlots);
-  gl.uniformMatrix3fv(host.uniforms.uTexMatrix, false, texMatrices);
+  if (surface.slots.length > 0) {
+    gl.uniform1iv(host.uniforms.uTexCoordSlot, texCoordSlots.subarray(0, surface.slots.length));
+    gl.uniformMatrix3fv(host.uniforms.uTexMatrix, false, texMatrices.subarray(0, surface.slots.length * 9));
+  }
 
   const factor = material?.baseColorFactor || [1, 1, 1, 1];
   gl.uniform4f(host.uniforms.uBaseColorFactor, factor[0], factor[1], factor[2], factor[3]);

@@ -60,6 +60,7 @@ import {
 } from './scene-graph.ts';
 import { MAX_JOINTS } from './shaders.ts';
 import { buildViewerPrograms } from './programs.ts';
+import type { SurfaceProgramCache } from './programs.ts';
 
 export class Viewer {
 
@@ -74,10 +75,12 @@ export class Viewer {
   declare camera: OrbitCamera;
   declare animation: AnimationState;
 
-  declare program: WebGLProgram;
+  declare surfacePrograms: SurfaceProgramCache;
   declare lineProgram: WebGLProgram;
   declare backgroundProgram: WebGLProgram;
+  /** The bound surface program's locations; replaced per draw by the renderer. */
   declare uniforms: Record<string, WebGLUniformLocation | null>;
+  declare _surfaceProgram: WebGLProgram | null;
   declare lineUniforms: Record<string, WebGLUniformLocation | null>;
   declare backgroundUniforms: Record<string, WebGLUniformLocation | null>;
   declare locations: Record<string, number>;
@@ -242,10 +245,11 @@ export class Viewer {
 
   _buildPrograms() {
     const built = buildViewerPrograms(this.gl, (message, type) => this._log(message, type));
-    this.program = built.program;
+    this.surfacePrograms = built.surfacePrograms;
     this.lineProgram = built.lineProgram;
     this.backgroundProgram = built.backgroundProgram;
-    this.uniforms = built.uniforms;
+    this.uniforms = {};
+    this._surfaceProgram = null;
     this.locations = built.locations;
     this.lineUniforms = built.lineUniforms;
     this.backgroundUniforms = built.backgroundUniforms;
@@ -480,7 +484,7 @@ export class Viewer {
       this._emptyMorphTexture = null;
     }
     this._resizeObserver?.disconnect();
-    if (this.program) this.gl.deleteProgram(this.program);
+    this.surfacePrograms?.dispose();
     if (this.lineProgram) this.gl.deleteProgram(this.lineProgram);
     if (this.backgroundProgram) this.gl.deleteProgram(this.backgroundProgram);
     if (this.backgroundVao) this.gl.deleteVertexArray(this.backgroundVao);
@@ -589,7 +593,7 @@ export class Viewer {
   }
 
   _applyMaterial(material: ViewerMaterial | undefined, uploaded: UploadedPrimitive, useSmoothNormals: boolean) {
-    applyMaterial(this, material, uploaded, useSmoothNormals);
+    applyMaterial(this, this.surfacePrograms.get([]), material, uploaded, useSmoothNormals);
   }
 
   _drawGrid() {

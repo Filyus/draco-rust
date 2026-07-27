@@ -1643,6 +1643,98 @@ test('exporting a scene to a flat format says what it costs', async ({ page }) =
   await expect(page.locator('#scene-warning-list')).toContainText('flattens the scene');
 });
 
+test('one surface program per set of texture slots, not per material', async ({ page }) => {
+  await page.goto('/index.html');
+  // A single program declaring every slot cannot survive the layered material
+  // extensions: the slot list plus the frame's own samplers already needs more
+  // than the sixteen texture units WebGL2 guarantees. So a program is built for
+  // the slots one material actually binds, and materials that bind the same set
+  // share it — including across scenes, which is what keeps the count bounded
+  // by the vocabulary rather than by the asset.
+  const observed = await page.evaluate(async (pngBytes) => {
+    const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }, { hydrateSceneTextures }] =
+      await Promise.all([
+        import('/viewer.js'),
+        import('/scene-document.js'),
+        import('/scene-document-viewer.js'),
+        import('/scene-document-textures.js'),
+      ]);
+
+    const bytes = (values) => new Uint8Array(
+      values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
+    );
+    const accessor = (values, components, componentType = 5126) => ({
+      bytes: bytes(values), componentType, components, count: values.length / components,
+    });
+    const quad = (material) => ({
+      attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 },
+      indices: 3,
+      material,
+    });
+
+    // Four materials over three distinct slot sets: two bind base colour only,
+    // one adds emissive, one binds nothing.
+    const document_ = createSceneDocument({
+      resources: [{ mimeType: 'image/png', bytes: new Uint8Array(pngBytes), name: 'map.png' }],
+      textures: [{ resource: 0, sampler: {} }],
+      materials: [
+        { baseColorFactor: [1, 1, 1, 1], baseColorTexture: { texture: 0 } },
+        { baseColorFactor: [0.5, 0.5, 0.5, 1], baseColorTexture: { texture: 0 } },
+        {
+          baseColorFactor: [1, 1, 1, 1],
+          baseColorTexture: { texture: 0 },
+          emissiveFactor: [1, 1, 1],
+          emissiveTexture: { texture: 0 },
+        },
+        { baseColorFactor: [1, 0, 0, 1] },
+      ],
+      accessors: [
+        accessor(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3),
+        accessor(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]), 3),
+        accessor(new Float32Array([0, 1, 1, 1, 1, 0, 0, 0]), 2),
+        accessor(new Uint16Array([0, 1, 2, 0, 2, 3]), 1, 5123),
+      ],
+      meshes: [{ primitives: [quad(0), quad(1), quad(2), quad(3)] }],
+      nodes: [{ name: 'Quads', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 }],
+      rootNodes: [0],
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
+    document.body.appendChild(canvas);
+    const viewer = new Viewer(canvas);
+    viewer.showGrid = false;
+    viewer.setScene(await hydrateSceneTextures(buildViewerSceneFromDocument(document_)));
+    viewer._render();
+    const afterFirst = viewer.surfacePrograms.size;
+    // A second scene over the same slot sets must not link anything new.
+    viewer.setScene(await hydrateSceneTextures(buildViewerSceneFromDocument(document_)));
+    viewer._render();
+    const afterSecond = viewer.surfacePrograms.size;
+    const glError = viewer.gl.getError();
+
+    // The program built for no slots declares no samplers at all; the one for
+    // base colour declares exactly one.
+    const sources = [[], ['BASE_COLOR']].map((slots) => {
+      const source = viewer.surfacePrograms.get(slots);
+      return { slots: source.slots.length, samplers: Object.keys(source.uniforms).filter((name) => (
+        name === 'uBaseColor' || name === 'uEmissive'
+      ) && source.uniforms[name] !== null).length };
+    });
+
+    viewer.dispose();
+    canvas.remove();
+    return { afterFirst, afterSecond, glError, sources };
+  }, Array.from(solidColorPng()));
+
+  expect(observed.glError).toBe(0);
+  // Three slot sets over four materials, drawn twice.
+  expect(observed.afterFirst).toBe(3);
+  expect(observed.afterSecond).toBe(3);
+  expect(observed.sources[0]).toEqual({ slots: 0, samplers: 0 });
+  expect(observed.sources[1]).toEqual({ slots: 1, samplers: 1 });
+});
+
 test('a morphed mesh keeps its material textures', async ({ page }) => {
   await page.goto('/index.html');
   // The morph deltas are a sampler2DArray and the material maps are sampler2D,
