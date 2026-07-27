@@ -70,3 +70,6 @@ pub mod uastc_to_astc;
 /// Restating a UASTC block as a BC7 block.
 #[cfg(all(feature = "uastc", feature = "bc"))]
 pub mod uastc_to_bc7;
+/// Turning a UASTC block into ETC1 and ETC2 blocks.
+#[cfg(all(feature = "uastc", feature = "etc"))]
+pub mod uastc_to_etc;

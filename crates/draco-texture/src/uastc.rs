@@ -19,7 +19,7 @@ pub const BLOCK_SIZE: usize = 16;
 
 const TOTAL_MODES: usize = 19;
 /// The mode that stores a single colour and nothing else.
-const MODE_SOLID_COLOR: usize = 8;
+pub(crate) const MODE_SOLID_COLOR: usize = 8;
 
 /// Which mode each of the 128 possible leading bit patterns selects.
 ///
@@ -49,6 +49,29 @@ pub(crate) const MODE_COMPONENTS: [u8; TOTAL_MODES] =
 /// Bits of encoder hints for other formats, which a decode to pixels skips.
 const MODE_HINT_BITS: [u8; TOTAL_MODES] = [
     15, 15, 15, 15, 15, 15, 15, 15, 0, 23, 17, 17, 17, 23, 23, 23, 23, 23, 15,
+];
+/// Which modes carry which hint fields, in the order the header stores them.
+#[cfg(feature = "etc")]
+const MODE_HAS_BC1_HINT0: [bool; TOTAL_MODES] = [
+    true, true, true, true, true, true, true, true, false, true, true, true, true, true, true,
+    true, true, true, true,
+];
+#[cfg(feature = "etc")]
+const MODE_HAS_BC1_HINT1: [bool; TOTAL_MODES] = [
+    true, true, true, true, true, true, true, true, false, true, false, false, false, true, true,
+    true, true, true, true,
+];
+/// Also the modes whose ETC1 base colour takes the hinted bias.
+#[cfg(feature = "etc")]
+pub(crate) const MODE_HAS_ETC1_BIAS: [bool; TOTAL_MODES] = [
+    true, true, true, true, true, true, true, true, false, true, false, false, false, true, true,
+    true, true, true, true,
+];
+/// Which modes carry alpha, and so an ETC2 alpha hint.
+#[cfg(feature = "etc")]
+pub(crate) const MODE_HAS_ALPHA: [bool; TOTAL_MODES] = [
+    false, false, false, false, false, false, false, false, true, true, true, true, true, true,
+    true, true, true, true, false,
 ];
 
 /// Bits, trits and quints of each ASTC quantization range.
@@ -342,6 +365,57 @@ pub fn decode_astc(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uast
     Ok(blocks)
 }
 
+/// Transcode a whole mip level into ETC1 blocks, eight bytes each.
+///
+/// No alpha: a block with alpha needs ETC2, which pairs these with an EAC
+/// block of its own.
+#[cfg(feature = "etc")]
+pub fn decode_etc1(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, UastcError> {
+    let blocks_x = width.div_ceil(4) as usize;
+    let blocks_y = height.div_ceil(4) as usize;
+    if data.len() < blocks_x * blocks_y * BLOCK_SIZE {
+        return Err(UastcError::Truncated(data.len()));
+    }
+
+    let mut blocks = vec![0u8; blocks_x * blocks_y * 8];
+    let mut texels = [[0u8; 4]; 16];
+    for index in 0..blocks_x * blocks_y {
+        let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
+        let unpacked = unpack_block(block, index)?;
+        write_unpacked(&unpacked, &mut texels);
+        blocks[index * 8..index * 8 + 8]
+            .copy_from_slice(&crate::uastc_to_etc::convert_etc1(&unpacked, &texels));
+    }
+    Ok(blocks)
+}
+
+/// Transcode a whole mip level into ETC2 RGBA blocks, sixteen bytes each.
+///
+/// The EAC alpha block comes first and the colour block second, which is the
+/// order `COMPRESSED_RGBA8_ETC2_EAC` reads them in. A block with no alpha gets
+/// a fully opaque one, so the caller can choose this whatever the file holds.
+#[cfg(feature = "etc")]
+pub fn decode_etc2(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, UastcError> {
+    let blocks_x = width.div_ceil(4) as usize;
+    let blocks_y = height.div_ceil(4) as usize;
+    if data.len() < blocks_x * blocks_y * BLOCK_SIZE {
+        return Err(UastcError::Truncated(data.len()));
+    }
+
+    let mut blocks = vec![0u8; blocks_x * blocks_y * 16];
+    let mut texels = [[0u8; 4]; 16];
+    for index in 0..blocks_x * blocks_y {
+        let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
+        let unpacked = unpack_block(block, index)?;
+        write_unpacked(&unpacked, &mut texels);
+        blocks[index * 16..index * 16 + 8]
+            .copy_from_slice(&crate::uastc_to_etc::convert_eac_alpha(&unpacked, &texels));
+        blocks[index * 16 + 8..index * 16 + 16]
+            .copy_from_slice(&crate::uastc_to_etc::convert_etc1(&unpacked, &texels));
+    }
+    Ok(blocks)
+}
+
 /// Transcode a whole mip level into BC7 blocks, sixteen bytes each.
 ///
 /// BC7 is the one target UASTC reaches without loss worth naming: the format
@@ -388,6 +462,9 @@ fn read_bits(block: &[u8], offset: &mut usize, count: u32) -> u32 {
 #[derive(Debug, Clone)]
 pub(crate) struct Unpacked {
     pub mode: usize,
+    /// What the encoder already worked out about this block's ETC form.
+    #[cfg(feature = "etc")]
+    pub etc_hints: EtcHints,
     #[cfg(any(feature = "bc", feature = "astc"))]
     pub common_pattern: u32,
     pub solid_color: [u8; 4],
@@ -436,6 +513,66 @@ pub(crate) fn planes_of(mode: usize) -> usize {
     }
 }
 
+/// What the encoder already worked out about this block's ETC form.
+///
+/// A UASTC encoder solves the ETC1 encoding while it works and writes the
+/// answer into the block header, so the transcoder never searches: it takes
+/// the flip and differential bits, both intensity tables and the bias from
+/// here, and for a block with alpha the EAC table and multiplier too.
+#[cfg(feature = "etc")]
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct EtcHints {
+    pub flip: bool,
+    pub diff: bool,
+    pub inten0: u8,
+    pub inten1: u8,
+    /// Solid-colour mode only: which of the four selectors every texel takes.
+    pub selector: u8,
+    /// Solid-colour mode only: the base colour, already in ETC1's own width.
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+    pub bias: u8,
+    /// EAC table in the low nibble, multiplier in the high one.
+    pub etc2: u8,
+}
+
+/// Read the hint fields, leaving `offset` exactly where skipping them would.
+#[cfg(feature = "etc")]
+fn read_etc_hints(block: &[u8], offset: &mut usize, mode: usize) -> EtcHints {
+    // The BC1 hints are read and dropped: nothing here targets BC1 from UASTC,
+    // but they sit in front of the ETC ones and have to be stepped over.
+    if MODE_HAS_BC1_HINT0[mode] {
+        read_bits(block, offset, 1);
+    }
+    if MODE_HAS_BC1_HINT1[mode] {
+        read_bits(block, offset, 1);
+    }
+    let flip = read_bits(block, offset, 1) != 0;
+    let diff = read_bits(block, offset, 1) != 0;
+    let inten0 = read_bits(block, offset, 3) as u8;
+    let inten1 = read_bits(block, offset, 3) as u8;
+    let bias = if MODE_HAS_ETC1_BIAS[mode] {
+        read_bits(block, offset, 5) as u8
+    } else {
+        0
+    };
+    let etc2 = if MODE_HAS_ALPHA[mode] {
+        read_bits(block, offset, 8) as u8
+    } else {
+        0
+    };
+    EtcHints {
+        flip,
+        diff,
+        inten0,
+        inten1,
+        bias,
+        etc2,
+        ..EtcHints::default()
+    }
+}
+
 /// Read one 128-bit block into its description.
 pub(crate) fn unpack_block(block: &[u8], index: usize) -> Result<Unpacked, UastcError> {
     let mode = HUFF_MODES[(block[0] & 127) as usize] as usize;
@@ -448,16 +585,33 @@ pub(crate) fn unpack_block(block: &[u8], index: usize) -> Result<Unpacked, Uastc
     let mut offset = MODE_CODE_BITS[mode] as usize;
 
     if mode == MODE_SOLID_COLOR {
+        let solid_color = [
+            read_bits(block, &mut offset, 8) as u8,
+            read_bits(block, &mut offset, 8) as u8,
+            read_bits(block, &mut offset, 8) as u8,
+            read_bits(block, &mut offset, 8) as u8,
+        ];
         return Ok(Unpacked {
             mode,
             #[cfg(any(feature = "bc", feature = "astc"))]
             common_pattern: 0,
-            solid_color: [
-                read_bits(block, &mut offset, 8) as u8,
-                read_bits(block, &mut offset, 8) as u8,
-                read_bits(block, &mut offset, 8) as u8,
-                read_bits(block, &mut offset, 8) as u8,
-            ],
+            #[cfg(feature = "etc")]
+            etc_hints: EtcHints {
+                // A solid block has no flip and one intensity table, so its
+                // hints are the whole ETC1 block rather than a correction to
+                // one: base colour, table, and the selector every texel takes.
+                flip: false,
+                diff: read_bits(block, &mut offset, 1) != 0,
+                inten0: read_bits(block, &mut offset, 3) as u8,
+                inten1: 0,
+                selector: read_bits(block, &mut offset, 2) as u8,
+                red: read_bits(block, &mut offset, 5) as u8,
+                green: read_bits(block, &mut offset, 5) as u8,
+                blue: read_bits(block, &mut offset, 5) as u8,
+                bias: 0,
+                etc2: 0,
+            },
+            solid_color,
             endpoints: Vec::new(),
             weights: [0; 32],
             component_selector: 0,
@@ -465,8 +619,18 @@ pub(crate) fn unpack_block(block: &[u8], index: usize) -> Result<Unpacked, Uastc
         });
     }
 
-    // Hints for encoders targeting BC1 and ETC. Nothing here reads them.
-    offset += MODE_HINT_BITS[mode] as usize;
+    // Hints for encoders targeting BC1 and ETC.
+    #[cfg(feature = "etc")]
+    let etc_hints = {
+        let before = offset;
+        let hints = read_etc_hints(block, &mut offset, mode);
+        debug_assert_eq!(offset - before, MODE_HINT_BITS[mode] as usize);
+        hints
+    };
+    #[cfg(not(feature = "etc"))]
+    {
+        offset += MODE_HINT_BITS[mode] as usize;
+    }
 
     let subsets = MODE_SUBSETS[mode] as usize;
     let common_pattern = match mode {
@@ -532,6 +696,8 @@ pub(crate) fn unpack_block(block: &[u8], index: usize) -> Result<Unpacked, Uastc
         mode,
         #[cfg(any(feature = "bc", feature = "astc"))]
         common_pattern,
+        #[cfg(feature = "etc")]
+        etc_hints,
         solid_color: [0; 4],
         endpoints,
         weights,

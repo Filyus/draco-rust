@@ -79,26 +79,27 @@ const TARGETS: { target: CompressedTarget; extension: string; codecs: TextureCod
     alpha: true,
   },
   {
+    // Ahead of ETC because ASTC is the format UASTC is a restricted profile
+    // of: the block is rewritten rather than approximated, where ETC would
+    // have to re-solve it. A phone with both should take this.
+    target: { name: 'astc', format: COMPRESSED_FORMAT.astc, bytesPerBlock: 16 },
+    extension: 'WEBGL_compressed_texture_astc',
+    codecs: ['uastc'],
+    alpha: true,
+  },
+  {
     // ETC comes after BC only because the two never appear together in
-    // practice; where they do, either is a fine answer.
+    // practice; where they do, either is a fine answer. For ETC1S this is the
+    // only mobile target there is; for UASTC it is the fallback behind ASTC.
     target: { name: 'etc1', format: COMPRESSED_FORMAT.etc1, bytesPerBlock: 8 },
     extension: 'WEBGL_compressed_texture_etc',
-    codecs: ['etc1s'],
+    codecs: ['etc1s', 'uastc'],
     alpha: false,
   },
   {
     target: { name: 'etc2', format: COMPRESSED_FORMAT.etc2, bytesPerBlock: 16 },
     extension: 'WEBGL_compressed_texture_etc',
-    codecs: ['etc1s'],
-    alpha: true,
-  },
-  {
-    // What UASTC reaches on a phone. ASTC is the format UASTC is a restricted
-    // profile of, so this loses nothing at all - the block is rewritten, not
-    // approximated.
-    target: { name: 'astc', format: COMPRESSED_FORMAT.astc, bytesPerBlock: 16 },
-    extension: 'WEBGL_compressed_texture_astc',
-    codecs: ['uastc'],
+    codecs: ['etc1s', 'uastc'],
     alpha: true,
   },
 ];

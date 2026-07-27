@@ -216,6 +216,10 @@ impl Transcoder {
                     Target::Bc7 => uastc::decode_bc7(image_data, width, height)?,
                     #[cfg(feature = "astc")]
                     Target::Astc => uastc::decode_astc(image_data, width, height)?,
+                    #[cfg(feature = "etc")]
+                    Target::Etc1 => uastc::decode_etc1(image_data, width, height)?,
+                    #[cfg(feature = "etc")]
+                    Target::Etc2 => uastc::decode_etc2(image_data, width, height)?,
                     #[allow(unreachable_patterns)]
                     other => {
                         return Err(TranscodeError::NoSuchTarget {
