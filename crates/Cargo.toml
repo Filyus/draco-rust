@@ -3,6 +3,7 @@ members = [
     "draco-core",
     "draco-io",
     "draco-gltf",
+    "draco-texture",
     "draco-cpp-test-bridge",
 ]
 resolver = "2"

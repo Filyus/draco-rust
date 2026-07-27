@@ -107,6 +107,7 @@ whichever crate the commit actually touched (`git show --stat`).
 | 06 | Compatibility | the touched crate | `compat`, `interop`, `legacy`, `cpp`, `parity` | keep if user-facing |
 | 07 | Performance | the touched crate | `perf`, `speed`, `memory` | keep if measured and user-facing |
 | 08 | WASM and release assets | web / the touched crate | `wasm`, `web`, `demo` | depends |
+| 09 | Texture codecs | draco-texture | `texture`, `ktx2`, `basis` | drop (crate is unpublished) |
 | 20 | Documentation | the touched crate | `docs`, `readme`, `rustdoc`, `examples` | case-by-case |
 | 90 | Tests | — | `test`, `tests`, `fixture` | drop unless a compatibility guarantee changed |
 | 91 | Refactoring | — | `refactor`, `cleanup`, `internal`, `module` | drop |

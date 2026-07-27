@@ -1,0 +1,26 @@
+[package]
+name = "draco-texture"
+version = "0.1.0"
+edition = "2021"
+description = "KTX2 container reading and Basis Universal transcoding for the Draco web tools"
+license = "Apache-2.0"
+repository = "https://github.com/Filyus/draco-rust"
+# Not part of the published Draco surface: this crate exists so the browser
+# converter can show KHR_texture_basisu textures, and it is shipped inside the
+# WASM release assets rather than on crates.io.
+publish = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
+
+[dependencies]
+thiserror = "2.0"
+# Zstd supercompression, which every UASTC file written by `toktx --zstd` uses.
+# Pure Rust and allocation-only, so it survives the wasm32 target unchanged.
+ruzstd = { version = "0.7", default-features = false, features = ["std"], optional = true }
+
+[features]
+default = ["ktx2"]
+# KTX2 container reading: header, level index, data format descriptor, key
+# values, and Zstd supercompression.
+ktx2 = ["dep:ruzstd"]

@@ -25,6 +25,9 @@ To format the workspaces, run the same commands without `-- --check`.
   `draco-core`.
 - `crates/draco-gltf` is the publishable full-scene glTF crate; it owns the
   lossless document model and depends on both `draco-core` and `draco-io`.
+- `crates/draco-texture` reads KTX2 and transcodes Basis Universal so the web
+  converter can show `KHR_texture_basisu` textures. Nothing in it is about
+  Draco, so it stays out of the published crates and has `publish = false`.
 - `crates/draco-cpp-test-bridge` is internal C++ parity infrastructure and has
   `publish = false`.
 - `web/` contains WASM wrapper crates and demo tooling; it is released as GitHub
