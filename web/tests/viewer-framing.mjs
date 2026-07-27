@@ -1,11 +1,23 @@
 /**
  * Opening framing: the scene bounds the camera and the grid are built from.
  *
- * Both inputs used to be wrong at the extremes of asset scale. A skinned mesh
- * was measured through its own node transform, which a skinned draw cancels
- * out, so a Mixamo character authored in metres under a 0.01-scaled armature
- * reported bounds a hundredth of what it renders as. And the fit distance had
- * an absolute half-metre floor, which frames a two-centimetre asset as a speck.
+ * All three inputs were wrong at the extremes of asset scale.
+ *
+ * A skinned mesh was first measured through its own node transform, which a
+ * skinned draw divides out, so a Mixamo character authored in metres under a
+ * 0.01-scaled armature reported a hundredth of what it renders as. Dropping the
+ * node transform fixed that case and replaced it with the opposite one: a
+ * skinned vertex lands at jointWorld * IBM * position, and treating that as the
+ * identity is only right when the rig happens to make it so. Soldier.glb does
+ * not — mesh and armature sit under one 0.01-scaled root, so the same character
+ * rendered 1.8 units tall while its bind pose measured 183, and the camera was
+ * framed a hundred times too far out to see it.
+ *
+ * And the fit distance had an absolute half-metre floor, which frames a
+ * two-centimetre asset as a speck.
+ *
+ * So the fixtures below carry both rig shapes, with the inverse bind matrices
+ * each one really has rather than an identity that stands in for them.
  */
 import assert from 'node:assert/strict';
 
@@ -34,13 +46,26 @@ function characterMesh({ skinned }) {
     };
 }
 
-function sceneWith({ skinned, skinIndex = 0 }) {
+/**
+ * A rig where the armature is scaled and the bind matrices undo it.
+ *
+ * This is what Michelle.glb and mixamo.fbx both do: the joint's world carries
+ * the 0.01, its inverse bind carries the 100, and their product is the identity
+ * — which is why the bind-pose box is the rendered box for these.
+ */
+function compensatingInverseBind(scale) {
+    const inverseBind = mat4.create();
+    composeMatrix(inverseBind, [0, 0, 0], [0, 0, 0, 1], [1 / scale, 1 / scale, 1 / scale]);
+    return inverseBind;
+}
+
+function sceneWith({ skinned, skinIndex = 0, inverseBind = compensatingInverseBind(SCALE) }) {
     const node = scaledNode(SCALE);
     return {
         nodes: [node],
         rootIndices: [0],
         meshes: [characterMesh({ skinned })],
-        skins: [{ name: 'skin', joints: [{ node, inverseBind: mat4.create() }] }],
+        skins: [{ name: 'skin', joints: [{ node, inverseBind }] }],
         materials: [],
         textures: [],
         animations: [],
@@ -79,14 +104,50 @@ const rounded = (box) => ({
 });
 
 // A skinned mesh renders at jointWorld * IBM, with its node transform divided
-// out, so the bind-pose box is already world space and measures the character
-// at its full 1.66 m rather than at 1.66 cm.
+// out. Under a scaled armature whose bind matrices undo the scale that product
+// is the identity, so the bind-pose box is already world space and measures the
+// character at its full 1.66 m rather than at 1.66 cm.
 {
     const probe = probeWith(sceneWith({ skinned: true }));
     probe._updateSceneBounds();
     assert.deepEqual(rounded(probe.scene.aabb), {
         min: [-0.73, 0, -0.18],
         max: [0.73, 1.66, 0.21],
+    });
+}
+
+// The other rig shape, and the one that made Soldier.glb invisible: mesh and
+// armature under a single scaled root, so the bind matrices carry no
+// compensating scale and jointWorld * IBM keeps the 0.01. The bind pose reads
+// 1.66 and the draw puts 1.66 cm on screen, so the bounds have to say 1.66 cm.
+// Asserting the bind-pose box here is what left the camera a hundred times too
+// far out to see anything.
+{
+    const probe = probeWith(sceneWith({ skinned: true, inverseBind: mat4.create() }));
+    probe._updateSceneBounds();
+    assert.deepEqual(rounded(probe.scene.aabb), {
+        min: [-0.0073, 0, -0.0018],
+        max: [0.0073, 0.0166, 0.0021],
+    });
+}
+
+// Every joint counts, not the first one. A vertex is a convex blend of its
+// joints' results, so the bound is the union of the bind box under each
+// jointWorld * IBM — a rig whose second joint sits a metre along +X can put
+// geometry there, and a bound taken from joint zero alone would clip it.
+{
+    const scene = sceneWith({ skinned: true });
+    const offsetWorld = mat4.create();
+    composeMatrix(offsetWorld, [1, 0, 0], [0, 0, 0, 1], [SCALE, SCALE, SCALE]);
+    scene.skins[0].joints.push({
+        node: { ...scaledNode(SCALE), world: offsetWorld },
+        inverseBind: compensatingInverseBind(SCALE),
+    });
+    const probe = probeWith(scene);
+    probe._updateSceneBounds();
+    assert.deepEqual(rounded(probe.scene.aabb), {
+        min: [-0.73, 0, -0.18],
+        max: [1.73, 1.66, 0.21],
     });
 }
 

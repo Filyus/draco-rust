@@ -7,6 +7,7 @@ export interface SceneGraphHost {
   scene: ViewerScene | null;
   _visitedNodes?: Set<ViewerNode>;
   _boundsPoint?: Vec3;
+  _boundsMatrix?: Mat4;
   _scratch: Mat4;
   _jointScratch?: Mat4;
 }
@@ -41,21 +42,9 @@ export function updateSceneBounds(host: SceneGraphHost) {
     max: [-Infinity, -Infinity, -Infinity],
   };
   const point = host._boundsPoint || (host._boundsPoint = vec3.create());
-  for (const renderable of host.scene.renderables || []) {
-    const mesh = host.scene.meshes[renderable.meshIndex];
-    const meshBox = mesh?.aabb;
-    if (!meshBox) continue;
-    const skin = renderable.skinIndex >= 0
-      ? host.scene.skins[renderable.skinIndex]
-      : null;
-    // A skinned draw multiplies by inverse(mesh world) * joint world * IBM, so
-    // the mesh node's own transform cancels out and the bind-pose positions are
-    // already world space. Applying node.world here anyway is what shrank a
-    // Mixamo character — mesh in metres under a 0.01-scaled armature — to a
-    // hundredth of its rendered size, taking the grid and the framing with it.
-    const skinned = !!skin?.joints.length && meshIsSkinned(mesh.primitives);
-    const world = skinned ? null : renderable.node.world;
-    const { min, max } = meshBox;
+  const matrix = host._boundsMatrix || (host._boundsMatrix = mat4.create());
+  const grow = (box: { min: number[]; max: number[] }, world: Mat4 | null) => {
+    const { min, max } = box;
     for (const x of [min[0], max[0]]) {
       for (const y of [min[1], max[1]]) {
         for (const z of [min[2], max[2]]) {
@@ -69,6 +58,37 @@ export function updateSceneBounds(host: SceneGraphHost) {
           aabb.max[2] = Math.max(aabb.max[2], point[2]);
         }
       }
+    }
+  };
+  for (const renderable of host.scene.renderables || []) {
+    const mesh = host.scene.meshes[renderable.meshIndex];
+    const meshBox = mesh?.aabb;
+    if (!meshBox) continue;
+    const skin = renderable.skinIndex >= 0
+      ? host.scene.skins[renderable.skinIndex]
+      : null;
+    const skinned = !!skin?.joints.length && meshIsSkinned(mesh.primitives);
+    if (!skinned) {
+      grow(meshBox, renderable.node.world);
+      continue;
+    }
+    // A skinned vertex lands at jointWorld * IBM * position: the palette is
+    // inverse(mesh world) * jointWorld * IBM and the shader multiplies by the
+    // mesh world again, so the node's own transform divides out. What is left
+    // is not the identity, though, and assuming it was is what left Soldier.glb
+    // invisible — mesh and armature alike sit under one 0.01-scaled root, so it
+    // renders 1.8 units tall while its bind pose measures 183, and the camera
+    // was framed a hundred times too far out.
+    //
+    // Every vertex is a convex blend of its joints' results, so the union of
+    // the bind box under each jointWorld * IBM contains all of them. Loose when
+    // a distant joint drags the whole box along with it, but framing is a
+    // camera fit, and loose beats wrong by two orders of magnitude.
+    for (const joint of skin!.joints) {
+      if (!joint?.node) continue;
+      if (joint.inverseBind) mat4.multiply(matrix, joint.node.world, joint.inverseBind);
+      else mat4.copy(matrix, joint.node.world);
+      grow(meshBox, matrix);
     }
   }
   if (isFinite(aabb.min[0])) host.scene.aabb = aabb;
