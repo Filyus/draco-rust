@@ -159,6 +159,28 @@ export function normalMappedQuad({ normalMap = true, scale = 0.02 } = {}) {
   });
 }
 
+/**
+ * A 1x1 truecolour PNG of one flat colour, default pure green.
+ *
+ * One texel is enough for what it is used for: telling a decoded image apart
+ * from the opaque white texel every texture is uploaded with before its bitmap
+ * arrives. Green, because that placeholder is neutral and a channel that only
+ * the decoded image can raise is what makes the two separable.
+ */
+export function solidColorPng([red, green, blue] = [0, 255, 0]) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(1, 0);
+  header.writeUInt32BE(1, 4);
+  header[8] = 8; // bit depth
+  header[9] = 2; // truecolour
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(Buffer.from([0, red, green, blue]))),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
 /** A 2x1 truecolour PNG: red on the left half, green on the right. */
 function splitColorPng() {
   const row = Buffer.from([0, 255, 0, 0, 0, 255, 0]);

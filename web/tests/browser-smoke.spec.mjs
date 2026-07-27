@@ -10,6 +10,7 @@ import {
   emissiveTransformQuad,
   externalTriangle,
   normalMappedQuad,
+  solidColorPng,
   triangleBytes,
 } from './smoke-fixtures.mjs';
 import { decodeFirstDracoPrimitive } from './draco-interop.mjs';
@@ -1640,4 +1641,95 @@ test('exporting a scene to a flat format says what it costs', async ({ page }) =
 
   await expect(page.locator('#console')).toContainText('Export complete!');
   await expect(page.locator('#scene-warning-list')).toContainText('flattens the scene');
+});
+
+test('a SceneDocument texture only reaches the GPU once it is hydrated', async ({ page }) => {
+  await page.goto('/index.html');
+  // The document carries texture bytes and no decoded image, because the
+  // adapter that builds the scene from it is deliberately DOM-free. Rendered as
+  // it arrives, every texture is the opaque white texel uploadImage starts with;
+  // the emissive slot is used here because it is additive and independent of the
+  // environment, so "white placeholder" and "green image" are exact colours
+  // rather than two shades of lit surface.
+  const samples = await page.evaluate(async (pngBytes) => {
+    const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }, { hydrateSceneTextures }] =
+      await Promise.all([
+        import('/viewer.js'),
+        import('/scene-document.js'),
+        import('/scene-document-viewer.js'),
+        import('/scene-document-textures.js'),
+      ]);
+
+    const bytes = (values) => new Uint8Array(
+      values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
+    );
+    const accessor = (values, components, componentType = 5126) => ({
+      bytes: bytes(values), componentType, components, count: values.length / components,
+    });
+
+    const document_ = createSceneDocument({
+      resources: [{ mimeType: 'image/png', bytes: new Uint8Array(pngBytes), name: 'emissive.png' }],
+      textures: [{ resource: 0, sampler: { wrapS: 33071, wrapT: 33071, minFilter: 9728, magFilter: 9728 } }],
+      materials: [{
+        baseColorFactor: [0, 0, 0, 1],
+        metallicFactor: 0,
+        roughnessFactor: 1,
+        emissiveFactor: [1, 1, 1],
+        emissiveTexture: { texture: 0 },
+      }],
+      accessors: [
+        accessor(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3),
+        accessor(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]), 3),
+        accessor(new Float32Array([0, 1, 1, 1, 1, 0, 0, 0]), 2),
+        accessor(new Uint16Array([0, 1, 2, 0, 2, 3]), 1, 5123),
+      ],
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 },
+          indices: 3,
+          material: 0,
+        }],
+      }],
+      nodes: [{ name: 'Quad', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 }],
+      rootNodes: [0],
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
+    document.body.appendChild(canvas);
+    const viewer = new Viewer(canvas);
+
+    const render = (scene) => {
+      viewer.setScene(scene);
+      viewer.showGrid = false;
+      viewer.camera.target.set([0, 0, 0]);
+      viewer.camera.distance = 3;
+      viewer.camera.azimuth = 0;
+      viewer.camera.elevation = 0;
+      viewer._render();
+      const rgba = new Uint8Array(4);
+      viewer.gl.readPixels(32, 32, 1, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, rgba);
+      return Array.from(rgba);
+    };
+
+    const dry = render(buildViewerSceneFromDocument(document_));
+    const hydratedScene = await hydrateSceneTextures(buildViewerSceneFromDocument(document_));
+    const wet = render(hydratedScene);
+    const glError = viewer.gl.getError();
+    viewer.dispose();
+    canvas.remove();
+    return { dry, wet, glError, warnings: hydratedScene.warnings, image: !!hydratedScene.textures[0].image };
+  }, Array.from(solidColorPng()));
+
+  expect(samples.glError).toBe(0);
+  expect(samples.image).toBe(true);
+  expect(samples.warnings).not.toContainEqual(expect.stringContaining('Failed to decode texture'));
+
+  // Unhydrated: the white placeholder emits equally on every channel.
+  expect(samples.dry[0]).toBeGreaterThan(200);
+  expect(Math.abs(samples.dry[0] - samples.dry[1])).toBeLessThan(8);
+
+  // Hydrated: only the green channel is emitted, so red collapses.
+  expect(samples.wet[1]).toBeGreaterThan(200);
+  expect(samples.wet[0]).toBeLessThan(samples.wet[1] / 2);
 });
