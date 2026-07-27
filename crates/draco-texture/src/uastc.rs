@@ -37,13 +37,14 @@ const HUFF_MODES: [u8; 128] = [
 /// How many bits the mode's prefix code itself occupies.
 const MODE_CODE_BITS: [u8; TOTAL_MODES] = [4, 6, 5, 5, 5, 5, 5, 5, 5, 5, 3, 2, 3, 5, 5, 7, 6, 6, 4];
 
-const MODE_WEIGHT_BITS: [u8; TOTAL_MODES] =
+pub(crate) const MODE_WEIGHT_BITS: [u8; TOTAL_MODES] =
     [4, 2, 3, 2, 2, 3, 2, 2, 0, 2, 4, 2, 3, 1, 2, 4, 2, 2, 5];
-const MODE_ENDPOINT_RANGES: [u8; TOTAL_MODES] = [
+pub(crate) const MODE_ENDPOINT_RANGES: [u8; TOTAL_MODES] = [
     19, 20, 8, 7, 12, 20, 18, 12, 0, 8, 13, 13, 19, 20, 20, 20, 20, 20, 11,
 ];
-const MODE_SUBSETS: [u8; TOTAL_MODES] = [1, 1, 2, 3, 2, 1, 1, 2, 0, 2, 1, 1, 1, 1, 1, 1, 2, 1, 1];
-const MODE_COMPONENTS: [u8; TOTAL_MODES] =
+pub(crate) const MODE_SUBSETS: [u8; TOTAL_MODES] =
+    [1, 1, 2, 3, 2, 1, 1, 2, 0, 2, 1, 1, 1, 1, 1, 1, 2, 1, 1];
+pub(crate) const MODE_COMPONENTS: [u8; TOTAL_MODES] =
     [3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 2, 2, 2, 3];
 /// Bits of encoder hints for other formats, which a decode to pixels skips.
 const MODE_HINT_BITS: [u8; TOTAL_MODES] = [
@@ -318,6 +319,30 @@ pub fn decode_rgba(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uast
     Ok(pixels)
 }
 
+/// Transcode a whole mip level into BC7 blocks, sixteen bytes each.
+///
+/// BC7 is the one target UASTC reaches without loss worth naming: the format
+/// was drawn up so its modes land on BC7's, so this restates each block rather
+/// than searching for a nearest one.
+#[cfg(feature = "block-formats")]
+pub fn decode_bc7(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, UastcError> {
+    let blocks_x = width.div_ceil(4) as usize;
+    let blocks_y = height.div_ceil(4) as usize;
+    if data.len() < blocks_x * blocks_y * BLOCK_SIZE {
+        return Err(UastcError::Truncated(data.len()));
+    }
+
+    let converter = crate::uastc_to_bc7::Bc7Converter::new();
+    let mut blocks = vec![0u8; blocks_x * blocks_y * 16];
+    for index in 0..blocks_x * blocks_y {
+        let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
+        let unpacked = unpack_block(block, index)?;
+        blocks[index * 16..index * 16 + 16]
+            .copy_from_slice(&converter.convert(&unpacked).to_bytes());
+    }
+    Ok(blocks)
+}
+
 /// Read a bit field out of the block, least significant bit first.
 fn read_bits(block: &[u8], offset: &mut usize, count: u32) -> u32 {
     if count == 0 {
@@ -332,8 +357,63 @@ fn read_bits(block: &[u8], offset: &mut usize, count: u32) -> u32 {
     value
 }
 
+/// One block read out of its 128 bits, before anything is done with it.
+///
+/// The same description serves both consumers: pixels are it interpolated,
+/// and a BC7 block is it restated in BC7's own terms. Keeping them one step
+/// apart is what stops the second from re-reading the bits its own way.
+#[derive(Debug, Clone)]
+pub(crate) struct Unpacked {
+    pub mode: usize,
+    pub common_pattern: u32,
+    pub solid_color: [u8; 4],
+    /// Endpoint values as stored, still quantized to the mode's range.
+    pub endpoints: Vec<u8>,
+    /// One weight per texel, or two per texel for a dual-plane mode.
+    pub weights: [u8; 32],
+    /// Dual-plane modes: which component the second plane interpolates.
+    pub component_selector: usize,
+    /// Which subset each texel belongs to.
+    pub partition: &'static [u8; 16],
+}
+
 /// Decode one 128-bit block into sixteen texels.
 fn decode_block(block: &[u8], index: usize, texels: &mut [[u8; 4]; 16]) -> Result<(), UastcError> {
+    let unpacked = unpack_block(block, index)?;
+    write_unpacked(&unpacked, texels);
+    Ok(())
+}
+
+/// Write one unpacked block's sixteen texels.
+fn write_unpacked(unpacked: &Unpacked, texels: &mut [[u8; 4]; 16]) {
+    if unpacked.mode == MODE_SOLID_COLOR {
+        texels.fill(unpacked.solid_color);
+        return;
+    }
+    write_texels(
+        MODE_SUBSETS[unpacked.mode] as usize,
+        MODE_COMPONENTS[unpacked.mode] as usize,
+        MODE_ENDPOINT_RANGES[unpacked.mode] as usize,
+        planes_of(unpacked.mode),
+        unpacked.component_selector,
+        MODE_WEIGHT_BITS[unpacked.mode] as u32,
+        &unpacked.endpoints,
+        &unpacked.weights,
+        unpacked.partition,
+        texels,
+    );
+}
+
+/// How many interpolation planes a mode uses.
+pub(crate) fn planes_of(mode: usize) -> usize {
+    match mode {
+        6 | 11 | 13 | 17 => 2,
+        _ => 1,
+    }
+}
+
+/// Read one 128-bit block into its description.
+pub(crate) fn unpack_block(block: &[u8], index: usize) -> Result<Unpacked, UastcError> {
     let mode = HUFF_MODES[(block[0] & 127) as usize] as usize;
     if mode >= TOTAL_MODES {
         return Err(UastcError::BadMode {
@@ -344,14 +424,20 @@ fn decode_block(block: &[u8], index: usize, texels: &mut [[u8; 4]; 16]) -> Resul
     let mut offset = MODE_CODE_BITS[mode] as usize;
 
     if mode == MODE_SOLID_COLOR {
-        let color = [
-            read_bits(block, &mut offset, 8) as u8,
-            read_bits(block, &mut offset, 8) as u8,
-            read_bits(block, &mut offset, 8) as u8,
-            read_bits(block, &mut offset, 8) as u8,
-        ];
-        texels.fill(color);
-        return Ok(());
+        return Ok(Unpacked {
+            mode,
+            common_pattern: 0,
+            solid_color: [
+                read_bits(block, &mut offset, 8) as u8,
+                read_bits(block, &mut offset, 8) as u8,
+                read_bits(block, &mut offset, 8) as u8,
+                read_bits(block, &mut offset, 8) as u8,
+            ],
+            endpoints: Vec::new(),
+            weights: [0; 32],
+            component_selector: 0,
+            partition: &ZERO_PATTERN,
+        });
     }
 
     // Hints for encoders targeting BC1 and ETC. Nothing here reads them.
@@ -417,19 +503,15 @@ fn decode_block(block: &[u8], index: usize, texels: &mut [[u8; 4]; 16]) -> Resul
     let endpoints = read_endpoints(block, &mut offset, total_values, endpoint_range);
     let weights = read_weights(block, offset, mode, weight_bits, planes, subsets, anchors);
 
-    write_texels(
-        subsets,
-        components,
-        endpoint_range,
-        planes,
+    Ok(Unpacked {
+        mode,
+        common_pattern,
+        solid_color: [0; 4],
+        endpoints,
+        weights,
         component_selector,
-        weight_bits,
-        &endpoints,
-        &weights,
         partition,
-        texels,
-    );
-    Ok(())
+    })
 }
 
 /// Read the endpoint values, undoing the integer sequence bundling.
@@ -563,7 +645,7 @@ fn read_weights(
 }
 
 /// Undo one endpoint value's quantization, per the ASTC specification.
-fn unquantize(value: u32, range: usize) -> u32 {
+pub(crate) fn unquantize(value: u32, range: usize) -> u32 {
     let bits = BISE_RANGES[range][0] as u32;
     let trits = BISE_RANGES[range][1] != 0;
     let quints = BISE_RANGES[range][2] != 0;
@@ -697,4 +779,9 @@ fn write_texels(
             };
         }
     }
+}
+
+/// Which mode a block names, for tools that want to know without decoding.
+pub fn mode_of(block: &[u8]) -> u8 {
+    HUFF_MODES[(block[0] & 127) as usize]
 }

@@ -35,6 +35,9 @@ pub enum Target {
     /// BC3, sixteen bytes per 4x4 block, alpha in a BC4 block of its own.
     #[cfg(feature = "block-formats")]
     Bc3,
+    /// BC7, sixteen bytes per 4x4 block, colour and alpha together.
+    #[cfg(feature = "block-formats")]
+    Bc7,
 }
 
 /// One decoded image, either as pixels or as GPU-ready blocks.
@@ -168,6 +171,13 @@ impl Transcoder {
                     Target::Bc1 => decoder.decode_bc1(&level_data, desc, width, height)?,
                     #[cfg(feature = "block-formats")]
                     Target::Bc3 => decoder.decode_bc3(&level_data, desc, width, height)?,
+                    #[cfg(feature = "block-formats")]
+                    other => {
+                        return Err(TranscodeError::NoSuchTarget {
+                            codec: "ETC1S",
+                            target: other,
+                        })
+                    }
                 };
                 Ok(Decoded {
                     width,
@@ -189,6 +199,8 @@ impl Transcoder {
                     .ok_or(TranscodeError::NoSuchImage { level, layer, face })?;
                 let bytes = match target {
                     Target::Rgba8 => uastc::decode_rgba(image_data, width, height)?,
+                    #[cfg(feature = "block-formats")]
+                    Target::Bc7 => uastc::decode_bc7(image_data, width, height)?,
                     #[allow(unreachable_patterns)]
                     other => {
                         return Err(TranscodeError::NoSuchTarget {

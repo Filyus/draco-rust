@@ -87,14 +87,25 @@ LDR, including Zstd supercompression. Each is a Rust port of Binomial's
 transcoder and is gated byte for byte against Binomial's own build, every mip
 level of every fixture.
 
-What the texture is turned into depends on the machine. Where the context
-offers `WEBGL_compressed_texture_s3tc`, an ETC1S texture without alpha is
-transcoded to BC1 and uploaded compressed, keeping about an eighth of the video
-memory the pixels would take; its mip chain comes from the file, because a
-compressed texture cannot have mips generated for it. Everything else — UASTC,
-ETC1S with alpha, or a context with no block format — decodes to RGBA8 and
-uploads as an ordinary image. BC3 for alpha and BC7 for UASTC are not
-transcoded yet.
+What the texture is turned into depends on the machine, and the choice is made
+per texture:
+
+| source | target | needs |
+|---|---|---|
+| ETC1S, no alpha | BC1, 8 bytes per block | `WEBGL_compressed_texture_s3tc` |
+| ETC1S with alpha | BC3, 16 bytes per block | `WEBGL_compressed_texture_s3tc` |
+| UASTC | BC7, 16 bytes per block | `EXT_texture_compression_bptc` |
+
+A texture that reaches one of those is uploaded compressed, at about an eighth
+of the video memory the pixels would take, and its mip chain comes from the
+file because a compressed texture cannot have mips generated for it. Anything
+else — a context with none of those extensions, which on a phone is the usual
+case — decodes to RGBA8 and uploads as an ordinary image. ETC2 and ASTC targets
+are not transcoded to yet, so a phone takes that fallback today.
+
+Five of UASTC's nineteen block modes appear in none of the fixtures, so the
+transcoder is written from the reference for those and verified by nothing; the
+UASTC gate names them rather than leaving the gap unstated.
 
 Exported glTF and GLB carry the KTX2 bytes through unchanged either way; OBJ,
 PLY and FBX carry them too, and no importer of those formats can read them,

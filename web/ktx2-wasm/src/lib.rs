@@ -127,13 +127,39 @@ impl Ktx2File {
         self.codec.to_string()
     }
 
+    /// How many blocks of each UASTC mode the whole file holds.
+    ///
+    /// Nineteen counts, mode 0 first. Exposed so a gate can say which modes
+    /// its fixtures actually exercise: a transcoder is only verified over the
+    /// modes some block used, and a natural image uses far from all of them.
+    #[wasm_bindgen(js_name = modeCensus)]
+    pub fn mode_census(&self) -> Vec<u32> {
+        let mut counts = vec![0u32; 20];
+        let Ok(file) = Ktx2::parse(&self.data) else {
+            return counts;
+        };
+        if !matches!(file.format(), Ktx2Format::UastcLdr4x4 { .. }) {
+            return counts;
+        }
+        for level in 0..file.level_count() {
+            let Ok(data) = file.level_bytes(level) else {
+                continue;
+            };
+            for block in data.chunks_exact(16) {
+                counts[draco_texture::uastc::mode_of(block) as usize] += 1;
+            }
+        }
+        counts
+    }
+
     /// Decode one mip level to RGBA8.
     #[wasm_bindgen(js_name = decodeRgba)]
     pub fn decode_rgba(&self, level: u32) -> Result<Ktx2Image, JsError> {
         self.decode(level, "rgba8")
     }
 
-    /// Decode one mip level into a named target: `"rgba8"`, `"bc1"` or `"bc3"`.
+    /// Decode one mip level into a named target: `"rgba8"`, `"bc1"`, `"bc3"`
+    /// or `"bc7"`.
     ///
     /// Named rather than numbered because the caller picks the target from
     /// what the GL context reports, and a string survives that round trip
@@ -144,6 +170,7 @@ impl Ktx2File {
             "rgba8" => Target::Rgba8,
             "bc1" => Target::Bc1,
             "bc3" => Target::Bc3,
+            "bc7" => Target::Bc7,
             other => return Err(JsError::new(&format!("unknown target format {other}"))),
         };
         let file = Ktx2::parse(&self.data).map_err(to_js)?;

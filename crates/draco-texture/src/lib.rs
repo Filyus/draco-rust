@@ -14,6 +14,11 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 
+/// Packing a BC7 block, and the tables it and the UASTC mapping share.
+#[cfg(all(feature = "uastc", feature = "block-formats"))]
+pub mod bc7;
+#[cfg(all(feature = "uastc", feature = "block-formats"))]
+mod bc7_tables;
 /// Basis Universal ETC1S decoding.
 #[cfg(feature = "etc1s")]
 pub mod etc1s;
@@ -37,3 +42,6 @@ pub mod transcode;
 /// Basis Universal UASTC LDR decoding.
 #[cfg(feature = "uastc")]
 pub mod uastc;
+/// Restating a UASTC block as a BC7 block.
+#[cfg(all(feature = "uastc", feature = "block-formats"))]
+pub mod uastc_to_bc7;

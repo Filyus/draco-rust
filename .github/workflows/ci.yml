@@ -123,6 +123,7 @@ jobs:
           cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features uastc
           cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features etc1s,uastc
           cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features etc1s,block-formats
+          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features uastc,block-formats
           cargo check --manifest-path crates/Cargo.toml -p draco-texture --target wasm32-unknown-unknown
 
       - name: Test draco-texture

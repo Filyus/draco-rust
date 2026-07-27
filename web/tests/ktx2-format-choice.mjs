@@ -30,10 +30,12 @@ const CASES = [
   // on Chrome with an NVIDIA card, and it is the case that matters most.
   [S3TC, 'etc1s', false, 'bc1', 'without alpha, BC1 is half the memory of BC3 and loses nothing'],
   [S3TC, 'etc1s', true, 'bc3', 'with alpha, only BC3 can carry it'],
-  // UASTC needs BC7, which is not transcoded yet, so it decodes to pixels
-  // rather than being forced into a format that would lose its precision.
-  [S3TC, 'uastc', false, 'pixels', 'UASTC has no BC target yet'],
-  [BPTC, 'etc1s', false, 'pixels', 'BC7 is not transcoded yet, and bptc alone offers nothing else'],
+  // UASTC goes to BC7 and nowhere else: BC1 or BC3 would throw away the
+  // precision it is chosen for in the first place.
+  [BPTC, 'uastc', false, 'bc7', 'bptc is what UASTC needs'],
+  [BPTC, 'uastc', true, 'bc7', 'BC7 carries alpha, so the answer does not change'],
+  [S3TC, 'uastc', false, 'pixels', 'without bptc there is nothing for UASTC to become'],
+  [BPTC, 'etc1s', false, 'pixels', 'ETC1S has no BC7 path, and bptc alone offers nothing else'],
   // A machine with no compressed formats at all, or one that offers only
   // families nothing here targets.
   [[], 'etc1s', false, 'pixels', 'no compressed format at all'],
@@ -49,5 +51,6 @@ for (const [extensions, codec, hasAlpha, expected, why] of CASES) {
 // The block size has to match the format, because the upload is sized by it.
 assert.equal(chooseCompressedTarget(S3TC, 'etc1s', false).bytesPerBlock, 8);
 assert.equal(chooseCompressedTarget(S3TC, 'etc1s', true).bytesPerBlock, 16);
+assert.equal(chooseCompressedTarget(BPTC, 'uastc', false).bytesPerBlock, 16);
 
 console.log(`ktx2-format-choice: ${CASES.length} cases OK`);

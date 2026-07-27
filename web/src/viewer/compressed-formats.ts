@@ -19,6 +19,8 @@ export const COMPRESSED_FORMAT = {
   bc1: 0x83f0,
   /** `COMPRESSED_RGBA_S3TC_DXT5_EXT` */
   bc3: 0x83f3,
+  /** `COMPRESSED_RGBA_BPTC_UNORM_EXT` */
+  bc7: 0x8e8c,
 } as const;
 
 /** A source codec, as the KTX2 module names it. */
@@ -27,7 +29,7 @@ export type TextureCodec = 'etc1s' | 'uastc';
 /** What to ask the transcoder for, and how to upload the result. */
 export interface CompressedTarget {
   /** The transcoder's name for the target. */
-  name: 'bc1' | 'bc3';
+  name: 'bc1' | 'bc3' | 'bc7';
   /** The GL internal format to pass to `compressedTexImage2D`. */
   format: number;
   /** Bytes each 4×4 block occupies. */
@@ -48,6 +50,16 @@ const TARGETS: { target: CompressedTarget; extension: string; codecs: TextureCod
     target: { name: 'bc3', format: COMPRESSED_FORMAT.bc3, bytesPerBlock: 16 },
     extension: 'WEBGL_compressed_texture_s3tc',
     codecs: ['etc1s'],
+    alpha: true,
+  },
+  {
+    // UASTC goes to BC7 and nowhere else. The two formats were designed to
+    // correspond, so the transcode keeps what UASTC was chosen for - the
+    // precision that makes it worth using over ETC1S on normal maps - which
+    // BC1 or BC3 would throw away.
+    target: { name: 'bc7', format: COMPRESSED_FORMAT.bc7, bytesPerBlock: 16 },
+    extension: 'EXT_texture_compression_bptc',
+    codecs: ['uastc'],
     alpha: true,
   },
 ];
