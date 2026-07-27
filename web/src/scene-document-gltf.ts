@@ -154,14 +154,28 @@ export function lowerSceneDocumentToGltf(document: SceneDocument) {
     for (const extension of Object.keys(material.extensions || {})) extensionsUsed.add(extension);
   }
   if (materials.some(materialUsesTextureTransform)) extensionsUsed.add('KHR_texture_transform');
-  if (textures.some((texture) => texture?.extensions?.KHR_texture_basisu)) extensionsUsed.add('KHR_texture_basisu');
-  if (textures.some((texture) => texture?.extensions?.EXT_texture_webp)) extensionsUsed.add('EXT_texture_webp');
+  // An alternate image source is written without a JPEG or PNG fallback,
+  // because the document holds one encoding of the image and inventing a
+  // second is not a serialization decision. Both extensions say what that
+  // costs: with no fallback to fall back to, a reader that skips the extension
+  // finds a texture with no source at all, so the extension may not be
+  // declared optional. The official validator does not enforce this, which is
+  // exactly why it has to be stated here rather than caught downstream.
+  const extensionsRequired = new Set<string>();
+  for (const extension of ['KHR_texture_basisu', 'EXT_texture_webp'] as const) {
+    if (!textures.some((texture) => texture?.extensions?.[extension])) continue;
+    extensionsUsed.add(extension);
+    extensionsRequired.add(extension);
+  }
   // Vertex attributes keep the component type they arrived in, so an asset that
   // came from gltfpack goes back out quantized. Core glTF allows only float for
   // most semantics; without this declaration the file is invalid, and the
   // accessors were already being written this way before it was added.
   const quantized = usesQuantizedAttributes(document);
-  if (quantized) extensionsUsed.add('KHR_mesh_quantization');
+  if (quantized) {
+    extensionsUsed.add('KHR_mesh_quantization');
+    extensionsRequired.add('KHR_mesh_quantization');
+  }
 
   const manifest = {
     asset: { version: '2.0', generator: 'draco-rust SceneDocument exporter' },
@@ -179,10 +193,11 @@ export function lowerSceneDocumentToGltf(document: SceneDocument) {
     scenes: [{ nodes: [...document.rootNodes] }],
     scene: 0,
     ...(extensionsUsed.size > 0 ? { extensionsUsed: [...extensionsUsed] } : {}),
-    // Quantization is the one extension here a reader may not skip: ignoring it
-    // means misreading the vertex data outright, so glTF forbids declaring it
-    // optional. The material layers, by contrast, degrade to plain PBR.
-    ...(quantized ? { extensionsRequired: ['KHR_mesh_quantization'] } : {}),
+    // What a reader may not skip: quantization, because ignoring it means
+    // misreading the vertex data outright, and an alternate image source with
+    // no fallback, because ignoring it leaves the texture with no image. The
+    // material layers, by contrast, degrade to plain PBR and stay optional.
+    ...(extensionsRequired.size > 0 ? { extensionsRequired: [...extensionsRequired] } : {}),
   };
   const json = new TextEncoder().encode(JSON.stringify(manifest));
   return {

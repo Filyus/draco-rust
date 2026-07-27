@@ -245,6 +245,17 @@ texturedDocument.materials.push({
 const texturedLowered = lowerSceneDocumentToGltf(texturedDocument);
 const texturedManifest = JSON.parse(new TextDecoder().decode(texturedLowered.json));
 assert.deepEqual(new Set(texturedManifest.extensionsUsed), new Set(['KHR_texture_transform', 'KHR_texture_basisu', 'EXT_texture_webp']));
+// The writer emits no JPEG or PNG fallback beside an alternate image source,
+// and both extensions say what that costs: a reader that skips the extension
+// finds a texture with no source at all, so neither may be declared optional.
+// KHR_texture_transform may, because a slot without it renders untransformed
+// rather than untextured. The official validator does not check this, so the
+// statement lives here.
+assert.deepEqual(
+    new Set(texturedManifest.extensionsRequired),
+    new Set(['KHR_texture_basisu', 'EXT_texture_webp']),
+    'an image source with no fallback cannot be an optional extension',
+);
 const portableMaterial = texturedManifest.materials.at(-1);
 assert.equal(portableMaterial.normalTexture.scale, 0.6);
 assert.equal(portableMaterial.occlusionTexture.strength, 0.4);
