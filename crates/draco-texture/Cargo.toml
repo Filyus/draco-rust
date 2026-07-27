@@ -63,9 +63,14 @@ block-formats = ["bc", "etc", "astc"]
 modern = ["bc", "astc"]
 # What is carried only for hardware with no current alternative. Today that is
 # `etc` and only `etc`: every machine with ASTC also has ETC, so the family
-# serves exactly the devices that have one and not the other - about six points
-# of Android at the last figures, and shrinking. `bc` is old by date and
-# nowhere near legacy by use.
+# serves exactly the devices that have one and not the other. On Android that
+# difference is nil - both are at 99.9% - and where it exists is Linux, 93.9%
+# ETC against 87.6% ASTC. `bc` is old by date and nowhere near legacy by use.
+#
+# Those are marginals, and what actually falls back is an intersection: a
+# UASTC texture goes to pixels only where there is ETC and neither ASTC nor
+# BC7. No survey reports that joint, so 6% of Linux is a ceiling on it and
+# almost certainly well above the truth.
 #
 # Cargo features add, they do not subtract, so this cannot be a flag that
 # default turns off. It is in default instead, and retiring the family means

@@ -143,8 +143,9 @@ here:
   Windows, ASTC on essentially every phone.
 - `legacy` — what is carried only for hardware with no current alternative.
   Today that is `etc` and nothing else: every machine with ASTC also has ETC,
-  so the family serves precisely the devices that have one and not the other,
-  about six points of Android and shrinking. `bc` is old by date and nowhere
+  so the family serves precisely the devices that have one and not the other.
+  On Android that difference is nil, as the table above shows; where it exists
+  is Linux, at 93.9% ETC against 87.6% ASTC. `bc` is old by date and nowhere
   near legacy by use.
 
 Cargo features add and never subtract, so `legacy` cannot be a flag the default
