@@ -26,6 +26,12 @@ export interface MaterialExtensionField {
   json?: string;
   /** What the core metallic-roughness model implies without the extension. */
   default: number | number[];
+  /**
+   * The renderer folds this into a core value instead of passing it through,
+   * so it has no uniform of its own. `emissiveStrength` only ever multiplies
+   * the emissive factor, and sending both would make the shader do it.
+   */
+  folded?: boolean;
 }
 
 /** A texture slot the extension contributes. */
@@ -52,7 +58,7 @@ export const MATERIAL_EXTENSIONS = [
   { name: 'KHR_materials_unlit', presence: 'unlit' },
   {
     name: 'KHR_materials_emissive_strength',
-    fields: [{ property: 'emissiveStrength', default: 1 }],
+    fields: [{ property: 'emissiveStrength', default: 1, folded: true }],
   },
   {
     // 1.5 is the index of refraction the core model implies (f0 = 0.04), so a
@@ -146,6 +152,28 @@ export const MATERIAL_EXTENSION_DEFAULTS: Readonly<Record<string, number | numbe
     ...(spec.presence ? [[spec.presence, false] as const] : []),
     ...(spec.fields ?? []).map((field) => [field.property, field.default] as const),
   ])));
+
+/**
+ * The GLSL uniform a material property is read through.
+ *
+ * By convention rather than by table entry: `specularFactor` is `uSpecularFactor`.
+ * The renderer collects its locations and writes its values by walking the same
+ * list, so a field declared in the table reaches the shader with nothing named
+ * a second time — only the GLSL that uses it stays hand-written.
+ */
+export function materialExtensionUniform(property: string): string {
+  return `u${property[0].toUpperCase()}${property.slice(1)}`;
+}
+
+/** Every extension factor the shader takes, paired with its uniform name. */
+export const MATERIAL_EXTENSION_UNIFORMS: readonly { property: string; uniform: string; components: number }[] =
+  SPECS.flatMap((spec) => (spec.fields ?? [])
+    .filter((field) => !field.folded)
+    .map((field) => ({
+      property: field.property,
+      uniform: materialExtensionUniform(field.property),
+      components: Array.isArray(field.default) ? field.default.length : 1,
+    })));
 
 /** Whether `value` is what the core model implies for `property`. */
 export function isMaterialExtensionDefault(property: string, value: unknown): boolean {

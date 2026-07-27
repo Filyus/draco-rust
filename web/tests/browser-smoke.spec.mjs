@@ -1735,6 +1735,42 @@ test('one surface program per set of texture slots, not per material', async ({ 
   expect(observed.sources[1]).toEqual({ slots: 1, samplers: 1 });
 });
 
+test('every material extension factor the table declares reaches the shader', async ({ page }) => {
+  await page.goto('/index.html');
+  // The uniform name follows from the property name, so declaring a field in
+  // the extension table is all it takes for the renderer to send it. The half
+  // that cannot be derived is the GLSL that reads it, and a field with no
+  // uniform behind it fails silently: setting a null location is a no-op, and
+  // the shader goes on using whatever the core model implies.
+  const observed = await page.evaluate(async () => {
+    const [{ Viewer }, { MATERIAL_EXTENSION_UNIFORMS }] = await Promise.all([
+      import('/viewer.js'),
+      import('/material-extensions.js'),
+    ]);
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:8px;height:8px';
+    document.body.appendChild(canvas);
+    const viewer = new Viewer(canvas);
+    // The barest program there is: if a factor survives here, it survives in
+    // every richer permutation too.
+    const surface = viewer.surfacePrograms.get([]);
+    const missing = MATERIAL_EXTENSION_UNIFORMS
+      .filter(({ uniform }) => surface.uniforms[uniform] == null)
+      .map(({ property, uniform }) => `${property} -> ${uniform}`);
+    const declared = MATERIAL_EXTENSION_UNIFORMS.map(({ uniform }) => uniform);
+    viewer.dispose();
+    canvas.remove();
+    return { missing, declared };
+  });
+
+  expect(observed.missing).toEqual([]);
+  // The list is derived, so a table that lost its factors would pass the check
+  // above by having nothing to check.
+  expect(observed.declared).toEqual(expect.arrayContaining([
+    'uIor', 'uSpecularFactor', 'uSpecularColorFactor', 'uClearcoatFactor', 'uClearcoatRoughnessFactor',
+  ]));
+});
+
 test('a morphed mesh keeps its material textures', async ({ page }) => {
   await page.goto('/index.html');
   // The morph deltas are a sampler2DArray and the material maps are sampler2D,

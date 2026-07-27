@@ -1,4 +1,5 @@
 import { createEnvironmentIbl } from '../environment-ibl.ts';
+import { MATERIAL_EXTENSION_UNIFORMS } from '../material-extensions.ts';
 import { linkProgram } from './gl-utils.ts';
 import {
   BACKGROUND_FRAG_SRC,
@@ -28,8 +29,7 @@ const SURFACE_UNIFORMS = [
   'uHasNormals', 'uHasVertexColors', 'uUnlit', 'uBaseColorOnly',
   'uBaseColorFactor', 'uMetallic', 'uRoughness', 'uEmissiveFactor',
   'uNormalScale', 'uOcclusionStrength',
-  'uIor', 'uSpecularFactor', 'uSpecularColorFactor',
-  'uClearcoatFactor', 'uClearcoatRoughnessFactor', 'uClearcoatNormalScale',
+  'uClearcoatNormalScale',
   'uIrradianceMap', 'uPrefilteredMap', 'uBrdfLut', 'uEnvironmentMaxLod',
   'uCameraPos',
 ] as const;
@@ -78,6 +78,11 @@ export function createSurfaceProgramCache(gl: WebGL2RenderingContext): SurfacePr
       const program = linkProgram(gl, VERT_SRC, buildSurfaceFragmentSource(slots));
       const uniforms: SurfaceUniforms = {};
       for (const name of SURFACE_UNIFORMS) uniforms[name] = gl.getUniformLocation(program, name);
+      // The layered extension factors are named by the table rather than here,
+      // so declaring one there is enough for the renderer to reach it.
+      for (const { uniform } of MATERIAL_EXTENSION_UNIFORMS) {
+        uniforms[uniform] = gl.getUniformLocation(program, uniform);
+      }
       for (const name of SURFACE_ARRAY_UNIFORMS) uniforms[name] = gl.getUniformLocation(program, `${name}[0]`);
       for (const slot of slots) {
         const sampler = TEXTURE_SLOT_SAMPLERS[slot];

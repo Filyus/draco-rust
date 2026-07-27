@@ -1,5 +1,5 @@
 import type { EnvironmentIbl } from '../environment-ibl.ts';
-import { materialExtensionFactors } from '../material-extensions.ts';
+import { MATERIAL_EXTENSION_UNIFORMS, materialExtensionFactors } from '../material-extensions.ts';
 import { mat4, vec3 } from '../math.ts';
 import type { Mat4, Vec3 } from '../math.ts';
 import { cameraPosition } from './camera.ts';
@@ -447,13 +447,15 @@ export function applyMaterial(
   );
   gl.uniform1f(host.uniforms.uNormalScale, material?.normalTexture?.scale ?? 1);
   gl.uniform1f(host.uniforms.uOcclusionStrength, material?.occlusionTexture?.strength ?? 1);
-  gl.uniform1f(host.uniforms.uIor, layered.ior);
-  gl.uniform1f(host.uniforms.uSpecularFactor, layered.specularFactor);
-  const specularColor = layered.specularColorFactor;
-  gl.uniform3f(host.uniforms.uSpecularColorFactor, specularColor[0], specularColor[1], specularColor[2]);
-  gl.uniform1f(host.uniforms.uClearcoatFactor, layered.clearcoatFactor);
-  gl.uniform1f(host.uniforms.uClearcoatRoughnessFactor, layered.clearcoatRoughnessFactor);
   gl.uniform1f(host.uniforms.uClearcoatNormalScale, material?.clearcoatNormalTexture?.scale ?? 1);
+  // Every extension factor the table declares, sent by the name the table
+  // implies. A field added there reaches the shader without being named again;
+  // what to do with it in GLSL is the only part left to write.
+  for (const { property, uniform, components } of MATERIAL_EXTENSION_UNIFORMS) {
+    const location = host.uniforms[uniform];
+    if (components === 1) gl.uniform1f(location, layered[property] as number);
+    else gl.uniform3fv(location, layered[property] as number[]);
+  }
 }
 
 export function drawGrid(host: RenderHost) {
