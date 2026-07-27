@@ -10,9 +10,9 @@
 import assert from 'node:assert/strict';
 
 globalThis.WebGL2RenderingContext = class {};
-const { Viewer } = await import('../www/viewer.js');
-const { buildSceneGrid } = await import('../www/viewer/renderer.js');
-const { composeMatrix, mat4, vec3 } = await import('../www/math.js');
+const { Viewer } = await import('../src/viewer.ts');
+const { buildSceneGrid } = await import('../src/viewer/renderer.ts');
+const { composeMatrix, mat4, vec3 } = await import('../src/math.ts');
 
 const SCALE = 0.01;
 

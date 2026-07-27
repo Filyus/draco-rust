@@ -8,7 +8,7 @@ import { buildViewerSceneFromDocument } from '../src/scene-document-viewer.ts';
 import { here, loadFbxViewerAdapter, loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.mjs';
 
 const { buildSceneFromFbx } = await loadFbxViewerAdapter();
-const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'www', 'viewer.js')));
+const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'src', 'viewer.ts')));
 const fbx = await loadWasm('fbx');
 
 const bones = [

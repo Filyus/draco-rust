@@ -15,7 +15,7 @@ import { lowerSceneDocumentToGltf, serializeSceneDocumentToGlb } from '../src/sc
 import { invertMat4, multiplyMat4 } from '../src/mat4.ts';
 import { here, foxBin, foxGltf, loadFbxViewerAdapter, loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.mjs';
 
-const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'www', 'viewer.js')));
+const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'src', 'viewer.ts')));
 const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')));
 const { buildSceneFromFbx } = await loadFbxViewerAdapter();
 const gltf = await loadWasm('gltf');

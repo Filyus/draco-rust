@@ -3,7 +3,7 @@ import { createSceneDocument } from '../src/scene-document.ts';
 import { buildViewerSceneFromDocument } from '../src/scene-document-viewer.ts';
 
 globalThis.WebGL2RenderingContext = class {};
-const { Viewer } = await import('../www/viewer.js');
+const { Viewer } = await import('../src/viewer.ts');
 
 function bytes(values) {
     return new Uint8Array(values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength));

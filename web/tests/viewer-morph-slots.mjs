@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 
 globalThis.WebGL2RenderingContext = class {};
-const { Viewer } = await import('../www/viewer.js');
+const { Viewer } = await import('../src/viewer.ts');
 
 const TARGET_COUNT = 40;
 const SHADER_LIMIT = 32;

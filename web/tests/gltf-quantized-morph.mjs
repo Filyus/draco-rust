@@ -15,7 +15,7 @@ const pkg = resolve(here, '..', 'www', 'pkg');
 
 const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href);
 await gltfModule.default({ module_or_path: await readFile(resolve(pkg, 'gltf_bg.wasm')) });
-const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'www', 'gltf-loader.js')).href);
+const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href);
 
 /** Concatenates typed arrays into one buffer, 4-byte aligning each view. */
 function packViews(views) {

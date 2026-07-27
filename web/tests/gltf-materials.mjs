@@ -12,7 +12,7 @@
  */
 import assert from 'node:assert/strict';
 
-const { buildMaterials, extensionWarnings } = await import('../www/gltf-loader.js');
+const { buildMaterials, extensionWarnings } = await import('../src/gltf-loader.ts');
 
 // A bare material must shade exactly as it did before the extensions landed:
 // no coat, the index of refraction the core model implies, full specular.

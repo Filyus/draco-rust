@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 
 globalThis.WebGL2RenderingContext = class {};
-const { buildNormalizedWeightAttribute } = await import('../www/viewer.js');
+const { buildNormalizedWeightAttribute } = await import('../src/viewer.ts');
 
 const primitive = (weights, { componentType = 5126, components = 4 } = {}) => {
     const array = componentType === 5126 ? Float32Array : componentType === 5121
