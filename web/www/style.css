@@ -597,39 +597,61 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
    value; only its rendering is replaced. Shared by the playback bar and the
    viewport toolbar, which differ in the trigger's look and in which way the
    menu opens, and in nothing else. */
-/* Each picker states the radius of the field it belongs to; the list takes it
-   for the two corners it does not share with the field. */
-.menu-picker { position: relative; --menu-radius: 6px; }
-.anim-clip-picker { --menu-radius: 7px; }
+.menu-picker { position: relative; }
 .menu-picker-native { display: none; }
 .anim-clip-picker {
     min-width: 140px;
     flex: 1 1 180px;
 }
 
-.anim-clip-trigger {
+/* One field, wherever it stands. Every surface used to dress its own -- height,
+   padding, font size, border, fill -- and since the list is built from the
+   field, two surfaces meant two lists. There is one now, and a place that wants
+   it merely places it.
+
+   The colours are opaque on purpose. Translucent ones read as identical in the
+   stylesheet and land on whatever happens to sit behind them, which is how the
+   chosen row and the field came to render a shade apart while being declared
+   the same. */
+.menu-picker-trigger {
     width: 100%;
-    height: 28px;
-    min-height: 28px;
-    padding: 2px 14px;
+    min-height: 30px;
+    padding: 4px 12px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    border: 0;
-    border-radius: 7px;
-    color: #d7e2f2;
+    border: 1px solid rgba(123, 153, 194, 0.24);
+    border-radius: 6px;
+    color: #c2d3ea;
     font-size: var(--viewer-ui-font);
     font-weight: 620;
     text-align: left;
-    background: var(--control);
-    transition: color 140ms ease, background 140ms ease;
+    background: #19273d;
+    cursor: pointer;
+    transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
 }
-.anim-clip-trigger:focus { outline: 0; color: #fff; background: var(--control-hover); }
-.anim-clip-trigger:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-hover); }
-
-.anim-clip-trigger:hover,
-.anim-clip-trigger[aria-expanded="true"] { color: #fff; background: var(--control-hover); }
+/* Hovered, focused and open are one state to look at: the field you are about
+   to use. Held on `:focus` rather than `:focus-visible`, so a field reached
+   with the pointer still shows which one the keyboard would act on. */
+.menu-picker-trigger:hover,
+.menu-picker-trigger:focus,
+.menu-picker-trigger[aria-expanded="true"] {
+    outline: 0;
+    color: #eaf2ff;
+    border-color: rgba(126, 169, 232, 0.55);
+    background: #20314a;
+}
+.menu-picker-trigger:focus-visible { box-shadow: 0 0 0 1px var(--accent-hover); }
+/* The chosen name may be longer than the field; it truncates rather than
+   wrapping, and stays readable in the list. The chevron never gives up room. */
+.menu-picker-trigger > span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.menu-picker-trigger .menu-picker-chevron { flex: none; }
 .menu-picker-chevron {
     width: 7px;
     height: 7px;
@@ -663,20 +685,13 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
        and thinning it only made the border thinner. */
     padding: 0;
     display: grid;
-    /* Border and radius follow the field, per context below. They belong to how
-       that field looks, not to the list: carried here, the list wore an outline
-       in the panel, where the field has one, and the same outline over the
-       playback bar, where it does not -- one component looking like two. */
-    border: 0;
-    border-radius: 0 0 var(--menu-radius) var(--menu-radius);
-    /* No shadow. A list lifted off the surface with one reads as a popup that
-       floated in over the page, when it is the lower half of the control that
-       opened it. The border and the shared edge are what define it.
-
-       Its fill is the control's own surface, set per context below: a
-       translucent row fill has to composite to the same colour on the row as
-       it does on the field, and it cannot if the two sit on different
-       backdrops. */
+    /* The field's border and corners, continued. No shadow: a list lifted off
+       the surface reads as a popup that floated in over the page, when it is
+       the lower half of the control that opened it. */
+    border: 1px solid rgba(123, 153, 194, 0.24);
+    border-top: 0;
+    border-radius: 0 0 6px 6px;
+    background: var(--surface);
 }
 
 .menu-picker-menu[hidden] { display: none; }
@@ -685,7 +700,7 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 .menu-picker-trigger[aria-expanded="true"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .menu-picker-option {
     min-height: 30px;
-    padding: 5px 14px;
+    padding: 4px 12px;
     /* One line: a long variant name wrapped the row and, on the trigger, made
        the control twice as tall as the buttons around it. */
     overflow: hidden;
@@ -710,22 +725,10 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
    Hover is deliberately not that colour. It answers a different question --
    where the pointer is, not what is chosen -- and the two have to be told
    apart while both are on screen. */
+.menu-picker-option.selected { color: #eaf2ff; font-weight: 620; background: #20314a; }
 .menu-picker-option:hover,
 .menu-picker-option:focus,
-.menu-picker-option.selected:hover { color: #fff; background: rgba(109, 145, 197, 0.32); }
-
-/* Each picker sits on its own surface, so each says what its list is made of
-   and what the chosen row wears -- which is whatever its own field wears while
-   the list is open. */
-.scene-variant .menu-picker-menu {
-    background: var(--surface);
-    border: 1px solid rgba(123, 153, 194, 0.24);
-    border-top: 0;
-}
-.scene-variant .menu-picker-option.selected { color: #eaf2ff; background: rgba(93, 129, 178, 0.2); }
-
-.anim-clip-picker .menu-picker-menu { background: var(--control); backdrop-filter: blur(10px); }
-.anim-clip-picker .menu-picker-option.selected { color: #fff; background: var(--control-hover); }
+.menu-picker-option.selected:hover { color: #fff; background: #2f4260; }
 /* An outline rather than a box-shadow, which the selected row already spends
    on its edge mark; two shadows on one element would cancel each other. */
 .menu-picker-option:focus-visible { outline: 1px solid rgba(124, 169, 235, 0.72); outline-offset: -1px; }
@@ -793,64 +796,6 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     text-transform: uppercase;
 }
 .scene-variant[hidden] { display: none; }
-.scene-variant-trigger {
-    width: 100%;
-    min-height: 27px;
-    padding: 3px 9px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    border: 1px solid rgba(123, 153, 194, 0.24);
-    border-radius: 6px;
-    color: #c2d3ea;
-    font-size: 0.68rem;
-    font-weight: 620;
-    text-align: left;
-    background: rgba(93, 129, 178, 0.10);
-    cursor: pointer;
-    transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
-}
-.scene-variant-trigger:hover,
-.scene-variant-trigger[aria-expanded="true"] {
-    color: #eaf2ff;
-    border-color: rgba(126, 169, 232, 0.6);
-    background: rgba(93, 129, 178, 0.2);
-}
-/* Held for as long as the field is the focused one, not only while its list is
-   open. Styling focus-visible alone meant a field clicked with the mouse went
-   back to looking untouched the moment the list closed, while still being what
-   the keyboard would act on. */
-.scene-variant-trigger:focus {
-    outline: 0;
-    color: #eaf2ff;
-    border-color: rgba(126, 169, 232, 0.55);
-    /* The same fill the open state and the selected row use: opening the list
-       is a focus event too, so a separate value here meant the field and its
-       chosen row were a shade apart at exactly the moment both are visible. */
-    background: rgba(93, 129, 178, 0.2);
-}
-.scene-variant-trigger:focus-visible { box-shadow: 0 0 0 1px var(--accent-hover); }
-/* The same metrics as the field above it: it was three pixels taller and its
-   text sat further in, so the list looked like a different control stacked
-   under the one that opened it. The extra pixel of inset is the field's
-   border, which the rows do not have. */
-.scene-variant .menu-picker-option {
-    min-height: 27px;
-    padding: 3px 10px;
-    font-size: 0.68rem;
-    font-weight: 620;
-}
-/* The chosen name may be longer than the control; it truncates rather than
-   wrapping, and the full text stays reachable through the list and the title. */
-.scene-variant-trigger > span:first-child {
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-}
-.scene-variant-trigger .menu-picker-chevron { flex: none; }
-
 .scene-tree { min-height: 88px; flex: 1 1 auto; margin: 0; padding: 4px 2px 4px 0; overflow: auto; }
 .scene-tree-node, .scene-tree-leaf { list-style: none; }
 .scene-tree-node > summary { list-style: none; }

@@ -2154,6 +2154,125 @@ test('the variant list stays within its control and its panel', async ({ page })
   expect(await page.locator('#viewer-variant-menu .menu-picker-option').count()).toBe(9);
 });
 
+/**
+ * Two pickers, one control.
+ *
+ * They sit on different surfaces, so each names its own colours and its own
+ * border -- but everything that makes them the same control has to come out
+ * the same, and it kept not doing. Each surface had been sizing its own field:
+ * 28px tall with 14px of padding over the viewport, 27px with 9px in the
+ * sidebar, at two different font sizes. The list takes its metrics from the
+ * field it opens under, so the two lists came out different too, which is
+ * exactly how it looked.
+ *
+ * One fixture carrying both a variant list and a clip list, because a gate that
+ * measures one picker in one test and the other in another cannot see them
+ * drift apart.
+ */
+test('the two pickers are the same control', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles({
+    name: 'both.gltf',
+    mimeType: 'model/gltf+json',
+    buffer: Buffer.from(JSON.stringify({
+      asset: { version: '2.0' },
+      extensionsUsed: ['KHR_materials_variants'],
+      extensions: { KHR_materials_variants: { variants: [{ name: 'Ruby' }, { name: 'Emerald' }] } },
+      buffers: [{
+        byteLength: 76,
+        uri: 'data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPw==',
+      }],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: 36 },
+        { buffer: 0, byteOffset: 36, byteLength: 8 },
+        { buffer: 0, byteOffset: 44, byteLength: 32 },
+      ],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
+        { bufferView: 1, componentType: 5126, count: 2, type: 'SCALAR', min: [0], max: [1] },
+        { bufferView: 2, componentType: 5126, count: 2, type: 'VEC4' },
+      ],
+      materials: [{ name: 'Base' }, { name: 'Alt' }],
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          material: 0,
+          extensions: { KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }] } },
+        }],
+      }],
+      nodes: [{ mesh: 0 }],
+      // Two clips, so the clip list has an unchosen row to compare as well.
+      animations: [{
+        name: 'Spin',
+        samplers: [{ input: 1, output: 2, interpolation: 'LINEAR' }],
+        channels: [{ sampler: 0, target: { node: 0, path: 'rotation' } }],
+      }, {
+        name: 'Rest',
+        samplers: [{ input: 1, output: 2, interpolation: 'LINEAR' }],
+        channels: [{ sampler: 0, target: { node: 0, path: 'rotation' } }],
+      }],
+      scenes: [{ nodes: [0] }],
+      scene: 0,
+    })),
+  });
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  const shapeOf = (field, menu) => page.evaluate(([fieldId, menuId]) => {
+    // Everything that makes it look like itself, not only its size: the two
+    // used to agree on metrics and still differ by a border, a corner radius
+    // and a fill, because each surface dressed its own.
+    const measure = (element) => {
+      const style = getComputedStyle(element);
+      return {
+        // What a row and the field it stands for must share.
+        text: [
+          Math.round(element.getBoundingClientRect().height),
+          style.padding,
+          style.fontSize,
+          style.fontWeight,
+          style.color,
+          style.backgroundColor,
+        ].join('|'),
+        // What only the two pickers must share: a row has no border of its own
+        // and no corners, because the list is what carries those.
+        frame: [style.border, style.borderRadius, style.boxShadow].join('|'),
+      };
+    };
+    return {
+      field: measure(document.querySelector(fieldId)),
+      row: measure(document.querySelector(`${menuId} .menu-picker-option:not(.selected)`)),
+      chosen: measure(document.querySelector(`${menuId} .menu-picker-option.selected`)),
+    };
+  }, [field, menu]);
+
+  // Settled before each reading: the field's colours are transitioned, so a
+  // measurement taken as the list opens catches it part way there.
+  await page.locator('#viewer-variant-trigger').click();
+  await page.waitForTimeout(300);
+  const variant = await shapeOf('#viewer-variant-trigger', '#viewer-variant-menu');
+  await page.keyboard.press('Escape');
+  await page.locator('#anim-clip-trigger').click();
+  await page.waitForTimeout(300);
+  const clip = await shapeOf('#anim-clip-trigger', '#anim-clip-menu');
+  await page.keyboard.press('Escape');
+
+  expect(clip).toEqual(variant);
+  // Including the list itself, which is where the difference showed.
+  const menus = await page.evaluate(() => {
+    const paint = (selector) => {
+      const style = getComputedStyle(document.querySelector(selector));
+      return [style.backgroundColor, style.border, style.borderRadius, style.boxShadow].join('|');
+    };
+    return { variant: paint('#viewer-variant-menu'), clip: paint('#anim-clip-menu') };
+  });
+  expect(menus.clip).toBe(menus.variant);
+  // And within each, the chosen row is shaped like the field it stands for
+  // while an unchosen one only differs in weight.
+  expect(variant.chosen.text).toBe(variant.field.text);
+  expect(variant.row.text).not.toBe(variant.chosen.text);
+});
+
 test('EXT_mesh_gpu_instancing draws the mesh once per instance transform', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);
