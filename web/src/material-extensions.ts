@@ -91,6 +91,12 @@ export const MATERIAL_EXTENSIONS = [
     textures: [{ property: 'transmissionTexture', slot: 'TRANSMISSION' }],
   },
   {
+    // How far apart the index of refraction pulls the channels. Zero is one
+    // index for all of them, which is what transmission alone assumes.
+    name: 'KHR_materials_dispersion',
+    fields: [{ property: 'dispersion', default: 0 }],
+  },
+  {
     // The interior the transmitted light crosses. A thickness of zero is a
     // thin surface with no volume, so the attenuation defaults never apply.
     name: 'KHR_materials_volume',

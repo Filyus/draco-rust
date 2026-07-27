@@ -74,6 +74,10 @@ const INTERPRETED = {
     material: { extensions: { KHR_materials_transmission: { transmissionFactor: 0.9 } } },
     effect: (read) => assert.equal(read.transmissionFactor, 0.9),
   },
+  KHR_materials_dispersion: {
+    material: { extensions: { KHR_materials_dispersion: { dispersion: 0.05 } } },
+    effect: (read) => assert.equal(read.dispersion, 0.05),
+  },
   KHR_materials_volume: {
     material: {
       extensions: {
@@ -229,6 +233,7 @@ const stated = {
     KHR_materials_specular: { specularFactor: 0.4, specularColorFactor: [0.5, 0.6, 0.7] },
     KHR_materials_sheen: { sheenColorFactor: [0.2, 0.3, 0.4], sheenRoughnessFactor: 0.6 },
     KHR_materials_transmission: { transmissionFactor: 0.9 },
+    KHR_materials_dispersion: { dispersion: 0.05 },
     KHR_materials_volume: {
       thicknessFactor: 0.4, attenuationDistance: 2.5, attenuationColor: [0.9, 0.3, 0.1],
     },

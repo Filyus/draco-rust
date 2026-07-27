@@ -187,6 +187,7 @@ uniform vec3 uSpecularColorFactor;
 // KHR_materials_transmission / KHR_materials_volume: what passes through the
 // surface, and the interior it crosses on the way.
 uniform float uTransmissionFactor;
+uniform float uDispersion;
 uniform float uThicknessFactor;
 uniform float uAttenuationDistance;
 uniform vec3 uAttenuationColor;
@@ -330,12 +331,34 @@ vec3 iridescentFresnel(float filmIor, float cosTheta1, float thickness, vec3 bas
  * Roughness picks the mip level: a rough transmissive surface scatters, and
  * the mip chain is the blur that stands in for it.
  */
-vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness) {
+float transmittedChannel(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness, int channel) {
     vec3 refracted = refract(-view, normal, 1.0 / max(ior, 1.0001));
     vec3 exitPoint = position + normalize(refracted) * thickness;
     vec4 clip = uProjection * uView * vec4(exitPoint, 1.0);
     vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, vec2(0.0), vec2(1.0));
-    return textureLod(uFrameSnapshot, uv, roughness * uFrameMaxLod).rgb;
+    return textureLod(uFrameSnapshot, uv, roughness * uFrameMaxLod)[channel];
+}
+
+vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness) {
+    // KHR_materials_dispersion: one index per channel instead of one for all,
+    // spread by the Abbe number the extension states as its reciprocal. Zero
+    // leaves the three rays on top of each other, which is the single-index
+    // case, so the branch is what the extension costs when absent.
+    if (uDispersion <= 0.0) {
+        vec3 refracted = refract(-view, normal, 1.0 / max(ior, 1.0001));
+        vec3 exitPoint = position + normalize(refracted) * thickness;
+        vec4 clip = uProjection * uView * vec4(exitPoint, 1.0);
+        vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+        return textureLod(uFrameSnapshot, uv, roughness * uFrameMaxLod).rgb;
+    }
+    // The spread the extension defines: the red and blue ends sit half a
+    // dispersion apart in index, with green at the material's own.
+    float spread = (2.0 * uDispersion) / 20.0;
+    return vec3(
+        transmittedChannel(position, normal, view, ior - spread, thickness, roughness, 0),
+        transmittedChannel(position, normal, view, ior, thickness, roughness, 1),
+        transmittedChannel(position, normal, view, ior + spread, thickness, roughness, 2)
+    );
 }
 
 /**

@@ -1762,8 +1762,9 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
         { baseColorFactor: [0, 0, 0, 1], metallicFactor: 0, roughnessFactor: 0.05, ...front },
       ],
       accessors: [
-        // The far quad, larger, and the near one in front of it.
-        accessor(new Float32Array([-2, -2, -1, 2, -2, -1, 2, 2, -1, -2, 2, -1]), 3),
+        // Behind: a green stripe rather than a wall, so a ray that leaves the
+        // glass at a different angle can land off it.
+        accessor(new Float32Array([-0.45, -2, -1, 0.45, -2, -1, 0.45, 2, -1, -0.45, 2, -1]), 3),
         accessor(new Float32Array([-1, -1, 0.5, 1, -1, 0.5, 1, 1, 0.5, -1, 1, 0.5]), 3),
         accessor(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]), 3),
         accessor(new Uint16Array([0, 1, 2, 0, 2, 3]), 1, 5123),
@@ -1792,7 +1793,7 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
       viewer.setScene(buildViewerSceneFromDocument(document_(front)));
       viewer.camera.target.set([0, 0, 0]);
       viewer.camera.distance = 4;
-      viewer.camera.azimuth = 0;
+      viewer.camera.azimuth = 0.45;
       viewer.camera.elevation = 0;
       viewer._render();
       const rgba = new Uint8Array(4);
@@ -1809,6 +1810,12 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
 
     const opaque = sample({});
     const clear = sample({ transmissionFactor: 1 });
+    // KHR_materials_dispersion: the same glass, same thickness, with the
+    // channels pulled apart - so the three rays leave at three angles and land
+    // in three places. The control has to carry the thickness too, or what it
+    // measures is the refraction offset rather than the dispersion.
+    const thick = sample({ transmissionFactor: 1, thicknessFactor: 1 });
+    const dispersed = sample({ transmissionFactor: 1, thicknessFactor: 1, dispersion: 4 });
     // The same glass filled with a green-absorbing medium: what comes through
     // is what the volume left of it.
     const tinted = sample({
@@ -1817,7 +1824,7 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
       attenuationDistance: 0.35,
       attenuationColor: [1, 0.1, 0.1],
     });
-    return { opaque, clear, tinted, glError };
+    return { opaque, clear, tinted, thick, dispersed, glError };
   });
 
   expect(observed.glError).toBe(0);
@@ -1827,6 +1834,12 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
   expect(observed.clear[1]).toBeGreaterThan(observed.opaque[1] + 40);
   // With a volume that absorbs green, less of it does.
   expect(observed.tinted[1]).toBeLessThan(observed.clear[1] - 20);
+  // Dispersion pulls the red and blue ends apart and leaves green on the
+  // material's own index. So against the same glass at the same thickness,
+  // red has moved onto the stripe and green has not moved at all - which is
+  // the extension rather than a brighter or dimmer refraction.
+  expect(Math.abs(observed.dispersed[0] - observed.thick[0])).toBeGreaterThan(8);
+  expect(Math.abs(observed.dispersed[1] - observed.thick[1])).toBeLessThan(8);
 });
 
 test('KHR_materials_iridescence tints the specular lobe by film thickness', async ({ page }) => {
