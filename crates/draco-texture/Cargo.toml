@@ -23,7 +23,7 @@ ruzstd = { version = "0.7", default-features = false, features = ["std"] }
 # Everything, which is what a build for the web converter wants:
 # `KHR_texture_basisu` lets a KTX2 file hold either Basis codec, so a reader
 # with one of them refuses half the files it is pointed at.
-default = ["etc1s", "uastc", "block-formats"]
+default = ["etc1s", "uastc", "modern", "legacy"]
 # Basis Universal ETC1S decoding.
 etc1s = []
 # Basis Universal UASTC LDR decoding.
@@ -51,3 +51,24 @@ astc = []
 # All three, for a build that does not know what it will be run on. This is
 # what the web converter takes, since a browser can be any of them.
 block-formats = ["bc", "etc", "astc"]
+
+# The two above say what a target is; these two say why it is still here. A
+# family's membership changes as hardware turns over, so the names carry the
+# policy and the lists carry today's answer - which is the only part that has
+# to be revisited when the figures move.
+#
+# What a machine sold today takes. Both halves of the desktop-mobile split,
+# because "modern" is about the hardware being current, not about it being
+# one kind: s3tc is on 99.9% of Windows and ASTC on essentially every phone.
+modern = ["bc", "astc"]
+# What is carried only for hardware with no current alternative. Today that is
+# `etc` and only `etc`: every machine with ASTC also has ETC, so the family
+# serves exactly the devices that have one and not the other - about six points
+# of Android at the last figures, and shrinking. `bc` is old by date and
+# nowhere near legacy by use.
+#
+# Cargo features add, they do not subtract, so this cannot be a flag that
+# default turns off. It is in default instead, and retiring the family means
+# deleting the word from that line - one edit, in the place the reasoning for
+# it is written. The CI slice that builds without it keeps that edit honest.
+legacy = ["etc"]

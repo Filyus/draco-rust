@@ -134,6 +134,11 @@ jobs:
           cargo check --manifest-path crates/Cargo.toml -p draco-texture --target wasm32-unknown-unknown
           cargo check --manifest-path web/Cargo.toml -p ktx2-wasm --target wasm32-unknown-unknown --no-default-features --features bc
           cargo check --manifest-path web/Cargo.toml -p ktx2-wasm --target wasm32-unknown-unknown --no-default-features --features etc,astc
+          # The build the day the `legacy` families are retired: the default
+          # set with that one word removed. Kept green so that retirement is
+          # the one-line edit it is described as, and not a day's work.
+          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features etc1s,uastc,modern
+          cargo check --manifest-path web/Cargo.toml -p ktx2-wasm --target wasm32-unknown-unknown --no-default-features --features modern
 
       - name: Test draco-texture
         run: cargo test --manifest-path crates/Cargo.toml -p draco-texture

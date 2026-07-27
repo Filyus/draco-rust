@@ -135,6 +135,25 @@ dropping the desktop family more than halves the module and dropping the mobile
 ones barely registers. Nothing about the container or either codec is optional:
 a KTX2 file is read and decoded to pixels whatever the module was built for.
 
+Two more flags sit over those and say not what a target is but why it is still
+here:
+
+- `modern` — what hardware sold today takes: `bc` and `astc` both, since being
+  current is not the same as being one kind of machine. s3tc is on 99.9% of
+  Windows, ASTC on essentially every phone.
+- `legacy` — what is carried only for hardware with no current alternative.
+  Today that is `etc` and nothing else: every machine with ASTC also has ETC,
+  so the family serves precisely the devices that have one and not the other,
+  about six points of Android and shrinking. `bc` is old by date and nowhere
+  near legacy by use.
+
+Cargo features add and never subtract, so `legacy` cannot be a flag the default
+set turns off; it is *in* the default set, and retiring the family means
+deleting that one word. CI builds both ways, so it stays a one-line edit rather
+than a day's work when the figures say it is time. Doing it today would save
+4 KiB — which is the point: the reason to drop it will be that it serves nobody,
+not that it costs anything.
+
 Two gaps are worth stating. Five of UASTC's nineteen block modes appear in none
 of the fixtures, so the transcoder is written from the reference for those and
 verified by nothing; the UASTC gate names them rather than leaving it unsaid.

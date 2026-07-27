@@ -20,9 +20,19 @@
 //!
 //! The second axis is by hardware rather than by target because that is what
 //! goes out of date: a target is worth carrying for as long as machines that
-//! take it are, and every one of these will one day stop being. `etc` is the
-//! first to age — every machine with ASTC also has ETC — so it exists for the
-//! ones that have ETC and not ASTC, and can be dropped when they are gone.
+//! take it are, and every one of these will one day stop being.
+//!
+//! Over those sit `modern` and `legacy`, which say not what a target is
+//! but why it is still here. `modern` is what hardware sold today takes, both
+//! `bc` and `astc`, since being current is not the same as being one kind of
+//! machine. `legacy` is what is carried only for hardware with no current
+//! alternative, today `etc` and only `etc` — every machine with ASTC also has
+//! ETC, so it serves the devices that have one and not the other.
+//!
+//! `legacy` is in the default set rather than subtracted from it, because
+//! Cargo features add and never subtract; retiring a family is deleting the
+//! word from that line, and a CI slice builds without it so that edit stays a
+//! one-liner.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
