@@ -697,16 +697,24 @@ impl Default for ExtensionRegistry {
         registry
             .register(DracoExtension)
             .expect("built-in extension names are unique");
-        registry
-            .register(MeshGpuInstancingExtension)
-            .expect("built-in extension names are unique");
-        registry
-            .register(StructuralMetadataExtension)
-            .expect("built-in extension names are unique");
-        for name in BINARY_FREE_EXTENSIONS {
+        // Everything below exists to answer one question — may a binary
+        // transform touch this document — which a build that cannot write one
+        // never asks. Registering them there would put twenty handlers into a
+        // reader whose only use for the registry is decoding Draco geometry,
+        // and the WASM reader is measured against a size budget.
+        #[cfg(feature = "write")]
+        {
             registry
-                .register(BinaryFreeExtension(name))
+                .register(MeshGpuInstancingExtension)
                 .expect("built-in extension names are unique");
+            registry
+                .register(StructuralMetadataExtension)
+                .expect("built-in extension names are unique");
+            for name in BINARY_FREE_EXTENSIONS {
+                registry
+                    .register(BinaryFreeExtension(name))
+                    .expect("built-in extension names are unique");
+            }
         }
         registry
     }
