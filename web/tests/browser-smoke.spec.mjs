@@ -1735,6 +1735,70 @@ test('one surface program per set of texture slots, not per material', async ({ 
   expect(observed.sources[1]).toEqual({ slots: 1, samplers: 1 });
 });
 
+test('KHR_materials_variants offers every choice and shows the one picked', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  // A variant is a choice about how to look at the scene, not a property of
+  // it, so the document carries every alternative and no selection. The picker
+  // is where the selection is made, and it must reach the frame.
+  await page.locator('#file-input').setInputFiles({
+    name: 'variants.gltf',
+    mimeType: 'model/gltf+json',
+    buffer: Buffer.from(JSON.stringify({
+      asset: { version: '2.0' },
+      extensionsUsed: ['KHR_materials_variants'],
+      extensions: { KHR_materials_variants: { variants: [{ name: 'Ruby' }, { name: 'Emerald' }] } },
+      buffers: [{
+        byteLength: 36,
+        uri: 'data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA',
+      }],
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] }],
+      materials: [
+        { name: 'Plain', emissiveFactor: [0, 0, 0] },
+        { name: 'Ruby', emissiveFactor: [1, 0, 0] },
+        { name: 'Emerald', emissiveFactor: [0, 1, 0] },
+      ],
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          material: 0,
+          extensions: {
+            KHR_materials_variants: {
+              mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }],
+            },
+          },
+        }],
+      }],
+      nodes: [{ mesh: 0 }],
+      scenes: [{ nodes: [0] }],
+      scene: 0,
+    })),
+  });
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  // The picker lists the default plus every variant the file named.
+  await expect(page.locator('#viewer-variant-picker')).toBeVisible();
+  expect(await page.locator('#viewer-variant option').allTextContents()).toEqual(['Default', 'Ruby', 'Emerald']);
+
+  const emissiveOf = async () => page.evaluate(async () => {
+    const { state } = await import('/app/state.js');
+    const scene = state.viewer.scene;
+    const index = scene.meshes[0].primitives[0].materialIndex;
+    return { index, emissive: [...(scene.materials[index]?.emissiveFactor ?? [])] };
+  });
+
+  const plain = await emissiveOf();
+  await page.locator('#viewer-variant').selectOption('1');
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  const emerald = await emissiveOf();
+
+  // The primitive took a different material, and the one the variant names.
+  expect(plain.index).toBe(0);
+  expect(emerald.index).toBe(2);
+  expect(emerald.emissive[1]).toBeGreaterThan(0.5);
+});
+
 test('KHR_lights_punctual lights the scene from the node that places it', async ({ page }) => {
   await page.goto('/index.html');
   // A light is the first thing the portable document carries that is neither

@@ -88,6 +88,7 @@ assert.equal(list[1].clearcoatFactor ?? 0, 0);
 // The extensions above are now acted on, so they must stop being reported as
 // ignored — the warning is what tells a user the preview is incomplete.
 const supported = [
+  'KHR_materials_variants',
   'KHR_lights_punctual',
   'KHR_materials_anisotropy',
   'KHR_materials_transmission',

@@ -184,10 +184,21 @@ export function lowerSceneDocumentToGltf(document: SceneDocument) {
   // them, which is how the document holds them too.
   const lights = (document.lights ?? []).map(lowerLight);
   if (lights.length > 0) extensionsUsed.add('KHR_lights_punctual');
+  // KHR_materials_variants states the names at the root and the choices on the
+  // primitives, which is where the document keeps them too.
+  const variants = (document.variants ?? []).map((name) => ({ name }));
+  if (variants.length > 0) extensionsUsed.add('KHR_materials_variants');
 
   const manifest = {
     asset: { version: '2.0', generator: 'draco-rust SceneDocument exporter' },
-    ...(lights.length > 0 ? { extensions: { KHR_lights_punctual: { lights } } } : {}),
+    ...(lights.length > 0 || variants.length > 0
+      ? {
+        extensions: {
+          ...(lights.length > 0 ? { KHR_lights_punctual: { lights } } : {}),
+          ...(variants.length > 0 ? { KHR_materials_variants: { variants } } : {}),
+        },
+      }
+      : {}),
     buffers: [{ uri: 'scene.bin', byteLength: binary.length }],
     bufferViews,
     accessors,
@@ -368,6 +379,24 @@ function lowerMaterial(
  * every consumer would have to unwrap. Defaults are omitted: the extension's
  * own are what an absent field means.
  */
+/**
+ * A primitive's variant choices, grouped the way the extension writes them.
+ *
+ * The document maps variant to material because that is the question a
+ * consumer asks; the extension lists material to variants because a material
+ * is usually shared by several. Same information, and this is where it turns
+ * around.
+ */
+function lowerVariantMappings(selected: Record<number, number> | undefined) {
+  if (!selected) return null;
+  const byMaterial = new Map<number, number[]>();
+  for (const [variant, material] of Object.entries(selected)) {
+    byMaterial.set(material, [...(byMaterial.get(material) ?? []), Number(variant)]);
+  }
+  const mappings = [...byMaterial].map(([material, variants]) => ({ material, variants: variants.sort((a, b) => a - b) }));
+  return mappings.length > 0 ? { KHR_materials_variants: { mappings } } : null;
+}
+
 function lowerLight(light: SceneLight, index: number) {
   const output: Record<string, unknown> = {
     type: light.type,
@@ -430,6 +459,9 @@ function lowerMesh(
         ...(primitive.material === undefined ? {} : { material: primitive.material }),
         mode: primitive.mode ?? 4,
         ...(targets.length ? { targets } : {}),
+        ...(lowerVariantMappings(primitive.variantMaterials)
+          ? { extensions: lowerVariantMappings(primitive.variantMaterials)! }
+          : {}),
       };
     }),
   };

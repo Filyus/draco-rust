@@ -37,6 +37,7 @@ export const GLTF_INTERPRETED_EXTENSIONS: ReadonlySet<string> = new Set([
   // one on the scene, so they are named here and read where they live.
   'KHR_texture_transform',
   'KHR_lights_punctual',
+  'KHR_materials_variants',
 ]);
 
 /**

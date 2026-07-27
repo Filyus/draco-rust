@@ -10,7 +10,7 @@ import { modules, state } from './state.ts';
 import { renderSceneDocumentSummary } from './scene-report.ts';
 import { setWarningSource } from './warnings.ts';
 import { updateAnimationPlayButton, updateAnimationUi } from './animation-ui.ts';
-import { viewerAutoRotateBtn, viewerBaseColorBtn, viewerCanvas, viewerControls, viewerGridBtn, viewerSection, viewerSmoothNormalsBtn, viewerWireframeBtn } from './dom.ts';
+import { viewerVariantPicker, viewerVariantSelect, viewerAutoRotateBtn, viewerBaseColorBtn, viewerCanvas, viewerControls, viewerGridBtn, viewerSection, viewerSmoothNormalsBtn, viewerWireframeBtn } from './dom.ts';
 
 /**
  * The 3D preview: creating the viewer on demand, loading a scene into it, and
@@ -92,6 +92,7 @@ export async function loadPreview(extension: string) {
     renderSceneDocumentSummary(state.currentSceneDocument!);
     setWarningSource('preview', scene.warnings || []);
     setViewerControlsEnabled(true);
+    syncVariantPicker(scene);
     syncViewerToolbar();
     log('Preview ready', 'success');
   } catch (error) {
@@ -113,7 +114,9 @@ export async function loadPreview(extension: string) {
  * known.
  */
 async function previewFromDocument(document: SceneDocument): Promise<ViewerScene> {
-  const scene = await hydrateSceneTextures(buildViewerSceneFromDocument(document) as ViewerScene);
+  const scene = await hydrateSceneTextures(
+    buildViewerSceneFromDocument(document, state.currentVariant) as ViewerScene,
+  );
   scene.warnings.push(...extensionWarnings(
     state.currentGltfProvenance ?? {},
     honoredTextureSources(scene),
@@ -137,6 +140,38 @@ async function previewFromLoader(): Promise<ViewerScene> {
     modules.gltf.module,
     { onLog: (msg: string, type: string) => log(msg, type) },
   );
+}
+
+/**
+ * Offer the scene's material variants, or hide the picker when it has none.
+ *
+ * A variant is a choice about how to look at the scene, so it belongs beside
+ * the display toggles rather than in the summary: the document carries every
+ * alternative and no selection, and this is where the selection is made.
+ */
+function syncVariantPicker(scene: ViewerScene) {
+  const variants = scene.variants ?? [];
+  viewerVariantPicker.hidden = variants.length === 0;
+  if (variants.length === 0) {
+    state.currentVariant = null;
+    return;
+  }
+  viewerVariantSelect.replaceChildren(...['Default', ...variants].map((name, index) => {
+    const option = window.document.createElement('option');
+    option.value = String(index - 1);
+    option.textContent = name;
+    return option;
+  }));
+  viewerVariantSelect.value = String(state.currentVariant ?? -1);
+}
+
+/** Re-read the document under the chosen variant; only materials change. */
+export function installVariantPicker() {
+  viewerVariantSelect.addEventListener('change', () => {
+    const chosen = Number(viewerVariantSelect.value);
+    state.currentVariant = chosen < 0 ? null : chosen;
+    if (state.currentFileType) void loadPreview(state.currentFileType);
+  });
 }
 
 export function setViewerControlsEnabled(enabled: boolean) {

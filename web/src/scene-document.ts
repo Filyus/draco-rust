@@ -119,6 +119,15 @@ export interface ScenePrimitive {
   material?: number;
   mode?: number;
   targets?: AttributeMap[];
+  /**
+   * Which material this primitive takes under each named variant.
+   *
+   * Indexed by `SceneDocument.variants`; an entry absent from the map means
+   * the primitive keeps `material` under that variant. A variant is a choice
+   * the viewer makes, not a property of the scene, which is why the document
+   * carries every alternative rather than a selected one.
+   */
+  variantMaterials?: Record<number, number>;
 }
 
 export interface SceneMesh {
@@ -196,6 +205,13 @@ export interface SceneAnimation {
 export interface SceneDocument {
   version: number;
   resources: SceneResource[];
+  /**
+   * Named material variants a consumer may switch between.
+   *
+   * The names only; which material each primitive takes under one is stated on
+   * the primitive, the way glTF states it.
+   */
+  variants?: string[];
   /**
    * Punctual lights, placed by the nodes that reference them.
    *
@@ -341,6 +357,7 @@ export function validateSceneDocument(input: unknown): ValidationResult {
   document.textures.forEach((texture: Untrusted, index: number) => validateTexture(texture, index, document.resources.length, errors));
   document.materials.forEach((material: Untrusted, index: number) => validateMaterial(material, index, document.textures.length, errors));
   (document.lights ?? []).forEach((light: Untrusted, index: number) => validateLight(light, index, errors));
+  (document.variants ?? []).forEach((variant: Untrusted, index: number) => validateVariant(variant, index, errors));
   document.accessors.forEach((accessor: Untrusted, index: number) => validateAccessor(accessor, index, errors));
 
   document.meshes.forEach((mesh: Untrusted, meshIndex: number) => {
@@ -448,6 +465,13 @@ function validateTexture(texture: Untrusted, index: number, resourceCount: numbe
   validateIndex(texture.resource, resourceCount, `${label}.resource`, errors);
   if (texture.name !== undefined && typeof texture.name !== 'string') errors.push(`${label}.name must be a string when present`);
   if (texture.sampler !== undefined && (!texture.sampler || typeof texture.sampler !== 'object')) errors.push(`${label}.sampler must be an object when present`);
+}
+
+/** A variant is a name and nothing else; what it selects lives on primitives. */
+function validateVariant(variant: Untrusted, index: number, errors: string[]) {
+  if (typeof variant !== 'string' || variant.length === 0) {
+    errors.push(`variants[${index}] must be a non-empty name`);
+  }
 }
 
 const LIGHT_TYPES = new Set(['directional', 'point', 'spot']);
@@ -564,6 +588,17 @@ function validatePrimitive(
   }
   if (primitive.indices !== undefined) validateIndex(primitive.indices, document.accessors.length, `${label}.indices`, errors);
   if (primitive.material !== undefined) validateIndex(primitive.material, document.materials.length, `${label}.material`, errors);
+  if (primitive.variantMaterials !== undefined) {
+    const variantCount = (document.variants ?? []).length;
+    if (!primitive.variantMaterials || typeof primitive.variantMaterials !== 'object') {
+      errors.push(`${label}.variantMaterials must be an object`);
+    } else {
+      for (const [variant, material] of Object.entries(primitive.variantMaterials)) {
+        validateIndex(Number(variant), variantCount, `${label}.variantMaterials key`, errors);
+        validateIndex(material, document.materials.length, `${label}.variantMaterials[${variant}]`, errors);
+      }
+    }
+  }
   if (primitive.targets !== undefined) {
     if (!Array.isArray(primitive.targets)) {
       errors.push(`${label}.targets must be an array`);

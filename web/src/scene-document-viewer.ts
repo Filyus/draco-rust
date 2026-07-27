@@ -41,7 +41,22 @@ const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
  * different node (it carries an `index`, not a rest/animation TRS pair), so
  * the one type both must satisfy belongs with the viewer that consumes them.
  */
-export function buildViewerSceneFromDocument(document: SceneDocument) {
+/**
+ * Which material a primitive shows under the chosen variant.
+ *
+ * The document carries every alternative and no selection, because a variant
+ * is a choice the viewer makes. A primitive the variant says nothing about
+ * keeps its own material, which is what the extension means by an absent
+ * mapping.
+ */
+function selectedMaterial(primitive: ScenePrimitive, variant: number | null): number {
+  if (variant !== null && primitive.variantMaterials?.[variant] !== undefined) {
+    return primitive.variantMaterials[variant];
+  }
+  return primitive.material ?? -1;
+}
+
+export function buildViewerSceneFromDocument(document: SceneDocument, variant: number | null = null) {
   assertValidSceneDocument(document);
   // Only what the renderer cannot show. The document's own warnings — what the
   // portable form cost the asset — are a different question with a different
@@ -54,7 +69,7 @@ export function buildViewerSceneFromDocument(document: SceneDocument) {
   const meshes = document.meshes.map((mesh, meshIndex) => ({
     name: mesh.name || `mesh_${meshIndex}`,
     primitives: mesh.primitives.map((primitive, primitiveIndex) => adaptPrimitive(
-      primitive, accessors, viewerWarnings, meshIndex, primitiveIndex,
+      primitive, accessors, viewerWarnings, meshIndex, primitiveIndex, variant,
     )),
     aabb: meshAabb(mesh, accessors),
   }));
@@ -98,6 +113,7 @@ export function buildViewerSceneFromDocument(document: SceneDocument) {
     animations,
     renderables,
     aabb,
+    variants: [...(document.variants ?? [])],
     warnings: viewerWarnings,
   };
 }
@@ -118,6 +134,7 @@ function adaptPrimitive(
   warnings: string[],
   meshIndex: number,
   primitiveIndex: number,
+  variant: number | null,
 ) {
   const attributes: Record<string, RuntimeAccessor> = {};
   for (const [semantic, accessorIndex] of Object.entries(primitive.attributes)) {
@@ -136,7 +153,7 @@ function adaptPrimitive(
     // Matches the glTF loader's convention: a primitive without a material
     // resolves to nothing, and the renderer falls back to its own defaults.
     // Defaulting to 0 would silently paint it with the first material instead.
-    materialIndex: primitive.material ?? -1,
+    materialIndex: selectedMaterial(primitive, variant),
   };
   if (primitive.indices !== undefined) runtime.indices = accessors[primitive.indices];
   if (primitive.targets?.length) {

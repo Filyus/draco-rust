@@ -78,6 +78,9 @@ export function buildSceneDocumentWithGltfProvenance(
     const imageResources = collectImageResources(asset, manifest.images || [], resources, document);
     const textureBySource = collectTextures(manifest.textures || [], manifest.samplers || [], imageResources, document);
     collectMaterials(manifest.materials || [], textureBySource, document);
+    // Before the meshes: a primitive's variant mapping is validated against
+    // the list of variants, so the list has to exist first.
+    collectVariants(manifest, document);
     collectMeshes(asset, manifest.meshes || [], document, accessorBySource);
     collectLights(manifest, document);
     collectNodes(manifest, document);
@@ -240,6 +243,8 @@ function collectMeshes(
           ...(typeof primitive.material === 'number' ? { material: primitive.material } : {}),
           ...(targets.length > 0 ? { targets } : {}),
         };
+        const variants = variantMaterials(primitive, document.variants?.length ?? 0);
+        if (variants) result.variantMaterials = variants;
         if (packed.hasIndices()) {
           result.indices = reuseAccessor(
             document,
@@ -261,6 +266,36 @@ function collectMeshes(
       }
     }),
   })));
+}
+
+/**
+ * The scene's named material variants.
+ *
+ * Only the names; which material a primitive takes under each is read with the
+ * primitive, because that is where glTF states it and where a consumer needs
+ * it. A variant nothing maps to is still carried: it is a choice the file
+ * offers, and dropping it would silently shorten the list the indices count
+ * against.
+ */
+function collectVariants(manifest: GltfJson, document: SceneDocument) {
+  const declared: GltfJson[] = manifest.extensions?.KHR_materials_variants?.variants || [];
+  if (declared.length === 0) return;
+  document.variants = declared.map((variant: GltfJson, index: number) => (
+    typeof variant?.name === 'string' && variant.name ? variant.name : `variant_${index}`
+  ));
+}
+
+/** Which material each variant selects for one primitive. */
+function variantMaterials(primitive: GltfJson, variantCount: number): Record<number, number> | null {
+  const mappings: GltfJson[] = primitive?.extensions?.KHR_materials_variants?.mappings || [];
+  const selected: Record<number, number> = {};
+  for (const mapping of mappings) {
+    if (!Number.isInteger(mapping?.material)) continue;
+    for (const variant of mapping.variants || []) {
+      if (Number.isInteger(variant) && variant >= 0 && variant < variantCount) selected[variant] = mapping.material;
+    }
+  }
+  return Object.keys(selected).length > 0 ? selected : null;
 }
 
 /** The light a node places, as KHR_lights_punctual states it. */

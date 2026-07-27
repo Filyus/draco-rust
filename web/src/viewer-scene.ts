@@ -211,6 +211,8 @@ export interface ViewerScene {
   nodes: ViewerNode[];
   /** Placed punctual lights; empty for a scene that declares none. */
   lights?: ViewerLight[];
+  /** Named material variants the source offered, for a consumer to choose from. */
+  variants?: string[];
   rootIndices: number[];
   meshes: ViewerMesh[];
   skins: ViewerSkin[];

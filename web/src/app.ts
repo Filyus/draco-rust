@@ -89,6 +89,7 @@ import {
 import { exportFile, updateExportOptions } from './app/export.ts';
 import {
   ensureViewer,
+  installVariantPicker,
   installViewerToggles,
   loadPreview,
   setViewerControlsEnabled,
@@ -206,6 +207,7 @@ function setupEventListeners() {
     state.viewer.setAutoRotate(!state.viewer.autoRotate);
   });
   installViewerToggles();
+  installVariantPicker();
 
   // Animation controls
   animPlayBtn.addEventListener('click', toggleAnimationPlayback);
@@ -302,6 +304,7 @@ async function handleFile(file: File, companionFiles: File[] = []) {
     state.currentSceneDocument = null;
     state.currentFbxProvenance = null;
     state.currentGltfProvenance = null;
+    state.currentVariant = null;
     clearWarningPanel();
     for (const companion of companionFiles) {
       if (Object.prototype.hasOwnProperty.call(state.currentSourceResources, companion.name)) {
@@ -431,6 +434,7 @@ function clearFile() {
   state.currentSceneDocument = null;
   state.currentFbxProvenance = null;
   state.currentGltfProvenance = null;
+  state.currentVariant = null;
   
   fileInfo.style.display = 'none';
   dropZone.style.display = 'grid';

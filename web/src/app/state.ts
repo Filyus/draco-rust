@@ -90,6 +90,8 @@ export interface AppState {
    * document deliberately does not record the file's claims about itself.
    */
   currentGltfProvenance: GltfSceneProvenance | null;
+  /** The material variant the preview is showing, or null for the default one. */
+  currentVariant: number | null;
   /** The 3D preview, created lazily on first use. */
   viewer: Viewer | null;
 }
@@ -102,5 +104,6 @@ export const state: AppState = {
   currentSceneDocument: null,
   currentFbxProvenance: null,
   currentGltfProvenance: null,
+  currentVariant: null,
   viewer: null,
 };

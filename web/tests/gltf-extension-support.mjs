@@ -134,6 +134,30 @@ const INTERPRETED = {
       assert.equal(read.clearcoatRoughnessFactor, 0.2);
     },
   },
+  KHR_materials_variants: {
+    // Also not a material extension: the names are at the root and the choices
+    // are on the primitives, so its case reads a document too.
+    material: null,
+    effect: () => {},
+    document: {
+      extensions: { KHR_materials_variants: { variants: [{ name: 'Ruby' }, { name: 'Emerald' }] } },
+      materials: [{}, {}, {}],
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          material: 0,
+          extensions: {
+            KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }] },
+          },
+        }],
+      }],
+    },
+    documentEffect: (built) => {
+      assert.deepEqual(built.variants, ['Ruby', 'Emerald']);
+      assert.deepEqual(built.meshes[0].primitives[0].variantMaterials, { 0: 1, 1: 2 });
+      assert.equal(built.meshes[0].primitives[0].material, 0, 'the default material is still the primitive own');
+    },
+  },
   KHR_lights_punctual: {
     // The only interpreted extension that is not on a material at all: it
     // states the scene's lights at the root and has nodes place them, so its
@@ -142,7 +166,31 @@ const INTERPRETED = {
     effect: () => {},
     document: {
       extensions: {
-        KHR_lights_punctual: {
+        KHR_materials_variants: {
+    // Also not a material extension: the names are at the root and the choices
+    // are on the primitives, so its case reads a document too.
+    material: null,
+    effect: () => {},
+    document: {
+      extensions: { KHR_materials_variants: { variants: [{ name: 'Ruby' }, { name: 'Emerald' }] } },
+      materials: [{}, {}, {}],
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          material: 0,
+          extensions: {
+            KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }] },
+          },
+        }],
+      }],
+    },
+    documentEffect: (built) => {
+      assert.deepEqual(built.variants, ['Ruby', 'Emerald']);
+      assert.deepEqual(built.meshes[0].primitives[0].variantMaterials, { 0: 1, 1: 2 });
+      assert.equal(built.meshes[0].primitives[0].material, 0, 'the default material is still the primitive own');
+    },
+  },
+  KHR_lights_punctual: {
           lights: [{ type: 'spot', color: [1, 0.5, 0], intensity: 3, range: 12, spot: { outerConeAngle: 0.5 } }],
         },
       },
