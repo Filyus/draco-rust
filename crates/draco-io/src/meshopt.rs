@@ -32,6 +32,9 @@ pub enum MeshoptFilter {
     Quaternion,
     /// Floats stored as shared-exponent mantissa pairs.
     Exponential,
+    /// RGBA stored as luma / chroma with the scale folded into alpha, 4 or 8
+    /// byte stride.
+    Color,
 }
 
 impl MeshoptMode {
@@ -56,6 +59,7 @@ impl MeshoptFilter {
             "OCTAHEDRAL" => Ok(Self::Octahedral),
             "QUATERNION" => Ok(Self::Quaternion),
             "EXPONENTIAL" => Ok(Self::Exponential),
+            "COLOR" => Ok(Self::Color),
             other => Err(GltfError::Unsupported(format!(
                 "EXT_meshopt_compression filter {other}"
             ))),
@@ -727,6 +731,61 @@ pub fn apply_filter(
             filter_exponential(data, count * (stride / 4));
             Ok(())
         }
+        MeshoptFilter::Color => {
+            if stride != 4 && stride != 8 {
+                return Err(invalid("COLOR filter needs a 4 or 8 byte stride"));
+            }
+            filter_color(data, count, stride);
+            Ok(())
+        }
+    }
+}
+
+/// Recovers RGBA from the luma/chroma form the color filter stores.
+///
+/// Colors are kept as Y/Co/Cg with the per-vertex scale folded into alpha: the
+/// alpha channel's highest set bit gives the range the three chroma components
+/// were quantized against, so alpha carries both the scale and, one bit lower,
+/// the alpha value itself. Co and Cg are signed; Y and alpha are not.
+fn filter_color(data: &mut [u8], count: usize, stride: usize) {
+    let component = stride / 4;
+    let max = if component == 1 {
+        f32::from(u8::MAX)
+    } else {
+        f32::from(u16::MAX)
+    };
+    for i in 0..count {
+        let base = i * stride;
+        let unsigned =
+            |data: &[u8], index: usize| read_unsigned(data, base + index * component, component);
+        let signed =
+            |data: &[u8], index: usize| read_signed(data, base + index * component, component);
+
+        // Smear the highest set bit of alpha down: the result is the range the
+        // chroma components were quantized against.
+        let mut scale = unsigned(data, 3);
+        scale |= scale >> 1;
+        scale |= scale >> 2;
+        scale |= scale >> 4;
+        scale |= scale >> 8;
+
+        let y = unsigned(data, 0);
+        let co = signed(data, 1);
+        let cg = signed(data, 2);
+        let r = y + co - cg;
+        let g = y + cg;
+        let b = y - co - cg;
+
+        // Alpha gains the bit the scale took from it, so it spans the same
+        // range as the three colour components before scaling.
+        let alpha = unsigned(data, 3);
+        let a = ((alpha << 1) & scale) | (alpha & 1);
+
+        let factor = max / scale as f32;
+        let round = |value: i32| (value as f32 * factor + 0.5) as i32;
+        for (index, value) in [r, g, b, a].into_iter().enumerate() {
+            write_unsigned(data, base + index * component, component, round(value));
+        }
     }
 }
 
@@ -813,6 +872,22 @@ fn write_signed(data: &mut [u8], offset: usize, size: usize, value: i32) {
         data[offset] = value as u8;
     } else {
         data[offset..offset + 2].copy_from_slice(&(value as i16).to_le_bytes());
+    }
+}
+
+fn read_unsigned(data: &[u8], offset: usize, size: usize) -> i32 {
+    if size == 1 {
+        i32::from(data[offset])
+    } else {
+        i32::from(u16::from_le_bytes([data[offset], data[offset + 1]]))
+    }
+}
+
+fn write_unsigned(data: &mut [u8], offset: usize, size: usize, value: i32) {
+    if size == 1 {
+        data[offset] = value as u8;
+    } else {
+        data[offset..offset + 2].copy_from_slice(&(value as u16).to_le_bytes());
     }
 }
 
@@ -906,6 +981,77 @@ mod tests {
             decoded,
             [0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0],
             "sequence indices are delta coded against two baselines"
+        );
+    }
+
+    /// Expected values come from an independent transcription of the reference
+    /// `decodeFilterColor`, not from this port: alpha's highest set bit gives
+    /// the range Y/Co/Cg were quantized against, so the same bytes decode to
+    /// different colours depending on it, and only fixed numbers pin that.
+    ///
+    /// The third vertex of each case carries an alpha below the scale it
+    /// implies, which is the only arrangement where the one-bit expansion of
+    /// alpha changes the result. The reference scales in single precision, and
+    /// at 16 bits that is visible: the third red component lands on 52531 in
+    /// `f32` and on 52530 in double. The fourth carries an alpha whose highest
+    /// set bit stands eight places clear of the next one, which is the only
+    /// arrangement where the last step of the scale smear changes the range.
+    #[test]
+    fn color_filter_recovers_rgba_from_luma_chroma() {
+        // Three vertices at 8 bits per component: scales 15, 63 and 15.
+        let mut narrow = vec![
+            10u8,
+            (-3i8) as u8,
+            2,
+            15,
+            40,
+            5,
+            (-7i8) as u8,
+            63,
+            8,
+            (-2i8) as u8,
+            3,
+            9,
+        ];
+        apply_filter(&mut narrow, MeshoptFilter::Color, 3, 4).unwrap();
+        assert_eq!(
+            narrow,
+            [85, 204, 187, 255, 210, 134, 170, 255, 51, 187, 119, 51]
+        );
+
+        // The same shape at 16 bits, where the scale smear needs its last step.
+        let mut wide = Vec::new();
+        for value in [
+            800u16,
+            (-100i16) as u16,
+            60,
+            1023,
+            300,
+            25,
+            (-40i16) as u16,
+            511,
+            700,
+            90,
+            (-30i16) as u16,
+            600,
+            50000,
+            (-3000i16) as u16,
+            1000,
+            32769,
+        ] {
+            wide.extend_from_slice(&value.to_le_bytes());
+        }
+        apply_filter(&mut wide, MeshoptFilter::Color, 4, 8).unwrap();
+        let decoded: Vec<u16> = wide
+            .chunks_exact(2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect();
+        assert_eq!(
+            decoded,
+            [
+                40999, 55093, 53812, 65535, 46811, 33345, 40398, 65535, 52531, 42921, 40999, 11275,
+                46000, 51000, 52000, 3
+            ]
         );
     }
 

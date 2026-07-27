@@ -34,17 +34,12 @@ const SKIPPED_DIRECTORIES = new Set(['fuzz_regressions', 'speed', 'production_dr
  * What each known-imperfect file does, one line each.
  *
  * These are findings, not accepted behaviour. Anything here is a file that
- * does not survive the route today, and the value says why.
+ * does not survive the route today, and the value says why. Empty as of the
+ * meshopt COLOR filter and the pre-ratification extension name: every file in
+ * the corpus is carried, and the assertions below make both a regression and a
+ * quietly-fixed entry fail.
  */
-const KNOWN = new Map(Object.entries({
-  // KHR_meshopt_compression is a newer extension than the
-  // EXT_meshopt_compression the reader decodes, with its own codec version
-  // rather than a rename. It marks its fallback buffer under the KHR name, so
-  // the reader sees a URI-less buffer it has no reason to accept and refuses
-  // the file outright. Kept in the corpus as the marker for that gap.
-  'testdata/KhronosSampleModels/MeshoptCubeTest/glTF_Meshopt/MeshoptCubeTest.gltf':
-    'not readable by either path: KHR_meshopt_compression, which the reader does not decode',
-}));
+const KNOWN = new Map(Object.entries({}));
 
 const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href);
 await gltfModule.default({ module_or_path: await readFile(resolve(pkg, 'gltf_bg.wasm')) });

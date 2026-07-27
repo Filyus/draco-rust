@@ -13,11 +13,13 @@ attribution obligation:
 | `CompareSpecular` | `KHR_materials_specular`, colour and strength textures |
 | `CompareEmissiveStrength` | `KHR_materials_emissive_strength` |
 | `PointLightIntensityTest` | `KHR_lights_punctual`, which SceneDocument drops |
-| `MeshoptCubeTest` | `KHR_meshopt_compression`, which the reader does not decode |
+| `MeshoptCubeTest` | meshopt under its pre-ratification name, and the `COLOR` vertex filter |
 
-`MeshoptCubeTest` is deliberately a file that does not load: it is the corpus
-marker for the newer meshopt codec, and `web/tests/gltf-corpus-parity.mjs`
-records it by name with that reason. Removing it would remove the record.
+`MeshoptCubeTest` was for a long time the one file in the corpus that did not
+load. It is written by gltfpack under `KHR_meshopt_compression`, the name the
+extension carried before it was ratified as `EXT_`, and it uses the `COLOR`
+vertex filter; both are read now, and `web/tests/gltf-corpus-parity.mjs` carries
+all 69 files. It stays as the coverage for both.
 
 The older models here predate this file; their licences are as published by
 Khronos and several are CC BY 4.0.

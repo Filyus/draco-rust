@@ -44,6 +44,9 @@ export const GLTF_INTERPRETED_EXTENSIONS: ReadonlySet<string> = new Set([
 export const GLTF_READER_RESOLVED_EXTENSIONS: ReadonlySet<string> = new Set([
   'KHR_draco_mesh_compression',
   'EXT_meshopt_compression',
+  // The name gltfpack wrote before the extension was ratified as EXT_; the
+  // reader decodes both spellings through one path.
+  'KHR_meshopt_compression',
   'KHR_mesh_quantization',
 ]);
 

@@ -2,12 +2,10 @@ use std::path::Path;
 
 use crate::json::Value;
 
+use crate::extensions::{meshopt_extension, meshopt_extension_mut};
 #[cfg(feature = "draco-decode")]
 use crate::PrimitiveRef;
-use crate::{
-    Document, Error, ExtensionRegistry, ResourceStore, Result, ValidationProfile,
-    EXT_MESHOPT_COMPRESSION,
-};
+use crate::{Document, Error, ExtensionRegistry, ResourceStore, Result, ValidationProfile};
 #[cfg(feature = "resources")]
 use crate::{ExternalAssetIndex, FileIndex};
 use draco_io::{
@@ -534,14 +532,11 @@ impl Import {
             for (index, view) in views.iter_mut().enumerate() {
                 // The compressed range of a meshopt view names its own buffer,
                 // so it has to follow the view onto the consolidated buffer.
-                if let Some(extension) = view
-                    .get_mut("extensions")
-                    .and_then(|value| value.get_mut(EXT_MESHOPT_COMPRESSION))
-                {
+                if let Some((name, extension)) = meshopt_extension_mut(view.get_mut("extensions")) {
                     rebase_buffer_reference(
                         extension,
                         &offsets,
-                        &format!("bufferViews[{index}].extensions.{EXT_MESHOPT_COMPRESSION}"),
+                        &format!("bufferViews[{index}].extensions.{name}"),
                     )?;
                 }
                 rebase_buffer_reference(view, &offsets, &format!("bufferViews[{index}]"))?;
@@ -783,10 +778,7 @@ fn decode_meshopt_buffer_views(document: &Document, buffers: &mut [Vec<u8>]) -> 
         return Ok(());
     };
     for (index, view) in views.iter().enumerate() {
-        let Some(extension) = view
-            .get("extensions")
-            .and_then(|value| value.get(EXT_MESHOPT_COMPRESSION))
-        else {
+        let Some((_, extension)) = meshopt_extension(view.get("extensions")) else {
             continue;
         };
         let fail = |message: &str| Error::Extension(format!("bufferViews[{index}]: {message}"));
@@ -899,11 +891,8 @@ pub fn parse_with_options(
                     buffer.index().0
                 )])
             })?;
-        let meshopt_fallback = buffer
-            .value()
-            .get("extensions")
-            .and_then(|value| value.get(EXT_MESHOPT_COMPRESSION))
-            .and_then(|value| value.get("fallback"))
+        let meshopt_fallback = meshopt_extension(buffer.value().get("extensions"))
+            .and_then(|(_, value)| value.get("fallback"))
             .is_some_and(|value| matches!(value, Value::Bool(true)));
         references.push(GltfBufferReference {
             uri,
@@ -960,6 +949,34 @@ mod tests {
                        {{"byteLength":4,"extensions":{{"EXT_meshopt_compression":{{"fallback":true}}}}}}],
             "bufferViews":[{{"buffer":1,"byteOffset":0,"byteLength":4,"byteStride":4,
                 "extensions":{{"EXT_meshopt_compression":{{"buffer":0,"byteOffset":0,"byteLength":{},
+                "byteStride":4,"mode":"ATTRIBUTES","count":1}}}}}}]}}"#,
+            bin.len(),
+            bin.len()
+        );
+        let glb = build_glb_from_json(json.as_bytes(), &bin, GltfContainerFormat::GlbV2).unwrap();
+
+        let import = parse(&glb, ValidationProfile::Gltf20).unwrap();
+
+        assert_eq!(import.resources.buffers[1], vec![1, 2, 3, 4]);
+    }
+
+    /// gltfpack wrote `KHR_meshopt_compression` before the extension was
+    /// ratified under the `EXT_` prefix, and assets carrying that spelling are
+    /// still in circulation. The extension object, the bitstream and the
+    /// fallback convention are identical, so refusing them refuses a file over
+    /// its name: the fallback buffer has no URI, and a reader that does not
+    /// recognise the extension sees a buffer it has no reason to accept.
+    #[test]
+    fn the_pre_ratification_extension_name_decodes_the_same_way() {
+        let bin = meshopt_vertex_stream();
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},
+            "extensionsUsed":["KHR_meshopt_compression"],
+            "extensionsRequired":["KHR_meshopt_compression"],
+            "buffers":[{{"byteLength":{}}},
+                       {{"byteLength":4,"extensions":{{"KHR_meshopt_compression":{{"fallback":true}}}}}}],
+            "bufferViews":[{{"buffer":1,"byteOffset":0,"byteLength":4,"byteStride":4,
+                "extensions":{{"KHR_meshopt_compression":{{"buffer":0,"byteOffset":0,"byteLength":{},
                 "byteStride":4,"mode":"ATTRIBUTES","count":1}}}}}}]}}"#,
             bin.len(),
             bin.len()

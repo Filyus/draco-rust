@@ -41,7 +41,7 @@ pub use writer::{GeometryEncoding, GeometryWriteOptions, GeometryWriteReport, Pr
 pub mod extensions;
 pub use extensions::{
     DracoExtension, ExtensionHandler, ExtensionRegistry, ExtensionValidationContext, ResourceStore,
-    EXT_MESHOPT_COMPRESSION, KHR_DRACO_MESH_COMPRESSION,
+    EXT_MESHOPT_COMPRESSION, KHR_DRACO_MESH_COMPRESSION, KHR_MESHOPT_COMPRESSION,
 };
 mod import;
 #[cfg(not(target_arch = "wasm32"))]

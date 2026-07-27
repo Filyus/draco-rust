@@ -18,6 +18,38 @@ pub const KHR_DRACO_MESH_COMPRESSION: &str = "KHR_draco_mesh_compression";
 /// the crate never sees a compressed buffer view.
 pub const EXT_MESHOPT_COMPRESSION: &str = "EXT_meshopt_compression";
 
+/// The name gltfpack wrote before the extension was ratified under the `EXT_`
+/// vendor prefix.
+///
+/// The extension object, the bitstream and the fallback-buffer convention are
+/// identical, so assets carrying the older name decode through exactly the same
+/// path. Refusing them means refusing a file over its spelling.
+pub const KHR_MESHOPT_COMPRESSION: &str = "KHR_meshopt_compression";
+
+/// Reads a `extensions` object's meshopt entry under either spelling.
+pub fn meshopt_extension(extensions: Option<&Value>) -> Option<(&'static str, &Value)> {
+    let extensions = extensions?;
+    for name in [EXT_MESHOPT_COMPRESSION, KHR_MESHOPT_COMPRESSION] {
+        if let Some(value) = extensions.get(name) {
+            return Some((name, value));
+        }
+    }
+    None
+}
+
+/// The mutable form of [`meshopt_extension`].
+pub fn meshopt_extension_mut(extensions: Option<&mut Value>) -> Option<(&'static str, &mut Value)> {
+    let extensions = extensions?;
+    let name = if extensions.get(EXT_MESHOPT_COMPRESSION).is_some() {
+        EXT_MESHOPT_COMPRESSION
+    } else if extensions.get(KHR_MESHOPT_COMPRESSION).is_some() {
+        KHR_MESHOPT_COMPRESSION
+    } else {
+        return None;
+    };
+    extensions.get_mut(name).map(|value| (name, value))
+}
+
 /// Resolved binary resources indexed by glTF buffer index.
 #[derive(Clone, Debug, Default)]
 pub struct ResourceStore {
