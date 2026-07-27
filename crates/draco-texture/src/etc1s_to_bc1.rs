@@ -431,7 +431,7 @@ impl Bc1Converter {
 }
 
 /// The lowest and highest selector value a block uses.
-fn selector_extremes(selectors: [u8; 4]) -> (u8, u8) {
+pub(crate) fn selector_extremes(selectors: [u8; 4]) -> (u8, u8) {
     let mut lowest = 3u8;
     let mut highest = 0u8;
     for row in selectors {
@@ -445,7 +445,7 @@ fn selector_extremes(selectors: [u8; 4]) -> (u8, u8) {
 }
 
 /// How many distinct selector values a block uses.
-fn unique_selectors(selectors: [u8; 4]) -> u32 {
+pub(crate) fn unique_selectors(selectors: [u8; 4]) -> u32 {
     let mut seen = 0u8;
     for row in selectors {
         for texel in 0..4 {

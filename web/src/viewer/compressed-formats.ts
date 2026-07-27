@@ -17,6 +17,8 @@
 export const COMPRESSED_FORMAT = {
   /** `COMPRESSED_RGB_S3TC_DXT1_EXT` */
   bc1: 0x83f0,
+  /** `COMPRESSED_RGBA_S3TC_DXT5_EXT` */
+  bc3: 0x83f3,
 } as const;
 
 /** A source codec, as the KTX2 module names it. */
@@ -25,7 +27,7 @@ export type TextureCodec = 'etc1s' | 'uastc';
 /** What to ask the transcoder for, and how to upload the result. */
 export interface CompressedTarget {
   /** The transcoder's name for the target. */
-  name: 'bc1';
+  name: 'bc1' | 'bc3';
   /** The GL internal format to pass to `compressedTexImage2D`. */
   format: number;
   /** Bytes each 4×4 block occupies. */
@@ -35,13 +37,18 @@ export interface CompressedTarget {
 /** Every target, in the order they would be preferred. */
 const TARGETS: { target: CompressedTarget; extension: string; codecs: TextureCodec[]; alpha: boolean }[] = [
   {
+    // First for a texture without alpha: half the video memory of BC3, and
+    // nothing is given up when there is no alpha to carry.
     target: { name: 'bc1', format: COMPRESSED_FORMAT.bc1, bytesPerBlock: 8 },
     extension: 'WEBGL_compressed_texture_s3tc',
-    // BC1 carries no alpha, so a texture that has meaningful alpha cannot use
-    // it. That case wants BC3, which is not transcoded yet, so it falls back
-    // to pixels rather than silently losing its alpha.
     codecs: ['etc1s'],
     alpha: false,
+  },
+  {
+    target: { name: 'bc3', format: COMPRESSED_FORMAT.bc3, bytesPerBlock: 16 },
+    extension: 'WEBGL_compressed_texture_s3tc',
+    codecs: ['etc1s'],
+    alpha: true,
   },
 ];
 

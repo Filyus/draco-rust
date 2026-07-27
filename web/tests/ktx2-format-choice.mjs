@@ -1,0 +1,53 @@
+/**
+ * Which block format a texture is transcoded into, given what the GPU offers.
+ *
+ * The decision is made once per texture from two facts — the machine's
+ * extension list and the file's own codec and alpha — and it is pure, so it
+ * can be checked here rather than only in a browser that happens to have the
+ * extensions the case needs. A phone's answers cannot be observed on a desktop
+ * at all, which is exactly why they are worth writing down.
+ *
+ * The failure this guards is a wrong choice rather than a crash: BC1 for a
+ * texture with alpha would drop the alpha silently, and BC3 for one without
+ * would double its video memory for nothing.
+ */
+import assert from 'node:assert/strict';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const { chooseCompressedTarget } = await import(
+  pathToFileURL(resolve(here, '..', 'www', 'viewer', 'compressed-formats.js')).href
+);
+
+const S3TC = ['WEBGL_compressed_texture_s3tc'];
+const BPTC = ['EXT_texture_compression_bptc'];
+
+const name = (target) => (target ? target.name : 'pixels');
+
+const CASES = [
+  // A desktop GPU: the BC family and nothing else. This is what was measured
+  // on Chrome with an NVIDIA card, and it is the case that matters most.
+  [S3TC, 'etc1s', false, 'bc1', 'without alpha, BC1 is half the memory of BC3 and loses nothing'],
+  [S3TC, 'etc1s', true, 'bc3', 'with alpha, only BC3 can carry it'],
+  // UASTC needs BC7, which is not transcoded yet, so it decodes to pixels
+  // rather than being forced into a format that would lose its precision.
+  [S3TC, 'uastc', false, 'pixels', 'UASTC has no BC target yet'],
+  [BPTC, 'etc1s', false, 'pixels', 'BC7 is not transcoded yet, and bptc alone offers nothing else'],
+  // A machine with no compressed formats at all, or one that offers only
+  // families nothing here targets.
+  [[], 'etc1s', false, 'pixels', 'no compressed format at all'],
+  [['WEBGL_compressed_texture_astc', 'WEBGL_compressed_texture_etc'], 'etc1s', false, 'pixels',
+    'ASTC and ETC are not transcoded to yet, so a phone falls back to pixels'],
+];
+
+for (const [extensions, codec, hasAlpha, expected, why] of CASES) {
+  const chosen = chooseCompressedTarget(extensions, codec, hasAlpha);
+  assert.equal(name(chosen), expected, `${codec}${hasAlpha ? ' with alpha' : ''} on [${extensions}]: ${why}`);
+}
+
+// The block size has to match the format, because the upload is sized by it.
+assert.equal(chooseCompressedTarget(S3TC, 'etc1s', false).bytesPerBlock, 8);
+assert.equal(chooseCompressedTarget(S3TC, 'etc1s', true).bytesPerBlock, 16);
+
+console.log(`ktx2-format-choice: ${CASES.length} cases OK`);

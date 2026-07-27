@@ -320,18 +320,11 @@ impl Etc1sDecoder {
         height: u32,
     ) -> Result<Vec<u8>, Etc1sError> {
         let mut pixels = vec![0u8; (width as usize) * (height as usize) * 4];
-        let slice = |offset: u32, length: u32| -> Result<&[u8], Etc1sError> {
-            let start = offset as usize;
-            let end = start
-                .checked_add(length as usize)
-                .ok_or(Etc1sError::Truncated)?;
-            level_data.get(start..end).ok_or(Etc1sError::Truncated)
-        };
 
         // Alpha first, then colour: the colour pass leaves the alpha byte
         // alone when there is an alpha slice, and writes 255 when there is not.
         if desc.alpha_length != 0 {
-            let data = slice(desc.alpha_offset, desc.alpha_length)?;
+            let data = self.slice(level_data, desc.alpha_offset, desc.alpha_length)?;
             self.walk_blocks(
                 data,
                 width,
@@ -339,7 +332,7 @@ impl Etc1sDecoder {
                 block_writer(width, height, &mut pixels, SliceKind::Alpha),
             )?;
         }
-        let data = slice(desc.rgb_offset, desc.rgb_length)?;
+        let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
         let kind = if desc.alpha_length != 0 {
             SliceKind::Color { opaque: false }
         } else {
@@ -359,9 +352,6 @@ impl Etc1sDecoder {
     /// Blocks in raster order, which is the layout `compressedTexImage2D`
     /// wants. Alpha is not part of BC1: a file that has an alpha slice needs
     /// BC3, which pairs these blocks with an alpha block of its own.
-    ///
-    /// `three_color` is passed through to the block conversion, where it says
-    /// whether BC1's punch-through mode may be used.
     #[cfg(feature = "block-formats")]
     pub fn decode_bc1(
         &self,
@@ -369,16 +359,11 @@ impl Etc1sDecoder {
         desc: ImageDesc,
         width: u32,
         height: u32,
-        three_color: bool,
     ) -> Result<Vec<u8>, Etc1sError> {
         let converter = crate::etc1s_to_bc1::Bc1Converter::new();
         let blocks_x = width.div_ceil(4) as usize;
         let mut blocks = vec![0u8; blocks_x * height.div_ceil(4) as usize * 8];
-        let start = desc.rgb_offset as usize;
-        let end = start
-            .checked_add(desc.rgb_length as usize)
-            .ok_or(Etc1sError::Truncated)?;
-        let data = level_data.get(start..end).ok_or(Etc1sError::Truncated)?;
+        let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
 
         self.walk_blocks(
             data,
@@ -386,11 +371,84 @@ impl Etc1sDecoder {
             height,
             |block_x, block_y, color5, inten5, selectors| {
                 let at = (block_y as usize * blocks_x + block_x as usize) * 8;
-                let block = converter.convert(color5, inten5, selectors, three_color);
+                // Punch-through is allowed here: a standalone BC1 texture may use
+                // it, unlike the same blocks inside BC3.
+                let block = converter.convert(color5, inten5, selectors, true);
                 blocks[at..at + 8].copy_from_slice(&block.to_bytes());
             },
         )?;
         Ok(blocks)
+    }
+
+    /// Decode one image into BC3 blocks, sixteen bytes each.
+    ///
+    /// A BC3 block is a BC4 alpha block followed by a BC1 colour block, and
+    /// the two come from the file's two slices. The colour half is built
+    /// without punch-through, because some GPUs do not implement that mode
+    /// inside BC3 — which is the one way these blocks differ from the ones
+    /// `decode_bc1` produces from the same slice.
+    ///
+    /// A file with no alpha slice gets fully opaque alpha blocks, so the
+    /// caller can choose BC3 whatever the file holds.
+    #[cfg(feature = "block-formats")]
+    pub fn decode_bc3(
+        &self,
+        level_data: &[u8],
+        desc: ImageDesc,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, Etc1sError> {
+        let converter = crate::etc1s_to_bc1::Bc1Converter::new();
+        let blocks_x = width.div_ceil(4) as usize;
+        let blocks_y = height.div_ceil(4) as usize;
+        let mut blocks = vec![0u8; blocks_x * blocks_y * 16];
+
+        if desc.alpha_length != 0 {
+            let data = self.slice(level_data, desc.alpha_offset, desc.alpha_length)?;
+            self.walk_blocks(
+                data,
+                width,
+                height,
+                |block_x, block_y, color5, inten5, selectors| {
+                    let at = (block_y as usize * blocks_x + block_x as usize) * 16;
+                    let block = crate::etc1s_to_bc4::convert(color5, inten5, selectors);
+                    blocks[at..at + 8].copy_from_slice(&block.to_bytes());
+                },
+            )?;
+        } else {
+            // 255 at both endpoints and every selector zero reads as opaque.
+            for block in blocks.chunks_exact_mut(16) {
+                block[0] = 255;
+                block[1] = 255;
+            }
+        }
+
+        let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
+        self.walk_blocks(
+            data,
+            width,
+            height,
+            |block_x, block_y, color5, inten5, selectors| {
+                let at = (block_y as usize * blocks_x + block_x as usize) * 16 + 8;
+                let block = converter.convert(color5, inten5, selectors, false);
+                blocks[at..at + 8].copy_from_slice(&block.to_bytes());
+            },
+        )?;
+        Ok(blocks)
+    }
+
+    /// One slice's bytes out of the level, bounds-checked.
+    fn slice<'a>(
+        &self,
+        level_data: &'a [u8],
+        offset: u32,
+        length: u32,
+    ) -> Result<&'a [u8], Etc1sError> {
+        let start = offset as usize;
+        let end = start
+            .checked_add(length as usize)
+            .ok_or(Etc1sError::Truncated)?;
+        level_data.get(start..end).ok_or(Etc1sError::Truncated)
     }
 
     /// Walk one slice's blocks, resolving each block's two codebook indices.

@@ -28,6 +28,7 @@ import {
 /** Which of our targets to compare, and what the reference calls it. */
 const PAIRS = [
   { codec: 'etc1s', target: 'bc1', reference: TARGET.BC1_RGB, bytesPerBlock: 8, files: ['facecap', '2d_etc1s', 'sample_etc1s'] },
+  { codec: 'etc1s', target: 'bc3', reference: TARGET.BC3_RGBA, bytesPerBlock: 16, files: ['facecap', '2d_etc1s', 'sample_etc1s'] },
 ];
 
 const reference = await loadReference();

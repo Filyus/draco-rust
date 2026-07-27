@@ -32,6 +32,9 @@ pub enum Target {
     /// BC1, eight bytes per 4x4 block, no alpha.
     #[cfg(feature = "block-formats")]
     Bc1,
+    /// BC3, sixteen bytes per 4x4 block, alpha in a BC4 block of its own.
+    #[cfg(feature = "block-formats")]
+    Bc3,
 }
 
 /// One decoded image, either as pixels or as GPU-ready blocks.
@@ -162,7 +165,9 @@ impl Transcoder {
                 let bytes = match target {
                     Target::Rgba8 => decoder.decode_rgba(&level_data, desc, width, height)?,
                     #[cfg(feature = "block-formats")]
-                    Target::Bc1 => decoder.decode_bc1(&level_data, desc, width, height, true)?,
+                    Target::Bc1 => decoder.decode_bc1(&level_data, desc, width, height)?,
+                    #[cfg(feature = "block-formats")]
+                    Target::Bc3 => decoder.decode_bc3(&level_data, desc, width, height)?,
                 };
                 Ok(Decoded {
                     width,

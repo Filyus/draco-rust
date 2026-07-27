@@ -20,6 +20,9 @@ pub mod etc1s;
 /// Turning ETC1S blocks into BC1, for a GPU that takes block formats.
 #[cfg(all(feature = "etc1s", feature = "block-formats"))]
 pub mod etc1s_to_bc1;
+/// Turning an ETC1S alpha slice into BC4, the alpha half of BC3.
+#[cfg(all(feature = "etc1s", feature = "block-formats"))]
+pub mod etc1s_to_bc4;
 #[cfg(any(feature = "etc1s", feature = "uastc"))]
 mod huffman;
 /// KTX2 container reading.
