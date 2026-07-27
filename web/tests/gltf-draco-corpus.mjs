@@ -41,18 +41,14 @@ const SKIPPED_DIRECTORIES = new Set(['fuzz_regressions', 'speed', 'production_dr
  */
 const KNOWN = new Map(Object.entries({
   'testdata/Box/glTF_Binary/Box_Draco.glb': 'primitive uses Draco compression',
+  'testdata/BoxMetaDraco/glTF/BoxMetaDraco.gltf': 'primitive uses Draco compression',
   'testdata/bun_zipper.glb': 'primitive uses Draco compression',
   'testdata/SphereTwoMaterials/sphere_two_materials_mesh_and_point_cloud.gltf': 'only TRIANGLES',
   'testdata/SphereTwoMaterials/sphere_two_materials_point_cloud.gltf': 'only TRIANGLES',
-  // Feature IDs ride on ordinary vertex attributes, so whether this is safe is
-  // a question about the encoder rather than about the JSON.
-  'testdata/BoxMeta/glTF/BoxMeta.gltf': 'EXT_mesh_features',
-  'testdata/BoxesMeta/glTF/BoxesMeta.gltf': 'EXT_mesh_features',
-  // Already Draco-compressed as well, but the extension is refused first, so
-  // that is the reason this file reports today.
-  'testdata/BoxMetaDraco/glTF/BoxMetaDraco.gltf': 'EXT_mesh_features',
   // Property tables address buffer views, and instancing addresses accessors;
   // both need a handler that keeps those slots alive and rewrites them.
+  'testdata/BoxMeta/glTF/BoxMeta.gltf': 'EXT_structural_metadata',
+  'testdata/BoxesMeta/glTF/BoxesMeta.gltf': 'EXT_structural_metadata',
   'testdata/ZeroLengthBufferView/ZeroLengthBufferView.gltf': 'EXT_structural_metadata',
   'testdata/InstancedQuads.gltf': 'EXT_mesh_gpu_instancing',
   // Decoded eagerly into the fallback buffers on import, but the now-stale

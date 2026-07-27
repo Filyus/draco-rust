@@ -38,6 +38,7 @@
     "test:gltf-accessor-dedup": "node tests/gltf-accessor-dedup.mjs",
     "test:gltf-corpus": "node tests/gltf-corpus-parity.mjs",
     "test:gltf-draco-corpus": "node tests/gltf-draco-corpus.mjs",
+    "test:gltf-draco-feature-ids": "node tests/gltf-draco-feature-ids.mjs",
     "test:gltf-build-profile": "node tests/gltf-build-profile.mjs",
     "test:viewer-limit-warnings": "node tests/viewer-limit-warnings.mjs",
     "test:gltf-scene-provenance": "node tests/gltf-scene-provenance.mjs",

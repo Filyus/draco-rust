@@ -91,6 +91,16 @@ pub const BINARY_FREE_EXTENSIONS: &[&str] = &[
     "KHR_mesh_quantization",
     // A Cesium vendor extension holding one origin offset, `center: [x, y, z]`.
     "CESIUM_RTC",
+    // The one entry that looks like a counter-example and is not. Its
+    // `featureIds[].attribute: N` is a *name* — it selects `_FEATURE_ID_N` —
+    // and its remaining references are a texture and an index into the root
+    // metadata arrays. None of those is an accessor or a buffer view.
+    //
+    // What it does depend on is the encoder leaving the identifier attributes
+    // alone, since a quantized feature ID is a wrong one. Measured on BoxMeta:
+    // every vertex record survives compression with its values, its component
+    // types and its pairing intact, and the semantics keep their names.
+    "EXT_mesh_features",
 ];
 
 /// An extension that owns no binary references.
