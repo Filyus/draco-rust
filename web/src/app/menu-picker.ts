@@ -48,6 +48,50 @@ export interface MenuPickerElements {
   optionId: string;
 }
 
+/** Gap between the control and its list, matching the CSS default. */
+const MENU_GAP = 6;
+
+/**
+ * The nearest ancestor that clips its overflow, or the viewport.
+ *
+ * An absolutely positioned menu is clipped by a scrolling ancestor just as
+ * surely as by the window — the sidebar scrolls, so a list long enough to pass
+ * its bottom edge simply loses its last rows.
+ */
+function clippingBounds(element: HTMLElement) {
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const { overflow, overflowY } = getComputedStyle(node);
+    if (/auto|scroll|hidden/.test(overflow) || /auto|scroll|hidden/.test(overflowY)) {
+      const rect = node.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom };
+    }
+  }
+  return { top: 0, bottom: window.innerHeight };
+}
+
+/**
+ * Put the list where it fits: below the control, above it when below is too
+ * tight, and never taller than the room it has.
+ *
+ * A fixed max-height cannot know the room — the same control sits near the top
+ * of a scrolling sidebar in one panel and at the bottom of the viewport in
+ * another. Measured on open, both cases fall out of one rule, and the playback
+ * bar no longer needs a rule of its own saying "this one opens upward".
+ */
+function placeMenu(trigger: HTMLElement, menu: HTMLElement) {
+  const anchor = trigger.getBoundingClientRect();
+  const bounds = clippingBounds(menu);
+  const below = bounds.bottom - anchor.bottom - MENU_GAP;
+  const above = anchor.top - bounds.top - MENU_GAP;
+  // Its natural height, before any cap from a previous opening.
+  menu.style.maxHeight = 'none';
+  const wanted = menu.getBoundingClientRect().height;
+  const openUp = below < Math.min(wanted, above);
+  menu.style.top = openUp ? 'auto' : `calc(100% + ${MENU_GAP}px)`;
+  menu.style.bottom = openUp ? `calc(100% + ${MENU_GAP}px)` : 'auto';
+  menu.style.maxHeight = `${Math.max(80, Math.floor(openUp ? above : below))}px`;
+}
+
 export function createMenuPicker({
   select, trigger, label, menu, placeholder, optionId, prefix,
 }: MenuPickerElements): MenuPicker {
@@ -60,6 +104,18 @@ export function createMenuPicker({
 
   const picker: MenuPicker = {
     rebuild() {
+      // Only when the options actually changed. Replacing them unconditionally
+      // destroyed the button holding focus, and the caller cannot avoid that:
+      // choosing an option reloads the preview, the preview re-renders the
+      // panel, and the panel syncs the picker. So a keyboard user pressing
+      // Down committed a choice, lost focus to the body, and found the control
+      // dead until they clicked it again.
+      const wanted = [...select.options].map((option) => option.value);
+      const current = options().map((option) => option.dataset.value);
+      if (wanted.length === current.length && wanted.every((value, index) => value === current[index])) {
+        picker.sync();
+        return;
+      }
       menu.replaceChildren(...[...select.options].map((option) => {
         const button = document.createElement('button');
         button.type = 'button';
@@ -69,6 +125,9 @@ export function createMenuPicker({
         button.tabIndex = -1;
         button.setAttribute('role', 'option');
         button.textContent = option.textContent;
+        // The row truncates rather than wrapping, so the full name has to stay
+        // readable somewhere.
+        button.title = option.textContent ?? '';
         button.addEventListener('click', () => {
           commit(option.value);
           picker.close(true);
@@ -92,11 +151,15 @@ export function createMenuPicker({
     open() {
       trigger.setAttribute('aria-expanded', 'true');
       menu.hidden = false;
+      placeMenu(trigger, menu);
       (menu.querySelector<HTMLElement>('.menu-picker-option.selected')
         || menu.querySelector<HTMLElement>('.menu-picker-option'))?.focus();
     },
 
     close(restoreFocus = false) {
+      menu.style.removeProperty('top');
+      menu.style.removeProperty('bottom');
+      menu.style.removeProperty('maxHeight');
       // Hiding the menu while one of its options holds focus would drop focus
       // to the body, so the trigger takes it back — but only then, otherwise
       // closing would steal focus from whatever the user just clicked.

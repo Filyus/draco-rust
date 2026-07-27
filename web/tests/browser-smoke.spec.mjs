@@ -1918,6 +1918,18 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   expect(emerald.index).toBe(2);
   expect(emerald.emissive[1]).toBeGreaterThan(0.5);
 
+  // Keyboard use must survive the reload the choice kicks off. Arrowing in the
+  // open list commits on every step, the commit rebuilds the preview, the
+  // preview re-renders the panel and the panel syncs the picker -- which used
+  // to replace the option buttons unconditionally, destroying the one holding
+  // focus. A user pressing Down once landed on the body with a dead control.
+  await page.locator('#viewer-variant-trigger').click();
+  await expect(page.locator('#viewer-variant-menu')).toBeVisible();
+  await page.keyboard.press('ArrowUp');
+  await expect.poll(async () => (await emissiveOf()).index, { timeout: 10000 }).toBe(1);
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe('viewer-variant-option-0');
+  await page.keyboard.press('Escape');
+
   // And the view did not move. A variant swaps materials and nothing else, so
   // re-framing shows the user the same model from somewhere other than where
   // they had put it — which is what loading a scene normally does, and what
@@ -1933,6 +1945,75 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
     };
   });
   expect(viewAfter).toEqual(viewBefore);
+});
+
+/**
+ * The list stays inside the control it belongs to, and inside the panel.
+ *
+ * Sized to its longest entry it grew wider than its trigger and out over the
+ * panel edge; with enough entries it ran past the bottom of the sidebar, which
+ * scrolls and therefore clips it. Both read as the list sliding away from the
+ * control that opened it, and neither is visible with the two short variants
+ * the other test uses -- so this one declares nine, one of them long.
+ */
+test('the variant list stays within its control and its panel', async ({ page }) => {
+  await page.setViewportSize({ width: 1500, height: 700 });
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const variants = [
+    'Midnight Peacock Velvet with Contrast Stitching',
+    'Beach', 'Street', 'Forest', 'Desert', 'Arctic', 'Volcano', 'Meadow', 'Harbour',
+  ];
+  await page.locator('#file-input').setInputFiles({
+    name: 'many-variants.gltf',
+    mimeType: 'model/gltf+json',
+    buffer: Buffer.from(JSON.stringify({
+      asset: { version: '2.0' },
+      extensionsUsed: ['KHR_materials_variants'],
+      extensions: { KHR_materials_variants: { variants: variants.map((name) => ({ name })) } },
+      buffers: [{
+        byteLength: 36,
+        uri: 'data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA',
+      }],
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] }],
+      materials: [{ name: 'Base' }, { name: 'Alt' }],
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          material: 0,
+          extensions: { KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }] } },
+        }],
+      }],
+      nodes: [{ mesh: 0 }],
+      scenes: [{ nodes: [0] }],
+      scene: 0,
+    })),
+  });
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  await page.locator('#viewer-variant-trigger').click();
+  await expect(page.locator('#viewer-variant-menu')).toBeVisible();
+  const geometry = await page.evaluate(() => {
+    const box = (selector) => {
+      const rect = document.querySelector(selector).getBoundingClientRect();
+      return { left: Math.round(rect.left), right: Math.round(rect.right), bottom: Math.round(rect.bottom) };
+    };
+    const menu = document.querySelector('#viewer-variant-menu');
+    return {
+      trigger: box('#viewer-variant-trigger'),
+      menu: box('#viewer-variant-menu'),
+      sidebar: box('.sidebar'),
+      scrolls: menu.scrollHeight > menu.clientHeight,
+    };
+  });
+
+  expect(geometry.menu.left).toBe(geometry.trigger.left);
+  expect(geometry.menu.right).toBe(geometry.trigger.right);
+  expect(geometry.menu.bottom).toBeLessThanOrEqual(geometry.sidebar.bottom);
+  // Capped rather than truncated: every entry is still reachable.
+  expect(geometry.scrolls).toBe(true);
+  expect(await page.locator('#viewer-variant-menu .menu-picker-option').count()).toBe(9);
 });
 
 test('EXT_mesh_gpu_instancing draws the mesh once per instance transform', async ({ page }) => {

@@ -647,7 +647,12 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     top: calc(100% + 6px);
     right: 0;
     left: 0;
-    min-width: max-content;
+    /* Exactly as wide as the control. Sized to its longest entry it grew past
+       the panel it sits in, which reads as the list sliding out from under its
+       trigger. How tall it may be, and whether it opens up or down, depend on
+       the room it has, so `placeMenu` sets those on opening. */
+    overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 6px;
     display: grid;
     gap: 2px;
@@ -657,11 +662,15 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     backdrop-filter: blur(10px);
 }
 
-.anim-clip-menu { top: auto; bottom: calc(100% + 6px); }
 .menu-picker-menu[hidden] { display: none; }
 .menu-picker-option {
     min-height: 30px;
     padding: 5px 14px;
+    /* One line: a long variant name wrapped the row and, on the trigger, made
+       the control twice as tall as the buttons around it. */
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     border: 0;
     border-radius: 6px;
     color: #aebed5;
@@ -765,6 +774,15 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 }
 .scene-variant-trigger:focus-visible { outline: 0; box-shadow: 0 0 0 1px var(--accent-hover); }
 .scene-variant .menu-picker-option { font-size: 0.68rem; }
+/* The chosen name may be longer than the control; it truncates rather than
+   wrapping, and the full text stays reachable through the list and the title. */
+.scene-variant-trigger > span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.scene-variant-trigger .menu-picker-chevron { flex: none; }
 
 .scene-tree { min-height: 88px; flex: 1 1 auto; margin: 0; padding: 4px 2px 4px 0; overflow: auto; }
 .scene-tree-node, .scene-tree-leaf { list-style: none; }
