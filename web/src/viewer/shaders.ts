@@ -184,6 +184,12 @@ uniform float uOcclusionStrength;
 uniform float uIor;
 uniform float uSpecularFactor;
 uniform vec3 uSpecularColorFactor;
+// KHR_materials_iridescence: a thin film over the specular lobe, whose
+// thickness in nanometres decides which wavelengths it reinforces.
+uniform float uIridescenceFactor;
+uniform float uIridescenceIor;
+uniform float uIridescenceThicknessMinimum;
+uniform float uIridescenceThicknessMaximum;
 // KHR_materials_sheen: a retroreflective lobe for cloth, over the base layer.
 uniform vec3 uSheenColorFactor;
 uniform float uSheenRoughnessFactor;
@@ -213,6 +219,90 @@ ${slotDeclarations(slots)}
 
 vec3 fresnelSchlickRoughness(float cosTheta, vec3 f0, float roughness) {
     return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - cosTheta, 5.0);
+}
+
+/**
+ * The Fresnel reflectance of a thin film over a base of reflectance baseF0.
+ *
+ * KHR_materials_iridescence is defined against Belcour and Barla's "A
+ * Practical Extension to Microfacet Theory for the Modeling of Varying
+ * Iridescence" (2017): light reflected off the film's two interfaces
+ * interferes, and which wavelengths survive depends on the optical path
+ * difference — the film's thickness times its index, twice, along the
+ * refracted direction. The spectrum is integrated against Gaussian fits of the
+ * eye's response and converted to linear sRGB, which is what makes a
+ * few-hundred-nanometre film read as a colour rather than as a brightness.
+ */
+vec3 filmSensitivity(float opd, vec3 shift) {
+    // Three Gaussians in wavenumber, fitted to the CIE curves; the third is a
+    // second lobe of the x-bar response, which is why it is added to x alone.
+    float phase = 6.2831853 * opd * 1.0e-9;
+    vec3 val = vec3(5.4856e-13, 4.4201e-13, 5.2481e-13);
+    vec3 pos = vec3(1.6810e+06, 1.7953e+06, 2.2084e+06);
+    vec3 var_ = vec3(4.3278e+09, 9.3046e+09, 6.6121e+09);
+    vec3 xyz = val * sqrt(6.2831853 * var_) * cos(pos * phase + shift) * exp(-var_ * phase * phase);
+    float x = 9.7470e-14 * sqrt(6.2831853 * 4.5282e+09)
+        * cos(2.2399e+06 * phase + shift[0]) * exp(-4.5282e+09 * phase * phase);
+    xyz = vec3(xyz.x + x, xyz.y, xyz.z) / 1.0685e-7;
+    return mat3(
+        3.2404542, -0.9692660, 0.0556434,
+        -1.5371385, 1.8760108, -0.2040259,
+        -0.4985314, 0.0415560, 1.0572252
+    ) * xyz;
+}
+
+vec3 iorToF0(vec3 transmitted, float incident) {
+    vec3 ratio = (transmitted - vec3(incident)) / (transmitted + vec3(incident));
+    return ratio * ratio;
+}
+
+vec3 f0ToIor(vec3 f0) {
+    vec3 root = sqrt(clamp(f0, 0.0, 0.9999));
+    return (vec3(1.0) + root) / (vec3(1.0) - root);
+}
+
+vec3 iridescentFresnel(float filmIor, float cosTheta1, float thickness, vec3 baseF0) {
+    // Reflection off the outer face of the film. A film thinner than a
+    // wavelength has nothing to interfere with, so it fades back to the base.
+    float iridescenceIor = mix(1.0, filmIor, smoothstep(0.0, 0.03, thickness));
+    float sinTheta2Sq = 1.0 - cosTheta1 * cosTheta1;
+    sinTheta2Sq /= iridescenceIor * iridescenceIor;
+    if (sinTheta2Sq > 1.0) return vec3(1.0); // total internal reflection
+    float cosTheta2 = sqrt(1.0 - sinTheta2Sq);
+
+    float r0 = (1.0 - iridescenceIor) / (1.0 + iridescenceIor);
+    r0 *= r0;
+    float r12 = r0 + (1.0 - r0) * pow(1.0 - cosTheta1, 5.0);
+    float r21 = r12;
+    float t121 = 1.0 - r12;
+
+    // The base seen through the film, in the film's own index space.
+    vec3 baseIor = f0ToIor(clamp(baseF0, 0.0, 0.9999));
+    vec3 r1 = iorToF0(baseIor, iridescenceIor);
+    vec3 r23 = r1 + (vec3(1.0) - r1) * pow(1.0 - cosTheta2, 5.0);
+
+    float phi12 = iridescenceIor < 1.0 ? PI : 0.0;
+    float phi21 = PI - phi12;
+    vec3 phi23 = vec3(
+        baseIor.r < iridescenceIor ? PI : 0.0,
+        baseIor.g < iridescenceIor ? PI : 0.0,
+        baseIor.b < iridescenceIor ? PI : 0.0
+    );
+    float opd = 2.0 * iridescenceIor * thickness * cosTheta2;
+    vec3 phi = vec3(phi21) + phi23;
+
+    vec3 r123 = clamp(r12 * r23, 1e-5, 0.9999);
+    vec3 rs = (t121 * t121) * r23 / (vec3(1.0) - r123);
+
+    // The first bounce, then every subsequent one, summed as a series.
+    vec3 c0 = vec3(r12) + rs;
+    vec3 sum = c0;
+    vec3 cm = rs - vec3(t121);
+    for (int m = 1; m <= 2; m += 1) {
+        cm *= sqrt(r123);
+        sum += 2.0 * cm * filmSensitivity(float(m) * opd, float(m) * phi);
+    }
+    return max(sum, vec3(0.0));
 }
 
 /**
@@ -349,6 +439,22 @@ void main() {
     #endif
     vec3 f0 = mix(min(vec3(iorF0) * specularColor, vec3(1.0)), baseColor, metallic);
     float nDotV = max(dot(N, V), 0.0);
+
+    // KHR_materials_iridescence replaces the Fresnel term with the thin film's
+    // own, weighted by the factor: the lobe stays where it was, only what it
+    // reflects changes colour with the angle.
+    float iridescence = uIridescenceFactor;
+    #ifdef HAS_IRIDESCENCE
+    iridescence *= texture(uIridescenceTexture, slotUv(SLOT_IRIDESCENCE)).r;
+    #endif
+    if (iridescence > 0.0) {
+        float thicknessMix = 1.0;
+        #ifdef HAS_IRIDESCENCE_THICKNESS
+        thicknessMix = texture(uIridescenceThicknessTexture, slotUv(SLOT_IRIDESCENCE_THICKNESS)).g;
+        #endif
+        float thickness = mix(uIridescenceThicknessMinimum, uIridescenceThicknessMaximum, thicknessMix);
+        f0 = mix(f0, clamp(iridescentFresnel(uIridescenceIor, nDotV, thickness, f0), 0.0, 1.0), iridescence);
+    }
     vec3 iblFresnel = fresnelSchlickRoughness(nDotV, f0, roughness);
     vec3 diffuseWeight = (1.0 - iblFresnel) * (1.0 - metallic);
     vec3 irradiance = texture(uIrradianceMap, N).rgb;

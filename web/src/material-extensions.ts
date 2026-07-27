@@ -84,6 +84,22 @@ export const MATERIAL_EXTENSIONS = [
     textures: [{ property: 'specularTexture', slot: 'SPECULAR' }, { property: 'specularColorTexture', slot: 'SPECULAR_COLOR' }],
   },
   {
+    // Thicknesses are nanometres, and the defaults are the extension's own:
+    // a film of 100..400 nm at an index of 1.3, weighted by a factor that
+    // starts at zero, so an absent extension changes nothing.
+    name: 'KHR_materials_iridescence',
+    fields: [
+      { property: 'iridescenceFactor', default: 0 },
+      { property: 'iridescenceIor', default: 1.3 },
+      { property: 'iridescenceThicknessMinimum', default: 100 },
+      { property: 'iridescenceThicknessMaximum', default: 400 },
+    ],
+    textures: [
+      { property: 'iridescenceTexture', slot: 'IRIDESCENCE' },
+      { property: 'iridescenceThicknessTexture', slot: 'IRIDESCENCE_THICKNESS' },
+    ],
+  },
+  {
     // A black sheen colour is no sheen at all, which is why the default is the
     // colour rather than a separate weight: the extension has none.
     name: 'KHR_materials_sheen',

@@ -70,6 +70,21 @@ const INTERPRETED = {
     material: { extensions: { KHR_materials_emissive_strength: { emissiveStrength: 4 } } },
     effect: (read) => assert.equal(read.emissiveStrength, 4),
   },
+  KHR_materials_iridescence: {
+    material: {
+      extensions: {
+        KHR_materials_iridescence: {
+          iridescenceFactor: 1, iridescenceIor: 1.8, iridescenceThicknessMaximum: 550,
+        },
+      },
+    },
+    effect: (read) => {
+      assert.equal(read.iridescenceFactor, 1);
+      assert.equal(read.iridescenceIor, 1.8);
+      assert.equal(read.iridescenceThicknessMaximum, 550);
+      assert.equal(read.iridescenceThicknessMinimum, 100, 'an unstated thickness keeps the extension default');
+    },
+  },
   KHR_materials_sheen: {
     material: {
       extensions: { KHR_materials_sheen: { sheenColorFactor: [0.8, 0.6, 0.4], sheenRoughnessFactor: 0.6 } },
@@ -195,6 +210,10 @@ const stated = {
     KHR_materials_ior: { ior: 1.9 },
     KHR_materials_specular: { specularFactor: 0.4, specularColorFactor: [0.5, 0.6, 0.7] },
     KHR_materials_sheen: { sheenColorFactor: [0.2, 0.3, 0.4], sheenRoughnessFactor: 0.6 },
+    KHR_materials_iridescence: {
+      iridescenceFactor: 0.7, iridescenceIor: 1.8,
+      iridescenceThicknessMinimum: 200, iridescenceThicknessMaximum: 550,
+    },
     KHR_materials_clearcoat: { clearcoatFactor: 0.8, clearcoatRoughnessFactor: 0.1 },
   },
 };

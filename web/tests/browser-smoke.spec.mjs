@@ -1735,6 +1735,91 @@ test('one surface program per set of texture slots, not per material', async ({ 
   expect(observed.sources[1]).toEqual({ slots: 1, samplers: 1 });
 });
 
+test('KHR_materials_iridescence tints the specular lobe by film thickness', async ({ page }) => {
+  await page.goto('/index.html');
+  // A thin film reinforces the wavelengths its thickness suits, so the same
+  // material at two thicknesses must reflect two different colours. That is
+  // what separates the extension from a plain tint: nothing about the material
+  // changes except a distance in nanometres.
+  const observed = await page.evaluate(async () => {
+    const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
+      import('/viewer.js'),
+      import('/scene-document.js'),
+      import('/scene-document-viewer.js'),
+    ]);
+
+    const bytes = (values) => new Uint8Array(
+      values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
+    );
+    const accessor = (values, components, componentType = 5126) => ({
+      bytes: bytes(values), componentType, components, count: values.length / components,
+    });
+    // A smooth black dielectric: its specular reflectance is the 4% the core
+    // model implies, which leaves the film room to change it. A white metal
+    // reflects everything already, and interference has nothing to add.
+    const document_ = (film) => createSceneDocument({
+      materials: [{
+        baseColorFactor: [0, 0, 0, 1],
+        metallicFactor: 0,
+        roughnessFactor: 0.05,
+        ...film,
+      }],
+      accessors: [
+        accessor(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3),
+        accessor(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]), 3),
+        accessor(new Uint16Array([0, 1, 2, 0, 2, 3]), 1, 5123),
+      ],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, indices: 2, material: 0 }] }],
+      nodes: [{ name: 'Quad', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 }],
+      rootNodes: [0],
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
+    document.body.appendChild(canvas);
+    const viewer = new Viewer(canvas);
+    viewer.showGrid = false;
+    const sample = (film) => {
+      viewer.setScene(buildViewerSceneFromDocument(document_(film)));
+      viewer.camera.target.set([0, 0, 0]);
+      viewer.camera.distance = 3;
+      viewer.camera.azimuth = 0.6;
+      viewer.camera.elevation = 0.2;
+      viewer._render();
+      const rgba = new Uint8Array(4);
+      viewer.gl.readPixels(
+        Math.floor(viewer.gl.drawingBufferWidth / 2),
+        Math.floor(viewer.gl.drawingBufferHeight / 2),
+        1, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, rgba,
+      );
+      return Array.from(rgba);
+    };
+
+    const plain = sample({});
+    const thin = sample({
+      iridescenceFactor: 1, iridescenceIor: 1.8,
+      iridescenceThicknessMinimum: 180, iridescenceThicknessMaximum: 180,
+    });
+    const thick = sample({
+      iridescenceFactor: 1, iridescenceIor: 1.8,
+      iridescenceThicknessMinimum: 520, iridescenceThicknessMaximum: 520,
+    });
+    const glError = viewer.gl.getError();
+    viewer.dispose();
+    canvas.remove();
+    return { plain, thin, thick, glError };
+  });
+
+  const hue = (pixel) => [pixel[0] - pixel[1], pixel[1] - pixel[2]];
+  expect(observed.glError).toBe(0);
+  // The film colours a surface that was neutral without it.
+  expect(Math.abs(hue(observed.thin)[0] - hue(observed.plain)[0])
+    + Math.abs(hue(observed.thin)[1] - hue(observed.plain)[1])).toBeGreaterThan(6);
+  // And the colour is the thickness talking, not a constant tint.
+  expect(Math.abs(hue(observed.thin)[0] - hue(observed.thick)[0])
+    + Math.abs(hue(observed.thin)[1] - hue(observed.thick)[1])).toBeGreaterThan(6);
+});
+
 test('KHR_materials_sheen shows on the surface it is set on', async ({ page }) => {
   await page.goto('/index.html');
   // Reading an extension and shading it are separate claims, and the gates so
