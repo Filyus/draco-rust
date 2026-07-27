@@ -40,19 +40,21 @@ assert.equal(reachOf(outcomes, 'KHR_draco_mesh_compression'), 'carried');
 // Read and shown, but only glTF can state it again.
 assert.equal(reachOf(outcomes, 'KHR_materials_clearcoat'), 'gltf-only');
 assert.equal(reachOf(outcomes, 'KHR_lights_punctual'), 'gltf-only');
-// Nothing acts on it at all.
-assert.equal(reachOf(outcomes, 'KHR_materials_pbrSpecularGlossiness'), 'ignored');
+// Nothing here interprets it — and it is still exported, because the glTF
+// route rewrites the asset in place rather than rebuilding it from what was
+// understood. Calling that "ignored" was the report's one false statement.
+assert.equal(reachOf(outcomes, 'KHR_materials_pbrSpecularGlossiness'), 'gltf-verbatim');
 
 // What the file said a reader may not skip is carried through, because that is
 // the difference between "this export is poorer" and "this export is wrong".
 assert.equal(outcomes.find((outcome) => outcome.name === 'KHR_draco_mesh_compression').required, true);
 assert.equal(outcomes.find((outcome) => outcome.name === 'KHR_materials_clearcoat').required, false);
 
-// Every interpreted extension has to land somewhere better than "ignored", or
-// the report contradicts the list the readers act on.
+// Every interpreted extension has to land somewhere better, or the report
+// contradicts the list the readers act on.
 for (const name of GLTF_INTERPRETED_EXTENSIONS) {
   const [outcome] = reportExtensionReach({ extensionsUsed: [name] });
-  assert.notEqual(outcome.reach, 'ignored', `${name} is interpreted, so the report must not call it ignored`);
+  assert.notEqual(outcome.reach, 'gltf-verbatim', `${name} is interpreted, so the report must not call it un-understood`);
 }
 for (const name of GLTF_READER_RESOLVED_EXTENSIONS) {
   const [outcome] = reportExtensionReach({ extensionsUsed: [name] });
@@ -64,6 +66,10 @@ const lines = describeExtensionReach(outcomes);
 assert.equal(lines.length, 3, 'one line per outcome that occurred, not per extension');
 assert.match(lines[0], /pbrSpecularGlossiness/);
 assert.match(lines[0], /not understood/);
+// The half that was wrong before: the file's own claim is not all that is left
+// of it, and the line has to say where it does survive.
+assert.match(lines[0], /copied unchanged into exported glTF/);
+assert.doesNotMatch(lines[0], /neither shown nor exported/);
 assert.match(lines[1], /clearcoat.*lights_punctual|lights_punctual.*clearcoat/);
 assert.match(lines[2], /draco.*\(required\)/);
 

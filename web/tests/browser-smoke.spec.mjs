@@ -1773,6 +1773,9 @@ test('the summary says what became of every extension the file declared', async 
   // it is the difference between a poorer export and a wrong one.
   expect(lines[0]).toContain('KHR_materials_pbrSpecularGlossiness (required)');
   expect(lines[0]).toContain('not understood');
+  // Un-understood is not the same as lost: the glTF route rewrites the asset
+  // in place, so this JSON is copied out with everything around it.
+  expect(lines[0]).toContain('copied unchanged into exported glTF');
   expect(lines[1]).toContain('KHR_materials_clearcoat');
   expect(lines[1]).toContain('KHR_lights_punctual');
   expect(lines[1]).toContain('OBJ, PLY and FBX cannot state it');

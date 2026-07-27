@@ -25,8 +25,16 @@ export type ExtensionReach =
   | 'gltf-only'
   /** Read into the document, but the preview does not shade it. */
   | 'not-shown'
-  /** Not acted on anywhere; the file's own claim is all that is left of it. */
-  | 'ignored';
+  /**
+   * Interpreted by nobody, and still exported to glTF unchanged.
+   *
+   * The glTF-to-glTF route rewrites the asset in place rather than rebuilding
+   * it, so JSON no reader here understands is copied along with everything
+   * else. That is how `EXT_structural_metadata` survives an export today. The
+   * distinction from `gltf-only` is what the preview does, not what the
+   * exporter does: nothing here reaches the screen.
+   */
+  | 'gltf-verbatim';
 
 export interface ExtensionOutcome {
   name: string;
@@ -82,14 +90,17 @@ function reachOf(name: string): ExtensionReach {
   // reads it without the preview showing it - the case worth naming, because
   // it is the one a user cannot see for themselves.
   if (GLTF_INTERPRETED_EXTENSIONS.has(name)) return 'not-shown';
-  return 'ignored';
+  return 'gltf-verbatim';
 }
 
 /** One line per outcome, in the order a reader cares about them. */
-const REACH_ORDER: ExtensionReach[] = ['ignored', 'not-shown', 'gltf-only', 'carried'];
+const REACH_ORDER: ExtensionReach[] = ['gltf-verbatim', 'not-shown', 'gltf-only', 'carried'];
 
 const REACH_WORDING: Record<ExtensionReach, string> = {
-  ignored: 'not understood: neither shown nor exported',
+  // Not "ignored": that said neither shown nor exported, and the second half
+  // was false. The glTF route rewrites the asset in place, so JSON nobody
+  // interprets is copied out with everything around it.
+  'gltf-verbatim': 'not understood: copied unchanged into exported glTF and GLB, not shown, and lost to OBJ, PLY and FBX',
   'not-shown': 'read and exported, but not shown in the preview',
   'gltf-only': 'shown and exported to glTF; OBJ, PLY and FBX cannot state it',
   carried: 'carried through every route',
