@@ -4,6 +4,7 @@ import { sceneExtensionReach, exportSidebar, meshStatFields, sceneCapabilitySumm
 import { errorMessage, log } from './log.ts';
 import type { LoadedFile } from './state.ts';
 import { setWarningSource } from './warnings.ts';
+import { syncVariantPicker } from './variant-picker.ts';
 import { describeExtensionReach, reportExtensionReach } from './extension-report.ts';
 import { state } from './state.ts';
 
@@ -17,6 +18,7 @@ import { state } from './state.ts';
 
 export function renderSceneDocumentSummary(sceneDocument: SceneDocument, extraWarnings = []) {
   if (!sceneDocument) {
+    syncVariantPicker(null);
     scenePanel.hidden = true;
     sceneInfo.hidden = true;
     setWarningSource('scene', []);
@@ -37,6 +39,9 @@ export function renderSceneDocumentSummary(sceneDocument: SceneDocument, extraWa
     sceneStatFields.morphs.textContent = morphs.toLocaleString();
     sceneStatFields.clips.textContent = sceneDocument.animations.length.toLocaleString();
     sceneStatFields.lights.textContent = (sceneDocument.lights?.length ?? 0).toLocaleString();
+    // Rendered with the tree it sits above rather than after the preview
+    // finishes, so the panel settles in one paint instead of two.
+    syncVariantPicker(sceneDocument);
     renderSceneTree(sceneDocument);
     renderSceneCompanions(sceneDocument);
     sceneSection.style.display = 'flex';
@@ -47,6 +52,7 @@ export function renderSceneDocumentSummary(sceneDocument: SceneDocument, extraWa
     scenePanel.hidden = false;
     sceneInfo.hidden = false;
   } catch (error) {
+    syncVariantPicker(null);
     scenePanel.hidden = true;
     sceneInfo.hidden = true;
     setWarningSource('scene', []);

@@ -6,12 +6,11 @@ import { buildViewerSceneFromDocument } from '../scene-document-viewer.ts';
 import { hydrateSceneTextures, honoredTextureSources } from '../scene-document-textures.ts';
 import type { SceneDocument } from '../scene-document.ts';
 import { errorMessage, log } from './log.ts';
-import { createMenuPicker } from './menu-picker.ts';
 import { modules, state } from './state.ts';
 import { renderSceneDocumentSummary } from './scene-report.ts';
 import { setWarningSource } from './warnings.ts';
 import { updateAnimationPlayButton, updateAnimationUi } from './animation-ui.ts';
-import { viewerVariantLabel, viewerVariantMenu, viewerVariantPicker, viewerVariantSelect, viewerVariantTrigger, viewerAutoRotateBtn, viewerBaseColorBtn, viewerCanvas, viewerControls, viewerGridBtn, viewerSection, viewerSmoothNormalsBtn, viewerWireframeBtn } from './dom.ts';
+import { viewerAutoRotateBtn, viewerBaseColorBtn, viewerCanvas, viewerControls, viewerGridBtn, viewerSection, viewerSmoothNormalsBtn, viewerWireframeBtn } from './dom.ts';
 
 /**
  * The 3D preview: creating the viewer on demand, loading a scene into it, and
@@ -108,7 +107,6 @@ export async function loadPreview(extension: string, { keepView = false } = {}) 
     renderSceneDocumentSummary(state.currentSceneDocument!);
     setWarningSource('preview', scene.warnings || []);
     setViewerControlsEnabled(true);
-    syncVariantPicker(scene);
     syncViewerToolbar();
     log('Preview ready', 'success');
   } catch (error) {
@@ -157,72 +155,6 @@ async function previewFromLoader(): Promise<ViewerScene> {
     modules.gltf.module,
     { onLog: (msg: string, type: string) => log(msg, type) },
   );
-}
-
-/**
- * Offer the scene's material variants, or hide the picker when it has none.
- *
- * A variant is a choice about how to look at the scene, so it belongs beside
- * the display toggles rather than in the summary: the document carries every
- * alternative and no selection, and this is where the selection is made.
- */
-function syncVariantPicker(scene: ViewerScene) {
-  const variants = scene.variants ?? [];
-  viewerVariantPicker.hidden = variants.length === 0;
-  if (variants.length === 0) {
-    state.currentVariant = null;
-    viewerVariantSelect.replaceChildren();
-    return;
-  }
-  // Rebuilt only when the list itself changed. Replacing the options resets
-  // the control's value on the way, and doing that on every preview means
-  // doing it in response to the choice the user just made - which is a loop:
-  // the picker reloads the preview, the preview rebuilds the picker.
-  const wanted = ['Default', ...variants];
-  const current = [...viewerVariantSelect.options].map((option) => option.textContent);
-  if (current.length !== wanted.length || wanted.some((name, index) => current[index] !== name)) {
-    viewerVariantSelect.replaceChildren(...wanted.map((name, index) => {
-      const option = window.document.createElement('option');
-      option.value = String(index - 1);
-      option.textContent = name;
-      return option;
-    }));
-  }
-  const selected = String(state.currentVariant ?? -1);
-  if (viewerVariantSelect.value !== selected) viewerVariantSelect.value = selected;
-  variantPicker.rebuild();
-}
-
-/**
- * The variant list, drawn as a listbox over the real select.
- *
- * Same control as the animation bar's clip list, which is the point: it is one
- * more choice made in the viewport, and it reads as one. A native select here
- * came with its own height, its own palette and a floating label, none of which
- * the toolbar beside it uses.
- */
-const variantPicker = createMenuPicker({
-  select: viewerVariantSelect,
-  trigger: viewerVariantTrigger,
-  label: viewerVariantLabel,
-  menu: viewerVariantMenu,
-  placeholder: 'Variant',
-  prefix: 'Variant',
-  optionId: 'viewer-variant-option',
-});
-
-/** Re-read the document under the chosen variant; only materials change. */
-export function installVariantPicker() {
-  variantPicker.install();
-  viewerVariantSelect.addEventListener('change', () => {
-    const chosen = Number(viewerVariantSelect.value);
-    state.currentVariant = chosen < 0 ? null : chosen;
-    variantPicker.sync();
-    // A variant swaps the materials and nothing else, so the camera and the
-    // clip that were on screen stay there. Re-framing here showed the user the
-    // same model from somewhere other than where they had put it.
-    if (state.currentFileType) void loadPreview(state.currentFileType, { keepView: true });
-  });
 }
 
 export function setViewerControlsEnabled(enabled: boolean) {

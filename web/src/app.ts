@@ -84,13 +84,13 @@ import {
 import { exportFile, updateExportOptions } from './app/export.ts';
 import {
   ensureViewer,
-  installVariantPicker,
   installViewerToggles,
   loadPreview,
   setViewerControlsEnabled,
   syncAutoRotateButton,
   syncViewerToolbar,
 } from './app/preview.ts';
+import { installVariantPicker } from './app/variant-picker.ts';
 
 
 

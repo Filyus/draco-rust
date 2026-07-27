@@ -1837,12 +1837,36 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   });
   await expect(page.locator('#console')).toContainText('Preview ready');
 
-  // The picker lists the default plus every variant the file named, and reads
-  // as one more toolbar control rather than as a form field dropped into it:
-  // the trigger shows the current choice and the list is ours to draw.
+  // Filled by the summary that renders the tree, in the same paint. Read off
+  // the finished preview instead, the control appeared a paint after the tree
+  // it sits above and pushed it down the moment a file with variants loaded.
+  // Asserted by re-running the summary alone rather than by watching for
+  // reflow: a small fixture parses and previews inside one frame, so the jump
+  // is real but not always observable.
+  const filledBySummary = await page.evaluate(async () => {
+    const { renderSceneDocumentSummary } = await import('/app/scene-report.js');
+    const { state } = await import('/app/state.js');
+    document.querySelector('#viewer-variant').replaceChildren();
+    renderSceneDocumentSummary(state.currentSceneDocument);
+    return [...document.querySelectorAll('#viewer-variant option')].map((option) => option.textContent);
+  });
+  expect(filledBySummary).toEqual(['Ruby', 'Emerald']);
+
+  // The picker names what the file offers, in the panel that lists what the
+  // file contains, and draws its own list because a native select's popup is
+  // drawn by the platform in the platform's palette.
   await expect(page.locator('#viewer-variant-picker')).toBeVisible();
-  expect(await page.locator('#viewer-variant option').allTextContents()).toEqual(['Default', 'Ruby', 'Emerald']);
-  await expect(page.locator('#viewer-variant-trigger')).toHaveText('Variant: Default');
+  // Exactly what the file declares, and nothing else. There used to be a
+  // leading entry of our own for "no variant" — the extension defines no such
+  // thing, the primitive's `material` being the fallback for readers that
+  // cannot follow it — and since a file usually writes that fallback as one of
+  // the variants' own materials, the extra row drew the same image as the row
+  // under it.
+  expect(await page.locator('#viewer-variant option').allTextContents()).toEqual(['Ruby', 'Emerald']);
+  // And one of them is in force from the start, rather than a state that is
+  // none of them.
+  await expect(page.locator('#viewer-variant-trigger')).toHaveText('Ruby');
+  await expect(page.locator('#viewer-variant')).toHaveValue('0');
   await expect(page.locator('#viewer-variant-menu')).toBeHidden();
 
   const emissiveOf = async () => page.evaluate(async () => {
@@ -1852,7 +1876,7 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
     return { index, emissive: [...(scene.materials[index]?.emissiveFactor ?? [])] };
   });
 
-  const plain = await emissiveOf();
+  const ruby = await emissiveOf();
   // Where the user had put the camera, and what was playing, before the switch.
   const viewBefore = await page.evaluate(async () => {
     const { state } = await import('/app/state.js');
@@ -1887,7 +1911,10 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   const emerald = await emissiveOf();
 
   // The primitive took a different material, and the one the variant names.
-  expect(plain.index).toBe(0);
+  // Neither is material 0: that is the fixture's fallback, which a reader that
+  // understands the extension never shows.
+  expect(ruby.index).toBe(1);
+  expect(ruby.emissive[0]).toBeGreaterThan(0.5);
   expect(emerald.index).toBe(2);
   expect(emerald.emissive[1]).toBeGreaterThan(0.5);
 

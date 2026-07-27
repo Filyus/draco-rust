@@ -726,6 +726,18 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
    but those choose how the scene is drawn and this chooses what the scene is
    made of, which is what the panel below it lists. */
 .scene-variant { flex-shrink: 0; margin-bottom: 8px; }
+/* Named above the control, the way the panel names everything else. The value
+   alone cannot say what it is: "Attenuation" is a variant this file happens to
+   declare, and the entry for no variant at all has no name in glTF to borrow. */
+.scene-variant-caption {
+    display: block;
+    margin-bottom: 4px;
+    color: #8b9cb6;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
 .scene-variant[hidden] { display: none; }
 .scene-variant-trigger {
     width: 100%;
