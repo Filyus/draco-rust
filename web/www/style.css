@@ -437,7 +437,11 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 
 .viewer-toolbar {
     position: absolute;
-    z-index: 4;
+    /* Above the stats and hints panels, which are read-only overlays sharing
+       the viewport. At the same layer the later markup won, so a short viewport
+       put the stats column over the toolbar's left end and swallowed clicks
+       meant for the buttons under it. */
+    z-index: 6;
     top: 10px;
     right: auto;
     bottom: auto;
@@ -526,6 +530,7 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 .viewer-btn:disabled:hover { color: #647793; background: transparent; }
 .viewer-btn:disabled:hover .viewer-btn-icon { color: #647793; }
 
+
 .viewer-animation {
     position: absolute;
     z-index: 5;
@@ -587,9 +592,14 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 }
 .anim-play-btn.active .anim-play-icon::before { left: 1px; }
 .anim-play-btn.active .anim-play-icon::after { right: 1px; }
-.anim-clip-native { display: none; }
+/* A styled listbox standing in for a native select, whose popup the platform
+   draws in its own palette. The select stays in the markup and keeps the
+   value; only its rendering is replaced. Shared by the playback bar and the
+   viewport toolbar, which differ in the trigger's look and in which way the
+   menu opens, and in nothing else. */
+.menu-picker { position: relative; }
+.menu-picker-native { display: none; }
 .anim-clip-picker {
-    position: relative;
     min-width: 140px;
     flex: 1 1 180px;
 }
@@ -616,7 +626,7 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 
 .anim-clip-trigger:hover,
 .anim-clip-trigger[aria-expanded="true"] { color: #fff; background: var(--control-hover); }
-.anim-clip-chevron {
+.menu-picker-chevron {
     width: 7px;
     height: 7px;
     flex: 0 0 7px;
@@ -627,14 +637,17 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     transform-origin: center;
     transition: transform 140ms ease, color 140ms ease;
 }
-.anim-clip-trigger[aria-expanded="true"] .anim-clip-chevron { color: #b9cce7; transform: rotate(225deg) translate(-1px, -1px); }
+.menu-picker-trigger[aria-expanded="true"] .menu-picker-chevron { color: #b9cce7; transform: rotate(225deg) translate(-1px, -1px); }
 
-.anim-clip-menu {
+.menu-picker-menu {
     position: absolute;
     z-index: 8;
+    /* Opens downward by default and upward where the control sits at the
+       bottom of the viewport; either way the list stays inside the canvas. */
+    top: calc(100% + 6px);
     right: 0;
-    bottom: calc(100% + 6px);
     left: 0;
+    min-width: max-content;
     padding: 6px;
     display: grid;
     gap: 2px;
@@ -644,8 +657,9 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     backdrop-filter: blur(10px);
 }
 
-.anim-clip-menu[hidden] { display: none; }
-.anim-clip-option {
+.anim-clip-menu { top: auto; bottom: calc(100% + 6px); }
+.menu-picker-menu[hidden] { display: none; }
+.menu-picker-option {
     min-height: 30px;
     padding: 5px 14px;
     border: 0;
@@ -657,10 +671,10 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     background: transparent;
     transition: color 130ms ease, background 130ms ease;
 }
-.anim-clip-option:hover { color: #fff; background: rgba(109, 145, 197, 0.14); }
-.anim-clip-option.selected { color: #fff; background: rgba(71, 127, 220, 0.82); }
-.anim-clip-option.selected:hover { background: rgba(82, 136, 223, 0.92); }
-.anim-clip-option:focus-visible { outline: 0; box-shadow: inset 0 0 0 1px rgba(124, 169, 235, 0.72); }
+.menu-picker-option:hover { color: #fff; background: rgba(109, 145, 197, 0.14); }
+.menu-picker-option.selected { color: #fff; background: rgba(71, 127, 220, 0.82); }
+.menu-picker-option.selected:hover { background: rgba(82, 136, 223, 0.92); }
+.menu-picker-option:focus-visible { outline: 0; box-shadow: inset 0 0 0 1px rgba(124, 169, 235, 0.72); }
 .anim-loop,
 .anim-speed-label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--viewer-ui-font); }
 .anim-time { margin-left: auto; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: var(--viewer-ui-font); }
@@ -707,6 +721,39 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
 .scene-tree-tools { flex-shrink: 0; display: inline-flex; gap: 4px; }
 .scene-tree-tool { padding: 2px 7px; border: 1px solid rgba(123, 153, 194, 0.24); border-radius: 5px; color: #9db1cd; font-size: 0.6rem; background: transparent; cursor: pointer; }
 .scene-tree-tool:hover { color: #dce8fb; border-color: rgba(126, 169, 232, 0.6); background: rgba(93, 129, 178, 0.18); }
+/* The material variant, above the tree.
+   It sat in the viewport toolbar first, among the wireframe and grid toggles —
+   but those choose how the scene is drawn and this chooses what the scene is
+   made of, which is what the panel below it lists. */
+.scene-variant { flex-shrink: 0; margin-bottom: 8px; }
+.scene-variant[hidden] { display: none; }
+.scene-variant-trigger {
+    width: 100%;
+    min-height: 27px;
+    padding: 3px 9px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border: 1px solid rgba(123, 153, 194, 0.24);
+    border-radius: 6px;
+    color: #c2d3ea;
+    font-size: 0.68rem;
+    font-weight: 620;
+    text-align: left;
+    background: rgba(93, 129, 178, 0.10);
+    cursor: pointer;
+    transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+.scene-variant-trigger:hover,
+.scene-variant-trigger[aria-expanded="true"] {
+    color: #eaf2ff;
+    border-color: rgba(126, 169, 232, 0.6);
+    background: rgba(93, 129, 178, 0.2);
+}
+.scene-variant-trigger:focus-visible { outline: 0; box-shadow: 0 0 0 1px var(--accent-hover); }
+.scene-variant .menu-picker-option { font-size: 0.68rem; }
+
 .scene-tree { min-height: 88px; flex: 1 1 auto; margin: 0; padding: 4px 2px 4px 0; overflow: auto; }
 .scene-tree-node, .scene-tree-leaf { list-style: none; }
 .scene-tree-node > summary { list-style: none; }

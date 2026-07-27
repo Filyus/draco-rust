@@ -1,4 +1,5 @@
 import { animClipLabel, animClipMenu, animClipSelect, animClipTrigger, animPlayBtn, animScrub, animSpeed, animSpeedValue, animTimeLabel, viewerAnimation } from './dom.ts';
+import { createMenuPicker } from './menu-picker.ts';
 import type { ViewerScene } from '../viewer-scene.ts';
 import { state } from './state.ts';
 
@@ -8,6 +9,21 @@ import { state } from './state.ts';
  * The viewer owns playback state; this only drives it and reflects it back, so
  * the bar and the viewport can never disagree about what is playing.
  */
+
+/**
+ * The clip list, drawn as a listbox over the real select.
+ *
+ * The select keeps the value and fires `change`; only the popup is ours,
+ * because the platform draws a native one in the platform's palette.
+ */
+const clipPicker = createMenuPicker({
+  select: animClipSelect,
+  trigger: animClipTrigger,
+  label: animClipLabel,
+  menu: animClipMenu,
+  placeholder: 'Animation',
+  optionId: 'anim-clip-option',
+});
 
 export function updateAnimationUi(scene: ViewerScene) {
   const clips = state.currentSceneDocument?.animations?.length
@@ -45,101 +61,11 @@ export function resetAnimationUi() {
   animPlayBtn.setAttribute('aria-label', 'Play animation');
 }
 
-export function rebuildAnimationClipMenu() {
-  animClipMenu.replaceChildren();
-  for (const option of animClipSelect.options) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'anim-clip-option';
-    button.dataset.value = option.value;
-    button.id = `anim-clip-option-${option.value}`;
-    button.tabIndex = -1;
-    button.setAttribute('role', 'option');
-    button.textContent = option.textContent;
-    button.addEventListener('click', () => {
-      animClipSelect.value = option.value;
-      animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
-      closeAnimationClipMenu(true);
-    });
-    animClipMenu.appendChild(button);
-  }
-  syncAnimationClipSelection();
-}
-
-export function syncAnimationClipSelection() {
-  const selected = animClipSelect.selectedOptions[0];
-  animClipLabel.textContent = selected?.textContent || 'Animation';
-  for (const option of animClipMenu.querySelectorAll<HTMLElement>('.anim-clip-option')) {
-    const active = option.dataset.value === animClipSelect.value;
-    option.classList.toggle('selected', active);
-    option.setAttribute('aria-selected', String(active));
-    if (active) animClipTrigger.setAttribute('aria-activedescendant', option.id);
-  }
-}
-
-export function openAnimationClipMenu() {
-  animClipTrigger.setAttribute('aria-expanded', 'true');
-  animClipMenu.hidden = false;
-  const selected = animClipMenu.querySelector<HTMLElement>('.anim-clip-option.selected')
-    || animClipMenu.querySelector<HTMLElement>('.anim-clip-option');
-  selected?.focus();
-}
-
-export function closeAnimationClipMenu(restoreFocus = false) {
-  // Hiding the menu while one of its options holds focus would drop focus to
-  // the body, so the trigger takes it back — but only then, otherwise closing
-  // would steal focus from whatever the user just clicked.
-  const hadFocus = animClipMenu.contains(document.activeElement);
-  animClipTrigger.setAttribute('aria-expanded', 'false');
-  animClipMenu.hidden = true;
-  if (restoreFocus || hadFocus) animClipTrigger.focus();
-}
-
-export function selectAnimationClipAt(index: number) {
-  const options = [...animClipSelect.options];
-  if (options.length === 0) return;
-  const wrapped = (index + options.length) % options.length;
-  animClipSelect.value = options[wrapped].value;
-  animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
-}
-
-export function handleAnimationClipTriggerKeydown(event: KeyboardEvent) {
-  const options = [...animClipSelect.options];
-  if (options.length === 0) return;
-  const current = Math.max(0, options.findIndex(option => option.value === animClipSelect.value));
-  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-    event.preventDefault();
-    selectAnimationClipAt(current + (event.key === 'ArrowDown' ? 1 : -1));
-  } else if (event.key === 'Home' || event.key === 'End') {
-    event.preventDefault();
-    selectAnimationClipAt(event.key === 'Home' ? 0 : options.length - 1);
-  } else if (event.key === 'Enter' || event.key === ' ') {
-    event.preventDefault();
-    openAnimationClipMenu();
-  }
-}
-
-export function handleAnimationClipMenuKeydown(event: KeyboardEvent) {
-  const options = [...animClipMenu.querySelectorAll<HTMLElement>('.anim-clip-option')];
-  const current = options.indexOf(document.activeElement as HTMLElement);
-  if (event.key === 'Escape') {
-    event.preventDefault();
-    closeAnimationClipMenu(true);
-    return;
-  }
-  let next = current;
-  if (event.key === 'ArrowDown') next = (current + 1) % options.length;
-  else if (event.key === 'ArrowUp') next = (current - 1 + options.length) % options.length;
-  else if (event.key === 'Home') next = 0;
-  else if (event.key === 'End') next = options.length - 1;
-  else return;
-  event.preventDefault();
-  options[next]?.focus();
-  if (options[next]) {
-    animClipSelect.value = options[next].dataset.value!;
-    animClipSelect.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-}
+export const rebuildAnimationClipMenu = () => clipPicker.rebuild();
+export const syncAnimationClipSelection = () => clipPicker.sync();
+export const closeAnimationClipMenu = () => clipPicker.close();
+export const selectAnimationClipAt = (index: number) => clipPicker.selectAt(index);
+export const installAnimationClipPicker = () => clipPicker.install();
 
 export function toggleAnimationPlayback() {
   if (!state.viewer || !state.viewer.scene?.animations?.length) return false;

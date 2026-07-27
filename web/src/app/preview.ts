@@ -6,11 +6,12 @@ import { buildViewerSceneFromDocument } from '../scene-document-viewer.ts';
 import { hydrateSceneTextures, honoredTextureSources } from '../scene-document-textures.ts';
 import type { SceneDocument } from '../scene-document.ts';
 import { errorMessage, log } from './log.ts';
+import { createMenuPicker } from './menu-picker.ts';
 import { modules, state } from './state.ts';
 import { renderSceneDocumentSummary } from './scene-report.ts';
 import { setWarningSource } from './warnings.ts';
 import { updateAnimationPlayButton, updateAnimationUi } from './animation-ui.ts';
-import { viewerVariantPicker, viewerVariantSelect, viewerAutoRotateBtn, viewerBaseColorBtn, viewerCanvas, viewerControls, viewerGridBtn, viewerSection, viewerSmoothNormalsBtn, viewerWireframeBtn } from './dom.ts';
+import { viewerVariantLabel, viewerVariantMenu, viewerVariantPicker, viewerVariantSelect, viewerVariantTrigger, viewerAutoRotateBtn, viewerBaseColorBtn, viewerCanvas, viewerControls, viewerGridBtn, viewerSection, viewerSmoothNormalsBtn, viewerWireframeBtn } from './dom.ts';
 
 /**
  * The 3D preview: creating the viewer on demand, loading a scene into it, and
@@ -49,7 +50,7 @@ export function ensureViewer() {
  */
 let previewGeneration = 0;
 
-export async function loadPreview(extension: string) {
+export async function loadPreview(extension: string, { keepView = false } = {}) {
   const generation = ++previewGeneration;
   viewerSection.classList.add('loaded');
   setViewerControlsEnabled(false);
@@ -103,7 +104,7 @@ export async function loadPreview(extension: string) {
       log(warning, 'warning');
     }
 
-    state.viewer!.setScene(scene);
+    state.viewer!.setScene(scene, { keepView });
     renderSceneDocumentSummary(state.currentSceneDocument!);
     setWarningSource('preview', scene.warnings || []);
     setViewerControlsEnabled(true);
@@ -189,14 +190,38 @@ function syncVariantPicker(scene: ViewerScene) {
   }
   const selected = String(state.currentVariant ?? -1);
   if (viewerVariantSelect.value !== selected) viewerVariantSelect.value = selected;
+  variantPicker.rebuild();
 }
+
+/**
+ * The variant list, drawn as a listbox over the real select.
+ *
+ * Same control as the animation bar's clip list, which is the point: it is one
+ * more choice made in the viewport, and it reads as one. A native select here
+ * came with its own height, its own palette and a floating label, none of which
+ * the toolbar beside it uses.
+ */
+const variantPicker = createMenuPicker({
+  select: viewerVariantSelect,
+  trigger: viewerVariantTrigger,
+  label: viewerVariantLabel,
+  menu: viewerVariantMenu,
+  placeholder: 'Variant',
+  prefix: 'Variant',
+  optionId: 'viewer-variant-option',
+});
 
 /** Re-read the document under the chosen variant; only materials change. */
 export function installVariantPicker() {
+  variantPicker.install();
   viewerVariantSelect.addEventListener('change', () => {
     const chosen = Number(viewerVariantSelect.value);
     state.currentVariant = chosen < 0 ? null : chosen;
-    if (state.currentFileType) void loadPreview(state.currentFileType);
+    variantPicker.sync();
+    // A variant swaps the materials and nothing else, so the camera and the
+    // clip that were on screen stay there. Re-framing here showed the user the
+    // same model from somewhere other than where they had put it.
+    if (state.currentFileType) void loadPreview(state.currentFileType, { keepView: true });
   });
 }
 

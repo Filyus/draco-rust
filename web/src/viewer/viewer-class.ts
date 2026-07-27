@@ -325,7 +325,28 @@ export class Viewer {
     this.hooks.onAutoRotateChange?.(next);
   }
 
-  setScene(scene: ViewerScene | null) {
+  /**
+   * Replace the scene, framing it and restarting playback.
+   *
+   * `keepView` is for a scene the caller says is the same one rebuilt — a
+   * material variant swaps the materials and nothing else, so re-framing the
+   * camera and rewinding the clip throws away exactly what the user was
+   * looking at in order to show them the same thing from somewhere else.
+   */
+  setScene(scene: ViewerScene | null, { keepView = false }: { keepView?: boolean } = {}) {
+    const view = keepView && this.scene
+      ? {
+        target: vec3.copy(vec3.create(), this.camera.target),
+        distance: this.camera.distance,
+        azimuth: this.camera.azimuth,
+        elevation: this.camera.elevation,
+        near: this.camera.near,
+        far: this.camera.far,
+        minDistance: this.camera.minDistance,
+        maxDistance: this.camera.maxDistance,
+        animation: { ...this.animation },
+      }
+      : null;
     this._disposeGlResources();
     this._disposeGrid();
     this.scene = scene;
@@ -410,18 +431,33 @@ export class Viewer {
     });
 
     this.glResources = resources;
-    this.camera.azimuth = DEFAULT_CAMERA_AZIMUTH;
-    this.camera.elevation = DEFAULT_CAMERA_ELEVATION;
     this._updateWorldMatrices();
     this._updateSceneBounds();
-    this._fitCameraToScene();
-
-    // Reset animation playback
-    this.animation.clipIndex = scene.animations.length > 0 ? 0 : -1;
-    this.animation.time = 0;
-    this.animation.playing = scene.animations.length > 0;
-    this.animation.speed = 1;
-    this.animation.loop = true;
+    if (view) {
+      // Restored after the bounds pass, which is what `_fitCameraToScene`
+      // reads: the same scene rebuilt has the same bounds, so the dolly limits
+      // it would derive are the ones already in hand.
+      vec3.copy(this.camera.target, view.target);
+      Object.assign(this.camera, {
+        distance: view.distance,
+        azimuth: view.azimuth,
+        elevation: view.elevation,
+        near: view.near,
+        far: view.far,
+        minDistance: view.minDistance,
+        maxDistance: view.maxDistance,
+      });
+      Object.assign(this.animation, view.animation);
+    } else {
+      this.camera.azimuth = DEFAULT_CAMERA_AZIMUTH;
+      this.camera.elevation = DEFAULT_CAMERA_ELEVATION;
+      this._fitCameraToScene();
+      this.animation.clipIndex = scene.animations.length > 0 ? 0 : -1;
+      this.animation.time = 0;
+      this.animation.playing = scene.animations.length > 0;
+      this.animation.speed = 1;
+      this.animation.loop = true;
+    }
 
     this.invalidate();
     this.hooks.onSceneLoaded?.(scene);

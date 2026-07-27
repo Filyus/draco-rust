@@ -22,9 +22,7 @@ import { serializeSceneDocumentToGlb } from './scene-document-gltf.ts';
 import { assertValidSceneDocument, summarizeSceneDocumentGeometry } from './scene-document.ts';
 import { basename } from './scene-resources.ts';
 import {
-  animClipMenu,
   animClipSelect,
-  animClipTrigger,
   animLoopCheckbox,
   animPlayBtn,
   animScrub,
@@ -72,11 +70,8 @@ import {
 } from './app/scene-report.ts';
 import {
   animationTick,
-  closeAnimationClipMenu,
-  handleAnimationClipMenuKeydown,
-  handleAnimationClipTriggerKeydown,
   handlePlaybackShortcut,
-  openAnimationClipMenu,
+  installAnimationClipPicker,
   rebuildAnimationClipMenu,
   resetAnimationUi,
   selectAnimationClipAt,
@@ -219,21 +214,7 @@ function setupEventListeners() {
     syncAnimationClipSelection();
     updateAnimationScrub();
   });
-  animClipTrigger.addEventListener('click', (event) => {
-    event.stopPropagation();
-    const open = animClipTrigger.getAttribute('aria-expanded') !== 'true';
-    if (open) openAnimationClipMenu();
-    else closeAnimationClipMenu();
-  });
-  animClipMenu.addEventListener('click', (event) => event.stopPropagation());
-  animClipTrigger.addEventListener('keydown', handleAnimationClipTriggerKeydown);
-  animClipMenu.addEventListener('keydown', handleAnimationClipMenuKeydown);
-  // Wrapped: passing the listener directly would hand the MouseEvent in as a
-  // truthy `restoreFocus`, so every click in the page focused the trigger.
-  document.addEventListener('click', () => closeAnimationClipMenu());
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeAnimationClipMenu();
-  });
+  installAnimationClipPicker();
   document.addEventListener('keydown', handlePlaybackShortcut);
   animLoopCheckbox.addEventListener('change', () => {
     if (state.viewer) state.viewer.animation.loop = animLoopCheckbox.checked;

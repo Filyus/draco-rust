@@ -866,7 +866,7 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   await expect(animationTrigger).toContainText('Survey');
   await animationTrigger.click();
   await expect(page.locator('#anim-clip-menu')).toBeVisible();
-  await page.locator('.anim-clip-option[data-value="1"]').click();
+  await page.locator('.menu-picker-option[data-value="1"]').click();
   await expect(page.locator('#anim-clip')).toHaveValue('1');
   await expect(animationTrigger).toContainText('Walk');
   await expect(animationTrigger).toHaveAttribute('aria-expanded', 'false');
@@ -876,9 +876,9 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   await animationTrigger.press('ArrowUp');
   await expect(page.locator('#anim-clip')).toHaveValue('1');
   await animationTrigger.click();
-  const selectedClip = page.locator('.anim-clip-option.selected');
+  const selectedClip = page.locator('.menu-picker-option.selected');
   await selectedClip.press('ArrowDown');
-  const runClip = page.locator('.anim-clip-option[data-value="2"]');
+  const runClip = page.locator('.menu-picker-option[data-value="2"]');
   await expect(runClip).toBeFocused();
   await runClip.press('Enter');
   await expect(page.locator('#anim-clip')).toHaveValue('2');
@@ -1837,9 +1837,13 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   });
   await expect(page.locator('#console')).toContainText('Preview ready');
 
-  // The picker lists the default plus every variant the file named.
+  // The picker lists the default plus every variant the file named, and reads
+  // as one more toolbar control rather than as a form field dropped into it:
+  // the trigger shows the current choice and the list is ours to draw.
   await expect(page.locator('#viewer-variant-picker')).toBeVisible();
   expect(await page.locator('#viewer-variant option').allTextContents()).toEqual(['Default', 'Ruby', 'Emerald']);
+  await expect(page.locator('#viewer-variant-trigger')).toHaveText('Variant: Default');
+  await expect(page.locator('#viewer-variant-menu')).toBeHidden();
 
   const emissiveOf = async () => page.evaluate(async () => {
     const { state } = await import('/app/state.js');
@@ -1849,7 +1853,32 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   });
 
   const plain = await emissiveOf();
-  await page.locator('#viewer-variant').selectOption('1');
+  // Where the user had put the camera, and what was playing, before the switch.
+  const viewBefore = await page.evaluate(async () => {
+    const { state } = await import('/app/state.js');
+    const viewer = state.viewer;
+    viewer.camera.azimuth += 0.7;
+    viewer.camera.elevation -= 0.3;
+    viewer.camera.distance *= 0.6;
+    viewer._render();
+    return {
+      azimuth: viewer.camera.azimuth,
+      elevation: viewer.camera.elevation,
+      distance: viewer.camera.distance,
+      target: [...viewer.camera.target],
+    };
+  });
+
+  // Driven the way a user drives it. The control is a listbox over a real
+  // select — the platform draws a native popup in the platform's palette, which
+  // is wrong over a dark viewport — so the click has to go through the trigger
+  // and the option, and the select is checked afterwards for still holding the
+  // value everything else reads.
+  await page.locator('#viewer-variant-trigger').click();
+  await expect(page.locator('#viewer-variant-menu')).toBeVisible();
+  await page.locator('#viewer-variant-menu .menu-picker-option[data-value="1"]').click();
+  await expect(page.locator('#viewer-variant')).toHaveValue('1');
+  await expect(page.locator('#viewer-variant-menu')).toBeHidden();
   // Waiting on the console would be satisfied by the "Preview ready" the first
   // load already printed, so wait for the scene the picker rebuilds. It has to
   // be expect.poll rather than waitForFunction: the latter takes the promise an
@@ -1861,6 +1890,22 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   expect(plain.index).toBe(0);
   expect(emerald.index).toBe(2);
   expect(emerald.emissive[1]).toBeGreaterThan(0.5);
+
+  // And the view did not move. A variant swaps materials and nothing else, so
+  // re-framing shows the user the same model from somewhere other than where
+  // they had put it — which is what loading a scene normally does, and what
+  // this path has to opt out of.
+  const viewAfter = await page.evaluate(async () => {
+    const { state } = await import('/app/state.js');
+    const viewer = state.viewer;
+    return {
+      azimuth: viewer.camera.azimuth,
+      elevation: viewer.camera.elevation,
+      distance: viewer.camera.distance,
+      target: [...viewer.camera.target],
+    };
+  });
+  expect(viewAfter).toEqual(viewBefore);
 });
 
 test('EXT_mesh_gpu_instancing draws the mesh once per instance transform', async ({ page }) => {
