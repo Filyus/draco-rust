@@ -76,7 +76,7 @@ export async function runExport(settings: ExportSettings): Promise<ExportOutcome
   if (!loaded) throw new Error('No parsed file to export');
 
   if (format === 'glb' && state.currentFileType === 'fbx' && state.currentSceneDocument) {
-    return exportSceneDocumentToGlb(state.currentSceneDocument);
+    return exportSceneDocumentToGlb(state.currentSceneDocument, settings);
   }
   if (loaded.document && (format === 'gltf' || format === 'glb')) {
     return exportGltfDocument(settings);
@@ -113,19 +113,76 @@ export async function runExport(settings: ExportSettings): Promise<ExportOutcome
   return exportFlattenedMeshes(settings, loaded);
 }
 
-/** GLB from the portable document — the route every non-glTF source takes. */
-export function exportSceneDocumentToGlb(document: SceneDocument): ExportOutcome {
+/**
+ * GLB from the portable document — the route every non-glTF source takes.
+ *
+ * Draco is applied as a second pass over the GLB this route just produced,
+ * rather than as something the document itself can express. That is the whole
+ * of it: the encoder works on a glTF document, the document lowers to one, and
+ * `SceneDocument` needs no idea that compression exists. Before this the
+ * checkbox was simply read and dropped here, so an FBX exported as a
+ * "compressed" GLB came out uncompressed and said nothing about it.
+ */
+export function exportSceneDocumentToGlb(
+  document: SceneDocument,
+  settings?: Pick<ExportSettings, 'useDraco' | 'encodingSpeed'>,
+): ExportOutcome {
   if (!modules.gltf.loaded) throw new Error('glTF module not loaded');
   const output = serializeSceneDocumentToGlb(document, modules.gltf.module);
+  const warnings = [...(output.warnings || [])];
+  const compressed = settings?.useDraco
+    ? compressGlb(output.binary, settings.encodingSpeed, warnings)
+    : null;
   return {
     result: {
       success: true,
-      binary_data: output.binary,
-      message: 'FBX SceneDocument exported as GLB',
+      binary_data: compressed?.binary ?? output.binary,
+      draco_stats: compressed?.stats ?? null,
+      message: compressed
+        ? 'SceneDocument compressed with Draco and exported as GLB'
+        : 'SceneDocument exported as GLB',
     },
-    warnings: [...(output.warnings || [])],
+    warnings,
     capabilities: output.capabilities,
   };
+}
+
+/**
+ * Compress a GLB this application produced, or explain why it could not.
+ *
+ * A refusal here is our own doing, not a property of the user's file: the only
+ * extensions this GLB can carry are the ones the document writer put in it. So
+ * the export still succeeds and hands over the uncompressed bytes with the
+ * reason attached, rather than failing and leaving the user with nothing.
+ */
+function compressGlb(glb: Uint8Array, encodingSpeed: number, warnings: string[]) {
+  const asset = modules.gltf.module.GltfAsset.withResources(glb, Object.create(null), '2.1');
+  try {
+    if (typeof asset.compressPrimitive !== 'function') {
+      warnings.push('Draco encoding is not included in this WASM build; the GLB was written uncompressed');
+      return null;
+    }
+    let compressedBytes = 0;
+    let compressedPrimitives = 0;
+    for (let mesh = 0; mesh < asset.meshCount(); mesh += 1) {
+      const primitiveCount = asset.primitiveCount(mesh);
+      for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
+        compressedBytes += asset.compressPrimitive(mesh, primitive, encodingSpeed, 5) || 0;
+        compressedPrimitives += 1;
+      }
+    }
+    return {
+      binary: asset.glb(2),
+      stats: { speed: encodingSpeed, compressed_size: compressedBytes, primitives: compressedPrimitives },
+    };
+  } catch (error) {
+    warnings.push(
+      `Draco compression was refused, so the GLB was written uncompressed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  } finally {
+    asset.free();
+  }
 }
 
 /**

@@ -10,11 +10,14 @@
  * needs a browser; the Playwright suite covers the wiring end to end.
  */
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const {
+  exportSceneDocumentToGlb,
+  runExport,
   mergeMeshes,
   prepareFbxAnimationForExport,
   prepareFbxSceneForExport,
@@ -103,5 +106,79 @@ assert.equal(merged.positions.length, 18);
 // buffer this size into push() overflows the call stack.
 const big = { positions: new Array(300000).fill(1), indices: [0, 1, 2] };
 assert.equal(mergeMeshes([big, big]).positions.length, 600000);
+
+/**
+ * The Draco checkbox has to reach the document route.
+ *
+ * It did not: the route read the export settings and never looked at
+ * `useDraco`, so an FBX exported as a "compressed" GLB came out uncompressed
+ * and said nothing about it. The document itself has no way to express Draco
+ * and does not need one — compression is a second pass over the GLB this route
+ * already produces — which is exactly why the omission was invisible.
+ */
+const { createSceneDocument } = await import(pathToFileURL(resolve(here, '..', 'src', 'scene-document.ts')).href);
+const gltfModule = await import(pathToFileURL(resolve(here, '..', 'www', 'pkg', 'gltf.js')).href);
+await gltfModule.default({
+  module_or_path: await readFile(resolve(here, '..', 'www', 'pkg', 'gltf_bg.wasm')),
+});
+const { modules } = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'state.ts')).href);
+modules.gltf.loaded = true;
+modules.gltf.module = gltfModule;
+
+const triangle = createSceneDocument({
+  accessors: [{
+    bytes: new Uint8Array(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]).buffer),
+    componentType: 5126,
+    components: 3,
+    count: 3,
+    min: [0, 0, 0],
+    max: [1, 1, 0],
+  }],
+  meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+  nodes: [{ name: 'triangle', mesh: 0 }],
+  rootNodes: [0],
+});
+
+/** The JSON chunk of a GLB, which is where the extension declarations live. */
+const glbManifest = (binary) => {
+  const bytes = new Uint8Array(binary);
+  const length = new DataView(bytes.buffer, bytes.byteOffset, 20).getUint32(12, true);
+  return JSON.parse(new TextDecoder().decode(bytes.subarray(20, 20 + length)));
+};
+
+const plain = exportSceneDocumentToGlb(triangle, { useDraco: false, encodingSpeed: 5 });
+assert.equal(plain.result.success, true);
+assert.equal(plain.result.draco_stats, null, 'an uncompressed export reports no compression');
+assert.equal(
+  glbManifest(plain.result.binary_data).extensionsRequired,
+  undefined,
+  'without the checkbox the GLB must not require Draco',
+);
+
+if (typeof gltfModule.GltfAsset?.prototype?.compressPrimitive === 'function') {
+  const compressed = exportSceneDocumentToGlb(triangle, { useDraco: true, encodingSpeed: 5 });
+  assert.equal(compressed.result.success, true);
+  assert.deepEqual(compressed.warnings, [], 'a document this route wrote itself must compress cleanly');
+  assert.ok(
+    (glbManifest(compressed.result.binary_data).extensionsRequired ?? []).includes('KHR_draco_mesh_compression'),
+    'the checkbox must reach the writer, not just the settings object',
+  );
+  assert.equal(compressed.result.draco_stats.primitives, 1);
+  assert.ok(compressed.result.draco_stats.compressed_size > 0);
+
+  // And through the route that actually runs, not only the helper it calls:
+  // the settings object reached `runExport` all along, and the loss was one
+  // call site inside it that never passed the flag on.
+  const { state } = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'state.ts')).href);
+  state.currentMeshData = { document: null, scene: null, meshes: [] };
+  state.currentFileType = 'fbx';
+  state.currentSceneDocument = triangle;
+  const routed = await runExport({
+    format: 'glb', includeNormals: true, includeUvs: true, useDraco: true, encodingSpeed: 5,
+  });
+  assert.equal(routed.result.draco_stats?.primitives, 1, 'the FBX-to-GLB route must honour the checkbox');
+} else {
+  console.log('export-branches: Draco leg skipped (this WASM profile has no encoder)');
+}
 
 console.log('export branch helpers passed');
