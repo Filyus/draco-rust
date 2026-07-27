@@ -5,6 +5,8 @@ import type { Mat4, Vec3 } from '../math.ts';
 import { cameraPosition } from './camera.ts';
 import type { CameraHost } from './camera.ts';
 import { GL } from './gl-utils.ts';
+import { captureFrameTarget, ensureFrameTarget } from './frame-target.ts';
+import type { FrameTarget } from './frame-target.ts';
 import { MORPH_TEXTURE_UNIT } from './morph-texture.ts';
 import {
   MAX_MATERIAL_TEXTURE_UNITS, SHARED_TEXTURE_UNITS, assertTextureUnitBudget, materialTextureUnit,
@@ -191,6 +193,8 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   uniforms: SurfaceUniforms;
   /** The surface program bound right now, or null before the first draw. */
   _surfaceProgram: WebGLProgram | null;
+  /** The offscreen colour buffer the frame is composed in. */
+  _frameTarget?: FrameTarget | null;
   lineUniforms: Record<string, WebGLUniformLocation | null>;
   backgroundUniforms: Record<string, WebGLUniformLocation | null>;
   backgroundVao: WebGLVertexArrayObject | null;
@@ -254,16 +258,41 @@ export function render(host: RenderHost) {
   // until the first one asks for one.
   host._surfaceProgram = null;
 
-  for (const renderable of host.scene.renderables) {
+  // Opaque first, then what blends over it. glTF asks for exactly that order,
+  // and it is also the only arrangement in which "everything a transmissive
+  // surface may see" is a moment the frame passes through rather than a
+  // guess: the snapshot is taken between the two.
+  drawSurfaces(host, false);
+  host._frameTarget = ensureFrameTarget(
+    gl, host._frameTarget ?? null, gl.drawingBufferWidth, gl.drawingBufferHeight,
+  );
+  captureFrameTarget(gl, host._frameTarget);
+  drawSurfaces(host, true);
+
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+  gl.bindVertexArray(null);
+}
+
+/**
+ * One pass over the scene's renderables, drawing either what is opaque or what
+ * blends over it.
+ *
+ * The two halves differ only in which primitives they take, so they share
+ * every uniform decision below rather than being written twice.
+ */
+function drawSurfaces(host: RenderHost, blended: boolean) {
+  const gl = host.gl;
+  for (const renderable of host.scene!.renderables) {
     const node = renderable.node;
-    const primitives = host.glResources.primitives[renderable.meshIndex];
+    const primitives = host.glResources!.primitives[renderable.meshIndex];
     if (!primitives || primitives.length === 0) continue;
 
     mat4.copy(host._model, node.world);
 
-    const skin = renderable.skinIndex >= 0 ? host.scene.skins[renderable.skinIndex] : null;
+    const skin = renderable.skinIndex >= 0 ? host.scene!.skins[renderable.skinIndex] : null;
     const jointMatrices = skin
-      ? computeJointMatrices(host, skin, node.world, host.glResources.jointMatrices?.[renderable.skinIndex] ?? null)
+      ? computeJointMatrices(host, skin, node.world, host.glResources!.jointMatrices?.[renderable.skinIndex] ?? null)
       : null;
 
     // Normal matrix = inverse-transpose(model)
@@ -272,7 +301,8 @@ export function render(host: RenderHost) {
 
     for (let i = 0; i < primitives.length; i++) {
       const { uploaded, materialIndex } = primitives[i];
-      const material = host.scene.materials[materialIndex];
+      const material = host.scene!.materials[materialIndex];
+      if ((material?.alphaMode === 'BLEND') !== blended) continue;
       // Which program draws this primitive is settled first: everything below
       // writes uniforms, and uniforms belong to whichever program is bound.
       const surface = useSurfaceProgram(host, enabledMaterialSlots(host, material, uploaded));
@@ -320,10 +350,6 @@ export function render(host: RenderHost) {
       }
     }
   }
-
-  gl.depthMask(true);
-  gl.disable(gl.BLEND);
-  gl.bindVertexArray(null);
 }
 
 /**

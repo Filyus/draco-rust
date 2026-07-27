@@ -59,6 +59,8 @@ import {
   updateWorldMatrices,
 } from './scene-graph.ts';
 import { MAX_JOINTS } from './shaders.ts';
+import { disposeFrameTarget } from './frame-target.ts';
+import type { FrameTarget } from './frame-target.ts';
 import { buildViewerPrograms } from './programs.ts';
 import type { SurfaceProgramCache } from './programs.ts';
 
@@ -81,6 +83,7 @@ export class Viewer {
   /** The bound surface program's locations; replaced per draw by the renderer. */
   declare uniforms: Record<string, WebGLUniformLocation | null>;
   declare _surfaceProgram: WebGLProgram | null;
+  declare _frameTarget: FrameTarget | null;
   declare lineUniforms: Record<string, WebGLUniformLocation | null>;
   declare backgroundUniforms: Record<string, WebGLUniformLocation | null>;
   declare locations: Record<string, number>;
@@ -250,6 +253,7 @@ export class Viewer {
     this.backgroundProgram = built.backgroundProgram;
     this.uniforms = {};
     this._surfaceProgram = null;
+    this._frameTarget = null;
     this.locations = built.locations;
     this.lineUniforms = built.lineUniforms;
     this.backgroundUniforms = built.backgroundUniforms;
@@ -485,6 +489,8 @@ export class Viewer {
     }
     this._resizeObserver?.disconnect();
     this.surfacePrograms?.dispose();
+    disposeFrameTarget(this.gl, this._frameTarget ?? null);
+    this._frameTarget = null;
     if (this.lineProgram) this.gl.deleteProgram(this.lineProgram);
     if (this.backgroundProgram) this.gl.deleteProgram(this.backgroundProgram);
     if (this.backgroundVao) this.gl.deleteVertexArray(this.backgroundVao);

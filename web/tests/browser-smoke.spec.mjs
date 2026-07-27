@@ -1735,6 +1735,108 @@ test('one surface program per set of texture slots, not per material', async ({ 
   expect(observed.sources[1]).toEqual({ slots: 1, samplers: 1 });
 });
 
+test('the opaque half of the frame is snapshotted before what blends over it', async ({ page }) => {
+  await page.goto('/index.html');
+  // A transmissive surface has to sample the scene behind it, and the only
+  // moment the frame holds "everything such a surface may see" is between the
+  // opaque pass and the blended one. Nothing samples the snapshot yet, so what
+  // this pins is the pass structure and the sizing: the texture is taken from
+  // the canvas rather than composed in a buffer of its own, because the context
+  // is multisampled and routing the visible frame through a single-sample
+  // framebuffer would quietly cost it its antialiasing.
+  const observed = await page.evaluate(async () => {
+    const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
+      import('/viewer.js'),
+      import('/scene-document.js'),
+      import('/scene-document-viewer.js'),
+    ]);
+
+    const bytes = (values) => new Uint8Array(
+      values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
+    );
+    const accessor = (values, components, componentType = 5126) => ({
+      bytes: bytes(values), componentType, components, count: values.length / components,
+    });
+    // A blended quad in front of an opaque one, in the wrong order in the
+    // scene: the opaque quad is second. Drawing them as they come would put
+    // the blend underneath.
+    const document_ = createSceneDocument({
+      materials: [
+        { baseColorFactor: [0, 0, 1, 0.5], alphaMode: 'BLEND', emissiveFactor: [0, 0, 1] },
+        { baseColorFactor: [1, 0, 0, 1], emissiveFactor: [1, 0, 0] },
+      ],
+      accessors: [
+        accessor(new Float32Array([-1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1]), 3),
+        accessor(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3),
+        accessor(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]), 3),
+        accessor(new Uint16Array([0, 1, 2, 0, 2, 3]), 1, 5123),
+      ],
+      meshes: [{
+        primitives: [
+          { attributes: { POSITION: 0, NORMAL: 2 }, indices: 3, material: 0 },
+          { attributes: { POSITION: 1, NORMAL: 2 }, indices: 3, material: 1 },
+        ],
+      }],
+      nodes: [{ name: 'Quads', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 }],
+      rootNodes: [0],
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
+    document.body.appendChild(canvas);
+    const viewer = new Viewer(canvas);
+    viewer.showGrid = false;
+    viewer.setScene(buildViewerSceneFromDocument(document_));
+    viewer.camera.target.set([0, 0, 0]);
+    viewer.camera.distance = 5;
+    viewer.camera.azimuth = 0;
+    viewer.camera.elevation = 0;
+    viewer._render();
+
+    const gl = viewer.gl;
+    const size = [viewer._frameTarget?.width, viewer._frameTarget?.height];
+    const matchesDrawingBuffer = size[0] === gl.drawingBufferWidth && size[1] === gl.drawingBufferHeight;
+
+    const centre = (x, y) => [Math.floor(x / 2), Math.floor(y / 2)];
+    const canvasPixel = new Uint8Array(4);
+    gl.readPixels(...centre(gl.drawingBufferWidth, gl.drawingBufferHeight), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, canvasPixel);
+
+    // Read the snapshot back by attaching it to a framebuffer of our own.
+    const readback = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, readback);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, viewer._frameTarget.color, 0);
+    const snapshotPixel = new Uint8Array(4);
+    gl.readPixels(...centre(size[0], size[1]), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, snapshotPixel);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(readback);
+
+    // A resize has to reallocate it: the texture is copied into at a fixed
+    // size, and a stale one would capture a corner of the frame.
+    const before = viewer._frameTarget;
+    canvas.width = gl.drawingBufferWidth + 32;
+    canvas.height = gl.drawingBufferHeight + 32;
+    viewer._render();
+    const reallocated = viewer._frameTarget !== before
+      && viewer._frameTarget.width === gl.drawingBufferWidth;
+
+    const glError = gl.getError();
+    viewer.dispose();
+    canvas.remove();
+    return { size, matchesDrawingBuffer, reallocated, glError, canvasPixel: Array.from(canvasPixel), snapshotPixel: Array.from(snapshotPixel) };
+  });
+
+  expect(observed.glError).toBe(0);
+  expect(observed.matchesDrawingBuffer).toBe(true);
+  expect(observed.reallocated).toBe(true);
+
+  // The snapshot holds the opaque quad and nothing else: red, no blue.
+  expect(observed.snapshotPixel[0]).toBeGreaterThan(120);
+  expect(observed.snapshotPixel[2]).toBeLessThan(observed.snapshotPixel[0] / 2);
+  // The canvas holds the blend over it, so blue has arrived by then. Taking
+  // the snapshot after both, or before the opaque pass, changes exactly this.
+  expect(observed.canvasPixel[2]).toBeGreaterThan(observed.snapshotPixel[2] + 40);
+});
+
 test('every material extension factor the table declares reaches the shader', async ({ page }) => {
   await page.goto('/index.html');
   // The uniform name follows from the property name, so declaring a field in
