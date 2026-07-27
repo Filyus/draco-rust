@@ -159,6 +159,86 @@ export function normalMappedQuad({ normalMap = true, scale = 0.02 } = {}) {
   });
 }
 
+/** A 2x1 truecolour PNG: red on the left half, green on the right. */
+function splitColorPng() {
+  const row = Buffer.from([0, 255, 0, 0, 0, 255, 0]);
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(2, 0);
+  header.writeUInt32BE(1, 4);
+  header[8] = 8; // bit depth
+  header[9] = 2; // truecolour
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(row)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+/**
+ * A quad whose emissive texture is squeezed onto one half of a two-colour map
+ * by `KHR_texture_transform`.
+ *
+ * The emissive slot is chosen because it is additive and independent of the
+ * environment: whatever the lighting does, the surface reads as the colour the
+ * transform selected. Both variants scale U by 0.5, so each samples exactly one
+ * half of the map and the frame is a single flat colour — red at offset 0,
+ * green at offset 0.5. A renderer that ignores the transform on this slot
+ * produces the same half-red half-green frame for both, which is what makes the
+ * pair separable rather than merely different.
+ */
+export function emissiveTransformQuad({ offset = 0 } = {}) {
+  const positions = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
+  const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]);
+  const uvs = new Float32Array([0, 1, 1, 1, 1, 0, 0, 0]);
+  const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+  const binary = Buffer.concat([
+    Buffer.from(positions.buffer),
+    Buffer.from(normals.buffer),
+    Buffer.from(uvs.buffer),
+    Buffer.from(indices.buffer),
+  ]);
+  return JSON.stringify({
+    asset: { version: '2.0' },
+    extensionsUsed: ['KHR_texture_transform'],
+    buffers: [{ byteLength: binary.length, uri: `data:application/octet-stream;base64,${binary.toString('base64')}` }],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 48 },
+      { buffer: 0, byteOffset: 48, byteLength: 48 },
+      { buffer: 0, byteOffset: 96, byteLength: 32 },
+      { buffer: 0, byteOffset: 128, byteLength: 12 },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 4, type: 'VEC3', min: [-1, -1, 0], max: [1, 1, 0] },
+      { bufferView: 1, componentType: 5126, count: 4, type: 'VEC3' },
+      { bufferView: 2, componentType: 5126, count: 4, type: 'VEC2' },
+      { bufferView: 3, componentType: 5123, count: 6, type: 'SCALAR' },
+    ],
+    images: [{
+      mimeType: 'image/png',
+      uri: `data:image/png;base64,${splitColorPng().toString('base64')}`,
+    }],
+    textures: [{ source: 0, sampler: 0 }],
+    // Nearest and clamped: the assertion is about which half is sampled, not
+    // about how the seam between them filters.
+    samplers: [{ wrapS: 33071, wrapT: 33071, minFilter: 9728, magFilter: 9728 }],
+    materials: [{
+      pbrMetallicRoughness: { baseColorFactor: [0, 0, 0, 1], metallicFactor: 0, roughnessFactor: 1 },
+      emissiveFactor: [1, 1, 1],
+      emissiveTexture: {
+        index: 0,
+        extensions: { KHR_texture_transform: { offset: [offset, 0], scale: [0.5, 1] } },
+      },
+    }],
+    meshes: [{
+      primitives: [{ attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 }, indices: 3, material: 0 }],
+    }],
+    nodes: [{ mesh: 0 }],
+    scenes: [{ nodes: [0] }],
+    scene: 0,
+  });
+}
+
 export function animatedTranslation() {
   return JSON.stringify({
     asset: { version: '2.0' },

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   animatedTranslation,
   embeddedTriangle,
+  emissiveTransformQuad,
   externalTriangle,
   normalMappedQuad,
   triangleBytes,
@@ -1494,6 +1495,72 @@ test('normal maps shade a model far smaller than one unit', async ({ page }) => 
   // measured difference on a working build is several times these bounds.
   expect(difference.meanAbsolute).toBeGreaterThan(2);
   expect(difference.changedFraction).toBeGreaterThan(0.05);
+});
+
+/**
+ * KHR_texture_transform reaches slots other than base color.
+ *
+ * The reader has always handed the transform over for every textureInfo, and
+ * the scene model has always carried it, but the shader read it on base color
+ * alone: nine slots silently sampled untransformed UVs. Emissive is the slot
+ * under test because it is additive, so the frame's colour is the sampled
+ * texel rather than a lighting result.
+ */
+test('the texture transform reaches slots other than base color', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  const shot = async (name, gltf) => {
+    await page.locator('#file-input').setInputFiles({
+      name,
+      mimeType: 'model/gltf+json',
+      buffer: Buffer.from(gltf),
+    });
+    await expect(page.locator('#console')).toContainText(`Successfully parsed ${name}`);
+    await expect(page.locator('#console')).toContainText('Preview ready');
+    const image = await page.locator('#viewer-canvas').screenshot();
+    await page.locator('#clear-file').click();
+    return image.toString('base64');
+  };
+
+  const red = await shot('emissive-left.gltf', emissiveTransformQuad({ offset: 0 }));
+  const green = await shot('emissive-right.gltf', emissiveTransformQuad({ offset: 0.5 }));
+
+  const measure = await page.evaluate(async ([a, b]) => {
+    const decode = async (base64) => {
+      const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const context = canvas.getContext('2d');
+      context.drawImage(bitmap, 0, 0);
+      return context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+    };
+    // The backdrop fills most of the frame, so the emitting quad is measured
+    // over the pixels where one channel actually dominates.
+    const dominance = (pixels) => {
+      let redPixels = 0;
+      let greenPixels = 0;
+      for (let index = 0; index < pixels.length; index += 4) {
+        const [r, g, blue] = [pixels[index], pixels[index + 1], pixels[index + 2]];
+        if (r > g + 40 && r > blue + 40) redPixels += 1;
+        if (g > r + 40 && g > blue + 40) greenPixels += 1;
+      }
+      const total = pixels.length / 4;
+      return { red: redPixels / total, green: greenPixels / total };
+    };
+    const [left, right] = await Promise.all([decode(a), decode(b)]);
+    let identical = left.length === right.length;
+    for (let index = 0; identical && index < left.length; index += 1) {
+      if (left[index] !== right[index]) identical = false;
+    }
+    return { left: dominance(left), right: dominance(right), identical };
+  }, [red, green]);
+
+  // Ignoring the transform renders both fixtures as the same half-and-half
+  // frame, which fails all three of these at once.
+  expect(measure.identical).toBe(false);
+  expect(measure.left.red).toBeGreaterThan(measure.left.green * 4 + 0.02);
+  expect(measure.right.green).toBeGreaterThan(measure.right.red * 4 + 0.02);
 });
 
 /**

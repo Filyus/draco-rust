@@ -6,7 +6,8 @@ import { GL } from './gl-utils.ts';
 import { MORPH_TEXTURE_UNIT } from './morph-texture.ts';
 import { computeJointMatrices, updateWorldMatrices } from './scene-graph.ts';
 import type { SceneGraphHost } from './scene-graph.ts';
-import { MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS } from './shaders.ts';
+import { MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS, TEXTURE_SLOTS } from './shaders.ts';
+import type { TextureSlotName } from './shaders.ts';
 import type { ViewerMaterial, ViewerTextureBinding } from '../viewer-scene.ts';
 
 /**
@@ -16,6 +17,121 @@ import type { ViewerMaterial, ViewerTextureBinding } from '../viewer-scene.ts';
  */
 /** World up, shared by every view matrix; hoisted out of the frame. */
 const WORLD_UP = new Float32Array([0, 1, 0]);
+
+/** How one material texture slot reaches the GPU. */
+interface TextureSlotBinding {
+  /** Texture unit. Units 5..8 belong to the backdrop and the IBL maps. */
+  unit: number;
+  textureUniform: string;
+  hasUniform: string;
+  read(material: ViewerMaterial | undefined): ViewerTextureBinding | null | undefined;
+}
+
+const SLOT_BINDINGS: Record<TextureSlotName, TextureSlotBinding> = {
+  // Base color is the one slot ViewerMaterial keeps flattened, because OBJ can
+  // carry a bare companion-file URI there. Rebuilding the binding here is what
+  // lets it travel the same path as the other nine.
+  BASE_COLOR: {
+    unit: 0,
+    textureUniform: 'uBaseColor',
+    hasUniform: 'uHasTexture',
+    read: (material) => (material?.baseColorTexture == null ? null : {
+      index: material.baseColorTexture,
+      texCoord: material.baseColorTexCoord ?? 0,
+      transform: material.baseColorTextureTransform,
+    }),
+  },
+  METALLIC_ROUGHNESS: {
+    unit: 1,
+    textureUniform: 'uMetallicRoughness',
+    hasUniform: 'uHasMetallicRoughnessTexture',
+    read: (material) => material?.metallicRoughnessTexture,
+  },
+  EMISSIVE: {
+    unit: 2,
+    textureUniform: 'uEmissive',
+    hasUniform: 'uHasEmissiveTexture',
+    read: (material) => material?.emissiveTexture,
+  },
+  NORMAL: {
+    unit: 3,
+    textureUniform: 'uNormalTexture',
+    hasUniform: 'uHasNormalTexture',
+    read: (material) => material?.normalTexture,
+  },
+  OCCLUSION: {
+    unit: 4,
+    textureUniform: 'uOcclusionTexture',
+    hasUniform: 'uHasOcclusionTexture',
+    read: (material) => material?.occlusionTexture,
+  },
+  SPECULAR: {
+    unit: 9,
+    textureUniform: 'uSpecularTexture',
+    hasUniform: 'uHasSpecularTexture',
+    read: (material) => material?.specularTexture,
+  },
+  SPECULAR_COLOR: {
+    unit: 10,
+    textureUniform: 'uSpecularColorTexture',
+    hasUniform: 'uHasSpecularColorTexture',
+    read: (material) => material?.specularColorTexture,
+  },
+  CLEARCOAT: {
+    unit: 11,
+    textureUniform: 'uClearcoatTexture',
+    hasUniform: 'uHasClearcoatTexture',
+    read: (material) => material?.clearcoatTexture,
+  },
+  CLEARCOAT_ROUGHNESS: {
+    unit: 12,
+    textureUniform: 'uClearcoatRoughnessTexture',
+    hasUniform: 'uHasClearcoatRoughnessTexture',
+    read: (material) => material?.clearcoatRoughnessTexture,
+  },
+  CLEARCOAT_NORMAL: {
+    unit: 13,
+    textureUniform: 'uClearcoatNormalTexture',
+    hasUniform: 'uHasClearcoatNormalTexture',
+    read: (material) => material?.clearcoatNormalTexture,
+  },
+};
+
+/**
+ * The slots in shader index order: position here is the `SLOT_*` constant the
+ * fragment program uses. Built by mapping over `TEXTURE_SLOTS` so the two
+ * cannot drift apart. Fourteen samplers total, inside the WebGL2 floor of 16.
+ */
+const MATERIAL_TEXTURE_SLOTS = TEXTURE_SLOTS.map((name) => SLOT_BINDINGS[name]);
+
+/**
+ * Write one slot's `KHR_texture_transform` as a column-major mat3.
+ *
+ * The spec composes it as translation * rotation * scale applied to the UV,
+ * with the rotation running clockwise; expanded, that is exactly the arithmetic
+ * the base color slot used to do in the shader. An absent transform writes the
+ * identity, so the shader keeps a single code path.
+ */
+function writeTextureMatrix(
+  out: Float32Array,
+  at: number,
+  transform: ViewerTextureBinding['transform'] | undefined,
+) {
+  const scale = transform?.scale || [1, 1];
+  const offset = transform?.offset || [0, 0];
+  const rotation = transform?.rotation || 0;
+  const c = Math.cos(rotation);
+  const s = Math.sin(rotation);
+  out[at] = scale[0] * c;
+  out[at + 1] = scale[0] * s;
+  out[at + 2] = 0;
+  out[at + 3] = -scale[1] * s;
+  out[at + 4] = scale[1] * c;
+  out[at + 5] = 0;
+  out[at + 6] = offset[0];
+  out[at + 7] = offset[1];
+  out[at + 8] = 1;
+}
 
 export interface RenderHost extends CameraHost, SceneGraphHost {
   gl: WebGL2RenderingContext;
@@ -46,6 +162,9 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   _morphLayers?: Int32Array;
   /** Reused ordering buffer for the per-frame morph target pick. */
   _morphOrder?: number[];
+  /** Reused per-material slot uniforms: UV set and texture transform. */
+  _texCoordSlots?: Int32Array;
+  _texMatrices?: Float32Array;
   _emptyMorphTexture?: WebGLTexture | null;
   _morphPlaceholderTexture?: WebGLTexture | null;
   _log(message: string, type?: string): void;
@@ -227,68 +346,38 @@ export function applyMaterial(
   useSmoothNormals: boolean,
 ) {
   const gl = host.gl;
-  const texCoord = material?.baseColorTexCoord ?? 0;
-  const hasTexCoords = texCoord === 0 ? uploaded.hasTexCoords0
-    : texCoord === 1 ? uploaded.hasTexCoords1 : false;
-  const baseTexture = host.glResources.textures[material?.baseColorTexture ?? -1];
-  const hasTexture = !!baseTexture && hasTexCoords;
-  gl.uniform1i(host.uniforms.uHasTexture, hasTexture ? 1 : 0);
   gl.uniform1i(host.uniforms.uHasNormals, uploaded.hasNormals || useSmoothNormals ? 1 : 0);
   gl.uniform1i(host.uniforms.uHasVertexColors, uploaded.hasColors ? 1 : 0);
   gl.uniform1i(host.uniforms.uUnlit, material?.unlit ? 1 : 0);
   gl.uniform1i(host.uniforms.uBaseColorOnly, host.baseColorOnly ? 1 : 0);
 
-  if (hasTexture) {
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, baseTexture);
-    gl.uniform1i(host.uniforms.uBaseColor, 0);
-  }
-  const factor = material?.baseColorFactor || [1, 1, 1, 1];
-  gl.uniform4f(host.uniforms.uBaseColorFactor, factor[0], factor[1], factor[2], factor[3]);
-  const transform = material?.baseColorTextureTransform;
-  const offset = transform?.offset || [0, 0];
-  const scale = transform?.scale || [1, 1];
-  gl.uniform1i(host.uniforms.uBaseColorTexCoord, texCoord);
-  gl.uniform2f(host.uniforms.uBaseColorTexOffset, offset[0], offset[1]);
-  gl.uniform2f(host.uniforms.uBaseColorTexScale, scale[0], scale[1]);
-  gl.uniform1f(host.uniforms.uBaseColorTexRotation, transform?.rotation || 0);
-
-  const bindTexture = (
-    binding: ViewerTextureBinding | null | undefined,
-    unit: number,
-    textureUniform: WebGLUniformLocation | null,
-    hasUniform: WebGLUniformLocation | null,
-    texCoordUniform: WebGLUniformLocation | null,
-  ) => {
+  // Every slot at once: bind its texture, say whether it is usable, and record
+  // the UV set and transform the shader will sample it with.
+  const texCoordSlots = host._texCoordSlots ??= new Int32Array(MATERIAL_TEXTURE_SLOTS.length);
+  const texMatrices = host._texMatrices ??= new Float32Array(MATERIAL_TEXTURE_SLOTS.length * 9);
+  for (const [slot, { unit, textureUniform, hasUniform, read }] of MATERIAL_TEXTURE_SLOTS.entries()) {
+    const binding = read(material);
     const texCoord = binding?.texCoord ?? 0;
     const hasUv = texCoord === 0 ? uploaded.hasTexCoords0
       : texCoord === 1 ? uploaded.hasTexCoords1 : false;
     const texture = host.glResources.textures[binding?.index ?? -1];
     const enabled = !!texture && hasUv;
-    gl.uniform1i(hasUniform, enabled ? 1 : 0);
-    gl.uniform1i(texCoordUniform, texCoord);
+    gl.uniform1i(host.uniforms[hasUniform], enabled ? 1 : 0);
+    texCoordSlots[slot] = texCoord;
+    writeTextureMatrix(texMatrices, slot * 9, binding?.transform);
     if (enabled) {
       gl.activeTexture(gl.TEXTURE0 + unit);
       gl.bindTexture(gl.TEXTURE_2D, texture);
-      gl.uniform1i(textureUniform, unit);
+      gl.uniform1i(host.uniforms[textureUniform], unit);
     }
-  };
-  bindTexture(
-    material?.metallicRoughnessTexture,
-    1,
-    host.uniforms.uMetallicRoughness,
-    host.uniforms.uHasMetallicRoughnessTexture,
-    host.uniforms.uMetallicRoughnessTexCoord,
-  );
+  }
+  gl.uniform1iv(host.uniforms.uTexCoordSlot, texCoordSlots);
+  gl.uniformMatrix3fv(host.uniforms.uTexMatrix, false, texMatrices);
+
+  const factor = material?.baseColorFactor || [1, 1, 1, 1];
+  gl.uniform4f(host.uniforms.uBaseColorFactor, factor[0], factor[1], factor[2], factor[3]);
   gl.uniform1f(host.uniforms.uMetallic, material?.metallic ?? 0);
   gl.uniform1f(host.uniforms.uRoughness, material?.roughness ?? 1);
-  bindTexture(
-    material?.emissiveTexture,
-    2,
-    host.uniforms.uEmissive,
-    host.uniforms.uHasEmissiveTexture,
-    host.uniforms.uEmissiveTexCoord,
-  );
   // KHR_materials_emissive_strength scales the factor rather than reaching the
   // shader on its own: the two are always multiplied together anyway.
   const emissive = material?.emissiveFactor || [0, 0, 0];
@@ -299,67 +388,14 @@ export function applyMaterial(
     emissive[1] * emissiveStrength,
     emissive[2] * emissiveStrength,
   );
-  bindTexture(
-    material?.normalTexture,
-    3,
-    host.uniforms.uNormalTexture,
-    host.uniforms.uHasNormalTexture,
-    host.uniforms.uNormalTexCoord,
-  );
   gl.uniform1f(host.uniforms.uNormalScale, material?.normalTexture?.scale ?? 1);
-  bindTexture(
-    material?.occlusionTexture,
-    4,
-    host.uniforms.uOcclusionTexture,
-    host.uniforms.uHasOcclusionTexture,
-    host.uniforms.uOcclusionTexCoord,
-  );
   gl.uniform1f(host.uniforms.uOcclusionStrength, material?.occlusionTexture?.strength ?? 1);
-
-  // Units 5..8 are taken by the backdrop and the IBL maps, so the material
-  // extension layers start at 9. That leaves 13 samplers in the fragment
-  // program, inside the WebGL2 floor of 16.
   gl.uniform1f(host.uniforms.uIor, material?.ior ?? 1.5);
   gl.uniform1f(host.uniforms.uSpecularFactor, material?.specularFactor ?? 1);
   const specularColor = material?.specularColorFactor || [1, 1, 1];
   gl.uniform3f(host.uniforms.uSpecularColorFactor, specularColor[0], specularColor[1], specularColor[2]);
-  bindTexture(
-    material?.specularTexture,
-    9,
-    host.uniforms.uSpecularTexture,
-    host.uniforms.uHasSpecularTexture,
-    host.uniforms.uSpecularTexCoord,
-  );
-  bindTexture(
-    material?.specularColorTexture,
-    10,
-    host.uniforms.uSpecularColorTexture,
-    host.uniforms.uHasSpecularColorTexture,
-    host.uniforms.uSpecularColorTexCoord,
-  );
   gl.uniform1f(host.uniforms.uClearcoatFactor, material?.clearcoatFactor ?? 0);
   gl.uniform1f(host.uniforms.uClearcoatRoughnessFactor, material?.clearcoatRoughnessFactor ?? 0);
-  bindTexture(
-    material?.clearcoatTexture,
-    11,
-    host.uniforms.uClearcoatTexture,
-    host.uniforms.uHasClearcoatTexture,
-    host.uniforms.uClearcoatTexCoord,
-  );
-  bindTexture(
-    material?.clearcoatRoughnessTexture,
-    12,
-    host.uniforms.uClearcoatRoughnessTexture,
-    host.uniforms.uHasClearcoatRoughnessTexture,
-    host.uniforms.uClearcoatRoughnessTexCoord,
-  );
-  bindTexture(
-    material?.clearcoatNormalTexture,
-    13,
-    host.uniforms.uClearcoatNormalTexture,
-    host.uniforms.uHasClearcoatNormalTexture,
-    host.uniforms.uClearcoatNormalTexCoord,
-  );
   gl.uniform1f(host.uniforms.uClearcoatNormalScale, material?.clearcoatNormalTexture?.scale ?? 1);
 }
 

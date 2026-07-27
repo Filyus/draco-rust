@@ -7,6 +7,31 @@
 export const MAX_JOINTS = 256;
 export const MAX_ACTIVE_MORPH_TARGETS = 32;
 
+/**
+ * The material texture slots, in the order the shader indexes them.
+ *
+ * Every slot carries its own TEXCOORD set and its own `KHR_texture_transform`,
+ * so the fragment shader addresses them through two uniform arrays rather than
+ * a pair of scalars per slot. This list is the single definition of that index
+ * space: the GLSL `SLOT_*` constants below are generated from it, and the
+ * renderer builds its binding table by mapping over it. Reordering it moves
+ * both sides at once, which is the point.
+ */
+export const TEXTURE_SLOTS = [
+  'BASE_COLOR',
+  'METALLIC_ROUGHNESS',
+  'EMISSIVE',
+  'NORMAL',
+  'OCCLUSION',
+  'SPECULAR',
+  'SPECULAR_COLOR',
+  'CLEARCOAT',
+  'CLEARCOAT_ROUGHNESS',
+  'CLEARCOAT_NORMAL',
+] as const;
+
+export type TextureSlotName = (typeof TEXTURE_SLOTS)[number];
+
 /** GLSL sources for the preview: PBR surface, debug lines and the backdrop. */
 
 export const VERT_SRC = `#version 300 es
@@ -104,26 +129,18 @@ uniform int uUnlit;
 uniform int uBaseColorOnly;
 uniform sampler2D uBaseColor;
 uniform vec4 uBaseColorFactor;
-uniform int uBaseColorTexCoord;
-uniform vec2 uBaseColorTexOffset;
-uniform vec2 uBaseColorTexScale;
-uniform float uBaseColorTexRotation;
 uniform int uHasMetallicRoughnessTexture;
 uniform sampler2D uMetallicRoughness;
-uniform int uMetallicRoughnessTexCoord;
 uniform float uMetallic;
 uniform float uRoughness;
 uniform int uHasEmissiveTexture;
 uniform sampler2D uEmissive;
-uniform int uEmissiveTexCoord;
 uniform vec3 uEmissiveFactor;
 uniform int uHasNormalTexture;
 uniform sampler2D uNormalTexture;
-uniform int uNormalTexCoord;
 uniform float uNormalScale;
 uniform int uHasOcclusionTexture;
 uniform sampler2D uOcclusionTexture;
-uniform int uOcclusionTexCoord;
 uniform float uOcclusionStrength;
 // KHR_materials_ior / KHR_materials_specular: the dielectric reflectance the
 // index of refraction implies, tinted and weighted by the specular extension.
@@ -132,22 +149,17 @@ uniform float uSpecularFactor;
 uniform vec3 uSpecularColorFactor;
 uniform int uHasSpecularTexture;
 uniform sampler2D uSpecularTexture;
-uniform int uSpecularTexCoord;
 uniform int uHasSpecularColorTexture;
 uniform sampler2D uSpecularColorTexture;
-uniform int uSpecularColorTexCoord;
 // KHR_materials_clearcoat: a second specular lobe over the whole material.
 uniform float uClearcoatFactor;
 uniform float uClearcoatRoughnessFactor;
 uniform int uHasClearcoatTexture;
 uniform sampler2D uClearcoatTexture;
-uniform int uClearcoatTexCoord;
 uniform int uHasClearcoatRoughnessTexture;
 uniform sampler2D uClearcoatRoughnessTexture;
-uniform int uClearcoatRoughnessTexCoord;
 uniform int uHasClearcoatNormalTexture;
 uniform sampler2D uClearcoatNormalTexture;
-uniform int uClearcoatNormalTexCoord;
 uniform float uClearcoatNormalScale;
 uniform samplerCube uIrradianceMap;
 uniform samplerCube uPrefilteredMap;
@@ -155,12 +167,26 @@ uniform sampler2D uBrdfLut;
 uniform float uEnvironmentMaxLod;
 uniform vec3 uCameraPos;
 
+// Per-slot UV state: which TEXCOORD set the slot reads, and the
+// KHR_texture_transform matrix to run it through. The matrix is built on the
+// CPU, so the shader neither knows nor cares whether the extension was present:
+// an absent transform arrives as the identity.
+${TEXTURE_SLOTS.map((name, slot) => `const int SLOT_${name} = ${slot};`).join('\n')}
+const int SLOT_COUNT = ${TEXTURE_SLOTS.length};
+uniform int uTexCoordSlot[SLOT_COUNT];
+uniform mat3 uTexMatrix[SLOT_COUNT];
+
 out vec4 outColor;
 
 const float PI = 3.14159265359;
 
 vec2 selectUv(int texCoord) {
     return texCoord == 1 ? vTexCoord1 : vTexCoord;
+}
+
+/** The UV one material slot samples at, transform applied. */
+vec2 slotUv(int slot) {
+    return (uTexMatrix[slot] * vec3(selectUv(uTexCoordSlot[slot]), 1.0)).xy;
 }
 
 vec3 fresnelSchlickRoughness(float cosTheta, vec3 f0, float roughness) {
@@ -208,12 +234,7 @@ void main() {
     if (uHasVertexColors == 1) base *= vColor;
     vec4 baseSample = vec4(1.0);
     if (uHasTexture == 1) {
-        vec2 uv = selectUv(uBaseColorTexCoord);
-        uv *= uBaseColorTexScale;
-        float c = cos(uBaseColorTexRotation);
-        float s = sin(uBaseColorTexRotation);
-        uv = vec2(c * uv.x - s * uv.y, s * uv.x + c * uv.y) + uBaseColorTexOffset;
-        baseSample = texture(uBaseColor, uv);
+        baseSample = texture(uBaseColor, slotUv(SLOT_BASE_COLOR));
     }
     base *= baseSample;
 
@@ -245,7 +266,7 @@ void main() {
     vec3 geometricN = N;
 
     if (uHasNormalTexture == 1) {
-        vec2 uv = selectUv(uNormalTexCoord);
+        vec2 uv = slotUv(SLOT_NORMAL);
         vec3 tangentNormal = texture(uNormalTexture, uv).xyz * 2.0 - 1.0;
         tangentNormal.xy *= uNormalScale;
         N = applyTangentNormal(N, uv, tangentNormal);
@@ -259,14 +280,14 @@ void main() {
     float metallic = uMetallic;
     float roughness = clamp(uRoughness, 0.045, 1.0);
     if (uHasMetallicRoughnessTexture == 1) {
-        vec4 packed = texture(uMetallicRoughness, selectUv(uMetallicRoughnessTexCoord));
+        vec4 packed = texture(uMetallicRoughness, slotUv(SLOT_METALLIC_ROUGHNESS));
         roughness = clamp(roughness * packed.g, 0.045, 1.0);
         metallic *= packed.b;
     }
 
     float occlusion = 1.0;
     if (uHasOcclusionTexture == 1) {
-        occlusion = mix(1.0, texture(uOcclusionTexture, selectUv(uOcclusionTexCoord)).r, uOcclusionStrength);
+        occlusion = mix(1.0, texture(uOcclusionTexture, slotUv(SLOT_OCCLUSION)).r, uOcclusionStrength);
     }
     // Dielectric reflectance from the index of refraction (0.04 at the glTF
     // default of 1.5), tinted and scaled by KHR_materials_specular. Metals keep
@@ -275,11 +296,11 @@ void main() {
     iorF0 *= iorF0;
     float specularWeight = uSpecularFactor;
     if (uHasSpecularTexture == 1) {
-        specularWeight *= texture(uSpecularTexture, selectUv(uSpecularTexCoord)).a;
+        specularWeight *= texture(uSpecularTexture, slotUv(SLOT_SPECULAR)).a;
     }
     vec3 specularColor = uSpecularColorFactor;
     if (uHasSpecularColorTexture == 1) {
-        specularColor *= pow(texture(uSpecularColorTexture, selectUv(uSpecularColorTexCoord)).rgb, vec3(2.2));
+        specularColor *= pow(texture(uSpecularColorTexture, slotUv(SLOT_SPECULAR_COLOR)).rgb, vec3(2.2));
     }
     vec3 f0 = mix(min(vec3(iorF0) * specularColor, vec3(1.0)), baseColor, metallic);
     float nDotV = max(dot(N, V), 0.0);
@@ -294,7 +315,7 @@ void main() {
     vec3 color = (diffuseWeight * diffuseIbl + specularIbl) * occlusion;
     vec3 emissive = uEmissiveFactor;
     if (uHasEmissiveTexture == 1) {
-        emissive *= pow(texture(uEmissive, selectUv(uEmissiveTexCoord)).rgb, vec3(2.2));
+        emissive *= pow(texture(uEmissive, slotUv(SLOT_EMISSIVE)).rgb, vec3(2.2));
     }
     color += emissive;
 
@@ -302,17 +323,17 @@ void main() {
     // reflects its own share of the environment and dims what shows through it.
     float clearcoat = uClearcoatFactor;
     if (uHasClearcoatTexture == 1) {
-        clearcoat *= texture(uClearcoatTexture, selectUv(uClearcoatTexCoord)).r;
+        clearcoat *= texture(uClearcoatTexture, slotUv(SLOT_CLEARCOAT)).r;
     }
     if (clearcoat > 0.0) {
         float coatRoughness = uClearcoatRoughnessFactor;
         if (uHasClearcoatRoughnessTexture == 1) {
-            coatRoughness *= texture(uClearcoatRoughnessTexture, selectUv(uClearcoatRoughnessTexCoord)).g;
+            coatRoughness *= texture(uClearcoatRoughnessTexture, slotUv(SLOT_CLEARCOAT_ROUGHNESS)).g;
         }
         coatRoughness = clamp(coatRoughness, 0.045, 1.0);
         vec3 coatN = geometricN;
         if (uHasClearcoatNormalTexture == 1) {
-            vec2 uv = selectUv(uClearcoatNormalTexCoord);
+            vec2 uv = slotUv(SLOT_CLEARCOAT_NORMAL);
             vec3 tangentNormal = texture(uClearcoatNormalTexture, uv).xyz * 2.0 - 1.0;
             tangentNormal.xy *= uClearcoatNormalScale;
             coatN = applyTangentNormal(coatN, uv, tangentNormal);

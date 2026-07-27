@@ -156,9 +156,9 @@ export function readGltfMaterial(def: GltfJson, index: number): InterpretedMater
  * Read one texture binding.
  *
  * `KHR_texture_transform` is read on every slot, not just base color: the
- * extension applies wherever a textureInfo does, and a consumer that ignores
- * the transform on a normal map should do so knowingly rather than because the
- * reader never told it.
+ * extension applies wherever a textureInfo does. The preview applies it on
+ * every slot too; the FBX export path reports it as unportable, which it can
+ * only do because the reader hands it over rather than dropping it.
  */
 function readTexture(
   info: GltfJson,

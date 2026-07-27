@@ -127,8 +127,8 @@ export interface ViewerClip {
  * A texture binding on a material slot.
  *
  * Indices are into `ViewerScene.textures`. `scale` belongs to a normal map and
- * `strength` to occlusion; `transform` is carried for every slot even though
- * only base color currently reaches the shader.
+ * `strength` to occlusion; `transform` is `KHR_texture_transform`, and the
+ * renderer applies it on every slot through its shared slot table.
  */
 export interface ViewerTextureBinding {
   index: number;
