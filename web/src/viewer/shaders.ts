@@ -293,9 +293,6 @@ uniform float uAttenuationDistance;
 uniform vec3 uAttenuationColor;
 // The opaque half of the frame, which the transmitted ray reads out of.
 uniform sampler2D uFrameSnapshot;
-// The far wall of this volume, as world normal and distance from the eye. A
-// zero normal means the pass found none, and the authored thickness stands in.
-uniform sampler2D uBackFace;
 uniform vec2 uFrameSize;
 uniform float uFrameMaxLod;
 uniform mat4 uProjection;
@@ -603,53 +600,55 @@ vec3 captureBicubic(vec2 uv, float lod) {
 }
 
 /**
- * Which way the far wall of this volume faces, where there is one.
+ * Where on the frame a ray leaving here at this index comes out.
  *
- * How *far* it is does not come from here. The extension states thickness as a
- * material property in mesh space, and a conformant renderer uses the number
- * the author wrote: the asset that exists to test dispersion states a
- * hundredth of a unit for prisms far deeper than that, and measuring them
- * instead multiplies every refraction by the ratio. Geometry answers the
- * question the file cannot - which way the light leaves - and nothing else.
+ * Bent at the near wall, carried across the volume, and projected from where it
+ * leaves. Not carried any further: once out, the ray travels to whatever is
+ * behind the glass, and how far that is, is exactly what a screen-space frame
+ * does not know. Walking it another thickness - which is what the far wall
+ * tempts one into, since the exit direction is right there - folds the mapping
+ * wherever that guess stops varying with the fragment, and a fold reads as a
+ * bright blot on the glass with a hard rim.
  */
-bool farWallNormal(out vec3 wallNormal) {
-    vec4 wall = texture(uBackFace, gl_FragCoord.xy / uFrameSize);
-    wallNormal = wall.xyz;
-    return dot(wallNormal, wallNormal) > 1e-4
-        && wall.w > distance(uCameraPos, vWorldPos);
+vec2 exitCoords(vec3 position, vec3 normal, vec3 view, float ior, float thickness) {
+    vec3 exitPoint = position + volumeTransmissionRay(normal, view, ior, thickness);
+    vec4 clip = uProjection * uView * vec4(exitPoint, 1.0);
+    return clip.xy / clip.w * 0.5 + 0.5;
 }
 
 /**
- * Where on the frame a ray leaving here at this index comes out.
+ * How much of what a ray asks for the frame actually holds.
  *
- * Bent at the near wall, carried across the volume, and bent again at the far
- * one - which is where a prism becomes a prism. Without the far wall in hand
- * the ray is only bent once and walked the authored thickness, which is what
- * every screen-space refraction does and what makes glass look like a decal.
+ * A screen-space frame knows only what was on screen. A ray that leaves
+ * through the side of it used to be clamped back to the border, and a clamped
+ * read of an edge-clamped texture is the border texel repeated - which is
+ * exactly the streak that appears across glass the further it sits from the
+ * middle of the view, and the further a steep angle throws the ray. Fading out
+ * over a margin instead lets the environment take over, which is a guess too
+ * but an unbiased one: it is the light that would be arriving from that
+ * direction if nothing in the scene were in the way.
  */
-vec2 exitCoords(vec3 position, vec3 normal, vec3 view, float ior, float thickness) {
-    vec3 inside = volumeTransmissionRay(normal, view, ior, thickness);
-    vec3 exitPoint = position + inside;
-    // A thickness of zero is the extension's thin-walled surface: no interior
-    // for a ray to cross, and so no far wall to leave through.
-    vec3 wallNormal;
-    if (thickness > 0.0 && dot(inside, inside) > 1e-8 && farWallNormal(wallNormal)) {
-        // Out through the far wall, whose normal faces away from the eye: the
-        // ratio is the reciprocal of the way in, and past the critical angle
-        // the ray stays inside and the exit is the wall itself. Where the two
-        // walls are parallel this bends the ray back the way it came, which is
-        // exactly what a slab does; where they are not, what is left is the
-        // deviation that makes a prism a prism.
-        vec3 outward = refract(normalize(inside), -normalize(wallNormal), max(ior, 1.0001));
-        if (dot(outward, outward) > 1e-8) exitPoint += normalize(outward) * length(inside);
-    }
-    vec4 clip = uProjection * uView * vec4(exitPoint, 1.0);
-    return clamp(clip.xy / clip.w * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+float framedWeight(vec2 uv) {
+    vec2 within = smoothstep(vec2(0.0), vec2(0.06), uv)
+        * smoothstep(vec2(0.0), vec2(0.06), vec2(1.0) - uv);
+    return within.x * within.y;
+}
+
+/** What the environment sends along the ray, where the frame cannot say. */
+vec3 unframedRadiance(vec3 normal, vec3 view, float ior, float roughness) {
+    vec3 direction = volumeTransmissionRay(normal, view, ior, 1.0);
+    if (dot(direction, direction) < 1e-8) direction = reflect(-view, normal);
+    return textureLod(uPrefilteredMap, normalize(direction), roughness * uEnvironmentMaxLod).rgb;
 }
 
 vec3 sampleCaptured(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness) {
-    return captureBicubic(
-        exitCoords(position, normal, view, ior, thickness), transmissionLod(roughness, ior));
+    vec2 uv = exitCoords(position, normal, view, ior, thickness);
+    float framed = framedWeight(uv);
+    if (framed <= 0.0) return unframedRadiance(normal, view, ior, roughness);
+    return mix(
+        unframedRadiance(normal, view, ior, roughness),
+        captureBicubic(clamp(uv, vec2(0.0), vec2(1.0)), transmissionLod(roughness, ior)),
+        framed);
 }
 
 vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness, out float rayLength) {
@@ -679,11 +678,16 @@ vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float
     // dispersion: what changes is where each wavelength lands, not how much of
     // it there is.
     float lod = transmissionLod(roughness, ior);
+    vec3 unframed = unframedRadiance(normal, view, ior, roughness);
     vec3 spread = vec3(0.0);
     for (int index = 0; index < SPECTRAL_SAMPLES; index += 1) {
         float wavelengthIor = dispersedIor(ior, SPECTRAL_WAVELENGTH[index]);
         vec2 uv = exitCoords(position, normal, view, wavelengthIor, thickness);
-        spread += SPECTRAL_WEIGHT[index] * textureLod(uFrameSnapshot, uv, lod).rgb;
+        vec3 arriving = mix(
+            unframed,
+            textureLod(uFrameSnapshot, clamp(uv, vec2(0.0), vec2(1.0)), lod).rgb,
+            framedWeight(uv));
+        spread += SPECTRAL_WEIGHT[index] * arriving;
     }
     return spread;
 }
@@ -1002,30 +1006,6 @@ void main() {
 }
 `;
 }
-
-/**
- * The far wall of a transmissive volume: its world normal, and how far away it
- * is from the eye.
- *
- * Shares the surface vertex shader, so a wall that is skinned, morphed or
- * instanced moves with the surface in front of it rather than lagging behind
- * in the bind pose.
- */
-export const BACK_FACE_FRAG_SRC = `#version 300 es
-precision highp float;
-in vec3 vNormal;
-in vec3 vWorldPos;
-uniform vec3 uCameraPos;
-out vec4 outColor;
-
-void main() {
-    // Facing the eye is what a far wall does not do; the pass culls front
-    // faces, so the normal here points away and is flipped to face the ray
-    // that will leave through it.
-    vec3 normal = normalize(vNormal);
-    outColor = vec4(normal, distance(uCameraPos, vWorldPos));
-}
-`;
 
 export const LINE_VERT_SRC = `#version 300 es
 precision highp float;

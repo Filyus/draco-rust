@@ -4,7 +4,6 @@ import { linkProgram } from './gl-utils.ts';
 import {
   BACKGROUND_FRAG_SRC,
   BACKGROUND_VERT_SRC,
-  BACK_FACE_FRAG_SRC,
   BLOOM_DOWN_FRAG_SRC,
   BLOOM_UP_FRAG_SRC,
   OUTPUT_FRAG_SRC,
@@ -35,7 +34,7 @@ const SURFACE_UNIFORMS = [
   'uNormalScale', 'uOcclusionStrength',
   'uClearcoatNormalScale',
   'uIrradianceMap', 'uPrefilteredMap', 'uBrdfLut', 'uEnvironmentMaxLod',
-  'uFrameSnapshot', 'uFrameSize', 'uFrameMaxLod', 'uBackFace',
+  'uFrameSnapshot', 'uFrameSize', 'uFrameMaxLod',
   'uLightCount',
   'uCameraPos',
 ] as const;
@@ -120,9 +119,6 @@ export function buildViewerPrograms(
   // All three share the background's fullscreen triangle; only the fragment
   // differs, and none of them has geometry of its own.
   const outputProgram = linkProgram(gl, BACKGROUND_VERT_SRC, OUTPUT_FRAG_SRC);
-  // The surface vertex shader, so the far wall is skinned and morphed with the
-  // surface in front of it.
-  const backFaceProgram = linkProgram(gl, VERT_SRC, BACK_FACE_FRAG_SRC);
   const bloomDownProgram = linkProgram(gl, BACKGROUND_VERT_SRC, BLOOM_DOWN_FRAG_SRC);
   const bloomUpProgram = linkProgram(gl, BACKGROUND_VERT_SRC, BLOOM_UP_FRAG_SRC);
 
@@ -152,23 +148,6 @@ export function buildViewerPrograms(
     uExposure: gl.getUniformLocation(outputProgram, 'uExposure'),
     uToneMap: gl.getUniformLocation(outputProgram, 'uToneMap'),
   };
-  const backFaceUniforms = {
-    uProjection: gl.getUniformLocation(backFaceProgram, 'uProjection'),
-    uView: gl.getUniformLocation(backFaceProgram, 'uView'),
-    uModel: gl.getUniformLocation(backFaceProgram, 'uModel'),
-    uNormalMatrix: gl.getUniformLocation(backFaceProgram, 'uNormalMatrix'),
-    uCameraPos: gl.getUniformLocation(backFaceProgram, 'uCameraPos'),
-    uUseSkin: gl.getUniformLocation(backFaceProgram, 'uUseSkin'),
-    uJointCount: gl.getUniformLocation(backFaceProgram, 'uJointCount'),
-    uJointMatrix: gl.getUniformLocation(backFaceProgram, 'uJointMatrix[0]'),
-    uMorphDeltas: gl.getUniformLocation(backFaceProgram, 'uMorphDeltas'),
-    uMorphCount: gl.getUniformLocation(backFaceProgram, 'uMorphCount'),
-    uMorphStride: gl.getUniformLocation(backFaceProgram, 'uMorphStride'),
-    uMorphWidth: gl.getUniformLocation(backFaceProgram, 'uMorphWidth'),
-    uMorphWeights: gl.getUniformLocation(backFaceProgram, 'uMorphWeights[0]'),
-    uMorphLayers: gl.getUniformLocation(backFaceProgram, 'uMorphLayers[0]'),
-    uUseSmoothNormals: gl.getUniformLocation(backFaceProgram, 'uUseSmoothNormals'),
-  };
   const bloomDownUniforms = {
     uSource: gl.getUniformLocation(bloomDownProgram, 'uSource'),
     uTexel: gl.getUniformLocation(bloomDownProgram, 'uTexel'),
@@ -186,14 +165,12 @@ export function buildViewerPrograms(
     lineProgram,
     backgroundProgram,
     outputProgram,
-    backFaceProgram,
     bloomDownProgram,
     bloomUpProgram,
     locations,
     lineUniforms,
     backgroundUniforms,
     outputUniforms,
-    backFaceUniforms,
     bloomDownUniforms,
     bloomUpUniforms,
     backgroundVao,

@@ -60,8 +60,6 @@ import {
   updateWorldMatrices,
 } from './scene-graph.ts';
 import { MAX_JOINTS } from './shaders.ts';
-import { disposeBackFaceDepth } from './back-face-depth.ts';
-import type { BackFaceDepth } from './back-face-depth.ts';
 import { disposeBloomChain } from './bloom.ts';
 import type { BloomChain } from './bloom.ts';
 import { disposeSceneTarget } from './scene-target.ts';
@@ -88,7 +86,6 @@ export class Viewer {
   declare lineProgram: WebGLProgram;
   declare backgroundProgram: WebGLProgram;
   declare outputProgram: WebGLProgram;
-  declare backFaceProgram: WebGLProgram;
   declare bloomDownProgram: WebGLProgram;
   declare bloomUpProgram: WebGLProgram;
   /** The bound surface program's locations; replaced per draw by the renderer. */
@@ -96,11 +93,9 @@ export class Viewer {
   declare _surfaceProgram: WebGLProgram | null;
   declare _sceneTarget: SceneTarget | null;
   declare _bloom: BloomChain | null;
-  declare _backFace: BackFaceDepth | null;
   declare lineUniforms: Record<string, WebGLUniformLocation | null>;
   declare backgroundUniforms: Record<string, WebGLUniformLocation | null>;
   declare outputUniforms: Record<string, WebGLUniformLocation | null>;
-  declare backFaceUniforms: Record<string, WebGLUniformLocation | null>;
   declare bloomDownUniforms: Record<string, WebGLUniformLocation | null>;
   declare bloomUpUniforms: Record<string, WebGLUniformLocation | null>;
   declare locations: Record<string, number>;
@@ -277,19 +272,16 @@ export class Viewer {
     this.lineProgram = built.lineProgram;
     this.backgroundProgram = built.backgroundProgram;
     this.outputProgram = built.outputProgram;
-    this.backFaceProgram = built.backFaceProgram;
     this.bloomDownProgram = built.bloomDownProgram;
     this.bloomUpProgram = built.bloomUpProgram;
     this.uniforms = {};
     this._surfaceProgram = null;
     this._sceneTarget = null;
     this._bloom = null;
-    this._backFace = null;
     this.locations = built.locations;
     this.lineUniforms = built.lineUniforms;
     this.backgroundUniforms = built.backgroundUniforms;
     this.outputUniforms = built.outputUniforms;
-    this.backFaceUniforms = built.backFaceUniforms;
     this.bloomDownUniforms = built.bloomDownUniforms;
     this.bloomUpUniforms = built.bloomUpUniforms;
     this.backgroundVao = built.backgroundVao;
@@ -572,12 +564,9 @@ export class Viewer {
     this._sceneTarget = null;
     disposeBloomChain(this.gl, this._bloom ?? null);
     this._bloom = null;
-    disposeBackFaceDepth(this.gl, this._backFace ?? null);
-    this._backFace = null;
     if (this.lineProgram) this.gl.deleteProgram(this.lineProgram);
     if (this.backgroundProgram) this.gl.deleteProgram(this.backgroundProgram);
     if (this.outputProgram) this.gl.deleteProgram(this.outputProgram);
-    if (this.backFaceProgram) this.gl.deleteProgram(this.backFaceProgram);
     if (this.bloomDownProgram) this.gl.deleteProgram(this.bloomDownProgram);
     if (this.bloomUpProgram) this.gl.deleteProgram(this.bloomUpProgram);
     if (this.backgroundVao) this.gl.deleteVertexArray(this.backgroundVao);
