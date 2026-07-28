@@ -634,19 +634,28 @@ float framedWeight(vec2 uv) {
     return within.x * within.y;
 }
 
-/** What the environment sends along the ray, where the frame cannot say. */
-vec3 unframedRadiance(vec3 normal, vec3 view, float ior, float roughness) {
-    vec3 direction = volumeTransmissionRay(normal, view, ior, 1.0);
-    if (dot(direction, direction) < 1e-8) direction = reflect(-view, normal);
-    return textureLod(uPrefilteredMap, normalize(direction), roughness * uEnvironmentMaxLod).rgb;
+/**
+ * What stands in for the frame where the ray leaves it.
+ *
+ * The coarsest mip level, which is the whole frame averaged into one texel.
+ * The environment map was the first answer here and it is the wrong one: it
+ * holds the sky the asset shipped and not the scene, so a ray angled downwards
+ * - which is every ray, looking at glass from above - finds nothing there and
+ * the glass goes black in a band. The frame's own average holds whatever the
+ * scene is actually made of, floor included. It has no direction to it, which
+ * is the honest part: past the edge of the frame there is no direction to be
+ * had, only a plausible amount of light.
+ */
+vec3 unframedRadiance() {
+    return textureLod(uFrameSnapshot, vec2(0.5), uFrameMaxLod).rgb;
 }
 
 vec3 sampleCaptured(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness) {
     vec2 uv = exitCoords(position, normal, view, ior, thickness);
     float framed = framedWeight(uv);
-    if (framed <= 0.0) return unframedRadiance(normal, view, ior, roughness);
+    if (framed <= 0.0) return unframedRadiance();
     return mix(
-        unframedRadiance(normal, view, ior, roughness),
+        unframedRadiance(),
         captureBicubic(clamp(uv, vec2(0.0), vec2(1.0)), transmissionLod(roughness, ior)),
         framed);
 }
@@ -678,7 +687,7 @@ vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float
     // dispersion: what changes is where each wavelength lands, not how much of
     // it there is.
     float lod = transmissionLod(roughness, ior);
-    vec3 unframed = unframedRadiance(normal, view, ior, roughness);
+    vec3 unframed = unframedRadiance();
     vec3 spread = vec3(0.0);
     for (int index = 0; index < SPECTRAL_SAMPLES; index += 1) {
         float wavelengthIor = dispersedIor(ior, SPECTRAL_WAVELENGTH[index]);
