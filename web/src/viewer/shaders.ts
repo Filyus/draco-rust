@@ -219,6 +219,10 @@ uniform vec2 uFrameSize;
 uniform float uFrameMaxLod;
 uniform mat4 uProjection;
 uniform mat4 uView;
+// The node transform, which the fragment stage needs for one thing only: the
+// volume's thickness is stated in local space, so the ray inside it has to be
+// carried into world space before it is projected back onto the frame.
+uniform mat4 uModel;
 // KHR_materials_iridescence: a thin film over the specular lobe, whose
 // thickness in nanometres decides which wavelengths it reinforces.
 uniform float uIridescenceFactor;
@@ -413,33 +417,64 @@ vec3 iridescentFresnel(float filmIor, float cosTheta1, float thickness, vec3 bas
  * Roughness picks the mip level: a rough transmissive surface scatters, and
  * the mip chain is the blur that stands in for it.
  */
-float transmittedChannel(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness, int channel) {
-    vec3 refracted = refract(-view, normal, 1.0 / max(ior, 1.0001));
-    vec3 exitPoint = position + normalize(refracted) * thickness;
-    vec4 clip = uProjection * uView * vec4(exitPoint, 1.0);
-    vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, vec2(0.0), vec2(1.0));
-    return textureLod(uFrameSnapshot, uv, roughness * uFrameMaxLod)[channel];
+/**
+ * The refracted ray across the volume, in world units.
+ *
+ * KHR_materials_volume states the thickness in the node's own space, so the
+ * model's scale belongs here rather than in the caller: the same glass scaled
+ * up is a thicker piece of glass, and a ray that ignored that would exit at the
+ * unscaled depth and read the wrong pixel.
+ */
+vec3 volumeTransmissionRay(vec3 normal, vec3 view, float ior, float thickness) {
+    vec3 refracted = refract(-view, normalize(normal), 1.0 / max(ior, 1.0001));
+    vec3 modelScale = vec3(
+        length(uModel[0].xyz), length(uModel[1].xyz), length(uModel[2].xyz));
+    return normalize(refracted) * thickness * modelScale;
 }
 
-vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness) {
+/**
+ * Which mip of the snapshot a surface of this roughness and index reads.
+ *
+ * Roughness alone is not the blur: microfacet refraction scales with how much
+ * the interface bends light at all, so an index of 1.0 - a surface that does
+ * not refract - takes level zero however rough it is, and 1.5 takes the full
+ * amount. That is the factor the extension's reference implementation applies.
+ */
+float transmissionLod(float roughness, float ior) {
+    return roughness * clamp(ior * 2.0 - 2.0, 0.0, 1.0) * uFrameMaxLod;
+}
+
+float transmittedChannel(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness, int channel) {
+    vec3 exitPoint = position + volumeTransmissionRay(normal, view, ior, thickness);
+    vec4 clip = uProjection * uView * vec4(exitPoint, 1.0);
+    vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+    return textureLod(uFrameSnapshot, uv, transmissionLod(roughness, ior))[channel];
+}
+
+vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness, out float rayLength) {
+    vec3 ray = volumeTransmissionRay(normal, view, ior, thickness);
+    // How far the light travelled through the medium, which is what Beer's law
+    // absorbs over. Dispersion splits the three rays by a fraction of a percent
+    // in index, so the green one's length stands for all of them.
+    rayLength = length(ray);
     // KHR_materials_dispersion: one index per channel instead of one for all,
     // spread by the Abbe number the extension states as its reciprocal. Zero
     // leaves the three rays on top of each other, which is the single-index
     // case, so the branch is what the extension costs when absent.
     if (uDispersion <= 0.0) {
-        vec3 refracted = refract(-view, normal, 1.0 / max(ior, 1.0001));
-        vec3 exitPoint = position + normalize(refracted) * thickness;
-        vec4 clip = uProjection * uView * vec4(exitPoint, 1.0);
+        vec4 clip = uProjection * uView * vec4(position + ray, 1.0);
         vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, vec2(0.0), vec2(1.0));
-        return textureLod(uFrameSnapshot, uv, roughness * uFrameMaxLod).rgb;
+        return textureLod(uFrameSnapshot, uv, transmissionLod(roughness, ior)).rgb;
     }
-    // The spread the extension defines: the red and blue ends sit half a
-    // dispersion apart in index, with green at the material's own.
-    float spread = (2.0 * uDispersion) / 20.0;
+    // The spread the extension's reference implementation defines: the red and
+    // blue ends sit half of it apart in index, green at the material's own. It
+    // is proportional to how far the index is from air, so a material that does
+    // not refract does not disperse either, whatever its Abbe number says.
+    float halfSpread = (ior - 1.0) * 0.025 * uDispersion;
     return vec3(
-        transmittedChannel(position, normal, view, ior - spread, thickness, roughness, 0),
+        transmittedChannel(position, normal, view, ior - halfSpread, thickness, roughness, 0),
         transmittedChannel(position, normal, view, ior, thickness, roughness, 1),
-        transmittedChannel(position, normal, view, ior + spread, thickness, roughness, 2)
+        transmittedChannel(position, normal, view, ior + halfSpread, thickness, roughness, 2)
     );
 }
 
@@ -660,8 +695,13 @@ void main() {
         #ifdef HAS_THICKNESS
         thickness *= texture(uThicknessTexture, slotUv(SLOT_THICKNESS)).g;
         #endif
-        vec3 transmitted = transmittedRadiance(vWorldPos, N, V, uIor, thickness, roughness);
-        diffuseTerm = mix(diffuseTerm, diffuseWeight * attenuate(transmitted, thickness), transmission);
+        float rayLength;
+        vec3 transmitted = transmittedRadiance(vWorldPos, N, V, uIor, thickness, roughness, rayLength);
+        // Tinted by the base colour, like the diffuse term it replaces: the
+        // spec's transmission BTDF carries it, and without it coloured glass
+        // shades as clear.
+        vec3 tinted = baseColor * attenuate(transmitted, rayLength);
+        diffuseTerm = mix(diffuseTerm, diffuseWeight * tinted, transmission);
     }
     vec3 color = (diffuseTerm + specularIbl) * occlusion;
 
