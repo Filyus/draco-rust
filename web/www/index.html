@@ -65,8 +65,8 @@
                     <div id="drop-zone" class="drop-zone">
                         <div class="drop-content">
                             <div style="font-size: 2.5rem; margin-bottom: 0.5rem">📁</div>
-                            <p>Drag &amp; Drop a 3D file here</p>
-                            <p style="font-size: 0.8rem; opacity: 0.7;">Include referenced .bin/images for glTF and .mtl/textures for OBJ in the same selection</p>
+                            <p>Drag &amp; Drop a 3D file or folder here</p>
+                            <p style="font-size: 0.8rem; opacity: 0.7;">A folder brings its own .bin, .mtl and images; selecting files means selecting every referenced one</p>
                             <label class="browse-btn">
                                 Browse Files
                                 <input type="file" id="file-input" accept=".obj,.mtl,.ply,.gltf,.glb,.fbx,.bin,.png,.jpg,.jpeg,.webp,.ktx2" multiple hidden>
@@ -78,6 +78,15 @@
                         <div class="file-meta">
                             <span class="file-name" id="file-name">model.obj</span>
                             <span class="file-size" id="file-size">12.5 MB</span>
+                            <div class="menu-picker file-model" id="file-model-picker" hidden>
+                                <span class="file-model-caption" id="file-model-caption">Model in this folder</span>
+                                <select id="file-model" class="menu-picker-native" aria-hidden="true" tabindex="-1"></select>
+                                <button type="button" class="menu-picker-trigger" id="file-model-trigger" aria-labelledby="file-model-caption file-model-label" aria-haspopup="listbox" aria-expanded="false" aria-controls="file-model-menu">
+                                    <span id="file-model-label">Model</span>
+                                    <span class="menu-picker-chevron" aria-hidden="true"></span>
+                                </button>
+                                <div class="menu-picker-menu" id="file-model-menu" role="listbox" aria-label="Model in this folder" hidden></div>
+                            </div>
                         </div>
                         <button id="clear-file" class="icon-btn" title="Remove file">✕</button>
                     </div>

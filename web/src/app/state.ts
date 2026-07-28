@@ -3,6 +3,7 @@ import type { GltfSceneProvenance } from '../gltf-scene-provenance.ts';
 import type { LoadedMesh, LoadedObjMaterial } from '../mesh-loader.ts';
 import type { SceneDocument } from '../scene-document.ts';
 import type { ResourceMap } from '../scene-resources.ts';
+import type { IntakeEntry } from './model-intake.ts';
 import type { Viewer } from '../viewer.ts';
 
 /**
@@ -95,6 +96,16 @@ export interface AppState {
   currentGltfProvenance: GltfSceneProvenance | null;
   /** The material variant the preview is showing, or null for the default one. */
   currentVariant: number | null;
+  /**
+   * Everything the last drop or selection offered, unread.
+   *
+   * Kept so another model out of the same folder can be opened without asking
+   * for the folder again. These are handles, not bytes: a selection of ten
+   * thousand costs ten thousand names.
+   */
+  currentSelection: IntakeEntry[];
+  /** Which of them is open, by its path within the selection. */
+  currentModelPath: string | null;
   /** The 3D preview, created lazily on first use. */
   viewer: Viewer | null;
 }
@@ -108,5 +119,7 @@ export const state: AppState = {
   currentFbxProvenance: null,
   currentGltfProvenance: null,
   currentVariant: null,
+  currentSelection: [],
+  currentModelPath: null,
   viewer: null,
 };

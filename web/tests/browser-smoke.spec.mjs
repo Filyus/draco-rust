@@ -1133,9 +1133,15 @@ test('converter explains a missing external glTF buffer', async ({ page }) => {
     path.join(repoRoot, 'testdata', 'Fox', 'glTF', 'Fox.gltf'),
   );
 
+  // Said twice over, and the first is the useful one: the reader names what it
+  // could not resolve, but the intake knows before anything is opened, because
+  // it looked the URI up in the selection and did not find it.
+  await expect(page.locator('#console')).toContainText(
+    'Referenced file not in the selection: Fox.bin',
+  );
   await expect(page.locator('#console')).toContainText('External resource denied: Fox.bin');
   await expect(page.locator('#console')).toContainText(
-    'Select the .gltf together with all referenced .bin and image files.',
+    'Drop the whole folder instead, or select the .gltf together with every referenced .bin and image.',
   );
   await expect(page.locator('#console')).not.toContainText('undefined');
 });
@@ -3567,4 +3573,140 @@ test('a KTX2 texture reaches the GPU without being decoded to pixels', async ({ 
   });
 
   expect(drawn.some((pixel) => pixel[0] !== 255 || pixel[1] !== 255 || pixel[2] !== 255)).toBe(true);
+});
+
+/**
+ * A dropped folder, which is the only way to open a model whose companions sit
+ * in a sibling directory.
+ *
+ * Built in the page rather than on disk: `setInputFiles` cannot express a
+ * folder — every file arrives with a bare name — and the whole point here is
+ * the path. The tree below is the shape that sent us looking, three.js's
+ * DamagedHelmet: two models in two folders, the second reaching back through
+ * `../` for the buffer the first one owns.
+ */
+test('a dropped folder offers its models and resolves a sibling directory', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  const observed = await page.evaluate(async () => {
+    const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const encoder = new TextEncoder();
+    const gltf = (uri) => encoder.encode(JSON.stringify({
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      buffers: [{ byteLength: 36, uri }],
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }],
+      accessors: [{
+        bufferView: 0, componentType: 5126, count: 3, type: 'VEC3',
+        min: [0, 0, 0], max: [1, 1, 0],
+      }],
+    }));
+
+    // Which files were actually opened. A folder is affordable only because
+    // most of it is never read, so this is the assertion that matters most.
+    const opened = [];
+    const fileFor = (name, bytes) => {
+      const file = new File([bytes], name);
+      const original = file.arrayBuffer.bind(file);
+      Object.defineProperty(file, 'arrayBuffer', {
+        value: () => { opened.push(name); return original(); },
+      });
+      return file;
+    };
+
+    const tree = {
+      'glTF': {
+        'Helmet.gltf': fileFor('Helmet.gltf', gltf('Helmet.bin')),
+        'Helmet.bin': fileFor('Helmet.bin', new Uint8Array(positions.buffer)),
+        'unused.bin': fileFor('unused.bin', new Uint8Array(36)),
+      },
+      'glTF-instancing': {
+        'HelmetInstanced.gltf': fileFor('HelmetInstanced.gltf', gltf('../glTF/Helmet.bin')),
+      },
+      'README.md': fileFor('README.md', encoder.encode('# not a model')),
+    };
+
+    // The smallest stand-in for a FileSystemEntry the walker accepts.
+    const entryFor = (name, node) => (node instanceof File ? {
+      isFile: true, isDirectory: false, name,
+      file: (onSuccess) => onSuccess(node),
+    } : {
+      isFile: false, isDirectory: true, name,
+      createReader() {
+        let done = false;
+        return {
+          readEntries(onSuccess) {
+            if (done) return onSuccess([]);
+            done = true;
+            onSuccess(Object.entries(node).map(([key, value]) => entryFor(key, value)));
+          },
+        };
+      },
+    });
+
+    const root = entryFor('Helmet', tree);
+    const event = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'dataTransfer', {
+      value: { items: [{ webkitGetAsEntry: () => root }], files: [] },
+    });
+    document.getElementById('drop-zone').dispatchEvent(event);
+
+    const { state } = await import('/app/state.js');
+    for (let attempt = 0; attempt < 100 && !state.currentSourceData; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    const picker = document.getElementById('file-model-picker');
+    const chosen = () => ({
+      path: state.currentModelPath,
+      resources: Object.keys(state.currentSourceResources),
+    });
+    const first = chosen();
+
+    // And the other model out of the same drop, without asking for it again.
+    const select = document.getElementById('file-model');
+    select.value = 'Helmet/glTF-instancing/HelmetInstanced.gltf';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    for (let attempt = 0; attempt < 100
+      && state.currentModelPath !== 'Helmet/glTF-instancing/HelmetInstanced.gltf'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    return {
+      first,
+      second: chosen(),
+      offered: [...select.options].map((option) => [option.value, option.textContent]),
+      pickerShown: !picker.hidden,
+      opened,
+      selected: state.currentSelection.length,
+    };
+  });
+
+  // Both models are offered, labelled by what differs rather than by the folder
+  // they share, and the shorter path is the one that opened.
+  expect(observed.pickerShown).toBe(true);
+  expect(observed.offered).toEqual([
+    ['Helmet/glTF/Helmet.gltf', 'glTF/Helmet.gltf'],
+    ['Helmet/glTF-instancing/HelmetInstanced.gltf', 'glTF-instancing/HelmetInstanced.gltf'],
+  ]);
+  expect(observed.first.path).toBe('Helmet/glTF/Helmet.gltf');
+  expect(observed.first.resources).toEqual(['Helmet.bin']);
+
+  // The case a file picker cannot supply at all: the buffer is a directory up
+  // and back down, and it is keyed by the URI the document wrote.
+  expect(observed.second.path).toBe('Helmet/glTF-instancing/HelmetInstanced.gltf');
+  expect(observed.second.resources).toEqual(['../glTF/Helmet.bin']);
+
+  // Five files in the folder; `unused.bin` and `README.md` were never read, and
+  // `Helmet.bin` was read once per model that named it.
+  expect(observed.selected).toBe(5);
+  expect(observed.opened).toEqual([
+    'Helmet.gltf', 'Helmet.bin', 'HelmetInstanced.gltf', 'Helmet.bin',
+  ]);
+
+  await expect(page.locator('#console')).not.toContainText('External resource denied');
 });

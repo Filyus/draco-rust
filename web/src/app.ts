@@ -91,6 +91,10 @@ import {
   syncViewerToolbar,
 } from './app/preview.ts';
 import { installVariantPicker } from './app/variant-picker.ts';
+import { entriesFromDataTransfer } from './app/dropped-entries.ts';
+import { findModels, readModel } from './app/model-intake.ts';
+import type { IntakeEntry } from './app/model-intake.ts';
+import { installModelPicker, syncModelPicker } from './app/model-picker.ts';
 
 
 
@@ -147,20 +151,21 @@ function setupEventListeners() {
     dropZone.classList.remove('drag-over');
   });
   
-  dropZone.addEventListener('drop', (e) => {
+  dropZone.addEventListener('drop', async (e) => {
     e.preventDefault();
     dropZone.classList.remove('drag-over');
-    
-    const files = e.dataTransfer!.files;
-    if (files.length > 0) {
-      handleFiles(files);
-    }
+
+    // A dropped folder has no entry in `dataTransfer.files` at all, so the
+    // items are asked for their filesystem entries first and the file list is
+    // only the fallback for a browser that does not offer them.
+    const entries = await entriesFromDataTransfer(e.dataTransfer!);
+    if (entries.length > 0) await openSelection(entries);
   });
-  
+
   // File input
   fileInput.addEventListener('change', () => {
     if (fileInput.files && fileInput.files.length > 0) {
-      handleFiles(fileInput.files);
+      openSelection(entriesFromFileList(fileInput.files));
     }
   });
   
@@ -203,6 +208,10 @@ function setupEventListeners() {
   });
   installViewerToggles();
   installVariantPicker();
+  installModelPicker((path) => {
+    const model = state.currentSelection.find((entry) => entry.path === path);
+    if (model) void handleModel(model, state.currentSelection);
+  });
 
   // Animation controls
   animPlayBtn.addEventListener('click', toggleAnimationPlayback);
@@ -237,63 +246,70 @@ function setupEventListeners() {
 }
 
 // Handle file selection
-async function handleFiles(fileList: FileList) {
-  const files = Array.from(fileList);
-  const supportedMain = files.filter((file) =>
-    ['obj', 'ply', 'gltf', 'glb', 'fbx'].includes(file.name.split('.').pop()!.toLowerCase())
-  );
-  if (supportedMain.length === 0) {
-    log('No supported main 3D file found in the selection', 'error');
+/**
+ * Open whatever was handed over: a file, several, or a whole folder.
+ *
+ * The selection is not read here. It is a list of names, and only the model
+ * chosen out of it — plus the companions that model names — is ever opened.
+ * That is what makes a dropped folder affordable: a thousand files cost a
+ * thousand names.
+ */
+async function openSelection(entries: IntakeEntry[]) {
+  const models = findModels(entries);
+  if (models.length === 0) {
+    log('No supported 3D file found in the selection', 'error');
     return;
   }
-  const gltfMain = supportedMain.filter((file) => /\.(gltf|glb)$/i.test(file.name));
-  const file = gltfMain.length === 1 ? gltfMain[0] : supportedMain[0];
-  if (supportedMain.length > 1) {
-    log('Select exactly one main model file; additional files are only companions for glTF', 'error');
-    return;
-  }
-  await handleFile(file, files.filter((candidate) => candidate !== file));
+  state.currentSelection = entries;
+  syncModelPicker(models);
+  await handleModel(models[0], entries);
 }
 
+/** Every supplied file, with the path it sat at inside the selection. */
+function entriesFromFileList(fileList: FileList): IntakeEntry[] {
+  return Array.from(fileList, (file) => ({
+    path: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+    file,
+  }));
+}
 
-async function handleFile(file: File, companionFiles: File[] = []) {
-  const extension = file.name.split('.').pop()!.toLowerCase();
-  
-  if (!['obj', 'ply', 'gltf', 'glb', 'fbx'].includes(extension)) {
-    log(`Unsupported file format: .${extension}`, 'error');
-    return;
-  }
-  
+async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
+  const file = model.file as File;
+  const extension = model.path.split('.').pop()!.toLowerCase();
+
   log(`Loading ${file.name}...`, 'info');
-  
-  // Show file info
-  fileName.textContent = companionFiles.length > 0
-    ? `${file.name} (+${companionFiles.length} resources)`
-    : file.name;
-  const totalSize = companionFiles.reduce((sum, companion) => sum + companion.size, file.size);
-  fileSize.textContent = formatFileSize(totalSize);
+
   fileInfo.style.display = 'flex';
   dropZone.style.display = 'none';
-  
+
   state.currentFileType = extension;
-  
+
   try {
-    const arrayBuffer = await file.arrayBuffer();
-    const data = new Uint8Array(arrayBuffer);
+    const intake = await readModel(model, entries);
+    const data = intake.data;
     state.currentSourceData = new Uint8Array(data);
-    state.currentSourceResources = Object.create(null);
+    state.currentSourceResources = intake.resources;
+    // Set with the bytes rather than before them: the field says which model is
+    // open, and until the read returns the answer is still the previous one.
+    state.currentModelPath = model.path;
     state.currentSceneDocument = null;
     state.currentFbxProvenance = null;
     state.currentGltfProvenance = null;
     state.currentVariant = null;
     clearWarningPanel();
-    for (const companion of companionFiles) {
-      if (Object.prototype.hasOwnProperty.call(state.currentSourceResources, companion.name)) {
-        throw new Error(`Duplicate companion resource name: ${companion.name}`);
-      }
-      state.currentSourceResources[companion.name] = new Uint8Array(await companion.arrayBuffer());
+
+    // Counted rather than assumed: with a folder the selection is arbitrarily
+    // large and the number that means anything is what the model actually
+    // pulled in.
+    const companions = Object.keys(intake.resources).length;
+    fileName.textContent = companions > 0 ? `${file.name} (+${companions} resources)` : file.name;
+    fileSize.textContent = formatFileSize(
+      Object.values(intake.resources).reduce((sum, bytes) => sum + bytes.length, data.length),
+    );
+    for (const uri of intake.missing) {
+      log(`Referenced file not in the selection: ${uri}`, 'warning');
     }
-    
+
     // Parse file based on extension
     let result;
     switch (extension) {
@@ -351,8 +367,10 @@ async function handleFile(file: File, companionFiles: File[] = []) {
     }
   } catch (error) {
     const message = errorMessage(error);
+    // A model whose companions sit in a sibling folder cannot be selected file
+    // by file at all, so the advice names the way that always works.
     const resourceHint = extension === 'gltf' && message.includes('External resource denied:')
-      ? ' Select the .gltf together with all referenced .bin and image files.'
+      ? ' Drop the whole folder instead, or select the .gltf together with every referenced .bin and image.'
       : '';
     log(`Error reading file: ${message}.${resourceHint}`, 'error');
   }
@@ -416,7 +434,10 @@ function clearFile() {
   state.currentFbxProvenance = null;
   state.currentGltfProvenance = null;
   state.currentVariant = null;
-  
+  state.currentSelection = [];
+  state.currentModelPath = null;
+  syncModelPicker([]);
+
   fileInfo.style.display = 'none';
   dropZone.style.display = 'grid';
   previewSection.style.display = 'none';

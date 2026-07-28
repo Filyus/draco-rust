@@ -7,6 +7,7 @@
     "build:ts": "tsc",
     "watch:ts": "tsc --watch",
     "test:node": "node tests/node-smoke.mjs",
+    "test:model-intake": "node tests/model-intake.mjs",
     "test:scene-document": "node tests/scene-document-contract.mjs",
     "test:scene-document-viewer": "node tests/scene-document-viewer-parity.mjs",
     "test:viewer-morph-slots": "node tests/viewer-morph-slots.mjs",

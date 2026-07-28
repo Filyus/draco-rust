@@ -278,6 +278,36 @@ Exported glTF and GLB carry the KTX2 bytes through unchanged either way; OBJ,
 PLY and FBX carry them too, and no importer of those formats can read them,
 which is what the extension report and the FBX export warning say.
 
+### Opening a folder
+
+A model whose companions sit in a sibling directory cannot be selected file by
+file — three.js's GPU-instanced Damaged Helmet lives in `glTF-instancing/` and
+names `../glTF/DamagedHelmet.bin`, which no multi-file picker can reach. So a
+folder can be dropped, and the drop decides: a file opens a file, a folder
+becomes the selection.
+
+Nothing in a folder is read for being in it. The chosen model is opened first,
+it says which URIs it needs, and only those are fetched — a `File` is a handle,
+so a folder of ten thousand costs ten thousand names and the size of the model.
+OBJ takes two rounds rather than one, because the model names material
+libraries and the libraries name the textures.
+
+Companions are keyed by the URI exactly as the document wrote it, which is what
+the resolver looks up. Keyed by bare filename, as they were, a document naming
+`textures/wood.png` never found its own image however it was supplied, and two
+files of the same name in different folders collided.
+
+When a selection holds more than one model — the usual case for a folder, since
+Khronos ships each asset as `glTF/`, `glTF-Binary/`, `glTF-Draco/` and
+`glTF-KTX-BasisU/` — the import panel grows a picker listing them by the part of
+the path that differs, shortest first. One model and it stays hidden, so
+opening a single file looks exactly as it did. The picker also switches models
+after the fact, which is the operation worth having: comparing a Draco variant
+against the plain one is what a converter is for.
+
+The button remains file-only: `webkitdirectory` would make it folder-only, and
+a second button beside it buys less than the drop already gives.
+
 ### Source-neutral scene conversion
 
 Loaded glTF/GLB and semantic FBX inputs are normalized into a serializable

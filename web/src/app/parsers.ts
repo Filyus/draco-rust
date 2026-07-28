@@ -1,6 +1,7 @@
 import type { ResourceMap } from '../scene-resources.ts';
 import { basename } from '../scene-resources.ts';
 import { debugLog } from './log.ts';
+import { mtlMapPath } from './model-intake.ts';
 import { modules, state } from './state.ts';
 
 /**
@@ -62,19 +63,10 @@ export function parseObjMaterials(objText: string, resources: ResourceMap, warni
   return materials;
 }
 
-// `map_Kd` accepts optional flags before its filename. Keep the filename (which
-// may itself contain spaces) while skipping the standardized flag arguments.
-export function mtlMapPath(values: string[]) {
-  const optionValues = {
-    '-blendu': 1, '-blendv': 1, '-cc': 1, '-clamp': 1, '-texres': 1,
-    '-bm': 1, '-imfchan': 1, '-type': 1, '-mm': 2, '-o': 3, '-s': 3, '-t': 3,
-  };
-  let index = 0;
-  while (index < values.length && values[index].startsWith('-')) {
-    index += 1 + (optionValues[values[index].toLowerCase() as keyof typeof optionValues] ?? 0);
-  }
-  return values.slice(index).join(' ').trim();
-}
+// One implementation, in the module that also decides which textures have to be
+// read: a second copy here would be the same rule written twice, and the two
+// would answer differently the first time either was corrected.
+export { mtlMapPath } from './model-intake.ts';
 
 // Parse PLY file
 export async function parsePlyFile(data: Uint8Array) {
