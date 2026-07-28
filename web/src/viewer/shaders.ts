@@ -83,11 +83,14 @@ function slotDeclarations(slots: readonly TextureSlotName[]): string {
  *
  * Three - one per primary - is what the extension's reference implementation
  * does and what it costs the least, but three samples of a continuous spectrum
- * alias into three coloured ghosts rather than a spread. A dozen resolves the
- * fringe as a fringe, and each is one more tap of a texture the surface is
- * reading anyway.
+ * alias into three coloured ghosts rather than a spread. How many it takes to
+ * read as a spread depends on how far apart they land, and at the factors that
+ * asset tests - five, which is an Abbe number of four, lower than any real
+ * glass - they land far apart indeed. Two dozen, sampled with a single
+ * bilinear tap each rather than a bicubic sixteen, costs about what a dozen
+ * bicubic ones did.
  */
-const SPECTRAL_SAMPLES = 12;
+const SPECTRAL_SAMPLES = 24;
 
 /**
  * The CIE 1931 observer at one wavelength, as linear sRGB.
@@ -649,7 +652,11 @@ vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float
     // spread by the Abbe number the extension states as its reciprocal. Zero
     // leaves the three rays on top of each other, which is the single-index
     // case, so the branch is what the extension costs when absent.
-    if (uDispersion <= 0.0) {
+    // An index of one does not refract, so it cannot disperse either - and
+    // taking the spectral path there would change nothing but the
+    // reconstruction filter, which would show as a seam where the factor
+    // crossed zero on a surface that never bent anything.
+    if (uDispersion <= 0.0 || ior <= 1.0001) {
         return sampleCaptured(position, normal, view, ior, thickness, roughness);
     }
     // The spread the extension's reference implementation defines: the red and
@@ -666,11 +673,7 @@ vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float
     for (int index = 0; index < SPECTRAL_SAMPLES; index += 1) {
         float wavelengthIor = dispersedIor(ior, SPECTRAL_WAVELENGTH[index]);
         vec2 uv = exitCoords(position, normal, view, wavelengthIor, thickness);
-        // Reconstructed the same way the single-index path reconstructs, or a
-        // surface with no dispersion to speak of would still shift when the
-        // factor crossed zero - the filter would be the only thing that
-        // changed, and it would show as a seam.
-        spread += SPECTRAL_WEIGHT[index] * captureBicubic(uv, lod);
+        spread += SPECTRAL_WEIGHT[index] * textureLod(uFrameSnapshot, uv, lod).rgb;
     }
     return spread;
 }

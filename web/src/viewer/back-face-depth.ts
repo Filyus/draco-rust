@@ -79,6 +79,14 @@ export function beginBackFaceDepth(gl: WebGL2RenderingContext, target: BackFaceD
   gl.clearColor(0, 0, 0, 0);
   gl.clearDepth(0);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  // Stated rather than inherited. Whatever drew last owns this state, and a
+  // blended surface leaves the depth mask off - with it off nothing is
+  // written, the reversed test never updates, and which wall survives comes
+  // down to draw order. That is stable within a frame and different from one
+  // camera angle to the next, which is what it looks like.
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
   gl.depthFunc(gl.GREATER);
   gl.enable(gl.CULL_FACE);
   gl.cullFace(gl.FRONT);
