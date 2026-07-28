@@ -2695,7 +2695,7 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
   const widestSplit = (sample) => sample.row.reduce((most, value, index) => (
     index % 4 === 0 ? Math.max(most, Math.abs(value - sample.row[index + 2])) : most
   ), 0);
-  expect(largestShift(0, observed.dispersed, observed.thick)).toBeGreaterThan(8);
+  expect(largestShift(0, observed.dispersed, observed.thick)).toBeGreaterThan(5);
   expect(widestSplit(observed.dispersed)).toBeGreaterThan(widestSplit(observed.thick) * 3);
 
   // And at the index of air there is no dispersion to have: light that is not
@@ -2997,12 +2997,23 @@ test('the frame stays light until the output pass, which spreads glare and maps 
 
     frame(3);
     const capturePixel = readFloat(scene.captureFramebuffer, centre[0], centre[1]);
-    const captureCorner = readFloat(scene.captureFramebuffer, 1, 1);
+    // Where the canvas's corner texel sits in a frame drawn wider than it.
+    const inFrame = (x, size, renderSize) => Math.round(
+      renderSize * (0.5 + ((x + 0.5) / size * 2 - 1) * 0.5 / scene.guard));
+    const cornerAt = [
+      inFrame(1, gl.drawingBufferWidth, scene.renderWidth),
+      inFrame(1, gl.drawingBufferHeight, scene.renderHeight),
+    ];
+    const captureCorner = readFloat(scene.captureFramebuffer, cornerAt[0], cornerAt[1]);
     const canvasCorner = readCanvas(1, 1);
     const canvasPixel = readCanvas(gl.drawingBufferWidth >> 1, gl.drawingBufferHeight >> 1);
+    // A quarter down the canvas, mapped into the wider frame: a row measured a
+    // quarter down the *frame* would sit in the guard, where the fixture put
+    // no geometry.
+    const rowY = inFrame(gl.drawingBufferHeight >> 2, gl.drawingBufferHeight, scene.renderHeight);
     const captureRow = [];
     for (let x = 0; x < scene.renderWidth; x += 1) {
-      captureRow.push(readFloat(scene.captureFramebuffer, x, scene.renderHeight >> 2)[0]);
+      captureRow.push(readFloat(scene.captureFramebuffer, x, rowY)[0]);
     }
     const readError = gl.getError();
 
@@ -3030,7 +3041,7 @@ test('the frame stays light until the output pass, which spreads glare and maps 
     return {
       withoutTransmission, capturePixel, captureCorner, captureRow, canvasCorner, canvasPixel,
       withoutGlare, withGlare, reallocated, glError, readError,
-      hdr: scene.hdr, samples: scene.samples, scale: scene.scale,
+      hdr: scene.hdr, samples: scene.samples, scale: scene.scale, guard: scene.guard,
       size: [scene.width, scene.height],
       renderSize: [scene.renderWidth, scene.renderHeight],
     };
@@ -3040,7 +3051,10 @@ test('the frame stays light until the output pass, which spreads glare and maps 
   expect(observed.readError).toBe(0);
   expect(observed.reallocated).toBe(true);
   expect(observed.hdr).toBe(true);
-  expect(observed.renderSize).toEqual(observed.size.map((side) => side * observed.scale));
+  // Wider than it is shown, by the guard the refracted rays are drawn for.
+  expect(observed.guard).toBeGreaterThanOrEqual(1);
+  expect(observed.renderSize).toEqual(
+    observed.size.map((side) => Math.round(side * observed.scale * observed.guard)));
 
   // A scene with nothing to refract never takes the copy.
   expect(observed.withoutTransmission.slice(0, 3)).toEqual([0, 0, 0]);

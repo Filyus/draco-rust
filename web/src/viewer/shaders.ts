@@ -1024,6 +1024,9 @@ uniform sampler2D uScene;
 uniform sampler2D uBloom;
 uniform float uBloomStrength;
 uniform float uExposure;
+// The frame is drawn wider than it is shown, so what reaches the canvas is its
+// middle. The rest was drawn for the refracted rays that leave the picture.
+uniform float uSceneCrop;
 // The base-colour view is an inspection mode, not a photograph: it exists to
 // show the texel the asset stores, so the curve that makes an image out of
 // light has no business in it.
@@ -1062,7 +1065,7 @@ vec3 toneMap(vec3 radiance) {
 }
 
 void main() {
-    vec2 uv = vNdc * 0.5 + 0.5;
+    vec2 uv = 0.5 + vNdc * 0.5 * uSceneCrop;
     // One tap at the centre of the block, which is an exact box average of the
     // supersampled frame because the filter is linear.
     vec3 scene = texture(uScene, uv).rgb;

@@ -147,6 +147,7 @@ export function buildViewerPrograms(
     uBloomStrength: gl.getUniformLocation(outputProgram, 'uBloomStrength'),
     uExposure: gl.getUniformLocation(outputProgram, 'uExposure'),
     uToneMap: gl.getUniformLocation(outputProgram, 'uToneMap'),
+    uSceneCrop: gl.getUniformLocation(outputProgram, 'uSceneCrop'),
   };
   const bloomDownUniforms = {
     uSource: gl.getUniformLocation(bloomDownProgram, 'uSource'),

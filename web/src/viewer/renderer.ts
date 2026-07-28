@@ -10,7 +10,8 @@ import { GL } from './gl-utils.ts';
 import { ensureBloomChain } from './bloom.ts';
 import type { BloomChain } from './bloom.ts';
 import {
-  beginScene, captureOpaqueHalf, ensureSceneTarget, resolveScene, sceneTargetHdrSupported,
+  beginScene, captureOpaqueHalf, ensureSceneTarget, GUARD_BAND, resolveScene,
+  sceneTargetHdrSupported,
 } from './scene-target.ts';
 import type { SceneTarget } from './scene-target.ts';
 import { MORPH_TEXTURE_UNIT } from './morph-texture.ts';
@@ -261,9 +262,13 @@ export function render(host: RenderHost) {
     return;
   }
 
-  // Compute camera matrices
+  // Compute camera matrices. The frame is drawn wider than it is shown, so the
+  // frustum opens by the same factor: the extra texels have to hold more
+  // scene, not the same scene larger.
   const aspect = host.canvas.width / Math.max(1, host.canvas.height);
-  mat4.perspective(host._projection, host.camera.fov, aspect, host.camera.near, host.camera.far);
+  const guard = 1 + 2 * Math.max(0, GUARD_BAND.margin);
+  const guardedFov = 2 * Math.atan(Math.tan(host.camera.fov / 2) * guard);
+  mat4.perspective(host._projection, guardedFov, aspect, host.camera.near, host.camera.far);
 
   const eye = cameraPosition(host, host._eye || (host._eye = vec3.create()));
   mat4.lookAt(host._view, eye, host.camera.target, WORLD_UP);
@@ -668,6 +673,7 @@ export function drawOutput(host: RenderHost) {
   gl.uniform1i(host.outputUniforms.uBloom, SHARED_TEXTURE_UNITS.morphDeltas);
   gl.uniform1f(host.outputUniforms.uBloomStrength, host.bloomStrength ?? DEFAULT_BLOOM_STRENGTH);
   gl.uniform1f(host.outputUniforms.uExposure, host.exposure ?? 1);
+  gl.uniform1f(host.outputUniforms.uSceneCrop, 1 / scene.guard);
   gl.uniform1i(host.outputUniforms.uToneMap, host.baseColorOnly ? 0 : 1);
   gl.bindVertexArray(host.backgroundVao);
   gl.drawArrays(gl.TRIANGLES, 0, 3);

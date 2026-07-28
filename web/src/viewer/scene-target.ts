@@ -33,6 +33,26 @@
  */
 const MAX_SUPERSAMPLED_PIXELS = 1_200_000;
 
+/**
+ * How much scene to draw beyond what is shown, as a fraction of the frame per
+ * side.
+ *
+ * Transmission reads the frame, and a refracted ray does not care where the
+ * frame ends: leaving it, there is nothing to read, and the border texel
+ * repeats into a streak. Every substitute for that is an invention. Drawing
+ * wider is not - the ray lands in geometry that was actually there, and the
+ * only thing spent is fill.
+ *
+ * A fifth of the frame per side costs about ninety per cent more texels and
+ * covers refraction through anything of ordinary thickness. Nothing else in
+ * the viewer sees it: the output pass shows the middle, and it is the only
+ * pass that writes to the canvas.
+ */
+export const GUARD_BAND = {
+  /** Fraction of the shown frame added on each side. Zero draws only it. */
+  margin: 0.2,
+};
+
 export interface SceneTarget {
   /** Multisampled draw target; null when the driver offers one sample. */
   framebuffer: WebGLFramebuffer | null;
@@ -47,10 +67,15 @@ export interface SceneTarget {
   /** The canvas size the frame is shown at. */
   width: number;
   height: number;
-  /** The size it is drawn at: `scale` times larger. */
+  /** The size it is drawn at: `scale` times larger, and wider by the guard. */
   renderWidth: number;
   renderHeight: number;
   scale: number;
+  /**
+   * How much wider than the canvas the frame is, as a factor. The output pass
+   * crops by its reciprocal, and the projection widens by it.
+   */
+  guard: number;
   samples: number;
   hdr: boolean;
 }
@@ -105,8 +130,9 @@ export function ensureSceneTarget(
   supersample = false,
 ): SceneTarget {
   const wanted = supersample && width * height <= MAX_SUPERSAMPLED_PIXELS ? 2 : 1;
+  const wantedGuard = 1 + 2 * Math.max(0, GUARD_BAND.margin);
   if (current && current.width === width && current.height === height
-    && current.hdr === hdr && current.scale === wanted) {
+    && current.hdr === hdr && current.scale === wanted && current.guard === wantedGuard) {
     return current;
   }
   if (current) disposeSceneTarget(gl, current);
@@ -114,8 +140,9 @@ export function ensureSceneTarget(
   const scale = wanted;
   const samples = Math.min(8, gl.getParameter(gl.MAX_SAMPLES) as number);
   const multisampled = samples > 1;
-  const renderWidth = width * scale;
-  const renderHeight = height * scale;
+  const guard = 1 + 2 * Math.max(0, GUARD_BAND.margin);
+  const renderWidth = Math.round(width * scale * guard);
+  const renderHeight = Math.round(height * scale * guard);
 
   const resolved = linearTexture(gl, renderWidth, renderHeight, hdr);
   const capture = linearTexture(gl, renderWidth, renderHeight, hdr, true);
@@ -164,6 +191,7 @@ export function ensureSceneTarget(
     renderWidth,
     renderHeight,
     scale,
+    guard,
     samples: multisampled ? samples : 1,
     hdr,
   };
