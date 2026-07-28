@@ -474,13 +474,21 @@ open_risks:
       - "Re-run seed_corpus.{sh,ps1} and confirm the ASCII branch is reached, for example by checking coverage or by asserting a seed decodes."
       - "Run a bounded campaign over the widened corpus before claiming the ASCII path is hardened."
 
-  - id: ktx2-fuzzing-soak-time
-    priority: low
-    summary: "The ktx2_transcode target is new: it compiles, is seeded from testdata/ktx2, and is wired into ClusterFuzzLite, but no campaign has accumulated over it yet."
-    why_it_matters: "The deterministic sweeps in ktx2_malformed.rs cover the fields someone would reach for by hand and run on every push, which is what caught nothing and is meant to keep catching nothing. What a campaign adds is the malformations nobody thought to sweep -- particularly inside the BasisLZ global data and the Zstd frames, which the sweeps only reach by overwriting wholesale."
+  - id: ktx2-fuzzing-throughput
+    priority: medium
+    summary: "The ktx2_transcode target runs at 4-5 executions per second, which is too slow for a campaign to explore anything. Two bounded local runs (166 seconds total, ASan, release semantics) completed with no crash, no OOM and peak RSS 479 MB, reaching 5048 edges and 15524 features -- so the codecs are reached, but only 1365 inputs were ever tried."
+    why_it_matters: "Throughput is a function of the seeds. Every fixture under testdata/ktx2 is a full 512x512 or 1024x1024 texture, and the target decodes each one into seven formats across every mip level, so a single execution is milliseconds of real transcoding rather than microseconds of parsing. A 600-second ClusterFuzzLite batch would manage roughly 2500 inputs at this rate, which is not a campaign. Coverage is good per input and the corpus barely moves."
     next_steps:
-      - "Run a bounded local campaign over the seeded corpus and record executions, peak RSS, and any findings."
-      - "Confirm the seeds actually reach the ETC1S codebook decoder and the UASTC block reader, rather than failing in the header."
+      - "Add a seed generator producing small KTX2 files -- 16x16 and 64x64, both codecs, supercompressed and not -- by rebuilding a fixture around only its smallest levels, the way web/tests/ktx2-uastc-modes.mjs already rebuilds one. Keep the large fixtures for parse coverage."
+      - "Re-measure executions per second and only then judge the campaign length."
+
+  - id: ktx2-no-differential-fuzzing
+    priority: medium
+    summary: "Malformed-input checking asks only that nothing panics. It could ask whether this reader and Binomial's agree, which is a far stronger question and one this project is uniquely able to put: the reference transcoder is already loaded in the node gates as an oracle."
+    why_it_matters: "A reader that refuses a file the reference accepts loses a texture; one that accepts a file the reference refuses is reading something nobody wrote. Neither is a panic, so nothing here would notice. The byte-exact gates already compare output on valid files -- what is missing is the same comparison on mutated ones, where the interesting answer is agreement about rejection."
+    next_steps:
+      - "Add a bounded randomized node gate: mutate a fixture, feed both transcoders, require both to accept or both to reject, and require identical bytes when both accept."
+      - "Record any disagreement as a finding rather than a threshold to tune."
 
   - id: fuzzing-ci-soak-time
     priority: low
