@@ -44,6 +44,7 @@ ships. Current counts:
 | `ktx2-differential` | 2400 mutants, 2505 images identical to the reference |
 | `ktx2_malformed.rs` | six sweeps over headers, long fields, truncation, payloads |
 | `ktx2_transcode` (libFuzzer) | 13521 executions, 5149 edges, no finding |
+| `basisu` cross-check | 215 images against a third implementation, in CI |
 
 ## Left out on purpose
 
@@ -83,6 +84,14 @@ eight bits per pair. Single-channel maps — roughness, occlusion, metalness —
 want BC4 or EAC R11 for the same reason. This is the next thing to build.
 
 ## Known limits
+
+**The node gates run on one machine.** They compare against Binomial's prebuilt
+WASM at a path inside a three.js checkout, so on a runner they print SKIPPED and
+exit 0 — which was always the stated intent of that step, but left CI proving
+only that the module builds and fits its budget. What proves the bytes on a
+runner is the `basis-crosscheck` job: 215 images against the `basisu` crate,
+which comes from crates.io and needs nothing external. The proper fix is K17, a
+C++ oracle built in tree, after which the node gates run everywhere too.
 
 **The ETC and ASTC uploads are unexercised.** Their transcoding is checked byte
 for byte in Node, but no desktop offers either extension, so the

@@ -20,10 +20,14 @@ wasm-opt = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Off for the size measurement, so the comparison is generous to `basisu`: the
+# shipped module here carries `ruzstd` and the probe does not. On for the
+# cross-check, where a fixture that needs Zstd is a fixture worth comparing.
+zstd = ["basisu/zstd"]
+
 [dependencies]
 wasm-bindgen = "0.2"
-# Without `zstd`, so the comparison is generous to it: the shipped module here
-# carries `ruzstd` and this does not.
 basisu = { version = "0.1.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
