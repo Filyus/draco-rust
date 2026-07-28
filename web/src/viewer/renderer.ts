@@ -9,6 +9,7 @@ import type { CameraHost } from './camera.ts';
 import { GL } from './gl-utils.ts';
 import {
   beginFrameCapture, ensureFrameTarget, finishFrameCapture, frameTargetHdrSupported,
+  resolveFrameCapture,
 } from './frame-target.ts';
 import type { FrameTarget } from './frame-target.ts';
 import { MORPH_TEXTURE_UNIT } from './morph-texture.ts';
@@ -189,6 +190,8 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   _frameTargetHdr?: boolean;
   lineUniforms: Record<string, WebGLUniformLocation | null>;
   backgroundUniforms: Record<string, WebGLUniformLocation | null>;
+  downsampleProgram: WebGLProgram;
+  downsampleUniforms: Record<string, WebGLUniformLocation | null>;
   backgroundVao: WebGLVertexArrayObject | null;
   environmentIbl: EnvironmentIbl;
   wireframe: boolean;
@@ -313,6 +316,8 @@ function captureTransmissionSnapshot(host: RenderHost) {
   beginFrameCapture(gl, host._frameTarget);
   drawBackground(host);
   drawSurfaces(host, false);
+  resolveFrameCapture(gl, host._frameTarget);
+  drawCaptureDownsample(host);
   finishFrameCapture(gl, host._frameTarget);
   host._linearOutput = false;
   // Force the next draw to re-state the frame uniforms: every program bound
@@ -546,6 +551,32 @@ export function drawGrid(host: RenderHost) {
   gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
   gl.drawArrays(gl.LINES, 0, host._grid.count);
+}
+
+/**
+ * Bring the capture down to the size the frame reads it at.
+ *
+ * Drawn between the resolve and the mip chain, which is the only place it can
+ * be: the samples have to be resolved before they can be averaged, and the mip
+ * levels have to be built from the result.
+ */
+export function drawCaptureDownsample(host: RenderHost) {
+  const gl = host.gl;
+  const frame = host._frameTarget!;
+  gl.disable(gl.DEPTH_TEST);
+  gl.depthMask(false);
+  gl.disable(gl.BLEND);
+  gl.useProgram(host.downsampleProgram);
+  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.frameSnapshot);
+  gl.bindTexture(gl.TEXTURE_2D, frame.resolved);
+  gl.uniform1i(host.downsampleUniforms.uCapture, SHARED_TEXTURE_UNITS.frameSnapshot);
+  gl.bindVertexArray(host.backgroundVao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.bindVertexArray(null);
+  gl.depthMask(true);
+  gl.enable(gl.DEPTH_TEST);
+  // The unit is the snapshot's own, and it now holds the wrong texture.
+  host._surfaceProgram = null;
 }
 
 /** Render the same radiance cubemap used by material IBL. */

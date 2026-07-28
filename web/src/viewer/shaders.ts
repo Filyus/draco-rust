@@ -450,11 +450,58 @@ float transmissionLod(float roughness, float ior) {
     return roughness * clamp(ior * 2.0 - 2.0, 0.0, 1.0) * uFrameMaxLod;
 }
 
-float transmittedChannel(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness, int channel) {
+/**
+ * Bicubic reconstruction of the capture, across two mip levels.
+ *
+ * The B-spline weights are folded into four bilinear taps rather than sixteen
+ * point ones, which is the standard trick and what three.js samples its own
+ * transmission frame with. It matters most where roughness has sent the read
+ * up the mip chain: the level under a rough pane is a fraction of the frame's
+ * resolution, and reconstructing it linearly shows the texel grid as facets on
+ * something that should read as frosted.
+ */
+float bicubicW0(float a) { return (1.0 / 6.0) * (a * (a * (-a + 3.0) - 3.0) + 1.0); }
+float bicubicW1(float a) { return (1.0 / 6.0) * (a * a * (3.0 * a - 6.0) + 4.0); }
+float bicubicW2(float a) { return (1.0 / 6.0) * (a * (a * (-3.0 * a + 3.0) + 3.0) + 1.0); }
+float bicubicW3(float a) { return (1.0 / 6.0) * (a * a * a); }
+float bicubicG0(float a) { return bicubicW0(a) + bicubicW1(a); }
+float bicubicG1(float a) { return bicubicW2(a) + bicubicW3(a); }
+float bicubicH0(float a) { return -1.0 + bicubicW1(a) / (bicubicW0(a) + bicubicW1(a)); }
+float bicubicH1(float a) { return 1.0 + bicubicW3(a) / (bicubicW2(a) + bicubicW3(a)); }
+
+vec3 bicubicLevel(vec2 uv, vec4 texelSize, float lod) {
+    vec2 scaled = uv * texelSize.zw + 0.5;
+    vec2 iuv = floor(scaled);
+    vec2 fuv = fract(scaled);
+    float g0x = bicubicG0(fuv.x);
+    float g1x = bicubicG1(fuv.x);
+    float h0x = bicubicH0(fuv.x);
+    float h1x = bicubicH1(fuv.x);
+    float h0y = bicubicH0(fuv.y);
+    float h1y = bicubicH1(fuv.y);
+    vec2 p0 = (vec2(iuv.x + h0x, iuv.y + h0y) - 0.5) * texelSize.xy;
+    vec2 p1 = (vec2(iuv.x + h1x, iuv.y + h0y) - 0.5) * texelSize.xy;
+    vec2 p2 = (vec2(iuv.x + h0x, iuv.y + h1y) - 0.5) * texelSize.xy;
+    vec2 p3 = (vec2(iuv.x + h1x, iuv.y + h1y) - 0.5) * texelSize.xy;
+    return bicubicG0(fuv.y) * (g0x * textureLod(uFrameSnapshot, p0, lod).rgb
+                             + g1x * textureLod(uFrameSnapshot, p1, lod).rgb)
+         + bicubicG1(fuv.y) * (g0x * textureLod(uFrameSnapshot, p2, lod).rgb
+                             + g1x * textureLod(uFrameSnapshot, p3, lod).rgb);
+}
+
+vec3 captureBicubic(vec2 uv, float lod) {
+    vec2 lowerSize = vec2(textureSize(uFrameSnapshot, int(lod)));
+    vec2 upperSize = vec2(textureSize(uFrameSnapshot, int(lod) + 1));
+    vec3 lower = bicubicLevel(uv, vec4(1.0 / lowerSize, lowerSize), floor(lod));
+    vec3 upper = bicubicLevel(uv, vec4(1.0 / upperSize, upperSize), ceil(lod));
+    return mix(lower, upper, fract(lod));
+}
+
+vec3 sampleCaptured(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness) {
     vec3 exitPoint = position + volumeTransmissionRay(normal, view, ior, thickness);
     vec4 clip = uProjection * uView * vec4(exitPoint, 1.0);
     vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, vec2(0.0), vec2(1.0));
-    return textureLod(uFrameSnapshot, uv, transmissionLod(roughness, ior))[channel];
+    return captureBicubic(uv, transmissionLod(roughness, ior));
 }
 
 vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness, out float rayLength) {
@@ -468,9 +515,7 @@ vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float
     // leaves the three rays on top of each other, which is the single-index
     // case, so the branch is what the extension costs when absent.
     if (uDispersion <= 0.0) {
-        vec4 clip = uProjection * uView * vec4(position + ray, 1.0);
-        vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, vec2(0.0), vec2(1.0));
-        return textureLod(uFrameSnapshot, uv, transmissionLod(roughness, ior)).rgb;
+        return sampleCaptured(position, normal, view, ior, thickness, roughness);
     }
     // The spread the extension's reference implementation defines: the red and
     // blue ends sit half of it apart in index, green at the material's own. It
@@ -478,9 +523,9 @@ vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float
     // not refract does not disperse either, whatever its Abbe number says.
     float halfSpread = (ior - 1.0) * 0.025 * uDispersion;
     return vec3(
-        transmittedChannel(position, normal, view, ior - halfSpread, thickness, roughness, 0),
-        transmittedChannel(position, normal, view, ior, thickness, roughness, 1),
-        transmittedChannel(position, normal, view, ior + halfSpread, thickness, roughness, 2)
+        sampleCaptured(position, normal, view, ior - halfSpread, thickness, roughness).r,
+        sampleCaptured(position, normal, view, ior, thickness, roughness).g,
+        sampleCaptured(position, normal, view, ior + halfSpread, thickness, roughness).b
     );
 }
 
@@ -606,12 +651,18 @@ void main() {
     #endif
 
     float metallic = uMetallic;
-    float roughness = clamp(uRoughness, 0.045, 1.0);
+    // Kept apart on purpose. The floor exists for the specular lobes, whose
+    // GGX terms degenerate at zero, and it is a lie about the surface: what
+    // transmission does with roughness is pick a mip of the frame behind, and
+    // a floor there makes a pane the asset called mirror-smooth read half of
+    // the level below - a thin bright thing behind it arrives in blocks.
+    float materialRoughness = clamp(uRoughness, 0.0, 1.0);
     #ifdef HAS_METALLIC_ROUGHNESS
     vec4 packed = texture(uMetallicRoughness, slotUv(SLOT_METALLIC_ROUGHNESS));
-    roughness = clamp(roughness * packed.g, 0.045, 1.0);
+    materialRoughness = clamp(materialRoughness * packed.g, 0.0, 1.0);
     metallic *= packed.b;
     #endif
+    float roughness = max(materialRoughness, 0.045);
 
     float occlusion = 1.0;
     #ifdef HAS_OCCLUSION
@@ -704,7 +755,8 @@ void main() {
         thickness *= texture(uThicknessTexture, slotUv(SLOT_THICKNESS)).g;
         #endif
         float rayLength;
-        vec3 transmitted = transmittedRadiance(vWorldPos, N, V, uIor, thickness, roughness, rayLength);
+        vec3 transmitted = transmittedRadiance(
+            vWorldPos, N, V, uIor, thickness, materialRoughness, rayLength);
         // Tinted by the base colour, like the diffuse term it replaces: the
         // spec's transmission BTDF carries it, and without it coloured glass
         // shades as clear.
@@ -812,6 +864,30 @@ uniform vec3 uColor;
 out vec4 outColor;
 void main() {
     outColor = vec4(uColor, 1.0);
+}
+`;
+
+/**
+ * The pass that brings the capture down to the size it is read at.
+ *
+ * The capture is drawn larger than the frame that samples it, and this is
+ * where the extra texels are spent: one bilinear tap at the centre of each
+ * block averages them exactly, in linear light, so what a texel ends up
+ * holding is the light that actually crossed it. That is the whole reason for
+ * the detour - the alternative, averaging in some compressed space so that the
+ * result survives tone mapping, does not conserve energy, and a wire covering
+ * half a texel comes back at a twentieth of its brightness and the wrong hue.
+ *
+ * At a scale of one the tap lands on the texel centre and this is a copy.
+ */
+export const DOWNSAMPLE_FRAG_SRC = `#version 300 es
+precision highp float;
+in vec2 vNdc;
+uniform sampler2D uCapture;
+out vec4 outColor;
+
+void main() {
+    outColor = vec4(texture(uCapture, vNdc * 0.5 + 0.5).rgb, 1.0);
 }
 `;
 

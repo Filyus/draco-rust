@@ -83,12 +83,14 @@ export class Viewer {
   declare surfacePrograms: SurfaceProgramCache;
   declare lineProgram: WebGLProgram;
   declare backgroundProgram: WebGLProgram;
+  declare downsampleProgram: WebGLProgram;
   /** The bound surface program's locations; replaced per draw by the renderer. */
   declare uniforms: Record<string, WebGLUniformLocation | null>;
   declare _surfaceProgram: WebGLProgram | null;
   declare _frameTarget: FrameTarget | null;
   declare lineUniforms: Record<string, WebGLUniformLocation | null>;
   declare backgroundUniforms: Record<string, WebGLUniformLocation | null>;
+  declare downsampleUniforms: Record<string, WebGLUniformLocation | null>;
   declare locations: Record<string, number>;
   declare backgroundVao: WebGLVertexArrayObject | null;
   declare environmentIbl: EnvironmentIbl;
@@ -260,12 +262,14 @@ export class Viewer {
     this.surfacePrograms = built.surfacePrograms;
     this.lineProgram = built.lineProgram;
     this.backgroundProgram = built.backgroundProgram;
+    this.downsampleProgram = built.downsampleProgram;
     this.uniforms = {};
     this._surfaceProgram = null;
     this._frameTarget = null;
     this.locations = built.locations;
     this.lineUniforms = built.lineUniforms;
     this.backgroundUniforms = built.backgroundUniforms;
+    this.downsampleUniforms = built.downsampleUniforms;
     this.backgroundVao = built.backgroundVao;
     this.environmentIbl = built.environmentIbl;
   }
@@ -546,6 +550,7 @@ export class Viewer {
     this._frameTarget = null;
     if (this.lineProgram) this.gl.deleteProgram(this.lineProgram);
     if (this.backgroundProgram) this.gl.deleteProgram(this.backgroundProgram);
+    if (this.downsampleProgram) this.gl.deleteProgram(this.downsampleProgram);
     if (this.backgroundVao) this.gl.deleteVertexArray(this.backgroundVao);
     this.environmentIbl?.dispose();
   }

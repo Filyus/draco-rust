@@ -4,6 +4,7 @@ import { linkProgram } from './gl-utils.ts';
 import {
   BACKGROUND_FRAG_SRC,
   BACKGROUND_VERT_SRC,
+  DOWNSAMPLE_FRAG_SRC,
   LINE_FRAG_SRC,
   LINE_VERT_SRC,
   TEXTURE_SLOTS,
@@ -113,6 +114,8 @@ export function buildViewerPrograms(
 ) {
   const lineProgram = linkProgram(gl, LINE_VERT_SRC, LINE_FRAG_SRC);
   const backgroundProgram = linkProgram(gl, BACKGROUND_VERT_SRC, BACKGROUND_FRAG_SRC);
+  // Shares the background's fullscreen triangle; only the fragment differs.
+  const downsampleProgram = linkProgram(gl, BACKGROUND_VERT_SRC, DOWNSAMPLE_FRAG_SRC);
 
   const locations = {
     position: 0,
@@ -134,6 +137,9 @@ export function buildViewerPrograms(
     uEnvironment: gl.getUniformLocation(backgroundProgram, 'uEnvironment'),
     uLinearOutput: gl.getUniformLocation(backgroundProgram, 'uLinearOutput'),
   };
+  const downsampleUniforms = {
+    uCapture: gl.getUniformLocation(downsampleProgram, 'uCapture'),
+  };
   // WebGL2 requires a VAO even for a shader driven solely by gl_VertexID.
   const backgroundVao = gl.createVertexArray();
   const environmentIbl = createEnvironmentIbl(gl, onLog);
@@ -142,9 +148,11 @@ export function buildViewerPrograms(
     surfacePrograms: createSurfaceProgramCache(gl),
     lineProgram,
     backgroundProgram,
+    downsampleProgram,
     locations,
     lineUniforms,
     backgroundUniforms,
+    downsampleUniforms,
     backgroundVao,
     environmentIbl,
   };

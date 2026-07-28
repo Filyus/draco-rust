@@ -2567,10 +2567,16 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
     const accessor = (values, components, componentType = 5126) => ({
       bytes: bytes(values), componentType, components, count: values.length / components,
     });
-    const document_ = (front) => createSceneDocument({
+    const document_ = (front, emissiveStrength = 1) => createSceneDocument({
       materials: [
         // Behind: a green emitter, so what shows through is unmistakably it.
-        { baseColorFactor: [0, 0, 0, 1], metallicFactor: 0, roughnessFactor: 1, emissiveFactor: [0, 1, 0] },
+        {
+          baseColorFactor: [0, 0, 0, 1],
+          metallicFactor: 0,
+          roughnessFactor: 1,
+          emissiveFactor: [0, 1, 0],
+          emissiveStrength,
+        },
         // In front: white, because the spec's BTDF tints what passes through
         // by the base colour. Black glass transmits nothing, which would make
         // this fixture measure the tint rather than the transmission.
@@ -2599,13 +2605,13 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
     // pass - and then drawing the transmissive quad too early would still look
     // right.
     let glError = 0;
-    const sample = (front) => {
+    const sample = (front, emissiveStrength) => {
       const canvas = document.createElement('canvas');
       canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
       document.body.appendChild(canvas);
       const viewer = new Viewer(canvas);
       viewer.showGrid = false;
-      viewer.setScene(buildViewerSceneFromDocument(document_(front)));
+      viewer.setScene(buildViewerSceneFromDocument(document_(front, emissiveStrength)));
       viewer.camera.target.set([0, 0, 0]);
       viewer.camera.distance = 4;
       viewer.camera.azimuth = 0.45;
@@ -2641,6 +2647,12 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
     const straightDispersed = sample({
       transmissionFactor: 1, thicknessFactor: 2, ior: 1, dispersion: 4,
     });
+    // Mirror-smooth glass against glass at the floor the specular lobes need.
+    // The lobes see the same roughness either way; the only thing that can
+    // tell these two apart is which mip of the frame behind the transmission
+    // reads, which is the whole question.
+    const smooth_ = sample({ transmissionFactor: 1, roughnessFactor: 0 });
+    const atFloor = sample({ transmissionFactor: 1, roughnessFactor: 0.045 });
     // The same glass filled with a green-absorbing medium: what comes through
     // is what the volume left of it.
     const tinted = sample({
@@ -2649,7 +2661,10 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
       attenuationDistance: 0.35,
       attenuationColor: [1, 0.1, 0.1],
     });
-    return { opaque, clear, tinted, thick, dispersed, straight, straightDispersed, glError };
+    return {
+      opaque, clear, tinted, thick, dispersed, straight, straightDispersed,
+      smooth: smooth_, atFloor, glError,
+    };
   });
 
   expect(observed.glError).toBe(0);
@@ -2681,6 +2696,13 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
   for (const channel of [0, 1, 2]) {
     expect(largestShift(channel, observed.straightDispersed, observed.straight)).toBeLessThan(3);
   }
+
+  // Roughness reaches transmission unclamped. The floor the specular lobes
+  // need is a lie about the surface, and spending it on the mip level makes a
+  // pane the asset called mirror-smooth read the level below - which is what
+  // a filament seen through glass shows as steps. Clamped, these two samples
+  // are the same surface and the rows come out identical.
+  expect(largestShift(1, observed.smooth, observed.atFloor)).toBeGreaterThan(4);
 });
 
 test('KHR_materials_iridescence tints the specular lobe by film thickness', async ({ page }) => {
@@ -2875,7 +2897,9 @@ test('the frame a transmissive surface refracts is drawn once, in linear light',
     // and contributes no pixel of its own.
     const materials = [
       { baseColorFactor: [0, 0, 1, 0.5], alphaMode: 'BLEND', emissiveFactor: [0, 0, 1] },
-      { baseColorFactor: [1, 0, 0, 1], emissiveFactor: [1, 0, 0] },
+      // Far brighter than white, like the filament this came from: that is the
+      // case the capture's compression exists for.
+      { baseColorFactor: [1, 0, 0, 1], emissiveFactor: [1, 0, 0], emissiveStrength: 25 },
       { baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 0, transmissionFactor: 1 },
     ];
     const sceneOf = (count) => createSceneDocument({
@@ -2894,7 +2918,16 @@ test('the frame a transmissive surface refracts is drawn once, in linear light',
           { attributes: { POSITION: 4, NORMAL: 2 }, indices: 3, material: 2 },
         ].slice(0, count),
       }],
-      nodes: [{ name: 'Quads', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 }],
+      // Turned about the view axis, so the quads' edges cross texels at an
+      // angle instead of landing on their boundaries. An axis-aligned edge
+      // says nothing about whether the capture is antialiased.
+      nodes: [{
+        name: 'Quads',
+        translation: [0, 0, 0],
+        rotation: [0, 0, Math.sin(0.175), Math.cos(0.175)],
+        scale: [1, 1, 1],
+        mesh: 0,
+      }],
       rootNodes: [0],
     });
 
@@ -2947,6 +2980,13 @@ test('the frame a transmissive surface refracts is drawn once, in linear light',
     };
     const capturePixel = readLinear(...centre(size[0], size[1]));
     const captureCorner = readLinear(1, 1);
+    // A row crossing the emitter's slanted edge. One sample per texel leaves
+    // only the two sides in it; resolved samples leave the partly covered
+    // texels between them, which is what a transmissive surface shows when it
+    // barely bends the ray.
+    const rowY = Math.floor(size[1] / 4);
+    const captureRow = [];
+    for (let x = 0; x < size[0]; x += 1) captureRow.push(readLinear(x, rowY)[0]);
     const readError = gl.getError();
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.deleteFramebuffer(readback);
@@ -2966,9 +3006,10 @@ test('the frame a transmissive surface refracts is drawn once, in linear light',
     canvas.remove();
     return {
       withoutTransmission, size, matchesDrawingBuffer, reallocated, glError, readError,
-      linearOutputLeftOn, hdr: target.hdr,
+      linearOutputLeftOn, hdr: target.hdr, samples: target.samples, scale: target.scale,
+      captureSize: [target.captureWidth, target.captureHeight],
       canvasPixel: Array.from(canvasPixel), canvasCorner: Array.from(canvasCorner),
-      capturePixel, captureCorner,
+      capturePixel, captureCorner, captureRow,
     };
   });
 
@@ -2981,13 +3022,33 @@ test('the frame a transmissive surface refracts is drawn once, in linear light',
   // A scene with nothing to refract allocates nothing and draws no second pass.
   expect(observed.withoutTransmission).toBe(false);
 
-  // The capture holds the opaque quad and nothing else: red, no blue.
-  expect(observed.capturePixel[0]).toBeGreaterThan(0.5);
+  // The capture holds the opaque quad and nothing else: red, no blue. And it
+  // holds it at its own brightness - the emitter is twenty-five times white,
+  // and the round trip through the compressed resolve has to give that back.
+  // Expanding after the filter instead of before it lands here, an order of
+  // magnitude low.
+  expect(observed.capturePixel[0]).toBeGreaterThan(10);
   expect(observed.capturePixel[2]).toBeLessThan(observed.capturePixel[0] / 2);
   // The canvas holds the blend over it, so blue has arrived by then. Drawing
   // the capture after the blended pass, or before the opaque one, changes
   // exactly this.
   expect(observed.canvasPixel[2]).toBeGreaterThan(100);
+
+  // The capture is antialiased. What a transmissive surface shows is this
+  // texture rather than the canvas, so the canvas keeping its own samples does
+  // nothing for the scene seen through glass: a filament behind a flat pane
+  // steps down the screen unless the pass that drew it resolved samples of its
+  // own. Partly covered texels along the emitter's edge are that resolve.
+  // Gradations along that edge are the product of the two: the samples the
+  // capture is drawn with, and the block the box filter brings down. Either
+  // one alone leaves a staircase a filament shows.
+  expect(observed.samples * observed.scale * observed.scale).toBeGreaterThanOrEqual(8);
+  expect(observed.captureSize).toEqual(observed.size.map((side) => side * observed.scale));
+  // Measured against the emitter's own level rather than an absolute one, so
+  // that how bright the fixture makes it stays the fixture's business.
+  const full = observed.capturePixel[0];
+  const partlyCovered = observed.captureRow.filter((red) => red > 0.05 * full && red < 0.8 * full);
+  expect(partlyCovered.length).toBeGreaterThan(0);
 
   // And the capture is the light behind the picture rather than the picture:
   // tone-mapped and encoded, it is what the canvas shows at the same texel.
