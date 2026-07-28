@@ -291,10 +291,14 @@ uniform float uDispersion;
 uniform float uThicknessFactor;
 uniform float uAttenuationDistance;
 uniform vec3 uAttenuationColor;
-// The opaque half of the frame, which the transmitted ray reads out of.
-uniform sampler2D uFrameSnapshot;
-uniform vec2 uFrameSize;
-uniform float uFrameMaxLod;
+// The opaque scene as a transmissive surface sees it: a cube rendered from
+// inside the object, indexed by direction. Corrected against the scene's own
+// box, because a cube is only right at the point it was rendered from.
+uniform samplerCube uRefractionProbe;
+uniform vec3 uProbeCenter;
+uniform vec3 uProbeBoundsMin;
+uniform vec3 uProbeBoundsMax;
+uniform float uProbeMaxLod;
 uniform mat4 uProjection;
 uniform mat4 uView;
 // The node transform, which the fragment stage needs for one thing only: the
@@ -505,18 +509,29 @@ vec3 iridescentFresnel(float filmIor, float cosTheta1, float thickness, vec3 bas
  * up is a thicker piece of glass, and a ray that ignored that would exit at the
  * unscaled depth and read the wrong pixel.
  */
-vec3 volumeTransmissionRay(vec3 normal, vec3 view, float ior, float thickness) {
+/**
+ * Which way light goes on entering, or nothing where none enters at all.
+ *
+ * Kept apart from how far it then travels, because the two answer different
+ * questions: a thin-walled surface has no distance to cross and still bends
+ * what passes through it, and reading a zero-length ray as "nothing crossed"
+ * turns every pane of window glass into a mirror.
+ */
+vec3 volumeTransmissionDirection(vec3 normal, vec3 view, float ior) {
     // Which way the interface is crossed decides the ratio. A back face is the
     // far wall of the volume seen from inside it, where light leaves a dense
     // medium for air - and where, past the critical angle, it does not leave
-    // at all - refract says so by returning nothing, and the caller reflects
-    // instead.
+    // at all - refract says so by returning nothing.
     float eta = gl_FrontFacing ? 1.0 / max(ior, 1.0001) : max(ior, 1.0001);
     vec3 refracted = refract(-view, normalize(normal), eta);
     if (dot(refracted, refracted) < 1e-8) return vec3(0.0);
+    return normalize(refracted);
+}
+
+vec3 volumeTransmissionRay(vec3 normal, vec3 view, float ior, float thickness) {
     vec3 modelScale = vec3(
         length(uModel[0].xyz), length(uModel[1].xyz), length(uModel[2].xyz));
-    return normalize(refracted) * thickness * modelScale;
+    return volumeTransmissionDirection(normal, view, ior) * thickness * modelScale;
 }
 
 /**
@@ -541,7 +556,7 @@ float dispersedIor(float ior, float wavelength) {
 }
 
 /**
- * Which mip of the snapshot a surface of this roughness and index reads.
+ * Which mip of the probe a surface of this roughness and index reads.
  *
  * Roughness alone is not the blur: microfacet refraction scales with how much
  * the interface bends light at all, so an index of 1.0 - a surface that does
@@ -549,154 +564,66 @@ float dispersedIor(float ior, float wavelength) {
  * amount. That is the factor the extension's reference implementation applies.
  */
 float transmissionLod(float roughness, float ior) {
-    return roughness * clamp(ior * 2.0 - 2.0, 0.0, 1.0) * uFrameMaxLod;
+    return roughness * clamp(ior * 2.0 - 2.0, 0.0, 1.0) * uProbeMaxLod;
 }
 
 /**
- * Bicubic reconstruction of the capture, across two mip levels.
+ * The direction to look the probe up along, corrected for where the ray
+ * actually is.
  *
- * The B-spline weights are folded into four bilinear taps rather than sixteen
- * point ones, which is the standard trick and what three.js samples its own
- * transmission frame with. It matters most where roughness has sent the read
- * up the mip chain: the level under a rough pane is a fraction of the frame's
- * resolution, and reconstructing it linearly shows the texel grid as facets on
- * something that should read as frosted.
+ * A cube holds what was visible from one point, and a surface reading it from
+ * somewhere else would see the scene from the wrong place - the backdrop
+ * behind a row of prisms would sit still while the prisms moved. Intersecting
+ * the ray with the scene's own box says where it would land, and looking at
+ * that from the probe's centre is the direction the cube has an answer for.
+ * Exact when the scene is the box, which a backdrop and a floor nearly are.
  */
-float bicubicW0(float a) { return (1.0 / 6.0) * (a * (a * (-a + 3.0) - 3.0) + 1.0); }
-float bicubicW1(float a) { return (1.0 / 6.0) * (a * a * (3.0 * a - 6.0) + 4.0); }
-float bicubicW2(float a) { return (1.0 / 6.0) * (a * (a * (-3.0 * a + 3.0) + 3.0) + 1.0); }
-float bicubicW3(float a) { return (1.0 / 6.0) * (a * a * a); }
-float bicubicG0(float a) { return bicubicW0(a) + bicubicW1(a); }
-float bicubicG1(float a) { return bicubicW2(a) + bicubicW3(a); }
-float bicubicH0(float a) { return -1.0 + bicubicW1(a) / (bicubicW0(a) + bicubicW1(a)); }
-float bicubicH1(float a) { return 1.0 + bicubicW3(a) / (bicubicW2(a) + bicubicW3(a)); }
-
-vec3 bicubicLevel(vec2 uv, vec4 texelSize, float lod) {
-    vec2 scaled = uv * texelSize.zw + 0.5;
-    vec2 iuv = floor(scaled);
-    vec2 fuv = fract(scaled);
-    float g0x = bicubicG0(fuv.x);
-    float g1x = bicubicG1(fuv.x);
-    float h0x = bicubicH0(fuv.x);
-    float h1x = bicubicH1(fuv.x);
-    float h0y = bicubicH0(fuv.y);
-    float h1y = bicubicH1(fuv.y);
-    vec2 p0 = (vec2(iuv.x + h0x, iuv.y + h0y) - 0.5) * texelSize.xy;
-    vec2 p1 = (vec2(iuv.x + h1x, iuv.y + h0y) - 0.5) * texelSize.xy;
-    vec2 p2 = (vec2(iuv.x + h0x, iuv.y + h1y) - 0.5) * texelSize.xy;
-    vec2 p3 = (vec2(iuv.x + h1x, iuv.y + h1y) - 0.5) * texelSize.xy;
-    return bicubicG0(fuv.y) * (g0x * textureLod(uFrameSnapshot, p0, lod).rgb
-                             + g1x * textureLod(uFrameSnapshot, p1, lod).rgb)
-         + bicubicG1(fuv.y) * (g0x * textureLod(uFrameSnapshot, p2, lod).rgb
-                             + g1x * textureLod(uFrameSnapshot, p3, lod).rgb);
+vec3 probeDirection(vec3 origin, vec3 direction) {
+    vec3 inverseDirection = 1.0 / direction;
+    vec3 toMin = (uProbeBoundsMin - origin) * inverseDirection;
+    vec3 toMax = (uProbeBoundsMax - origin) * inverseDirection;
+    vec3 furthest = max(toMin, toMax);
+    // Behind the box, or on it, the ray has nothing left to cross: the raw
+    // direction is then the best the cube can be asked for.
+    float distanceToBox = max(min(min(furthest.x, furthest.y), furthest.z), 0.0);
+    vec3 offset = origin + direction * distanceToBox - uProbeCenter;
+    return dot(offset, offset) > 1e-8 ? offset : direction;
 }
 
-vec3 captureBicubic(vec2 uv, float lod) {
-    vec2 lowerSize = vec2(textureSize(uFrameSnapshot, int(lod)));
-    vec2 upperSize = vec2(textureSize(uFrameSnapshot, int(lod) + 1));
-    vec3 lower = bicubicLevel(uv, vec4(1.0 / lowerSize, lowerSize), floor(lod));
-    vec3 upper = bicubicLevel(uv, vec4(1.0 / upperSize, upperSize), ceil(lod));
-    return mix(lower, upper, fract(lod));
-}
-
-/**
- * Where on the frame a ray leaving here at this index comes out.
- *
- * Bent at the near wall, carried across the volume, and projected from where it
- * leaves. Not carried any further: once out, the ray travels to whatever is
- * behind the glass, and how far that is, is exactly what a screen-space frame
- * does not know. Walking it another thickness - which is what the far wall
- * tempts one into, since the exit direction is right there - folds the mapping
- * wherever that guess stops varying with the fragment, and a fold reads as a
- * bright blot on the glass with a hard rim.
- */
-vec2 exitCoords(vec3 position, vec3 normal, vec3 view, float ior, float thickness) {
+/** What the probe holds along the ray that leaves this volume. */
+vec3 sampleProbe(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float lod) {
+    vec3 bent = volumeTransmissionDirection(normal, view, ior);
+    // Nothing crossed the boundary: the surface is a mirror here, and what it
+    // shows is what the probe holds along the reflected ray. A ray of no
+    // length is not that - it is a surface with no volume behind it, which
+    // still bends what goes through.
+    vec3 direction = dot(bent, bent) > 1e-8 ? bent : reflect(-view, normal);
     vec3 exitPoint = position + volumeTransmissionRay(normal, view, ior, thickness);
-    vec4 clip = uProjection * uView * vec4(exitPoint, 1.0);
-    return clip.xy / clip.w * 0.5 + 0.5;
-}
-
-/**
- * How much of what a ray asks for the frame actually holds.
- *
- * A screen-space frame knows only what was on screen. A ray that leaves
- * through the side of it used to be clamped back to the border, and a clamped
- * read of an edge-clamped texture is the border texel repeated - which is
- * exactly the streak that appears across glass the further it sits from the
- * middle of the view, and the further a steep angle throws the ray. Fading out
- * over a margin instead lets the environment take over, which is a guess too
- * but an unbiased one: it is the light that would be arriving from that
- * direction if nothing in the scene were in the way.
- */
-float framedWeight(vec2 uv) {
-    vec2 within = smoothstep(vec2(0.0), vec2(0.06), uv)
-        * smoothstep(vec2(0.0), vec2(0.06), vec2(1.0) - uv);
-    return within.x * within.y;
-}
-
-/**
- * What stands in for the frame where the ray leaves it.
- *
- * The coarsest mip level, which is the whole frame averaged into one texel.
- * The environment map was the first answer here and it is the wrong one: it
- * holds the sky the asset shipped and not the scene, so a ray angled downwards
- * - which is every ray, looking at glass from above - finds nothing there and
- * the glass goes black in a band. The frame's own average holds whatever the
- * scene is actually made of, floor included. It has no direction to it, which
- * is the honest part: past the edge of the frame there is no direction to be
- * had, only a plausible amount of light.
- */
-vec3 unframedRadiance() {
-    return textureLod(uFrameSnapshot, vec2(0.5), uFrameMaxLod).rgb;
-}
-
-vec3 sampleCaptured(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness) {
-    vec2 uv = exitCoords(position, normal, view, ior, thickness);
-    float framed = framedWeight(uv);
-    if (framed <= 0.0) return unframedRadiance();
-    return mix(
-        unframedRadiance(),
-        captureBicubic(clamp(uv, vec2(0.0), vec2(1.0)), transmissionLod(roughness, ior)),
-        framed);
+    return textureLod(uRefractionProbe, probeDirection(exitPoint, direction), lod).rgb;
 }
 
 vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness, out float rayLength) {
-    vec3 ray = volumeTransmissionRay(normal, view, ior, thickness);
     // How far the light travelled through the medium, which is what Beer's law
     // absorbs over. Dispersion parts the wavelengths by a fraction of a percent
     // in index, so one length stands for all of them.
-    rayLength = length(ray);
-    // KHR_materials_dispersion: one index per channel instead of one for all,
-    // spread by the Abbe number the extension states as its reciprocal. Zero
-    // leaves the three rays on top of each other, which is the single-index
-    // case, so the branch is what the extension costs when absent.
-    // An index of one does not refract, so it cannot disperse either - and
-    // taking the spectral path there would change nothing but the
-    // reconstruction filter, which would show as a seam where the factor
-    // crossed zero on a surface that never bent anything.
-    if (uDispersion <= 0.0 || ior <= 1.0001) {
-        return sampleCaptured(position, normal, view, ior, thickness, roughness);
-    }
-    // The spread the extension's reference implementation defines: the red and
-    // blue ends sit half of it apart in index, green at the material's own. It
-    // is proportional to how far the index is from air, so a material that does
-    // not refract does not disperse either, whatever its Abbe number says.
-    // A dozen wavelengths across the visible range, each bent by its own
-    // index and weighted by what the eye makes of it. The weights sum to one
-    // per channel, so a flat frame comes back flat however strong the
-    // dispersion: what changes is where each wavelength lands, not how much of
-    // it there is.
+    rayLength = length(volumeTransmissionRay(normal, view, ior, thickness));
     float lod = transmissionLod(roughness, ior);
-    vec3 unframed = unframedRadiance();
+    // KHR_materials_dispersion: an index per wavelength instead of one for all.
+    // Zero leaves every ray on top of the others, which is the single-index
+    // case, so the branch is what the extension costs when absent - and an
+    // index of one does not refract, so it cannot disperse either.
+    if (uDispersion <= 0.0 || ior <= 1.0001) {
+        return sampleProbe(position, normal, view, ior, thickness, lod);
+    }
+    // Each wavelength bent by its own index and weighted by what the eye makes
+    // of it. The weights sum to one per channel, so a flat surround comes back
+    // flat however strong the dispersion: what changes is where each wavelength
+    // looks, not how much of it there is.
     vec3 spread = vec3(0.0);
     for (int index = 0; index < SPECTRAL_SAMPLES; index += 1) {
-        float wavelengthIor = dispersedIor(ior, SPECTRAL_WAVELENGTH[index]);
-        vec2 uv = exitCoords(position, normal, view, wavelengthIor, thickness);
-        vec3 arriving = mix(
-            unframed,
-            textureLod(uFrameSnapshot, clamp(uv, vec2(0.0), vec2(1.0)), lod).rgb,
-            framedWeight(uv));
-        spread += SPECTRAL_WEIGHT[index] * arriving;
+        spread += SPECTRAL_WEIGHT[index] * sampleProbe(
+            position, normal, view,
+            dispersedIor(ior, SPECTRAL_WAVELENGTH[index]), thickness, lod);
     }
     return spread;
 }
@@ -922,13 +849,6 @@ void main() {
         float rayLength;
         vec3 transmitted = transmittedRadiance(
             vWorldPos, N, V, uIor, thickness, materialRoughness, rayLength);
-        // Past the critical angle nothing crosses the interface; the surface
-        // becomes a mirror, and what it shows is the environment it reflects.
-        if (volumeTransmissionRay(N, V, uIor, 1.0) == vec3(0.0)) {
-            transmitted = textureLod(
-                uPrefilteredMap, reflect(-V, N), materialRoughness * uEnvironmentMaxLod).rgb;
-            rayLength = 0.0;
-        }
         // Tinted by the base colour, like the diffuse term it replaces: the
         // spec's transmission BTDF carries it, and without it coloured glass
         // shades as clear.
