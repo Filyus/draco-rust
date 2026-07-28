@@ -66,14 +66,18 @@ export async function loadReference() {
   return {
     async transcode(name, level, target) {
       const bytes = new Uint8Array(await readFile(resolve(FIXTURES, `${name}.ktx2`)));
+      return this.transcodeBytes(bytes, level, target, `${name}.ktx2`);
+    },
+    /** The same, for a file that was built rather than read. */
+    transcodeBytes(bytes, level, target, name = 'the given bytes') {
       const file = new basis.KTX2File(bytes);
       try {
-        if (!file.isValid()) throw new Error(`the reference transcoder rejects ${name}.ktx2`);
+        if (!file.isValid()) throw new Error(`the reference transcoder rejects ${name}`);
         file.startTranscoding();
         const size = file.getImageTranscodedSizeInBytes(level, 0, 0, target);
         const out = new Uint8Array(size);
         if (!file.transcodeImage(out, level, 0, 0, target, 0, -1, -1)) {
-          throw new Error(`the reference transcoder failed on ${name}.ktx2 level ${level}`);
+          throw new Error(`the reference transcoder failed on ${name} level ${level}`);
         }
         return out;
       } finally {

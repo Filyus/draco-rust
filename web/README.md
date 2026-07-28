@@ -155,13 +155,20 @@ What it would cost in quality is the ETC1S half: ASTC lands below ETC1 there and
 takes twice the space. That is the trade, and it is a decision rather than a
 formality, which is why there is no flag pretending otherwise.
 
-Two gaps are worth stating. Five of UASTC's nineteen block modes appear in none
-of the fixtures, so the transcoder is written from the reference for those and
-verified by nothing; the UASTC gate names them rather than leaving it unsaid.
-And the ETC and ASTC uploads cannot be exercised on a desktop, which offers
-neither — their transcoding is checked byte for byte against the reference in
-Node, but the `compressedTexImage2D` call itself is only covered where the
-browser has the extension.
+Five of UASTC's nineteen block modes appear in none of the fixtures — an
+encoder picks modes by what compresses the image in front of it, and a natural
+photograph never reaches for a three-subset block. Rather than wait for an asset
+that happens to use them, the gate builds them: a UASTC block has no checksum
+and no redundancy, so any 128 bits whose leading code names a mode and whose
+pattern index exists is a legal block of that mode, and random bits with those
+two fields fixed are a fair sample. They go into a real container, by rebuilding
+a fixture's levels around them, and the reference is still the oracle.
+
+One gap is left, and it is about the upload rather than the transcode: ETC and
+ASTC cannot be exercised on a desktop, which offers neither. Their transcoding
+is checked byte for byte against the reference in Node, but the
+`compressedTexImage2D` call itself is only covered where the browser has the
+extension.
 
 Exported glTF and GLB carry the KTX2 bytes through unchanged either way; OBJ,
 PLY and FBX carry them too, and no importer of those formats can read them,

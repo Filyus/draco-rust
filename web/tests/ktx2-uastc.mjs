@@ -59,8 +59,11 @@ assert.deepEqual(
 assert.deepEqual(
   missing,
   [2, 3, 7, 14, 18],
-  'the unverified modes changed; every one of these is written from the reference and checked by nothing',
+  'the modes no fixture reaches changed; ktx2-uastc-modes builds blocks for exactly this set',
 );
 
 console.log(`ktx2-uastc: ${compared} mip levels match the reference transcoder byte for byte`);
-console.log(`ktx2-uastc: modes ${covered.join(',')} exercised; ${missing.join(',')} unverified`);
+console.log(
+  `ktx2-uastc: modes ${covered.join(',')} exercised by fixtures; `
+  + `${missing.join(',')} only by the blocks ktx2-uastc-modes builds`,
+);

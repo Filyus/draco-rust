@@ -44,6 +44,7 @@
     "test:ktx2-etc1s": "node tests/ktx2-etc1s.mjs",
     "test:ktx2-uastc": "node tests/ktx2-uastc.mjs",
     "test:ktx2-block-formats": "node tests/ktx2-block-formats.mjs",
+    "test:ktx2-uastc-modes": "node tests/ktx2-uastc-modes.mjs",
     "test:ktx2-format-choice": "node tests/ktx2-format-choice.mjs",
     "test:viewer-limit-warnings": "node tests/viewer-limit-warnings.mjs",
     "test:gltf-scene-provenance": "node tests/gltf-scene-provenance.mjs",
