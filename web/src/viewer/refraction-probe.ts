@@ -20,6 +20,13 @@
  * is be right from more than one point: the cube is correct at its own centre
  * and parallaxes elsewhere, which is what the bounds correction is for - the
  * ray is intersected with the scene's own box and looked up as if from there.
+ *
+ * Which is also why there is one per refracting object rather than one for the
+ * scene. A shared cube taken from the middle of everything is taken from
+ * wherever that happens to be - inside a lampshade, say - and glass anywhere
+ * else then shows the shade's lining instead of what is actually behind it.
+ * The correction fixes parallax, not being in the wrong room. Past the budget
+ * they share one, which is the old behaviour and the best that fits.
  */
 
 import { mat4, vec3 } from '../math.ts';
@@ -40,6 +47,14 @@ export const REFRACTION_PROBE = {
   fieldOfView: Math.PI / 2,
   /** Near plane. Closer than this the probe's own object would be in the way. */
   near: 0.01,
+  /**
+   * How many objects get a cube of their own before they start sharing one.
+   *
+   * Each is six faces of the opaque scene, so this is the real cost knob: a
+   * scene of two dozen prisms cannot have two dozen cubes at any resolution
+   * worth having, and prisms in a row are all in much the same room anyway.
+   */
+  maxProbes: 6,
 };
 
 /** The six faces, as the direction each looks and the up it keeps. */
