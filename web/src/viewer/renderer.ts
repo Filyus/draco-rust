@@ -7,15 +7,10 @@ import type { Mat4, Vec3 } from '../math.ts';
 import { cameraPosition } from './camera.ts';
 import type { CameraHost } from './camera.ts';
 import { GL } from './gl-utils.ts';
-import { disposeRefractionProbe } from './refraction-probe.ts';
 import { ensureBloomChain } from './bloom.ts';
 import type { BloomChain } from './bloom.ts';
 import {
-  beginProbeFace, ensureRefractionProbe, finishProbe, PROBE_FACE_COUNT, REFRACTION_PROBE,
-} from './refraction-probe.ts';
-import type { RefractionProbe } from './refraction-probe.ts';
-import {
-  beginScene, ensureSceneTarget, resolveScene, sceneTargetHdrSupported,
+  beginScene, captureOpaqueHalf, ensureSceneTarget, resolveScene, sceneTargetHdrSupported,
 } from './scene-target.ts';
 import type { SceneTarget } from './scene-target.ts';
 import { MORPH_TEXTURE_UNIT } from './morph-texture.ts';
@@ -195,16 +190,8 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   _sceneTarget?: SceneTarget | null;
   /** The glare pyramid the output pass reads. */
   _bloom?: BloomChain | null;
-  /** The scene as each refracting object sees it, by direction. */
-  _refractionProbes?: RefractionProbe[];
-  /** Which probe each renderable reads, by its index in the scene. */
-  _probeForRenderable?: Map<object, RefractionProbe>;
-  /** The probe the surface programs are currently bound to. */
-  _refractionProbe?: RefractionProbe | null;
-  /** Bound in place of the probe before there is one. */
-  _probePlaceholder?: WebGLTexture | null;
-  /** Set while the probe is being rendered, so nothing samples it. */
-  _probePass?: boolean;
+  /** Bound in place of the capture before there is one. */
+  _snapshotPlaceholder?: WebGLTexture | null;
   /** Whether this machine can hold the frame as half floats. Asked once. */
   _sceneTargetHdr?: boolean;
   /** How much of the frame's light the output pass spreads as glare. */
@@ -283,10 +270,6 @@ export function render(host: RenderHost) {
 
   updateWorldMatrices(host);
 
-  // What a transmissive surface will read, rendered before the frame it
-  // belongs to: it is indexed by direction, so the camera has no say in it.
-  drawRefractionProbes(host);
-
   const scene = ensureSceneResources(host);
   beginScene(gl, scene);
 
@@ -304,6 +287,11 @@ export function render(host: RenderHost) {
   // surface may see" is a moment the frame passes through: the copy is taken
   // between the two.
   drawSurfaces(host, false);
+  if (sceneRefracts(host)) {
+    captureOpaqueHalf(gl, scene);
+    // The copy did not exist when the opaque programs were bound.
+    host._surfaceProgram = null;
+  }
   drawSurfaces(host, true);
 
   gl.depthMask(true);
@@ -315,111 +303,7 @@ export function render(host: RenderHost) {
   drawOutput(host);
 }
 
-/**
- * Render the opaque scene into a cube from the middle of each refracting
- * object.
- *
- * Six faces of the same passes the frame draws, minus the transmissive half -
- * a glass object must not see itself, and what it wants to know is what is
- * behind it. Rebuilt every frame rather than cached: a cube is view-
- * independent, so nothing about orbiting invalidates it, but animation moves
- * the scene and a stale cube is worse than a coarse one.
- *
- * Where each cube is taken from is the whole point. From the middle of the
- * object that will read it, so that what it holds is what surrounds *that*
- * object; a single cube from the middle of the scene is taken from wherever
- * the scene's middle happens to be, and a bulb inside a shade then refracts
- * the shade. Past the budget they do share one, because two dozen prisms in a
- * row cannot each have a cube and are all in much the same place anyway.
- */
-export function drawRefractionProbes(host: RenderHost) {
-  const gl = host.gl;
-  const box = host.scene?.aabb;
-  if (!box) return;
-  const refracting = host.scene!.renderables.filter((renderable) => {
-    const primitives = host.glResources!.primitives[renderable.meshIndex] || [];
-    return primitives.some(
-      ({ materialIndex }) => (host.scene!.materials[materialIndex]?.transmissionFactor ?? 0) > 0);
-  });
-  if (refracting.length === 0) return;
-
-  const shared = refracting.length > REFRACTION_PROBE.maxProbes;
-  const wanted = shared ? 1 : refracting.length;
-  const probes = host._refractionProbes || (host._refractionProbes = []);
-  while (probes.length > wanted) disposeRefractionProbe(gl, probes.pop()!);
-  const hdr = host._sceneTargetHdr ?? true;
-  for (let index = 0; index < wanted; index += 1) {
-    probes[index] = ensureRefractionProbe(gl, probes[index] ?? null, hdr);
-  }
-
-  const centres = host._probeForRenderable || (host._probeForRenderable = new Map());
-  centres.clear();
-  const radius = Math.max(
-    box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]);
-
-  // The frame's own matrices are restored below; the probes borrow them so
-  // that every pass they drive reads the same host state the frame does.
-  const projection = mat4.copy(mat4.create(), host._projection);
-  const view = mat4.copy(mat4.create(), host._view);
-  const eye = vec3.copy(vec3.create(), host._eye!);
-
-  // Nothing may sample a cube now being drawn into, and the unit holds one
-  // from the frame before - so the stand-in goes in for the duration.
-  host._probePass = true;
-  for (let index = 0; index < wanted; index += 1) {
-    const probe = probes[index];
-    if (shared) {
-      for (let axis = 0; axis < 3; axis += 1) {
-        probe.center[axis] = (box.min[axis] + box.max[axis]) / 2;
-      }
-    } else {
-      renderableCenter(host, refracting[index], probe.center);
-    }
-    for (let axis = 0; axis < 3; axis += 1) {
-      probe.boundsMin[axis] = box.min[axis];
-      probe.boundsMax[axis] = box.max[axis];
-    }
-    vec3.copy(host._eye!, probe.center);
-    for (let face = 0; face < PROBE_FACE_COUNT; face += 1) {
-      beginProbeFace(gl, probe, face, host._projection, host._view, radius);
-      // Every program holds the matrices it was last given, and they were the
-      // frame's.
-      host._surfaceProgram = null;
-      drawBackground(host);
-      drawSurfaces(host, false);
-    }
-    finishProbe(gl, probe);
-    for (const renderable of shared ? refracting : [refracting[index]]) {
-      centres.set(renderable, probe);
-    }
-  }
-  host._probePass = false;
-
-  mat4.copy(host._projection, projection);
-  mat4.copy(host._view, view);
-  vec3.copy(host._eye!, eye);
-  host._surfaceProgram = null;
-  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
-}
-
-/** The middle of what a renderable covers, in world space. */
-function renderableCenter(host: RenderHost, renderable: { node: ViewerNode; meshIndex: number }, out: Vec3) {
-  const mesh = host.scene!.meshes?.[renderable.meshIndex] as { aabb?: { min: number[]; max: number[] } } | undefined;
-  const local = mesh?.aabb;
-  if (!local) {
-    vec3.set(out, renderable.node.world[12], renderable.node.world[13], renderable.node.world[14]);
-    return;
-  }
-  vec3.set(
-    out,
-    (local.min[0] + local.max[0]) / 2,
-    (local.min[1] + local.max[1]) / 2,
-    (local.min[2] + local.max[2]) / 2,
-  );
-  vec3.transformMat4(out, out, renderable.node.world);
-}
-
-/** Whether anything in the scene will read the probe at all. */
+/** Whether anything in the scene will read the opaque-half copy at all. */
 function sceneRefracts(host: RenderHost): boolean {
   return host.scene!.materials.some((material) => (material?.transmissionFactor ?? 0) > 0);
 }
@@ -464,13 +348,6 @@ function drawSurfaces(host: RenderHost, deferred: boolean) {
     if (!primitives || primitives.length === 0) continue;
 
     mat4.copy(host._model, node.world);
-    // Which cube this object refracts is a property of the object, so it is
-    // settled before any of its primitives choose a program.
-    const probe = host._probeForRenderable?.get(renderable) ?? null;
-    if (probe !== (host._refractionProbe ?? null)) {
-      host._refractionProbe = probe;
-      host._surfaceProgram = null;
-    }
 
     const skin = renderable.skinIndex >= 0 ? host.scene!.skins[renderable.skinIndex] : null;
     const jointMatrices = skin
@@ -728,10 +605,10 @@ export function drawGlare(host: RenderHost) {
   gl.depthMask(false);
   gl.disable(gl.BLEND);
   gl.bindVertexArray(host.backgroundVao);
-  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.refractionProbe);
+  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.frameSnapshot);
 
   gl.useProgram(host.bloomDownProgram);
-  gl.uniform1i(host.bloomDownUniforms.uSource, SHARED_TEXTURE_UNITS.refractionProbe);
+  gl.uniform1i(host.bloomDownUniforms.uSource, SHARED_TEXTURE_UNITS.frameSnapshot);
   let sourceTexture = scene.resolved;
   let sourceWidth = scene.renderWidth;
   let sourceHeight = scene.renderHeight;
@@ -749,7 +626,7 @@ export function drawGlare(host: RenderHost) {
   // Each level adds into the one above it, so the coarse tails accumulate
   // rather than replace what the finer levels already spread.
   gl.useProgram(host.bloomUpProgram);
-  gl.uniform1i(host.bloomUpUniforms.uSource, SHARED_TEXTURE_UNITS.refractionProbe);
+  gl.uniform1i(host.bloomUpUniforms.uSource, SHARED_TEXTURE_UNITS.frameSnapshot);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.ONE, gl.ONE);
   for (let index = chain.levels.length - 1; index > 0; index -= 1) {
@@ -783,9 +660,9 @@ export function drawOutput(host: RenderHost) {
   gl.depthMask(false);
   gl.disable(gl.BLEND);
   gl.useProgram(host.outputProgram);
-  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.refractionProbe);
+  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.frameSnapshot);
   gl.bindTexture(gl.TEXTURE_2D, scene.resolved);
-  gl.uniform1i(host.outputUniforms.uScene, SHARED_TEXTURE_UNITS.refractionProbe);
+  gl.uniform1i(host.outputUniforms.uScene, SHARED_TEXTURE_UNITS.frameSnapshot);
   gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.morphDeltas);
   gl.bindTexture(gl.TEXTURE_2D, chain?.levels[0]?.texture ?? scene.resolved);
   gl.uniform1i(host.outputUniforms.uBloom, SHARED_TEXTURE_UNITS.morphDeltas);
@@ -822,46 +699,43 @@ export function drawBackground(host: RenderHost) {
 }
 
 /**
- * A one-texel stand-in for the probe, bound before there is one.
+ * A one-texel stand-in for the opaque-half copy, bound before there is one.
  *
  * A sampler has to reference a complete texture even on the branch that never
- * reads it, and on a scene with nothing transmissive the probe is never built.
+ * reads it, and on the frame's first opaque pass the copy has not been taken.
  */
-function probePlaceholder(host: RenderHost) {
-  if (!host._probePlaceholder) {
+function snapshotPlaceholder(host: RenderHost) {
+  if (!host._snapshotPlaceholder) {
     const gl = host.gl;
     const texture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
-    for (let face = 0; face < 6; face += 1) {
-      gl.texImage2D(
-        gl.TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, gl.RGBA8, 1, 1, 0,
-        gl.RGBA, gl.UNSIGNED_BYTE, null);
-    }
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    host._probePlaceholder = texture;
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    host._snapshotPlaceholder = texture;
   }
-  return host._probePlaceholder;
+  return host._snapshotPlaceholder;
 }
 
 /**
- * Offer the probe to the program now bound, with where it was taken from.
+ * Offer the snapshot of the opaque frame to the program now bound.
  *
  * Every program takes it, because whether a given material refracts is a
- * runtime question and the sampler costs a unit either way.
+ * runtime question and the sampler costs a unit either way. Before the first
+ * capture there is nothing to bind, and no material that would read it has
+ * been drawn.
  */
 export function bindFrameSnapshot(host: RenderHost) {
   const gl = host.gl;
-  const probe = host._probePass ? null : host._refractionProbe;
-  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.refractionProbe);
-  gl.bindTexture(gl.TEXTURE_CUBE_MAP, probe ? probe.cubemap : probePlaceholder(host));
-  gl.uniform1i(host.uniforms.uRefractionProbe, SHARED_TEXTURE_UNITS.refractionProbe);
-  if (!probe) return;
-  gl.uniform3fv(host.uniforms.uProbeCenter, probe.center);
-  gl.uniform3fv(host.uniforms.uProbeBoundsMin, probe.boundsMin);
-  gl.uniform3fv(host.uniforms.uProbeBoundsMax, probe.boundsMax);
+  const scene = host._sceneTarget;
+  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.frameSnapshot);
+  gl.bindTexture(gl.TEXTURE_2D, scene ? scene.capture : snapshotPlaceholder(host));
+  gl.uniform1i(host.uniforms.uFrameSnapshot, SHARED_TEXTURE_UNITS.frameSnapshot);
+  if (!scene) return;
+  gl.uniform2f(host.uniforms.uFrameSize, scene.renderWidth, scene.renderHeight);
   // The mip chain is the blur a rough transmissive surface reads through.
-  gl.uniform1f(host.uniforms.uProbeMaxLod, probe.levels - 1);
+  gl.uniform1f(
+    host.uniforms.uFrameMaxLod, Math.log2(Math.max(scene.renderWidth, scene.renderHeight)));
 }
 
 /**

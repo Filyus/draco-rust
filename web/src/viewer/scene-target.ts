@@ -21,9 +21,10 @@
  * evaluation. That is a trade to opt into on a still, not to make on
  * everyone's behalf every frame.
  *
- * Transmission does not read it. What a refracted ray needs is indexed by
- * direction rather than by where the camera happened to be pointed, and that
- * lives in the probe.
+ * Transmission takes a copy of it partway through, once the opaque half is
+ * down. That is a blit rather than a second pass over the geometry: the frame
+ * is already the linear light a refracted ray wants to read, which it was not
+ * back when the canvas was the only buffer.
  */
 
 /**
@@ -40,6 +41,9 @@ export interface SceneTarget {
   /** Where the samples resolve to, and what the output pass reads. */
   resolveFramebuffer: WebGLFramebuffer;
   resolved: WebGLTexture;
+  /** The opaque half, mipmapped, as a refracted ray reads it. */
+  captureFramebuffer: WebGLFramebuffer;
+  capture: WebGLTexture;
   /** The canvas size the frame is shown at. */
   width: number;
   height: number;
@@ -114,7 +118,9 @@ export function ensureSceneTarget(
   const renderHeight = height * scale;
 
   const resolved = linearTexture(gl, renderWidth, renderHeight, hdr);
+  const capture = linearTexture(gl, renderWidth, renderHeight, hdr, true);
   const resolveFramebuffer = framebufferFor(gl, resolved);
+  const captureFramebuffer = framebufferFor(gl, capture);
 
   const depth = gl.createRenderbuffer()!;
   gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
@@ -151,6 +157,8 @@ export function ensureSceneTarget(
     depth,
     resolveFramebuffer,
     resolved,
+    captureFramebuffer,
+    capture,
     width,
     height,
     renderWidth,
@@ -160,7 +168,7 @@ export function ensureSceneTarget(
     hdr,
   };
 
-  for (const each of [framebuffer, resolveFramebuffer]) {
+  for (const each of [framebuffer, resolveFramebuffer, captureFramebuffer]) {
     if (!each) continue;
     gl.bindFramebuffer(gl.FRAMEBUFFER, each);
     const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
@@ -179,8 +187,10 @@ export function disposeSceneTarget(gl: WebGL2RenderingContext, target: SceneTarg
   if (target.framebuffer) gl.deleteFramebuffer(target.framebuffer);
   if (target.color) gl.deleteRenderbuffer(target.color);
   gl.deleteFramebuffer(target.resolveFramebuffer);
+  gl.deleteFramebuffer(target.captureFramebuffer);
   gl.deleteRenderbuffer(target.depth);
   gl.deleteTexture(target.resolved);
+  gl.deleteTexture(target.capture);
 }
 
 /** Point drawing at the scene target and clear it. */
@@ -203,6 +213,20 @@ function blitInto(gl: WebGL2RenderingContext, target: SceneTarget, destination: 
   gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
   gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
   gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer ?? target.resolveFramebuffer);
+}
+
+/**
+ * Take the copy transmission refracts, and go on drawing.
+ *
+ * Called with the opaque half down and nothing blended over it yet, which is
+ * the moment the frame holds everything a transmissive surface is allowed to
+ * see. The mip chain is the blur a rough one reads through.
+ */
+export function captureOpaqueHalf(gl: WebGL2RenderingContext, target: SceneTarget) {
+  blitInto(gl, target, target.captureFramebuffer);
+  gl.bindTexture(gl.TEXTURE_2D, target.capture);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.bindTexture(gl.TEXTURE_2D, null);
 }
 
 /** Resolve the finished frame, ready for the output pass to read. */

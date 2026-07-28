@@ -61,8 +61,6 @@ import {
 } from './scene-graph.ts';
 import { MAX_JOINTS } from './shaders.ts';
 import { disposeBloomChain } from './bloom.ts';
-import { disposeRefractionProbe } from './refraction-probe.ts';
-import type { RefractionProbe } from './refraction-probe.ts';
 import type { BloomChain } from './bloom.ts';
 import { disposeSceneTarget } from './scene-target.ts';
 import type { SceneTarget } from './scene-target.ts';
@@ -95,7 +93,6 @@ export class Viewer {
   declare _surfaceProgram: WebGLProgram | null;
   declare _sceneTarget: SceneTarget | null;
   declare _bloom: BloomChain | null;
-  declare _refractionProbes?: RefractionProbe[];
   declare lineUniforms: Record<string, WebGLUniformLocation | null>;
   declare backgroundUniforms: Record<string, WebGLUniformLocation | null>;
   declare outputUniforms: Record<string, WebGLUniformLocation | null>;
@@ -567,10 +564,6 @@ export class Viewer {
     this._sceneTarget = null;
     disposeBloomChain(this.gl, this._bloom ?? null);
     this._bloom = null;
-    for (const probe of this._refractionProbes ?? []) {
-      disposeRefractionProbe(this.gl, probe);
-    }
-    this._refractionProbes = [];
     if (this.lineProgram) this.gl.deleteProgram(this.lineProgram);
     if (this.backgroundProgram) this.gl.deleteProgram(this.backgroundProgram);
     if (this.outputProgram) this.gl.deleteProgram(this.outputProgram);
