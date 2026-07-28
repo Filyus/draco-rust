@@ -183,10 +183,13 @@ not marked optional, because a reader that skips it finds a texture with no
 source at all. glTF 2.1 promotes WebP to guaranteed support, which removes the
 expectation of a fallback that was never emitted here anyway.
 
-One gap: the round-trip gate uses a resource declared `image/webp` rather than
-real WebP bytes — it proves the structure, not the decode. Whether a browser
-actually shows a WebP texture here has the same standing as the ETC and ASTC
-uploads below: reasoned, not exercised.
+The round-trip gate carries a real WebP now — `testdata/textures/quadrants.webp`,
+four flat quadrants in 66 bytes — and checks that content sniffing reaches the
+same extension the declared type does, which is the half a writer and a reader
+can disagree about over a file nobody looked inside. What is still not exercised
+is the decode itself: proving a browser shows those quadrants needs a browser,
+so it has the same standing as the ETC and ASTC uploads below — reasoned, not
+exercised.
 
 Exported glTF and GLB carry the KTX2 bytes through unchanged either way; OBJ,
 PLY and FBX carry them too, and no importer of those formats can read them,

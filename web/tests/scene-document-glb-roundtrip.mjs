@@ -11,6 +11,7 @@ import { validateBytes } from 'gltf-validator';
 import { buildSceneDocumentFromFbx } from '../src/fbx-scene-document.ts';
 import { buildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
 import { cloneSceneDocument } from '../src/scene-document.ts';
+import { sniffMime } from '../src/scene-resources.ts';
 import { lowerSceneDocumentToGltf, serializeSceneDocumentToGlb } from '../src/scene-document-gltf.ts';
 import { invertMat4, multiplyMat4 } from '../src/mat4.ts';
 import { here, foxBin, foxGltf, loadFbxViewerAdapter, loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.mjs';
@@ -219,16 +220,22 @@ assert.equal(foxRoundtrip.resources[0].mimeType, 'image/png', 'Fox texture bytes
 // contract, not to the FBX or browser viewer boundary.  Exercise every core
 // material slot through the typed glTF lowering/import path.
 const texturedDocument = cloneSceneDocument(foxDocument);
+// Both alternate sources are real files rather than declared types over
+// borrowed bytes. Sniffing them is part of what this checks: a resource whose
+// MIME type was guessed from its content and one whose type was stated have to
+// reach the same extension, or the writer and the reader disagree about a file
+// nobody looked inside.
 const ktxResource = texturedDocument.resources.length;
 texturedDocument.resources.push({
     name: 'sample.ktx2',
     mimeType: 'image/ktx2',
-    bytes: new Uint8Array(await readFile('D:/Projects/Three.ts/examples/textures/compressed/2d_etc1s.ktx2')),
+    bytes: new Uint8Array(await readFile(resolve(here, '..', '..', 'testdata', 'ktx2', '2d_etc1s.ktx2'))),
 });
 const webpResource = texturedDocument.resources.length;
-// Source-extension selection is based on the declared portable MIME type;
-// image decoding remains a viewer capability, outside this structural test.
-texturedDocument.resources.push({ name: 'declared-webp.webp', mimeType: 'image/webp', bytes: new Uint8Array(texturedDocument.resources[0].bytes) });
+const webpBytes = new Uint8Array(await readFile(resolve(here, '..', '..', 'testdata', 'textures', 'quadrants.webp')));
+assert.equal(sniffMime(webpBytes), 'image/webp', 'the fixture must be sniffed as WebP from its own bytes');
+assert.equal(sniffMime(new Uint8Array(await readFile(resolve(here, '..', '..', 'testdata', 'ktx2', '2d_etc1s.ktx2')))), 'image/ktx2', 'and the KTX2 fixture as KTX2');
+texturedDocument.resources.push({ name: 'quadrants.webp', mimeType: 'image/webp', bytes: webpBytes });
 const ktxTexture = texturedDocument.textures.length;
 texturedDocument.textures.push({ name: 'ktx', resource: ktxResource, sampler: {} });
 const webpTexture = texturedDocument.textures.length;
