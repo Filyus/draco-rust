@@ -28,6 +28,9 @@ To format the workspaces, run the same commands without `-- --check`.
 - `crates/draco-texture` reads KTX2 and transcodes Basis Universal so the web
   converter can show `KHR_texture_basisu` textures. Nothing in it is about
   Draco, so it stays out of the published crates and has `publish = false`.
+  `crates/draco-texture/STATUS.md` records what is finished, what was left out
+  and why, and what upstream has been doing; read it before adding a codec or a
+  target, so the decisions already taken are not retaken.
 - `crates/draco-cpp-test-bridge` is internal C++ parity infrastructure and has
   `publish = false`.
 - `web/` contains WASM wrapper crates and demo tooling; it is released as GitHub
