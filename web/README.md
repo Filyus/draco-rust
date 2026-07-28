@@ -170,6 +170,24 @@ is checked byte for byte against the reference in Node, but the
 `compressedTexImage2D` call itself is only covered where the browser has the
 extension.
 
+### WebP textures
+
+`EXT_texture_webp` needs no transcoder: the browser decodes WebP, so what this
+has to get right is naming the source, carrying the bytes, and saying whether
+the decode happened. It does — the extension is read as an image source beside
+`KHR_texture_basisu`, the MIME type round-trips through the document model, and
+`honoredTextureSources` reports per browser rather than claiming support.
+
+No JPEG or PNG fallback is written beside a WebP source, and the extension is
+not marked optional, because a reader that skips it finds a texture with no
+source at all. glTF 2.1 promotes WebP to guaranteed support, which removes the
+expectation of a fallback that was never emitted here anyway.
+
+One gap: the round-trip gate uses a resource declared `image/webp` rather than
+real WebP bytes — it proves the structure, not the decode. Whether a browser
+actually shows a WebP texture here has the same standing as the ETC and ASTC
+uploads below: reasoned, not exercised.
+
 Exported glTF and GLB carry the KTX2 bytes through unchanged either way; OBJ,
 PLY and FBX carry them too, and no importer of those formats can read them,
 which is what the extension report and the FBX export warning say.

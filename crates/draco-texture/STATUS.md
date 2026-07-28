@@ -57,11 +57,36 @@ honest answer rather than a reproduction of somebody else's heuristic.
 **The HDR codecs** — `UASTC HDR 4x4`, `ASTC HDR 6x6`, `UASTC HDR 6x6
 intermediate`. Not variants of what is implemented: separate codecs, separate
 KTX2 colour models, separate bitstreams, decoding to half-float rather than to
-bytes. `KHR_texture_basisu` is ratified and pins `colorModel` to
-`KHR_DF_MODEL_UASTC` and the transfer function to sRGB or linear, so an HDR
-payload is doubly outside it. There is no public sign of that changing: the only
-issue in the glTF tracker titled for HDR textures was closed in 2019, and the
-real blocker is glTF's own material model rather than the codec.
+bytes.
+
+Three sources say the same thing about whether they will ever be wanted here.
+`KHR_texture_basisu` is ratified and pins `colorModel` to `KHR_DF_MODEL_UASTC`
+and the transfer function to sRGB or linear, so an HDR payload is doubly outside
+it. The only issue in the glTF tracker titled for HDR textures was closed in
+2019. And the glTF 2.1 announcement of 2026-06-11 does not mention HDR at all —
+its one texture-format change is promoting WebP, which is 8-bit; the
+`HALF_FLOAT` it adds is an accessor component type, for buffer data rather than
+for pixels.
+
+**Which means HDR arrives beside the model rather than inside it.** glTF core
+has never carried an environment; `KHR_lights_image_based` only references
+images and nothing here implements it. The place HDR pays is radiance — the
+environment map — and every viewer that wants one takes it as a separate file.
+This one currently synthesises it: see `web/src/environment-ibl.ts`, "Procedural
+HDR environment". So the cheap route to real HDR lighting is a Radiance `.hdr`
+reader in the viewer, on the order of 150 lines, uploading `RGBA16F` into the
+prefilter that already exists. The transcoder is not on that path at all.
+
+If a port were wanted anyway, it was measured rather than guessed, against the
+`basisu` crate's own line counts: the block reader is ~170 lines, the BC6H
+packer ~770 with a ~1770-line table, half-float ~150, RGB9E5 ~190, and the HDR
+endpoint decode a few hundred more. Baking the table as a blob the way this
+crate already does puts it at roughly **1700 lines plus one baked table** —
+about a fifth of the crate — and the ASTC HDR 4×4 target is free, a verbatim
+per-block copy, because a UASTC HDR block already is an ASTC HDR block. The
+verification would be ready from the first commit: `tools/basis-cpp-oracle`
+compiles the HDR paths already, and `basisu` v2.50.0 writes an HDR fixture from
+one command.
 
 Worth knowing when it does become relevant: HDR's benefit is not confined to
 content with bright highlights. The bitrate is identical — both UASTC 4×4

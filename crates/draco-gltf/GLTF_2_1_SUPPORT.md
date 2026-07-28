@@ -97,6 +97,30 @@ draco-gltf = { version = "0.2", default-features = false, features = ["read", "d
 The browser release uses `gltf-wasm` with `read` and `draco-decode` enabled by
 default. Raw writing and Draco encoding remain opt-in features.
 
+## What 2.1 does and does not change for textures
+
+Read off the announcement of 2026-06-11 rather than inferred, because the
+inference is easy and wrong.
+
+`EXT_texture_webp` is promoted to guaranteed support. That removes the
+expectation of a JPEG or PNG fallback beside a WebP source — which the web
+converter never emitted anyway, on the grounds that a reader skipping the
+extension finds a texture with no source at all.
+
+Nothing else about textures moves, and **HDR is not mentioned at all**. The
+`HALF_FLOAT` and `DOUBLE` this revision adds are accessor component types,
+motivated by scientific and geospatial data: they describe what a buffer holds,
+not what a texel is. A texture's pixel format comes from its image, so those
+additions say nothing about high dynamic range.
+
+That matters because `KHR_texture_basisu` is ratified with `colorModel` pinned
+to `KHR_DF_MODEL_UASTC` and the transfer function to sRGB or linear, and the
+only issue in the Khronos tracker titled for HDR textures was closed in 2019.
+Three independent readings, one conclusion: HDR reaches an application beside
+the model rather than inside it — as an environment map, which glTF core has
+never carried. `crates/draco-texture/STATUS.md` records what that would cost if
+it ever changed.
+
 ## References
 
 - [Khronos: Introducing glTF 2.1 with Complex Scenes](https://www.khronos.org/blog/introducing-gltf-2.1-with-complex-scenes)
