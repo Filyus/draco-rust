@@ -19,12 +19,16 @@ use std::fmt::Write as _;
 use basis_cpp_oracle::{sha256, transcode, Target};
 
 /// The same list the parity test walks.
-const FIXTURES: [&str; 5] = [
+const FIXTURES: [&str; 7] = [
     "facecap.ktx2",
     "2d_etc1s.ktx2",
     "sample_etc1s.ktx2",
     "2d_uastc.ktx2",
     "sample_uastc_zstd.ktx2",
+    // Written by the current encoder rather than collected years ago; see
+    // testdata/ktx2/README.md.
+    "etc1s_alpha_v250.ktx2",
+    "uastc_alpha_v250.ktx2",
 ];
 
 const TARGETS: [(&str, Target); 7] = [

@@ -27,12 +27,14 @@ const TARGETS: [(Target, Reference); 7] = [
     (Target::Astc, Reference::Astc4x4Rgba),
 ];
 
-const FIXTURES: [&str; 5] = [
+const FIXTURES: [&str; 7] = [
     "facecap.ktx2",
     "2d_etc1s.ktx2",
     "sample_etc1s.ktx2",
     "2d_uastc.ktx2",
     "sample_uastc_zstd.ktx2",
+    "etc1s_alpha_v250.ktx2",
+    "uastc_alpha_v250.ktx2",
 ];
 
 fn fixture(name: &str) -> PathBuf {

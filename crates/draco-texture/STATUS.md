@@ -44,8 +44,9 @@ ships. Current counts:
 | `ktx2-differential` | 2400 mutants, 2505 images identical to the reference |
 | `ktx2_malformed.rs` | six sweeps over headers, long fields, truncation, payloads |
 | `ktx2_transcode` (libFuzzer) | 13521 executions, 5149 edges, no finding |
-| `ktx2_goldens.rs` | 247 images against pinned hashes of what the reference said |
-| C++ parity | the same 247 against the vendored reference itself, in CI |
+| `ktx2_goldens.rs` | 346 images against pinned hashes of what the reference said |
+| C++ parity | the same 346 against the vendored reference itself, in CI |
+| `baked_tables.rs` | the ASTC blob re-derived from the reference's own table |
 
 ## Left out on purpose
 
@@ -86,6 +87,13 @@ want BC4 or EAC R11 for the same reason. This is the next thing to build.
 
 ## Known limits
 
+Two fixtures are written here by `basisu` v2.50.0 rather than collected, which
+closed the limit this section used to open with: upstream changed what its
+encoder writes for ETC1S alpha on 2026-02-24, and this reader keys on the
+descriptor length that change might have moved. It did not — v2.50.0 still
+writes 60 bytes — and both files transcode byte-identically across every
+target. See `testdata/ktx2/README.md`.
+
 **The node gates still run on one machine**, and nothing depends on that any
 more. Byte-exactness is carried by `ktx2_goldens.rs` in the ordinary test suite,
 against hashes of what the reference produced; `tools/basis-cpp-oracle` is what
@@ -106,13 +114,6 @@ C++ oracle built in tree, after which the node gates run everywhere too.
 **The ETC and ASTC uploads are unexercised.** Their transcoding is checked byte
 for byte in Node, but no desktop offers either extension, so the
 `compressedTexImage2D` call itself is only covered where a browser has them.
-
-**The 2026-02-24 upstream change to the alpha ETC1S DFD is untested here.** It
-fixed what `basisu` writes so KTX-Software validates it. This reader decides
-ETC1S alpha from the DFD's length — 44 against 60 — so a file from a newer
-encoder could be read differently. Every fixture predates the change and there
-is nothing to test against until a file written by `basisu` v2.1 or later turns
-up.
 
 **Differential checking excludes the key/value section.** This reader reports it;
 the reference acts on it. With only that section's length changed, the
