@@ -257,6 +257,7 @@ jobs:
           npm run test:ktx2-uastc
           npm run test:ktx2-block-formats
           npm run test:ktx2-uastc-modes
+          npm run test:ktx2-differential
           npm run test:ktx2-format-choice
         working-directory: web
 

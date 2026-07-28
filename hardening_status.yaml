@@ -449,6 +449,14 @@ completed:
       - path: "fuzz/fuzz_targets/fbx_roundtrip.rs"
     note: "FbxDecodeLimits bounds file size, node count, nesting depth, per-node property count, string/blob payloads, and per-array and total array bytes, with defaults calibrated against the 308-file ufbx binary corpus rather than guessed. Limit violations fail with OutOfMemory and structural violations with InvalidData so a caller can tell them apart. Backwards end offsets, oversized records, zip bombs and array-length overflow are refused; strict mode additionally validates the container layout. A cycle in the Model hierarchy no longer recurses until the stack is exhausted. The opt-in corpus test asserts no panic, no hang and bounded output over every file, and two libFuzzer targets cover reading and the read/write round trip."
 
+  - id: ktx2-differential-against-the-reference
+    status: covered
+    evidence:
+      - path: "web/tests/ktx2-differential.mjs"
+      - path: "crates/draco-texture/src/ktx2.rs"
+      - path: "crates/draco-texture/tests/ktx2_container.rs"
+    note: "2400 mutants of the six seeds are fed to both this reader and Binomial's, and every image both accept must be byte-identical: 2505 images are, over four targets. It found a real defect on its first run -- the key/value section's range was never checked, so a file whose section ran past the end of the file was read as if it had none, which the reference refuses; the two then disagreed about the pixels of a file neither should have read. Fixed, with a regression test. Two things are deliberately out of scope and stated in the gate: the key/value section itself, because this reader reports it while the reference acts on it, so a garbled one leaves both right and different; and acceptance, which diverges by design and is tallied against a ceiling rather than asserted -- measured at 6 mutants only this reader read and 174 only the reference did. One more finding is about the oracle rather than this reader: fed malformed input, Binomial's module can return success from transcodeImage having written nothing, so the pristine seed is transcoded again after every mutant and a comparison from a degraded instance is discarded rather than believed."
+
   - id: ktx2-fuzzing-throughput
     status: covered
     evidence:
@@ -481,14 +489,6 @@ open_risks:
       - "Add ASCII seeds to fbx_make_seeds.rs: a minimal valid document, one with a deep block nest, one with a huge declared array length, and one with an unterminated string or block."
       - "Re-run seed_corpus.{sh,ps1} and confirm the ASCII branch is reached, for example by checking coverage or by asserting a seed decodes."
       - "Run a bounded campaign over the widened corpus before claiming the ASCII path is hardened."
-
-  - id: ktx2-no-differential-fuzzing
-    priority: medium
-    summary: "Malformed-input checking asks only that nothing panics. It could ask whether this reader and Binomial's agree, which is a far stronger question and one this project is uniquely able to put: the reference transcoder is already loaded in the node gates as an oracle."
-    why_it_matters: "A reader that refuses a file the reference accepts loses a texture; one that accepts a file the reference refuses is reading something nobody wrote. Neither is a panic, so nothing here would notice. The byte-exact gates already compare output on valid files -- what is missing is the same comparison on mutated ones, where the interesting answer is agreement about rejection."
-    next_steps:
-      - "Add a bounded randomized node gate: mutate a fixture, feed both transcoders, require both to accept or both to reject, and require identical bytes when both accept."
-      - "Record any disagreement as a finding rather than a threshold to tune."
 
   - id: fuzzing-ci-soak-time
     priority: low

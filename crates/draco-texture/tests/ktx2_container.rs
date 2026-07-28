@@ -296,6 +296,29 @@ mod hostile {
     }
 
     #[test]
+    fn refuses_key_value_data_that_reaches_past_the_file() {
+        // Found by the differential gate rather than by reading upstream. The
+        // key/value section is the one this reader takes opportunistically -
+        // orientation, and whatever else a writer left - so its range went
+        // unchecked, and a file whose section ran past the end was read as if
+        // it had none. The reference refuses that file, and the two then
+        // disagreed about the pixels of a file neither should have read.
+        let bytes = with_word("2d_uastc.ktx2", 60, u32::MAX);
+        Ktx2::parse(&bytes).expect_err("key/value data longer than the file");
+        let bytes = with_word("2d_uastc.ktx2", 56, u32::MAX);
+        Ktx2::parse(&bytes).expect_err("key/value data starting past the file");
+
+        // A file that says it has none is still a file.
+        let mut bytes = read("2d_uastc.ktx2");
+        bytes[56..60].copy_from_slice(&0u32.to_le_bytes());
+        bytes[60..64].copy_from_slice(&0u32.to_le_bytes());
+        assert!(
+            Ktx2::parse(&bytes).is_ok(),
+            "an empty key/value section is not a malformed one"
+        );
+    }
+
+    #[test]
     fn refuses_global_data_that_reaches_past_the_file() {
         // Basis LZ keeps its codebooks here, and the field is two 64-bit
         // values of someone else's choosing.

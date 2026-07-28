@@ -331,6 +331,19 @@ impl<'a> Ktx2<'a> {
         // a property of files Basis itself wrote: an ordinary R8G8B8A8 file
         // has four samples and a 92-byte descriptor, and refusing to read its
         // header would be refusing to say what it is.
+        // The key/value data is the one section this crate reads opportunistically
+        // rather than structurally - orientation, and whatever else a writer left
+        // - so its range was never checked. It has to be: a length past the end
+        // of the file is a malformed file, and reading it as if it were absent
+        // means accepting one the reference refuses and then disagreeing with it
+        // about what the rest of the file says. The differential gate found
+        // exactly that.
+        let kvd_offset = word(56) as u64;
+        let kvd_length = word(60) as u64;
+        if kvd_length != 0 && !in_range(kvd_offset, kvd_length) {
+            return Err(Ktx2Error::Truncated("the key/value data"));
+        }
+
         if dfd_length < 28 {
             return Err(Ktx2Error::Unsupported(format!(
                 "data format descriptor of {dfd_length} bytes"
