@@ -19,6 +19,12 @@ thiserror = "2.0"
 # Pure Rust and allocation-only, so it survives the wasm32 target unchanged.
 ruzstd = { version = "0.7", default-features = false, features = ["std"] }
 
+[dev-dependencies]
+# For the golden manifest: the transcoder's output is pinned by hash, so the
+# ordinary test suite carries the byte-exactness claim without needing either
+# oracle present.
+sha2 = "0.10"
+
 [features]
 # Everything, which is what a build for the web converter wants:
 # `KHR_texture_basisu` lets a KTX2 file hold either Basis codec, so a reader

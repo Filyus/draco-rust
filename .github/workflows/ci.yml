@@ -374,26 +374,3 @@ jobs:
       - name: Compare draco-texture against the reference transcoder
         run: cargo test --manifest-path tools/basis-cpp-oracle/Cargo.toml -- --nocapture
 
-  basis-crosscheck:
-    name: basis cross-check
-    runs-on: ubuntu-latest
-
-    # A job of its own because `basisu` carries about twelve megabytes of
-    # lookup tables as Rust source and takes minutes to compile. Nothing in the
-    # main job should wait for it.
-    #
-    # This is what verifies the transcoder byte for byte on a runner. The node
-    # gates compare against a build that lives outside the repository, so they
-    # skip everywhere but a machine that happens to have a three.js checkout;
-    # `basisu` comes from crates.io and needs nothing else. It is a third
-    # implementation, itself verified against a C++ oracle compiled in its own
-    # tree, so agreeing with it is agreeing with the reference at one remove.
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cross-check draco-texture against the basisu crate
-        run: cargo test --manifest-path tools/basisu-probe/Cargo.toml --features zstd -- --nocapture

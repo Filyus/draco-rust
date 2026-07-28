@@ -49,12 +49,15 @@ Yes, and that is why this stays.
 cargo test --manifest-path tools/basisu-probe/Cargo.toml --features zstd
 ```
 
-215 images across five fixtures, every level, six targets, byte-identical. This
-runs in CI as the `basis-crosscheck` job, and it is what verifies the transcoder
-byte for byte on a runner: the node gates compare against a build that lives
-outside the repository, so they skip everywhere but a machine that happens to
-have a three.js checkout. `zstd` is off by default so the size measurement stays
-generous, and on for the cross-check so the Zstd fixture is compared too. The
+215 images across five fixtures, every level, six targets, byte-identical, with
+`--features zstd`.
+
+It does not run in CI, and that is deliberate. This crate is a port of the
+reference C++, so agreeing with that C++ is the definition of correct, and a
+third implementation cannot catch a disagreement the reference itself does not
+- `tools/basis-cpp-oracle` compares against the reference directly, at the
+revision this was ported from. What is kept here is the record of what was
+measured, and a second opinion available on demand rather than every push. The
 node gates already compare against Binomial's prebuilt WASM, but that build is
 dated 2024-11-29 — older than the source `draco-texture` was ported from — and
 fed a malformed file it can be left reporting success while writing nothing.

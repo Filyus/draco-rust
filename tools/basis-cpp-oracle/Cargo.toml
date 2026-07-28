@@ -14,6 +14,11 @@ license = "Apache-2.0"
 cc = "1.0"
 
 [dependencies]
+# Its own Zstd and its own hashing, rather than borrowing them from the crate
+# it is an oracle for: preparing the input with the implementation under test
+# would make the oracle depend on what it is meant to judge.
+ruzstd = { version = "0.7", default-features = false, features = ["std"] }
+sha2 = "0.10"
 
 [dev-dependencies]
 draco-texture = { path = "../../crates/draco-texture" }
