@@ -1000,6 +1000,67 @@ test('preview loads metallic-roughness and emissive PBR textures', async ({ page
   await expect(page.locator('#console')).not.toContainText('Skipped primitive');
 });
 
+test('preview decodes an EXT_texture_webp source into the right pixels', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const fixture = path.join(repoRoot, 'testdata', 'textures');
+  await page.locator('#file-input').setInputFiles([
+    path.join(fixture, 'quadrants-webp.gltf'),
+    path.join(fixture, 'quadrants.webp'),
+  ]);
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  // Everything else about WebP is checked without a browser: that the
+  // extension is read as an image source, that the type survives the document
+  // model, that content sniffing agrees with the declared type. None of it
+  // touches a decoder, because Node has none. This does — the codec belongs to
+  // the host, and the only way to find out whether the host used it is to ask
+  // for the pixels back.
+  const decoded = await page.evaluate(async () => {
+    const { state } = await import('/app/state.js');
+    const texture = state.viewer.scene.textures.find((entry) => entry && entry.image);
+    if (!texture) return { found: false };
+
+    const canvas = document.createElement('canvas');
+    canvas.width = texture.image.width;
+    canvas.height = texture.image.height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    context.drawImage(texture.image, 0, 0);
+    const at = (x, y) => Array.from(context.getImageData(x, y, 1, 1).data).slice(0, 3);
+
+    const quarter = Math.floor(canvas.width / 4);
+    const threeQuarters = Math.floor((canvas.width * 3) / 4);
+    return {
+      found: true,
+      mimeType: texture.mimeType,
+      size: [canvas.width, canvas.height],
+      topLeft: at(quarter, quarter),
+      topRight: at(threeQuarters, quarter),
+      bottomLeft: at(quarter, threeQuarters),
+      bottomRight: at(threeQuarters, threeQuarters),
+      uploaded: state.viewer.glResources.textures.filter(Boolean).length,
+    };
+  });
+
+  expect(decoded.found).toBe(true);
+  expect(decoded.mimeType).toBe('image/webp');
+  expect(decoded.size).toEqual([64, 64]);
+  // The fixture's own quadrants, stated here rather than read from the WebP,
+  // which would be circular. testdata/textures/quadrants.png is the same
+  // image if they ever need re-reading by eye.
+  expect(decoded.topLeft).toEqual([220, 40, 40]);
+  expect(decoded.topRight).toEqual([40, 200, 60]);
+  expect(decoded.bottomLeft).toEqual([50, 90, 230]);
+  expect(decoded.bottomRight).toEqual([240, 220, 40]);
+  expect(decoded.uploaded).toBeGreaterThan(0);
+
+  // And the extension is not merely tolerated: a source the viewer could not
+  // read would be reported, and this asset has no fallback image to fall back
+  // to.
+  await expect(page.locator('#console')).not.toContainText('requires a transcoder');
+  await expect(page.locator('#console')).not.toContainText('EXT_texture_webp');
+});
+
 test('preview uploads its textures to the GPU', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);

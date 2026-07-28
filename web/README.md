@@ -183,13 +183,16 @@ not marked optional, because a reader that skips it finds a texture with no
 source at all. glTF 2.1 promotes WebP to guaranteed support, which removes the
 expectation of a fallback that was never emitted here anyway.
 
-The round-trip gate carries a real WebP now — `testdata/textures/quadrants.webp`,
+The round-trip gate carries a real WebP — `testdata/textures/quadrants.webp`,
 four flat quadrants in 66 bytes — and checks that content sniffing reaches the
 same extension the declared type does, which is the half a writer and a reader
-can disagree about over a file nobody looked inside. What is still not exercised
-is the decode itself: proving a browser shows those quadrants needs a browser,
-so it has the same standing as the ETC and ASTC uploads below — reasoned, not
-exercised.
+can disagree about over a file nobody looked inside.
+
+The decode is checked too, and it needs a browser, so it lives in the Playwright
+gate: `quadrants-webp.gltf` is loaded, the decoded bitmap is drawn to a canvas,
+and each quadrant is read back and compared against the colours the fixture was
+written with. That is the whole of the WebP path — declared, carried, sniffed,
+decoded, uploaded — with nothing left standing on reasoning alone.
 
 Exported glTF and GLB carry the KTX2 bytes through unchanged either way; OBJ,
 PLY and FBX carry them too, and no importer of those formats can read them,

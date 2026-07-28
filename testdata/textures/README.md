@@ -4,6 +4,7 @@
 |---|---|
 | `quadrants.webp` | 64×64 lossless WebP, four flat quadrants: red, green, blue, yellow |
 | `quadrants.png` | the same image as PNG |
+| `quadrants-webp.gltf` | one quad using that WebP through `EXT_texture_webp` |
 
 Four quadrants rather than one flat colour, because a solid image proves only
 that something arrived. Quadrants prove the decoder put the right pixels in the
@@ -19,6 +20,14 @@ Regenerate:
 ```sh
 python tools/make_texture_fixtures.py
 ```
+
+`quadrants-webp.gltf` references the image as a separate file rather than
+embedding it, so what a browser is asked to decode is the committed fixture
+itself and not a copy inside a container. Its UVs run so that the image's top
+row — red and green — lands at the top: a viewer that flipped them would show
+blue and yellow there, and the browser gate would say so. The extension is
+declared *required*, not merely used, because there is no fallback source: a
+reader that skips it finds a texture with nothing to sample.
 
 `quadrants.webp` is 66 bytes. That is not a mistake: a lossless WebP of four
 flat rectangles compresses to almost nothing, which is convenient — it is a real
