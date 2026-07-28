@@ -178,9 +178,14 @@ input:focus-visible,
 .panel { display: flex; flex-direction: column; gap: 8px; }
 
 /* Import */
+/* The padding was set when the zone held one button and had room to spare; a
+   second one made the block tall enough that the same 20px read as slack at
+   both ends. It is the empty zone that needs the breathing room, and
+   `min-height` is what gives it that — the padding only has to keep the
+   content off the dashed border. */
 .drop-zone {
     min-height: 190px;
-    padding: 20px 14px;
+    padding: 12px 14px;
     display: grid;
     place-items: center;
     border: 1px dashed #3b5273;
@@ -216,12 +221,13 @@ input:focus-visible,
    The folder one is quieter: it answers a particular shape of asset rather than
    being the ordinary way to open a file. */
 .browse-row {
-    display: inline-grid;
-    grid-auto-flow: column;
-    grid-auto-columns: 1fr;
-    max-width: 100%;
+    width: 100%;
+    max-width: 220px;
+    margin: 12px auto 0;
+    display: grid;
     gap: 8px;
 }
+.browse-row .browse-btn { margin-top: 0; white-space: nowrap; text-align: center; }
 .browse-btn-secondary { color: #c2d3ea; background: #20314a; box-shadow: inset 0 0 0 1px rgba(123, 153, 194, 0.24); }
 .browse-btn-secondary:hover { background: #263a56; }
 .browse-btn:hover,

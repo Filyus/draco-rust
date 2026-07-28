@@ -3729,13 +3729,36 @@ test('a folder chosen with the button opens the same way a dropped one does', as
   await page.goto('/index.html');
   await waitForConverterReady(page);
 
-  // Alternatives of the same weight, so they are the same size: sized to their
-  // own captions, the folder one came out wider for no reason a reader could
-  // name.
-  const buttons = await page.evaluate(() => [...document.querySelectorAll('.browse-row label')]
-    .map((label) => Math.round(label.getBoundingClientRect().width)));
-  expect(buttons.length).toBe(2);
-  expect(buttons[0]).toBe(buttons[1]);
+  // Alternatives of the same weight, so they are the same size, and neither
+  // may break its caption across two lines. Side by side in a sidebar this
+  // narrow, the longer caption wrapped and left the pair ragged; stacked, both
+  // take the column's width and the question does not arise. Checked at
+  // several widths because the defect only appeared at one of them.
+  const buttons = await page.evaluate(() => {
+    const sidebar = document.querySelector('.sidebar');
+    const original = sidebar.style.width;
+    const measured = [];
+    for (const width of ['360px', '300px', '260px', '220px', '190px']) {
+      sidebar.style.width = width;
+      const labels = [...document.querySelectorAll('.browse-row label')];
+      const zone = document.getElementById('drop-zone').getBoundingClientRect();
+      measured.push({
+        width,
+        count: labels.length,
+        widths: labels.map((label) => Math.round(label.getBoundingClientRect().width)),
+        wrapped: labels.some((label) => label.scrollWidth > label.clientWidth + 1),
+        overflows: labels.some((label) => label.getBoundingClientRect().right > zone.right + 1),
+      });
+    }
+    sidebar.style.width = original;
+    return measured;
+  });
+  for (const measured of buttons) {
+    expect(measured.count, `at ${measured.width}`).toBe(2);
+    expect(measured.widths[0], `at ${measured.width}`).toBe(measured.widths[1]);
+    expect(measured.wrapped, `at ${measured.width}`).toBe(false);
+    expect(measured.overflows, `at ${measured.width}`).toBe(false);
+  }
 
   const folder = path.join(repoRoot, 'testdata', 'Fox');
   await page.locator('#folder-input').setInputFiles(folder);
