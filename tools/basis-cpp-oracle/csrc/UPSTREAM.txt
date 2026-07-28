@@ -8,8 +8,8 @@
 # FXT1 are switched off in build.rs rather than vendored, which leaves about
 # 1.2 MB of tables out.
 #
-# Verified by tests/vendoring.rs, so a local edit to somebody else's source
-# is a failing test rather than a silent divergence from what was reviewed.
+# Written by vendor.sh and verified by tests/vendoring.rs, so a local edit to
+# somebody else's source is a failing test rather than a silent divergence.
 #
 # sha256  file
 065fcf48d6af21c0b75e23be5ed5753aee75c892e1c2cf178fa6736305614a5c  LICENSE
