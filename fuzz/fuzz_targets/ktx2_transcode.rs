@@ -22,7 +22,14 @@ const TARGETS: [Target; 7] = [
 /// can legitimately ask for a gigabyte, `-rss_limit_mb` fires on that, and real
 /// findings drown in the noise. Parsing is exercised at any size; only decoding
 /// is held to this, so that an allocation failure past it is a genuine bug.
-const MAX_TEXELS: u64 = 1 << 20;
+///
+/// Measured rather than picked, and applied per level rather than per file. At
+/// a million texels every level of the full fixtures decoded and the target
+/// managed four executions a second, which explores nothing. At this bound a
+/// large file still has its small mips decoded - so its supercompression and
+/// its codebooks are still read - while the levels that cost megabytes are
+/// skipped, and it manages fifty.
+const MAX_TEXELS: u64 = 1 << 14;
 
 // KTX2 is untrusted binary with the same shape as the FBX reader's: a header of
 // file-controlled offsets and lengths, a supercompression payload that expands,
@@ -42,22 +49,24 @@ fuzz_target!(|data: &[u8]| {
         "parsing the same bytes twice disagreed"
     );
 
-    let texels = (file.width() as u64)
-        * (file.height() as u64)
-        * (file.layer_count() as u64)
-        * (file.face_count() as u64);
-    if texels > MAX_TEXELS {
-        return;
-    }
-
     let Ok(transcoder) = Transcoder::new(&file) else {
         return;
     };
 
-    // Every level into every target. A target the file's codec cannot reach is
-    // a named error rather than a panic, which is itself part of what this
-    // checks.
+    // Every level small enough, into every target. Skipping a level rather
+    // than the whole file is what keeps a large one useful: its mip chain ends
+    // in a handful of texels, so the supercompression, the codebooks and the
+    // block decoders are all still reached through it - only the levels whose
+    // cost is measured in megabytes are left out.
+    //
+    // A target the file's codec cannot reach is a named error rather than a
+    // panic, which is itself part of what this checks.
+    let images = (file.layer_count() as u64) * (file.face_count() as u64);
     for level in 0..file.level_count() {
+        let (width, height) = file.level_dimensions(level);
+        if (width as u64) * (height as u64) * images > MAX_TEXELS {
+            continue;
+        }
         for target in TARGETS {
             let _ = transcoder.decode(&file, level, 0, 0, target);
         }

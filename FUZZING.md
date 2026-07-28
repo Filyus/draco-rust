@@ -17,7 +17,7 @@ status, threat model, and known residual risk live in
 | `draco_gltf_import` | [`fuzz/fuzz_targets/draco_gltf_import.rs`](fuzz/fuzz_targets/draco_gltf_import.rs) | Imports a full scene through `draco-gltf`, decodes every Draco primitive, then exercises atomic in-place decompression. |
 | `fbx_read_scene` | [`fuzz/fuzz_targets/fbx_read_scene.rs`](fuzz/fuzz_targets/fbx_read_scene.rs) | Reads arbitrary bytes as an FBX scene under tight decode limits, in both lenient and strict modes, and checks that reading the same input twice agrees. |
 | `fbx_roundtrip` | [`fuzz/fuzz_targets/fbx_roundtrip.rs`](fuzz/fuzz_targets/fbx_roundtrip.rs) | Writes back whatever the FBX reader accepted and requires the result to satisfy the reader's strict mode, so the writer is fuzzed with scenes nobody would hand-build. |
-| `ktx2_transcode` | [`fuzz/fuzz_targets/ktx2_transcode.rs`](fuzz/fuzz_targets/ktx2_transcode.rs) | Parses arbitrary bytes as KTX2 and transcodes every level into every target, for images small enough that an allocation failure is a finding rather than the header's own arithmetic. |
+| `ktx2_transcode` | [`fuzz/fuzz_targets/ktx2_transcode.rs`](fuzz/fuzz_targets/ktx2_transcode.rs) | Parses arbitrary bytes as KTX2 and transcodes every level small enough into every target, so that an allocation failure is a finding rather than the header's own arithmetic. |
 
 `decode_drc` builds `draco-core` with `default-features = false` and enables the
 legacy decode features needed for old streams. The two glTF targets use
@@ -41,8 +41,37 @@ header declares before it is decompressed, and block data indexed arithmetically
 from the dimensions the file states. The reader's own limit is 16384 texels
 either way, which is right for a texture and wrong for a campaign - a header
 well inside it can legitimately ask for a gigabyte and `-rss_limit_mb` would
-fire on that - so the target parses at any size and only decodes below a
-million texels. Past that bound an allocation failure is a genuine bug.
+fire on that - so the target parses at any size and decodes only the levels
+under 16384 texels. Past that bound an allocation failure is a genuine bug.
+
+That bound is per **level**, not per file, and both halves of that were
+measured rather than assumed:
+
+| configuration | exec/s | edges | features |
+|---|--:|--:|--:|
+| full fixtures, every level decoded | 4 | 5048 | 15524 |
+| per-file bound, large fixtures parsed only | 59 | 4128 | 14520 |
+| per-level bound, plus the small seeds | 64 | 4887 | 16726 |
+
+Bounding per file threw away a fifth of the coverage: a large fixture stopped
+being decoded at all, taking its supercompression and its codebooks with it.
+Bounding per level keeps them, because a mip chain ends in a handful of texels
+whatever it started at - only the levels that cost megabytes are skipped.
+
+The seeds matter as much as the bound. Every fixture is a full texture, and a
+mutation engine given one explores nothing. `cargo run -p draco-texture
+--example ktx2_make_seeds -- fuzz/seeds` rebuilds fixtures around their smallest
+level - same header, same codebooks, same blocks, 8 or 64 texels - with the Zstd
+undone, since a mutation of a compressed level dies in the frame checksum while
+a mutation of an uncompressed one lands on the block bits. The full fixtures
+stay in the corpus for the container coverage they are still the only source of,
+and [`crates/draco-texture/tests/ktx2_seeds.rs`](crates/draco-texture/tests/ktx2_seeds.rs)
+asserts each seed still parses and decodes, because a seed that does not is
+worse than no seed at all.
+
+A 300-second campaign over that corpus (ASan, release semantics) completed with
+no crash, no OOM and no timeout: 13521 executions, 5149 edges, 20474 features,
+peak RSS 510 MB.
 
 It has a deterministic counterpart that needs no campaign to run:
 [`crates/draco-texture/tests/ktx2_malformed.rs`](crates/draco-texture/tests/ktx2_malformed.rs)
