@@ -1,0 +1,157 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "tools/make_instancing_fixture.py",
+    "copyright": "Authored for this repository; CC0 1.0 Universal."
+  },
+  "extensionsUsed": [
+    "EXT_mesh_gpu_instancing"
+  ],
+  "extensionsRequired": [
+    "EXT_mesh_gpu_instancing"
+  ],
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "InstancedQuadsQuantized",
+      "mesh": 0,
+      "extensions": {
+        "EXT_mesh_gpu_instancing": {
+          "attributes": {
+            "TRANSLATION": 3,
+            "ROTATION": 4,
+            "SCALE": 5
+          }
+        }
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "quad",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "quad",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.8,
+          0.8,
+          0.8,
+          1.0
+        ],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 1.0
+      },
+      "doubleSided": true
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 236,
+      "uri": "data:application/octet-stream;base64,AAAAvwAAAL8AAAAAAAAAPwAAAL8AAAAAAAAAPwAAAD8AAAAAAAAAvwAAAD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIAAAACAAMAAAAQwAAAAAAAAAAAAABAvwAAAAAAAAAAAABAPwAAAAAAAAAAAAAQQAAAAAAAAAAAAAAAAAAA/38AAAAA+RiJfQAAAAD7MEF2AAAAABxHbWrNzMw+zczMPgAAgD+amRk/mpkZPwAAgD/NzEw/zcxMPwAAgD8AAIA/AACAPwAAgD8="
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 48,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 48,
+      "byteLength": 48,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 96,
+      "byteLength": 12,
+      "target": 34963
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 108,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 156,
+      "byteLength": 32
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 188,
+      "byteLength": 48
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3",
+      "min": [
+        -0.5,
+        -0.5,
+        0.0
+      ],
+      "max": [
+        0.5,
+        0.5,
+        0.0
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5123,
+      "count": 6,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 4,
+      "componentType": 5122,
+      "count": 4,
+      "type": "VEC4",
+      "normalized": true
+    },
+    {
+      "bufferView": 5,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3"
+    }
+  ]
+}

@@ -7,7 +7,9 @@
  * into SceneDocument.
  */
 
-import { componentByteSize, morphDeltaAccessor, readComponent } from './component-values.ts';
+import {
+  componentByteSize, morphDeltaAccessor, normalizeComponent, readComponent,
+} from './component-values.ts';
 import { cloneTrs, composeTrs, decomposeMat4 } from './mat4.ts';
 import {
   MAX_ACTIVE_MORPH_TARGETS, VIEWER_LIMIT_WARNINGS, peakActiveMorphWeights,
@@ -402,10 +404,24 @@ function textureInfo(info: TextureInfo | undefined) {
   } : null;
 }
 
+/**
+ * An accessor as floats, whatever it was stored as.
+ *
+ * Reading the bytes as float32 outright was wrong for every accessor the
+ * format allows to be smaller: EXT_mesh_gpu_instancing states ROTATION as
+ * normalized BYTE or SHORT as readily as FLOAT, and a skin's inverse bind
+ * matrices go through here too. The stored width decides the stride, and
+ * `normalized` decides whether an integer means itself or a fraction of its
+ * range.
+ */
 function floatAccessor(accessor: RuntimeAccessor): Float32Array {
   const view = new DataView(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength);
+  const width = componentByteSize(accessor.componentType);
   const values = new Float32Array(accessor.count * accessor.components);
-  for (let index = 0; index < values.length; index += 1) values[index] = view.getFloat32(index * 4, true);
+  for (let index = 0; index < values.length; index += 1) {
+    const value = readComponent(view, index * width, accessor.componentType);
+    values[index] = accessor.normalized ? normalizeComponent(value, accessor.componentType) : value;
+  }
   return values;
 }
 

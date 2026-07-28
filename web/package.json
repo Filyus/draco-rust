@@ -13,6 +13,7 @@
     "test:viewer-skin-weights": "node tests/viewer-skin-weights.mjs",
     "test:viewer-framing": "node tests/viewer-framing.mjs",
     "test:viewer-texture-units": "node tests/viewer-texture-units.mjs",
+    "test:viewer-instancing": "node tests/viewer-instancing.mjs",
     "test:gltf-scene-document": "node tests/gltf-scene-document-parity.mjs",
     "test:fbx-scene-document": "node tests/fbx-scene-document-parity.mjs",
     "test:fbx-scene-provenance": "node tests/fbx-scene-provenance.mjs",
