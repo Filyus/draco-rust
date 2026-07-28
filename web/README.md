@@ -67,12 +67,74 @@ the release asset.
 ## Converter preview
 
 The bundled converter includes a dependency-free WebGL2 preview. It loads raw
-and Draco primitives through `gltf-wasm`, renders base-color materials and
-textures, and plays glTF node and skin animations with timeline controls. It
-also previews the flat OBJ, PLY, and FBX meshes returned by their WASM modules.
-The preview is intentionally a diagnostic renderer, not a replacement for a
-full PBR glTF runtime: unsupported material and texture extensions are reported
-as warnings instead of changing exported assets.
+and Draco primitives through `gltf-wasm`, shades metallic-roughness materials
+with image-based lighting and punctual lights, and plays glTF node and skin
+animations with timeline controls. It also previews the flat OBJ, PLY, and FBX
+meshes returned by their WASM modules. Whatever it cannot honour is reported as
+a warning rather than changed in the exported asset: the preview never writes
+back to the document it is showing.
+
+Shading happens in linear light throughout. The scene is drawn into a
+half-float frame with multisampling, and one output pass does the whole display
+transform — glare as a threshold-free pyramid, exposure, hue-preserving tone
+mapping, sRGB encode. Everything that averages pixels (resolve, mip chains,
+blur) therefore happens on radiance rather than on encoded values, which is the
+difference between a light that blooms white and one that blooms yellow.
+
+### Extensions the preview honours
+
+Eleven material layers, read from one table that also defines how each is
+shaded, so the list cannot claim a layer the renderer ignores
+(`src/material-extensions.ts`):
+
+| extension | what it adds |
+|---|---|
+| `KHR_materials_ior` | the dielectric reflectance, feeding specular and refraction |
+| `KHR_materials_specular` | that reflectance tinted and scaled |
+| `KHR_materials_transmission` | what passes through the surface, from a capture of the frame |
+| `KHR_materials_volume` | thickness, attenuation colour and distance, over the ray inside |
+| `KHR_materials_dispersion` | one index per wavelength instead of one for all |
+| `KHR_materials_anisotropy` | a specular lobe stretched along a tangent |
+| `KHR_materials_iridescence` | a thin film over the specular lobe |
+| `KHR_materials_sheen` | a retroreflective lobe for cloth, over the base layer |
+| `KHR_materials_clearcoat` | a second specular lobe over the whole material |
+| `KHR_materials_emissive_strength` | emission past the 0..1 the factor allows |
+| `KHR_materials_unlit` | flat shading, skipping all of the above |
+
+Four more are read where they live rather than on the material:
+`KHR_texture_transform` on every texture binding, not only base colour;
+`KHR_lights_punctual`; `KHR_materials_variants`; `EXT_mesh_gpu_instancing`.
+
+Four arrive already resolved by the Rust reader, so nothing is lost and none is
+reported as ignored: `KHR_draco_mesh_compression`, `EXT_meshopt_compression`
+(and the pre-ratification spelling `KHR_meshopt_compression`), and
+`KHR_mesh_quantization`.
+
+Two name an alternate image source and are honoured conditionally —
+`KHR_texture_basisu` and `EXT_texture_webp`, each described in its own section
+below. The document always carries their bytes; the preview claims one only
+when the browser actually decoded every image that came through it.
+
+Anything outside those lists reaches the extension report as ignored. The
+notable absences today are `KHR_materials_diffuse_transmission`,
+`KHR_animation_pointer`, `KHR_xmp_json_ld`, and `EXT_structural_metadata` —
+the last survives an export as an opaque block without being interpreted.
+
+### What refraction can and cannot see
+
+Transmission reads a capture of the frame, so it shows what is genuinely behind
+the surface on screen and nothing else. Beyond that the honest statement is a
+list of absences: geometry that is off-screen or occluded, refraction at the
+exit boundary, per-pixel volume depth, total internal reflection at the far
+side, more than one internal bounce, and caustics. A ray leaving the frame
+clamps at the border texel, the way the WebGL references do.
+
+The frame is drawn wider than it is shown to push that boundary outwards — the
+extra texels hold more scene, and the output pass shows the middle. The width
+is one constant, `GUARD_BAND` at the top of `src/viewer/scene-target.ts`; a
+fifth of the frame per side costs about ninety per cent more fill and covers
+refraction through anything of ordinary thickness. Zero draws only what is
+shown.
 
 ### KTX2 textures
 
