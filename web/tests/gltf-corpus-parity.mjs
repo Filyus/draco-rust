@@ -54,6 +54,9 @@ const { buildViewerSceneFromDocument } = await import(
 const { assertValidSceneDocument } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'scene-document.ts')).href
 );
+const { GLTF_INTERPRETED_EXTENSIONS } = await import(
+  pathToFileURL(resolve(here, '..', 'src', 'gltf-interpretation.ts')).href
+);
 
 async function collect(directory) {
   const found = [];
@@ -165,16 +168,40 @@ function reason(error) {
   return (error.message || String(error)).split('\n')[0].slice(0, 120);
 }
 
+/**
+ * What a file says it uses, read straight from its own JSON.
+ *
+ * Deliberately not taken from either adapter's output: the question here is
+ * what the corpus contains, and an adapter that silently dropped an extension
+ * would then also drop it from the coverage count, which is the one number
+ * that must not agree with the code being measured.
+ */
+function declaredExtensions(data) {
+  let json = data;
+  if (data.length >= 20 && String.fromCharCode(...data.subarray(0, 4)) === 'glTF') {
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    json = data.subarray(20, 20 + view.getUint32(12, true));
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(json)).extensionsUsed || [];
+  } catch {
+    return [];
+  }
+}
+
 const models = await collect(corpusRoot);
 assert.ok(models.length >= 60, `the corpus shrank to ${models.length} files; expected the whole testdata tree`);
 
 /** Every file that did not come through, and what stopped it. */
 const problems = new Map();
+/** Which extensions the corpus actually contains, for the coverage gate below. */
+const present = new Set();
 let carried = 0;
 for (const model of models) {
   const name = relative(repoRoot, model).replace(/\\/g, '/');
   const data = new Uint8Array(await readFile(model));
   const resources = await companions(model, data);
+  for (const extension of declaredExtensions(data)) present.add(extension);
 
   let preview;
   try {
@@ -205,4 +232,19 @@ const fixed = [...KNOWN.keys()].filter((name) => !problems.has(name));
 assert.deepEqual(unexpected, [], 'these files stopped surviving the portable document route');
 assert.deepEqual(fixed, [], 'these files now survive; remove them from KNOWN and keep the count honest');
 
-console.log('glTF corpus parity passed');
+// Every extension the viewer claims to interpret has to appear in the corpus.
+//
+// Hand-built fixtures state what a reader does with a field; they cannot say
+// whether a file an authoring tool actually wrote still goes through. Four
+// extensions were shaded with nothing but hand-written JSON behind them —
+// dispersion and transmission among them, after a month of work on exactly
+// that path — and nothing failed when the corpus could not have caught a
+// regression at all.
+const uncovered = [...GLTF_INTERPRETED_EXTENSIONS].filter((name) => !present.has(name)).sort();
+assert.deepEqual(
+  uncovered,
+  [],
+  'the viewer interprets these extensions and no file in testdata uses them; add one from glTF-Sample-Assets',
+);
+
+console.log(`glTF corpus parity passed; ${GLTF_INTERPRETED_EXTENSIONS.size} interpreted extensions covered`);

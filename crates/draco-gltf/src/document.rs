@@ -761,7 +761,18 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
                 let path = target.get("path").and_then(Value::as_str).ok_or_else(|| {
                     Error::Validation(vec!["animation channel target path is missing".into()])
                 })?;
-                if !matches!(path, "translation" | "rotation" | "scale" | "weights") {
+                // `pointer` is the path KHR_animation_pointer defines, and it
+                // targets a JSON pointer rather than a node, which is why the
+                // node index is absent on such a channel. The extension is
+                // ratified, so a file using it is valid whether or not a
+                // reader animates it: rejecting the document would lose the
+                // geometry over an animation the reader was free to skip.
+                let pointed = path == "pointer"
+                    && target
+                        .get("extensions")
+                        .and_then(|extensions| extensions.get("KHR_animation_pointer"))
+                        .is_some();
+                if !pointed && !matches!(path, "translation" | "rotation" | "scale" | "weights") {
                     return Err(Error::Validation(vec![format!(
                         "animation channel target path {path:?} is invalid"
                     )]));

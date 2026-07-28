@@ -81,6 +81,7 @@ pub const BINARY_FREE_EXTENSIONS: &[&str] = &[
     "KHR_texture_transform",
     // Name an alternate `images[]` entry; the image itself is an ordinary one.
     "EXT_texture_webp",
+    "EXT_texture_avif",
     "KHR_texture_basisu",
     // Scene-level, and both stay in their own index spaces: lights[] and
     // variants[] are root arrays this crate never compacts.

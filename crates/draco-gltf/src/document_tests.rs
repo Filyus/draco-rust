@@ -306,6 +306,29 @@ fn validation_covers_scene_skin_and_animation_links() {
     assert!(invalid.validate(ValidationProfile::Gltf20).is_err());
 }
 
+/// `KHR_animation_pointer` targets a JSON pointer instead of a node, through a
+/// channel path core glTF does not define. Rejecting the document over it would
+/// throw away the geometry for the sake of an animation the reader was free to
+/// skip - and it did, for every file in the corpus that uses the extension.
+#[cfg(feature = "strict-validation")]
+#[test]
+fn validation_accepts_the_animation_pointer_channel_path() {
+    let document = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.0"},"extensionsUsed":["KHR_animation_pointer"],"accessors":[{"componentType":5126,"count":0,"type":"SCALAR"}],"nodes":[{}],"animations":[{"samplers":[{"input":0,"output":0}],"channels":[{"sampler":0,"target":{"path":"pointer","extensions":{"KHR_animation_pointer":{"pointer":"/materials/0/pbrMetallicRoughness/baseColorFactor"}}}}]}]}"#,
+    )
+    .unwrap();
+    document.validate(ValidationProfile::Gltf20).unwrap();
+
+    // Only with the extension on the target, though: `pointer` on its own says
+    // where to write nothing.
+    let mut bare = document.clone();
+    bare.as_value_mut()["animations"][0]["channels"][0]["target"]
+        .as_object_mut()
+        .unwrap()
+        .retain(|(key, _)| key != "extensions");
+    assert!(bare.validate(ValidationProfile::Gltf20).is_err());
+}
+
 #[cfg(feature = "strict-validation")]
 #[test]
 fn validation_requires_finite_ordered_position_bounds() {

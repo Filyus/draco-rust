@@ -53,6 +53,13 @@ const KNOWN = new Map(Object.entries({
   // views. There is nothing to remap it with, so this refusal is correct until
   // meshopt is decompressed on the way in rather than carried through.
   'testdata/KhronosSampleModels/MeshoptCubeTest/glTF_Meshopt/MeshoptCubeTest.gltf': 'meshopt_compression',
+  // KHR_animation_pointer addresses arbitrary JSON by pointer, and a Draco
+  // pass rewrites accessors and buffer views under it. A pointer into
+  // `/meshes/0/primitives/0/attributes/POSITION` would be left naming
+  // something that moved, and this crate cannot tell that pointer from one
+  // into a material factor without implementing the extension. Refusing the
+  // whole file is the conservative answer and, for now, the right one.
+  'testdata/KhronosSampleModels/AnimatedColorsCube/glTF_Binary/AnimatedColorsCube.glb': 'animation_pointer',
 }));
 
 const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href);
