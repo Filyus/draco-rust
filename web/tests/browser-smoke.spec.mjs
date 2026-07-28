@@ -3683,12 +3683,17 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
       pickerShown: !picker.hidden,
       opened,
       selected: state.currentSelection.length,
+      // A path is longer than the panel it sits in, and the label is nowrap, so
+      // the control has to truncate rather than push the panel wider.
+      fits: picker.getBoundingClientRect().right
+        <= document.getElementById('file-info').getBoundingClientRect().right + 1,
     };
   });
 
   // Both models are offered, labelled by what differs rather than by the folder
   // they share, and the shorter path is the one that opened.
   expect(observed.pickerShown).toBe(true);
+  expect(observed.fits).toBe(true);
   expect(observed.offered).toEqual([
     ['Helmet/glTF/Helmet.gltf', 'glTF/Helmet.gltf'],
     ['Helmet/glTF-instancing/HelmetInstanced.gltf', 'glTF-instancing/HelmetInstanced.gltf'],

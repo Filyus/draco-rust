@@ -227,7 +227,10 @@ input:focus-visible,
 .file-size { color: var(--muted); font-size: 0.68rem; }
 /* Shown only when a selection held more than one model, so the panel keeps the
    two-line shape it has always had for the ordinary case of opening one file. */
-.file-model { margin-top: 6px; }
+/* `min-width: 0` because the trigger's label is nowrap: hiding the overflow
+   does not shrink what the column asks for, so without this the grid track
+   sizes to the whole path and the panel spills over the viewport beside it. */
+.file-model { min-width: 0; margin-top: 6px; }
 .file-model[hidden] { display: none; }
 .file-model-caption {
     display: block;
