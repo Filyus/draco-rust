@@ -50,23 +50,28 @@ const plainMaterial = { pbrMetallicRoughness: { baseColorTexture: { index: 0 } }
 
 // An image reached through an alternate-source extension has to be carried.
 // The old reader looked only at `texture.source` and wrote an empty payload.
-const webp = buildFbxSceneFromGltf(
-  asset({
-    textures: [{ extensions: { EXT_texture_webp: { source: 0 } } }],
-    materials: [plainMaterial],
-    extensionsUsed: ['EXT_texture_webp'],
-  }),
-  {},
-  gltfModule,
-);
-assert.ok(
-  webp.textures[0].content && webp.textures[0].content.length > 0,
-  'a texture whose image comes through EXT_texture_webp exported with no payload',
-);
-assert.ok(
-  webp.warnings.some((warning) => /WebP or KTX2/.test(warning)),
-  'carrying a codec FBX importers cannot read has to be reported',
-);
+// Every such extension takes the same path, so each is asked rather than one
+// standing in for the rest: a name missing from the list reads as an ordinary
+// texture with no source, which is silent.
+for (const extension of ['EXT_texture_webp', 'EXT_texture_avif', 'KHR_texture_basisu']) {
+  const alternate = buildFbxSceneFromGltf(
+    asset({
+      textures: [{ extensions: { [extension]: { source: 0 } } }],
+      materials: [plainMaterial],
+      extensionsUsed: [extension],
+    }),
+    {},
+    gltfModule,
+  );
+  assert.ok(
+    alternate.textures[0].content && alternate.textures[0].content.length > 0,
+    `a texture whose image comes through ${extension} exported with no payload`,
+  );
+  assert.ok(
+    alternate.warnings.some((warning) => /importers cannot decode them/.test(warning)),
+    'carrying a codec FBX importers cannot read has to be reported',
+  );
+}
 
 // Wrap modes, UV transforms and the layered material extensions all have
 // nowhere to go in FBX; each has to be named rather than silently dropped.

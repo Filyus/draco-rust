@@ -22,6 +22,7 @@ import type {
   TextureInfo,
 } from './scene-document.ts';
 import { writeMaterialExtensions } from './material-extensions.ts';
+import { GLTF_TEXTURE_SOURCE_EXTENSIONS } from './gltf-interpretation.ts';
 import type { GltfAsset, GltfModule } from './wasm-modules.ts';
 
 /**
@@ -165,7 +166,7 @@ export function lowerSceneDocumentToGltf(document: SceneDocument) {
   // declared optional. The official validator does not enforce this, which is
   // exactly why it has to be stated here rather than caught downstream.
   const extensionsRequired = new Set<string>();
-  for (const extension of ['KHR_texture_basisu', 'EXT_texture_webp'] as const) {
+  for (const extension of GLTF_TEXTURE_SOURCE_EXTENSIONS) {
     if (!textures.some((texture) => texture?.extensions?.[extension])) continue;
     extensionsUsed.add(extension);
     extensionsRequired.add(extension);
@@ -644,6 +645,7 @@ function usesQuantizedAttributes(document: SceneDocument) {
 function textureSourceExtension(mimeType: string | undefined) {
   if (mimeType === 'image/png' || mimeType === 'image/jpeg') return 'core';
   if (mimeType === 'image/webp') return 'EXT_texture_webp';
+  if (mimeType === 'image/avif') return 'EXT_texture_avif';
   if (mimeType === 'image/ktx2') return 'KHR_texture_basisu';
   return null;
 }

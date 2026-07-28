@@ -25,8 +25,15 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
   webp: 'image/webp',
+  avif: 'image/avif',
   ktx2: 'image/ktx2',
 };
+
+/** Reads four bytes as ASCII, for the container tags that are spelled out. */
+function tagAt(bytes: Uint8Array, offset: number): string {
+  if (bytes.length < offset + 4) return '';
+  return String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
+}
 
 /** Guesses an image MIME type from a URI's file extension. */
 export function mimeFromUri(uri: string | null | undefined): string | null {
@@ -41,7 +48,13 @@ export function sniffMime(bytes: Uint8Array | null | undefined): string | null {
   if (!bytes || bytes.length < 2) return null;
   if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
   if (bytes[0] === 0xff && bytes[1] === 0xd8) return 'image/jpeg';
-  if (bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) return 'image/webp';
+  // RIFF alone is the container WAV and AVI also use, so the form tag decides.
+  if (tagAt(bytes, 0) === 'RIFF' && tagAt(bytes, 8) === 'WEBP') return 'image/webp';
+  // AVIF is ISOBMFF: a box whose type is `ftyp`, then the brand. HEIC is the
+  // same container with a different brand, which is why the brand is read
+  // rather than the box type taken as an answer. `avis` is a sequence; the
+  // extension permits one and a decoder shows its first frame.
+  if (tagAt(bytes, 4) === 'ftyp' && ['avif', 'avis'].includes(tagAt(bytes, 8))) return 'image/avif';
   if (bytes.length >= 4 && bytes[0] === 0xab && bytes[1] === 0x4b && bytes[2] === 0x54 && bytes[3] === 0x58) return 'image/ktx2';
   return null;
 }

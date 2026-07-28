@@ -101,6 +101,7 @@ export async function hydrateSceneTextures(
  */
 const SOURCE_EXTENSION_BY_MIME: Record<string, string> = {
   'image/webp': 'EXT_texture_webp',
+  'image/avif': 'EXT_texture_avif',
   'image/ktx2': 'KHR_texture_basisu',
 };
 

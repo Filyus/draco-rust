@@ -77,7 +77,7 @@ assert.match(lines[2], /draco.*\(required\)/);
 // they are not understood. That was true of KHR_texture_basisu until the
 // transcoder existed, and saying it now would send a user looking for a
 // problem that is no longer there.
-for (const name of ['KHR_texture_basisu', 'EXT_texture_webp']) {
+for (const name of ['KHR_texture_basisu', 'EXT_texture_webp', 'EXT_texture_avif']) {
   const [outcome] = reportExtensionReach({ extensionsUsed: [name] });
   assert.equal(
     outcome.reach,

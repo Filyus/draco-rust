@@ -110,15 +110,17 @@ reported as ignored: `KHR_draco_mesh_compression`, `EXT_meshopt_compression`
 (and the pre-ratification spelling `KHR_meshopt_compression`), and
 `KHR_mesh_quantization`.
 
-Two name an alternate image source and are honoured conditionally —
-`KHR_texture_basisu` and `EXT_texture_webp`, each described in its own section
-below. The document always carries their bytes; the preview claims one only
-when the browser actually decoded every image that came through it.
+Three name an alternate image source and are honoured conditionally —
+`KHR_texture_basisu`, `EXT_texture_webp` and `EXT_texture_avif`, described in
+their own sections below. The document always carries their bytes; the preview
+claims one only when the browser actually decoded every image that came through
+it.
 
 Anything outside those lists reaches the extension report as ignored. The
 notable absences today are `KHR_materials_diffuse_transmission`,
-`KHR_animation_pointer`, `KHR_xmp_json_ld`, and `EXT_structural_metadata` —
-the last survives an export as an opaque block without being interpreted.
+`KHR_animation_pointer`, `KHR_node_visibility`, `KHR_xmp_json_ld`, and
+`EXT_structural_metadata` — the last survives an export as an opaque block
+without being interpreted.
 
 ### What refraction can and cannot see
 
@@ -232,29 +234,45 @@ is checked byte for byte against the reference in Node, but the
 `compressedTexImage2D` call itself is only covered where the browser has the
 extension.
 
-### WebP textures
+### WebP and AVIF textures
 
-`EXT_texture_webp` needs no transcoder: the browser decodes WebP, so what this
-has to get right is naming the source, carrying the bytes, and saying whether
-the decode happened. It does — the extension is read as an image source beside
-`KHR_texture_basisu`, the MIME type round-trips through the document model, and
-`honoredTextureSources` reports per browser rather than claiming support.
+`EXT_texture_webp` and `EXT_texture_avif` need no transcoder: the browser
+decodes both, so what this has to get right is naming the source, carrying the
+bytes, and saying whether the decode happened. The decode path never learns
+either codec's name — it hands a MIME type to `createImageBitmap` and that is
+the whole of it, which is why the second codec cost a list entry rather than an
+implementation.
 
-No JPEG or PNG fallback is written beside a WebP source, and the extension is
-not marked optional, because a reader that skips it finds a texture with no
+WebCodecs' `ImageDecoder` would be the wrong instrument here despite looking
+like the specialized one: it reached Firefox in 130 and Safari in 26, where
+AVIF in `createImageBitmap` has been available since Firefox 93 and Safari
+16.4. The general API has the wider reach.
+
+No JPEG or PNG fallback is written beside either source, and neither extension
+is marked optional, because a reader that skips it finds a texture with no
 source at all. glTF 2.1 promotes WebP to guaranteed support, which removes the
-expectation of a fallback that was never emitted here anyway.
+expectation of a fallback that was never emitted here anyway. AVIF is a draft
+extension rather than a ratified one, and is honoured on the same terms: what
+decides is the browser in front of it, which is what `honoredTextureSources`
+reports.
 
-The round-trip gate carries a real WebP — `testdata/textures/quadrants.webp`,
-four flat quadrants in 66 bytes — and checks that content sniffing reaches the
-same extension the declared type does, which is the half a writer and a reader
-can disagree about over a file nobody looked inside.
+Both save transfer and not video memory — an AVIF is RGBA8 by the time it
+reaches the GPU, exactly like a PNG. `KHR_texture_basisu` is the one that
+changes what the texture costs once uploaded, so these are alternatives to
+JPEG, not to KTX2.
+
+The round-trip gate carries a real file of each — 66 bytes of WebP and 354 of
+AVIF, both the same four flat quadrants — and checks that content sniffing
+reaches the same extension the declared type does, which is the half a writer
+and a reader can disagree about over a file nobody looked inside. AVIF is
+sniffed by its brand rather than by `ftyp` alone: HEIC is the same container.
 
 The decode is checked too, and it needs a browser, so it lives in the Playwright
-gate: `quadrants-webp.gltf` is loaded, the decoded bitmap is drawn to a canvas,
-and each quadrant is read back and compared against the colours the fixture was
-written with. That is the whole of the WebP path — declared, carried, sniffed,
-decoded, uploaded — with nothing left standing on reasoning alone.
+gate: each fixture is loaded, the decoded bitmap is drawn to a canvas, and every
+quadrant is read back and compared against the colours the fixture was written
+with — exactly, because both fixtures are lossless. That is the whole of either
+path — declared, carried, sniffed, decoded, uploaded — with nothing left
+standing on reasoning alone.
 
 Exported glTF and GLB carry the KTX2 bytes through unchanged either way; OBJ,
 PLY and FBX carry them too, and no importer of those formats can read them,

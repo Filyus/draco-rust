@@ -236,10 +236,24 @@ const webpBytes = new Uint8Array(await readFile(resolve(here, '..', '..', 'testd
 assert.equal(sniffMime(webpBytes), 'image/webp', 'the fixture must be sniffed as WebP from its own bytes');
 assert.equal(sniffMime(new Uint8Array(await readFile(resolve(here, '..', '..', 'testdata', 'ktx2', '2d_etc1s.ktx2')))), 'image/ktx2', 'and the KTX2 fixture as KTX2');
 texturedDocument.resources.push({ name: 'quadrants.webp', mimeType: 'image/webp', bytes: webpBytes });
+const avifResource = texturedDocument.resources.length;
+const avifBytes = new Uint8Array(await readFile(resolve(here, '..', '..', 'testdata', 'textures', 'quadrants.avif')));
+// AVIF and HEIC are the same container with different brands, so sniffing has
+// to read past the box type to the brand. A fixture that only proved `ftyp`
+// would pass for either.
+assert.equal(sniffMime(avifBytes), 'image/avif', 'the fixture must be sniffed as AVIF from its own bytes');
+texturedDocument.resources.push({ name: 'quadrants.avif', mimeType: 'image/avif', bytes: avifBytes });
 const ktxTexture = texturedDocument.textures.length;
 texturedDocument.textures.push({ name: 'ktx', resource: ktxResource, sampler: {} });
 const webpTexture = texturedDocument.textures.length;
 texturedDocument.textures.push({ name: 'webp', resource: webpResource, sampler: {} });
+const avifTexture = texturedDocument.textures.length;
+texturedDocument.textures.push({ name: 'avif', resource: avifResource, sampler: {} });
+texturedDocument.materials.push({
+    name: 'avif-texture-info',
+    baseColorFactor: [1, 1, 1, 1], metallicFactor: 1, roughnessFactor: 1, emissiveFactor: [0, 0, 0],
+    baseColorTexture: { texture: avifTexture, texCoord: 0 },
+});
 texturedDocument.materials.push({
     name: 'portable-texture-info',
     baseColorFactor: [1, 1, 1, 1], metallicFactor: 1, roughnessFactor: 1, emissiveFactor: [0, 0, 0],
@@ -251,7 +265,7 @@ texturedDocument.materials.push({
 });
 const texturedLowered = lowerSceneDocumentToGltf(texturedDocument);
 const texturedManifest = JSON.parse(new TextDecoder().decode(texturedLowered.json));
-assert.deepEqual(new Set(texturedManifest.extensionsUsed), new Set(['KHR_texture_transform', 'KHR_texture_basisu', 'EXT_texture_webp']));
+assert.deepEqual(new Set(texturedManifest.extensionsUsed), new Set(['KHR_texture_transform', 'KHR_texture_basisu', 'EXT_texture_webp', 'EXT_texture_avif']));
 // The writer emits no JPEG or PNG fallback beside an alternate image source,
 // and both extensions say what that costs: a reader that skips the extension
 // finds a texture with no source at all, so neither may be declared optional.
@@ -260,7 +274,7 @@ assert.deepEqual(new Set(texturedManifest.extensionsUsed), new Set(['KHR_texture
 // statement lives here.
 assert.deepEqual(
     new Set(texturedManifest.extensionsRequired),
-    new Set(['KHR_texture_basisu', 'EXT_texture_webp']),
+    new Set(['KHR_texture_basisu', 'EXT_texture_webp', 'EXT_texture_avif']),
     'an image source with no fallback cannot be an optional extension',
 );
 const portableMaterial = texturedManifest.materials.at(-1);
@@ -270,6 +284,7 @@ assert.equal(portableMaterial.normalTexture.extensions.KHR_texture_transform.rot
 assert.equal(portableMaterial.occlusionTexture.extensions.KHR_texture_transform.texCoord, undefined);
 assert.equal(texturedManifest.textures[ktxTexture].extensions.KHR_texture_basisu.source >= 0, true);
 assert.equal(texturedManifest.textures[webpTexture].extensions.EXT_texture_webp.source >= 0, true);
+assert.equal(texturedManifest.textures[avifTexture].extensions.EXT_texture_avif.source >= 0, true);
 const texturedRoundtrip = buildSceneDocumentFromGltf(texturedLowered.json, texturedLowered.resources, gltf);
 const roundtripMaterial = texturedRoundtrip.materials.at(-1);
 assert.deepEqual(roundtripMaterial.baseColorTexture.transform, { offset: [0.25, 0.5], scale: [2, 3], rotation: 0.125, texCoord: 2 });
@@ -277,6 +292,7 @@ assert.equal(roundtripMaterial.normalTexture.scale, 0.6);
 assert.equal(roundtripMaterial.occlusionTexture.strength, 0.4);
 assert.equal(texturedRoundtrip.resources.some((resource) => resource.mimeType === 'image/ktx2'), true);
 assert.equal(texturedRoundtrip.resources.some((resource) => resource.mimeType === 'image/webp'), true);
+assert.equal(texturedRoundtrip.resources.some((resource) => resource.mimeType === 'image/avif'), true);
 
 // Punctual lights are the first thing the contract carries that is neither
 // geometry nor material, and the writer has to put them back where the

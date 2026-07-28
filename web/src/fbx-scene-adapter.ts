@@ -214,7 +214,7 @@ export function buildFbxTextures(
     return { name: texture.name || image.name || `texture_${index}`, content, filename: image.uri || null };
   });
   if (alternateSource) {
-    warnings.push('Textures encoded as WebP or KTX2 were written to FBX unchanged; most importers cannot decode them');
+    warnings.push('Textures encoded as WebP, AVIF or KTX2 were written to FBX unchanged; most importers cannot decode them');
   }
   if (droppedSamplers) {
     warnings.push('FBX textures carry no wrap mode: clamp and mirror settings were not written');

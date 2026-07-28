@@ -1000,17 +1000,27 @@ test('preview loads metallic-roughness and emissive PBR textures', async ({ page
   await expect(page.locator('#console')).not.toContainText('Skipped primitive');
 });
 
-test('preview decodes an EXT_texture_webp source into the right pixels', async ({ page }) => {
+// Both alternate image sources take the same path — the viewer names a MIME
+// type and the browser decodes it — so they are checked the same way rather
+// than twice over in prose. The fixtures are the same image, which is what
+// makes one set of expected pixels legitimate for both.
+const IMAGE_SOURCES = [
+  { extension: 'EXT_texture_webp', file: 'quadrants.webp', mimeType: 'image/webp' },
+  { extension: 'EXT_texture_avif', file: 'quadrants.avif', mimeType: 'image/avif' },
+];
+
+for (const source of IMAGE_SOURCES) {
+  test(`preview decodes an ${source.extension} source into the right pixels`, async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);
   const fixture = path.join(repoRoot, 'testdata', 'textures');
   await page.locator('#file-input').setInputFiles([
-    path.join(fixture, 'quadrants-webp.gltf'),
-    path.join(fixture, 'quadrants.webp'),
+    path.join(fixture, `quadrants-${source.mimeType.slice('image/'.length)}.gltf`),
+    path.join(fixture, source.file),
   ]);
   await expect(page.locator('#console')).toContainText('Preview ready');
 
-  // Everything else about WebP is checked without a browser: that the
+  // Everything else about these codecs is checked without a browser: that the
   // extension is read as an image source, that the type survives the document
   // model, that content sniffing agrees with the declared type. None of it
   // touches a decoder, because Node has none. This does — the codec belongs to
@@ -1043,11 +1053,13 @@ test('preview decodes an EXT_texture_webp source into the right pixels', async (
   });
 
   expect(decoded.found).toBe(true);
-  expect(decoded.mimeType).toBe('image/webp');
+  expect(decoded.mimeType).toBe(source.mimeType);
   expect(decoded.size).toEqual([64, 64]);
-  // The fixture's own quadrants, stated here rather than read from the WebP,
-  // which would be circular. testdata/textures/quadrants.png is the same
-  // image if they ever need re-reading by eye.
+  // The fixture's own quadrants, stated here rather than read from the encoded
+  // file, which would be circular. testdata/textures/quadrants.png is the same
+  // image if they ever need re-reading by eye. Both fixtures are exact, so
+  // there is nothing to tolerate: an off-by-one here means a colour conversion
+  // nobody asked for.
   expect(decoded.topLeft).toEqual([220, 40, 40]);
   expect(decoded.topRight).toEqual([40, 200, 60]);
   expect(decoded.bottomLeft).toEqual([50, 90, 230]);
@@ -1058,8 +1070,9 @@ test('preview decodes an EXT_texture_webp source into the right pixels', async (
   // read would be reported, and this asset has no fallback image to fall back
   // to.
   await expect(page.locator('#console')).not.toContainText('requires a transcoder');
-  await expect(page.locator('#console')).not.toContainText('EXT_texture_webp');
-});
+  await expect(page.locator('#console')).not.toContainText(source.extension);
+  });
+}
 
 test('preview uploads its textures to the GPU', async ({ page }) => {
   await page.goto('/index.html');

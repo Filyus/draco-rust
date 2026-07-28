@@ -65,7 +65,9 @@ export const GLTF_READER_RESOLVED_EXTENSIONS: ReadonlySet<string> = new Set([
  * codec, so it always honors them; the preview honors one only when the
  * browser actually decoded every image that came through it.
  */
-export const GLTF_TEXTURE_SOURCE_EXTENSIONS = ['EXT_texture_webp', 'KHR_texture_basisu'] as const;
+export const GLTF_TEXTURE_SOURCE_EXTENSIONS = [
+  'EXT_texture_webp', 'EXT_texture_avif', 'KHR_texture_basisu',
+] as const;
 
 /** glTF sampler defaults, spelled as numbers so this module needs no GL context. */
 const DEFAULT_SAMPLER = {
