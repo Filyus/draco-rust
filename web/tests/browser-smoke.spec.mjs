@@ -3715,3 +3715,50 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
 
   await expect(page.locator('#console')).not.toContainText('External resource denied');
 });
+
+/**
+ * The same folder, chosen with the button rather than dropped.
+ *
+ * Dragging is not available to everyone — a keyboard user cannot drop at all —
+ * so the folder route needs a control. `webkitdirectory` makes an input
+ * folder-only, hence a second one beside the file picker rather than a mode on
+ * the first. It fills `webkitRelativePath`, so what arrives is the same list of
+ * paths a drop produces and takes the same route from there.
+ */
+test('a folder chosen with the button opens the same way a dropped one does', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  // Alternatives of the same weight, so they are the same size: sized to their
+  // own captions, the folder one came out wider for no reason a reader could
+  // name.
+  const buttons = await page.evaluate(() => [...document.querySelectorAll('.browse-row label')]
+    .map((label) => Math.round(label.getBoundingClientRect().width)));
+  expect(buttons.length).toBe(2);
+  expect(buttons[0]).toBe(buttons[1]);
+
+  const folder = path.join(repoRoot, 'testdata', 'Fox');
+  await page.locator('#folder-input').setInputFiles(folder);
+
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  // Fox/glTF/Fox.gltf names Fox.bin and Texture.png beside it — the selection
+  // a file picker would have needed three separate clicks to assemble.
+  await expect(page.locator('#console')).not.toContainText('External resource denied');
+  await expect(page.locator('#console')).not.toContainText('not in the selection');
+
+  const observed = await page.evaluate(async () => {
+    const { state } = await import('/app/state.js');
+    return {
+      path: state.currentModelPath,
+      resources: Object.keys(state.currentSourceResources).sort(),
+      selected: state.currentSelection.length,
+      pickerShown: !document.getElementById('file-model-picker').hidden,
+    };
+  });
+
+  expect(observed.path).toBe('Fox/glTF/Fox.gltf');
+  expect(observed.resources).toEqual(['Fox.bin', 'Texture.png']);
+  // One model in the folder, so nothing to choose between and no picker.
+  expect(observed.pickerShown).toBe(false);
+  expect(observed.selected).toBeGreaterThan(observed.resources.length);
+});

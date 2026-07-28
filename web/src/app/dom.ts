@@ -26,6 +26,7 @@ export function query<T extends HTMLElement = HTMLElement>(selector: string): T 
 // DOM Elements
 export const dropZone = element('drop-zone');
 export const fileInput = element<HTMLInputElement>('file-input');
+export const folderInput = element<HTMLInputElement>('folder-input');
 export const fileInfo = element('file-info');
 export const fileName = element('file-name');
 export const fileSize = element('file-size');

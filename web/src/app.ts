@@ -40,6 +40,7 @@ import {
   exportSidebar,
   fileInfo,
   fileInput,
+  folderInput,
   fileName,
   fileSize,
   normalBits,
@@ -162,12 +163,16 @@ function setupEventListeners() {
     if (entries.length > 0) await openSelection(entries);
   });
 
-  // File input
-  fileInput.addEventListener('change', () => {
-    if (fileInput.files && fileInput.files.length > 0) {
-      openSelection(entriesFromFileList(fileInput.files));
-    }
-  });
+  // File input, and the folder one beside it. `webkitdirectory` fills
+  // `webkitRelativePath`, so a folder chosen through the button arrives with
+  // the same paths a dropped one does and takes the same route from here.
+  for (const input of [fileInput, folderInput]) {
+    input.addEventListener('change', () => {
+      if (input.files && input.files.length > 0) {
+        openSelection(entriesFromFileList(input.files));
+      }
+    });
+  }
   
   // Clear file
   clearFileBtn.addEventListener('click', clearFile);
@@ -454,7 +459,10 @@ function clearFile() {
   workspace.classList.remove('export-loaded');
   workspace.classList.remove('scene-loaded');
 
+  // Both, or choosing the same folder twice in a row fires no change event the
+  // second time and the panel sits empty.
   fileInput.value = '';
+  folderInput.value = '';
 
   log('File cleared', 'info');
 }

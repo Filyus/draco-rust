@@ -207,6 +207,23 @@ input:focus-visible,
 }
 
 .browse-btn { display: inline-block; margin-top: 12px; padding: 8px 13px; font-size: 0.77rem; }
+/* Two ways in, side by side. Equal columns rather than two content-sized
+   buttons: they are alternatives of the same weight, and sizing each to its own
+   caption makes "Browse Folder" the wider one for no reason a reader could
+   name. `1fr` in a grid that is itself content-sized resolves to the widest
+   item, so the pair grows with the longer label instead of to a guessed number.
+
+   The folder one is quieter: it answers a particular shape of asset rather than
+   being the ordinary way to open a file. */
+.browse-row {
+    display: inline-grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+    max-width: 100%;
+    gap: 8px;
+}
+.browse-btn-secondary { color: #c2d3ea; background: #20314a; box-shadow: inset 0 0 0 1px rgba(123, 153, 194, 0.24); }
+.browse-btn-secondary:hover { background: #263a56; }
 .browse-btn:hover,
 .primary-btn:hover { background: #5288df; }
 
