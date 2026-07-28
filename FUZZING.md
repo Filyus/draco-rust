@@ -17,6 +17,7 @@ status, threat model, and known residual risk live in
 | `draco_gltf_import` | [`fuzz/fuzz_targets/draco_gltf_import.rs`](fuzz/fuzz_targets/draco_gltf_import.rs) | Imports a full scene through `draco-gltf`, decodes every Draco primitive, then exercises atomic in-place decompression. |
 | `fbx_read_scene` | [`fuzz/fuzz_targets/fbx_read_scene.rs`](fuzz/fuzz_targets/fbx_read_scene.rs) | Reads arbitrary bytes as an FBX scene under tight decode limits, in both lenient and strict modes, and checks that reading the same input twice agrees. |
 | `fbx_roundtrip` | [`fuzz/fuzz_targets/fbx_roundtrip.rs`](fuzz/fuzz_targets/fbx_roundtrip.rs) | Writes back whatever the FBX reader accepted and requires the result to satisfy the reader's strict mode, so the writer is fuzzed with scenes nobody would hand-build. |
+| `ktx2_transcode` | [`fuzz/fuzz_targets/ktx2_transcode.rs`](fuzz/fuzz_targets/ktx2_transcode.rs) | Parses arbitrary bytes as KTX2 and transcodes every level into every target, for images small enough that an allocation failure is a finding rather than the header's own arithmetic. |
 
 `decode_drc` builds `draco-core` with `default-features = false` and enables the
 legacy decode features needed for old streams. The two glTF targets use
@@ -33,6 +34,23 @@ it, and real findings would drown in that noise. Under the fuzzing limits any
 allocation failure is a genuine bug.
 
 [`FbxDecodeLimits::fuzzing()`]: crates/draco-io/src/fbx_options.rs
+
+`ktx2_transcode` covers `draco-texture`, which is the same shape of surface: a
+header of file-controlled offsets and lengths, a Zstd payload whose size the
+header declares before it is decompressed, and block data indexed arithmetically
+from the dimensions the file states. The reader's own limit is 16384 texels
+either way, which is right for a texture and wrong for a campaign - a header
+well inside it can legitimately ask for a gigabyte and `-rss_limit_mb` would
+fire on that - so the target parses at any size and only decodes below a
+million texels. Past that bound an allocation failure is a genuine bug.
+
+It has a deterministic counterpart that needs no campaign to run:
+[`crates/draco-texture/tests/ktx2_malformed.rs`](crates/draco-texture/tests/ktx2_malformed.rs)
+sweeps every header and level-index field at eight extreme values, every
+truncation of every fixture, and payloads overwritten wholesale, on every push.
+The two divide the work the way they should - the sweep covers the fields
+someone would actually reach for, in under three seconds; the campaign looks
+for what nobody thought to sweep.
 
 ### `-O`: fuzz with production (release) semantics
 

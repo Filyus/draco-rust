@@ -16,6 +16,7 @@ scope:
   surface: "Rust DRC decode of mesh and point-cloud streams"
   secondary_surface: "draco-gltf lossless document parsing and document-preserving Draco transforms for untrusted glTF/GLB bytes."
   tertiary_surface: "draco-io FBX reading: two hand-written parsers for untrusted input -- a length-prefixed binary container with a zlib path, and an ASCII container parsed as text."
+  quaternary_surface: "draco-texture KTX2 reading and Basis transcoding: a header of file-controlled offsets and lengths, a Zstd payload whose uncompressed size the header declares before it is decompressed, and block data indexed arithmetically from the dimensions the file states."
   compatibility_floor: "Draco 1.0.0+ for supported compatibility claims"
   threat_model:
     controlled_assets: "Known-good generated/fixture streams from trusted pipelines."
@@ -448,6 +449,15 @@ completed:
       - path: "fuzz/fuzz_targets/fbx_roundtrip.rs"
     note: "FbxDecodeLimits bounds file size, node count, nesting depth, per-node property count, string/blob payloads, and per-array and total array bytes, with defaults calibrated against the 308-file ufbx binary corpus rather than guessed. Limit violations fail with OutOfMemory and structural violations with InvalidData so a caller can tell them apart. Backwards end offsets, oversized records, zip bombs and array-length overflow are refused; strict mode additionally validates the container layout. A cycle in the Model hierarchy no longer recurses until the stack is exhausted. The opt-in corpus test asserts no panic, no hang and bounded output over every file, and two libFuzzer targets cover reading and the read/write round trip."
 
+  - id: ktx2-reader-hardening
+    status: covered
+    evidence:
+      - path: "crates/draco-texture/src/ktx2.rs"
+      - path: "crates/draco-texture/tests/ktx2_container.rs"
+      - path: "crates/draco-texture/tests/ktx2_malformed.rs"
+      - path: "fuzz/fuzz_targets/ktx2_transcode.rs"
+    note: "Offsets and lengths are checked as fits-in-what-is-left rather than as offset plus length, which wraps and passes. Dimensions are bounded at 16384 either way, without which every buffer sized as width by height wraps at 32 bits on the wasm32 target this ships to. A Zstd level's declared uncompressed length is bounded by what a level of those dimensions could hold, because it is what the output buffer is reserved from before anything is decompressed. Level and layer counts are bounded, and the ETC1S global data offsets are accumulated with checked addition and validated before the descriptor array is built. Six regression tests pin the individual cases, four sweeps cover every header field at eight extreme values, every truncation of every fixture and wholesale payload corruption, and a libFuzzer target parses arbitrary bytes and transcodes every level into every target. The two dimension and level-length bounds were added after auditing six 2026 hardening commits to the reference reader; the other four cases they cover were already handled."
+
   - id: caller-resource-policy-documented
     status: covered
     evidence:
@@ -463,6 +473,14 @@ open_risks:
       - "Add ASCII seeds to fbx_make_seeds.rs: a minimal valid document, one with a deep block nest, one with a huge declared array length, and one with an unterminated string or block."
       - "Re-run seed_corpus.{sh,ps1} and confirm the ASCII branch is reached, for example by checking coverage or by asserting a seed decodes."
       - "Run a bounded campaign over the widened corpus before claiming the ASCII path is hardened."
+
+  - id: ktx2-fuzzing-soak-time
+    priority: low
+    summary: "The ktx2_transcode target is new: it compiles, is seeded from testdata/ktx2, and is wired into ClusterFuzzLite, but no campaign has accumulated over it yet."
+    why_it_matters: "The deterministic sweeps in ktx2_malformed.rs cover the fields someone would reach for by hand and run on every push, which is what caught nothing and is meant to keep catching nothing. What a campaign adds is the malformations nobody thought to sweep -- particularly inside the BasisLZ global data and the Zstd frames, which the sweeps only reach by overwriting wholesale."
+    next_steps:
+      - "Run a bounded local campaign over the seeded corpus and record executions, peak RSS, and any findings."
+      - "Confirm the seeds actually reach the ETC1S codebook decoder and the UASTC block reader, rather than failing in the header."
 
   - id: fuzzing-ci-soak-time
     priority: low

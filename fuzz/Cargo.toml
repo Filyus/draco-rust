@@ -19,6 +19,11 @@ draco-io = { path = "../crates/draco-io", default-features = false, features = [
     "fbx-writer",
     "compression",
 ] }
+# KTX2 is the other untrusted binary container the workspace reads: a header
+# of file-controlled offsets and lengths, a Zstd payload that expands, and
+# block data indexed from dimensions the file states. Every feature is on, so
+# each transcode target is reachable.
+draco-texture = { path = "../crates/draco-texture" }
 libfuzzer-sys = "0.4"
 
 [[bin]]
@@ -52,6 +57,13 @@ bench = false
 [[bin]]
 name = "fbx_roundtrip"
 path = "fuzz_targets/fbx_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ktx2_transcode"
+path = "fuzz_targets/ktx2_transcode.rs"
 test = false
 doc = false
 bench = false
