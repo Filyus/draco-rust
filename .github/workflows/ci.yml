@@ -351,6 +351,29 @@ jobs:
           target/gltf-interop/rust-box.glb
           testdata/Box/glTF/Box.gltf
 
+  basis-parity:
+    name: basis parity
+    runs-on: ubuntu-latest
+
+    # The reference transcoder itself, vendored at the revision draco-texture
+    # was ported from and compiled here. This is what the node gates would do
+    # if their oracle were not a prebuilt WASM living outside the repository.
+    #
+    # It is the only check that can reach the ETC1S-to-ASTC pair: the reference
+    # has two branches behind BASISD_SUPPORT_ASTC_HIGHER_OPAQUE_QUALITY that an
+    # emscripten build compiles out and a native one compiles in, so the
+    # configuration has to be ours to choose. It is set to the browser profile,
+    # which is what this repository implements.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Compare draco-texture against the reference transcoder
+        run: cargo test --manifest-path tools/basis-cpp-oracle/Cargo.toml -- --nocapture
+
   basis-crosscheck:
     name: basis cross-check
     runs-on: ubuntu-latest

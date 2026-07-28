@@ -67,12 +67,21 @@ fn fixture(name: &str) -> PathBuf {
 /// Where two byte strings first differ.
 fn first_difference(want: &[u8], got: &[u8]) -> Option<String> {
     if want.len() != got.len() {
-        return Some(format!("{} bytes expected, {} produced", want.len(), got.len()));
+        return Some(format!(
+            "{} bytes expected, {} produced",
+            want.len(),
+            got.len()
+        ));
     }
     want.iter()
         .zip(got.iter())
         .position(|(a, b)| a != b)
-        .map(|at| format!("first differs at byte {at}: expected {}, got {}", want[at], got[at]))
+        .map(|at| {
+            format!(
+                "first differs at byte {at}: expected {}, got {}",
+                want[at], got[at]
+            )
+        })
 }
 
 #[test]

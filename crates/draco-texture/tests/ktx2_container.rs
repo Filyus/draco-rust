@@ -296,6 +296,35 @@ mod hostile {
     }
 
     #[test]
+    fn refuses_a_level_whose_two_lengths_disagree() {
+        // With no supercompression the stored and uncompressed lengths
+        // describe the same bytes. The reference asserts on it; this reader
+        // did not, and the omission was found by the parity test in
+        // tools/basis-cpp-oracle - which wrote a file this reader read happily
+        // and the reference would not touch.
+        // Every fixture is supercompressed, so this uses a seed instead -
+        // they are rebuilt without it, which is the case the rule is about.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fuzz/seeds/ktx2_transcode/uastc_64.ktx2");
+        let mut bytes = std::fs::read(&path).expect("a seed; regenerate with ktx2_make_seeds");
+        assert_eq!(
+            u32::from_le_bytes(bytes[44..48].try_into().unwrap()),
+            0,
+            "this seed should carry no supercompression"
+        );
+        assert!(
+            Ktx2::parse(&bytes).is_ok(),
+            "the seed itself is well formed"
+        );
+
+        let stored = u64::from_le_bytes(bytes[88..96].try_into().unwrap());
+        bytes[96..104].copy_from_slice(&(stored + 1).to_le_bytes());
+        Ktx2::parse(&bytes).expect_err("two lengths that disagree");
+        bytes[96..104].copy_from_slice(&0u64.to_le_bytes());
+        Ktx2::parse(&bytes).expect_err("an uncompressed length of zero");
+    }
+
+    #[test]
     fn refuses_key_value_data_that_reaches_past_the_file() {
         // Found by the differential gate rather than by reading upstream. The
         // key/value section is the one this reader takes opportunistically -

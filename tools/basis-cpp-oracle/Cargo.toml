@@ -1,0 +1,19 @@
+[package]
+name = "basis-cpp-oracle"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "The reference Basis transcoder, vendored and built, as an oracle for draco-texture"
+license = "Apache-2.0"
+
+# Its own workspace on purpose: this compiles about 1.5 MB of C++ and nothing
+# in the ordinary build or test cycle should wait for it.
+[workspace]
+
+[build-dependencies]
+cc = "1.0"
+
+[dependencies]
+
+[dev-dependencies]
+draco-texture = { path = "../../crates/draco-texture" }

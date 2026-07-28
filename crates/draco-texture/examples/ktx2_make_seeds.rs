@@ -147,13 +147,15 @@ fn shrink(original: &[u8], keep: usize, payload: Vec<u8>, scheme: u32) -> Vec<u8
 
     set_long(&mut bytes, HEADER_SIZE, new_level as u64);
     set_long(&mut bytes, HEADER_SIZE + 8, payload.len() as u64);
+    // With no supercompression the two lengths describe the same bytes and
+    // must agree; only BasisLZ, which carries its own, leaves this zero.
     set_long(
         &mut bytes,
         HEADER_SIZE + 16,
-        if scheme == 2 {
-            level.uncompressed as u64
-        } else {
-            0
+        match scheme {
+            0 => payload.len() as u64,
+            2 => level.uncompressed as u64,
+            _ => 0,
         },
     );
 

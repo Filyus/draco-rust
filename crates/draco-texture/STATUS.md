@@ -45,6 +45,7 @@ ships. Current counts:
 | `ktx2_malformed.rs` | six sweeps over headers, long fields, truncation, payloads |
 | `ktx2_transcode` (libFuzzer) | 13521 executions, 5149 edges, no finding |
 | `basisu` cross-check | 215 images against a third implementation, in CI |
+| C++ parity | 247 images against the vendored reference at the ported revision, in CI |
 
 ## Left out on purpose
 
@@ -85,7 +86,13 @@ want BC4 or EAC R11 for the same reason. This is the next thing to build.
 
 ## Known limits
 
-**The node gates run on one machine.** They compare against Binomial's prebuilt
+**The node gates still run on one machine**, but nothing depends on that any
+more: `tools/basis-cpp-oracle` vendors the reference at the revision this was
+ported from and compares 247 images on any runner, and `tools/basisu-probe`
+compares 215 against a third implementation. What the node gates add on top is
+the browser-side ranking and upload, which needs a browser anyway.
+
+**(superseded)** They compare against Binomial's prebuilt
 WASM at a path inside a three.js checkout, so on a runner they print SKIPPED and
 exit 0 — which was always the stated intent of that step, but left CI proving
 only that the module builds and fits its budget. What proves the bytes on a

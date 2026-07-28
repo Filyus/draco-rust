@@ -294,6 +294,16 @@ impl<'a> Ktx2<'a> {
                         value: entry.uncompressed_byte_length,
                     })
                 }
+                // 3.9.4: with no supercompression the two lengths describe the
+                // same bytes and must agree. The reference asserts on it; this
+                // reader did not, which the parity test found by writing a
+                // file this reader would have read and the reference would not.
+                Supercompression::None if entry.uncompressed_byte_length != entry.byte_length => {
+                    return Err(Ktx2Error::Invalid {
+                        field: "level uncompressedByteLength",
+                        value: entry.uncompressed_byte_length,
+                    })
+                }
                 Supercompression::Zstd if entry.uncompressed_byte_length == 0 => {
                     return Err(Ktx2Error::Invalid {
                         field: "level uncompressedByteLength",
