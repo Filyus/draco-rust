@@ -70,14 +70,27 @@ const MENU_GAP = 0;
  * its bottom edge simply loses its last rows.
  */
 function clippingBounds(element: HTMLElement) {
-  for (let node = element.parentElement; node; node = node.parentElement) {
-    const { overflow, overflowY } = getComputedStyle(node);
-    if (/auto|scroll|hidden/.test(overflow) || /auto|scroll|hidden/.test(overflowY)) {
-      const rect = node.getBoundingClientRect();
-      return { top: rect.top, bottom: rect.bottom };
+  const bounds = { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
+  // Each axis is clipped by its own nearest scroller, and they need not be the
+  // same element: a sidebar that scrolls vertically stops the list going past
+  // its bottom edge while leaving it free to be wider than the sidebar.
+  let verticalFound = false;
+  let horizontalFound = false;
+  for (let node = element.parentElement; node && !(verticalFound && horizontalFound); node = node.parentElement) {
+    const { overflow, overflowX, overflowY } = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    if (!verticalFound && (/auto|scroll|hidden/.test(overflow) || /auto|scroll|hidden/.test(overflowY))) {
+      bounds.top = rect.top;
+      bounds.bottom = rect.bottom;
+      verticalFound = true;
+    }
+    if (!horizontalFound && (/auto|scroll|hidden/.test(overflow) || /auto|scroll|hidden/.test(overflowX))) {
+      bounds.left = rect.left;
+      bounds.right = rect.right;
+      horizontalFound = true;
     }
   }
-  return { top: 0, bottom: window.innerHeight };
+  return bounds;
 }
 
 /**
@@ -101,6 +114,26 @@ function placeMenu(trigger: HTMLElement, menu: HTMLElement) {
   menu.style.top = openUp ? 'auto' : `calc(100% + ${MENU_GAP}px)`;
   menu.style.bottom = openUp ? `calc(100% + ${MENU_GAP}px)` : 'auto';
   menu.style.maxHeight = `${Math.max(80, Math.floor(openUp ? above : below))}px`;
+
+  // The same question sideways, and it has to be asked because the entries are
+  // not always short. Clamped to the control, a list of file paths in a narrow
+  // sidebar cut every row to a few characters and an ellipsis — which is the
+  // one thing a list of similar names must not do, since what tells them apart
+  // is exactly what gets cut. So it is as wide as its longest row, never
+  // narrower than the control it hangs from, and never past the edge it would
+  // be clipped at; if it does not fit to the right of that edge, it hangs from
+  // the control's other corner instead.
+  menu.style.maxWidth = 'none';
+  menu.style.left = '0';
+  menu.style.right = 'auto';
+  const wantedWidth = menu.getBoundingClientRect().width;
+  const rightward = bounds.right - anchor.left;
+  const leftward = anchor.right - bounds.left;
+  const openLeft = rightward < Math.min(wantedWidth, leftward);
+  menu.style.left = openLeft ? 'auto' : '0';
+  menu.style.right = openLeft ? '0' : 'auto';
+  menu.style.maxWidth = `${Math.max(anchor.width, Math.floor(openLeft ? leftward : rightward))}px`;
+
   // A tooltip repeating a name that is fully visible is noise; one on a name
   // the row had to cut is the only way to read it.
   for (const option of menu.querySelectorAll<HTMLElement>('.menu-picker-option')) {
@@ -179,6 +212,9 @@ export function createMenuPicker({
       menu.style.removeProperty('top');
       menu.style.removeProperty('bottom');
       menu.style.removeProperty('maxHeight');
+      menu.style.removeProperty('left');
+      menu.style.removeProperty('right');
+      menu.style.removeProperty('maxWidth');
       // Hiding the menu while one of its options holds focus would drop focus
       // to the body, so the trigger takes it back — but only then, otherwise
       // closing would steal focus from whatever the user just clicked.

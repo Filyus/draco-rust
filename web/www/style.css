@@ -710,12 +710,14 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     /* Opens downward by default and upward where the control sits at the
        bottom of the viewport; either way the list stays inside the canvas. */
     top: 100%;
-    right: 0;
     left: 0;
-    /* Exactly as wide as the control. Sized to its longest entry it grew past
-       the panel it sits in, which reads as the list sliding out from under its
-       trigger. How tall it may be, and whether it opens up or down, depend on
-       the room it has, so `placeMenu` sets those on opening. */
+    /* As wide as its longest entry and never narrower than the control, so a
+       list of file paths in a narrow panel stays readable. How wide it may
+       actually get, which corner it hangs from, how tall it may be and whether
+       it opens up or down all depend on the room it has, so `placeMenu` sets
+       those on opening. */
+    width: max-content;
+    min-width: 100%;
     overflow-y: auto;
     overscroll-behavior: contain;
     /* No frame at all: the rows reach the edges and the fill is the one the

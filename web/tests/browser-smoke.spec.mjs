@@ -2160,6 +2160,9 @@ test('the variant list stays within its control and its panel', async ({ page })
       trigger: box('#viewer-variant-trigger'),
       menu: box('#viewer-variant-menu'),
       sidebar: box('.sidebar'),
+      truncated: [...menu.querySelectorAll('.menu-picker-option')]
+        .filter((row) => row.scrollWidth > row.clientWidth + 1)
+        .map((row) => [row.textContent, row.title]),
       scrolls: menu.scrollHeight > menu.clientHeight,
     };
   });
@@ -2227,9 +2230,21 @@ test('the variant list stays within its control and its panel', async ({ page })
   expect(await page.evaluate(() => getComputedStyle(document.querySelector('#viewer-variant-menu')).boxShadow)).toBe('none');
   await page.mouse.move(0, 0);
 
+  // Hanging from the control's edge, never narrower than it, and never past
+  // the panel that would clip it. It used to be pinned to the control's width
+  // exactly, which is fine for variant names and unusable for the file paths
+  // the model picker lists: every row came back as four characters and an
+  // ellipsis, and what tells those entries apart is the part that got cut.
   expect(geometry.menu.left).toBe(geometry.trigger.left);
-  expect(geometry.menu.right).toBe(geometry.trigger.right);
+  expect(geometry.menu.right).toBeGreaterThanOrEqual(geometry.trigger.right);
+  expect(geometry.menu.right).toBeLessThanOrEqual(geometry.sidebar.right);
   expect(geometry.menu.bottom).toBeLessThanOrEqual(geometry.sidebar.bottom);
+  // The one name longer than the panel itself still has to be cut — there is
+  // nowhere for it to go — and the tooltip is then the only way to read it.
+  // Everything shorter now fits, which is the whole of the change.
+  expect(geometry.truncated.length).toBe(1);
+  expect(geometry.truncated[0][0]).toBe('Midnight Peacock Velvet with Contrast Stitching');
+  expect(geometry.truncated[0][1]).toBe(geometry.truncated[0][0]);
   // Capped rather than truncated: every entry is still reachable.
   expect(geometry.scrolls).toBe(true);
   expect(await page.locator('#viewer-variant-menu .menu-picker-option').count()).toBe(9);
@@ -3661,6 +3676,26 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
     }
 
     const picker = document.getElementById('file-model-picker');
+
+    // What the open list looks like. Clamped to the width of its trigger, a
+    // list of paths in a sidebar this narrow cut every row to a few characters
+    // — and what tells these entries apart is precisely the part that gets cut.
+    const triggerButton = document.getElementById('file-model-trigger');
+    triggerButton.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const menu = document.getElementById('file-model-menu');
+    const rows = [...menu.querySelectorAll('.menu-picker-option')];
+    const menuBox = menu.getBoundingClientRect();
+    const triggerBox = triggerButton.getBoundingClientRect();
+    const list = {
+      rows: rows.length,
+      truncated: rows.filter((row) => row.scrollWidth > row.clientWidth + 1).length,
+      widerThanTrigger: menuBox.width > triggerBox.width,
+      insideViewport: menuBox.left >= -1 && menuBox.right <= window.innerWidth + 1
+        && menuBox.top >= -1 && menuBox.bottom <= window.innerHeight + 1,
+    };
+    triggerButton.click();
+
     const chosen = () => ({
       path: state.currentModelPath,
       resources: Object.keys(state.currentSourceResources),
@@ -3678,6 +3713,7 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
 
     return {
       first,
+      list,
       second: chosen(),
       offered: [...select.options].map((option) => [option.value, option.textContent]),
       pickerShown: !picker.hidden,
@@ -3694,6 +3730,12 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
   // they share, and the shorter path is the one that opened.
   expect(observed.pickerShown).toBe(true);
   expect(observed.fits).toBe(true);
+  // The list is as wide as it needs to be and stays on screen: both entries
+  // read in full, neither cut to an ellipsis.
+  expect(observed.list.rows).toBe(2);
+  expect(observed.list.truncated).toBe(0);
+  expect(observed.list.widerThanTrigger).toBe(true);
+  expect(observed.list.insideViewport).toBe(true);
   expect(observed.offered).toEqual([
     ['Helmet/glTF/Helmet.gltf', 'glTF/Helmet.gltf'],
     ['Helmet/glTF-instancing/HelmetInstanced.gltf', 'glTF-instancing/HelmetInstanced.gltf'],
