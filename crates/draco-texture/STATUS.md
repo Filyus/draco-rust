@@ -126,6 +126,26 @@ ETC, so the pair serves nobody. True as far as it went, and it missed that the
 pair is the prerequisite for ever retiring the ETC family at all. The better
 reason to build something is sometimes not the one it looks like it has.
 
+## The `basisu` crate, measured
+
+[`basisu`](https://crates.io/crates/basisu) 0.1.0 appeared on 2026-07-18 — a
+pure-Rust transcoder covering strictly more than this: every codec including
+HDR and XUASTC, the `.basis` container, about twenty targets. It was measured
+rather than argued about; see [`tools/basisu-probe`](../../tools/basisu-probe).
+
+It cannot replace this crate in the browser: the same job built on it is
+437 KiB gzip against 166 here, and 390 even when asked for one target only, so
+its tables are not trimmable. It is kept as a **second oracle** instead, which
+is worth more than it sounds — the node gates compare against a build dated
+2024-11-29 that degrades on malformed input, and this is a third implementation
+verified against a vendored C++ oracle of its own. 160 images agree byte for
+byte.
+
+The one disagreement is ETC1S to ASTC, and it confirmed something previously
+only read off an `#ifdef`: `basisu` implements the two
+`BASISD_SUPPORT_ASTC_HIGHER_OPAQUE_QUALITY` branches that every emscripten
+build compiles out. Each of us matches a different build of the same reference.
+
 ## How upstream stands
 
 Dates from the repository's own history, for judging what is stable rather than

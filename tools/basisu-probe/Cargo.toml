@@ -1,0 +1,37 @@
+[package]
+name = "basisu-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Measures the basisu crate against draco-texture: wasm size, and byte-for-byte agreement"
+license = "Apache-2.0"
+
+# Its own workspace on purpose. `basisu` carries about twelve megabytes of
+# lookup tables as Rust source and takes minutes to compile; nothing in the
+# ordinary build or test cycle should ever wait for it.
+[workspace]
+
+[package.metadata.wasm-pack.profile.release]
+# wasm-pack's own invocation fails validation on this module. The repository's
+# build tool passes explicit feature flags for the same reason; see the README
+# here for the command that works.
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+# Without `zstd`, so the comparison is generous to it: the shipped module here
+# carries `ruzstd` and this does not.
+basisu = { version = "0.1.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+draco-texture = { path = "../../crates/draco-texture" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
