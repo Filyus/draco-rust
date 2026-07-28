@@ -120,15 +120,25 @@ function observerAt(wavelength: number): [number, number, number] {
 /**
  * The wavelengths and their weights, as a GLSL table.
  *
+ * Sampled between the Fraunhofer F and C lines rather than across the whole
+ * visible range, because that interval is the one the dispersion factor is
+ * defined on: the Abbe number is the ratio of the index at the sodium line to
+ * the spread between these two, and the fit the extension publishes places the
+ * primaries at exactly that spread apart. Sampling out to violet is more of
+ * the spectrum than the number describes, and at the factors that asset tests
+ * it doubles the width of every fringe.
+ *
  * Normalised so the weights sum to one in every channel: a surface reading a
  * flat image has to hand it back unchanged, whatever its Abbe number, or
  * dispersion would tint everything it touched.
  */
 function spectralTable(): string {
+  const shortest = 486.13;
+  const longest = 656.27;
   const wavelengths: number[] = [];
   const weights: [number, number, number][] = [];
   for (let index = 0; index < SPECTRAL_SAMPLES; index += 1) {
-    const wavelength = 400 + (700 - 400) * ((index + 0.5) / SPECTRAL_SAMPLES);
+    const wavelength = shortest + (longest - shortest) * ((index + 0.5) / SPECTRAL_SAMPLES);
     wavelengths.push(wavelength);
     weights.push(observerAt(wavelength).map((value) => Math.max(value, 0)) as [number, number, number]);
   }
