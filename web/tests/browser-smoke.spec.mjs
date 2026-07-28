@@ -2682,17 +2682,21 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
   // With a volume that absorbs green, less of it does.
   expect(observed.tinted.centre[1]).toBeLessThan(observed.clear.centre[1] - 20);
 
-  // Dispersion pulls the red and blue ends apart and leaves green on the
-  // material's own index. So against the same glass at the same thickness, red
-  // has moved across the stripe's edge somewhere along the row and green has
-  // moved nowhere - which is the extension rather than a brighter or dimmer
-  // refraction. The spread is proportional to how far the index sits from air,
-  // so a factor that ignored the index would show here as a far wider one.
+  // What dispersion does is separate the ends of the spectrum: the red end
+  // bends least and the blue end most, so where the glass shows an edge the
+  // two land in different places and the channels come apart. Measured as the
+  // widest gap between them along the row, against the same glass at the same
+  // thickness - which is the extension rather than a brighter or dimmer
+  // refraction. Not "green stays put": every channel is now built from a dozen
+  // wavelengths of its own, and only the whole spectrum has a fixed point.
   const largestShift = (channel, a, b) => a.row.reduce((most, value, index) => (
     index % 4 === channel ? Math.max(most, Math.abs(value - b.row[index])) : most
   ), 0);
+  const widestSplit = (sample) => sample.row.reduce((most, value, index) => (
+    index % 4 === 0 ? Math.max(most, Math.abs(value - sample.row[index + 2])) : most
+  ), 0);
   expect(largestShift(0, observed.dispersed, observed.thick)).toBeGreaterThan(8);
-  expect(largestShift(1, observed.dispersed, observed.thick)).toBeLessThan(8);
+  expect(widestSplit(observed.dispersed)).toBeGreaterThan(widestSplit(observed.thick) * 3);
 
   // And at the index of air there is no dispersion to have: light that is not
   // bent at all is not bent by wavelength either. This is what a spread stated

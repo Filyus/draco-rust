@@ -78,6 +78,71 @@ function slotDeclarations(slots: readonly TextureSlotName[]): string {
   ].join('\n');
 }
 
+/**
+ * How many wavelengths a dispersive surface is sampled at.
+ *
+ * Three - one per primary - is what the extension's reference implementation
+ * does and what it costs the least, but three samples of a continuous spectrum
+ * alias into three coloured ghosts rather than a spread. A dozen resolves the
+ * fringe as a fringe, and each is one more tap of a texture the surface is
+ * reading anyway.
+ */
+const SPECTRAL_SAMPLES = 12;
+
+/**
+ * The CIE 1931 observer at one wavelength, as linear sRGB.
+ *
+ * Wyman, Sloan and Shirley's analytic fits of the colour matching functions -
+ * a couple of skewed Gaussians apiece - through the D65 matrix. Computed here
+ * rather than in GLSL because it is the same table every frame.
+ */
+function observerAt(wavelength: number): [number, number, number] {
+  const lobe = (mean: number, below: number, above: number) => {
+    const spread = wavelength < mean ? below : above;
+    const offset = (wavelength - mean) / spread;
+    return Math.exp(-0.5 * offset * offset);
+  };
+  const x = 1.056 * lobe(599.8, 37.9, 31.0)
+    + 0.362 * lobe(442.0, 16.0, 26.7)
+    - 0.065 * lobe(501.1, 20.4, 26.2);
+  const y = 0.821 * lobe(568.8, 46.9, 40.5) + 0.286 * lobe(530.9, 16.3, 31.1);
+  const z = 1.217 * lobe(437.0, 11.8, 36.0) + 0.681 * lobe(459.0, 26.0, 13.8);
+  return [
+    3.2406 * x - 1.5372 * y - 0.4986 * z,
+    -0.9689 * x + 1.8758 * y + 0.0415 * z,
+    0.0557 * x - 0.2040 * y + 1.0570 * z,
+  ];
+}
+
+/**
+ * The wavelengths and their weights, as a GLSL table.
+ *
+ * Normalised so the weights sum to one in every channel: a surface reading a
+ * flat image has to hand it back unchanged, whatever its Abbe number, or
+ * dispersion would tint everything it touched.
+ */
+function spectralTable(): string {
+  const wavelengths: number[] = [];
+  const weights: [number, number, number][] = [];
+  for (let index = 0; index < SPECTRAL_SAMPLES; index += 1) {
+    const wavelength = 400 + (700 - 400) * ((index + 0.5) / SPECTRAL_SAMPLES);
+    wavelengths.push(wavelength);
+    weights.push(observerAt(wavelength).map((value) => Math.max(value, 0)) as [number, number, number]);
+  }
+  const totals = weights.reduce(
+    (sum, weight) => [sum[0] + weight[0], sum[1] + weight[1], sum[2] + weight[2]],
+    [0, 0, 0],
+  );
+  const glsl = (values: number[]) => `vec3(${values.map((v) => v.toFixed(6)).join(', ')})`;
+  return [
+    `const int SPECTRAL_SAMPLES = ${SPECTRAL_SAMPLES};`,
+    `const float SPECTRAL_WAVELENGTH[SPECTRAL_SAMPLES] = float[SPECTRAL_SAMPLES](`,
+    `    ${wavelengths.map((value) => value.toFixed(2)).join(', ')});`,
+    `const vec3 SPECTRAL_WEIGHT[SPECTRAL_SAMPLES] = vec3[SPECTRAL_SAMPLES](`,
+    `    ${weights.map((weight) => glsl(weight.map((value, channel) => value / totals[channel]))).join(',\n    ')});`,
+  ].join('\n');
+}
+
 /** GLSL sources for the preview: PBR surface, debug lines and the backdrop. */
 
 export const VERT_SRC = `#version 300 es
@@ -264,6 +329,8 @@ vec2 selectUv(int texCoord) {
 // an absent transform arrives as the identity.
 ${slotDeclarations(slots)}
 
+${spectralTable()}
+
 vec3 fresnelSchlickRoughness(float cosTheta, vec3 f0, float roughness) {
     return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - cosTheta, 5.0);
 }
@@ -426,10 +493,38 @@ vec3 iridescentFresnel(float filmIor, float cosTheta1, float thickness, vec3 bas
  * unscaled depth and read the wrong pixel.
  */
 vec3 volumeTransmissionRay(vec3 normal, vec3 view, float ior, float thickness) {
-    vec3 refracted = refract(-view, normalize(normal), 1.0 / max(ior, 1.0001));
+    // Which way the interface is crossed decides the ratio. A back face is the
+    // far wall of the volume seen from inside it, where light leaves a dense
+    // medium for air - and where, past the critical angle, it does not leave
+    // at all - refract says so by returning nothing, and the caller reflects
+    // instead.
+    float eta = gl_FrontFacing ? 1.0 / max(ior, 1.0001) : max(ior, 1.0001);
+    vec3 refracted = refract(-view, normalize(normal), eta);
+    if (dot(refracted, refracted) < 1e-8) return vec3(0.0);
     vec3 modelScale = vec3(
         length(uModel[0].xyz), length(uModel[1].xyz), length(uModel[2].xyz));
     return normalize(refracted) * thickness * modelScale;
+}
+
+/**
+ * The index of refraction at one wavelength, from the material's own.
+ *
+ * Cauchy's equation, with its two constants pinned by the Abbe number the
+ * dispersion factor states as twenty over. The extension's own implementation
+ * note spreads the three primaries linearly instead, which is a fit to this
+ * over the visible range; sampling the spectrum properly, there is no reason
+ * to use the fit rather than the thing it fits.
+ */
+float dispersedIor(float ior, float wavelength) {
+    if (uDispersion <= 0.0) return ior;
+    const float FRAUNHOFER_F = 486.13;
+    const float FRAUNHOFER_D = 587.56;
+    const float FRAUNHOFER_C = 656.27;
+    float abbe = 20.0 / uDispersion;
+    float b = (ior - 1.0)
+        / (abbe * (1.0 / (FRAUNHOFER_F * FRAUNHOFER_F) - 1.0 / (FRAUNHOFER_C * FRAUNHOFER_C)));
+    float a = ior - b / (FRAUNHOFER_D * FRAUNHOFER_D);
+    return a + b / (wavelength * wavelength);
 }
 
 /**
@@ -491,11 +586,16 @@ vec3 captureBicubic(vec2 uv, float lod) {
     return mix(lower, upper, fract(lod));
 }
 
+/** Where on the frame a ray leaving here at this index comes out. */
+vec2 exitCoords(vec3 position, vec3 normal, vec3 view, float ior, float thickness) {
+    vec4 clip = uProjection * uView
+        * vec4(position + volumeTransmissionRay(normal, view, ior, thickness), 1.0);
+    return clamp(clip.xy / clip.w * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+}
+
 vec3 sampleCaptured(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness) {
-    vec3 exitPoint = position + volumeTransmissionRay(normal, view, ior, thickness);
-    vec4 clip = uProjection * uView * vec4(exitPoint, 1.0);
-    vec2 uv = clamp(clip.xy / clip.w * 0.5 + 0.5, vec2(0.0), vec2(1.0));
-    return captureBicubic(uv, transmissionLod(roughness, ior));
+    return captureBicubic(
+        exitCoords(position, normal, view, ior, thickness), transmissionLod(roughness, ior));
 }
 
 vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness, out float rayLength) {
@@ -515,12 +615,23 @@ vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float
     // blue ends sit half of it apart in index, green at the material's own. It
     // is proportional to how far the index is from air, so a material that does
     // not refract does not disperse either, whatever its Abbe number says.
-    float halfSpread = (ior - 1.0) * 0.025 * uDispersion;
-    return vec3(
-        sampleCaptured(position, normal, view, ior - halfSpread, thickness, roughness).r,
-        sampleCaptured(position, normal, view, ior, thickness, roughness).g,
-        sampleCaptured(position, normal, view, ior + halfSpread, thickness, roughness).b
-    );
+    // A dozen wavelengths across the visible range, each bent by its own
+    // index and weighted by what the eye makes of it. The weights sum to one
+    // per channel, so a flat frame comes back flat however strong the
+    // dispersion: what changes is where each wavelength lands, not how much of
+    // it there is.
+    float lod = transmissionLod(roughness, ior);
+    vec3 spread = vec3(0.0);
+    for (int index = 0; index < SPECTRAL_SAMPLES; index += 1) {
+        float wavelengthIor = dispersedIor(ior, SPECTRAL_WAVELENGTH[index]);
+        vec2 uv = exitCoords(position, normal, view, wavelengthIor, thickness);
+        // Reconstructed the same way the single-index path reconstructs, or a
+        // surface with no dispersion to speak of would still shift when the
+        // factor crossed zero - the filter would be the only thing that
+        // changed, and it would show as a seam.
+        spread += SPECTRAL_WEIGHT[index] * captureBicubic(uv, lod);
+    }
+    return spread;
 }
 
 /**
@@ -744,6 +855,13 @@ void main() {
         float rayLength;
         vec3 transmitted = transmittedRadiance(
             vWorldPos, N, V, uIor, thickness, materialRoughness, rayLength);
+        // Past the critical angle nothing crosses the interface; the surface
+        // becomes a mirror, and what it shows is the environment it reflects.
+        if (volumeTransmissionRay(N, V, uIor, 1.0) == vec3(0.0)) {
+            transmitted = textureLod(
+                uPrefilteredMap, reflect(-V, N), materialRoughness * uEnvironmentMaxLod).rgb;
+            rayLength = 0.0;
+        }
         // Tinted by the base colour, like the diffuse term it replaces: the
         // spec's transmission BTDF carries it, and without it coloured glass
         // shades as clear.
