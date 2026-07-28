@@ -7,6 +7,10 @@ import type { Mat4, Vec3 } from '../math.ts';
 import { cameraPosition } from './camera.ts';
 import type { CameraHost } from './camera.ts';
 import { GL } from './gl-utils.ts';
+import {
+  beginBackFaceDepth, endBackFaceDepth, ensureBackFaceDepth,
+} from './back-face-depth.ts';
+import type { BackFaceDepth } from './back-face-depth.ts';
 import { ensureBloomChain } from './bloom.ts';
 import type { BloomChain } from './bloom.ts';
 import {
@@ -190,6 +194,10 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   _sceneTarget?: SceneTarget | null;
   /** The glare pyramid the output pass reads. */
   _bloom?: BloomChain | null;
+  /** Where each transmissive volume ends, and which way its far wall faces. */
+  _backFace?: BackFaceDepth | null;
+  backFaceProgram: WebGLProgram;
+  backFaceUniforms: Record<string, WebGLUniformLocation | null>;
   /** Bound in place of the capture before there is one. */
   _snapshotPlaceholder?: WebGLTexture | null;
   /** Whether this machine can hold the frame as half floats. Asked once. */
@@ -198,6 +206,8 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   bloomStrength?: number;
   /** Draw the frame at twice the size and average it down. Costly; off. */
   supersample?: boolean;
+  /** Set while the far wall is being drawn, which uses its own program. */
+  _backFacePass?: boolean;
   /** Stops applied to the frame before the tone curve. */
   exposure?: number;
   lineUniforms: Record<string, WebGLUniformLocation | null>;
@@ -271,6 +281,9 @@ export function render(host: RenderHost) {
   updateWorldMatrices(host);
 
   const scene = ensureSceneResources(host);
+  // Where the glass ends has to be known before the glass is shaded, and it is
+  // the same geometry either way - so it is drawn first, back faces only.
+  drawBackFaceDepth(host, scene);
   beginScene(gl, scene);
 
   drawBackground(host);
@@ -301,6 +314,33 @@ export function render(host: RenderHost) {
   resolveScene(gl, scene);
   drawGlare(host);
   drawOutput(host);
+}
+
+/**
+ * Draw the far wall of every transmissive volume.
+ *
+ * Skipped with the rest of the transmission machinery when nothing in the
+ * scene refracts. What it costs is one depth-only pass over the transmissive
+ * meshes, which are the few: the pass exists so that thickness is the depth of
+ * the glass at this pixel rather than a number the file states once for a
+ * shape that is not a slab.
+ */
+function drawBackFaceDepth(host: RenderHost, scene: SceneTarget) {
+  const gl = host.gl;
+  if (!sceneRefracts(host)) return;
+  host._backFace = ensureBackFaceDepth(
+    gl, host._backFace ?? null, scene.renderWidth, scene.renderHeight);
+  beginBackFaceDepth(gl, host._backFace);
+  gl.useProgram(host.backFaceProgram);
+  gl.uniformMatrix4fv(host.backFaceUniforms.uProjection, false, host._projection);
+  gl.uniformMatrix4fv(host.backFaceUniforms.uView, false, host._view);
+  gl.uniform3fv(host.backFaceUniforms.uCameraPos, host._eye!);
+  host._backFacePass = true;
+  drawSurfaces(host, true);
+  host._backFacePass = false;
+  endBackFaceDepth(gl);
+  // Every program bound during the pass belongs to it, not to the frame.
+  host._surfaceProgram = null;
 }
 
 /** Whether anything in the scene will read the opaque-half copy at all. */
@@ -362,9 +402,18 @@ function drawSurfaces(host: RenderHost, deferred: boolean) {
       const { uploaded, materialIndex } = primitives[i];
       const material = host.scene!.materials[materialIndex];
       if (needsCompletedFrame(material) !== deferred) continue;
+      // The far wall belongs to the volume that has one; a blended surface has
+      // no interior for a ray to cross.
+      const wallOnly = !!host._backFacePass;
+      if (wallOnly && (material?.transmissionFactor ?? 0) <= 0) continue;
       // Which program draws this primitive is settled first: everything below
       // writes uniforms, and uniforms belong to whichever program is bound.
-      const surface = useSurfaceProgram(host, enabledMaterialSlots(host, material, uploaded));
+      // The far-wall pass has one program for every material, and the uniforms
+      // it shares with the surface are the ones the vertex stage reads.
+      const surface = wallOnly
+        ? null
+        : useSurfaceProgram(host, enabledMaterialSlots(host, material, uploaded));
+      if (wallOnly) host.uniforms = host.backFaceUniforms;
       gl.uniformMatrix4fv(host.uniforms.uModel, false, host._model);
       gl.uniformMatrix4fv(host.uniforms.uNormalMatrix, false, host._normalMatrix);
       const usesSkin = !!(jointMatrices && uploaded.hasJoints && uploaded.hasWeights);
@@ -387,18 +436,23 @@ function drawSurfaces(host: RenderHost, deferred: boolean) {
         host.uniforms.uUseSmoothNormals,
         useSmoothNormals ? 1 : 0,
       );
-      applyMaterial(host, surface, material, uploaded, useSmoothNormals);
+      if (surface) applyMaterial(host, surface, material, uploaded, useSmoothNormals);
 
-      if (material?.doubleSided) gl.disable(gl.CULL_FACE);
-      else gl.enable(gl.CULL_FACE);
+      // The far-wall pass keeps its own state: front faces culled whatever the
+      // material says about sidedness, and the depth test reversed so that the
+      // wall it keeps is the far one.
+      if (!wallOnly) {
+        if (material?.doubleSided) gl.disable(gl.CULL_FACE);
+        else gl.enable(gl.CULL_FACE);
 
-      if (material?.alphaMode === 'BLEND') {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        gl.depthMask(false);
-      } else {
-        gl.disable(gl.BLEND);
-        gl.depthMask(true);
+        if (material?.alphaMode === 'BLEND') {
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+          gl.depthMask(false);
+        } else {
+          gl.disable(gl.BLEND);
+          gl.depthMask(true);
+        }
       }
 
       const mode = glMode(host, uploaded.mode, host.wireframe);
@@ -731,6 +785,10 @@ export function bindFrameSnapshot(host: RenderHost) {
   gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.frameSnapshot);
   gl.bindTexture(gl.TEXTURE_2D, scene ? scene.capture : snapshotPlaceholder(host));
   gl.uniform1i(host.uniforms.uFrameSnapshot, SHARED_TEXTURE_UNITS.frameSnapshot);
+  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.backFace);
+  gl.bindTexture(
+    gl.TEXTURE_2D, host._backFace ? host._backFace.texture : snapshotPlaceholder(host));
+  gl.uniform1i(host.uniforms.uBackFace, SHARED_TEXTURE_UNITS.backFace);
   if (!scene) return;
   gl.uniform2f(host.uniforms.uFrameSize, scene.renderWidth, scene.renderHeight);
   // The mip chain is the blur a rough transmissive surface reads through.

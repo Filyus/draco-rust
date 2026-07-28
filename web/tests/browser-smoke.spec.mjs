@@ -2714,6 +2714,126 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
   expect(largestShift(1, observed.smooth, observed.atFloor)).toBeGreaterThan(4);
 });
 
+test('a volume is as deep as its geometry, not as deep as its file says', async ({ page }) => {
+  await page.goto('/index.html');
+  // Thickness in the file is one number for a whole mesh, and a mesh is
+  // usually not a slab: a bulb is thin at the neck and deep through the
+  // middle, and a lens is nothing else. So the far wall of every transmissive
+  // volume is drawn before the frame, and what a ray crosses is the depth of
+  // the glass at that pixel - which is also where it is bent the second time,
+  // the thing that makes a prism a prism.
+  const observed = await page.evaluate(async () => {
+    const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
+      import('/viewer.js'),
+      import('/scene-document.js'),
+      import('/scene-document-viewer.js'),
+    ]);
+
+    const bytes = (values) => new Uint8Array(
+      values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
+    );
+    const accessor = (values, components, componentType = 5126) => ({
+      bytes: bytes(values), componentType, components, count: values.length / components,
+    });
+    // A closed box, so there is a far wall to find, in front of a green
+    // emitter. Depth is the node's scale, and the material never changes.
+    const box = [
+      -1, -1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1,
+      -1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1,
+    ];
+    const boxIndices = [
+      0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4,
+      3, 7, 6, 3, 6, 2, 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5,
+    ];
+    const document_ = (depth) => createSceneDocument({
+      materials: [
+        { baseColorFactor: [0, 0, 0, 1], metallicFactor: 0, roughnessFactor: 1, emissiveFactor: [0, 1, 0] },
+        {
+          baseColorFactor: [1, 1, 1, 1],
+          metallicFactor: 0,
+          roughnessFactor: 0,
+          transmissionFactor: 1,
+          thicknessFactor: 0.1,
+          attenuationDistance: 0.6,
+          attenuationColor: [1, 0.15, 0.15],
+        },
+      ],
+      accessors: [
+        accessor(new Float32Array([-3, -3, -3, 3, -3, -3, 3, 3, -3, -3, 3, -3]), 3),
+        accessor(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]), 3),
+        accessor(new Uint16Array([0, 1, 2, 0, 2, 3]), 1, 5123),
+        accessor(new Float32Array(box), 3),
+        accessor(new Uint16Array(boxIndices), 1, 5123),
+      ],
+      meshes: [
+        { primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, indices: 2, material: 0 }] },
+        { primitives: [{ attributes: { POSITION: 3, NORMAL: 3 }, indices: 4, material: 1 }] },
+      ],
+      nodes: [
+        { name: 'Emitter', translation: [0, 0, -2], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 },
+        { name: 'Glass', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, depth], mesh: 1 },
+      ],
+      rootNodes: [0, 1],
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
+    document.body.appendChild(canvas);
+    const viewer = new Viewer(canvas);
+    viewer.showGrid = false;
+    viewer.bloomStrength = 0;
+    const sample = (depth) => {
+      viewer.setScene(buildViewerSceneFromDocument(document_(depth)));
+      viewer.camera.target.set([0, 0, 0]);
+      viewer.camera.distance = 6;
+      viewer.camera.azimuth = 0;
+      viewer.camera.elevation = 0;
+      viewer._render();
+      const gl = viewer.gl;
+      const scene = viewer._sceneTarget;
+      const radiance = new Float32Array(4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, scene.resolveFramebuffer);
+      gl.readPixels(
+        scene.renderWidth >> 1, scene.renderHeight >> 1, 1, 1, gl.RGBA, gl.FLOAT, radiance);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return Array.from(radiance);
+    };
+
+    const thin = sample(0.04);
+    const deep = sample(1.0);
+
+    // The far wall itself: a normal where the glass is, nothing where it is not.
+    const gl = viewer.gl;
+    const wall = viewer._backFace;
+    const read = (x, y) => {
+      const pixel = new Float32Array(4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, wall.framebuffer);
+      gl.readPixels(x, y, 1, 1, gl.RGBA, gl.FLOAT, pixel);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return Array.from(pixel);
+    };
+    const onGlass = read(wall.width >> 1, wall.height >> 1);
+    const offGlass = read(1, 1);
+    const glError = gl.getError();
+    viewer.dispose();
+    canvas.remove();
+    return { thin, deep, onGlass, offGlass, glError };
+  });
+
+  expect(observed.glError).toBe(0);
+
+  // The pass found the box where the box is, and nothing where it is not.
+  expect(Math.hypot(...observed.onGlass.slice(0, 3))).toBeGreaterThan(0.5);
+  expect(observed.onGlass[3]).toBeGreaterThan(1);
+  expect(Math.hypot(...observed.offGlass.slice(0, 3))).toBe(0);
+
+  // Same material, same authored thickness, twenty-five times the geometry:
+  // the medium absorbs green over the distance actually crossed, so the deep
+  // box passes far less of the emitter behind it. Taking thickness from the
+  // file would make these two readings the same.
+  expect(observed.thin[1]).toBeGreaterThan(observed.deep[1] * 2);
+});
+
 test('KHR_materials_iridescence tints the specular lobe by film thickness', async ({ page }) => {
   await page.goto('/index.html');
   // A thin film reinforces the wavelengths its thickness suits, so the same

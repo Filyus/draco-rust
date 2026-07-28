@@ -280,6 +280,9 @@ uniform float uAttenuationDistance;
 uniform vec3 uAttenuationColor;
 // The opaque half of the frame, which the transmitted ray reads out of.
 uniform sampler2D uFrameSnapshot;
+// The far wall of this volume, as world normal and distance from the eye. A
+// zero normal means the pass found none, and the authored thickness stands in.
+uniform sampler2D uBackFace;
 uniform vec2 uFrameSize;
 uniform float uFrameMaxLod;
 uniform mat4 uProjection;
@@ -586,10 +589,53 @@ vec3 captureBicubic(vec2 uv, float lod) {
     return mix(lower, upper, fract(lod));
 }
 
-/** Where on the frame a ray leaving here at this index comes out. */
+/**
+ * The far wall under this fragment: how deep the volume is here, and which way
+ * it faces on the way out.
+ *
+ * The distance is measured along the eye ray rather than along the refracted
+ * one, which is the approximation this buys its cheapness with: the two agree
+ * exactly at normal incidence and part company at a glance. It is still the
+ * volume's own depth at this pixel rather than a number from the file, which
+ * is what a lens, a bulb or anything else that is not a slab needs.
+ */
+bool farWall(out vec3 wallNormal, out float depth) {
+    vec4 wall = texture(uBackFace, gl_FragCoord.xy / uFrameSize);
+    wallNormal = wall.xyz;
+    depth = wall.w - distance(uCameraPos, vWorldPos);
+    return dot(wallNormal, wallNormal) > 1e-4 && depth > 0.0;
+}
+
+/**
+ * Where on the frame a ray leaving here at this index comes out.
+ *
+ * Bent at the near wall, carried across the volume, and bent again at the far
+ * one - which is where a prism becomes a prism. Without the far wall in hand
+ * the ray is only bent once and walked the authored thickness, which is what
+ * every screen-space refraction does and what makes glass look like a decal.
+ */
 vec2 exitCoords(vec3 position, vec3 normal, vec3 view, float ior, float thickness) {
-    vec4 clip = uProjection * uView
-        * vec4(position + volumeTransmissionRay(normal, view, ior, thickness), 1.0);
+    vec3 wallNormal;
+    float depth;
+    vec3 exitPoint;
+    // A thickness of zero is the extension's thin-walled surface: no interior
+    // for a ray to cross, whatever geometry stands behind it. Measuring a wall
+    // there would give a pane of window glass the optics of a solid block.
+    if (thickness > 0.0 && farWall(wallNormal, depth)) {
+        vec3 inside = volumeTransmissionRay(normal, view, ior, 1.0);
+        if (dot(inside, inside) < 1e-8) return clamp(
+            (uProjection * uView * vec4(position, 1.0)).xy * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+        vec3 direction = normalize(inside);
+        exitPoint = position + direction * depth;
+        // Out through the far wall, whose normal faces away from the eye: the
+        // ratio is the reciprocal of the way in, and past the critical angle
+        // the ray stays inside and the exit is the wall itself.
+        vec3 outward = refract(direction, -normalize(wallNormal), max(ior, 1.0001));
+        if (dot(outward, outward) > 1e-8) exitPoint += normalize(outward) * depth;
+    } else {
+        exitPoint = position + volumeTransmissionRay(normal, view, ior, thickness);
+    }
+    vec4 clip = uProjection * uView * vec4(exitPoint, 1.0);
     return clamp(clip.xy / clip.w * 0.5 + 0.5, vec2(0.0), vec2(1.0));
 }
 
@@ -601,9 +647,13 @@ vec3 sampleCaptured(vec3 position, vec3 normal, vec3 view, float ior, float thic
 vec3 transmittedRadiance(vec3 position, vec3 normal, vec3 view, float ior, float thickness, float roughness, out float rayLength) {
     vec3 ray = volumeTransmissionRay(normal, view, ior, thickness);
     // How far the light travelled through the medium, which is what Beer's law
-    // absorbs over. Dispersion splits the three rays by a fraction of a percent
-    // in index, so the green one's length stands for all of them.
-    rayLength = length(ray);
+    // absorbs over: the volume's own depth here when the far wall was found,
+    // and the authored thickness when it was not. Dispersion parts the
+    // wavelengths by a fraction of a percent in index, so one length stands
+    // for all of them.
+    vec3 wallNormal;
+    float depth;
+    rayLength = thickness > 0.0 && farWall(wallNormal, depth) ? depth : length(ray);
     // KHR_materials_dispersion: one index per channel instead of one for all,
     // spread by the Abbe number the extension states as its reciprocal. Zero
     // leaves the three rays on top of each other, which is the single-index
@@ -948,6 +998,30 @@ void main() {
 }
 `;
 }
+
+/**
+ * The far wall of a transmissive volume: its world normal, and how far away it
+ * is from the eye.
+ *
+ * Shares the surface vertex shader, so a wall that is skinned, morphed or
+ * instanced moves with the surface in front of it rather than lagging behind
+ * in the bind pose.
+ */
+export const BACK_FACE_FRAG_SRC = `#version 300 es
+precision highp float;
+in vec3 vNormal;
+in vec3 vWorldPos;
+uniform vec3 uCameraPos;
+out vec4 outColor;
+
+void main() {
+    // Facing the eye is what a far wall does not do; the pass culls front
+    // faces, so the normal here points away and is flipped to face the ray
+    // that will leave through it.
+    vec3 normal = normalize(vNormal);
+    outColor = vec4(normal, distance(uCameraPos, vWorldPos));
+}
+`;
 
 export const LINE_VERT_SRC = `#version 300 es
 precision highp float;
