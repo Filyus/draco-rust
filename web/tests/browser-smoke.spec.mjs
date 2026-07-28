@@ -2571,7 +2571,10 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
       materials: [
         // Behind: a green emitter, so what shows through is unmistakably it.
         { baseColorFactor: [0, 0, 0, 1], metallicFactor: 0, roughnessFactor: 1, emissiveFactor: [0, 1, 0] },
-        { baseColorFactor: [0, 0, 0, 1], metallicFactor: 0, roughnessFactor: 0.05, ...front },
+        // In front: white, because the spec's BTDF tints what passes through
+        // by the base colour. Black glass transmits nothing, which would make
+        // this fixture measure the tint rather than the transmission.
+        { baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 0.05, ...front },
       ],
       accessors: [
         // Behind: a green stripe rather than a wall, so a ray that leaves the
@@ -2608,16 +2611,21 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
       viewer.camera.azimuth = 0.45;
       viewer.camera.elevation = 0;
       viewer._render();
-      const rgba = new Uint8Array(4);
+      // A whole scanline rather than one pixel: dispersion moves a channel
+      // sideways by a few texels, and which texel it lands on depends on the
+      // drawing buffer's size. What the row says - this channel moved, that
+      // one did not - does not.
+      const width = viewer.gl.drawingBufferWidth;
+      const row = new Uint8Array(width * 4);
       viewer.gl.readPixels(
-        Math.floor(viewer.gl.drawingBufferWidth / 2),
-        Math.floor(viewer.gl.drawingBufferHeight / 2),
-        1, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, rgba,
+        0, Math.floor(viewer.gl.drawingBufferHeight / 2),
+        width, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, row,
       );
       glError = glError || viewer.gl.getError();
       viewer.dispose();
       canvas.remove();
-      return Array.from(rgba);
+      const centre = (width >> 1) * 4;
+      return { centre: Array.from(row.subarray(centre, centre + 4)), row: Array.from(row) };
     };
 
     const opaque = sample({});
@@ -2626,8 +2634,13 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
     // channels pulled apart - so the three rays leave at three angles and land
     // in three places. The control has to carry the thickness too, or what it
     // measures is the refraction offset rather than the dispersion.
-    const thick = sample({ transmissionFactor: 1, thicknessFactor: 1 });
-    const dispersed = sample({ transmissionFactor: 1, thicknessFactor: 1, dispersion: 4 });
+    const thick = sample({ transmissionFactor: 1, thicknessFactor: 2 });
+    const dispersed = sample({ transmissionFactor: 1, thicknessFactor: 2, dispersion: 4 });
+    // The same pair at the index of air, where the surface does not refract.
+    const straight = sample({ transmissionFactor: 1, thicknessFactor: 2, ior: 1 });
+    const straightDispersed = sample({
+      transmissionFactor: 1, thicknessFactor: 2, ior: 1, dispersion: 4,
+    });
     // The same glass filled with a green-absorbing medium: what comes through
     // is what the volume left of it.
     const tinted = sample({
@@ -2636,22 +2649,38 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
       attenuationDistance: 0.35,
       attenuationColor: [1, 0.1, 0.1],
     });
-    return { opaque, clear, tinted, thick, dispersed, glError };
+    return { opaque, clear, tinted, thick, dispersed, straight, straightDispersed, glError };
   });
 
   expect(observed.glError).toBe(0);
-  // Opaque: the near quad hides the emitter entirely.
-  expect(observed.opaque[1]).toBeLessThan(60);
-  // Transmissive: the green behind it arrives.
-  expect(observed.clear[1]).toBeGreaterThan(observed.opaque[1] + 40);
+  // What separates the two is not brightness but colour: the surface is lit by
+  // a neutral environment either way, so green standing out from red is the
+  // emitter behind arriving and nothing else. Comparing absolute levels would
+  // measure how bright the environment is.
+  expect(Math.abs(observed.opaque.centre[1] - observed.opaque.centre[0])).toBeLessThan(20);
+  expect(observed.clear.centre[1] - observed.clear.centre[0]).toBeGreaterThan(40);
   // With a volume that absorbs green, less of it does.
-  expect(observed.tinted[1]).toBeLessThan(observed.clear[1] - 20);
+  expect(observed.tinted.centre[1]).toBeLessThan(observed.clear.centre[1] - 20);
+
   // Dispersion pulls the red and blue ends apart and leaves green on the
-  // material's own index. So against the same glass at the same thickness,
-  // red has moved onto the stripe and green has not moved at all - which is
-  // the extension rather than a brighter or dimmer refraction.
-  expect(Math.abs(observed.dispersed[0] - observed.thick[0])).toBeGreaterThan(8);
-  expect(Math.abs(observed.dispersed[1] - observed.thick[1])).toBeLessThan(8);
+  // material's own index. So against the same glass at the same thickness, red
+  // has moved across the stripe's edge somewhere along the row and green has
+  // moved nowhere - which is the extension rather than a brighter or dimmer
+  // refraction. The spread is proportional to how far the index sits from air,
+  // so a factor that ignored the index would show here as a far wider one.
+  const largestShift = (channel, a, b) => a.row.reduce((most, value, index) => (
+    index % 4 === channel ? Math.max(most, Math.abs(value - b.row[index])) : most
+  ), 0);
+  expect(largestShift(0, observed.dispersed, observed.thick)).toBeGreaterThan(8);
+  expect(largestShift(1, observed.dispersed, observed.thick)).toBeLessThan(8);
+
+  // And at the index of air there is no dispersion to have: light that is not
+  // bent at all is not bent by wavelength either. This is what a spread stated
+  // as a bare multiple of the factor gets wrong - it splits the channels of a
+  // surface that does not refract.
+  for (const channel of [0, 1, 2]) {
+    expect(largestShift(channel, observed.straightDispersed, observed.straight)).toBeLessThan(3);
+  }
 });
 
 test('KHR_materials_iridescence tints the specular lobe by film thickness', async ({ page }) => {
@@ -2818,15 +2847,14 @@ test('KHR_materials_sheen shows on the surface it is set on', async ({ page }) =
   expect(Math.abs(observed.sheened[0] - observed.rougher[0])).toBeGreaterThan(4);
 });
 
-test('the opaque half of the frame is snapshotted before what blends over it', async ({ page }) => {
+test('the frame a transmissive surface refracts is drawn once, in linear light', async ({ page }) => {
   await page.goto('/index.html');
-  // A transmissive surface has to sample the scene behind it, and the only
-  // moment the frame holds "everything such a surface may see" is between the
-  // opaque pass and the blended one. Nothing samples the snapshot yet, so what
-  // this pins is the pass structure and the sizing: the texture is taken from
-  // the canvas rather than composed in a buffer of its own, because the context
-  // is multisampled and routing the visible frame through a single-sample
-  // framebuffer would quietly cost it its antialiasing.
+  // A transmissive surface has to sample the scene behind it, and what it
+  // samples has to be the light there rather than the picture made of it: the
+  // shader treats the sample as radiance, tone maps the result and encodes it,
+  // so a capture that was already tone-mapped and encoded goes through both
+  // twice. Hence a pass of its own, drawn with the output transform switched
+  // off - and skipped outright when no material in the scene transmits.
   const observed = await page.evaluate(async () => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
       import('/viewer.js'),
@@ -2842,23 +2870,29 @@ test('the opaque half of the frame is snapshotted before what blends over it', a
     });
     // A blended quad in front of an opaque one, in the wrong order in the
     // scene: the opaque quad is second. Drawing them as they come would put
-    // the blend underneath.
-    const document_ = createSceneDocument({
-      materials: [
-        { baseColorFactor: [0, 0, 1, 0.5], alphaMode: 'BLEND', emissiveFactor: [0, 0, 1] },
-        { baseColorFactor: [1, 0, 0, 1], emissiveFactor: [1, 0, 0] },
-      ],
+    // the blend underneath. The transmissive quad is what makes the capture
+    // happen at all; it sits behind the opaque one, so it is depth-rejected
+    // and contributes no pixel of its own.
+    const materials = [
+      { baseColorFactor: [0, 0, 1, 0.5], alphaMode: 'BLEND', emissiveFactor: [0, 0, 1] },
+      { baseColorFactor: [1, 0, 0, 1], emissiveFactor: [1, 0, 0] },
+      { baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 0, transmissionFactor: 1 },
+    ];
+    const sceneOf = (count) => createSceneDocument({
+      materials: materials.slice(0, count),
       accessors: [
         accessor(new Float32Array([-1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1]), 3),
         accessor(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3),
         accessor(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]), 3),
         accessor(new Uint16Array([0, 1, 2, 0, 2, 3]), 1, 5123),
+        accessor(new Float32Array([-1, -1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1]), 3),
       ],
       meshes: [{
         primitives: [
           { attributes: { POSITION: 0, NORMAL: 2 }, indices: 3, material: 0 },
           { attributes: { POSITION: 1, NORMAL: 2 }, indices: 3, material: 1 },
-        ],
+          { attributes: { POSITION: 4, NORMAL: 2 }, indices: 3, material: 2 },
+        ].slice(0, count),
       }],
       nodes: [{ name: 'Quads', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 }],
       rootNodes: [0],
@@ -2869,33 +2903,57 @@ test('the opaque half of the frame is snapshotted before what blends over it', a
     document.body.appendChild(canvas);
     const viewer = new Viewer(canvas);
     viewer.showGrid = false;
-    viewer.setScene(buildViewerSceneFromDocument(document_));
-    viewer.camera.target.set([0, 0, 0]);
-    viewer.camera.distance = 5;
-    viewer.camera.azimuth = 0;
-    viewer.camera.elevation = 0;
-    viewer._render();
+    const frame = (count) => {
+      viewer.setScene(buildViewerSceneFromDocument(sceneOf(count)));
+      viewer.camera.target.set([0, 0, 0]);
+      viewer.camera.distance = 5;
+      viewer.camera.azimuth = 0;
+      viewer.camera.elevation = 0;
+      viewer._render();
+    };
 
+    // Nothing transmits, so the pass never runs and no target is allocated.
+    frame(2);
+    const withoutTransmission = !!viewer._frameTarget;
+
+    frame(3);
     const gl = viewer.gl;
-    const size = [viewer._frameTarget?.width, viewer._frameTarget?.height];
+    const target = viewer._frameTarget;
+    const size = [target?.width, target?.height];
     const matchesDrawingBuffer = size[0] === gl.drawingBufferWidth && size[1] === gl.drawingBufferHeight;
 
     const centre = (x, y) => [Math.floor(x / 2), Math.floor(y / 2)];
     const canvasPixel = new Uint8Array(4);
     gl.readPixels(...centre(gl.drawingBufferWidth, gl.drawingBufferHeight), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, canvasPixel);
+    // A corner: no geometry stands there in either image, so both hold the
+    // environment - the canvas as a picture of it, the capture as the light.
+    const canvasCorner = new Uint8Array(4);
+    gl.readPixels(1, 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, canvasCorner);
 
-    // Read the snapshot back by attaching it to a framebuffer of our own.
+    // Read the capture back by attaching it to a framebuffer of our own. Half
+    // floats are read as floats; the byte fallback is normalised to match.
     const readback = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, readback);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, viewer._frameTarget.color, 0);
-    const snapshotPixel = new Uint8Array(4);
-    gl.readPixels(...centre(size[0], size[1]), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, snapshotPixel);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target.color, 0);
+    const readLinear = (x, y) => {
+      if (!target.hdr) {
+        const bytes = new Uint8Array(4);
+        gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
+        return [...bytes].map((value) => value / 255);
+      }
+      const floats = new Float32Array(4);
+      gl.readPixels(x, y, 1, 1, gl.RGBA, gl.FLOAT, floats);
+      return [...floats];
+    };
+    const capturePixel = readLinear(...centre(size[0], size[1]));
+    const captureCorner = readLinear(1, 1);
+    const readError = gl.getError();
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.deleteFramebuffer(readback);
 
-    // A resize has to reallocate it: the texture is copied into at a fixed
-    // size, and a stale one would capture a corner of the frame.
-    const before = viewer._frameTarget;
+    // A resize has to reallocate it: the attachments are allocated at a fixed
+    // size, and a stale one would capture the frame at the wrong scale.
+    const before = target;
     canvas.width = gl.drawingBufferWidth + 32;
     canvas.height = gl.drawingBufferHeight + 32;
     viewer._render();
@@ -2903,21 +2961,47 @@ test('the opaque half of the frame is snapshotted before what blends over it', a
       && viewer._frameTarget.width === gl.drawingBufferWidth;
 
     const glError = gl.getError();
+    const linearOutputLeftOn = viewer._linearOutput;
     viewer.dispose();
     canvas.remove();
-    return { size, matchesDrawingBuffer, reallocated, glError, canvasPixel: Array.from(canvasPixel), snapshotPixel: Array.from(snapshotPixel) };
+    return {
+      withoutTransmission, size, matchesDrawingBuffer, reallocated, glError, readError,
+      linearOutputLeftOn, hdr: target.hdr,
+      canvasPixel: Array.from(canvasPixel), canvasCorner: Array.from(canvasCorner),
+      capturePixel, captureCorner,
+    };
   });
 
   expect(observed.glError).toBe(0);
+  expect(observed.readError).toBe(0);
   expect(observed.matchesDrawingBuffer).toBe(true);
   expect(observed.reallocated).toBe(true);
+  // Nothing outside the capture may be drawn with the output transform off.
+  expect(observed.linearOutputLeftOn).toBe(false);
+  // A scene with nothing to refract allocates nothing and draws no second pass.
+  expect(observed.withoutTransmission).toBe(false);
 
-  // The snapshot holds the opaque quad and nothing else: red, no blue.
-  expect(observed.snapshotPixel[0]).toBeGreaterThan(120);
-  expect(observed.snapshotPixel[2]).toBeLessThan(observed.snapshotPixel[0] / 2);
-  // The canvas holds the blend over it, so blue has arrived by then. Taking
-  // the snapshot after both, or before the opaque pass, changes exactly this.
-  expect(observed.canvasPixel[2]).toBeGreaterThan(observed.snapshotPixel[2] + 40);
+  // The capture holds the opaque quad and nothing else: red, no blue.
+  expect(observed.capturePixel[0]).toBeGreaterThan(0.5);
+  expect(observed.capturePixel[2]).toBeLessThan(observed.capturePixel[0] / 2);
+  // The canvas holds the blend over it, so blue has arrived by then. Drawing
+  // the capture after the blended pass, or before the opaque one, changes
+  // exactly this.
+  expect(observed.canvasPixel[2]).toBeGreaterThan(100);
+
+  // And the capture is the light behind the picture rather than the picture:
+  // tone-mapped and encoded, it is what the canvas shows at the same texel.
+  // Equal to the canvas instead would mean it had been captured encoded.
+  const aces = (x) => {
+    const value = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
+    return Math.min(Math.max(value, 0), 1);
+  };
+  for (let channel = 0; channel < 3; channel += 1) {
+    const asPicture = Math.round(255 * aces(observed.captureCorner[channel]) ** (1 / 2.2));
+    expect(Math.abs(asPicture - observed.canvasCorner[channel])).toBeLessThanOrEqual(3);
+    expect(Math.abs(observed.captureCorner[channel] * 255 - observed.canvasCorner[channel]))
+      .toBeGreaterThan(2);
+  }
 });
 
 test('every material extension factor the table declares reaches the shader', async ({ page }) => {

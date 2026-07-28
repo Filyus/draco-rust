@@ -31,7 +31,7 @@ const SURFACE_UNIFORMS = [
   'uNormalScale', 'uOcclusionStrength',
   'uClearcoatNormalScale',
   'uIrradianceMap', 'uPrefilteredMap', 'uBrdfLut', 'uEnvironmentMaxLod',
-  'uFrameSnapshot', 'uFrameSize', 'uFrameMaxLod',
+  'uFrameSnapshot', 'uFrameSize', 'uFrameMaxLod', 'uLinearOutput',
   'uLightCount',
   'uCameraPos',
 ] as const;
@@ -132,6 +132,7 @@ export function buildViewerPrograms(
     uInverseProjection: gl.getUniformLocation(backgroundProgram, 'uInverseProjection'),
     uInverseView: gl.getUniformLocation(backgroundProgram, 'uInverseView'),
     uEnvironment: gl.getUniformLocation(backgroundProgram, 'uEnvironment'),
+    uLinearOutput: gl.getUniformLocation(backgroundProgram, 'uLinearOutput'),
   };
   // WebGL2 requires a VAO even for a shader driven solely by gl_VertexID.
   const backgroundVao = gl.createVertexArray();

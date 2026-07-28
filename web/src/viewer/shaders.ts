@@ -241,6 +241,12 @@ uniform samplerCube uPrefilteredMap;
 uniform sampler2D uBrdfLut;
 uniform float uEnvironmentMaxLod;
 uniform vec3 uCameraPos;
+// Set while the frame is being captured for transmission to read: the capture
+// stores linear light, so the tone map and the transfer function that turn
+// light into a picture are the one thing it must not do. Applying them there
+// and again on the way to the canvas is exactly the double encoding a
+// transmissive surface would then refract.
+uniform int uLinearOutput;
 // KHR_lights_punctual, resolved to world space by the renderer. Type 0 is
 // directional, 1 point, 2 spot; a range of zero never falls off.
 uniform int uLightCount;
@@ -556,9 +562,11 @@ void main() {
     #endif
     base *= baseSample;
 
-    // Hard unlit materials (KHR_materials_unlit) keep flat shading.
+    // Hard unlit materials (KHR_materials_unlit) keep flat shading. Their
+    // colour is the picture already, so the capture takes it back to linear
+    // rather than leaving it encoded twice over.
     if (uUnlit == 1 || uBaseColorOnly == 1) {
-        outColor = vec4(base.rgb, base.a);
+        outColor = vec4(uLinearOutput == 1 ? pow(base.rgb, vec3(2.2)) : base.rgb, base.a);
         return;
     }
 
@@ -779,6 +787,10 @@ void main() {
         float coatFresnel = clearcoat * fresnelSchlickRoughness(coatNdotV, vec3(0.04), coatRoughness).x;
         color = color * (1.0 - coatFresnel) + coatSpecular * clearcoat;
     }
+    if (uLinearOutput == 1) {
+        outColor = vec4(color, base.a);
+        return;
+    }
     color = acesToneMap(color);
     outColor = vec4(pow(color, vec3(1.0 / 2.2)), base.a);
 }
@@ -819,6 +831,10 @@ in vec2 vNdc;
 uniform mat4 uInverseProjection;
 uniform mat4 uInverseView;
 uniform samplerCube uEnvironment;
+// As in the surface shader: the capture wants the environment's own radiance,
+// not the picture made of it. It is the backdrop a transmissive surface sees
+// wherever no geometry stands behind it, so it goes in on the same terms.
+uniform int uLinearOutput;
 out vec4 outColor;
 
 vec3 acesToneMap(vec3 color) {
@@ -834,7 +850,11 @@ void main() {
     vec4 view = uInverseProjection * vec4(vNdc, 1.0, 1.0);
     view /= view.w;
     vec3 direction = normalize((uInverseView * vec4(view.xyz, 0.0)).xyz);
-    vec3 color = acesToneMap(textureLod(uEnvironment, direction, 0.0).rgb);
-    outColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
+    vec3 radiance = textureLod(uEnvironment, direction, 0.0).rgb;
+    if (uLinearOutput == 1) {
+        outColor = vec4(radiance, 1.0);
+        return;
+    }
+    outColor = vec4(pow(acesToneMap(radiance), vec3(1.0 / 2.2)), 1.0);
 }
 `;

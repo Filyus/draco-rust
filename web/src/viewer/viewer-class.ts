@@ -154,6 +154,9 @@ export class Viewer {
   declare _morphOrder?: number[];
   declare _emptyMorphTexture?: WebGLTexture | null;
   declare _morphPlaceholderTexture?: WebGLTexture | null;
+  declare _linearOutput?: boolean;
+  declare _snapshotPlaceholder?: WebGLTexture | null;
+  declare _frameTargetHdr?: boolean;
 
   declare _resizeObserver: ResizeObserver;
   declare _running: boolean;
@@ -532,6 +535,10 @@ export class Viewer {
     if (this._emptyMorphTexture) {
       this.gl.deleteTexture(this._emptyMorphTexture);
       this._emptyMorphTexture = null;
+    }
+    if (this._snapshotPlaceholder) {
+      this.gl.deleteTexture(this._snapshotPlaceholder);
+      this._snapshotPlaceholder = null;
     }
     this._resizeObserver?.disconnect();
     this.surfacePrograms?.dispose();

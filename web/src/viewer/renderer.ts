@@ -7,7 +7,9 @@ import type { Mat4, Vec3 } from '../math.ts';
 import { cameraPosition } from './camera.ts';
 import type { CameraHost } from './camera.ts';
 import { GL } from './gl-utils.ts';
-import { captureFrameTarget, ensureFrameTarget } from './frame-target.ts';
+import {
+  beginFrameCapture, ensureFrameTarget, finishFrameCapture, frameTargetHdrSupported,
+} from './frame-target.ts';
 import type { FrameTarget } from './frame-target.ts';
 import { MORPH_TEXTURE_UNIT } from './morph-texture.ts';
 import {
@@ -121,6 +123,7 @@ function useSurfaceProgram(host: RenderHost, slots: readonly TextureSlotName[]) 
   host.gl.uniformMatrix4fv(surface.uniforms.uProjection, false, host._projection);
   host.gl.uniformMatrix4fv(surface.uniforms.uView, false, host._view);
   host.gl.uniform3fv(surface.uniforms.uCameraPos, host._eye!);
+  host.gl.uniform1i(surface.uniforms.uLinearOutput, host._linearOutput ? 1 : 0);
   bindEnvironmentIbl(host);
   bindFrameSnapshot(host);
   bindPunctualLights(host);
@@ -173,8 +176,17 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   uniforms: SurfaceUniforms;
   /** The surface program bound right now, or null before the first draw. */
   _surfaceProgram: WebGLProgram | null;
-  /** The offscreen colour buffer the frame is composed in. */
+  /** The linear render of the opaque frame a transmissive surface refracts. */
   _frameTarget?: FrameTarget | null;
+  /**
+   * Set while that render is being drawn, so the programs it uses write light
+   * rather than a picture, and so nothing samples the target it is writing to.
+   */
+  _linearOutput?: boolean;
+  /** Bound in place of the snapshot while the snapshot is being drawn. */
+  _snapshotPlaceholder?: WebGLTexture | null;
+  /** Whether this machine can hold the capture as half floats. Asked once. */
+  _frameTargetHdr?: boolean;
   lineUniforms: Record<string, WebGLUniformLocation | null>;
   backgroundUniforms: Record<string, WebGLUniformLocation | null>;
   backgroundVao: WebGLVertexArrayObject | null;
@@ -237,6 +249,10 @@ export function render(host: RenderHost) {
 
   updateWorldMatrices(host);
 
+  // What a transmissive surface will refract, drawn before the frame the user
+  // sees rather than lifted out of it.
+  captureTransmissionSnapshot(host);
+
   drawBackground(host);
 
   // Grid (drawn first, depth-disabled so it sits behind everything)
@@ -246,24 +262,62 @@ export function render(host: RenderHost) {
   // until the first one asks for one.
   host._surfaceProgram = null;
 
-  // Opaque first, then what blends over it. glTF asks for exactly that order,
-  // and it is also the only arrangement in which "everything a transmissive
-  // surface may see" is a moment the frame passes through rather than a
-  // guess: the snapshot is taken between the two.
+  // Opaque first, then what blends over it. glTF asks for exactly that order.
   drawSurfaces(host, false);
-  host._frameTarget = ensureFrameTarget(
-    gl, host._frameTarget ?? null, gl.drawingBufferWidth, gl.drawingBufferHeight,
-  );
-  captureFrameTarget(gl, host._frameTarget);
-  // Force the next draw to re-state the frame uniforms: a program bound during
-  // the opaque pass has not been told about the snapshot, which did not exist
-  // when it was chosen.
-  host._surfaceProgram = null;
   drawSurfaces(host, true);
 
   gl.depthMask(true);
   gl.disable(gl.BLEND);
   gl.bindVertexArray(null);
+}
+
+/** Whether anything in the scene will read the snapshot at all. */
+function sceneRefracts(host: RenderHost): boolean {
+  return host.scene!.materials.some((material) => (material?.transmissionFactor ?? 0) > 0);
+}
+
+/**
+ * Draw the opaque frame once more, into the linear target transmission reads.
+ *
+ * Skipped outright when no material in the scene transmits, which is the usual
+ * case: the pass costs a second run over the opaque geometry, and a scene that
+ * will never sample the result should not pay for it. The same question used
+ * to be left unasked - the old capture copied the whole canvas and built its
+ * mip chain every frame regardless.
+ *
+ * The grid stays out of it. It is an aid the viewer draws over the scene, not
+ * something the asset contains, and glass that refracts the helper geometry
+ * reads as a rendering fault rather than as a floor.
+ */
+function captureTransmissionSnapshot(host: RenderHost) {
+  const gl = host.gl;
+  if (!sceneRefracts(host)) return;
+  if (host._frameTargetHdr === undefined) {
+    host._frameTargetHdr = frameTargetHdrSupported(gl);
+    // Said once, and only when a scene actually refracts: eight bits over
+    // linear light band in the darks and clip anything brighter than white,
+    // which a transmissive surface shows as steps in what it looks through.
+    if (!host._frameTargetHdr) {
+      host._log('Float render targets unavailable; transmission refracts an LDR frame', 'warning');
+    }
+  }
+  host._frameTarget = ensureFrameTarget(
+    gl, host._frameTarget ?? null, gl.drawingBufferWidth, gl.drawingBufferHeight,
+    host._frameTargetHdr,
+  );
+
+  host._linearOutput = true;
+  // Nothing may sample the texture now being drawn into, and the unit still
+  // holds it from the previous frame - so the placeholder goes in first.
+  host._surfaceProgram = null;
+  beginFrameCapture(gl, host._frameTarget);
+  drawBackground(host);
+  drawSurfaces(host, false);
+  finishFrameCapture(gl, host._frameTarget);
+  host._linearOutput = false;
+  // Force the next draw to re-state the frame uniforms: every program bound
+  // during the capture was told to write light and to read the placeholder.
+  host._surfaceProgram = null;
 }
 
 /**
@@ -507,11 +561,34 @@ export function drawBackground(host: RenderHost) {
   gl.activeTexture(gl.TEXTURE5);
   gl.bindTexture(gl.TEXTURE_CUBE_MAP, host.environmentIbl.environment);
   gl.uniform1i(host.backgroundUniforms.uEnvironment, 5);
+  gl.uniform1i(host.backgroundUniforms.uLinearOutput, host._linearOutput ? 1 : 0);
   gl.bindVertexArray(host.backgroundVao);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.bindVertexArray(null);
   gl.depthMask(true);
   gl.enable(gl.DEPTH_TEST);
+}
+
+/**
+ * A one-texel stand-in for the snapshot, bound while the snapshot is drawn.
+ *
+ * Sampling a texture that is attached to the framebuffer being drawn into is
+ * undefined however carefully the shader avoids reading it, and the unit still
+ * holds the target from the frame before. Every material the capture draws is
+ * opaque, so what the stand-in contains is never read - only that it is not
+ * the attachment.
+ */
+function snapshotPlaceholder(host: RenderHost) {
+  if (!host._snapshotPlaceholder) {
+    const gl = host.gl;
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    host._snapshotPlaceholder = texture;
+  }
+  return host._snapshotPlaceholder;
 }
 
 /**
@@ -527,6 +604,11 @@ export function bindFrameSnapshot(host: RenderHost) {
   const frame = host._frameTarget;
   if (!frame) return;
   gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.frameSnapshot);
+  if (host._linearOutput) {
+    gl.bindTexture(gl.TEXTURE_2D, snapshotPlaceholder(host));
+    gl.uniform1i(host.uniforms.uFrameSnapshot, SHARED_TEXTURE_UNITS.frameSnapshot);
+    return;
+  }
   gl.bindTexture(gl.TEXTURE_2D, frame.color);
   gl.uniform1i(host.uniforms.uFrameSnapshot, SHARED_TEXTURE_UNITS.frameSnapshot);
   gl.uniform2f(host.uniforms.uFrameSize, frame.width, frame.height);
