@@ -28,6 +28,34 @@ const LEVEL_INDEX_SIZE: usize = 24;
 const MAX_LEVEL_COUNT: u32 = 16;
 /// Implementation limit on the array layer count, as the reference reader sets it.
 const MAX_LAYER_COUNT: u32 = 65535;
+/// Implementation limit on either dimension, as the reference reader sets it.
+///
+/// Nothing in the format says a texture cannot be four billion texels wide, and
+/// a file claiming that costs nothing to write. What it costs to read is the
+/// point: every buffer this crate sizes is some multiple of width by height,
+/// and on the 32-bit target it actually runs on that multiplication wraps
+/// rather than saturating. A ceiling here is what keeps the arithmetic below
+/// well inside `u32` on any target.
+const MAX_DIMENSION: u32 = 16384;
+/// The most any format read here can spend on one texel.
+///
+/// Only used to bound a declared uncompressed length before it is believed. A
+/// block format spends at most sixteen bytes per 4x4 block, so this is loose
+/// by a factor of sixteen against the formats that matter - being right is not
+/// the job, being finite is.
+const MAX_BYTES_PER_TEXEL: u64 = 16;
+
+/// The most bytes one level could hold, whatever format it turns out to be.
+///
+/// Not a size but a ceiling, and deliberately a loose one: it exists so that a
+/// declared uncompressed length can be refused before anything is reserved
+/// from it. Every term is bounded by a check above, so the product cannot
+/// overflow.
+fn level_ceiling(width: u32, height: u32, level: u32, layers: u32, faces: u32) -> u64 {
+    let width = (width >> level).max(1) as u64;
+    let height = (height >> level).max(1) as u64;
+    width * height * MAX_BYTES_PER_TEXEL * layers.max(1) as u64 * faces.max(1) as u64
+}
 
 // Data format descriptor colour models. The two this crate can transcode plus
 // the plain-ASTC one, which is named so the error can say what it found.
@@ -187,6 +215,12 @@ impl<'a> Ktx2<'a> {
                 "only 2D and cubemap textures are read".into(),
             ));
         }
+        if pixel_width > MAX_DIMENSION || pixel_height > MAX_DIMENSION {
+            return Err(Ktx2Error::Invalid {
+                field: "pixelWidth or pixelHeight",
+                value: pixel_width.max(pixel_height).into(),
+            });
+        }
         if face_count != 1 && face_count != 6 {
             return Err(Ktx2Error::Invalid {
                 field: "faceCount",
@@ -264,6 +298,26 @@ impl<'a> Ktx2<'a> {
                     return Err(Ktx2Error::Invalid {
                         field: "level uncompressedByteLength",
                         value: 0,
+                    })
+                }
+                // This one is believed before anything is decompressed - it is
+                // what the output buffer is reserved from - so a file claiming
+                // an exabyte would be an allocation failure rather than a
+                // rejected file. The dimensions are already bounded above, so
+                // what the level could possibly hold is finite and known.
+                Supercompression::Zstd
+                    if entry.uncompressed_byte_length
+                        > level_ceiling(
+                            pixel_width,
+                            pixel_height,
+                            level as u32,
+                            layer_count,
+                            face_count,
+                        ) =>
+                {
+                    return Err(Ktx2Error::Invalid {
+                        field: "level uncompressedByteLength",
+                        value: entry.uncompressed_byte_length,
                     })
                 }
                 _ => {}

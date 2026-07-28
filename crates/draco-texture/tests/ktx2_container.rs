@@ -187,3 +187,129 @@ fn rejects_files_that_are_not_ktx2() {
         });
     }
 }
+
+/// Hostile headers, taken from what Binomial fixed in its own reader.
+///
+/// Between March and July 2026 the reference reader was hardened six times
+/// against malformed KTX2: an overflow in the header parser, two cases found
+/// by fuzzing, a maximum texture size, validation of the slice descriptions,
+/// overflow-safe range checks in `ktx2_transcoder::init`, and an oversized
+/// level uncompressed length. None of them changed the format. This reader was
+/// written from the specification rather than from that code, so the same
+/// classes of defect could be here on their own, and each is checked below
+/// against a real file with one field rewritten.
+mod hostile {
+    use super::*;
+
+    /// The implementation limit on either dimension, as `ktx2.rs` sets it.
+    const MAX_DIMENSION: u32 = 16384;
+
+    /// The fixture with one little-endian 32-bit header field replaced.
+    fn with_word(name: &str, offset: usize, value: u32) -> Vec<u8> {
+        let mut bytes = read(name);
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        bytes
+    }
+
+    /// The fixture with one little-endian 64-bit field replaced.
+    fn with_long(name: &str, offset: usize, value: u64) -> Vec<u8> {
+        let mut bytes = read(name);
+        bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        bytes
+    }
+
+    /// Where level `level`'s index entry starts.
+    fn level_entry(level: usize) -> usize {
+        80 + level * 24
+    }
+
+    #[test]
+    fn refuses_a_texture_larger_than_the_implementation_limit() {
+        // Every buffer this crate sizes is a multiple of width by height, and
+        // on wasm32 - the target it actually runs on - that product wraps at
+        // 32 bits rather than saturating. A file claiming four billion texels
+        // costs nothing to write.
+        for (field, offset) in [("pixelWidth", 20), ("pixelHeight", 24)] {
+            let bytes = with_word("2d_uastc.ktx2", offset, 0x4001);
+            let error = Ktx2::parse(&bytes).expect_err(field);
+            assert!(
+                error.to_string().contains("pixelWidth or pixelHeight"),
+                "{field} of 16385 should be refused by name, got: {error}"
+            );
+        }
+        // The limit is a limit rather than a blanket refusal: at it, the file
+        // is still read, whatever its levels then turn out not to contain.
+        let bytes = with_word("2d_uastc.ktx2", 20, MAX_DIMENSION);
+        assert!(
+            Ktx2::parse(&bytes).is_ok(),
+            "{MAX_DIMENSION} is within the limit and should still parse"
+        );
+    }
+
+    #[test]
+    fn refuses_a_level_claiming_more_than_it_could_hold() {
+        // Believed before anything is decompressed: it is what the output
+        // buffer is reserved from, so an unchecked value is an allocation
+        // failure rather than a rejected file.
+        let bytes = with_long("2d_uastc.ktx2", level_entry(0) + 16, u64::MAX);
+        let error = Ktx2::parse(&bytes).expect_err("an exabyte level");
+        assert!(
+            error.to_string().contains("uncompressedByteLength"),
+            "the oversized length should be named, got: {error}"
+        );
+
+        // And the bound is a ceiling rather than an equality: the real value
+        // is far below it, and a file is not required to be tightly packed.
+        let original = read("2d_uastc.ktx2");
+        let real = Ktx2::parse(&original)
+            .unwrap()
+            .level_byte_length(0)
+            .unwrap();
+        let bytes = with_long("2d_uastc.ktx2", level_entry(0) + 16, real + 1);
+        assert!(
+            Ktx2::parse(&bytes).is_ok(),
+            "one byte over the real size is still within what the level could hold"
+        );
+    }
+
+    #[test]
+    fn refuses_a_level_whose_offset_and_length_wrap() {
+        // The pair is checked as "does it fit in what is left" rather than as
+        // "offset + length", which wraps to something small and passes.
+        let mut bytes = read("2d_uastc.ktx2");
+        let entry = level_entry(0);
+        bytes[entry..entry + 8].copy_from_slice(&(u64::MAX - 63).to_le_bytes());
+        bytes[entry + 8..entry + 16].copy_from_slice(&128u64.to_le_bytes());
+        let error = Ktx2::parse(&bytes).expect_err("a wrapping level range");
+        assert!(
+            error.to_string().contains("level"),
+            "the truncated level should be named, got: {error}"
+        );
+    }
+
+    #[test]
+    fn refuses_a_descriptor_that_reaches_past_the_file() {
+        let bytes = with_word("2d_uastc.ktx2", 52, u32::MAX);
+        Ktx2::parse(&bytes).expect_err("a descriptor longer than the file");
+        let bytes = with_word("2d_uastc.ktx2", 48, u32::MAX);
+        Ktx2::parse(&bytes).expect_err("a descriptor starting past the file");
+    }
+
+    #[test]
+    fn refuses_global_data_that_reaches_past_the_file() {
+        // Basis LZ keeps its codebooks here, and the field is two 64-bit
+        // values of someone else's choosing.
+        let bytes = with_long("facecap.ktx2", 72, u64::MAX);
+        Ktx2::parse(&bytes).expect_err("global data longer than the file");
+        let bytes = with_long("facecap.ktx2", 64, u64::MAX - 1024);
+        Ktx2::parse(&bytes).expect_err("global data starting past the file");
+    }
+
+    #[test]
+    fn refuses_a_level_count_the_index_cannot_hold() {
+        let bytes = with_word("2d_uastc.ktx2", 40, 17);
+        Ktx2::parse(&bytes).expect_err("more levels than the implementation reads");
+        let bytes = with_word("2d_uastc.ktx2", 40, 0);
+        Ktx2::parse(&bytes).expect_err("no levels at all");
+    }
+}
