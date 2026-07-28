@@ -2611,6 +2611,11 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
       document.body.appendChild(canvas);
       const viewer = new Viewer(canvas);
       viewer.showGrid = false;
+    // These are sixty-four texels square, so the frame can be drawn at twice
+    // that and averaged down for nothing. What is measured here is a material,
+    // and the finest sampling available is what keeps the margins about the
+    // material rather than about how coarsely it was sampled.
+    viewer.supersample = true;
       viewer.setScene(buildViewerSceneFromDocument(document_(front, emissiveStrength)));
       viewer.camera.target.set([0, 0, 0]);
       viewer.camera.distance = 4;
@@ -2749,6 +2754,11 @@ test('KHR_materials_iridescence tints the specular lobe by film thickness', asyn
     document.body.appendChild(canvas);
     const viewer = new Viewer(canvas);
     viewer.showGrid = false;
+    // These are sixty-four texels square, so the frame can be drawn at twice
+    // that and averaged down for nothing. What is measured here is a material,
+    // and the finest sampling available is what keeps the margins about the
+    // material rather than about how coarsely it was sampled.
+    viewer.supersample = true;
     const sample = (film) => {
       viewer.setScene(buildViewerSceneFromDocument(document_(film)));
       viewer.camera.target.set([0, 0, 0]);
@@ -2842,13 +2852,20 @@ test('KHR_materials_sheen shows on the surface it is set on', async ({ page }) =
       viewer.camera.azimuth = 1.35;
       viewer.camera.elevation = 0.15;
       viewer._render();
-      const rgba = new Uint8Array(4);
-      viewer.gl.readPixels(
-        Math.floor(viewer.gl.drawingBufferWidth / 2),
-        Math.floor(viewer.gl.drawingBufferHeight / 2),
-        1, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, rgba,
+      // Read the frame, not the canvas: what the material did is a quantity of
+      // light, and the tone curve compresses differences near the top of its
+      // range to almost nothing. A threshold on the picture would be a
+      // threshold on the display transform.
+      const gl = viewer.gl;
+      const scene = viewer._sceneTarget;
+      const radiance = new Float32Array(4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, scene.resolveFramebuffer);
+      gl.readPixels(
+        scene.renderWidth >> 1, scene.renderHeight >> 1,
+        1, 1, gl.RGBA, gl.FLOAT, radiance,
       );
-      return Array.from(rgba);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return Array.from(radiance);
     };
 
     const plain = sample({});
@@ -2862,21 +2879,22 @@ test('KHR_materials_sheen shows on the surface it is set on', async ({ page }) =
 
   expect(observed.glError).toBe(0);
   // The sheen is red, and it is the only thing on a black rough surface that
-  // could be.
-  expect(observed.sheened[0]).toBeGreaterThan(observed.plain[0] + 10);
-  expect(observed.sheened[0]).toBeGreaterThan(observed.sheened[1] + 5);
+  // could be. Measured as light, so the margins are fractions of the surface
+  // rather than of whatever the output pass does with it.
+  expect(observed.sheened[0]).toBeGreaterThan(observed.plain[0] * 1.3);
+  expect(observed.sheened[0]).toBeGreaterThan(observed.sheened[1] * 1.3);
   // Roughness drives the lobe, so it is read rather than defaulted.
-  expect(Math.abs(observed.sheened[0] - observed.rougher[0])).toBeGreaterThan(4);
+  expect(Math.abs(observed.sheened[0] - observed.rougher[0]))
+    .toBeGreaterThan(observed.sheened[0] * 0.05);
 });
 
-test('the frame a transmissive surface refracts is drawn once, in linear light', async ({ page }) => {
+test('the frame stays light until the output pass, which spreads glare and maps tones', async ({ page }) => {
   await page.goto('/index.html');
-  // A transmissive surface has to sample the scene behind it, and what it
-  // samples has to be the light there rather than the picture made of it: the
-  // shader treats the sample as radiance, tone maps the result and encodes it,
-  // so a capture that was already tone-mapped and encoded goes through both
-  // twice. Hence a pass of its own, drawn with the output transform switched
-  // off - and skipped outright when no material in the scene transmits.
+  // Everything is drawn into one linear frame and turned into a picture once,
+  // at the end. That is what makes every average in between mean something:
+  // the multisample resolve, the mip chain a rough refraction reads, the glare
+  // pyramid. A surface that tone mapped its own output would poison all three,
+  // and a transmissive one reading such a frame would refract it twice over.
   const observed = await page.evaluate(async () => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
       import('/viewer.js'),
@@ -2892,13 +2910,13 @@ test('the frame a transmissive surface refracts is drawn once, in linear light',
     });
     // A blended quad in front of an opaque one, in the wrong order in the
     // scene: the opaque quad is second. Drawing them as they come would put
-    // the blend underneath. The transmissive quad is what makes the capture
+    // the blend underneath. The transmissive quad is what makes the copy
     // happen at all; it sits behind the opaque one, so it is depth-rejected
     // and contributes no pixel of its own.
     const materials = [
       { baseColorFactor: [0, 0, 1, 0.5], alphaMode: 'BLEND', emissiveFactor: [0, 0, 1] },
-      // Far brighter than white, like the filament this came from: that is the
-      // case the capture's compression exists for.
+      // Far brighter than white, like a filament: the case the linear frame
+      // and the glare pass both exist for.
       { baseColorFactor: [1, 0, 0, 1], emissiveFactor: [1, 0, 0], emissiveStrength: 25 },
       { baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 0, transmissionFactor: 1 },
     ];
@@ -2918,9 +2936,9 @@ test('the frame a transmissive surface refracts is drawn once, in linear light',
           { attributes: { POSITION: 4, NORMAL: 2 }, indices: 3, material: 2 },
         ].slice(0, count),
       }],
-      // Turned about the view axis, so the quads' edges cross texels at an
-      // angle instead of landing on their boundaries. An axis-aligned edge
-      // says nothing about whether the capture is antialiased.
+      // Turned about the view axis, so the edges cross texels at an angle
+      // instead of landing on their boundaries. An axis-aligned edge says
+      // nothing about whether the frame is antialiased.
       nodes: [{
         name: 'Quads',
         translation: [0, 0, 0],
@@ -2936,6 +2954,14 @@ test('the frame a transmissive surface refracts is drawn once, in linear light',
     document.body.appendChild(canvas);
     const viewer = new Viewer(canvas);
     viewer.showGrid = false;
+    // These are sixty-four texels square, so the frame can be drawn at twice
+    // that and averaged down for nothing. What is measured here is a material,
+    // and the finest sampling available is what keeps the margins about the
+    // material rather than about how coarsely it was sampled.
+    viewer.supersample = true;
+    // Glare is measured on its own below; everything in between is compared
+    // against the tone curve, which has to be the only thing acting.
+    viewer.bloomStrength = 0;
     const frame = (count) => {
       viewer.setScene(buildViewerSceneFromDocument(sceneOf(count)));
       viewer.camera.target.set([0, 0, 0]);
@@ -2945,124 +2971,118 @@ test('the frame a transmissive surface refracts is drawn once, in linear light',
       viewer._render();
     };
 
-    // Nothing transmits, so the pass never runs and no target is allocated.
+    const gl = viewer.gl;
+    const readFloat = (framebuffer, x, y) => {
+      const pixel = new Float32Array(4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.readPixels(x, y, 1, 1, gl.RGBA, gl.FLOAT, pixel);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return [...pixel];
+    };
+    const readCanvas = (x, y) => {
+      const pixel = new Uint8Array(4);
+      gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+      return [...pixel];
+    };
+
+    // Nothing transmits, so the copy is never taken and stays as cleared.
     frame(2);
-    const withoutTransmission = !!viewer._frameTarget;
+    const scene = viewer._sceneTarget;
+    const centre = [scene.renderWidth >> 1, scene.renderHeight >> 1];
+    const withoutTransmission = readFloat(scene.captureFramebuffer, centre[0], centre[1]);
 
     frame(3);
-    const gl = viewer.gl;
-    const target = viewer._frameTarget;
-    const size = [target?.width, target?.height];
-    const matchesDrawingBuffer = size[0] === gl.drawingBufferWidth && size[1] === gl.drawingBufferHeight;
-
-    const centre = (x, y) => [Math.floor(x / 2), Math.floor(y / 2)];
-    const canvasPixel = new Uint8Array(4);
-    gl.readPixels(...centre(gl.drawingBufferWidth, gl.drawingBufferHeight), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, canvasPixel);
-    // A corner: no geometry stands there in either image, so both hold the
-    // environment - the canvas as a picture of it, the capture as the light.
-    const canvasCorner = new Uint8Array(4);
-    gl.readPixels(1, 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, canvasCorner);
-
-    // Read the capture back by attaching it to a framebuffer of our own. Half
-    // floats are read as floats; the byte fallback is normalised to match.
-    const readback = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, readback);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target.color, 0);
-    const readLinear = (x, y) => {
-      if (!target.hdr) {
-        const bytes = new Uint8Array(4);
-        gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
-        return [...bytes].map((value) => value / 255);
-      }
-      const floats = new Float32Array(4);
-      gl.readPixels(x, y, 1, 1, gl.RGBA, gl.FLOAT, floats);
-      return [...floats];
-    };
-    const capturePixel = readLinear(...centre(size[0], size[1]));
-    const captureCorner = readLinear(1, 1);
-    // A row crossing the emitter's slanted edge. One sample per texel leaves
-    // only the two sides in it; resolved samples leave the partly covered
-    // texels between them, which is what a transmissive surface shows when it
-    // barely bends the ray.
-    const rowY = Math.floor(size[1] / 4);
+    const capturePixel = readFloat(scene.captureFramebuffer, centre[0], centre[1]);
+    const captureCorner = readFloat(scene.captureFramebuffer, 1, 1);
+    const canvasCorner = readCanvas(1, 1);
+    const canvasPixel = readCanvas(gl.drawingBufferWidth >> 1, gl.drawingBufferHeight >> 1);
     const captureRow = [];
-    for (let x = 0; x < size[0]; x += 1) captureRow.push(readLinear(x, rowY)[0]);
+    for (let x = 0; x < scene.renderWidth; x += 1) {
+      captureRow.push(readFloat(scene.captureFramebuffer, x, scene.renderHeight >> 2)[0]);
+    }
     const readError = gl.getError();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.deleteFramebuffer(readback);
 
-    // A resize has to reallocate it: the attachments are allocated at a fixed
-    // size, and a stale one would capture the frame at the wrong scale.
-    const before = target;
+    // Glare, measured where the geometry put none: background beside the
+    // emitter, with the pass off and then on.
+    const probe = [Math.max(1, (gl.drawingBufferWidth >> 1) - 24), gl.drawingBufferHeight >> 1];
+    const withoutGlare = readCanvas(probe[0], probe[1]);
+    viewer.bloomStrength = 0.5;
+    viewer._render();
+    const withGlare = readCanvas(probe[0], probe[1]);
+    viewer.bloomStrength = 0;
+
+    // A resize has to reallocate: the attachments are allocated at a fixed
+    // size, and a stale one would hold the frame at the wrong scale.
+    const before = viewer._sceneTarget;
     canvas.width = gl.drawingBufferWidth + 32;
     canvas.height = gl.drawingBufferHeight + 32;
     viewer._render();
-    const reallocated = viewer._frameTarget !== before
-      && viewer._frameTarget.width === gl.drawingBufferWidth;
+    const reallocated = viewer._sceneTarget !== before
+      && viewer._sceneTarget.width === gl.drawingBufferWidth;
 
     const glError = gl.getError();
-    const linearOutputLeftOn = viewer._linearOutput;
     viewer.dispose();
     canvas.remove();
     return {
-      withoutTransmission, size, matchesDrawingBuffer, reallocated, glError, readError,
-      linearOutputLeftOn, hdr: target.hdr, samples: target.samples, scale: target.scale,
-      captureSize: [target.captureWidth, target.captureHeight],
-      canvasPixel: Array.from(canvasPixel), canvasCorner: Array.from(canvasCorner),
-      capturePixel, captureCorner, captureRow,
+      withoutTransmission, capturePixel, captureCorner, captureRow, canvasCorner, canvasPixel,
+      withoutGlare, withGlare, reallocated, glError, readError,
+      hdr: scene.hdr, samples: scene.samples, scale: scene.scale,
+      size: [scene.width, scene.height],
+      renderSize: [scene.renderWidth, scene.renderHeight],
     };
   });
 
   expect(observed.glError).toBe(0);
   expect(observed.readError).toBe(0);
-  expect(observed.matchesDrawingBuffer).toBe(true);
   expect(observed.reallocated).toBe(true);
-  // Nothing outside the capture may be drawn with the output transform off.
-  expect(observed.linearOutputLeftOn).toBe(false);
-  // A scene with nothing to refract allocates nothing and draws no second pass.
-  expect(observed.withoutTransmission).toBe(false);
+  expect(observed.hdr).toBe(true);
+  expect(observed.renderSize).toEqual(observed.size.map((side) => side * observed.scale));
 
-  // The capture holds the opaque quad and nothing else: red, no blue. And it
-  // holds it at its own brightness - the emitter is twenty-five times white,
-  // and the round trip through the compressed resolve has to give that back.
-  // Expanding after the filter instead of before it lands here, an order of
-  // magnitude low.
+  // A scene with nothing to refract never takes the copy.
+  expect(observed.withoutTransmission.slice(0, 3)).toEqual([0, 0, 0]);
+
+  // The copy holds the opaque quad and nothing else - red, no blue - at its
+  // own brightness. Twenty-five times white has to survive as twenty-five.
   expect(observed.capturePixel[0]).toBeGreaterThan(10);
   expect(observed.capturePixel[2]).toBeLessThan(observed.capturePixel[0] / 2);
-  // The canvas holds the blend over it, so blue has arrived by then. Drawing
-  // the capture after the blended pass, or before the opaque one, changes
-  // exactly this.
+  // The canvas holds the blend over it, so blue has arrived by then.
   expect(observed.canvasPixel[2]).toBeGreaterThan(100);
 
-  // The capture is antialiased. What a transmissive surface shows is this
-  // texture rather than the canvas, so the canvas keeping its own samples does
-  // nothing for the scene seen through glass: a filament behind a flat pane
-  // steps down the screen unless the pass that drew it resolved samples of its
-  // own. Partly covered texels along the emitter's edge are that resolve.
-  // Gradations along that edge are the product of the two: the samples the
-  // capture is drawn with, and the block the box filter brings down. Either
-  // one alone leaves a staircase a filament shows.
+  // Coverage is sampled by the samples and the scale together: either alone
+  // leaves a staircase on anything thin and much brighter than white.
   expect(observed.samples * observed.scale * observed.scale).toBeGreaterThanOrEqual(8);
-  expect(observed.captureSize).toEqual(observed.size.map((side) => side * observed.scale));
-  // Measured against the emitter's own level rather than an absolute one, so
-  // that how bright the fixture makes it stays the fixture's business.
   const full = observed.capturePixel[0];
   const partlyCovered = observed.captureRow.filter((red) => red > 0.05 * full && red < 0.8 * full);
   expect(partlyCovered.length).toBeGreaterThan(0);
 
-  // And the capture is the light behind the picture rather than the picture:
-  // tone-mapped and encoded, it is what the canvas shows at the same texel.
-  // Equal to the canvas instead would mean it had been captured encoded.
-  const aces = (x) => {
+  // The frame is light, and the output pass is what makes it a picture: tone
+  // mapped and encoded, the corner of the frame is the corner of the canvas.
+  // Equal without the curve would mean something had mapped tones too early.
+  const toneCurve = (x) => {
     const value = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
     return Math.min(Math.max(value, 0), 1);
   };
+  const toneMap = (rgb) => {
+    const level = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    if (level <= 0) return [0, 0, 0];
+    const mapped = toneCurve(level);
+    const scaled = rgb.map((channel) => channel * (mapped / level));
+    const overflow = Math.min(Math.max(Math.max.apply(null, scaled) - 1, 0), 1);
+    return scaled.map((channel) => Math.min(Math.max(
+      channel * (1 - overflow) + mapped * overflow, 0), 1));
+  };
+  const asPicture = toneMap(observed.captureCorner.slice(0, 3))
+    .map((channel) => Math.round(255 * channel ** (1 / 2.2)));
   for (let channel = 0; channel < 3; channel += 1) {
-    const asPicture = Math.round(255 * aces(observed.captureCorner[channel]) ** (1 / 2.2));
-    expect(Math.abs(asPicture - observed.canvasCorner[channel])).toBeLessThanOrEqual(3);
+    expect(Math.abs(asPicture[channel] - observed.canvasCorner[channel])).toBeLessThanOrEqual(3);
     expect(Math.abs(observed.captureCorner[channel] * 255 - observed.canvasCorner[channel]))
       .toBeGreaterThan(2);
   }
+
+  // And the glare pass spreads light where the geometry put none: background
+  // beside an emitter twenty-five times brighter than white is measurably
+  // lighter with the pyramid than without it.
+  expect(observed.withGlare[0]).toBeGreaterThan(observed.withoutGlare[0] + 4);
 });
 
 test('every material extension factor the table declares reaches the shader', async ({ page }) => {
@@ -3181,9 +3201,13 @@ test('a morphed mesh keeps its material textures', async ({ page }) => {
   }, Array.from(solidColorPng()));
 
   expect(observed.glError).toBe(0);
-  // The morphed quad covers the centre and emits red.
+  // The morphed quad covers the centre and emits red. Red *dominant* rather
+  // than green *absent*: a colour bright enough to leave the display gamut
+  // walks toward white on the way out, so the other channels are not zero and
+  // a threshold on them would be a threshold on the tone curve.
   expect(observed.pixel[0]).toBeGreaterThan(200);
-  expect(observed.pixel[1]).toBeLessThan(80);
+  expect(observed.pixel[0] - observed.pixel[1]).toBeGreaterThan(60);
+  expect(observed.pixel[1] - observed.pixel[2]).toBeLessThan(30);
 });
 
 test('a SceneDocument texture only reaches the GPU once it is hydrated', async ({ page }) => {

@@ -4,7 +4,9 @@ import { linkProgram } from './gl-utils.ts';
 import {
   BACKGROUND_FRAG_SRC,
   BACKGROUND_VERT_SRC,
-  DOWNSAMPLE_FRAG_SRC,
+  BLOOM_DOWN_FRAG_SRC,
+  BLOOM_UP_FRAG_SRC,
+  OUTPUT_FRAG_SRC,
   LINE_FRAG_SRC,
   LINE_VERT_SRC,
   TEXTURE_SLOTS,
@@ -32,7 +34,7 @@ const SURFACE_UNIFORMS = [
   'uNormalScale', 'uOcclusionStrength',
   'uClearcoatNormalScale',
   'uIrradianceMap', 'uPrefilteredMap', 'uBrdfLut', 'uEnvironmentMaxLod',
-  'uFrameSnapshot', 'uFrameSize', 'uFrameMaxLod', 'uLinearOutput',
+  'uFrameSnapshot', 'uFrameSize', 'uFrameMaxLod',
   'uLightCount',
   'uCameraPos',
 ] as const;
@@ -114,8 +116,11 @@ export function buildViewerPrograms(
 ) {
   const lineProgram = linkProgram(gl, LINE_VERT_SRC, LINE_FRAG_SRC);
   const backgroundProgram = linkProgram(gl, BACKGROUND_VERT_SRC, BACKGROUND_FRAG_SRC);
-  // Shares the background's fullscreen triangle; only the fragment differs.
-  const downsampleProgram = linkProgram(gl, BACKGROUND_VERT_SRC, DOWNSAMPLE_FRAG_SRC);
+  // All three share the background's fullscreen triangle; only the fragment
+  // differs, and none of them has geometry of its own.
+  const outputProgram = linkProgram(gl, BACKGROUND_VERT_SRC, OUTPUT_FRAG_SRC);
+  const bloomDownProgram = linkProgram(gl, BACKGROUND_VERT_SRC, BLOOM_DOWN_FRAG_SRC);
+  const bloomUpProgram = linkProgram(gl, BACKGROUND_VERT_SRC, BLOOM_UP_FRAG_SRC);
 
   const locations = {
     position: 0,
@@ -135,10 +140,21 @@ export function buildViewerPrograms(
     uInverseProjection: gl.getUniformLocation(backgroundProgram, 'uInverseProjection'),
     uInverseView: gl.getUniformLocation(backgroundProgram, 'uInverseView'),
     uEnvironment: gl.getUniformLocation(backgroundProgram, 'uEnvironment'),
-    uLinearOutput: gl.getUniformLocation(backgroundProgram, 'uLinearOutput'),
   };
-  const downsampleUniforms = {
-    uCapture: gl.getUniformLocation(downsampleProgram, 'uCapture'),
+  const outputUniforms = {
+    uScene: gl.getUniformLocation(outputProgram, 'uScene'),
+    uBloom: gl.getUniformLocation(outputProgram, 'uBloom'),
+    uBloomStrength: gl.getUniformLocation(outputProgram, 'uBloomStrength'),
+    uExposure: gl.getUniformLocation(outputProgram, 'uExposure'),
+    uToneMap: gl.getUniformLocation(outputProgram, 'uToneMap'),
+  };
+  const bloomDownUniforms = {
+    uSource: gl.getUniformLocation(bloomDownProgram, 'uSource'),
+    uTexel: gl.getUniformLocation(bloomDownProgram, 'uTexel'),
+  };
+  const bloomUpUniforms = {
+    uSource: gl.getUniformLocation(bloomUpProgram, 'uSource'),
+    uTexel: gl.getUniformLocation(bloomUpProgram, 'uTexel'),
   };
   // WebGL2 requires a VAO even for a shader driven solely by gl_VertexID.
   const backgroundVao = gl.createVertexArray();
@@ -148,11 +164,15 @@ export function buildViewerPrograms(
     surfacePrograms: createSurfaceProgramCache(gl),
     lineProgram,
     backgroundProgram,
-    downsampleProgram,
+    outputProgram,
+    bloomDownProgram,
+    bloomUpProgram,
     locations,
     lineUniforms,
     backgroundUniforms,
-    downsampleUniforms,
+    outputUniforms,
+    bloomDownUniforms,
+    bloomUpUniforms,
     backgroundVao,
     environmentIbl,
   };

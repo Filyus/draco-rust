@@ -60,8 +60,10 @@ import {
   updateWorldMatrices,
 } from './scene-graph.ts';
 import { MAX_JOINTS } from './shaders.ts';
-import { disposeFrameTarget } from './frame-target.ts';
-import type { FrameTarget } from './frame-target.ts';
+import { disposeBloomChain } from './bloom.ts';
+import type { BloomChain } from './bloom.ts';
+import { disposeSceneTarget } from './scene-target.ts';
+import type { SceneTarget } from './scene-target.ts';
 import { buildViewerPrograms } from './programs.ts';
 import type { SurfaceProgramCache } from './programs.ts';
 
@@ -83,14 +85,19 @@ export class Viewer {
   declare surfacePrograms: SurfaceProgramCache;
   declare lineProgram: WebGLProgram;
   declare backgroundProgram: WebGLProgram;
-  declare downsampleProgram: WebGLProgram;
+  declare outputProgram: WebGLProgram;
+  declare bloomDownProgram: WebGLProgram;
+  declare bloomUpProgram: WebGLProgram;
   /** The bound surface program's locations; replaced per draw by the renderer. */
   declare uniforms: Record<string, WebGLUniformLocation | null>;
   declare _surfaceProgram: WebGLProgram | null;
-  declare _frameTarget: FrameTarget | null;
+  declare _sceneTarget: SceneTarget | null;
+  declare _bloom: BloomChain | null;
   declare lineUniforms: Record<string, WebGLUniformLocation | null>;
   declare backgroundUniforms: Record<string, WebGLUniformLocation | null>;
-  declare downsampleUniforms: Record<string, WebGLUniformLocation | null>;
+  declare outputUniforms: Record<string, WebGLUniformLocation | null>;
+  declare bloomDownUniforms: Record<string, WebGLUniformLocation | null>;
+  declare bloomUpUniforms: Record<string, WebGLUniformLocation | null>;
   declare locations: Record<string, number>;
   declare backgroundVao: WebGLVertexArrayObject | null;
   declare environmentIbl: EnvironmentIbl;
@@ -156,9 +163,11 @@ export class Viewer {
   declare _morphOrder?: number[];
   declare _emptyMorphTexture?: WebGLTexture | null;
   declare _morphPlaceholderTexture?: WebGLTexture | null;
-  declare _linearOutput?: boolean;
   declare _snapshotPlaceholder?: WebGLTexture | null;
-  declare _frameTargetHdr?: boolean;
+  declare _sceneTargetHdr?: boolean;
+  declare bloomStrength?: number;
+  declare supersample?: boolean;
+  declare exposure?: number;
 
   declare _resizeObserver: ResizeObserver;
   declare _running: boolean;
@@ -262,14 +271,19 @@ export class Viewer {
     this.surfacePrograms = built.surfacePrograms;
     this.lineProgram = built.lineProgram;
     this.backgroundProgram = built.backgroundProgram;
-    this.downsampleProgram = built.downsampleProgram;
+    this.outputProgram = built.outputProgram;
+    this.bloomDownProgram = built.bloomDownProgram;
+    this.bloomUpProgram = built.bloomUpProgram;
     this.uniforms = {};
     this._surfaceProgram = null;
-    this._frameTarget = null;
+    this._sceneTarget = null;
+    this._bloom = null;
     this.locations = built.locations;
     this.lineUniforms = built.lineUniforms;
     this.backgroundUniforms = built.backgroundUniforms;
-    this.downsampleUniforms = built.downsampleUniforms;
+    this.outputUniforms = built.outputUniforms;
+    this.bloomDownUniforms = built.bloomDownUniforms;
+    this.bloomUpUniforms = built.bloomUpUniforms;
     this.backgroundVao = built.backgroundVao;
     this.environmentIbl = built.environmentIbl;
   }
@@ -546,11 +560,15 @@ export class Viewer {
     }
     this._resizeObserver?.disconnect();
     this.surfacePrograms?.dispose();
-    disposeFrameTarget(this.gl, this._frameTarget ?? null);
-    this._frameTarget = null;
+    disposeSceneTarget(this.gl, this._sceneTarget ?? null);
+    this._sceneTarget = null;
+    disposeBloomChain(this.gl, this._bloom ?? null);
+    this._bloom = null;
     if (this.lineProgram) this.gl.deleteProgram(this.lineProgram);
     if (this.backgroundProgram) this.gl.deleteProgram(this.backgroundProgram);
-    if (this.downsampleProgram) this.gl.deleteProgram(this.downsampleProgram);
+    if (this.outputProgram) this.gl.deleteProgram(this.outputProgram);
+    if (this.bloomDownProgram) this.gl.deleteProgram(this.bloomDownProgram);
+    if (this.bloomUpProgram) this.gl.deleteProgram(this.bloomUpProgram);
     if (this.backgroundVao) this.gl.deleteVertexArray(this.backgroundVao);
     this.environmentIbl?.dispose();
   }

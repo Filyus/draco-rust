@@ -7,11 +7,12 @@ import type { Mat4, Vec3 } from '../math.ts';
 import { cameraPosition } from './camera.ts';
 import type { CameraHost } from './camera.ts';
 import { GL } from './gl-utils.ts';
+import { ensureBloomChain } from './bloom.ts';
+import type { BloomChain } from './bloom.ts';
 import {
-  beginFrameCapture, ensureFrameTarget, finishFrameCapture, frameTargetHdrSupported,
-  resolveFrameCapture,
-} from './frame-target.ts';
-import type { FrameTarget } from './frame-target.ts';
+  beginScene, captureOpaqueHalf, ensureSceneTarget, resolveScene, sceneTargetHdrSupported,
+} from './scene-target.ts';
+import type { SceneTarget } from './scene-target.ts';
 import { MORPH_TEXTURE_UNIT } from './morph-texture.ts';
 import {
   MAX_MATERIAL_TEXTURE_UNITS, SHARED_TEXTURE_UNITS, assertTextureUnitBudget, materialTextureUnit,
@@ -31,6 +32,15 @@ import type { ViewerMaterial, ViewerNode, ViewerTextureBinding } from '../viewer
  * programs and their uniform locations, the uploaded GL resources, and the
  * display flags the user toggles.
  */
+/**
+ * How much of the frame's light the output pass spreads as glare.
+ *
+ * A few percent: enough that a source far brighter than white reads as one,
+ * which is what an optical system does with it, and not so much that the whole
+ * image hazes over.
+ */
+const DEFAULT_BLOOM_STRENGTH = 0.05;
+
 /** World up, shared by every view matrix; hoisted out of the frame. */
 const WORLD_UP = new Float32Array([0, 1, 0]);
 
@@ -124,7 +134,6 @@ function useSurfaceProgram(host: RenderHost, slots: readonly TextureSlotName[]) 
   host.gl.uniformMatrix4fv(surface.uniforms.uProjection, false, host._projection);
   host.gl.uniformMatrix4fv(surface.uniforms.uView, false, host._view);
   host.gl.uniform3fv(surface.uniforms.uCameraPos, host._eye!);
-  host.gl.uniform1i(surface.uniforms.uLinearOutput, host._linearOutput ? 1 : 0);
   bindEnvironmentIbl(host);
   bindFrameSnapshot(host);
   bindPunctualLights(host);
@@ -177,21 +186,28 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   uniforms: SurfaceUniforms;
   /** The surface program bound right now, or null before the first draw. */
   _surfaceProgram: WebGLProgram | null;
-  /** The linear render of the opaque frame a transmissive surface refracts. */
-  _frameTarget?: FrameTarget | null;
-  /**
-   * Set while that render is being drawn, so the programs it uses write light
-   * rather than a picture, and so nothing samples the target it is writing to.
-   */
-  _linearOutput?: boolean;
-  /** Bound in place of the snapshot while the snapshot is being drawn. */
+  /** The linear frame everything is drawn into, and its opaque-half copy. */
+  _sceneTarget?: SceneTarget | null;
+  /** The glare pyramid the output pass reads. */
+  _bloom?: BloomChain | null;
+  /** Bound in place of the capture before there is one. */
   _snapshotPlaceholder?: WebGLTexture | null;
-  /** Whether this machine can hold the capture as half floats. Asked once. */
-  _frameTargetHdr?: boolean;
+  /** Whether this machine can hold the frame as half floats. Asked once. */
+  _sceneTargetHdr?: boolean;
+  /** How much of the frame's light the output pass spreads as glare. */
+  bloomStrength?: number;
+  /** Draw the frame at twice the size and average it down. Costly; off. */
+  supersample?: boolean;
+  /** Stops applied to the frame before the tone curve. */
+  exposure?: number;
   lineUniforms: Record<string, WebGLUniformLocation | null>;
   backgroundUniforms: Record<string, WebGLUniformLocation | null>;
-  downsampleProgram: WebGLProgram;
-  downsampleUniforms: Record<string, WebGLUniformLocation | null>;
+  outputProgram: WebGLProgram;
+  outputUniforms: Record<string, WebGLUniformLocation | null>;
+  bloomDownProgram: WebGLProgram;
+  bloomDownUniforms: Record<string, WebGLUniformLocation | null>;
+  bloomUpProgram: WebGLProgram;
+  bloomUpUniforms: Record<string, WebGLUniformLocation | null>;
   backgroundVao: WebGLVertexArrayObject | null;
   environmentIbl: EnvironmentIbl;
   wireframe: boolean;
@@ -240,8 +256,10 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
 
 export function render(host: RenderHost) {
   const gl = host.gl;
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-  if (!host.scene || !host.glResources) return;
+  if (!host.scene || !host.glResources) {
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    return;
+  }
 
   // Compute camera matrices
   const aspect = host.canvas.width / Math.max(1, host.canvas.height);
@@ -252,9 +270,8 @@ export function render(host: RenderHost) {
 
   updateWorldMatrices(host);
 
-  // What a transmissive surface will refract, drawn before the frame the user
-  // sees rather than lifted out of it.
-  captureTransmissionSnapshot(host);
+  const scene = ensureSceneResources(host);
+  beginScene(gl, scene);
 
   drawBackground(host);
 
@@ -265,64 +282,55 @@ export function render(host: RenderHost) {
   // until the first one asks for one.
   host._surfaceProgram = null;
 
-  // Opaque first, then what blends over it. glTF asks for exactly that order.
+  // Opaque first, then what blends over it. glTF asks for exactly that order,
+  // and it is also the only arrangement in which "everything a transmissive
+  // surface may see" is a moment the frame passes through: the copy is taken
+  // between the two.
   drawSurfaces(host, false);
+  if (sceneRefracts(host)) {
+    captureOpaqueHalf(gl, scene);
+    // The copy did not exist when the opaque programs were bound.
+    host._surfaceProgram = null;
+  }
   drawSurfaces(host, true);
 
   gl.depthMask(true);
   gl.disable(gl.BLEND);
   gl.bindVertexArray(null);
+
+  resolveScene(gl, scene);
+  drawGlare(host);
+  drawOutput(host);
 }
 
-/** Whether anything in the scene will read the snapshot at all. */
+/** Whether anything in the scene will read the opaque-half copy at all. */
 function sceneRefracts(host: RenderHost): boolean {
   return host.scene!.materials.some((material) => (material?.transmissionFactor ?? 0) > 0);
 }
 
 /**
- * Draw the opaque frame once more, into the linear target transmission reads.
+ * The frame and the glare pyramid for the drawing buffer as it stands now.
  *
- * Skipped outright when no material in the scene transmits, which is the usual
- * case: the pass costs a second run over the opaque geometry, and a scene that
- * will never sample the result should not pay for it. The same question used
- * to be left unasked - the old capture copied the whole canvas and built its
- * mip chain every frame regardless.
- *
- * The grid stays out of it. It is an aid the viewer draws over the scene, not
- * something the asset contains, and glass that refracts the helper geometry
- * reads as a rendering fault rather than as a floor.
+ * Half floats are asked for once: a frame that cannot hold light past white
+ * still draws, it just clips everything an emitter does, and the tone curve
+ * then has nothing left to roll off.
  */
-function captureTransmissionSnapshot(host: RenderHost) {
+function ensureSceneResources(host: RenderHost): SceneTarget {
   const gl = host.gl;
-  if (!sceneRefracts(host)) return;
-  if (host._frameTargetHdr === undefined) {
-    host._frameTargetHdr = frameTargetHdrSupported(gl);
-    // Said once, and only when a scene actually refracts: eight bits over
-    // linear light band in the darks and clip anything brighter than white,
-    // which a transmissive surface shows as steps in what it looks through.
-    if (!host._frameTargetHdr) {
-      host._log('Float render targets unavailable; transmission refracts an LDR frame', 'warning');
+  if (host._sceneTargetHdr === undefined) {
+    host._sceneTargetHdr = sceneTargetHdrSupported(gl);
+    if (!host._sceneTargetHdr) {
+      host._log('Float render targets unavailable; the frame clips at white', 'warning');
     }
   }
-  host._frameTarget = ensureFrameTarget(
-    gl, host._frameTarget ?? null, gl.drawingBufferWidth, gl.drawingBufferHeight,
-    host._frameTargetHdr,
+  const scene = ensureSceneTarget(
+    gl, host._sceneTarget ?? null, gl.drawingBufferWidth, gl.drawingBufferHeight,
+    host._sceneTargetHdr, host.supersample ?? false,
   );
-
-  host._linearOutput = true;
-  // Nothing may sample the texture now being drawn into, and the unit still
-  // holds it from the previous frame - so the placeholder goes in first.
-  host._surfaceProgram = null;
-  beginFrameCapture(gl, host._frameTarget);
-  drawBackground(host);
-  drawSurfaces(host, false);
-  resolveFrameCapture(gl, host._frameTarget);
-  drawCaptureDownsample(host);
-  finishFrameCapture(gl, host._frameTarget);
-  host._linearOutput = false;
-  // Force the next draw to re-state the frame uniforms: every program bound
-  // during the capture was told to write light and to read the placeholder.
-  host._surfaceProgram = null;
+  host._sceneTarget = scene;
+  host._bloom = ensureBloomChain(
+    gl, host._bloom ?? null, scene.renderWidth, scene.renderHeight, scene.hdr);
+  return scene;
 }
 
 /**
@@ -539,6 +547,33 @@ export function applyMaterial(
   }
 }
 
+/**
+ * The scene-referred light that comes out of the output pass as this colour.
+ *
+ * The grid is authored the way it should look, not as a quantity of light, and
+ * everything now goes through a tone curve on the way to the canvas. Sending
+ * the authored value as radiance would have the curve darken it, so it is run
+ * backwards once: the tone curve is a quadratic in disguise, and inverting it
+ * is the positive root. Luminance carries the whole transform, exactly as the
+ * forward direction does, so the hue survives the round trip.
+ */
+function toneMapInverse(display: readonly number[]): [number, number, number] {
+  const target = display.map((channel) => channel ** 2.2);
+  const level = 0.2126 * target[0] + 0.7152 * target[1] + 0.0722 * target[2];
+  if (level <= 0) return [0, 0, 0];
+  const [a, b, c, d, e] = [2.51, 0.03, 2.43, 0.59, 0.14];
+  const quadratic = a - level * c;
+  const linear = b - level * d;
+  const scene = (-linear + Math.sqrt(linear * linear + 4 * quadratic * level * e))
+    / (2 * quadratic);
+  const gain = scene / level;
+  return [target[0] * gain, target[1] * gain, target[2] * gain];
+}
+
+/** The grid's own colour, as authored, and the light that reproduces it. */
+const GRID_DISPLAY_COLOR = [0.31, 0.40, 0.56];
+const GRID_RADIANCE = toneMapInverse(GRID_DISPLAY_COLOR);
+
 export function drawGrid(host: RenderHost) {
   const gl = host.gl;
   mat4.multiply(host._projectionView, host._projection, host._view);
@@ -546,7 +581,7 @@ export function drawGrid(host: RenderHost) {
   if (!host._grid) return;
   gl.useProgram(host.lineProgram);
   gl.uniformMatrix4fv(host.lineUniforms.uProjectionView, false, host._projectionView);
-  gl.uniform3f(host.lineUniforms.uColor, 0.31, 0.40, 0.56);
+  gl.uniform3f(host.lineUniforms.uColor, ...GRID_RADIANCE);
   gl.bindBuffer(gl.ARRAY_BUFFER, host._grid.buffer);
   gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
@@ -554,28 +589,92 @@ export function drawGrid(host: RenderHost) {
 }
 
 /**
- * Bring the capture down to the size the frame reads it at.
+ * Build the glare pyramid from the resolved frame.
  *
- * Drawn between the resolve and the mip chain, which is the only place it can
- * be: the samples have to be resolved before they can be averaged, and the mip
- * levels have to be built from the result.
+ * Down with a thirteen-tap filter, back up with a tent added into the level
+ * above; the sum of levels is the long tail. The frame itself is level zero
+ * only as the source - the pyramid starts half its size, so what this costs is
+ * a third of a frame's worth of texels however many levels there are.
  */
-export function drawCaptureDownsample(host: RenderHost) {
+export function drawGlare(host: RenderHost) {
   const gl = host.gl;
-  const frame = host._frameTarget!;
+  const chain = host._bloom;
+  const scene = host._sceneTarget;
+  if (!chain || !scene || chain.levels.length === 0) return;
   gl.disable(gl.DEPTH_TEST);
   gl.depthMask(false);
   gl.disable(gl.BLEND);
-  gl.useProgram(host.downsampleProgram);
+  gl.bindVertexArray(host.backgroundVao);
   gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.frameSnapshot);
-  gl.bindTexture(gl.TEXTURE_2D, frame.resolved);
-  gl.uniform1i(host.downsampleUniforms.uCapture, SHARED_TEXTURE_UNITS.frameSnapshot);
+
+  gl.useProgram(host.bloomDownProgram);
+  gl.uniform1i(host.bloomDownUniforms.uSource, SHARED_TEXTURE_UNITS.frameSnapshot);
+  let sourceTexture = scene.resolved;
+  let sourceWidth = scene.renderWidth;
+  let sourceHeight = scene.renderHeight;
+  for (const level of chain.levels) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, level.framebuffer);
+    gl.viewport(0, 0, level.width, level.height);
+    gl.bindTexture(gl.TEXTURE_2D, sourceTexture);
+    gl.uniform2f(host.bloomDownUniforms.uTexel, 1 / sourceWidth, 1 / sourceHeight);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    sourceTexture = level.texture;
+    sourceWidth = level.width;
+    sourceHeight = level.height;
+  }
+
+  // Each level adds into the one above it, so the coarse tails accumulate
+  // rather than replace what the finer levels already spread.
+  gl.useProgram(host.bloomUpProgram);
+  gl.uniform1i(host.bloomUpUniforms.uSource, SHARED_TEXTURE_UNITS.frameSnapshot);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE);
+  for (let index = chain.levels.length - 1; index > 0; index -= 1) {
+    const source = chain.levels[index];
+    const destination = chain.levels[index - 1];
+    gl.bindFramebuffer(gl.FRAMEBUFFER, destination.framebuffer);
+    gl.viewport(0, 0, destination.width, destination.height);
+    gl.bindTexture(gl.TEXTURE_2D, source.texture);
+    gl.uniform2f(host.bloomUpUniforms.uTexel, 1 / source.width, 1 / source.height);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  gl.disable(gl.BLEND);
+  gl.bindVertexArray(null);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthMask(true);
+}
+
+/**
+ * The one pass that writes to the canvas: glare in, tone curve, transfer
+ * function out.
+ */
+export function drawOutput(host: RenderHost) {
+  const gl = host.gl;
+  const scene = host._sceneTarget;
+  const chain = host._bloom;
+  if (!scene) return;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.disable(gl.DEPTH_TEST);
+  gl.depthMask(false);
+  gl.disable(gl.BLEND);
+  gl.useProgram(host.outputProgram);
+  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.frameSnapshot);
+  gl.bindTexture(gl.TEXTURE_2D, scene.resolved);
+  gl.uniform1i(host.outputUniforms.uScene, SHARED_TEXTURE_UNITS.frameSnapshot);
+  gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.morphDeltas);
+  gl.bindTexture(gl.TEXTURE_2D, chain?.levels[0]?.texture ?? scene.resolved);
+  gl.uniform1i(host.outputUniforms.uBloom, SHARED_TEXTURE_UNITS.morphDeltas);
+  gl.uniform1f(host.outputUniforms.uBloomStrength, host.bloomStrength ?? DEFAULT_BLOOM_STRENGTH);
+  gl.uniform1f(host.outputUniforms.uExposure, host.exposure ?? 1);
+  gl.uniform1i(host.outputUniforms.uToneMap, host.baseColorOnly ? 0 : 1);
   gl.bindVertexArray(host.backgroundVao);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.bindVertexArray(null);
-  gl.depthMask(true);
   gl.enable(gl.DEPTH_TEST);
-  // The unit is the snapshot's own, and it now holds the wrong texture.
+  gl.depthMask(true);
+  // Both units held something else; the next surface program re-states them.
   host._surfaceProgram = null;
 }
 
@@ -592,7 +691,6 @@ export function drawBackground(host: RenderHost) {
   gl.activeTexture(gl.TEXTURE5);
   gl.bindTexture(gl.TEXTURE_CUBE_MAP, host.environmentIbl.environment);
   gl.uniform1i(host.backgroundUniforms.uEnvironment, 5);
-  gl.uniform1i(host.backgroundUniforms.uLinearOutput, host._linearOutput ? 1 : 0);
   gl.bindVertexArray(host.backgroundVao);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.bindVertexArray(null);
@@ -601,13 +699,10 @@ export function drawBackground(host: RenderHost) {
 }
 
 /**
- * A one-texel stand-in for the snapshot, bound while the snapshot is drawn.
+ * A one-texel stand-in for the opaque-half copy, bound before there is one.
  *
- * Sampling a texture that is attached to the framebuffer being drawn into is
- * undefined however carefully the shader avoids reading it, and the unit still
- * holds the target from the frame before. Every material the capture draws is
- * opaque, so what the stand-in contains is never read - only that it is not
- * the attachment.
+ * A sampler has to reference a complete texture even on the branch that never
+ * reads it, and on the frame's first opaque pass the copy has not been taken.
  */
 function snapshotPlaceholder(host: RenderHost) {
   if (!host._snapshotPlaceholder) {
@@ -632,19 +727,15 @@ function snapshotPlaceholder(host: RenderHost) {
  */
 export function bindFrameSnapshot(host: RenderHost) {
   const gl = host.gl;
-  const frame = host._frameTarget;
-  if (!frame) return;
+  const scene = host._sceneTarget;
   gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.frameSnapshot);
-  if (host._linearOutput) {
-    gl.bindTexture(gl.TEXTURE_2D, snapshotPlaceholder(host));
-    gl.uniform1i(host.uniforms.uFrameSnapshot, SHARED_TEXTURE_UNITS.frameSnapshot);
-    return;
-  }
-  gl.bindTexture(gl.TEXTURE_2D, frame.color);
+  gl.bindTexture(gl.TEXTURE_2D, scene ? scene.capture : snapshotPlaceholder(host));
   gl.uniform1i(host.uniforms.uFrameSnapshot, SHARED_TEXTURE_UNITS.frameSnapshot);
-  gl.uniform2f(host.uniforms.uFrameSize, frame.width, frame.height);
+  if (!scene) return;
+  gl.uniform2f(host.uniforms.uFrameSize, scene.renderWidth, scene.renderHeight);
   // The mip chain is the blur a rough transmissive surface reads through.
-  gl.uniform1f(host.uniforms.uFrameMaxLod, Math.log2(Math.max(frame.width, frame.height)));
+  gl.uniform1f(
+    host.uniforms.uFrameMaxLod, Math.log2(Math.max(scene.renderWidth, scene.renderHeight)));
 }
 
 /**

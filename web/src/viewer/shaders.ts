@@ -241,12 +241,6 @@ uniform samplerCube uPrefilteredMap;
 uniform sampler2D uBrdfLut;
 uniform float uEnvironmentMaxLod;
 uniform vec3 uCameraPos;
-// Set while the frame is being captured for transmission to read: the capture
-// stores linear light, so the tone map and the transfer function that turn
-// light into a picture are the one thing it must not do. Applying them there
-// and again on the way to the canvas is exactly the double encoding a
-// transmissive surface would then refract.
-uniform int uLinearOutput;
 // KHR_lights_punctual, resolved to world space by the renderer. Type 0 is
 // directional, 1 point, 2 spot; a range of zero never falls off.
 uniform int uLightCount;
@@ -562,15 +556,6 @@ float sheenDirectionalAlbedo(float nDotV, float roughness) {
     return clamp(fit / PI, 0.0, 1.0);
 }
 
-vec3 acesToneMap(vec3 color) {
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
-}
-
 /**
  * Bend N by a tangent-space normal map sample.
  *
@@ -611,7 +596,9 @@ void main() {
     // colour is the picture already, so the capture takes it back to linear
     // rather than leaving it encoded twice over.
     if (uUnlit == 1 || uBaseColorOnly == 1) {
-        outColor = vec4(uLinearOutput == 1 ? pow(base.rgb, vec3(2.2)) : base.rgb, base.a);
+        // Authored as a colour, so it is taken back to the light that colour
+        // stands for; the output pass turns light into a picture, not this.
+        outColor = vec4(pow(base.rgb, vec3(2.2)), base.a);
         return;
     }
 
@@ -839,12 +826,7 @@ void main() {
         float coatFresnel = clearcoat * fresnelSchlickRoughness(coatNdotV, vec3(0.04), coatRoughness).x;
         color = color * (1.0 - coatFresnel) + coatSpecular * clearcoat;
     }
-    if (uLinearOutput == 1) {
-        outColor = vec4(color, base.a);
-        return;
-    }
-    color = acesToneMap(color);
-    outColor = vec4(pow(color, vec3(1.0 / 2.2)), base.a);
+    outColor = vec4(color, base.a);
 }
 `;
 }
@@ -868,26 +850,144 @@ void main() {
 `;
 
 /**
- * The pass that brings the capture down to the size it is read at.
+ * The output pass, and the only place in the viewer that turns light into a
+ * picture.
  *
- * The capture is drawn larger than the frame that samples it, and this is
- * where the extra texels are spent: one bilinear tap at the centre of each
- * block averages them exactly, in linear light, so what a texel ends up
- * holding is the light that actually crossed it. That is the whole reason for
- * the detour - the alternative, averaging in some compressed space so that the
- * result survives tone mapping, does not conserve energy, and a wire covering
- * half a texel comes back at a twentieth of its brightness and the wrong hue.
+ * Two things happen here that used to happen per surface, and both belong
+ * after everything has been added up rather than during. Glare, because the
+ * spread function of an optical system acts on the image, not on one object in
+ * it. And the tone curve, because it is a display transform: applied early it
+ * poisons every average taken afterwards, which is what a snapshot lifted off
+ * a tone-mapped canvas kept doing.
  *
- * At a scale of one the tap lands on the texel centre and this is a copy.
+ * The curve maps luminance and rescales the channels by what it did, rather
+ * than running per channel. A per-channel curve pulls whichever channel is
+ * brightest down hardest, so a saturated highlight drifts toward whichever
+ * primary saturates last - the reason a warm filament turns pink or a red
+ * emitter turns orange as it brightens. Mapping luminance leaves the hue where
+ * the material put it; what remains is that a very bright colour cannot stay
+ * saturated inside the display gamut, so past the point where a channel would
+ * leave it the colour walks to white, which is what film does and what the eye
+ * expects of anything that bright.
  */
-export const DOWNSAMPLE_FRAG_SRC = `#version 300 es
+export const OUTPUT_FRAG_SRC = `#version 300 es
 precision highp float;
 in vec2 vNdc;
-uniform sampler2D uCapture;
+uniform sampler2D uScene;
+uniform sampler2D uBloom;
+uniform float uBloomStrength;
+uniform float uExposure;
+// The base-colour view is an inspection mode, not a photograph: it exists to
+// show the texel the asset stores, so the curve that makes an image out of
+// light has no business in it.
+uniform int uToneMap;
+out vec4 outColor;
+
+float luminance(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
+/** The Narkowicz fit of the ACES curve, on one value rather than three. */
+float toneCurve(float x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+vec3 toneMap(vec3 radiance) {
+    float level = luminance(radiance);
+    if (level <= 0.0) return vec3(0.0);
+    float mapped = toneCurve(level);
+    vec3 scaled = radiance * (mapped / level);
+    // Scaling by what the curve did to luminance can push a saturated colour
+    // outside the display cube even where the luminance fits, so it walks
+    // toward the grey of its own luminance - but only far enough to fit, and
+    // not a step further. Anything else would grey out a mid-tone red for
+    // being red, and clipping instead would move the hue exactly the way
+    // mapping per channel does.
+    float peak = max(max(scaled.r, scaled.g), scaled.b);
+    if (peak <= 1.0) return scaled;
+    float fit = (peak - 1.0) / max(peak - mapped, 1e-5);
+    return clamp(mix(scaled, vec3(mapped), clamp(fit, 0.0, 1.0)), 0.0, 1.0);
+}
+
+void main() {
+    vec2 uv = vNdc * 0.5 + 0.5;
+    // One tap at the centre of the block, which is an exact box average of the
+    // supersampled frame because the filter is linear.
+    vec3 scene = texture(uScene, uv).rgb;
+    vec3 glare = texture(uBloom, uv).rgb;
+    // Mixed rather than added: glare moves light about, it does not make any.
+    vec3 radiance = mix(scene, glare, uBloomStrength) * uExposure;
+    vec3 shown = uToneMap == 1 ? toneMap(radiance) : clamp(radiance, 0.0, 1.0);
+    outColor = vec4(pow(shown, vec3(1.0 / 2.2)), 1.0);
+}
+`;
+
+/**
+ * One step down the glare pyramid: the thirteen-tap filter the pyramid is
+ * usually built with, which keeps the level stable as the frame moves rather
+ * than shimmering the way a plain box does.
+ */
+export const BLOOM_DOWN_FRAG_SRC = `#version 300 es
+precision highp float;
+in vec2 vNdc;
+uniform sampler2D uSource;
+uniform vec2 uTexel;
 out vec4 outColor;
 
 void main() {
-    outColor = vec4(texture(uCapture, vNdc * 0.5 + 0.5).rgb, 1.0);
+    vec2 uv = vNdc * 0.5 + 0.5;
+    vec3 a = texture(uSource, uv + uTexel * vec2(-2.0, 2.0)).rgb;
+    vec3 b = texture(uSource, uv + uTexel * vec2(0.0, 2.0)).rgb;
+    vec3 c = texture(uSource, uv + uTexel * vec2(2.0, 2.0)).rgb;
+    vec3 d = texture(uSource, uv + uTexel * vec2(-2.0, 0.0)).rgb;
+    vec3 e = texture(uSource, uv).rgb;
+    vec3 f = texture(uSource, uv + uTexel * vec2(2.0, 0.0)).rgb;
+    vec3 g = texture(uSource, uv + uTexel * vec2(-2.0, -2.0)).rgb;
+    vec3 h = texture(uSource, uv + uTexel * vec2(0.0, -2.0)).rgb;
+    vec3 i = texture(uSource, uv + uTexel * vec2(2.0, -2.0)).rgb;
+    vec3 j = texture(uSource, uv + uTexel * vec2(-1.0, 1.0)).rgb;
+    vec3 k = texture(uSource, uv + uTexel * vec2(1.0, 1.0)).rgb;
+    vec3 l = texture(uSource, uv + uTexel * vec2(-1.0, -1.0)).rgb;
+    vec3 m = texture(uSource, uv + uTexel * vec2(1.0, -1.0)).rgb;
+    vec3 sum = e * 0.125;
+    sum += (a + c + g + i) * 0.03125;
+    sum += (b + d + f + h) * 0.0625;
+    sum += (j + k + l + m) * 0.125;
+    outColor = vec4(sum, 1.0);
+}
+`;
+
+/**
+ * One step back up: a tent filter, added into the level above.
+ *
+ * The sum of the levels is what gives the spread its long tail - each is twice
+ * as wide and carries less, which is far closer to a real point spread than
+ * any single blur of one width.
+ */
+export const BLOOM_UP_FRAG_SRC = `#version 300 es
+precision highp float;
+in vec2 vNdc;
+uniform sampler2D uSource;
+uniform vec2 uTexel;
+out vec4 outColor;
+
+void main() {
+    vec2 uv = vNdc * 0.5 + 0.5;
+    vec3 sum = texture(uSource, uv + uTexel * vec2(-1.0, 1.0)).rgb;
+    sum += texture(uSource, uv + uTexel * vec2(0.0, 1.0)).rgb * 2.0;
+    sum += texture(uSource, uv + uTexel * vec2(1.0, 1.0)).rgb;
+    sum += texture(uSource, uv + uTexel * vec2(-1.0, 0.0)).rgb * 2.0;
+    sum += texture(uSource, uv).rgb * 4.0;
+    sum += texture(uSource, uv + uTexel * vec2(1.0, 0.0)).rgb * 2.0;
+    sum += texture(uSource, uv + uTexel * vec2(-1.0, -1.0)).rgb;
+    sum += texture(uSource, uv + uTexel * vec2(0.0, -1.0)).rgb * 2.0;
+    sum += texture(uSource, uv + uTexel * vec2(1.0, -1.0)).rgb;
+    outColor = vec4(sum / 16.0, 1.0);
 }
 `;
 
@@ -907,30 +1007,12 @@ in vec2 vNdc;
 uniform mat4 uInverseProjection;
 uniform mat4 uInverseView;
 uniform samplerCube uEnvironment;
-// As in the surface shader: the capture wants the environment's own radiance,
-// not the picture made of it. It is the backdrop a transmissive surface sees
-// wherever no geometry stands behind it, so it goes in on the same terms.
-uniform int uLinearOutput;
 out vec4 outColor;
-
-vec3 acesToneMap(vec3 color) {
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
-}
 
 void main() {
     vec4 view = uInverseProjection * vec4(vNdc, 1.0, 1.0);
     view /= view.w;
     vec3 direction = normalize((uInverseView * vec4(view.xyz, 0.0)).xyz);
-    vec3 radiance = textureLod(uEnvironment, direction, 0.0).rgb;
-    if (uLinearOutput == 1) {
-        outColor = vec4(radiance, 1.0);
-        return;
-    }
-    outColor = vec4(pow(acesToneMap(radiance), vec3(1.0 / 2.2)), 1.0);
+    outColor = vec4(textureLod(uEnvironment, direction, 0.0).rgb, 1.0);
 }
 `;
