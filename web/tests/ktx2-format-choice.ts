@@ -14,11 +14,16 @@
 import assert from 'node:assert/strict';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type {
+  chooseCompressedTarget as ChooseCompressedTarget,
+  CompressedTarget,
+  TextureCodec,
+} from '../src/viewer/compressed-formats.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { chooseCompressedTarget } = await import(
   pathToFileURL(resolve(here, '..', 'www', 'viewer', 'compressed-formats.js')).href
-);
+) as { chooseCompressedTarget: typeof ChooseCompressedTarget };
 
 const S3TC = ['WEBGL_compressed_texture_s3tc'];
 const BPTC = ['EXT_texture_compression_bptc'];
@@ -27,9 +32,11 @@ const ASTC = ['WEBGL_compressed_texture_astc'];
 /** What a phone reports: no BC family at all.  */
 const MOBILE = [...ETC, ...ASTC];
 
-const name = (target) => (target ? target.name : 'pixels');
+const name = (target: CompressedTarget | null) => (target ? target.name : 'pixels');
 
-const CASES = [
+type Case = [extensions: string[], codec: TextureCodec, hasAlpha: boolean, expected: string, why: string];
+
+const CASES: Case[] = [
   // A desktop GPU: the BC family and nothing else. This is what was measured
   // on Chrome with an NVIDIA card, and it is the case that matters most.
   [S3TC, 'etc1s', false, 'bc1', 'without alpha, BC1 is half the memory of BC3 and loses nothing'],
@@ -62,10 +69,10 @@ for (const [extensions, codec, hasAlpha, expected, why] of CASES) {
 }
 
 // The block size has to match the format, because the upload is sized by it.
-assert.equal(chooseCompressedTarget(S3TC, 'etc1s', false).bytesPerBlock, 8);
-assert.equal(chooseCompressedTarget(S3TC, 'etc1s', true).bytesPerBlock, 16);
-assert.equal(chooseCompressedTarget(BPTC, 'uastc', false).bytesPerBlock, 16);
-assert.equal(chooseCompressedTarget(MOBILE, 'etc1s', false).bytesPerBlock, 8);
-assert.equal(chooseCompressedTarget(MOBILE, 'uastc', false).bytesPerBlock, 16);
+assert.equal(chooseCompressedTarget(S3TC, 'etc1s', false)?.bytesPerBlock, 8);
+assert.equal(chooseCompressedTarget(S3TC, 'etc1s', true)?.bytesPerBlock, 16);
+assert.equal(chooseCompressedTarget(BPTC, 'uastc', false)?.bytesPerBlock, 16);
+assert.equal(chooseCompressedTarget(MOBILE, 'etc1s', false)?.bytesPerBlock, 8);
+assert.equal(chooseCompressedTarget(MOBILE, 'uastc', false)?.bytesPerBlock, 16);
 
 console.log(`ktx2-format-choice: ${CASES.length} cases OK`);

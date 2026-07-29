@@ -34,6 +34,12 @@ const HUFF_MODES = [
   11, 18, 10, 5, 11, 14, 12, 9, 11, 0, 10, 4, 11, 1, 12, 8, 11, 18, 10, 6, 11, 2, 12, 13,
 ];
 
+interface PatternField {
+  offset: number;
+  bits: number;
+  count: number;
+}
+
 /**
  * Where a mode's pattern index sits and how many values it has.
  *
@@ -45,7 +51,7 @@ const HUFF_MODES = [
  * produces a pattern the decoder rejects, and a wrong offset produces a block
  * whose bytes the reference reads differently, which the comparison shows.
  */
-const PATTERN = {
+const PATTERN: Record<number, PatternField | null> = {
   2: { offset: 5 + 15, bits: 5, count: 30 },
   3: { offset: 5 + 15, bits: 4, count: 11 },
   7: { offset: 5 + 15, bits: 5, count: 19 },
@@ -57,7 +63,7 @@ const MODES = [2, 3, 7, 14, 18];
 
 /** Every target either the file's codec can reach. */
 const TARGETS = [
-  { name: 'rgba8', reference: TARGET.RGBA32, bytesPerBlock: null },
+  { name: 'rgba8', reference: TARGET.RGBA32, bytesPerBlock: null as number | null },
   { name: 'bc7', reference: TARGET.BC7_RGBA, bytesPerBlock: 16 },
   { name: 'astc', reference: TARGET.ASTC_4x4_RGBA, bytesPerBlock: 16 },
   { name: 'etc1', reference: TARGET.ETC1_RGB, bytesPerBlock: 8 },
@@ -65,7 +71,7 @@ const TARGETS = [
 ];
 
 /** A fixed stream, so a failure is reproducible rather than a one-off. */
-function randomBits(seed) {
+function randomBits(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
     state ^= state << 13;
@@ -77,7 +83,7 @@ function randomBits(seed) {
 }
 
 /** Write `count` bits at `offset`, least significant first, as the format reads them. */
-function setBits(block, offset, count, value) {
+function setBits(block: Uint8Array, offset: number, count: number, value: number): void {
   for (let bit = 0; bit < count; bit++) {
     const at = offset + bit;
     const mask = 1 << (at & 7);
@@ -87,7 +93,7 @@ function setBits(block, offset, count, value) {
 }
 
 /** One legal block of the given mode, filled otherwise at random. */
-function buildBlock(mode, next) {
+function buildBlock(mode: number, next: () => number): Uint8Array {
   const block = new Uint8Array(16);
   for (let index = 0; index < 16; index++) block[index] = next() & 0xff;
 
@@ -101,12 +107,18 @@ function buildBlock(mode, next) {
   return block;
 }
 
+interface LevelEntry {
+  offset: number;
+  length: number;
+  uncompressed: number;
+}
+
 /** Read the level index of a KTX2 file: where each level's bytes are. */
-function levelIndex(bytes) {
+function levelIndex(bytes: Uint8Array): LevelEntry[] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const levels = Math.max(1, view.getUint32(40, true));
   assert.equal(view.getUint32(44, true), 2, 'this gate expects a Zstd-supercompressed fixture');
-  const index = [];
+  const index: LevelEntry[] = [];
   for (let level = 0; level < levels; level++) {
     const at = 80 + level * 24;
     index.push({
@@ -127,10 +139,10 @@ function levelIndex(bytes) {
  * is carried through untouched, which is the point. The container stays a real
  * one and only what the blocks say changes.
  */
-function rebuild(original, index, build) {
+function rebuild(original: Uint8Array, index: LevelEntry[], build: () => Uint8Array): Uint8Array {
   const storage = index.map((level, at) => ({ ...level, at })).sort((a, b) => a.offset - b.offset);
   const base = storage[0].offset;
-  const payloads = new Map();
+  const payloads = new Map<number, { offset: number; packed: Uint8Array; uncompressed: number }>();
   let cursor = base;
   for (const level of storage) {
     const raw = new Uint8Array(level.uncompressed);
@@ -177,7 +189,7 @@ for (const mode of MODES) {
   const file = new ktx2.Ktx2File(bytes);
   const census = file.modeCensus();
   assert.equal(
-    census.reduce((total, count, at) => (at === mode ? total : total + count), 0),
+    census.reduce((total: number, count: number, at: number) => (at === mode ? total : total + count), 0),
     0,
     `every block of the built file should be mode ${mode}`,
   );

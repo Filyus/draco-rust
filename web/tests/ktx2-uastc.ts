@@ -45,7 +45,7 @@ const census = new Array(20).fill(0);
 for (const name of FILES) {
   const bytes = await readFile(resolve(FIXTURES, `${name}.ktx2`));
   const counts = new ktx2.Ktx2File(new Uint8Array(bytes)).modeCensus();
-  counts.forEach((count, mode) => { census[mode] += count; });
+  counts.forEach((count: number, mode: number) => { census[mode] += count; });
 }
 
 const covered = census.flatMap((count, mode) => (count > 0 ? [mode] : []));

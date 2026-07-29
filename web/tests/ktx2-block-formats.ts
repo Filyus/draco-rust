@@ -25,8 +25,16 @@ import {
   TARGET,
 } from './ktx2-reference.ts';
 
+interface Pair {
+  codec: string;
+  target: string;
+  reference: number;
+  bytesPerBlock: number;
+  files: string[];
+}
+
 /** Which of our targets to compare, and what the reference calls it. */
-const PAIRS = [
+const PAIRS: Pair[] = [
   { codec: 'etc1s', target: 'bc1', reference: TARGET.BC1_RGB, bytesPerBlock: 8, files: ['facecap', '2d_etc1s', 'sample_etc1s'] },
   { codec: 'etc1s', target: 'bc3', reference: TARGET.BC3_RGBA, bytesPerBlock: 16, files: ['facecap', '2d_etc1s', 'sample_etc1s'] },
   { codec: 'uastc', target: 'bc7', reference: TARGET.BC7_RGBA, bytesPerBlock: 16, files: ['2d_uastc', 'sample_uastc_zstd'] },

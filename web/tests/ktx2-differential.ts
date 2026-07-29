@@ -34,6 +34,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { TARGET, firstDifference, loadKtx2Module, loadReference } from './ktx2-reference.ts';
+import type { ReferenceTranscoder } from './ktx2-reference.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /** The small seeds, which are real files and cheap to transcode. */
@@ -51,7 +52,7 @@ const TARGETS = [
 const ROUNDS = 400;
 
 /** A fixed stream, so a disagreement is reproducible rather than a rumour. */
-function randomBits(seed) {
+function randomBits(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
     state ^= state << 13;
@@ -59,6 +60,11 @@ function randomBits(seed) {
     state ^= state << 5;
     return (state >>>= 0);
   };
+}
+
+interface KeyValueRange {
+  start: number;
+  end: number;
 }
 
 /**
@@ -76,7 +82,7 @@ function randomBits(seed) {
  * Its own range is still checked - `ktx2.rs` refuses a section reaching past
  * the end of the file, which the first version of this gate is what found.
  */
-function keyValueRange(original) {
+function keyValueRange(original: Uint8Array): KeyValueRange[] {
   const view = new DataView(original.buffer, original.byteOffset, original.byteLength);
   const offset = view.getUint32(56, true);
   const length = view.getUint32(60, true);
@@ -96,9 +102,9 @@ function keyValueRange(original) {
  * the parser, which is where the two readers most easily disagree; and a
  * truncation is the malformation that costs nothing to produce in the wild.
  */
-function mutate(original, next, keyValues) {
+function mutate(original: Uint8Array, next: () => number, keyValues: KeyValueRange[]): Uint8Array {
   const bytes = new Uint8Array(original);
-  const inKeyValues = (at) => keyValues.some(({ start, end }) => at >= start && at < end);
+  const inKeyValues = (at: number) => keyValues.some(({ start, end }) => at >= start && at < end);
   switch (next() % 3) {
     case 0: {
       const flips = 1 + (next() % 4);
@@ -126,14 +132,14 @@ function mutate(original, next, keyValues) {
 }
 
 /** What our reader makes of these bytes: null if it refuses them. */
-function ours(ktx2, bytes) {
+function ours(ktx2: any, bytes: Uint8Array): Map<string, Uint8Array> | null {
   let file;
   try {
     file = new ktx2.Ktx2File(bytes);
   } catch {
     return null;
   }
-  const images = new Map();
+  const images = new Map<string, Uint8Array>();
   for (const target of TARGETS) {
     try {
       images.set(target.name, file.decode(0, target.name).bytes());
@@ -146,7 +152,7 @@ function ours(ktx2, bytes) {
 }
 
 /** The same from the reference: null if it refuses the file or the image. */
-function theirs(reference, bytes, target) {
+function theirs(reference: ReferenceTranscoder, bytes: Uint8Array, target: number): Uint8Array | null {
   try {
     return reference.transcodeBytes(bytes, 0, target);
   } catch {
@@ -180,7 +186,7 @@ for (const name of seeds) {
   // What the pristine seed transcodes to, from a fresh instance. It is read
   // back after every mutant: see `poisoned` below.
   reference = await loadReference();
-  let canary = reference.transcodeBytes(original, 0, TARGET.RGBA32);
+  let canary = reference!.transcodeBytes(original, 0, TARGET.RGBA32);
   const keyValues = keyValueRange(original);
 
   for (let round = 0; round < ROUNDS; round++) {
@@ -190,10 +196,10 @@ for (const name of seeds) {
     const mine = ours(ktx2, bytes);
     let anyOfMine = false;
     let anyOfTheirs = false;
-    const pending = [];
+    const pending: [string, Uint8Array, Uint8Array][] = [];
 
     for (const target of TARGETS) {
-      const want = theirs(reference, bytes, target.reference);
+      const want = theirs(reference!, bytes, target.reference);
       const got = mine?.get(target.name) ?? null;
       anyOfMine ||= got !== null;
       anyOfTheirs ||= want !== null;
@@ -214,11 +220,11 @@ for (const name of seeds) {
     // the pristine seed is transcoded again, and if it no longer produces what
     // it did from a fresh instance, this mutant's comparisons are discarded
     // rather than believed, and the instance is replaced.
-    const again = theirs(reference, original, TARGET.RGBA32);
+    const again = theirs(reference!, original, TARGET.RGBA32);
     if (again === null || firstDifference(canary, again) !== null) {
       poisoned++;
       reference = await loadReference();
-      canary = reference.transcodeBytes(original, 0, TARGET.RGBA32);
+      canary = reference!.transcodeBytes(original, 0, TARGET.RGBA32);
       continue;
     }
 
@@ -241,7 +247,7 @@ for (const name of seeds) {
 // would be alarming is either side becoming wholesale more permissive, which
 // is what these ceilings catch: they are set well above what is measured and
 // below what a real regression would produce.
-const rate = (count) => count / mutants;
+const rate = (count: number) => count / mutants;
 assert.ok(
   rate(onlyTheirs) < 0.2,
   `the reference accepted ${onlyTheirs} of ${mutants} mutants this reader refused, which is more than a difference of limits`,
