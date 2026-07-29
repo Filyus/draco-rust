@@ -7,13 +7,14 @@
  */
 import assert from 'node:assert/strict';
 
-globalThis.WebGL2RenderingContext = class {};
+(globalThis as any).WebGL2RenderingContext = class {};
 const { Viewer } = await import('../src/viewer.ts');
 
 const TARGET_COUNT = 40;
 const SHADER_LIMIT = 32;
 
-function createMorph(layerCount = TARGET_COUNT, { rejected = [] } = {}) {
+/** A stand-in for the uploaded morph texture record; no real GL context involved. */
+function createMorph(layerCount = TARGET_COUNT, { rejected = [] as number[] } = {}) {
     return {
         texture: 'morph-texture',
         width: 64,
@@ -23,20 +24,20 @@ function createMorph(layerCount = TARGET_COUNT, { rejected = [] } = {}) {
     };
 }
 
-function weightsAt(entries, length = TARGET_COUNT) {
+function weightsAt(entries: Array<[number, number]>, length = TARGET_COUNT) {
     const weights = new Float32Array(length);
     for (const [index, value] of entries) weights[index] = value;
     return weights;
 }
 
-function staged(probe, count) {
+function staged(probe: any, count: number) {
     return Array.from({ length: count }, (_, slot) => [
         probe._morphLayers[slot],
         Number(probe._morphWeights[slot].toFixed(6)),
     ]);
 }
 
-const probe = Object.create(Viewer.prototype);
+const probe: any = Object.create(Viewer.prototype);
 
 // A single late target must reach the shader — this is the case that used to
 // leave the mesh frozen at its rest pose for most of the clip.
@@ -78,7 +79,7 @@ const probe = Object.create(Viewer.prototype);
 
 // Past the shader loop bound the strongest weights win, in descending order.
 {
-    const entries = Array.from({ length: TARGET_COUNT }, (_, i) => [i, (i + 1) / TARGET_COUNT]);
+    const entries: Array<[number, number]> = Array.from({ length: TARGET_COUNT }, (_, i) => [i, (i + 1) / TARGET_COUNT]);
     const count = probe._selectMorphTargets(createMorph(), weightsAt(entries));
     assert.equal(count, SHADER_LIMIT);
     const layers = staged(probe, count).map(([layer]) => layer);
@@ -102,8 +103,8 @@ const probe = Object.create(Viewer.prototype);
     probe._selectMorphTargets(createMorph(), weightsAt([[5, 1]]));
     const count = probe._selectMorphTargets(createMorph(), weightsAt([]));
     assert.equal(count, 0);
-    assert.equal(probe._morphWeights.some((weight) => weight !== 0), false);
-    assert.equal(probe._morphLayers.some((layer) => layer !== 0), false);
+    assert.equal(probe._morphWeights.some((weight: number) => weight !== 0), false);
+    assert.equal(probe._morphLayers.some((layer: number) => layer !== 0), false);
 }
 
 // Meshes without morph data stage nothing at all.

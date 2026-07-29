@@ -48,7 +48,7 @@ const times = new Float32Array([0, 1]);
 const weightKeys = new Float32Array(2 * TARGETS).fill(1);
 
 const views = [positions, tangents, indices, targetDeltas, times, weightKeys];
-const offsets = [];
+const offsets: number[] = [];
 let length = 0;
 for (const view of views) {
   offsets.push(length);
@@ -106,7 +106,7 @@ const manifest = {
 const source = new Uint8Array(new TextEncoder().encode(JSON.stringify(manifest)));
 
 /** Only the statements about the renderer; the rest is each path's own business. */
-function limitWarnings(warnings) {
+function limitWarnings(warnings: string[]) {
   return warnings.filter((warning) => /^Morph |^Animation .*targets at once/.test(warning)).sort();
 }
 

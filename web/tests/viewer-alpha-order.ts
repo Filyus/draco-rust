@@ -20,10 +20,10 @@ import assert from 'node:assert/strict';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-globalThis.WebGL2RenderingContext = class {};
+(globalThis as any).WebGL2RenderingContext = class {};
 
 const here = dirname(fileURLToPath(import.meta.url));
-const source = (name) => pathToFileURL(resolve(here, '..', 'src', 'viewer', name)).href;
+const source = (name: string) => pathToFileURL(resolve(here, '..', 'src', 'viewer', name)).href;
 const { alphaModeUniforms, capturePoints, deferredDrawOrder } = await import(source('renderer.ts'));
 
 // --- Alpha modes -----------------------------------------------------------
@@ -62,12 +62,12 @@ assert.deepEqual(
 // --- Deferred order and capture points --------------------------------------
 
 /** A scene of single-primitive meshes, each at its own distance down -Z. */
-function sceneAt(entries) {
+function sceneAt(entries: Array<{ z: number; material: any }>) {
     const identity = () => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
     const meshes = entries.map(({ z }) => ({
         aabb: { min: [-1, -1, z - 0.5], max: [1, 1, z + 0.5] },
     }));
-    const world = (index) => {
+    const world = (index: number) => {
         const matrix = identity();
         void index;
         return matrix;
@@ -105,7 +105,7 @@ const host = sceneAt([
 
 const order = deferredDrawOrder(host);
 assert.deepEqual(
-    order.map((draw) => host.scene.renderables.indexOf(draw.renderable)),
+    order.map((draw: any) => host.scene.renderables.indexOf(draw.renderable)),
     [0, 2, 1],
     'what waits is drawn back to front, and an opaque surface does not wait at all',
 );

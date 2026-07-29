@@ -32,11 +32,11 @@ const { buildViewerSceneFromDocument } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'scene-document-viewer.ts')).href
 );
 
-async function instancesOf(name) {
+async function instancesOf(name: string) {
   const path = resolve(repoRoot, 'testdata', name);
   const data = new Uint8Array(await readFile(path));
   const scene = buildViewerSceneFromDocument(buildSceneDocumentFromGltf(data, {}, gltfModule));
-  const node = scene.nodes.find((entry) => entry.instancing);
+  const node = scene.nodes.find((entry: any) => entry.instancing);
   assert.ok(node, `${name} has a node carrying EXT_mesh_gpu_instancing`);
   return node.instancing;
 }
@@ -53,7 +53,7 @@ assert.equal(quantized.matrices.length, float.matrices.length);
 // but stays in that neighbourhood. A reader that decoded the bytes as float32
 // is not close to this — it is off by whole units and by half the matrices.
 const worst = Math.max(...Array.from(
-  quantized.matrices, (value, index) => Math.abs(value - float.matrices[index]),
+  quantized.matrices, (value: number, index: number) => Math.abs(value - float.matrices[index]),
 ));
 assert.ok(
   worst < 1e-4,

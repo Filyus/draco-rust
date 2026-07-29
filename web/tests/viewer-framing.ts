@@ -21,21 +21,21 @@
  */
 import assert from 'node:assert/strict';
 
-globalThis.WebGL2RenderingContext = class {};
+(globalThis as any).WebGL2RenderingContext = class {};
 const { Viewer } = await import('../src/viewer.ts');
 const { buildSceneGrid } = await import('../src/viewer/renderer.ts');
 const { composeMatrix, mat4, vec3 } = await import('../src/math.ts');
 
 const SCALE = 0.01;
 
-function scaledNode(scale) {
+function scaledNode(scale: number) {
     const world = mat4.create();
     composeMatrix(world, [0, 0, 0], [0, 0, 0, 1], [scale, scale, scale]);
     return { name: 'node', trs: null, children: [], meshIndex: 0, skinIndex: 0, world };
 }
 
 /** A body-sized mesh box, the way a Mixamo export authors one: in metres. */
-function characterMesh({ skinned }) {
+function characterMesh({ skinned }: { skinned: boolean }) {
     const attributes = skinned
         ? { POSITION: {}, JOINTS_0: {}, WEIGHTS_0: {} }
         : { POSITION: {} };
@@ -53,13 +53,21 @@ function characterMesh({ skinned }) {
  * the 0.01, its inverse bind carries the 100, and their product is the identity
  * — which is why the bind-pose box is the rendered box for these.
  */
-function compensatingInverseBind(scale) {
+function compensatingInverseBind(scale: number) {
     const inverseBind = mat4.create();
     composeMatrix(inverseBind, [0, 0, 0], [0, 0, 0, 1], [1 / scale, 1 / scale, 1 / scale]);
     return inverseBind;
 }
 
-function sceneWith({ skinned, skinIndex = 0, inverseBind = compensatingInverseBind(SCALE) }) {
+function sceneWith({
+    skinned,
+    skinIndex = 0,
+    inverseBind = compensatingInverseBind(SCALE),
+}: {
+    skinned: boolean;
+    skinIndex?: number;
+    inverseBind?: any;
+}) {
     const node = scaledNode(SCALE);
     return {
         nodes: [node],
@@ -75,8 +83,8 @@ function sceneWith({ skinned, skinIndex = 0, inverseBind = compensatingInverseBi
     };
 }
 
-function probeWith(scene) {
-    const probe = Object.create(Viewer.prototype);
+function probeWith(scene: any) {
+    const probe: any = Object.create(Viewer.prototype);
     probe.scene = scene;
     probe.canvas = { width: 800, height: 600 };
     probe._scratch = mat4.create();
@@ -98,7 +106,7 @@ function probeWith(scene) {
     return probe;
 }
 
-const rounded = (box) => ({
+const rounded = (box: { min: number[]; max: number[] }) => ({
     min: box.min.map((v) => Number(v.toFixed(4))),
     max: box.max.map((v) => Number(v.toFixed(4))),
 });
@@ -206,18 +214,18 @@ const rounded = (box) => ({
     probe.scene.nodes[0].world = mat4.create();
     probe._updateSceneBounds();
 
-    let positions = null;
+    let positions: any = null;
     probe.gl = {
         ARRAY_BUFFER: 0,
         STATIC_DRAW: 1,
         createBuffer: () => 'buffer',
         bindBuffer: () => {},
-        bufferData: (_target, data) => { positions = data; },
+        bufferData: (_target: number, data: any) => { positions = data; },
     };
     buildSceneGrid(probe);
 
-    const xs = [];
-    const ys = [];
+    const xs: number[] = [];
+    const ys: number[] = [];
     for (let i = 0; i < positions.length; i += 3) {
         xs.push(positions[i]);
         ys.push(positions[i + 1]);

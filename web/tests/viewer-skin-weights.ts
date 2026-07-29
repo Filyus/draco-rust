@@ -8,10 +8,14 @@
  */
 import assert from 'node:assert/strict';
 
-globalThis.WebGL2RenderingContext = class {};
+(globalThis as any).WebGL2RenderingContext = class {};
 const { buildNormalizedWeightAttribute } = await import('../src/viewer.ts');
 
-const primitive = (weights, { componentType = 5126, components = 4 } = {}) => {
+/** A minimal WEIGHTS_0-only primitive stub; not a full ViewerPrimitive. */
+const primitive = (
+    weights: number[],
+    { componentType = 5126, components = 4 }: { componentType?: number; components?: number } = {},
+): any => {
     const array = componentType === 5126 ? Float32Array : componentType === 5121
         ? Uint8Array : Uint16Array;
     const bytes = array.from(weights);
@@ -28,13 +32,13 @@ const primitive = (weights, { componentType = 5126, components = 4 } = {}) => {
     };
 };
 
-const valuesOf = (result) => Array.from(
+const valuesOf = (result: any) => Array.from(
     new Float32Array(
         result.attribute.bytes.buffer,
         result.attribute.bytes.byteOffset,
         result.attribute.bytes.byteLength / 4,
     ),
-).map((v) => Number(v.toFixed(6)));
+).map((v: any) => Number(v.toFixed(6)));
 
 // A well-formed attribute is passed through untouched, buffer identity and all,
 // so ordinary skins pay nothing for this.
@@ -72,8 +76,8 @@ const valuesOf = (result) => Array.from(
     const result = buildNormalizedWeightAttribute(primitive([1, 0, 0, 0, 0.5, 0.1, 0.1, 0.1]));
     assert.equal(result.drifted, 1);
     assert.deepEqual(valuesOf(result), [1, 0, 0, 0, 0.625, 0.125, 0.125, 0.125]);
-    assert.equal(result.attribute.componentType, 5126);
-    assert.equal(result.attribute.count, 2);
+    assert.equal(result.attribute!.componentType, 5126);
+    assert.equal(result.attribute!.count, 2);
 }
 
 // Normalized integer storage is understood and normalizes to float weights.
@@ -88,7 +92,7 @@ const valuesOf = (result) => Array.from(
 // Shapes the skin contract does not describe are left for the upload path to
 // reject or ignore, rather than being silently reinterpreted.
 {
-    assert.equal(buildNormalizedWeightAttribute({ attributes: {} }).attribute, null);
+    assert.equal(buildNormalizedWeightAttribute({ attributes: {} } as any).attribute, null);
     const threeComponent = primitive([0.3, 0.1, 0], { components: 3 });
     assert.equal(
         buildNormalizedWeightAttribute(threeComponent).attribute,

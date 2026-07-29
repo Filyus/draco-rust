@@ -17,11 +17,11 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const source = (name) => pathToFileURL(resolve(here, '..', 'src', 'viewer', name)).href;
+const source = (name: string) => pathToFileURL(resolve(here, '..', 'src', 'viewer', name)).href;
 
 // The unit map needs no context, but the module that reads it sits beside code
 // that names the GL constants at import time.
-globalThis.WebGL2RenderingContext = class {};
+(globalThis as any).WebGL2RenderingContext = class {};
 
 const {
   MAX_MATERIAL_TEXTURE_UNITS,
@@ -39,8 +39,8 @@ const shared = Object.entries(SHARED_TEXTURE_UNITS);
 // `MAX_MATERIAL_TEXTURE_UNITS` and nothing beyond them.
 const material = Array.from({ length: MAX_MATERIAL_TEXTURE_UNITS }, (_, slot) => materialTextureUnit(slot));
 
-const claims = new Map();
-for (const [name, unit] of shared) claims.set(unit, [`shared:${name}`]);
+const claims = new Map<number, string[]>();
+for (const [name, unit] of shared as Array<[string, number]>) claims.set(unit, [`shared:${name}`]);
 for (const [slot, unit] of material.entries()) {
   claims.set(unit, [...(claims.get(unit) ?? []), `material slot ${slot}`]);
 }
