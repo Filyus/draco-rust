@@ -9,10 +9,26 @@ name: Fuzz
 # ClusterFuzzLite (cflite_*.yml) provides the heavier continuous-fuzzing layer
 # (crash dedup, batch mode); this workflow is the lightweight in-repo gate.
 
+# Fuzz what the targets actually reach. The paths filter is what makes the
+# comment below true: without it a README push starts a run, and because runs
+# cancel each other, a few documentation pushes in a row leave the workflow's
+# last conclusion at `cancelled` -- which the badge renders as failing.
+# The lists are spelled twice on purpose: GitHub Actions does not resolve YAML
+# anchors, so a shared alias would be read as an empty filter.
 on:
   pull_request:
+    paths:
+      - ".github/workflows/fuzz.yml"
+      - "crates/**"
+      - "fuzz/**"
+      - "testdata/**"
   push:
     branches: [main]
+    paths:
+      - ".github/workflows/fuzz.yml"
+      - "crates/**"
+      - "fuzz/**"
+      - "testdata/**"
   # No scheduled (nightly) run: the smoke gate fires only when code changes.
   # Trigger a longer soak manually with `gh workflow run fuzz.yml`.
   workflow_dispatch:
