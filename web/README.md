@@ -82,6 +82,14 @@ is a different route from Draco inside glTF: there the payload is a
 `KHR_draco_mesh_compression` extension and `gltf-wasm` owns it. The export
 panel's quantization controls reach both, because both end at the same encoder.
 
+A source that arrives as a bare mesh list — OBJ, PLY, STL and `.drc` — reaches
+glTF through the same portable document FBX uses: `buildSceneDocumentFromMeshes`
+turns the list into a `SceneDocument`, which the GLB writer already knows how to
+serialize, Draco pass included. OBJ's material library comes with it, textures
+embedded, so the GLB is self-contained. JSON glTF stays out of reach for the
+reason it is out of reach for a compressed document: it needs a companion `.bin`
+beside it, and the panel downloads one file.
+
 Draco puts no limit on how many attributes of a type a payload holds -- a second
 texture-coordinate set is ordinary, and glTF's own extension keeps joints and
 weights as generics -- while the flat mesh the shell works in has one slot per
@@ -89,8 +97,13 @@ named type and none for generics. The rest are carried rather than dropped: the
 reader hands them over whole, with their type, component count, component type
 and the id a consumer addresses them by, and the writer puts them back
 unchanged. Nothing in between reads their meaning, which is what makes it safe,
-and the file says so -- each one is reported as carried but uninterpreted, and
-exporting to any other format warns that it is being left behind.
+and the file says so -- each one is reported as carried but uninterpreted.
+
+Where another format has a name for one, it gets it: a second texture-coordinate
+or colour set becomes `TEXCOORD_1` or `COLOR_1` on the way into glTF. A generic
+does not. glTF's only home for one is an application-specific `_NAME`, and the
+name would be this converter's invention rather than anything the payload
+stated, so it is reported as left behind instead.
 
 ## Converter preview
 

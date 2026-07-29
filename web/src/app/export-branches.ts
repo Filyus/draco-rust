@@ -1,4 +1,6 @@
 import type { LoadedLayerSet, LoadedMesh, OpaqueAttribute } from '../mesh-loader.ts';
+import { buildSceneDocumentFromMeshes } from '../mesh-scene-document.ts';
+import type { MeshDocumentOptions } from '../mesh-scene-document.ts';
 import type { SceneCapabilities, SceneDocument } from '../scene-document.ts';
 import { buildFbxSceneFromDocument } from '../fbx-scene-document-writer.ts';
 import { buildFbxSceneFromGltf, buildFlatSceneMeshesFromGltf } from '../gltf-loader.ts';
@@ -331,8 +333,16 @@ async function exportFlattenedMeshes(settings: ExportSettings, loaded: LoadedFil
     case 'drc':
       return { result: await exportToDrc(meshes, settings), warnings };
     case 'gltf':
-    case 'glb':
-      return { result: await exportToGltf(format), warnings };
+    case 'glb': {
+      // The document route reports its own warnings, and the flattening ones
+      // above do not apply: a GLB keeps the hierarchy, the materials and the
+      // attributes a mesh list carries.
+      const gltf = exportMeshesAsGltf(meshes, settings, {
+        materials: loaded.materials,
+        resources: state.currentSourceResources,
+      });
+      return { ...gltf, warnings: gltf.warnings };
+    }
     case 'fbx':
     case 'fbx-legacy':
       return { result: await exportToFbx(meshes), warnings };
@@ -362,6 +372,9 @@ export function prepareMeshesForExport(
   }));
   return meshes.map((mesh, idx) => ({
     name: mesh.name || `mesh_${idx}`,
+    // The `usemtl` name, which only the glTF route uses: it is the one target
+    // that can hold what an OBJ's material library says.
+    material: mesh.material,
     positions: Array.from(mesh.positions || []),
     indices: Array.from(mesh.indices || []),
     normals: settings.includeNormals ? Array.from(mesh.normals || []) : null,
@@ -546,11 +559,41 @@ export async function exportToDrc(meshes: PreparedMesh[], settings: ExportSettin
   });
 }
 
-export async function exportToGltf(format: string) {
-  return {
-    success: false,
-    error: `Creating ${format.toUpperCase()} from flattened meshes is not part of the document API`,
-  };
+/**
+ * glTF out of a mesh list, through the portable document.
+ *
+ * A flat source has no document to re-serialize, which is why this used to
+ * refuse outright: OBJ, PLY, STL and `.drc` could reach every target except the
+ * one most people convert to. Building the SceneDocument first puts them on the
+ * same writer FBX already uses, Draco pass included.
+ *
+ * JSON glTF stays out of reach, for the reason it is out of reach for a
+ * compressed document too: it needs a companion `.bin` beside it, and the panel
+ * downloads one file. GLB is that file.
+ */
+export function exportMeshesAsGltf(
+  meshes: LoadedMesh[],
+  settings: ExportSettings,
+  options: MeshDocumentOptions = {},
+): ExportOutcome {
+  if (settings.format !== 'glb') {
+    return {
+      result: {
+        success: false,
+        error: 'A mesh list can only be written as GLB: JSON glTF would need a separate .bin',
+      },
+      warnings: [],
+    };
+  }
+  const document = buildSceneDocumentFromMeshes(meshes, options);
+  if (document.meshes.length === 0) {
+    return {
+      result: { success: false, error: 'The file contains no triangle geometry to export' },
+      warnings: [],
+    };
+  }
+  const outcome = exportSceneDocumentToGlb(document, settings);
+  return { ...outcome, warnings: [...document.warnings, ...outcome.warnings] };
 }
 
 export async function exportToFbx(meshes: PreparedMesh[]) {

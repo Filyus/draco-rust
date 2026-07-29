@@ -2005,6 +2005,74 @@ test('a .drc round trip keeps every attribute the flat mesh carries', async ({ p
 });
 
 /**
+ * The formats that arrive as a bare mesh list can reach glTF.
+ *
+ * They could reach every target except the one most conversions are for: the
+ * glTF routes re-serialize a source document, and a mesh list is not one, so
+ * OBJ, PLY, STL and `.drc` were refused outright. Building the portable
+ * document first puts them on the writer FBX already uses.
+ */
+test('a flat source exports to GLB with its attributes and materials', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  const exportGlb = async () => {
+    await page.locator('[data-choice-for="export-format"] [data-value="glb"]').click();
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#export-btn').click();
+    return readFile((await (await downloadPromise).path())!);
+  };
+  /** The GLB's JSON chunk, which is what states the attributes and materials. */
+  const manifest = (glb: Buffer) => {
+    expect(glb.subarray(0, 4).toString('binary')).toBe('glTF');
+    return JSON.parse(glb.subarray(20, 20 + glb.readUInt32LE(12)).toString('utf8'));
+  };
+
+  // A vertex-coloured glTF has to survive the trip through the flat readers it
+  // is not one of, so it goes out as .drc and comes back as a mesh list.
+  await page.locator('#file-input').setInputFiles({
+    name: 'attributed.gltf',
+    mimeType: 'model/gltf+json',
+    buffer: Buffer.from(attributedTriangle()),
+  });
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await page.locator('[data-choice-for="export-format"] [data-value="drc"]').click();
+  const drcDownload = page.waitForEvent('download');
+  await page.locator('#export-btn').click();
+  const drc = await readFile((await (await drcDownload).path())!);
+  await page.locator('#file-input').setInputFiles({
+    name: 'flat.drc',
+    mimeType: 'application/octet-stream',
+    buffer: drc,
+  });
+  await expect(page.locator('#console')).toContainText('Successfully parsed flat.drc');
+
+  const fromDrc = manifest(await exportGlb());
+  const attributes = fromDrc.meshes[0].primitives[0].attributes;
+  expect(Object.keys(attributes).sort()).toEqual(['COLOR_0', 'NORMAL', 'POSITION', 'TEXCOORD_0']);
+  expect(fromDrc.nodes).toHaveLength(1);
+  // Bounds are the writer's own, and glTF requires them on POSITION.
+  expect(fromDrc.accessors[attributes.POSITION].min).toEqual([0, 0, 0]);
+
+  // An OBJ carries a material library, and the colours in it belong in the GLB
+  // rather than in a warning about what was lost.
+  await page.locator('#file-input').setInputFiles([
+    path.join(repoRoot, 'testdata', 'mat_test.obj'),
+    path.join(repoRoot, 'testdata', 'mat_test.mtl'),
+  ]);
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  const fromObj = manifest(await exportGlb());
+  expect(fromObj.materials.length).toBeGreaterThan(0);
+  // mat14's diffuse, straight out of the library, as an opaque base colour.
+  const factors = fromObj.materials.map((material: any) => material.pbrMetallicRoughness?.baseColorFactor);
+  expect(factors).toContainEqual([1, 0.34, 0.13, 1]);
+  // OBJ states no metallic-roughness, and leaving glTF's defaults would render
+  // every one of these as polished metal.
+  expect(fromObj.materials.every((material: any) => material.pbrMetallicRoughness?.metallicFactor === 0)).toBe(true);
+  expect(fromObj.meshes[0].primitives[0]).toHaveProperty('material');
+});
+
+/**
  * A `.drc` keeps the attributes nothing here understands.
  *
  * Draco puts no limit on how many attributes of a type a payload holds, and the
@@ -2094,6 +2162,16 @@ test('a .drc keeps a second UV set and a generic attribute through the app', asy
       values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     },
   ]);
+
+  // glTF has a name for the second set and none for the generic, and the export
+  // does exactly that much: TEXCOORD_1 is written, the generic is reported.
+  await page.locator('[data-choice-for="export-format"] [data-value="glb"]').click();
+  const glbDownload = page.waitForEvent('download');
+  await page.locator('#export-btn').click();
+  const glb = await readFile((await (await glbDownload).path())!);
+  const manifest = JSON.parse(glb.subarray(20, 20 + glb.readUInt32LE(12)).toString('utf8'));
+  expect(Object.keys(manifest.meshes[0].primitives[0].attributes)).toContain('TEXCOORD_1');
+  await expect(page.locator('#scene-warning-list')).toContainText('glTF has no place for a GENERIC attribute');
 });
 
 /**
