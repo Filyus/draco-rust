@@ -15,7 +15,8 @@ and GitHub release.
 
 - **Agent**: prepares the bump + changelog for one crate, shows the diff, and —
   only after the maintainer OKs the wording — creates and pushes the release
-  commit. Stops there unless explicitly asked to start the workflow.
+  commit. Stops there unless asked to start the publish workflow; being asked
+  once covers the crates of that release, and covers nothing past the gate.
 - **Maintainer**: reviews the changelog wording before the push, and approves the
   `release` GitHub environment after CI + preflight. Only that approval publishes.
   The agent cannot and must not approve it.
@@ -37,6 +38,20 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
    ```
    If the tree is dirty, classify per `RELEASING.md`; never fold stray work into
    the release commit.
+
+   Then establish what is **actually published**, from the registry and the tags
+   rather than from the manifest:
+   ```sh
+   git ls-remote --tags origin | grep "<crate>-v"
+   curl -s "https://crates.io/api/v1/crates/<crate>" | grep -o '"max_version":"[^"]*"'
+   ```
+   A version bumped in `Cargo.toml`, dated in the changelog and never published
+   is a real state: preparation that stopped before the commit. Treat the last
+   tag as the previous release, not the manifest. When the prepared version is
+   absent from crates.io, from the tags and from the GitHub releases, fold the
+   new work into its section and re-date it rather than opening the next number
+   — nobody can depend on a version that was never there, and skipping it leaves
+   a hole plus a compare link pointing at a tag that does not exist.
 
 2. **Decide the version** of `<crate>` from *its* public API surface. Bump the
    field Cargo treats as breaking, which is the leftmost non-zero one — so the
@@ -74,13 +89,25 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
    root `README.md` and `crates/<crate>/README.md`. Touch no other docs in the release
    commit.
 
-5. **Show the diff and pause:**
+5. **Run the checks that can fail on the code**, before there is a release
+   commit to protect — a preflight failure after the push has to be repaired by
+   rewriting `main`:
+   ```sh
+   rustup update nightly   # which rustdoc lints fire changes with the toolchain
+   RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc \
+     --manifest-path crates/<crate>/Cargo.toml --no-deps --all-features
+   cargo semver-checks --manifest-path crates/<crate>/Cargo.toml
+   ```
+
+6. **Show the diff and pause:**
    ```sh
    git diff -- crates/<crate>/Cargo.toml crates/<crate>/CHANGELOG.md crates/<crate>/README.md README.md
    ```
    Wait for the maintainer to OK the changelog wording. Do **not** commit first.
+   This pause is owed for every crate separately: a maintainer who delegated the
+   commands still reviews each changelog, and silence is not an OK.
 
-6. **After the maintainer OKs**, commit exactly the release files with the exact
+7. **After the maintainer OKs**, commit exactly the release files with the exact
    subject, then push:
    ```sh
    git commit -m "release: prepare <crate> vX.Y.Z"
@@ -89,16 +116,35 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
    The subject must match `crates/<crate>/Cargo.toml`'s version exactly (`<crate>` is the
    crate name), or the publish workflow refuses to publish.
 
-7. **After CI passes, start the publish workflow for `<crate>`** (it does not run
-   automatically):
+8. **Once `Rust CI` and `Fuzz` are both green for that commit, start the publish
+   workflow for `<crate>`** (it does not run automatically):
    ```sh
    gh workflow run publish.yml --ref main -f crate=<crate>
    ```
-   It runs against `main` HEAD, which must still be the release commit. This only
-   starts the pipeline; it gates at the `release` environment for the maintainer.
+   Both are triggered by the push; `Fuzz` is the slower of the two, so watching
+   only `Rust CI` starts the release while fuzzing is still running. Preflight
+   refuses that, and waiting for it is the point — not a formality to route
+   around. Start the workflow as soon as both are green, in the same turn that
+   observes it: it runs against `main` HEAD, which must still be the release
+   commit, and any push landing meanwhile invalidates it. This only starts the
+   pipeline; it gates at the `release` environment for the maintainer.
 
-8. **Stop.** Do not publish, tag, create releases, or approve the `release`
-   environment unless the maintainer explicitly asks for that specific action.
+9. **If preflight fails**, the fix is a normal commit and a *new* release
+   commit, because the subject check reads the head of `main`:
+   - fix the cause in its own commit, with its own domain prefix — code never
+     belongs in the release commit;
+   - put the release commit back on top. Prefer rebuilding the pair over an
+     empty marker commit: reset to the commit before the original release
+     commit, cherry-pick the fix, cherry-pick the release commit, and
+     `push --force-with-lease`. Two commits with the same release subject, one
+     of them empty, is what the alternative leaves in the history forever.
+   - a force-push to `main` is safe only while nothing points at those commits.
+     Once the tag and the crates.io version exist, that door is closed;
+   - the rewrite discards the working tree. Commit or copy aside anything
+     uncommitted first — `git reset --hard` takes unrelated drafts with it.
+
+10. **Stop.** Do not publish, tag, create releases, or approve the `release`
+    environment unless the maintainer explicitly asks for that specific action.
 
 ## Changelog taxonomy
 

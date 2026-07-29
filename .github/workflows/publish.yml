@@ -95,6 +95,25 @@ jobs:
           fi
           echo "Using successful CI run: $ci_url"
 
+      # Fuzz is slower than Rust CI, so a release started as soon as CI goes
+      # green would race it. Gate here rather than by watching the Actions tab.
+      - name: Check fuzz passed for this commit
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.resolve.outputs.release_sha }}
+        run: |
+          fuzz_url="$(gh run list \
+            --workflow fuzz.yml --branch main --commit "$RELEASE_SHA" \
+            --json conclusion,status,url --limit 20 \
+            --jq '.[] | select(.status == "completed" and .conclusion == "success") | .url' \
+            | head -n 1)"
+          if [ -z "$fuzz_url" ]; then
+            echo "No successful Fuzz run found for $RELEASE_SHA. Wait for it on main, then rerun."
+            exit 1
+          fi
+          echo "Using successful fuzz run: $fuzz_url"
+
       - name: Install stable Rust
         if: ${{ steps.release.outputs.should_publish == 'true' }}
         uses: dtolnay/rust-toolchain@stable

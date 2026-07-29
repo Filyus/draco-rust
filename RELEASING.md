@@ -72,8 +72,21 @@ Prepare the bump and changelog by hand, following
   demo-only commits);
 - keep feature/code changes out of the release commit.
 
-Do not run release-only checks manually — the publish preflight runs semver,
-docs.rs-style docs, duplicate-version, duplicate-tag, and `--dry-run` checks.
+Run the two checks that can fail on code rather than on the release itself
+**before** committing — the preflight runs them too, but by then the release
+commit is pushed and has to be HEAD, so a failure costs a history rewrite:
+
+```powershell
+rustup update nightly
+$env:RUSTDOCFLAGS = "--cfg docsrs -D warnings"
+cargo +nightly doc --manifest-path crates/<crate>/Cargo.toml --no-deps --all-features
+cargo semver-checks --manifest-path crates/<crate>/Cargo.toml
+```
+
+Update nightly first: the docs build fails on rustdoc lints, and which lints
+fire changes with the toolchain, so a stale local nightly passes what the
+runner rejects. The remaining preflight checks — duplicate version, duplicate
+tag, `--dry-run` — depend on the push and are not worth reproducing by hand.
 
 Show the maintainer the diff before committing:
 
@@ -101,16 +114,21 @@ continues when the subject matches `crates/<crate>/Cargo.toml`'s version.
 
 ### 3. Start the publish workflow and preflight
 
-The push to `main` starts `Rust CI`. Wait for it to pass, then start the publish
-workflow for the crate:
+The push to `main` starts `Rust CI` and `Fuzz`. Wait for **both** — `Fuzz` takes
+longer, so a release started when `Rust CI` alone goes green races it — then
+start the publish workflow for the crate:
 
 ```powershell
 gh workflow run publish.yml --ref main -f crate=<crate>
 ```
 
+Start it as soon as both are green: nothing else guards the release commit's
+place at the head of `main`, and any push that lands meanwhile invalidates it.
+
 Preflight checks, for crate `<crate>`:
 
 - a successful `Rust CI` run exists for this commit;
+- a successful `Fuzz` run exists for this commit;
 - the commit subject is exactly `release: prepare <crate> vX.Y.Z`;
 - `X.Y.Z` matches `crates/<crate>/Cargo.toml`;
 - every internal dependency `<crate>` pins is already published at the pinned version;
