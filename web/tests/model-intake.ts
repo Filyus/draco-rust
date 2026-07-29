@@ -25,8 +25,8 @@ const { findModels, readModel, resolveUriPath } = await import(
 );
 
 /** A `File` that remembers whether anyone asked for its bytes. */
-const opened = [];
-function entry(path, diskPath) {
+const opened: string[] = [];
+function entry(path: string, diskPath?: string) {
   const name = path.split('/').pop();
   return {
     path,
@@ -65,7 +65,7 @@ const folder = [
 ];
 const found = findModels(folder);
 assert.deepEqual(
-  found.map((candidate) => candidate.path),
+  found.map((candidate: { path: string }) => candidate.path),
   ['glTF/DamagedHelmet.gltf', 'glTF-instancing/DamagedHelmetGpuInstancing.gltf'],
   'both models are offered, and the shorter path leads',
 );

@@ -7,8 +7,8 @@
     "typecheck:tests": "tsc --noEmit -p tests/tsconfig.json",
     "build:ts": "tsc",
     "watch:ts": "tsc --watch",
-    "test:node": "node tests/node-smoke.mjs",
-    "test:model-intake": "node tests/model-intake.mjs",
+    "test:node": "node tests/node-smoke.ts",
+    "test:model-intake": "node tests/model-intake.ts",
     "test:scene-document": "node tests/scene-document-contract.mjs",
     "test:scene-document-viewer": "node tests/scene-document-viewer-parity.mjs",
     "test:viewer-morph-slots": "node tests/viewer-morph-slots.mjs",
@@ -59,7 +59,7 @@
     "test:gltf-quantized-morph": "node tests/gltf-quantized-morph.mjs",
     "test:gltf-write": "node tests/gltf-write-smoke.mjs",
     "test:gltf-draco-write": "node tests/gltf-write-smoke.mjs --draco",
-    "test:browser": "playwright test --config tests/playwright.config.mjs"
+    "test:browser": "playwright test --config tests/playwright.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
