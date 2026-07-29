@@ -22,10 +22,10 @@ Open an OBJ, PLY, FBX or glTF/GLB asset and it reports what the file actually
 contains — hierarchy, materials, skins, morph targets, animation clips — renders
 it, and exports GLB or FBX with Draco compression optional along the way.
 
-Converting between formats loses things, and here it is said out loud: which
-attributes survive an FBX to glTF trip, which have no equivalent to survive
-into, and where the viewer's limits differ from the exporter's are all
-[written down per format](web/README.md#source-neutral-scene-conversion).
+Converting between formats loses things, and the
+[per-format conversion rules](web/README.md#source-neutral-scene-conversion)
+say which: what survives an FBX to glTF trip, what has no equivalent to survive
+into, and where the viewer's limits are narrower than the exporter's.
 
 ## Crates
 
