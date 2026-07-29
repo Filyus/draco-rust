@@ -2023,8 +2023,10 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
 
   // The chevron is two edges of a square, so its ink sits off the centre of its
   // own box and the box has to ride against it — up while it points down, down
-  // while it points up, by the same amount. Compensated in one state only, it
-  // reads as an arrow that drifts when the list opens.
+  // while it points up. Compensated in one state only, it reads as an arrow
+  // that drifts when the list opens; the amounts differ by a tenth of a pixel
+  // because the mark does not rasterize to the same shape upside down, so what
+  // is checked is the direction and the rough size, not an exact figure.
   const chevron = () => page.evaluate(() => {
     const trigger = document.getElementById('viewer-variant-trigger');
     const box = trigger.getBoundingClientRect();
@@ -2035,13 +2037,16 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   // the number is whatever the 140ms transition had reached.
   await page.waitForTimeout(300);
   const openOffset = await chevron();
-  expect(openOffset).toBeGreaterThan(0);
+  expect(openOffset).toBeGreaterThan(1.5);
+  expect(openOffset).toBeLessThan(2.5);
 
   await page.locator('#viewer-variant-menu .menu-picker-option[data-value="1"]').click();
   await expect(page.locator('#viewer-variant')).toHaveValue('1');
   await expect(page.locator('#viewer-variant-menu')).toBeHidden();
-  await page.waitForTimeout(200);
-  expect(await chevron()).toBe(-openOffset);
+  await page.waitForTimeout(300);
+  const closedOffset = await chevron();
+  expect(closedOffset).toBeLessThan(-1.5);
+  expect(closedOffset).toBeGreaterThan(-2.5);
   // Waiting on the console would be satisfied by the "Preview ready" the first
   // load already printed, so wait for the scene the picker rebuilds. It has to
   // be expect.poll rather than waitForFunction: the latter takes the promise an
