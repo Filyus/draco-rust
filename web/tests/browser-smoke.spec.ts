@@ -2005,6 +2005,77 @@ test('a .drc round trip keeps every attribute the flat mesh carries', async ({ p
 });
 
 /**
+ * Every source reaches every target.
+ *
+ * The gaps were not visible one conversion at a time: JSON glTF was refused
+ * from every source including glTF itself, because the only route to it needed
+ * an uncompressed `.gltf` and the Draco box is ticked by default. Walking the
+ * whole matrix is what makes a missing cell obvious, and what keeps one from
+ * reappearing when a route is added.
+ *
+ * The glTF outputs go through Khronos's own validator rather than a shape
+ * check: this suite writes them, so nothing here is entitled to decide what
+ * valid means.
+ */
+test('every source format converts to every target format', async ({ page }) => {
+  test.setTimeout(180000);
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  const load = async (name: string, buffer: Buffer, companions: string[] = []) => {
+    await page.locator('#file-input').setInputFiles([
+      { name, mimeType: 'application/octet-stream', buffer },
+      ...await Promise.all(companions.map(async (file) => ({
+        name: path.basename(file),
+        mimeType: 'application/octet-stream',
+        buffer: await readFile(file),
+      }))),
+    ]);
+    await expect(page.locator('#console')).toContainText(`Successfully parsed ${name}`);
+  };
+  const exportAs = async (format: string) => {
+    await page.locator(`[data-choice-for="export-format"] [data-value="${format}"]`).click();
+    const download = page.waitForEvent('download');
+    await page.locator('#export-btn').click();
+    return readFile((await (await download).path())!);
+  };
+
+  const testdata = (...parts: string[]) => path.join(repoRoot, 'testdata', ...parts);
+  const sources: { name: string; buffer: Buffer; companions?: string[] }[] = [
+    { name: 'matrix.gltf', buffer: Buffer.from(attributedTriangle()) },
+    { name: 'matrix.glb', buffer: await readFile(testdata('Box', 'glTF_Binary', 'Box.glb')) },
+    {
+      name: 'mat_test.obj',
+      buffer: await readFile(testdata('mat_test.obj')),
+      companions: [testdata('mat_test.mtl')],
+    },
+    { name: 'matrix.ply', buffer: await readFile(testdata('cube_att.obj.edgebreaker.cl10.2.2.drc.ply')) },
+    { name: 'matrix.drc', buffer: await readFile(testdata('cube_att.obj.edgebreaker.cl10.2.2.drc')) },
+  ];
+
+  // STL and FBX have no checked-in fixture, so the suite writes its own — which
+  // also makes them round trips rather than merely readable files.
+  await load('matrix.glb', sources[1].buffer);
+  sources.push({ name: 'matrix.stl', buffer: await exportAs('stl') });
+  sources.push({ name: 'matrix.fbx', buffer: await exportAs('fbx') });
+
+  const { validateBytes } = await import('gltf-validator');
+  for (const source of sources) {
+    await load(source.name, source.buffer, source.companions);
+    for (const target of ['glb', 'gltf', 'obj', 'ply', 'stl', 'drc', 'fbx', 'fbx-legacy']) {
+      const bytes = await exportAs(target);
+      expect(bytes.length, `${source.name} -> ${target} produced nothing`).toBeGreaterThan(0);
+      if (target !== 'glb' && target !== 'gltf') continue;
+      const report = await validateBytes(new Uint8Array(bytes));
+      expect(
+        report.issues.numErrors,
+        `${source.name} -> ${target}: ${JSON.stringify(report.issues.messages)}`,
+      ).toBe(0);
+    }
+  }
+});
+
+/**
  * The formats that arrive as a bare mesh list can reach glTF.
  *
  * They could reach every target except the one most conversions are for: the
@@ -2265,6 +2336,59 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
   await expect(page.locator('#compression-stats')).toBeHidden();
   // The geometry readout shares the row and must still be the new file's.
   await expect(page.locator('#triangle-count')).toHaveText('12');
+});
+
+/**
+ * The same for a source whose scene came from FBX.
+ *
+ * It had the same defect and a different cause: the FBX reader's flat meshes
+ * are each in their own node's space, and the export read those rather than the
+ * hierarchy that places them. Asserted as a shape rather than as coordinates —
+ * the FBX round trip has its own opinions about units and axes, and this is
+ * about placement, not about those.
+ */
+test('a flattened export from an FBX source keeps the scene apart', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles([
+    path.join(repoRoot, 'testdata', 'two_objects_inverse_materials.gltf'),
+    path.join(repoRoot, 'testdata', 'two_objects_inverse_materials.bin'),
+  ]);
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  const exportAs = async (format: string) => {
+    await page.locator(`[data-choice-for="export-format"] [data-value="${format}"]`).click();
+    const download = page.waitForEvent('download');
+    await page.locator('#export-btn').click();
+    return readFile((await (await download).path())!);
+  };
+  const fbx = await exportAs('fbx');
+  await page.locator('#file-input').setInputFiles({
+    name: 'two-objects.fbx',
+    mimeType: 'application/octet-stream',
+    buffer: fbx,
+  });
+  await expect(page.locator('#console')).toContainText('Successfully parsed two-objects.fbx');
+  const stl = await exportAs('stl');
+
+  const triangles = stl.readUInt32LE(80);
+  expect(triangles).toBe(92);
+  const low = [Infinity, Infinity, Infinity];
+  const high = [-Infinity, -Infinity, -Infinity];
+  for (let triangle = 0; triangle < triangles; triangle += 1) {
+    for (let corner = 0; corner < 3; corner += 1) {
+      for (let axis = 0; axis < 3; axis += 1) {
+        const value = stl.readFloatLE(84 + triangle * 50 + 12 + corner * 12 + axis * 4);
+        low[axis] = Math.min(low[axis], value);
+        high[axis] = Math.max(high[axis], value);
+      }
+    }
+  }
+  // Both objects are about as wide as they are tall and both are centred on
+  // their own origin, so stacking them makes the box square. The scene sets
+  // them 1.4 diameters apart, which no unit or axis convention can disguise.
+  const extents = high.map((value, axis) => value - low[axis]);
+  expect(Math.max(...extents) / Math.min(...extents)).toBeGreaterThan(2);
 });
 
 /**

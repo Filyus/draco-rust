@@ -1,10 +1,10 @@
 import type { LoadedLayerSet, LoadedMesh, OpaqueAttribute } from '../mesh-loader.ts';
-import { buildSceneDocumentFromMeshes } from '../mesh-scene-document.ts';
+import { buildSceneDocumentFromMeshes, flattenSceneDocument } from '../mesh-scene-document.ts';
 import type { MeshDocumentOptions } from '../mesh-scene-document.ts';
 import type { SceneCapabilities, SceneDocument } from '../scene-document.ts';
 import { buildFbxSceneFromDocument } from '../fbx-scene-document-writer.ts';
 import { buildFbxSceneFromGltf, buildFlatSceneMeshesFromGltf } from '../gltf-loader.ts';
-import { serializeSceneDocumentToGlb } from '../scene-document-gltf.ts';
+import { glbToEmbeddedGltf, serializeSceneDocumentToGlb } from '../scene-document-gltf.ts';
 import type { FbxSceneData, LoadedFile } from './state.ts';
 import { modules, state } from './state.ts';
 
@@ -81,8 +81,12 @@ export async function runExport(settings: ExportSettings): Promise<ExportOutcome
   const loaded = state.currentMeshData;
   if (!loaded) throw new Error('No parsed file to export');
 
-  if (format === 'glb' && state.currentFileType === 'fbx' && state.currentSceneDocument) {
-    return exportSceneDocumentToGlb(state.currentSceneDocument, settings);
+  if ((format === 'glb' || format === 'gltf')
+    && state.currentFileType === 'fbx' && state.currentSceneDocument) {
+    // JSON as much as GLB: both are the same document, and flattening an FBX
+    // into a mesh list to reach one of them would throw away the hierarchy the
+    // other keeps.
+    return asGltfIfAsked(exportSceneDocumentToGlb(state.currentSceneDocument, settings), format);
   }
   if (loaded.document && (format === 'gltf' || format === 'glb')) {
     return exportGltfDocument(settings);
@@ -252,6 +256,8 @@ export function exportGltfDocument(settings: ExportSettings): ExportOutcome {
       };
     }
     if (format === 'gltf' && state.currentFileType === 'gltf' && !useDraco) {
+      // The source document itself, byte for byte past minification. Nothing
+      // this route could rebuild would be closer to what was opened.
       return {
         result: {
           success: true,
@@ -261,8 +267,18 @@ export function exportGltfDocument(settings: ExportSettings): ExportOutcome {
         warnings: [],
       };
     }
-    if (format === 'gltf' && useDraco) {
-      throw new Error('Compressed JSON glTF requires bundle download; select GLB instead');
+    if (format === 'gltf') {
+      // A GLB source, or a compressed one: the buffer is a chunk rather than a
+      // file beside the JSON, so it is embedded rather than refused.
+      return {
+        result: {
+          success: true,
+          json_data: glbToEmbeddedGltf(asset.glb(2)),
+          draco_stats: dracoStats,
+          message: 'Exported as JSON glTF with its binary embedded',
+        },
+        warnings: [],
+      };
     }
     throw new Error(`Document export to ${format.toUpperCase()} is not supported`);
   } finally {
@@ -283,13 +299,21 @@ async function exportFlattenedMeshes(settings: ExportSettings, loaded: LoadedFil
   // Placed rather than raw: the target has no hierarchy to put node transforms
   // into, so they are baked into the coordinates here. Without that a scene's
   // objects all come out stacked on the origin, inside one another.
-  const sourceMeshes = loaded.document
-    ? buildFlatSceneMeshesFromGltf(
-      state.currentSourceData!,
-      state.currentSourceResources,
-      modules.gltf.module,
-    )
-    : loaded.meshes || [];
+  //
+  // The portable document is the source of that placement wherever one was
+  // built, which is every scene-bearing format. The glTF-specific flattener
+  // remains for the one case that has no document: a glTF whose document could
+  // not be built still previews and still exports, and it says so when it is
+  // opened.
+  const sourceMeshes = state.currentSceneDocument
+    ? flattenSceneDocument(state.currentSceneDocument)
+    : loaded.document
+      ? buildFlatSceneMeshesFromGltf(
+        state.currentSourceData!,
+        state.currentSourceResources,
+        modules.gltf.module,
+      )
+      : loaded.meshes || [];
   if (loaded.document || loaded.scene) {
     warnings.push(
       `Exporting to ${format.toUpperCase()} flattens the scene: materials, textures, skins, `
@@ -576,15 +600,6 @@ export function exportMeshesAsGltf(
   settings: ExportSettings,
   options: MeshDocumentOptions = {},
 ): ExportOutcome {
-  if (settings.format !== 'glb') {
-    return {
-      result: {
-        success: false,
-        error: 'A mesh list can only be written as GLB: JSON glTF would need a separate .bin',
-      },
-      warnings: [],
-    };
-  }
   const document = buildSceneDocumentFromMeshes(meshes, options);
   if (document.meshes.length === 0) {
     return {
@@ -592,8 +607,28 @@ export function exportMeshesAsGltf(
       warnings: [],
     };
   }
-  const outcome = exportSceneDocumentToGlb(document, settings);
+  const outcome = asGltfIfAsked(exportSceneDocumentToGlb(document, settings), settings.format);
   return { ...outcome, warnings: [...document.warnings, ...outcome.warnings] };
+}
+
+/**
+ * The same export as JSON, when JSON is what was asked for.
+ *
+ * Every route that can produce glTF produces a GLB first, because that is what
+ * the writer emits and what the Draco pass operates on. Turning it into JSON is
+ * a container change and belongs in one place rather than in each route.
+ */
+function asGltfIfAsked(outcome: ExportOutcome, format: string): ExportOutcome {
+  if (format !== 'gltf' || !outcome.result.success || !outcome.result.binary_data) return outcome;
+  return {
+    ...outcome,
+    result: {
+      ...outcome.result,
+      binary_data: undefined,
+      json_data: glbToEmbeddedGltf(new Uint8Array(outcome.result.binary_data as ArrayLike<number>)),
+      message: 'Exported as JSON glTF with its binary embedded',
+    },
+  };
 }
 
 export async function exportToFbx(meshes: PreparedMesh[]) {

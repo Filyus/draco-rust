@@ -86,9 +86,19 @@ A source that arrives as a bare mesh list — OBJ, PLY, STL and `.drc` — reach
 glTF through the same portable document FBX uses: `buildSceneDocumentFromMeshes`
 turns the list into a `SceneDocument`, which the GLB writer already knows how to
 serialize, Draco pass included. OBJ's material library comes with it, textures
-embedded, so the GLB is self-contained. JSON glTF stays out of reach for the
-reason it is out of reach for a compressed document: it needs a companion `.bin`
-beside it, and the panel downloads one file.
+embedded, so the GLB is self-contained. JSON glTF is that GLB rewritten with its
+binary as a `data:` buffer URI, which is what the embedded profile is for; a
+`.gltf` source that is not being compressed is passed through as itself instead,
+since nothing rebuilt could be closer to what was opened.
+
+The other direction — a document down to a mesh list — is `flattenSceneDocument`,
+and every flat target takes it. Node transforms are baked into the coordinates
+there, because OBJ, PLY, STL and `.drc` have nowhere to put a hierarchy and a
+scene that keeps its local coordinates collapses onto the origin.
+
+`browser-smoke.spec.ts` walks every source against every target and validates
+the glTF outputs with Khronos's validator. The gaps it was written for were not
+visible one conversion at a time.
 
 Draco puts no limit on how many attributes of a type a payload holds -- a second
 texture-coordinate set is ordinary, and glTF's own extension keeps joints and

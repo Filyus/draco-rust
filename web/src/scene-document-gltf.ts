@@ -251,6 +251,58 @@ export function serializeSceneDocumentToGlb(document: SceneDocument, gltfModule:
   }
 }
 
+/**
+ * A GLB rewritten as a self-contained JSON glTF.
+ *
+ * JSON glTF was unreachable from every source, and the reason was always the
+ * same: the file needs its binary beside it and the panel downloads one file.
+ * A `data:` buffer URI is the format's own answer to that — it is what the
+ * embedded profile is, and every consumer reads it. Larger than a GLB by a
+ * third, which is the cost of asking for JSON.
+ *
+ * Nothing is re-encoded on the way: the JSON chunk is the manifest the writer
+ * already produced, and the binary chunk is copied as it stands.
+ */
+export function glbToEmbeddedGltf(glb: Uint8Array): string {
+  const view = new DataView(glb.buffer, glb.byteOffset, glb.byteLength);
+  if (glb.byteLength < 12 || view.getUint32(0, true) !== 0x46546c67) {
+    throw new Error('Not a GLB container');
+  }
+  let json: string | null = null;
+  let binary: Uint8Array | null = null;
+  // Chunk lengths are multiples of four by the container's own rule, so the
+  // walk needs no padding arithmetic of its own.
+  for (let offset = 12; offset + 8 <= glb.byteLength;) {
+    const length = view.getUint32(offset, true);
+    const kind = view.getUint32(offset + 4, true);
+    const body = glb.subarray(offset + 8, offset + 8 + length);
+    if (kind === 0x4e4f534a) json = new TextDecoder().decode(body);
+    else if (kind === 0x004e4942) binary = body;
+    offset += 8 + length;
+  }
+  if (!json) throw new Error('GLB has no JSON chunk');
+
+  const document = JSON.parse(json);
+  const buffer = document.buffers?.[0];
+  if (binary && buffer && !buffer.uri) {
+    // The chunk is padded to four bytes and the buffer is not, so the declared
+    // length decides how much of it is the buffer.
+    const bytes = binary.subarray(0, buffer.byteLength ?? binary.byteLength);
+    buffer.uri = `data:application/octet-stream;base64,${base64(bytes)}`;
+  }
+  return JSON.stringify(document);
+}
+
+/** Base64, in chunks: one `String.fromCharCode` over a megabyte overflows. */
+function base64(bytes: Uint8Array): string {
+  let binary = '';
+  const step = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += step) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + step));
+  }
+  return btoa(binary);
+}
+
 function lowerAccessor(
   accessor: SceneAccessor,
   index: number,
