@@ -30,6 +30,7 @@ const SURFACE_UNIFORMS = [
   'uUseSkin', 'uJointCount', 'uUseSmoothNormals',
   'uMorphDeltas', 'uMorphCount', 'uMorphStride', 'uMorphWidth',
   'uHasNormals', 'uHasVertexColors', 'uUnlit', 'uBaseColorOnly',
+  'uAlphaCutoff', 'uAlphaOpaque',
   'uBaseColorFactor', 'uMetallic', 'uRoughness', 'uEmissiveFactor',
   'uNormalScale', 'uOcclusionStrength',
   'uClearcoatNormalScale',

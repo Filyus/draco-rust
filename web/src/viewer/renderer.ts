@@ -26,7 +26,7 @@ import {
   MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS, MAX_PUNCTUAL_LIGHTS, TEXTURE_SLOTS, TEXTURE_SLOT_SAMPLERS,
 } from './shaders.ts';
 import type { TextureSlotName } from './shaders.ts';
-import type { ViewerMaterial, ViewerNode, ViewerTextureBinding } from '../viewer-scene.ts';
+import type { Renderable, ViewerMaterial, ViewerNode, ViewerTextureBinding } from '../viewer-scene.ts';
 
 /**
  * What drawing a frame needs from the viewer: the context, the linked
@@ -114,6 +114,24 @@ function enabledMaterialSlots(
  */
 function needsCompletedFrame(material: ViewerMaterial | undefined): boolean {
   return material?.alphaMode === 'BLEND' || (material?.transmissionFactor ?? 0) > 0;
+}
+
+/**
+ * What one material's alpha mode asks the shader for.
+ *
+ * Only MASK cuts, and its cutoff defaults to the spec's half. Only BLEND keeps
+ * the alpha channel: OPAQUE means the channel is *ignored*, which is not the
+ * same as it happening to be one — a base colour texture is free to carry a
+ * cut-out there, and a material that never asked to be transparent must not
+ * inherit it. A cutoff of zero discards nothing, which is what the two
+ * non-masking modes want and also what `alphaCutoff: 0` means on a MASK one.
+ */
+export function alphaModeUniforms(material: ViewerMaterial | undefined) {
+  const mode = material?.alphaMode ?? 'OPAQUE';
+  return {
+    cutoff: mode === 'MASK' ? material?.alphaCutoff ?? 0.5 : 0,
+    opaque: mode !== 'BLEND',
+  };
 }
 
 /**
@@ -287,17 +305,12 @@ export function render(host: RenderHost) {
   // until the first one asks for one.
   host._surfaceProgram = null;
 
-  // Opaque first, then what blends over it. glTF asks for exactly that order,
-  // and it is also the only arrangement in which "everything a transmissive
-  // surface may see" is a moment the frame passes through: the copy is taken
-  // between the two.
-  drawSurfaces(host, false);
-  if (sceneRefracts(host)) {
-    captureOpaqueHalf(gl, scene);
-    // The copy did not exist when the opaque programs were bound.
-    host._surfaceProgram = null;
-  }
-  drawSurfaces(host, true);
+  // Opaque first, then what blends over it or looks through it, back to front.
+  // glTF asks for exactly that order, and the copy transmission reads is taken
+  // inside the second pass, whenever the surface about to refract needs to see
+  // something blended behind it.
+  drawOpaqueSurfaces(host);
+  drawDeferredSurfaces(host, scene);
 
   gl.depthMask(true);
   gl.disable(gl.BLEND);
@@ -306,11 +319,6 @@ export function render(host: RenderHost) {
   resolveScene(gl, scene);
   drawGlare(host);
   drawOutput(host);
-}
-
-/** Whether anything in the scene will read the opaque-half copy at all. */
-function sceneRefracts(host: RenderHost): boolean {
-  return host.scene!.materials.some((material) => (material?.transmissionFactor ?? 0) > 0);
 }
 
 /**
@@ -339,85 +347,194 @@ function ensureSceneResources(host: RenderHost): SceneTarget {
 }
 
 /**
- * One pass over the scene's renderables: either what can be drawn straight
- * away, or what had to wait for the rest of the frame.
+ * Put one renderable's matrices on the host and return its joint palette.
  *
- * The two halves differ only in which primitives they take, so they share
- * every uniform decision below rather than being written twice.
+ * Split out of the pass because the deferred half no longer walks renderables
+ * in order: it walks its own sorted list, and each entry has to arrive with
+ * the same state around it that the straight walk left.
  */
-function drawSurfaces(host: RenderHost, deferred: boolean) {
+function prepareRenderable(host: RenderHost, renderable: Renderable) {
+  const node = renderable.node;
+  mat4.copy(host._model, node.world);
+  // Normal matrix = inverse-transpose(model)
+  mat4.invert(host._normalMatrix, host._model);
+  mat4.transpose(host._normalMatrix, host._normalMatrix);
+  const skinIndex = renderable.skinIndex;
+  const skin = skinIndex >= 0 ? host.scene!.skins[skinIndex] : null;
+  // Recomputed rather than cached across the pass: the palette is written into
+  // one buffer per skin, so two renderables sharing a skin would hand back the
+  // same array with the last one's pose in it.
+  return skin
+    ? computeJointMatrices(host, skin, node.world, host.glResources!.jointMatrices?.[skinIndex] ?? null)
+    : null;
+}
+
+/**
+ * Draw one primitive with the matrices `prepareRenderable` left on the host.
+ */
+function drawPrimitive(
+  host: RenderHost,
+  renderable: Renderable,
+  primitiveIndex: number,
+  jointMatrices: Float32Array | null,
+) {
   const gl = host.gl;
+  const node = renderable.node;
+  const { uploaded, materialIndex } = host.glResources!.primitives[renderable.meshIndex][primitiveIndex];
+  const material = host.scene!.materials[materialIndex];
+  // Which program draws this primitive is settled first: everything below
+  // writes uniforms, and uniforms belong to whichever program is bound.
+  const surface = useSurfaceProgram(host, enabledMaterialSlots(host, material, uploaded));
+  gl.uniformMatrix4fv(host.uniforms.uModel, false, host._model);
+  gl.uniformMatrix4fv(host.uniforms.uNormalMatrix, false, host._normalMatrix);
+  const usesSkin = !!(jointMatrices && uploaded.hasJoints && uploaded.hasWeights);
+  gl.uniform1i(host.uniforms.uUseSkin, usesSkin ? 1 : 0);
+  gl.uniform1i(host.uniforms.uJointCount, usesSkin ? jointMatrices!.length / 16 : 0);
+  if (usesSkin) gl.uniformMatrix4fv(host.uniforms.uJointMatrix, false, jointMatrices!);
+  gl.bindVertexArray(uploaded.vao);
+  const morph = uploaded.morph;
+  gl.activeTexture(gl.TEXTURE0 + MORPH_TEXTURE_UNIT);
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, morph ? morph.texture : morphPlaceholder(host));
+  gl.uniform1i(host.uniforms.uMorphDeltas, MORPH_TEXTURE_UNIT);
+  gl.uniform1i(host.uniforms.uMorphCount, selectMorphTargets(host, morph, node.weights));
+  gl.uniform1i(host.uniforms.uMorphStride, morph ? morph.stride : 1);
+  gl.uniform1i(host.uniforms.uMorphWidth, morph ? morph.width : 1);
+  gl.uniform1fv(host.uniforms.uMorphWeights, host._morphWeights!);
+  gl.uniform1iv(host.uniforms.uMorphLayers, host._morphLayers!);
+  const useSmoothNormals = host.smoothNormals
+    && uploaded.hasSmoothNormals && uploaded.morphTargetCount === 0;
+  gl.uniform1i(host.uniforms.uUseSmoothNormals, useSmoothNormals ? 1 : 0);
+  applyMaterial(host, surface, material, uploaded, useSmoothNormals);
+
+  if (material?.doubleSided) gl.disable(gl.CULL_FACE);
+  else gl.enable(gl.CULL_FACE);
+
+  if (material?.alphaMode === 'BLEND') {
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthMask(false);
+  } else {
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+  }
+
+  const mode = glMode(host, uploaded.mode, host.wireframe);
+  const instances = bindInstances(host, node);
+  if (uploaded.indexType !== undefined) {
+    if (instances > 0) gl.drawElementsInstanced(mode, uploaded.elementCount, uploaded.indexType, 0, instances);
+    else gl.drawElements(mode, uploaded.elementCount, uploaded.indexType, 0);
+  } else if (instances > 0) {
+    gl.drawArraysInstanced(mode, 0, uploaded.elementCount, instances);
+  } else {
+    gl.drawArrays(mode, 0, uploaded.elementCount);
+  }
+}
+
+/** Everything that can be drawn before the frame holds anything else. */
+function drawOpaqueSurfaces(host: RenderHost) {
   for (const renderable of host.scene!.renderables) {
-    const node = renderable.node;
     const primitives = host.glResources!.primitives[renderable.meshIndex];
     if (!primitives || primitives.length === 0) continue;
-
-    mat4.copy(host._model, node.world);
-
-    const skin = renderable.skinIndex >= 0 ? host.scene!.skins[renderable.skinIndex] : null;
-    const jointMatrices = skin
-      ? computeJointMatrices(host, skin, node.world, host.glResources!.jointMatrices?.[renderable.skinIndex] ?? null)
-      : null;
-
-    // Normal matrix = inverse-transpose(model)
-    mat4.invert(host._normalMatrix, host._model);
-    mat4.transpose(host._normalMatrix, host._normalMatrix);
-
+    const jointMatrices = prepareRenderable(host, renderable);
     for (let i = 0; i < primitives.length; i++) {
-      const { uploaded, materialIndex } = primitives[i];
-      const material = host.scene!.materials[materialIndex];
-      if (needsCompletedFrame(material) !== deferred) continue;
-      // Which program draws this primitive is settled first: everything below
-      // writes uniforms, and uniforms belong to whichever program is bound.
-      const surface = useSurfaceProgram(host, enabledMaterialSlots(host, material, uploaded));
-      gl.uniformMatrix4fv(host.uniforms.uModel, false, host._model);
-      gl.uniformMatrix4fv(host.uniforms.uNormalMatrix, false, host._normalMatrix);
-      const usesSkin = !!(jointMatrices && uploaded.hasJoints && uploaded.hasWeights);
-      gl.uniform1i(host.uniforms.uUseSkin, usesSkin ? 1 : 0);
-      gl.uniform1i(host.uniforms.uJointCount, usesSkin ? jointMatrices.length / 16 : 0);
-      if (usesSkin) gl.uniformMatrix4fv(host.uniforms.uJointMatrix, false, jointMatrices);
-      gl.bindVertexArray(uploaded.vao);
-      const morph = uploaded.morph;
-      gl.activeTexture(gl.TEXTURE0 + MORPH_TEXTURE_UNIT);
-      gl.bindTexture(gl.TEXTURE_2D_ARRAY, morph ? morph.texture : morphPlaceholder(host));
-      gl.uniform1i(host.uniforms.uMorphDeltas, MORPH_TEXTURE_UNIT);
-      gl.uniform1i(host.uniforms.uMorphCount, selectMorphTargets(host, morph, node.weights));
-      gl.uniform1i(host.uniforms.uMorphStride, morph ? morph.stride : 1);
-      gl.uniform1i(host.uniforms.uMorphWidth, morph ? morph.width : 1);
-      gl.uniform1fv(host.uniforms.uMorphWeights, host._morphWeights!);
-      gl.uniform1iv(host.uniforms.uMorphLayers, host._morphLayers!);
-      const useSmoothNormals = host.smoothNormals
-        && uploaded.hasSmoothNormals && uploaded.morphTargetCount === 0;
-      gl.uniform1i(
-        host.uniforms.uUseSmoothNormals,
-        useSmoothNormals ? 1 : 0,
-      );
-      applyMaterial(host, surface, material, uploaded, useSmoothNormals);
-
-      if (material?.doubleSided) gl.disable(gl.CULL_FACE);
-      else gl.enable(gl.CULL_FACE);
-
-      if (material?.alphaMode === 'BLEND') {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        gl.depthMask(false);
-      } else {
-        gl.disable(gl.BLEND);
-        gl.depthMask(true);
-      }
-
-      const mode = glMode(host, uploaded.mode, host.wireframe);
-      const instances = bindInstances(host, node);
-      if (uploaded.indexType !== undefined) {
-        if (instances > 0) gl.drawElementsInstanced(mode, uploaded.elementCount, uploaded.indexType, 0, instances);
-        else gl.drawElements(mode, uploaded.elementCount, uploaded.indexType, 0);
-      } else if (instances > 0) {
-        gl.drawArraysInstanced(mode, 0, uploaded.elementCount, instances);
-      } else {
-        gl.drawArrays(mode, 0, uploaded.elementCount);
-      }
+      const material = host.scene!.materials[primitives[i].materialIndex];
+      if (needsCompletedFrame(material)) continue;
+      drawPrimitive(host, renderable, i, jointMatrices);
     }
   }
+}
+
+/** One primitive that had to wait, and how far from the eye it sits. */
+export interface DeferredDraw {
+  renderable: Renderable;
+  primitiveIndex: number;
+  distance: number;
+  transmissive: boolean;
+}
+
+/**
+ * The primitives that had to wait, farthest first.
+ *
+ * Sorted by the eye distance of the mesh box's centre in world space. That is
+ * per object rather than per fragment, so two surfaces that interpenetrate
+ * still resolve by whichever centre is farther — the ordinary approximation,
+ * and the granularity a preview can afford.
+ */
+export function deferredDrawOrder(host: RenderHost): DeferredDraw[] {
+  const draws: DeferredDraw[] = [];
+  const centre = vec3.create();
+  for (const renderable of host.scene!.renderables) {
+    const meshIndex = renderable.meshIndex;
+    const primitives = host.glResources!.primitives[meshIndex];
+    if (!primitives || primitives.length === 0) continue;
+    const box = host.scene!.meshes[meshIndex]?.aabb;
+    let distance = 0;
+    if (box) {
+      vec3.set(
+        centre,
+        (box.min[0] + box.max[0]) / 2,
+        (box.min[1] + box.max[1]) / 2,
+        (box.min[2] + box.max[2]) / 2,
+      );
+      vec3.transformMat4(centre, centre, renderable.node.world);
+      const eye = host._eye!;
+      distance = Math.hypot(centre[0] - eye[0], centre[1] - eye[1], centre[2] - eye[2]);
+    }
+    for (let i = 0; i < primitives.length; i++) {
+      const material = host.scene!.materials[primitives[i].materialIndex];
+      if (!needsCompletedFrame(material)) continue;
+      draws.push({
+        renderable,
+        primitiveIndex: i,
+        distance,
+        transmissive: (material?.transmissionFactor ?? 0) > 0,
+      });
+    }
+  }
+  return draws.sort((a, b) => b.distance - a.distance);
+}
+
+/**
+ * Draw what waited, back to front, refreshing the copy transmission reads.
+ *
+ * A transmissive surface refracts a copy of the frame, and the frame has to
+ * already hold everything behind it — including surfaces that blend rather
+ * than write depth. Taking one copy after the opaque half, which is what this
+ * used to do, leaves a blended surface out of every transmissive lookup:
+ * TransmissionOrderTest's blended alpha simply vanished where the glass
+ * covered it, while the masked and opaque rows showed through as they should.
+ *
+ * So the copy is retaken lazily, before the first transmissive draw that
+ * follows a blended one. That costs a blit and a mip chain per hand-off, and
+ * a scene alternating the two kinds in depth pays it once per alternation;
+ * the ordinary scene, with its transmissive surfaces in one stretch of the
+ * order, pays it exactly once.
+ */
+export function capturePoints(draws: readonly DeferredDraw[]): boolean[] {
+  let stale = true;
+  return draws.map((draw) => {
+    if (!draw.transmissive) {
+      stale = true;
+      return false;
+    }
+    const take = stale;
+    stale = false;
+    return take;
+  });
+}
+
+function drawDeferredSurfaces(host: RenderHost, scene: SceneTarget) {
+  const draws = deferredDrawOrder(host);
+  const captures = capturePoints(draws);
+  draws.forEach((draw, index) => {
+    if (captures[index]) {
+      captureOpaqueHalf(host.gl, scene);
+      // The copy did not exist when the last program was bound.
+      host._surfaceProgram = null;
+    }
+    const jointMatrices = prepareRenderable(host, draw.renderable);
+    drawPrimitive(host, draw.renderable, draw.primitiveIndex, jointMatrices);
+  });
 }
 
 /**
@@ -501,6 +618,9 @@ export function applyMaterial(
   gl.uniform1i(host.uniforms.uHasVertexColors, uploaded.hasColors ? 1 : 0);
   gl.uniform1i(host.uniforms.uUnlit, material?.unlit ? 1 : 0);
   gl.uniform1i(host.uniforms.uBaseColorOnly, host.baseColorOnly ? 1 : 0);
+  const alpha = alphaModeUniforms(material);
+  gl.uniform1f(host.uniforms.uAlphaCutoff, alpha.cutoff);
+  gl.uniform1i(host.uniforms.uAlphaOpaque, alpha.opaque ? 1 : 0);
 
   // Only the slots this program declares: it was built for exactly the ones
   // the material can sample, so there is no "absent" case left to report, and

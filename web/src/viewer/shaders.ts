@@ -270,6 +270,13 @@ uniform int uHasNormals;
 uniform int uHasVertexColors;
 uniform int uUnlit;
 uniform int uBaseColorOnly;
+// glTF alpha modes. MASK cuts the surface at the cutoff and is opaque on
+// either side of it; OPAQUE ignores the alpha channel entirely, which is not
+// the same as it happening to be one — a base colour texture is free to carry
+// whatever it likes there, and a material that never asked to be transparent
+// must not inherit it.
+uniform float uAlphaCutoff;
+uniform int uAlphaOpaque;
 uniform vec4 uBaseColorFactor;
 uniform float uMetallic;
 uniform float uRoughness;
@@ -731,6 +738,15 @@ void main() {
     baseSample = texture(uBaseColor, slotUv(SLOT_BASE_COLOR));
     #endif
     base *= baseSample;
+
+    // The cut comes before any shading: a masked-out texel is not a dim
+    // surface, it is no surface, and it must leave neither colour nor depth
+    // behind. Without it the transparent half of an alpha-mask texture drew as
+    // whatever colour sat under its zero alpha — black, in every asset that
+    // stores a cut-out that way — and TransmissionOrderTest's masked row came
+    // out as three black squares.
+    if (base.a < uAlphaCutoff) discard;
+    if (uAlphaOpaque == 1) base.a = 1.0;
 
     // Hard unlit materials (KHR_materials_unlit) keep flat shading. Their
     // colour is the picture already, so the capture takes it back to linear
