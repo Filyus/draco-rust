@@ -1829,6 +1829,96 @@ test('a texture slot reads the UV set its material names', async ({ page }) => {
 });
 
 /**
+ * STL and the standalone `.drc` container, out through the panel and back in.
+ *
+ * Written as a round trip rather than as two fixture loads because that is what
+ * makes each half check the other: a writer and a reader that agree on the same
+ * mistake still fail here, since the geometry has to survive as the same twelve
+ * triangles the source GLB carried.
+ */
+for (const target of [
+  {
+    format: 'stl',
+    // STL unshares every vertex, and the source cube shares them across faces.
+    vertices: 36,
+    check: (bytes: Buffer) => {
+      expect(bytes.length).toBe(84 + 12 * 50);
+      expect(bytes.readUInt32LE(80)).toBe(12);
+      // A binary file whose header begins with the ASCII keyword is the one
+      // ambiguity the format has, and the writer must not create it.
+      expect(bytes.subarray(0, 5).toString('binary')).not.toBe('solid');
+    },
+  },
+  {
+    format: 'drc',
+    vertices: 24,
+    check: (bytes: Buffer) => {
+      expect(bytes.subarray(0, 5).toString('binary')).toBe('DRACO');
+      // Compression is the point: the payload is far under the 24 float triples
+      // and 36 indices it stands for.
+      expect(bytes.length).toBeLessThan(24 * 12);
+    },
+  },
+]) {
+  test(`${target.format.toUpperCase()} survives a round trip through the export panel`, async ({ page }) => {
+    await page.goto('/index.html');
+    await waitForConverterReady(page);
+    await expect(page.locator('#console')).toContainText(`${target.format} v`);
+
+    await page.locator('#file-input').setInputFiles(
+      path.join(repoRoot, 'testdata', 'Box', 'glTF_Binary', 'Box.glb'),
+    );
+    await expect(page.locator('#console')).toContainText('Preview ready');
+
+    await page.locator(`[data-choice-for="export-format"] [data-value="${target.format}"]`).click();
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#export-btn').click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe(`export.${target.format}`);
+    const downloadedPath = await download.path();
+    expect(downloadedPath).not.toBeNull();
+    const bytes = await readFile(downloadedPath!);
+    target.check(bytes);
+
+    const name = `roundtrip.${target.format}`;
+    await page.locator('#file-input').setInputFiles({
+      name,
+      mimeType: 'application/octet-stream',
+      buffer: bytes,
+    });
+    await expect(page.locator('#console')).toContainText(`Successfully parsed ${name}`);
+    await expect(page.locator('#console')).toContainText('Preview ready');
+    await expect(page.locator('#console')).not.toContainText('Preview failed');
+    await expect(page.locator('#triangle-count')).toHaveText('12');
+    await expect(page.locator('#vertex-count')).toHaveText(String(target.vertices));
+  });
+}
+
+/**
+ * A file the decoder cannot read must be reported, not thrown.
+ *
+ * The Draco decoder trusts lengths the payload states, so a truncated one
+ * reaches a Rust panic — and on wasm32 that is a trap with no unwinding behind
+ * it. Without the shell catching it the page shows a bare RuntimeError and no
+ * indication of which file caused it.
+ */
+test('a malformed .drc is reported rather than thrown', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const payload = Buffer.concat([
+    Buffer.from('DRACO', 'binary'),
+    Buffer.alloc(64, 0xab),
+  ]);
+  await page.locator('#file-input').setInputFiles({
+    name: 'broken.drc',
+    mimeType: 'application/octet-stream',
+    buffer: payload,
+  });
+  await expect(page.locator('#console')).toContainText('Failed to parse file:');
+  await expect(page.locator('#console')).not.toContainText('Preview ready');
+});
+
+/**
  * An export that costs something has to say so.
  *
  * Five of the six export routes used to compute warnings and drop them; the

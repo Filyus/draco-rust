@@ -86,6 +86,44 @@ export async function parsePlyFile(data: Uint8Array) {
   return result;
 }
 
+// Parse STL file
+export async function parseStlFile(data: Uint8Array) {
+  if (!modules.stl.loaded) {
+    return { success: false, error: 'STL module not loaded' };
+  }
+
+  const result = modules.stl.module.parse_stl_bytes(data);
+  debugLog('STL parse result:', result);
+  return result;
+}
+
+/**
+ * Parse a standalone Draco payload.
+ *
+ * Wrapped, unlike its neighbours, because this is the only reader whose input
+ * is a compressed bitstream: the decoder walks lengths the payload itself
+ * states. It returns errors for every malformed payload tested against it, and
+ * nothing inside the module catches a panic — wasm32 has no unwinding to catch
+ * with. So a panic would arrive here as a trap, and this is what keeps it a
+ * named file that could not be read rather than a bare RuntimeError.
+ */
+export async function parseDrcFile(data: Uint8Array) {
+  if (!modules.drc.loaded) {
+    return { success: false, error: 'DRC module not loaded' };
+  }
+
+  try {
+    const result = modules.drc.module.parse_drc_bytes(data);
+    debugLog('DRC parse result:', result);
+    return result;
+  } catch (error) {
+    return {
+      success: false,
+      error: `Malformed Draco payload: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 /**
  * Parse a glTF/GLB file for the summary panel.
  *

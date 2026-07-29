@@ -63,6 +63,10 @@ export interface ExportSettings {
   includeUvs: boolean;
   useDraco: boolean;
   encodingSpeed: number;
+  /** Quantization, shared by the glTF Draco pass and the `.drc` route. */
+  positionBits?: number;
+  normalBits?: number;
+  texcoordBits?: number;
 }
 
 /** Route the loaded file to a writer and report what the route cost. */
@@ -291,8 +295,17 @@ async function exportFlattenedMeshes(settings: ExportSettings, loaded: LoadedFil
   if (meshes.length === 0) {
     throw new Error('The document contains no triangle geometry to export');
   }
-  if (format === 'ply' && meshes.length > 1) {
-    warnings.push(`PLY holds one mesh: ${meshes.length} meshes were merged into one`);
+  // Every single-mesh target says the same thing about the same merge.
+  if (['ply', 'stl', 'drc'].includes(format) && meshes.length > 1) {
+    warnings.push(
+      `${format.toUpperCase()} holds one mesh: ${meshes.length} meshes were merged into one`,
+    );
+  }
+  if (format === 'stl' && (settings.includeNormals || settings.includeUvs)) {
+    warnings.push(
+      'STL holds triangle positions only: normals are recomputed per facet from the winding, '
+      + 'and texture coordinates are not written',
+    );
   }
 
   switch (format) {
@@ -300,6 +313,10 @@ async function exportFlattenedMeshes(settings: ExportSettings, loaded: LoadedFil
       return { result: await exportToObj(meshes, settings), warnings };
     case 'ply':
       return { result: await exportToPly(meshes, settings), warnings };
+    case 'stl':
+      return { result: await exportToStl(meshes), warnings };
+    case 'drc':
+      return { result: await exportToDrc(meshes, settings), warnings };
     case 'gltf':
     case 'glb':
       return { result: await exportToGltf(format), warnings };
@@ -458,6 +475,47 @@ export async function exportToPly(meshes: PreparedMesh[], settings: Pick<ExportS
     format: 'ascii',
   };
   return modules.ply.module.create_ply(merged, options);
+}
+
+/**
+ * STL, always the binary container.
+ *
+ * The writer can emit ASCII and the module exposes it, but nothing in the panel
+ * asks for it: ASCII STL is five times the size for the same triangles, and the
+ * cases that want readable output are not the ones that go through a converter.
+ */
+export async function exportToStl(meshes: PreparedMesh[]) {
+  if (!modules.stl.loaded) {
+    return { success: false, error: 'STL module not loaded' };
+  }
+  const merged = mergeMeshes(meshes);
+  return modules.stl.module.create_stl(
+    { positions: merged.positions, indices: merged.indices },
+    { format: 'binary', name: merged.name },
+  );
+}
+
+/**
+ * A standalone Draco payload — the `.drc` container, not glTF's extension.
+ *
+ * The quantization controls are the same ones the glTF route uses, because they
+ * mean the same thing to the same encoder: this route just addresses the
+ * attributes directly instead of through a primitive.
+ */
+export async function exportToDrc(meshes: PreparedMesh[], settings: ExportSettings) {
+  if (!modules.drc.loaded) {
+    return { success: false, error: 'DRC module not loaded' };
+  }
+  const merged = mergeMeshes(meshes);
+  return modules.drc.module.create_drc(merged, {
+    encoding_speed: settings.encodingSpeed,
+    position_bits: settings.positionBits,
+    normal_bits: settings.normalBits,
+    texcoord_bits: settings.texcoordBits,
+    include_normals: settings.includeNormals,
+    include_uvs: settings.includeUvs,
+    include_colors: true,
+  });
 }
 
 export async function exportToGltf(format: string) {

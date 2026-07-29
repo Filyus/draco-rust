@@ -1,0 +1,30 @@
+[package]
+name = "drc-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Draco web .drc reader and writer (WASM)"
+repository = "https://github.com/Filyus/draco-rust"
+license = "Apache-2.0"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+console_error_panic_hook = { workspace = true, optional = true }
+draco-core = { path = "../../crates/draco-core", default-features = false }
+
+[features]
+default = ["read", "write"]
+console_error_panic_hook = ["dep:console_error_panic_hook"]
+# Draco decoding (`parse_drc_bytes`).
+read = ["draco-core/decoder", "draco-core/edgebreaker_valence_decode", "draco-core/legacy_bitstream_decode"]
+# Draco encoding (`create_drc`).
+write = ["draco-core/encoder", "draco-core/edgebreaker_valence_encode"]

@@ -1,0 +1,627 @@
+//! Draco `.drc` reader and writer WASM module.
+//!
+//! The codec itself lives in `draco-core`; this is the JavaScript surface for
+//! the standalone container, the one `draco_encoder`/`draco_decoder` write.
+//! Draco inside glTF is a different route entirely — there the payload is a
+//! `KHR_draco_mesh_compression` extension and the glTF module owns it.
+//!
+//! The two halves are independent: build with `--features read` or
+//! `--features write` (both are on by default).
+
+use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
+
+/// Install the panic hook, so a panic reads as a message rather than a trap.
+#[wasm_bindgen(start)]
+pub fn init() {
+    #[cfg(feature = "console_error_panic_hook")]
+    console_error_panic_hook::set_once();
+}
+
+/// The version of this WASM module.
+#[wasm_bindgen]
+pub fn version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// File extensions this module reads and writes.
+#[wasm_bindgen]
+pub fn supported_extensions() -> Vec<String> {
+    vec!["drc".to_string()]
+}
+
+use draco_core::draco_types::DataType;
+use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use draco_core::geometry_indices::{FaceIndex, PointIndex};
+use draco_core::mesh::Mesh;
+
+// ===========================================================================
+// Reader
+// ===========================================================================
+
+/// Mesh data produced by the decoder, for JavaScript interop.
+#[cfg(feature = "read")]
+#[derive(Serialize, Deserialize)]
+pub struct MeshData {
+    /// Vertex positions as a flat array `[x0, y0, z0, x1, ...]`.
+    pub positions: Vec<f32>,
+    /// Triangle indices as a flat array.
+    pub indices: Vec<u32>,
+    /// Vertex normals, empty when the payload carried none.
+    pub normals: Vec<f32>,
+    /// Texture coordinates, empty when the payload carried none.
+    pub uvs: Vec<f32>,
+    /// Vertex colors as `[r, g, b, a, ...]`, 0-255, empty when absent.
+    pub colors: Vec<u8>,
+}
+
+/// What the decoder hands back: the mesh, or why there is none.
+#[cfg(feature = "read")]
+#[derive(Serialize, Deserialize)]
+pub struct ParseResult {
+    /// Whether a mesh was decoded.
+    pub success: bool,
+    /// The decoded mesh; a `.drc` holds one.
+    pub meshes: Vec<MeshData>,
+    /// Why the decode failed, when it did.
+    pub error: Option<String>,
+    /// Non-fatal remarks about the payload.
+    pub warnings: Vec<String>,
+    /// Which attributes the payload declared, by name.
+    pub attributes: Vec<String>,
+}
+
+/// Decode a standalone Draco payload.
+#[cfg(feature = "read")]
+#[wasm_bindgen]
+pub fn parse_drc_bytes(data: &[u8]) -> JsValue {
+    let result = parse_drc_internal(data);
+    let json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
+    js_sys::JSON::parse(&json).unwrap_or(JsValue::NULL)
+}
+
+#[cfg(feature = "read")]
+fn parse_drc_internal(data: &[u8]) -> ParseResult {
+    use draco_core::decoder_buffer::DecoderBuffer;
+    use draco_core::mesh_decoder::MeshDecoder;
+
+    let mut mesh = Mesh::new();
+    let mut decoder = MeshDecoder::new();
+    let mut buffer = DecoderBuffer::new(data);
+    // Nothing catches a panic here. The decoder returns errors for every
+    // malformed payload tried against it -- truncation at each of a payload's
+    // byte offsets, and garbage -- and on wasm32 a catch would be theatre
+    // anyway: the target has no unwinding, and the release profile aborts on
+    // top of that. What actually stands between a trap and a dead page is the
+    // shell's own guard around this call.
+    match decoder.decode(&mut buffer, &mut mesh) {
+        Ok(()) => {
+            let mut warnings = Vec::new();
+            if mesh.num_faces() == 0 {
+                warnings.push(
+                    "Draco payload decoded to a point cloud: it carries no faces".to_string(),
+                );
+            }
+            ParseResult {
+                success: true,
+                attributes: attribute_names(&mesh),
+                meshes: vec![mesh_to_js_data(&mesh)],
+                error: None,
+                warnings,
+            }
+        }
+        Err(error) => ParseResult {
+            success: false,
+            meshes: vec![],
+            error: Some(error.to_string()),
+            warnings: vec![],
+            attributes: vec![],
+        },
+    }
+}
+
+#[cfg(feature = "read")]
+fn attribute_names(mesh: &Mesh) -> Vec<String> {
+    let named = [
+        (GeometryAttributeType::Position, "POSITION"),
+        (GeometryAttributeType::Normal, "NORMAL"),
+        (GeometryAttributeType::Color, "COLOR"),
+        (GeometryAttributeType::TexCoord, "TEX_COORD"),
+    ];
+    named
+        .iter()
+        .filter(|(attribute_type, _)| mesh.named_attribute_id(*attribute_type) >= 0)
+        .map(|(_, name)| (*name).to_string())
+        .collect()
+}
+
+#[cfg(feature = "read")]
+fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
+    let mut indices = Vec::with_capacity(mesh.num_faces() * 3);
+    for index in 0..mesh.num_faces() {
+        let face = mesh.face(FaceIndex(index as u32));
+        indices.extend([face[0].0, face[1].0, face[2].0]);
+    }
+    MeshData {
+        positions: read_attribute_as_f32(mesh, GeometryAttributeType::Position, 3),
+        indices,
+        normals: read_attribute_as_f32(mesh, GeometryAttributeType::Normal, 3),
+        uvs: read_attribute_as_f32(mesh, GeometryAttributeType::TexCoord, 2),
+        colors: read_colors(mesh),
+    }
+}
+
+/// Read an attribute as one float tuple per point, whatever it decoded to.
+///
+/// Two things make this more than a copy. A Draco attribute is addressed by its
+/// own value index rather than by the point id — the encoder deduplicates
+/// values and records the mapping, so reading the buffer in point order returns
+/// another vertex's data whenever the mapping is not the identity. And a
+/// payload whose quantization transform was not applied hands back integers, so
+/// the component ladder is not decoration either.
+#[cfg(feature = "read")]
+fn read_attribute_as_f32(
+    mesh: &Mesh,
+    attribute_type: GeometryAttributeType,
+    components: usize,
+) -> Vec<f32> {
+    let attribute_id = mesh.named_attribute_id(attribute_type);
+    if attribute_id < 0 {
+        return Vec::new();
+    }
+    let attribute = mesh.attribute(attribute_id);
+    let available = (attribute.num_components() as usize).min(components);
+    let stride = attribute.byte_stride() as usize;
+    let width = attribute.data_type().byte_length();
+    let data = attribute.buffer().data();
+    let mut values = Vec::with_capacity(mesh.num_points() * components);
+    for point in 0..mesh.num_points() {
+        let value_index = attribute.mapped_index(PointIndex(point as u32)).0 as usize;
+        for component in 0..components {
+            let offset = value_index * stride + component * width;
+            if component >= available || offset + width > data.len() {
+                values.push(0.0);
+                continue;
+            }
+            values.push(scalar_as_f32(
+                attribute.data_type(),
+                &data[offset..offset + width],
+            ));
+        }
+    }
+    values
+}
+
+#[cfg(feature = "read")]
+fn scalar_as_f32(data_type: DataType, bytes: &[u8]) -> f32 {
+    match data_type {
+        DataType::Float32 => f32::from_le_bytes(bytes.try_into().unwrap()),
+        DataType::Float64 => f64::from_le_bytes(bytes.try_into().unwrap()) as f32,
+        DataType::Int8 => bytes[0] as i8 as f32,
+        DataType::Uint8 => bytes[0] as f32,
+        DataType::Int16 => i16::from_le_bytes(bytes.try_into().unwrap()) as f32,
+        DataType::Uint16 => u16::from_le_bytes(bytes.try_into().unwrap()) as f32,
+        DataType::Int32 => i32::from_le_bytes(bytes.try_into().unwrap()) as f32,
+        DataType::Uint32 => u32::from_le_bytes(bytes.try_into().unwrap()) as f32,
+        _ => 0.0,
+    }
+}
+
+#[cfg(feature = "read")]
+fn read_colors(mesh: &Mesh) -> Vec<u8> {
+    let attribute_id = mesh.named_attribute_id(GeometryAttributeType::Color);
+    if attribute_id < 0 {
+        return Vec::new();
+    }
+    // The shell wants RGBA bytes; anything wider is scaled here rather than in
+    // four places downstream.
+    let channels = read_attribute_as_f32(mesh, GeometryAttributeType::Color, 4);
+    let attribute = mesh.attribute(attribute_id);
+    let float_source = matches!(attribute.data_type(), DataType::Float32 | DataType::Float64);
+    let opaque = if attribute.num_components() >= 4 {
+        None
+    } else {
+        Some(255u8)
+    };
+    let mut colors = Vec::with_capacity(channels.len());
+    for (index, value) in channels.iter().enumerate() {
+        if index % 4 == 3 {
+            if let Some(alpha) = opaque {
+                colors.push(alpha);
+                continue;
+            }
+        }
+        let scaled = if float_source { value * 255.0 } else { *value };
+        colors.push(scaled.clamp(0.0, 255.0) as u8);
+    }
+    colors
+}
+
+// ===========================================================================
+// Writer
+// ===========================================================================
+
+/// Input mesh data consumed by the encoder, from JavaScript.
+#[cfg(feature = "write")]
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct MeshInput {
+    /// Vertex positions as a flat array `[x0, y0, z0, x1, ...]`.
+    pub positions: Vec<f32>,
+    /// Triangle indices as a flat array.
+    pub indices: Vec<u32>,
+    /// Vertex normals (optional).
+    pub normals: Option<Vec<f32>>,
+    /// Texture coordinates (optional).
+    pub uvs: Option<Vec<f32>>,
+    /// Vertex colors as `[r, g, b, a, ...]`, 0-255 (optional).
+    pub colors: Option<Vec<u8>>,
+}
+
+/// Encoder options, named as the export panel's controls are.
+#[cfg(feature = "write")]
+#[derive(Serialize, Deserialize, Default)]
+pub struct ExportOptions {
+    /// 0 is the smallest file, 10 the fastest encode. Draco's own scale.
+    pub encoding_speed: Option<i32>,
+    /// Kept equal to `encoding_speed` when unset, which is Draco's default.
+    pub decoding_speed: Option<i32>,
+    /// Quantization bits for positions.
+    pub position_bits: Option<i32>,
+    /// Quantization bits for normals.
+    pub normal_bits: Option<i32>,
+    /// Quantization bits for texture coordinates.
+    pub texcoord_bits: Option<i32>,
+    /// Whether to write normals, when the mesh has them.
+    pub include_normals: Option<bool>,
+    /// Whether to write texture coordinates, when the mesh has them.
+    pub include_uvs: Option<bool>,
+    /// Whether to write colors, when the mesh has them.
+    pub include_colors: Option<bool>,
+}
+
+/// Export result. `binary_data` is the payload; `.drc` has no text container.
+#[cfg(feature = "write")]
+#[derive(Serialize, Deserialize)]
+pub struct ExportResult {
+    /// Whether the payload was encoded.
+    pub success: bool,
+    /// The encoded payload.
+    pub binary_data: Option<Vec<u8>>,
+    /// Why the encode failed, when it did.
+    pub error: Option<String>,
+    /// What the encoder did, for the compression panel.
+    pub draco_stats: Option<DracoStats>,
+}
+
+/// What the encoder did, in the shape the export panel already reads.
+#[cfg(feature = "write")]
+#[derive(Serialize, Deserialize)]
+pub struct DracoStats {
+    /// Always 1 here: a `.drc` holds one mesh.
+    pub primitives: usize,
+    /// The speed setting the payload was written at.
+    pub speed: i32,
+    /// Bytes of Draco payload.
+    pub compressed_size: usize,
+    /// Left unnamed: the binding does not report which method was chosen.
+    pub method: Option<String>,
+    /// Likewise for the prediction scheme.
+    pub prediction_scheme: Option<String>,
+}
+
+/// Encode mesh data into a standalone Draco payload.
+#[cfg(feature = "write")]
+#[wasm_bindgen]
+pub fn create_drc(mesh_js: JsValue, options_js: JsValue) -> JsValue {
+    let mesh: MeshInput = match serde_wasm_bindgen::from_value(mesh_js) {
+        Ok(mesh) => mesh,
+        Err(error) => {
+            return to_js(&ExportResult {
+                success: false,
+                binary_data: None,
+                error: Some(format!("Invalid mesh data: {error}")),
+                draco_stats: None,
+            });
+        }
+    };
+    let options: ExportOptions = serde_wasm_bindgen::from_value(options_js).unwrap_or_default();
+    to_js(&create_drc_internal(&mesh, &options))
+}
+
+#[cfg(feature = "write")]
+fn to_js(result: &ExportResult) -> JsValue {
+    serde_wasm_bindgen::to_value(result).unwrap_or(JsValue::NULL)
+}
+
+#[cfg(feature = "write")]
+fn create_drc_internal(input: &MeshInput, options: &ExportOptions) -> ExportResult {
+    use draco_core::encoder_buffer::EncoderBuffer;
+    use draco_core::encoder_options::EncoderOptions;
+    use draco_core::mesh_encoder::MeshEncoder;
+
+    let (mesh, quantization) = match mesh_input_to_core_mesh(input, options) {
+        Ok(built) => built,
+        Err(error) => {
+            return ExportResult {
+                success: false,
+                binary_data: None,
+                error: Some(error),
+                draco_stats: None,
+            }
+        }
+    };
+
+    let speed = options.encoding_speed.unwrap_or(0).clamp(0, 10);
+    let mut settings = EncoderOptions::new();
+    settings.set_global_int("encoding_speed", speed);
+    settings.set_global_int("decoding_speed", options.decoding_speed.unwrap_or(speed));
+    for (attribute_id, bits) in quantization {
+        settings.set_attribute_int(attribute_id, "quantization_bits", bits);
+    }
+
+    let mut encoder = MeshEncoder::new();
+    encoder.set_mesh(mesh);
+    let mut output = EncoderBuffer::new();
+    match encoder.encode(&settings, &mut output) {
+        Ok(()) => {
+            let bytes = output.data().to_vec();
+            ExportResult {
+                success: true,
+                draco_stats: Some(DracoStats {
+                    primitives: 1,
+                    speed,
+                    compressed_size: bytes.len(),
+                    method: None,
+                    prediction_scheme: None,
+                }),
+                binary_data: Some(bytes),
+                error: None,
+            }
+        }
+        Err(error) => ExportResult {
+            success: false,
+            binary_data: None,
+            error: Some(error.to_string()),
+            draco_stats: None,
+        },
+    }
+}
+
+/// Build the mesh, and say which attribute id each bit setting belongs to.
+///
+/// The ids are only knowable here: `set_attribute_int` addresses attributes by
+/// the order they were added, so the caller's per-channel bit counts cannot be
+/// turned into encoder options until the mesh exists.
+#[cfg(feature = "write")]
+fn mesh_input_to_core_mesh(
+    input: &MeshInput,
+    options: &ExportOptions,
+) -> Result<(Mesh, Vec<(i32, i32)>), String> {
+    if input.positions.len() % 3 != 0 {
+        return Err("positions length must be divisible by 3".to_string());
+    }
+    if input.indices.len() % 3 != 0 {
+        return Err("indices length must be divisible by 3".to_string());
+    }
+    let vertex_count = input.positions.len() / 3;
+    if vertex_count == 0 {
+        return Err("mesh has no vertices".to_string());
+    }
+    if let Some(&highest) = input.indices.iter().max() {
+        if highest as usize >= vertex_count {
+            return Err("an index points past the last vertex".to_string());
+        }
+    }
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(vertex_count);
+    let mut quantization = Vec::new();
+
+    let position_id = mesh.add_attribute(float_attribute(
+        GeometryAttributeType::Position,
+        3,
+        &input.positions,
+        vertex_count,
+    ));
+    if let Some(bits) = options.position_bits {
+        quantization.push((position_id, bits));
+    }
+
+    if options.include_normals.unwrap_or(true) {
+        if let Some(normals) = channel(&input.normals, vertex_count * 3) {
+            let id = mesh.add_attribute(float_attribute(
+                GeometryAttributeType::Normal,
+                3,
+                normals,
+                vertex_count,
+            ));
+            if let Some(bits) = options.normal_bits {
+                quantization.push((id, bits));
+            }
+        }
+    }
+
+    if options.include_uvs.unwrap_or(true) {
+        if let Some(uvs) = channel(&input.uvs, vertex_count * 2) {
+            let id = mesh.add_attribute(float_attribute(
+                GeometryAttributeType::TexCoord,
+                2,
+                uvs,
+                vertex_count,
+            ));
+            if let Some(bits) = options.texcoord_bits {
+                quantization.push((id, bits));
+            }
+        }
+    }
+
+    if options.include_colors.unwrap_or(true) {
+        if let Some(colors) = channel(&input.colors, vertex_count * 4) {
+            let mut attribute = PointAttribute::new();
+            attribute.init(
+                GeometryAttributeType::Color,
+                4,
+                DataType::Uint8,
+                true,
+                vertex_count,
+            );
+            attribute.buffer_mut().write(0, &colors[..vertex_count * 4]);
+            mesh.add_attribute(attribute);
+        }
+    }
+
+    mesh.set_num_faces(input.indices.len() / 3);
+    for (index, chunk) in input.indices.chunks_exact(3).enumerate() {
+        mesh.set_face(
+            FaceIndex(index as u32),
+            [
+                PointIndex(chunk[0]),
+                PointIndex(chunk[1]),
+                PointIndex(chunk[2]),
+            ],
+        );
+    }
+    Ok((mesh, quantization))
+}
+
+/// An optional channel, only when it covers every vertex.
+///
+/// A short channel is dropped rather than padded: the encoder would otherwise
+/// write zeros that look like data, and a partial normal set is a bug upstream
+/// rather than something to preserve.
+#[cfg(feature = "write")]
+fn channel<T>(values: &Option<Vec<T>>, required: usize) -> Option<&[T]> {
+    values
+        .as_deref()
+        .filter(|values| values.len() >= required && required > 0)
+}
+
+#[cfg(feature = "write")]
+fn float_attribute(
+    attribute_type: GeometryAttributeType,
+    components: usize,
+    values: &[f32],
+    vertex_count: usize,
+) -> PointAttribute {
+    let mut attribute = PointAttribute::new();
+    attribute.init(
+        attribute_type,
+        components as u8,
+        DataType::Float32,
+        false,
+        vertex_count,
+    );
+    let width = components * 4;
+    for (index, chunk) in values
+        .chunks_exact(components)
+        .take(vertex_count)
+        .enumerate()
+    {
+        let bytes: Vec<u8> = chunk.iter().flat_map(|value| value.to_le_bytes()).collect();
+        attribute.buffer_mut().write(index * width, &bytes);
+    }
+    attribute
+}
+
+#[cfg(all(test, feature = "read", feature = "write"))]
+mod tests {
+    use super::*;
+
+    fn quad() -> MeshInput {
+        MeshInput {
+            positions: vec![
+                0.0, 0.0, 0.0, //
+                1.0, 0.0, 0.0, //
+                1.0, 1.0, 0.0, //
+                0.0, 1.0, 0.0,
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            normals: Some(vec![0.0, 0.0, 1.0].repeat(4)),
+            uvs: Some(vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]),
+            colors: None,
+        }
+    }
+
+    /// The decoded corners, rounded to something quantization cannot move, and
+    /// sorted: Draco reorders points as it encodes, so the vertex list comes
+    /// back as a set rather than as a sequence.
+    fn corner_set(positions: &[f32], indices: &[u32]) -> Vec<[i32; 3]> {
+        let mut corners: Vec<[i32; 3]> = indices
+            .iter()
+            .map(|index| {
+                let base = *index as usize * 3;
+                [
+                    (positions[base] * 1000.0).round() as i32,
+                    (positions[base + 1] * 1000.0).round() as i32,
+                    (positions[base + 2] * 1000.0).round() as i32,
+                ]
+            })
+            .collect();
+        corners.sort_unstable();
+        corners
+    }
+
+    /// Encode and decode across the two entry points the shell calls. Positions
+    /// are quantized, so they come back near rather than equal; the topology
+    /// does not get that latitude.
+    #[test]
+    fn test_roundtrip_through_the_js_entry_points() {
+        let exported = create_drc_internal(
+            &quad(),
+            &ExportOptions {
+                position_bits: Some(16),
+                texcoord_bits: Some(12),
+                ..Default::default()
+            },
+        );
+        assert!(exported.success, "{:?}", exported.error);
+        let payload = exported.binary_data.unwrap();
+        assert_eq!(exported.draco_stats.unwrap().compressed_size, payload.len());
+
+        let parsed = parse_drc_internal(&payload);
+        assert!(parsed.success, "{:?}", parsed.error);
+        let mesh = &parsed.meshes[0];
+        assert_eq!(mesh.indices.len(), 6);
+        assert_eq!(mesh.positions.len(), 12);
+        assert!(parsed.attributes.contains(&"POSITION".to_string()));
+        assert!(parsed.attributes.contains(&"TEX_COORD".to_string()));
+        // The same six corners at the same places, however the encoder chose to
+        // number them.
+        assert_eq!(
+            corner_set(&mesh.positions, &mesh.indices),
+            corner_set(&quad().positions, &quad().indices),
+        );
+    }
+
+    /// A `.drc` arrives over the network and the decoder trusts lengths the
+    /// payload states. Garbage and every truncation of a real payload have to
+    /// come back as errors: nothing above this catches a panic, so a panic is a
+    /// trap that takes the page with it.
+    #[test]
+    fn test_malformed_payloads_report_rather_than_panic() {
+        let garbage = parse_drc_internal(b"not a draco payload at all, but long enough to try");
+        assert!(!garbage.success);
+        assert!(garbage.error.is_some());
+
+        let payload = create_drc_internal(&quad(), &ExportOptions::default())
+            .binary_data
+            .unwrap();
+        for cut in 1..payload.len() {
+            let result = parse_drc_internal(&payload[..cut]);
+            assert!(!result.success, "a payload cut to {cut} bytes decoded");
+            assert!(
+                result.error.is_some(),
+                "cut to {cut} bytes reported nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn test_encoder_rejects_an_index_past_the_last_vertex() {
+        let mut mesh = quad();
+        mesh.indices = vec![0, 1, 99];
+        let result = create_drc_internal(&mesh, &ExportOptions::default());
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("past the last vertex"));
+    }
+}

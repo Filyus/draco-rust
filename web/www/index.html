@@ -35,6 +35,20 @@
                             <span class="status-text">Loading...</span>
                         </span>
                     </div>
+                    <div class="module-pill" id="stl-status">
+                        <span class="module-name">STL</span>
+                        <span class="status-indicator loading" aria-live="polite">
+                            <span class="status-dot"></span>
+                            <span class="status-text">Loading...</span>
+                        </span>
+                    </div>
+                    <div class="module-pill" id="drc-status">
+                        <span class="module-name">DRC</span>
+                        <span class="status-indicator loading" aria-live="polite">
+                            <span class="status-dot"></span>
+                            <span class="status-text">Loading...</span>
+                        </span>
+                    </div>
                     <div class="module-pill" id="gltf-status">
                         <span class="module-name">glTF</span>
                         <span class="status-indicator loading" aria-live="polite">
@@ -70,7 +84,7 @@
                             <div class="browse-row">
                                 <label class="browse-btn">
                                     Browse Files
-                                    <input type="file" id="file-input" accept=".obj,.mtl,.ply,.gltf,.glb,.fbx,.bin,.png,.jpg,.jpeg,.webp,.ktx2" multiple hidden>
+                                    <input type="file" id="file-input" accept=".obj,.mtl,.ply,.stl,.drc,.gltf,.glb,.fbx,.bin,.png,.jpg,.jpeg,.webp,.ktx2" multiple hidden>
                                 </label>
                                 <!-- A separate input because `webkitdirectory` makes one
                                      folder-only: a single control cannot offer both, and
@@ -114,6 +128,8 @@
                             <option value="gltf">glTF (JSON)</option>
                             <option value="obj">OBJ (Wavefront)</option>
                             <option value="ply">PLY (Polygon File Format)</option>
+                            <option value="stl">STL (Stereolithography)</option>
+                            <option value="drc">DRC (Draco compressed)</option>
                             <option value="fbx">FBX (Autodesk)</option>
                             <option value="fbx-legacy">Legacy FBX (Blender)</option>
                         </select>
@@ -122,6 +138,8 @@
                             <button type="button" data-value="gltf" title="glTF (JSON)">glTF</button>
                             <button type="button" data-value="obj" title="OBJ (Wavefront)">OBJ</button>
                             <button type="button" data-value="ply" title="PLY (Polygon File Format)">PLY</button>
+                            <button type="button" data-value="stl" title="STL (Stereolithography)">STL</button>
+                            <button type="button" data-value="drc" title="DRC (standalone Draco payload)">DRC</button>
                             <button type="button" data-value="fbx" title="FBX (Autodesk)">FBX</button>
                             <button type="button" data-value="fbx-legacy" title="FBX for Blender's legacy importer">Legacy FBX</button>
                         </div>

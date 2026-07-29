@@ -5,6 +5,8 @@ members = [
     "dev-server",
     "obj-wasm",
     "ply-wasm",
+    "stl-wasm",
+    "drc-wasm",
     "gltf-wasm",
     "fbx-wasm",
     "ktx2-wasm",

@@ -20,6 +20,8 @@ export async function loadAllModules() {
   const moduleConfigs = [
     { key: 'obj', path: pkg('obj'), statusId: 'obj-status' },
     { key: 'ply', path: pkg('ply'), statusId: 'ply-status' },
+    { key: 'stl', path: pkg('stl'), statusId: 'stl-status' },
+    { key: 'drc', path: pkg('drc'), statusId: 'drc-status' },
     { key: 'gltf', path: pkg('gltf'), statusId: 'gltf-status' },
     { key: 'fbx', path: pkg('fbx'), statusId: 'fbx-status' },
   ];

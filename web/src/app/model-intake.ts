@@ -32,7 +32,7 @@ export interface IntakeEntry {
 }
 
 /** What the shell can open as a scene, as opposed to carry as a companion. */
-export const MODEL_EXTENSIONS = ['gltf', 'glb', 'obj', 'ply', 'fbx'] as const;
+export const MODEL_EXTENSIONS = ['gltf', 'glb', 'obj', 'ply', 'stl', 'drc', 'fbx'] as const;
 
 export interface IntakeResult {
   data: Uint8Array;

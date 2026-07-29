@@ -18,9 +18,10 @@ viewer for the crates below, running at `filyus.github.io/draco-rust`. No
 upload, no server: the WASM modules do the work in the page, and the files never
 leave the machine.
 
-Open an OBJ, PLY, FBX or glTF/GLB asset and it reports what the file actually
-contains — hierarchy, materials, skins, morph targets, animation clips — renders
-it, and exports GLB or FBX with Draco compression optional along the way.
+Open an OBJ, PLY, STL, DRC, FBX or glTF/GLB asset and it reports what the file
+actually contains — hierarchy, materials, skins, morph targets, animation clips —
+renders it, and exports any of them back out, with Draco compression optional
+along the way.
 
 Converting between formats loses things, and the
 [per-format conversion rules](web/README.md#source-neutral-scene-conversion)
@@ -42,7 +43,7 @@ clouds, and the geometry model everything else speaks.
 [![crates.io](https://img.shields.io/crates/v/draco-io.svg)](https://crates.io/crates/draco-io)
 [![docs.rs](https://docs.rs/draco-io/badge.svg)](https://docs.rs/draco-io)
 
-Formats: OBJ, PLY, binary and ASCII FBX, plus strict glTF/GLB container,
+Formats: OBJ, PLY, STL, binary and ASCII FBX, plus strict glTF/GLB container,
 resource and accessor contracts.
 
 ### [`draco-gltf`](crates/draco-gltf)

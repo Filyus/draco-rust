@@ -63,7 +63,7 @@ import {
   setWarningSource,
 } from './app/warnings.ts';
 import { loadAllModules, updateDracoEncoderAvailability } from './app/modules.ts';
-import { parseFbxFile, parseGltfFile, parseObjFile, parsePlyFile } from './app/parsers.ts';
+import { parseDrcFile, parseFbxFile, parseGltfFile, parseObjFile, parsePlyFile, parseStlFile } from './app/parsers.ts';
 import {
   describeSceneCapabilities,
   displayMeshInfo,
@@ -326,6 +326,12 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
         break;
       case 'ply':
         result = await parsePlyFile(data);
+        break;
+      case 'stl':
+        result = await parseStlFile(data);
+        break;
+      case 'drc':
+        result = await parseDrcFile(data);
         break;
       case 'gltf':
       case 'glb':

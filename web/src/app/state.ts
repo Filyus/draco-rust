@@ -30,6 +30,8 @@ interface ModuleSlot {
 export const modules: Record<string, ModuleSlot> = {
   obj: { loaded: false, module: null },
   ply: { loaded: false, module: null },
+  stl: { loaded: false, module: null },
+  drc: { loaded: false, module: null },
   gltf: { loaded: false, module: null },
   fbx: { loaded: false, module: null },
   // Fetched only when a file turns out to carry a KTX2 texture: it is the

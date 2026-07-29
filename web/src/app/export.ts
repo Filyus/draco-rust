@@ -1,6 +1,6 @@
 import { formatFileSize } from './format.ts';
 import { errorMessage, log } from './log.ts';
-import { compressionStatFields, compressionStats, dracoOptions, element, encodingSpeed, exportFormat, useDraco } from './dom.ts';
+import { compressionStatFields, compressionStats, dracoOptions, element, encodingSpeed, exportFormat, normalBits, positionBits, texcoordBits, useDraco } from './dom.ts';
 import { state } from './state.ts';
 import { runExport } from './export-branches.ts';
 import type { DracoStats, ExportOutcome, ExportResult, ExportSettings } from './export-branches.ts';
@@ -20,8 +20,10 @@ import { setWarningSource } from './warnings.ts';
 export function updateExportOptions() {
   const format = exportFormat.value;
 
-  // Show/hide Draco options for glTF formats only
-  if (format === 'gltf' || format === 'glb') {
+  // The Draco controls belong to whatever the encoder will actually read: the
+  // glTF pass, and the .drc container, which is the same encoder without a
+  // document around it.
+  if (format === 'gltf' || format === 'glb' || format === 'drc') {
     dracoOptions.style.display = 'flex';
   } else {
     dracoOptions.style.display = 'none';
@@ -36,6 +38,9 @@ function exportSettings(): ExportSettings {
     includeUvs: element<HTMLInputElement>('include-uvs').checked,
     useDraco: useDraco.checked,
     encodingSpeed: Number(encodingSpeed.value),
+    positionBits: Number(positionBits.value),
+    normalBits: Number(normalBits.value),
+    texcoordBits: Number(texcoordBits.value),
   };
 }
 

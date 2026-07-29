@@ -1,7 +1,7 @@
 # Draco Web Converter
 
 The WebAssembly workspace exposes independently loaded helpers for OBJ, PLY,
-FBX and glTF assets.
+STL, standalone Draco (`.drc`), FBX and glTF assets.
 
 ## glTF module
 
@@ -64,13 +64,31 @@ The released reader is 102.7 KiB gzip, within the 112 KiB budget. Optional and
 converter sizes are informational because those features are not included in
 the release asset.
 
+## STL and standalone Draco
+
+`stl-wasm` and `drc-wasm` are the two smallest modules and the same shape as
+`obj-wasm` and `ply-wasm`: `parse_*_bytes` in, `create_*` out, flat triangle
+meshes on both sides. Each splits into `read` and `write` features, so a build
+that only opens files carries no writer.
+
+STL is read from both containers and written as binary. Which container a file
+is in follows from its length, not from the leading keyword — exporters write
+`solid` into the 80 free header bytes of binary files. Its meshes keep STL's own
+shape, three unshared vertices per triangle with the facet normal on each
+corner, so a cube arrives as 36 vertices rather than 24.
+
+`.drc` is the standalone Draco container, the one `draco_encoder` writes, and it
+is a different route from Draco inside glTF: there the payload is a
+`KHR_draco_mesh_compression` extension and `gltf-wasm` owns it. The export
+panel's quantization controls reach both, because both end at the same encoder.
+
 ## Converter preview
 
 The bundled converter includes a dependency-free WebGL2 preview. It loads raw
 and Draco primitives through `gltf-wasm`, shades metallic-roughness materials
 with image-based lighting and punctual lights, and plays glTF node and skin
 animations with timeline controls. It also previews the flat OBJ, PLY, and FBX
-meshes returned by their WASM modules. Whatever it cannot honour is reported as
+meshes returned by their WASM modules -- OBJ, PLY, STL and `.drc` among them. Whatever it cannot honour is reported as
 a warning rather than changed in the exported asset: the preview never writes
 back to the document it is showing.
 
