@@ -1,0 +1,98 @@
+name: "Pages: deploy converter"
+run-name: "pages: deploy converter"
+
+# The converter is the only place the web modules are shown working together --
+# import, inspect, compress, view, export -- and until now it existed solely as
+# a local build. `Release: WASM assets` publishes the modules for consumers;
+# this publishes the app that uses them.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/pages.yml"
+      - "crates/**"
+      - "web/**"
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Install wasm-opt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binaryen
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Pages has never been turned on for this repository, and `enablement`
+      # switches its source to GitHub Actions on the first run rather than
+      # making the deploy fail until someone visits the settings page.
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      # `build.sh` with no arguments builds the release profile, which is the
+      # size gate rather than the app: the converter needs `--app`, and so does
+      # anything that runs the front-end. It also runs `npm run build:ts`
+      # itself, which is why the install has to come first.
+      - name: Build the converter
+        working-directory: web
+        run: |
+          npm ci
+          bash ./build.sh --app
+
+      # The site is index.html, style.css and build output beside them. Fail
+      # here rather than deploying a page whose modules are missing.
+      - name: Verify the built site
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f web/www/index.html
+          test -f web/www/app.js
+          for module in obj ply gltf fbx ktx2; do
+            test -f "web/www/pkg/${module}_bg.wasm"
+          done
+          du -sh web/www
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/www
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -7,8 +7,12 @@ its own changelog and its own `<crate>-vX.Y.Z` release tags:
 - **draco-io** — [`crates/draco-io/CHANGELOG.md`](crates/draco-io/CHANGELOG.md)
 - **draco-gltf** — [`crates/draco-gltf/CHANGELOG.md`](crates/draco-gltf/CHANGELOG.md)
 
-The `web/` WASM wrappers and demo are not published to crates.io; their release
-assets are attached to GitHub Releases.
+The `web/` WASM wrappers and converter are not published to crates.io. The
+wrappers ship as zipped release assets, built by `Release: WASM assets` from
+each `draco-io` and `draco-gltf` tag. The converter itself is deployed to GitHub
+Pages by `Pages: deploy converter`, from `main` rather than from a tag — it
+demonstrates the current code, and pinning it to a crate release would show
+neither crate's version honestly.
 
 See [`RELEASING.md`](RELEASING.md) for the release process.
 

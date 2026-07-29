@@ -382,6 +382,21 @@ the Node scene gates included — needs `--app` built over it afterwards.
 
 Optimized packages are written to `web/www/pkg/`.
 
+## Deployment
+
+`Pages: deploy converter` (`.github/workflows/pages.yml`) builds `--app` and
+publishes `web/www` to GitHub Pages on every push to `main` that touches
+`crates/**` or `web/**`, and on demand through `workflow_dispatch`. There is
+nothing to configure for a subdirectory URL: `index.html` references `app.js`
+and `style.css` relatively, and [`src/app/modules.ts`](src/app/modules.ts)
+resolves every WASM package against `document.baseURI`, so the site works
+unchanged at a repository path.
+
+The deploy is deliberately not tied to a crate tag. It shows what `main` does,
+while [`Release: WASM assets`](../.github/workflows/release.yml) is what carries
+a version: it builds the release profile from each `draco-io` and `draco-gltf`
+tag and attaches the per-module zips to that GitHub Release.
+
 The front-end is TypeScript in `web/src/`, compiled by `tsc` into `web/www/`
 as plain ES modules — no bundler, and `index.html` still loads a single
 `app.js`. `web/www/` therefore holds only build output and the two tracked
