@@ -695,29 +695,42 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     text-overflow: ellipsis;
 }
 .menu-picker-trigger .menu-picker-chevron { flex: none; }
-.menu-picker-chevron {
-    width: 7px;
-    height: 7px;
-    flex: 0 0 7px;
-    border-right: 1.5px solid currentColor;
-    border-bottom: 1.5px solid currentColor;
-    color: #8298b7;
-    /* Nudged in screen pixels, not in the glyph's own rotated frame, so the
-       figures below mean what they say. Only two edges of the square are inked,
-       so the mark sits well off the centre of its box — below it pointing down,
-       above it pointing up — and centring the box leaves the mark visibly low
-       or high.
+/* Drawn as a mask, not as two borders of a square turned 45°.
 
-       The two figures differ because the mark is not the same shape upside
-       down: rasterized, the painted pixels of the up chevron sit half a pixel
-       higher within their box than the down one's sit low. Both were read off
-       the rendered pixels rather than derived, which is why they are not the
-       round number the geometry would give. */
-    transform: translateY(-1.9px) rotate(45deg);
+   That construction inked only part of its own box, so the mark sat off centre
+   and every state had to carry a nudge back — and the two nudges could not even
+   be the same, because the same two edges do not rasterize to the same shape
+   once turned the other way up. Numbers read off a rasterizer are not a
+   solution, they are a fit to one browser at one zoom.
+
+   The arms run at 45°, which is the angle the rotated square gave and the
+   reason it read as a chevron rather than as a shallow tick, and 4.4 across for
+   4.4 down, which puts the painted mark at 10x6 — the square's was 9x6, so this
+   is the same mark at the same weight and not a smaller one.
+
+   The polyline is symmetric about the middle of its own viewBox, round caps and
+   join included. That is what the endpoints are chosen for: a cap reaches half
+   the stroke above `y=2.8` and the join half below `y=7.2`, so the ink runs
+   2..8 in a box 10 tall and sits on the box's centre by construction — the two
+   only balance because the endpoints sum to the box's height. Opening flips it
+   about that centre line, which maps a vertically centred shape onto itself.
+   There is nothing left to compensate.
+
+   Flipped rather than turned, and not animated. Turned, the mark swept through
+   the horizontal on its way round, which is a movement the list does not make —
+   the list is simply there on the next frame. So the mark changes with it. */
+.menu-picker-chevron {
+    --chevron: url('data:image/svg+xml;utf8,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 10"%3E%3Cpolyline points="1.6,2.8 6,7.2 10.4,2.8" fill="none" stroke="%23000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/%3E%3C/svg%3E');
+    width: 12px;
+    height: 10px;
+    flex: 0 0 12px;
+    color: #8298b7;
+    background: currentColor;
+    -webkit-mask: var(--chevron) no-repeat center / contain;
+    mask: var(--chevron) no-repeat center / contain;
     transform-origin: center;
-    transition: transform 140ms ease, color 140ms ease;
 }
-.menu-picker-trigger[aria-expanded="true"] .menu-picker-chevron { color: #b9cce7; transform: translateY(2.02px) rotate(225deg); }
+.menu-picker-trigger[aria-expanded="true"] .menu-picker-chevron { transform: rotateX(180deg); }
 
 .menu-picker-menu {
     position: absolute;
