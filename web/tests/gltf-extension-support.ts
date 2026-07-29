@@ -199,27 +199,7 @@ const INTERPRETED: Record<string, {
           attributes: { POSITION: 0 },
           material: 0,
           extensions: {
-            EXT_mesh_gpu_instancing: {
-    // On the node, like the light, but its payload is accessors rather than a
-    // root record: the copies travel as data in the document's own space.
-    material: null,
-    effect: () => {},
-    document: {
-      nodes: [{
-        mesh: 0,
-        extensions: { EXT_mesh_gpu_instancing: { attributes: { TRANSLATION: 1 } } },
-      }],
-      accessors: [
-        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
-        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
-      ],
-    },
-    documentEffect: (built: any) => {
-      assert.equal(built.nodes[0].instancing?.count, 3);
-      assert.equal(typeof built.nodes[0].instancing?.attributes.TRANSLATION, 'number');
-    },
-  } as any,
-  KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }] } as any,
+            KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }] },
           },
         }],
       }],
@@ -238,77 +218,13 @@ const INTERPRETED: Record<string, {
     effect: () => {},
     document: {
       extensions: {
-        EXT_mesh_gpu_instancing: {
-    // On the node, like the light, but its payload is accessors rather than a
-    // root record: the copies travel as data in the document's own space.
-    material: null,
-    effect: () => {},
-    document: {
-      nodes: [{
-        mesh: 0,
-        extensions: { EXT_mesh_gpu_instancing: { attributes: { TRANSLATION: 1 } } },
-      }],
-      accessors: [
-        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
-        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
-      ],
-    },
-    documentEffect: (built: any) => {
-      assert.equal(built.nodes[0].instancing?.count, 3);
-      assert.equal(typeof built.nodes[0].instancing?.attributes.TRANSLATION, 'number');
-    },
-  } as any,
-  KHR_materials_variants: {
-    // Also not a material extension: the names are at the root and the choices
-    // are on the primitives, so its case reads a document too.
-    material: null,
-    effect: () => {},
-    document: {
-      extensions: { KHR_materials_variants: { variants: [{ name: 'Ruby' }, { name: 'Emerald' }] } },
-      materials: [{}, {}, {}],
-      meshes: [{
-        primitives: [{
-          attributes: { POSITION: 0 },
-          material: 0,
-          extensions: {
-            EXT_mesh_gpu_instancing: {
-    // On the node, like the light, but its payload is accessors rather than a
-    // root record: the copies travel as data in the document's own space.
-    material: null,
-    effect: () => {},
-    document: {
-      nodes: [{
-        mesh: 0,
-        extensions: { EXT_mesh_gpu_instancing: { attributes: { TRANSLATION: 1 } } },
-      }],
-      accessors: [
-        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
-        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
-      ],
-    },
-    documentEffect: (built: any) => {
-      assert.equal(built.nodes[0].instancing?.count, 3);
-      assert.equal(typeof built.nodes[0].instancing?.attributes.TRANSLATION, 'number');
-    },
-  } as any,
-  KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }] } as any,
-          },
-        }],
-      }],
-    },
-    documentEffect: (built: any) => {
-      assert.deepEqual(built.variants, ['Ruby', 'Emerald']);
-      assert.deepEqual(built.meshes[0].primitives[0].variantMaterials, { 0: 1, 1: 2 });
-      assert.equal(built.meshes[0].primitives[0].material, 0, 'the default material is still the primitive own');
-    },
-  } as any,
-  KHR_lights_punctual: {
+        KHR_lights_punctual: {
           lights: [{ type: 'spot', color: [1, 0.5, 0], intensity: 3, range: 12, spot: { outerConeAngle: 0.5 } }],
         },
       },
       nodes: [{ mesh: 0, extensions: { KHR_lights_punctual: { light: 0 } } }],
     },
-    documentEffect: (built: any) => {
+    documentEffect: (built) => {
       assert.equal(built.lights?.length, 1, 'a placed light must reach the document');
       assert.deepEqual(built.lights[0].color, [1, 0.5, 0]);
       assert.equal(built.lights[0].intensity, 3);
@@ -316,7 +232,7 @@ const INTERPRETED: Record<string, {
       assert.equal(built.lights[0].outerConeAngle, 0.5);
       assert.equal(built.nodes[0].light, 0, 'the node that placed it must keep pointing at it');
     },
-  } as any,
+  },
   KHR_texture_transform: {
     material: {
       pbrMetallicRoughness: {
