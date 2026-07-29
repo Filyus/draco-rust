@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { buildSceneDocumentFromFbx, buildSceneDocumentWithFbxProvenance } from '../src/fbx-scene-document.ts';
 import { buildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
 import { buildFbxSceneFromDocument } from '../src/fbx-scene-document-writer.ts';
-import { loadWasm, mixamoFbx, readBytes, sambaFbx, foxBin, foxGltf, skipUnless } from './fbx-test-utils.mjs';
+import { loadWasm, mixamoFbx, readBytes, sambaFbx, foxBin, foxGltf, skipUnless } from './fbx-test-utils.ts';
 
 // The Fox leg needs only testdata, so it runs everywhere including CI; the
 // FBX legs need locally installed source models and skip without them. Gating

@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { here, loadWasm, readBytes, sambaFbx } from './fbx-test-utils.mjs';
+import { here, loadWasm, readBytes, sambaFbx } from './fbx-test-utils.ts';
 
 const blender = process.env.BLENDER || 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe';
 if (!existsSync(blender) || !existsSync(sambaFbx)) {

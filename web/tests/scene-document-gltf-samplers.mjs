@@ -11,7 +11,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { stripeNormalMapPng } from './smoke-fixtures.mjs';
+import { stripeNormalMapPng } from './smoke-fixtures.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');

@@ -3,7 +3,7 @@
 // kept outside the portable cross-format contract.
 import assert from 'node:assert/strict';
 
-import { loadWasm, mixamoFbx, readBytes, sambaFbx, skipUnless } from './fbx-test-utils.mjs';
+import { loadWasm, mixamoFbx, readBytes, sambaFbx, skipUnless } from './fbx-test-utils.ts';
 
 if (skipUnless([mixamoFbx, sambaFbx], 'FBX source-provenance round-trip')) process.exit(0);
 

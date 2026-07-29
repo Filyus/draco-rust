@@ -126,3 +126,8 @@ test-results/
 
 # Local scratch/debug artifacts
 .scratch/
+
+# Local overrides for machine-specific paths (external fixture checkouts,
+# reference-oracle locations). Never commit real paths; web/.env.example
+# documents the variables each gated test reads.
+web/.env

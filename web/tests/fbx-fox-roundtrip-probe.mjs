@@ -2,7 +2,7 @@
 // DRACO_WRITE_DEBUG_ARTIFACTS=1; it never writes .scratch during normal tests.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { foxBin, foxGltf, here, loadWasm, readBytes, skipUnless, verbose } from './fbx-test-utils.mjs';
+import { foxBin, foxGltf, here, loadWasm, readBytes, skipUnless, verbose } from './fbx-test-utils.ts';
 import { pathToFileURL } from 'node:url';
 
 if (skipUnless([foxGltf, foxBin], 'Fox FBX round-trip probe')) process.exit(0);

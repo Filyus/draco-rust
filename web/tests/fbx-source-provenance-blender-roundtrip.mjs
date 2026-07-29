@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
-import { loadWasm, mixamoFbx, readBytes, sambaFbx, skipUnless } from './fbx-test-utils.mjs';
+import { loadWasm, mixamoFbx, readBytes, sambaFbx, skipUnless } from './fbx-test-utils.ts';
 
 const blender = process.env.BLENDER || 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe';
 if (skipUnless([mixamoFbx, sambaFbx, blender], 'FBX source-provenance Blender round-trip')) process.exit(0);

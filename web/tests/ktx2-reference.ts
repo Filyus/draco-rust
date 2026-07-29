@@ -19,9 +19,17 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+// See fbx-test-utils.ts for why this reads web/.env: the checkout location of
+// an external oracle is local by nature, and does not belong in source.
+try {
+  process.loadEnvFile(resolve(here, '..', '.env'));
+} catch {
+  // No web/.env: loadReference() below reports this gate as unavailable.
+}
+
 /** Where the three.js checkout keeps Binomial's build. */
 const REFERENCE_DIR = process.env.THREEJS_BASIS_DIR
-  || 'D:/Projects/Three.ts/three.js-master/examples/jsm/libs/basis';
+  || resolve(here, '..', '..', 'testdata', 'external', 'three-basis');
 
 export const FIXTURES = resolve(here, '..', '..', 'testdata', 'ktx2');
 export const PKG = resolve(here, '..', 'www', 'pkg');

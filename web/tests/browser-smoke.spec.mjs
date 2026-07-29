@@ -13,12 +13,24 @@ import {
   normalMappedQuad,
   solidColorPng,
   triangleBytes,
-} from './smoke-fixtures.mjs';
-import { decodeFirstDracoPrimitive } from './draco-interop.mjs';
+} from './smoke-fixtures.ts';
+import { decodeFirstDracoPrimitive } from './draco-interop.ts';
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const mixamoFbx = process.env.MIXAMO_FBX || 'D:/Projects/Three.ts/examples/models/fbx/mixamo.fbx';
-const sambaFbx = process.env.SAMBA_FBX || 'D:/Projects/Three.ts/examples/models/fbx/Samba Dancing.fbx';
+const here = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(here, '..', '..');
+
+// See fbx-test-utils.ts for why this reads web/.env: an external fixture
+// checkout is local by nature, and does not belong in source.
+try {
+  process.loadEnvFile(path.resolve(here, '..', '.env'));
+} catch {
+  // No web/.env: the fixture-gated cases below skip themselves.
+}
+
+const mixamoFixtureRoot = process.env.FBX_FIXTURES
+  || path.resolve(repoRoot, 'testdata', 'external', 'fbx');
+const mixamoFbx = process.env.MIXAMO_FBX || path.resolve(mixamoFixtureRoot, 'mixamo.fbx');
+const sambaFbx = process.env.SAMBA_FBX || path.resolve(mixamoFixtureRoot, 'Samba Dancing.fbx');
 
 async function waitForConverterReady(page) {
   await expect(page.locator('#console')).toContainText('Ready to convert 3D files!');

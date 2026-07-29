@@ -1,5 +1,5 @@
 // FBX morph preview/write round-trip. Set MORPH_FBX or FBX_FIXTURES to override.
-import { loadFbxViewerAdapter, loadWasm, morphFbx, readBytes, skipUnless } from './fbx-test-utils.mjs';
+import { loadFbxViewerAdapter, loadWasm, morphFbx, readBytes, skipUnless } from './fbx-test-utils.ts';
 
 if (skipUnless([morphFbx], 'FBX morph probe')) process.exit(0);
 const fbx = await loadWasm('fbx');

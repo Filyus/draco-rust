@@ -23,7 +23,7 @@ import {
   loadKtx2Module,
   loadReference,
   TARGET,
-} from './ktx2-reference.mjs';
+} from './ktx2-reference.ts';
 
 /** Which of our targets to compare, and what the reference calls it. */
 const PAIRS = [

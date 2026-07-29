@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 
 import { buildSceneDocumentWithFbxProvenance } from '../src/fbx-scene-document.ts';
 import { cloneFbxSemanticScene } from '../src/fbx-scene-provenance.ts';
-import { loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.mjs';
+import { loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.ts';
 
 const fbx = await loadWasm('fbx');
 for (const [label, path] of [['Mixamo', mixamoFbx], ['Samba', sambaFbx]]) {

@@ -14,7 +14,7 @@ import { cloneSceneDocument } from '../src/scene-document.ts';
 import { sniffMime } from '../src/scene-resources.ts';
 import { lowerSceneDocumentToGltf, serializeSceneDocumentToGlb } from '../src/scene-document-gltf.ts';
 import { invertMat4, multiplyMat4 } from '../src/mat4.ts';
-import { here, foxBin, foxGltf, loadFbxViewerAdapter, loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.mjs';
+import { here, foxBin, foxGltf, loadFbxViewerAdapter, loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.ts';
 
 const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'src', 'viewer.ts')));
 const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')));

@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { validateBytes } from 'gltf-validator';
 
-import { decodeFirstDracoPrimitive } from './draco-interop.mjs';
+import { decodeFirstDracoPrimitive } from './draco-interop.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');

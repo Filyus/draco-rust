@@ -2,7 +2,7 @@
 // assert motion correctness: Samba Dancing currently has a known inverted-arm
 // visual mismatch and remains a focused follow-up transform-semantics target.
 // Set SAMBA_FBX or FBX_FIXTURES to override the local fixture path.
-import { loadFbxViewerAdapter, loadWasm, readBytes, sambaFbx, skipUnless, verbose } from './fbx-test-utils.mjs';
+import { loadFbxViewerAdapter, loadWasm, readBytes, sambaFbx, skipUnless, verbose } from './fbx-test-utils.ts';
 
 if (skipUnless([sambaFbx], 'Samba Dancing FBX scene probe')) process.exit(0);
 const fbx = await loadWasm('fbx');

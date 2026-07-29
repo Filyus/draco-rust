@@ -3,6 +3,23 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+export const here = dirname(fileURLToPath(import.meta.url));
+export const repoRoot = resolve(here, '..', '..');
+export const pkg = resolve(here, '..', 'www', 'pkg');
+
+// Mixamo/Samba/morph fixtures are copyrighted assets that stay off this
+// machine's disk and out of the repository, so the paths to them are
+// necessarily local. `web/.env` (gitignored; see `web/.env.example`) is where
+// a checkout points FBX_FIXTURES etc. at wherever it keeps them; a machine
+// without one leaves fixtureRoot resolving under testdata/, which does not
+// exist, and skipUnless below reports the gated tests as skipped rather than
+// failing on a path built into the code.
+try {
+    process.loadEnvFile(resolve(here, '..', '.env'));
+} catch {
+    // No web/.env: the fixture-gated tests below will skip themselves.
+}
+
 if (typeof (globalThis as any).WebGL2RenderingContext === 'undefined') {
     (globalThis as any).WebGL2RenderingContext = class {
         static REPEAT = 0x2901;
@@ -11,10 +28,7 @@ if (typeof (globalThis as any).WebGL2RenderingContext === 'undefined') {
     };
 }
 
-export const here = dirname(fileURLToPath(import.meta.url));
-export const repoRoot = resolve(here, '..', '..');
-export const pkg = resolve(here, '..', 'www', 'pkg');
-export const fixtureRoot = process.env.FBX_FIXTURES || 'D:/Projects/Three.ts/examples/models/fbx';
+export const fixtureRoot = process.env.FBX_FIXTURES || resolve(repoRoot, 'testdata', 'external', 'fbx');
 export const mixamoFbx = process.env.MIXAMO_FBX || resolve(fixtureRoot, 'mixamo.fbx');
 export const morphFbx = process.env.MORPH_FBX || resolve(fixtureRoot, 'morph_test.fbx');
 export const sambaFbx = process.env.SAMBA_FBX || resolve(fixtureRoot, 'Samba Dancing.fbx');

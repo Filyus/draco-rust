@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   animatedTranslation, embeddedTriangle, externalTriangle, triangleBytes,
-} from './smoke-fixtures.mjs';
+} from './smoke-fixtures.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');

@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { assertValidSceneDocument } from '../src/scene-document.ts';
 import { buildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
 import { buildViewerSceneFromDocument } from '../src/scene-document-viewer.ts';
-import { foxBin, foxGltf, here, loadWasm, readBytes } from './fbx-test-utils.mjs';
+import { foxBin, foxGltf, here, loadWasm, readBytes } from './fbx-test-utils.ts';
 
 const gltf = await loadWasm('gltf');
 const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')));

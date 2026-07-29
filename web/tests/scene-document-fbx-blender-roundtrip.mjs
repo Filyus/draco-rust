@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { buildSceneDocumentWithFbxProvenance } from '../src/fbx-scene-document.ts';
 import { buildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
 import { buildFbxSceneFromDocument } from '../src/fbx-scene-document-writer.ts';
-import { foxBin, foxGltf, here, loadWasm, mixamoFbx, readBytes, sambaFbx, skipUnless } from './fbx-test-utils.mjs';
+import { foxBin, foxGltf, here, loadWasm, mixamoFbx, readBytes, sambaFbx, skipUnless } from './fbx-test-utils.ts';
 
 const blender = process.env.BLENDER || 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe';
 if (skipUnless([mixamoFbx, sambaFbx], 'SceneDocument FBX Blender round-trip') || !existsSync(blender)) process.exit(0);

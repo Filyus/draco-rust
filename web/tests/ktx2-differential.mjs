@@ -33,7 +33,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { TARGET, firstDifference, loadKtx2Module, loadReference } from './ktx2-reference.mjs';
+import { TARGET, firstDifference, loadKtx2Module, loadReference } from './ktx2-reference.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /** The small seeds, which are real files and cheap to transcode. */

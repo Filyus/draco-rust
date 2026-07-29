@@ -15,7 +15,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { embeddedTriangle } from './smoke-fixtures.mjs';
+import { embeddedTriangle } from './smoke-fixtures.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');

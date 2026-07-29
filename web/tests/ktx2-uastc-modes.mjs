@@ -23,7 +23,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 
-import { FIXTURES, TARGET, firstDifference, loadKtx2Module, loadReference } from './ktx2-reference.mjs';
+import { FIXTURES, TARGET, firstDifference, loadKtx2Module, loadReference } from './ktx2-reference.ts';
 
 /** Which mode each of the 128 leading bit patterns selects. */
 const HUFF_MODES = [

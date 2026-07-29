@@ -2,7 +2,7 @@
 // the local fixture path. It exits nonzero for any parsed-fixture failure.
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { mixamoFbx, here, loadFbxViewerAdapter, loadWasm, readBytes, skipUnless, verbose } from './fbx-test-utils.mjs';
+import { mixamoFbx, here, loadFbxViewerAdapter, loadWasm, readBytes, skipUnless, verbose } from './fbx-test-utils.ts';
 
 if (skipUnless([mixamoFbx], 'Mixamo FBX matrix probe')) process.exit(0);
 const fbx = await loadWasm('fbx');

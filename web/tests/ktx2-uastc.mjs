@@ -22,7 +22,7 @@ import {
   FIXTURES,
   loadKtx2Module,
   loadReference,
-} from './ktx2-reference.mjs';
+} from './ktx2-reference.ts';
 
 const FILES = ['2d_uastc', 'sample_uastc_zstd'];
 
