@@ -21,3 +21,12 @@
 # whose whole point is unusual line endings at the mercy of a heuristic.
 testdata/** -text
 fuzz/seeds/** -text
+
+# The Basis Universal transcoder is vendored upstream source, kept verbatim so
+# the KTX2 oracle decodes exactly what the reference does -- see its own LICENSE
+# and UPSTREAM.txt beside it. It is 46k lines of C++, which is most of the
+# repository by volume and none of it ours, so it drowned the language stats and
+# advertised a Rust codec as 40% C++. `oracle.cpp` is the thin harness we wrote
+# around it and stays counted.
+tools/basis-cpp-oracle/csrc/** linguist-vendored
+tools/basis-cpp-oracle/csrc/oracle.cpp linguist-vendored=false
