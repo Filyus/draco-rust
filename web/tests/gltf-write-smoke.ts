@@ -8,7 +8,7 @@ import { decodeFirstDracoPrimitive } from './draco-interop.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');
-const api = await import(pathToFileURL(resolve(pkg, 'gltf.js')));
+const api = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href) as any;
 const wasm = await readFile(resolve(pkg, 'gltf_bg.wasm'));
 await api.default({ module_or_path: wasm });
 

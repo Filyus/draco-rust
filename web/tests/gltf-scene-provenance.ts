@@ -16,15 +16,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');
 
-const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href);
+const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href) as any;
 await gltfModule.default({ module_or_path: await readFile(resolve(pkg, 'gltf_bg.wasm')) });
 
 const { buildSceneDocumentFromGltf, buildSceneDocumentWithGltfProvenance } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'gltf-scene-document.ts')).href
-);
+) as any;
 const { GLTF_SCENE_PROVENANCE_VERSION } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'gltf-scene-provenance.ts')).href
-);
+) as any;
 
 const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
 const binary = new Uint8Array(positions.buffer);
@@ -81,13 +81,13 @@ assert.equal(
   'the document must not start carrying the file claims it deliberately omits',
 );
 assert.ok(
-  document.warnings.some((warning) => warning.includes('KHR_materials_pbrSpecularGlossiness')),
+  document.warnings.some((warning: string) => warning.includes('KHR_materials_pbrSpecularGlossiness')),
   'the document still reports what the portable subset could not take',
 );
 
 // A file that claims nothing yields empty lists rather than absent ones, so a
 // consumer never has to distinguish "claimed nothing" from "was not asked".
-const bare = { ...manifest };
+const bare: Record<string, unknown> = { ...manifest };
 delete bare.extensionsUsed;
 delete bare.extensionsRequired;
 const plain = buildSceneDocumentWithGltfProvenance(

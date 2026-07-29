@@ -22,6 +22,11 @@ const pkg = resolve(here, '..', 'www', 'pkg');
 
 const PROFILE_FLAGS = ['--write', '--draco-encode', '--accessors', '--strict-validation', '--raw-resources'];
 
+interface BuiltProfile {
+  features: string[];
+  flags: Set<string>;
+}
+
 /**
  * The feature profile the package in `www/pkg` was actually built with.
  *
@@ -30,7 +35,7 @@ const PROFILE_FLAGS = ['--write', '--draco-encode', '--accessors', '--strict-val
  * `draco-decode` are always on; the only implication that matters here is that
  * `draco-encode` pulls in `write`.
  */
-async function builtProfile() {
+async function builtProfile(): Promise<BuiltProfile | null> {
   let stamp;
   try {
     stamp = JSON.parse(await readFile(resolve(pkg, 'gltf.build-stamp.json'), 'utf8'));
@@ -59,7 +64,7 @@ const requested = PROFILE_FLAGS.filter((flag) => process.argv.includes(flag));
 // running this bare gets whatever the last build produced, and asking them to
 // remember its feature list is how this ends up asserting a profile that
 // nothing builds.
-let profile;
+let profile: Set<string>;
 if (requested.length > 0) {
   profile = new Set(requested);
   const disagrees = built
@@ -67,7 +72,7 @@ if (requested.length > 0) {
   if (disagrees) {
     throw new Error(
       `asked for the ${[...profile].join(' ')} profile but www/pkg was built with `
-      + `features=${built.features.join(',')}, which is the ${[...built.flags].join(' ') || 'read only'} profile.\n`
+      + `features=${built!.features.join(',')}, which is the ${[...built!.flags].join(' ') || 'read only'} profile.\n`
       + 'Rebuild for the profile you want to test:\n'
       + '  cargo run --manifest-path build-tool/Cargo.toml -- --module gltf-wasm --features <list> --force\n'
       + 'or run with no flags to test whatever is built.',
@@ -84,14 +89,14 @@ const wantsEncoder = profile.has('--draco-encode');
 const wantsAccessors = profile.has('--accessors');
 const wantsStrictValidation = profile.has('--strict-validation');
 const wantsRawResources = profile.has('--raw-resources');
-const api = await import(pathToFileURL(resolve(pkg, 'gltf.js')));
+const api = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href) as any;
 const wasm = await readFile(resolve(pkg, 'gltf_bg.wasm'));
 await api.default({ module_or_path: wasm });
 
 const asset = new api.GltfAsset(new TextEncoder().encode(embeddedTriangle()), '2.0');
 
 /** A method must be exported exactly when the feature gating it is on. */
-function gate(method, expected, feature) {
+function gate(method: string, expected: boolean, feature: string) {
   const present = typeof asset[method] === 'function';
   if (present === expected) return;
   throw new Error(

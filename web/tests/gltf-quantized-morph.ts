@@ -13,13 +13,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');
 
-const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href);
+const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href) as any;
 await gltfModule.default({ module_or_path: await readFile(resolve(pkg, 'gltf_bg.wasm')) });
-const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href);
+const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href) as any;
 
 /** Concatenates typed arrays into one buffer, 4-byte aligning each view. */
-function packViews(views) {
-  const offsets = [];
+function packViews(views: ArrayBufferView[]) {
+  const offsets: number[] = [];
   let length = 0;
   for (const view of views) {
     offsets.push(length);
@@ -32,7 +32,7 @@ function packViews(views) {
   return { bytes, offsets };
 }
 
-function glb(json, bin) {
+function glb(json: unknown, bin: Uint8Array): Uint8Array {
   const jsonBytes = new TextEncoder().encode(JSON.stringify(json));
   const jsonChunk = new Uint8Array(Math.ceil(jsonBytes.length / 4) * 4).fill(0x20);
   jsonChunk.set(jsonBytes);
@@ -109,9 +109,9 @@ const document = {
 };
 
 const source = glb(document, bin);
-const warnings = [];
+const warnings: string[] = [];
 const scene = await buildSceneFromGltf(source, {}, gltfModule, {
-  onLog: (message, level) => { if (level === 'warning') warnings.push(message); },
+  onLog: (message: string, level: string) => { if (level === 'warning') warnings.push(message); },
   loadImage: async () => null,
 });
 
@@ -146,10 +146,10 @@ assert.deepEqual(
 // SceneDocument path that drives the scene tree and every export.
 const { buildSceneDocumentFromGltf } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'gltf-scene-document.ts')).href
-);
+) as any;
 const { assertValidSceneDocument } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'scene-document.ts')).href
-);
+) as any;
 
 const sceneDocument = buildSceneDocumentFromGltf(source, {}, gltfModule);
 assertValidSceneDocument(sceneDocument);
@@ -158,7 +158,7 @@ assertValidSceneDocument(sceneDocument);
 // something the portable subset lacks — is a false alarm about a file that
 // came through intact.
 assert.deepEqual(
-  sceneDocument.warnings.filter((message) => /omitted from SceneDocument|outside the portable/.test(message)),
+  sceneDocument.warnings.filter((message: string) => /omitted from SceneDocument|outside the portable/.test(message)),
   [],
   'reader-resolved extensions must not be reported as dropped from the document',
 );
@@ -173,7 +173,7 @@ assert.deepEqual(Array.from(new Float32Array(output.bytes.buffer, output.bytes.b
 // bug this file was written for, reached through the other path.
 const { buildViewerSceneFromDocument } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'scene-document-viewer.ts')).href
-);
+) as any;
 const adapted = buildViewerSceneFromDocument(sceneDocument).meshes[0].primitives[0];
 
 assert.ok(adapted.morphPositions[0], 'the adapter dropped quantized morph positions');
@@ -198,7 +198,7 @@ assert.deepEqual(
 // checking cannot quietly let an invalid file through.
 const { lowerSceneDocumentToGltf } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'scene-document-gltf.ts')).href
-);
+) as any;
 const lowered = lowerSceneDocumentToGltf(sceneDocument);
 const manifest = JSON.parse(new TextDecoder().decode(lowered.json));
 assert.ok(
@@ -208,7 +208,7 @@ assert.ok(
 
 const { validateBytes } = await import('gltf-validator');
 const report = await validateBytes(lowered.json, {
-  externalResourceFunction: async (uri) => lowered.resources[uri] ?? new Uint8Array(),
+  externalResourceFunction: async (uri: string) => lowered.resources[uri] ?? new Uint8Array(),
 });
 assert.deepEqual(
   report.issues.messages.filter((issue) => issue.severity === 0),

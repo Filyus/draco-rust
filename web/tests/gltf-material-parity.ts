@@ -22,19 +22,19 @@ import { stripeNormalMapPng } from './smoke-fixtures.ts';
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');
 
-const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href);
+const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href) as any;
 await gltfModule.default({ module_or_path: await readFile(resolve(pkg, 'gltf_bg.wasm')) });
 
-const { buildMaterials } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href);
+const { buildMaterials } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href) as any;
 const { buildSceneDocumentFromGltf } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'gltf-scene-document.ts')).href
-);
+) as any;
 const { buildViewerSceneFromDocument } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'scene-document-viewer.ts')).href
-);
+) as any;
 const { lowerSceneDocumentToGltf } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'scene-document-gltf.ts')).href
-);
+) as any;
 
 const geometry = new Float32Array([
   0, 0, 0, 1, 0, 0, 0, 1, 0, // POSITION
@@ -177,7 +177,7 @@ const plain = buildSceneDocumentFromGltf(
   {},
   gltfModule,
 );
-assert.deepEqual(Object.keys(plain.materials[0]).filter((key) => /clearcoat|specular|ior|emissiveStrength/i.test(key)), []);
+assert.deepEqual(Object.keys(plain.materials[0]).filter((key: string) => /clearcoat|specular|ior|emissiveStrength/i.test(key)), []);
 const loweredPlain = JSON.parse(new TextDecoder().decode(lowerSceneDocumentToGltf(plain).json));
 assert.equal(loweredPlain.materials[0].extensions, undefined);
 assert.equal(loweredPlain.extensionsUsed, undefined);

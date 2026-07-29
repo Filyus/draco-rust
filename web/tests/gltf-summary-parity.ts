@@ -16,18 +16,18 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 const pkg = resolve(here, '..', 'www', 'pkg');
 
-const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href);
+const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href) as any;
 await gltfModule.default({ module_or_path: await readFile(resolve(pkg, 'gltf_bg.wasm')) });
 
 const { buildSceneDocumentFromGltf } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'gltf-scene-document.ts')).href
-);
+) as any;
 const { summarizeSceneDocumentGeometry, triangleCountForMode } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'scene-document.ts')).href
-);
+) as any;
 
 /** The walk this replaced, kept here as the thing the new figures must match. */
-function summarizeByWalkingTheAsset(data, resources) {
+function summarizeByWalkingTheAsset(data: Uint8Array, resources: Record<string, Uint8Array>) {
   const asset = gltfModule.GltfAsset.withResources(data, resources, '2.1');
   let vertexCount = 0;
   let triangleCount = 0;
@@ -60,15 +60,15 @@ function summarizeByWalkingTheAsset(data, resources) {
 }
 
 /** A .gltf needs its companions by name; a .glb needs none. */
-async function companionResources(path) {
+async function companionResources(path: string): Promise<Record<string, Uint8Array>> {
   if (path.endsWith('.glb')) return {};
   const directory = dirname(path);
   const manifest = JSON.parse(await readFile(path, 'utf8'));
   const names = [
-    ...(manifest.buffers || []).map((buffer) => buffer.uri),
-    ...(manifest.images || []).map((image) => image.uri),
-  ].filter((uri) => typeof uri === 'string' && !uri.startsWith('data:'));
-  const resources = {};
+    ...(manifest.buffers || []).map((buffer: { uri?: string }) => buffer.uri),
+    ...(manifest.images || []).map((image: { uri?: string }) => image.uri),
+  ].filter((uri): uri is string => typeof uri === 'string' && !uri.startsWith('data:'));
+  const resources: Record<string, Uint8Array> = {};
   for (const name of names) resources[name] = new Uint8Array(await readFile(resolve(directory, name)));
   return resources;
 }
@@ -83,7 +83,7 @@ const models = [
 
 let checked = 0;
 for (const model of models) {
-  let data;
+  let data: Uint8Array;
   try {
     data = new Uint8Array(await readFile(model.path));
   } catch {

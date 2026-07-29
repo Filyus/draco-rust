@@ -11,8 +11,15 @@
  * this passes against the previous edit.
  */
 import assert from 'node:assert/strict';
+import type {
+  buildMaterials as BuildMaterials,
+  extensionWarnings as ExtensionWarnings,
+} from '../src/gltf-loader.ts';
 
-const { buildMaterials, extensionWarnings } = await import('../src/gltf-loader.ts');
+const { buildMaterials, extensionWarnings } = await import('../src/gltf-loader.ts') as {
+  buildMaterials: typeof BuildMaterials;
+  extensionWarnings: typeof ExtensionWarnings;
+};
 
 // A bare material must shade exactly as it did before the extensions landed:
 // no coat, the index of refraction the core model implies, full specular.
