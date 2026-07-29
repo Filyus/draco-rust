@@ -168,7 +168,12 @@
                 1.0
             ],
             "emissiveTexture" : {
-                "index" : 1
+                "index" : 1,
+                "extensions" : {
+                    "KHR_texture_transform" : {
+                        "texCoord" : 1
+                    }
+                }
             },
             "name" : "Material",
             "pbrMetallicRoughness" : {
