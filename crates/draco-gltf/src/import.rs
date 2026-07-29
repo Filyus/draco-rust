@@ -217,7 +217,21 @@ impl Import {
                         "Draco attribute {semantic:?} accessor count is missing"
                     )])
                 })?;
-            if declared != decoded_points {
+            // Only an accessor that promises more vertices than the stream can
+            // supply is fatal: the missing ones have nowhere to come from.
+            //
+            // The other direction is what real encoders emit. Draco stores
+            // connectivity per position vertex and re-splits it at attribute
+            // seams while decoding, so a mesh whose normals or texture
+            // coordinates break along an edge decodes to more points than the
+            // accessor written before compression declares. glTF-Pipeline,
+            // Blender and the Draco encoder itself all produce such files —
+            // Three.js's ferrari.glb among them — and every browser viewer
+            // reads them, because the decoded geometry is self-consistent:
+            // indices, positions and attributes all come out of the same
+            // stream. Refusing them would reject working files over metadata
+            // the extension has already superseded.
+            if declared > decoded_points {
                 return Err(crate::GeometryError::DracoAccessorCount {
                     semantic: semantic.into(),
                     decoded: decoded_points,

@@ -742,6 +742,21 @@ mod compression_tests {
                 }
             ))
         ));
+
+        // An accessor that undercounts is what real encoders emit for a mesh
+        // with attribute seams, and the decoded stream is self-consistent, so
+        // the read must go through with the decoded count.
+        import.document.as_value_mut()["accessors"][position.0]["count"] = 2u64.into();
+        let primitive = import.document.primitive(crate::MeshIndex(0), 0).unwrap();
+        let decoded = import.decode_draco_primitive(primitive).unwrap();
+        assert_eq!(decoded.num_points(), 3);
+        let geometry = import
+            .read_primitive(crate::PrimitiveIndex {
+                mesh: crate::MeshIndex(0),
+                primitive: 0,
+            })
+            .unwrap();
+        assert_eq!(geometry.vertex_count(), 3);
     }
 
     #[test]
