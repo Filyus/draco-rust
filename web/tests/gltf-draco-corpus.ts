@@ -70,8 +70,8 @@ if (typeof gltfModule.GltfAsset?.prototype?.compressPrimitive !== 'function') {
   process.exit(0);
 }
 
-async function collect(directory) {
-  const found = [];
+async function collect(directory: string): Promise<string[]> {
+  const found: string[] = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = resolve(directory, entry.name);
     if (entry.isDirectory()) {
@@ -84,10 +84,10 @@ async function collect(directory) {
 }
 
 /** The companion buffers and images a .gltf names, as the browser would supply them. */
-async function companions(model, data) {
-  const resources = Object.create(null);
+async function companions(model: string, data: Uint8Array): Promise<Record<string, Uint8Array>> {
+  const resources: Record<string, Uint8Array> = Object.create(null);
   if (!model.toLowerCase().endsWith('.gltf')) return resources;
-  let manifest;
+  let manifest: any;
   try {
     manifest = JSON.parse(new TextDecoder().decode(data));
   } catch {
@@ -105,7 +105,7 @@ async function companions(model, data) {
 }
 
 /** Compress every primitive and package the result, exactly as the app does. */
-function compress(data, resources) {
+function compress(data: Uint8Array, resources: Record<string, Uint8Array>) {
   const asset = gltfModule.GltfAsset.withResources(data, resources, '2.1');
   try {
     let primitives = 0;
@@ -123,7 +123,7 @@ function compress(data, resources) {
 }
 
 const models = await collect(corpusRoot);
-const refused = new Map();
+const refused = new Map<string, string>();
 let compressed = 0;
 
 for (const model of models) {
@@ -133,7 +133,7 @@ for (const model of models) {
     const result = compress(data, await companions(model, data));
     assert.ok(result.bytes > 0, `${name} produced an empty GLB`);
     compressed += 1;
-  } catch (error) {
+  } catch (error: any) {
     refused.set(name, String(error?.message ?? error));
   }
 }
@@ -150,7 +150,7 @@ assert.deepEqual(fixed, [], `these files now compress; remove them from KNOWN:\n
 
 for (const [name, reason] of KNOWN) {
   assert.ok(
-    refused.get(name).includes(reason),
+    refused.get(name)!.includes(reason),
     `${name} was refused for a different reason than recorded: ${refused.get(name)}`,
   );
 }

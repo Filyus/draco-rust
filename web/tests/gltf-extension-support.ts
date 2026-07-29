@@ -19,6 +19,20 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type {
+  GLTF_INTERPRETED_EXTENSIONS as InterpretedExtensions,
+  GLTF_READER_RESOLVED_EXTENSIONS as ReaderResolvedExtensions,
+  GLTF_TEXTURE_SOURCE_EXTENSIONS as TextureSourceExtensions,
+  readGltfMaterial as ReadGltfMaterial,
+} from '../src/gltf-interpretation.ts';
+import type {
+  MATERIAL_EXTENSION_DEFAULTS as MaterialExtensionDefaults,
+  MATERIAL_EXTENSION_TEXTURE_SLOTS as MaterialExtensionTextureSlots,
+  writeMaterialExtensions as WriteMaterialExtensions,
+} from '../src/material-extensions.ts';
+import type { MATERIAL_TEXTURE_SLOTS as MaterialTextureSlots } from '../src/scene-document.ts';
+import type { extensionWarnings as ExtensionWarnings } from '../src/gltf-loader.ts';
+import type { buildSceneDocumentFromGltf as BuildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');
@@ -31,15 +45,28 @@ const {
   GLTF_READER_RESOLVED_EXTENSIONS,
   GLTF_TEXTURE_SOURCE_EXTENSIONS,
   readGltfMaterial,
-} = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-interpretation.ts')).href);
+} = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-interpretation.ts')).href) as {
+  GLTF_INTERPRETED_EXTENSIONS: typeof InterpretedExtensions;
+  GLTF_READER_RESOLVED_EXTENSIONS: typeof ReaderResolvedExtensions;
+  GLTF_TEXTURE_SOURCE_EXTENSIONS: typeof TextureSourceExtensions;
+  readGltfMaterial: typeof ReadGltfMaterial;
+};
 const {
   MATERIAL_EXTENSION_DEFAULTS, MATERIAL_EXTENSION_TEXTURE_SLOTS, writeMaterialExtensions,
-} = await import(pathToFileURL(resolve(here, '..', 'src', 'material-extensions.ts')).href);
-const { MATERIAL_TEXTURE_SLOTS } = await import(pathToFileURL(resolve(here, '..', 'src', 'scene-document.ts')).href);
-const { extensionWarnings } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href);
+} = await import(pathToFileURL(resolve(here, '..', 'src', 'material-extensions.ts')).href) as {
+  MATERIAL_EXTENSION_DEFAULTS: typeof MaterialExtensionDefaults;
+  MATERIAL_EXTENSION_TEXTURE_SLOTS: typeof MaterialExtensionTextureSlots;
+  writeMaterialExtensions: typeof WriteMaterialExtensions;
+};
+const { MATERIAL_TEXTURE_SLOTS } = await import(pathToFileURL(resolve(here, '..', 'src', 'scene-document.ts')).href) as {
+  MATERIAL_TEXTURE_SLOTS: typeof MaterialTextureSlots;
+};
+const { extensionWarnings } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href) as {
+  extensionWarnings: typeof ExtensionWarnings;
+};
 const { buildSceneDocumentFromGltf } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'gltf-scene-document.ts')).href
-);
+) as { buildSceneDocumentFromGltf: typeof BuildSceneDocumentFromGltf };
 
 /**
  * What each interpreted extension does to the reading, stated as the material
@@ -48,7 +75,12 @@ const { buildSceneDocumentFromGltf } = await import(
  * `KHR_texture_transform` rides on a texture binding rather than on the
  * material, so its case reads the binding instead.
  */
-const INTERPRETED = {
+const INTERPRETED: Record<string, {
+  material: any;
+  effect: (read: any) => void;
+  document?: any;
+  documentEffect?: (built: any) => void;
+}> = {
   KHR_materials_unlit: {
     material: { extensions: { KHR_materials_unlit: {} } },
     effect: (read) => assert.equal(read.unlit, true, 'KHR_materials_unlit must reach the reading'),
@@ -182,12 +214,12 @@ const INTERPRETED = {
         { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
       ],
     },
-    documentEffect: (built) => {
+    documentEffect: (built: any) => {
       assert.equal(built.nodes[0].instancing?.count, 3);
       assert.equal(typeof built.nodes[0].instancing?.attributes.TRANSLATION, 'number');
     },
-  },
-  KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }] },
+  } as any,
+  KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }] } as any,
           },
         }],
       }],
@@ -221,11 +253,11 @@ const INTERPRETED = {
         { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
       ],
     },
-    documentEffect: (built) => {
+    documentEffect: (built: any) => {
       assert.equal(built.nodes[0].instancing?.count, 3);
       assert.equal(typeof built.nodes[0].instancing?.attributes.TRANSLATION, 'number');
     },
-  },
+  } as any,
   KHR_materials_variants: {
     // Also not a material extension: the names are at the root and the choices
     // are on the primitives, so its case reads a document too.
@@ -254,29 +286,29 @@ const INTERPRETED = {
         { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
       ],
     },
-    documentEffect: (built) => {
+    documentEffect: (built: any) => {
       assert.equal(built.nodes[0].instancing?.count, 3);
       assert.equal(typeof built.nodes[0].instancing?.attributes.TRANSLATION, 'number');
     },
-  },
-  KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }] },
+  } as any,
+  KHR_materials_variants: { mappings: [{ material: 1, variants: [0] }, { material: 2, variants: [1] }] } as any,
           },
         }],
       }],
     },
-    documentEffect: (built) => {
+    documentEffect: (built: any) => {
       assert.deepEqual(built.variants, ['Ruby', 'Emerald']);
       assert.deepEqual(built.meshes[0].primitives[0].variantMaterials, { 0: 1, 1: 2 });
       assert.equal(built.meshes[0].primitives[0].material, 0, 'the default material is still the primitive own');
     },
-  },
+  } as any,
   KHR_lights_punctual: {
           lights: [{ type: 'spot', color: [1, 0.5, 0], intensity: 3, range: 12, spot: { outerConeAngle: 0.5 } }],
         },
       },
       nodes: [{ mesh: 0, extensions: { KHR_lights_punctual: { light: 0 } } }],
     },
-    documentEffect: (built) => {
+    documentEffect: (built: any) => {
       assert.equal(built.lights?.length, 1, 'a placed light must reach the document');
       assert.deepEqual(built.lights[0].color, [1, 0.5, 0]);
       assert.equal(built.lights[0].intensity, 3);
@@ -284,7 +316,7 @@ const INTERPRETED = {
       assert.equal(built.lights[0].outerConeAngle, 0.5);
       assert.equal(built.nodes[0].light, 0, 'the node that placed it must keep pointing at it');
     },
-  },
+  } as any,
   KHR_texture_transform: {
     material: {
       pbrMetallicRoughness: {
@@ -306,7 +338,7 @@ const INTERPRETED = {
 // is spliced in rather than repeated, but the core half is written out by hand
 // and a slot dropped from it silently stops being validated.
 assert.deepEqual(
-  MATERIAL_TEXTURE_SLOTS.filter((slot) => !MATERIAL_EXTENSION_TEXTURE_SLOTS.includes(slot)),
+  MATERIAL_TEXTURE_SLOTS.filter((slot) => !(MATERIAL_EXTENSION_TEXTURE_SLOTS as readonly string[]).includes(slot)),
   [
     'baseColorTexture',
     'metallicRoughnessTexture',
@@ -332,7 +364,7 @@ assert.deepEqual(
  * entry: a scene's lights are stated at the root and placed by a node, and no
  * amount of material JSON expresses that.
  */
-function assetWith(extensions, material, overrides = {}) {
+function assetWith(extensions: string[], material: any, overrides: any = {}) {
   return new TextEncoder().encode(JSON.stringify({
     asset: { version: '2.0' },
     extensionsUsed: extensions,
@@ -352,12 +384,12 @@ function assetWith(extensions, material, overrides = {}) {
 }
 
 /** Whether either consumer names `extension` in what it could not act on. */
-function reported(extension, material = null, overrides = {}) {
+function reported(extension: string, material: any = null, overrides: any = {}) {
   const bytes = assetWith([extension], material, overrides);
   const manifest = JSON.parse(new TextDecoder().decode(bytes));
   const preview = extensionWarnings(manifest, new Map());
   const document = buildSceneDocumentFromGltf(bytes, Object.create(null), gltfModule);
-  const names = (warnings) => warnings.some((warning) => warning.includes(extension));
+  const names = (warnings: string[]) => warnings.some((warning) => warning.includes(extension));
   return { preview: names(preview), document: names(document.warnings) };
 }
 
@@ -381,7 +413,7 @@ for (const [extension, { material, effect, document: overrides, documentEffect }
 const bare = readGltfMaterial({}, 0);
 for (const [property, fallback] of Object.entries(MATERIAL_EXTENSION_DEFAULTS)) {
   assert.deepEqual(
-    bare[property],
+    (bare as any)[property],
     fallback,
     `a material without extensions must read ${property} as what the core model implies`,
   );
@@ -419,8 +451,8 @@ const read = readGltfMaterial(stated, 0);
 const written = writeMaterialExtensions(read, () => null);
 assert.deepEqual(written, stated.extensions, 'the table must write back exactly what it read');
 for (const [property, fallback] of Object.entries(MATERIAL_EXTENSION_DEFAULTS)) {
-  assert.notDeepEqual(read[property], fallback, `${property} must be exercised away from its default here`);
-  assert.deepEqual(readGltfMaterial({ extensions: written }, 0)[property], read[property]);
+  assert.notDeepEqual((read as any)[property], fallback, `${property} must be exercised away from its default here`);
+  assert.deepEqual(readGltfMaterial({ extensions: written }, 0)[property as keyof typeof read], (read as any)[property]);
 }
 
 // The reader resolves these before either consumer runs - decoded payloads and

@@ -14,16 +14,31 @@
 import assert from 'node:assert/strict';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type {
+  describeExtensionReach as DescribeExtensionReach,
+  ExtensionOutcome,
+  reportExtensionReach as ReportExtensionReach,
+} from '../src/app/extension-report.ts';
+import type {
+  GLTF_INTERPRETED_EXTENSIONS as InterpretedExtensions,
+  GLTF_READER_RESOLVED_EXTENSIONS as ReaderResolvedExtensions,
+} from '../src/gltf-interpretation.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const source = (...parts) => pathToFileURL(resolve(here, '..', 'src', ...parts)).href;
+const source = (...parts: string[]) => pathToFileURL(resolve(here, '..', 'src', ...parts)).href;
 
-const { describeExtensionReach, reportExtensionReach } = await import(source('app', 'extension-report.ts'));
+const { describeExtensionReach, reportExtensionReach } = await import(source('app', 'extension-report.ts')) as {
+  describeExtensionReach: typeof DescribeExtensionReach;
+  reportExtensionReach: typeof ReportExtensionReach;
+};
 const { GLTF_INTERPRETED_EXTENSIONS, GLTF_READER_RESOLVED_EXTENSIONS } = await import(
   source('gltf-interpretation.ts')
-);
+) as {
+  GLTF_INTERPRETED_EXTENSIONS: typeof InterpretedExtensions;
+  GLTF_READER_RESOLVED_EXTENSIONS: typeof ReaderResolvedExtensions;
+};
 
-const reachOf = (outcomes, name) => outcomes.find((outcome) => outcome.name === name)?.reach;
+const reachOf = (outcomes: ExtensionOutcome[], name: string) => outcomes.find((outcome) => outcome.name === name)?.reach;
 
 const outcomes = reportExtensionReach({
   extensionsUsed: [
@@ -47,8 +62,8 @@ assert.equal(reachOf(outcomes, 'KHR_materials_pbrSpecularGlossiness'), 'gltf-ver
 
 // What the file said a reader may not skip is carried through, because that is
 // the difference between "this export is poorer" and "this export is wrong".
-assert.equal(outcomes.find((outcome) => outcome.name === 'KHR_draco_mesh_compression').required, true);
-assert.equal(outcomes.find((outcome) => outcome.name === 'KHR_materials_clearcoat').required, false);
+assert.equal(outcomes.find((outcome) => outcome.name === 'KHR_draco_mesh_compression')!.required, true);
+assert.equal(outcomes.find((outcome) => outcome.name === 'KHR_materials_clearcoat')!.required, false);
 
 // Every interpreted extension has to land somewhere better, or the report
 // contradicts the list the readers act on.

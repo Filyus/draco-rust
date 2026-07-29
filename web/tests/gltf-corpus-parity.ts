@@ -17,6 +17,11 @@ import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { buildSceneFromGltf as BuildSceneFromGltf } from '../src/gltf-loader.ts';
+import type { buildSceneDocumentFromGltf as BuildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
+import type { buildViewerSceneFromDocument as BuildViewerSceneFromDocument } from '../src/scene-document-viewer.ts';
+import type { assertValidSceneDocument as AssertValidSceneDocument } from '../src/scene-document.ts';
+import type { GLTF_INTERPRETED_EXTENSIONS as InterpretedExtensions } from '../src/gltf-interpretation.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -44,22 +49,24 @@ const KNOWN = new Map(Object.entries({}));
 const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href);
 await gltfModule.default({ module_or_path: await readFile(resolve(pkg, 'gltf_bg.wasm')) });
 
-const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href);
+const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href) as {
+  buildSceneFromGltf: typeof BuildSceneFromGltf;
+};
 const { buildSceneDocumentFromGltf } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'gltf-scene-document.ts')).href
-);
+) as { buildSceneDocumentFromGltf: typeof BuildSceneDocumentFromGltf };
 const { buildViewerSceneFromDocument } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'scene-document-viewer.ts')).href
-);
+) as { buildViewerSceneFromDocument: typeof BuildViewerSceneFromDocument };
 const { assertValidSceneDocument } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'scene-document.ts')).href
-);
+) as { assertValidSceneDocument: typeof AssertValidSceneDocument };
 const { GLTF_INTERPRETED_EXTENSIONS } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'gltf-interpretation.ts')).href
-);
+) as { GLTF_INTERPRETED_EXTENSIONS: typeof InterpretedExtensions };
 
-async function collect(directory) {
-  const found = [];
+async function collect(directory: string): Promise<string[]> {
+  const found: string[] = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = resolve(directory, entry.name);
     if (entry.isDirectory()) {
@@ -72,10 +79,10 @@ async function collect(directory) {
 }
 
 /** The companion buffers and images a .gltf names, as the browser would supply them. */
-async function companions(model, data) {
-  const resources = Object.create(null);
+async function companions(model: string, data: Uint8Array): Promise<Record<string, Uint8Array>> {
+  const resources: Record<string, Uint8Array> = Object.create(null);
   if (!model.toLowerCase().endsWith('.gltf')) return resources;
-  let manifest;
+  let manifest: any;
   try {
     manifest = JSON.parse(new TextDecoder().decode(data));
   } catch {
@@ -100,7 +107,7 @@ async function companions(model, data) {
  * inside a minute. Two different payloads colliding here is a missed finding,
  * not a wrong one.
  */
-function digest(accessor) {
+function digest(accessor: any): string | null {
   if (!accessor) return null;
   const bytes = ArrayBuffer.isView(accessor.bytes)
     ? new Uint8Array(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength)
@@ -135,8 +142,8 @@ function digest(accessor) {
  * primitive's bytes come out of the codec rather than out of a named accessor,
  * so byte equality there needs an argument before it becomes an assertion.
  */
-function observe(scene) {
-  const materialName = (primitive) => {
+function observe(scene: any) {
+  const materialName = (primitive: any) => {
     const material = scene.materials[primitive.materialIndex];
     // The preview's trailing fallback has no name, and neither does an absent
     // material. Both mean "the renderer decides", which is the same thing.
@@ -148,8 +155,8 @@ function observe(scene) {
     skins: scene.skins.length,
     textures: scene.textures.length,
     renderables: scene.renderables.length,
-    clips: scene.animations.map((clip) => clip.channels.length),
-    meshes: scene.meshes.map((mesh) => mesh.primitives.map((primitive) => ({
+    clips: scene.animations.map((clip: any) => clip.channels.length),
+    meshes: scene.meshes.map((mesh: any) => mesh.primitives.map((primitive: any) => ({
       mode: primitive.mode,
       vertices: primitive.attributes.POSITION?.count ?? 0,
       elements: primitive.indices?.count ?? null,
@@ -164,7 +171,7 @@ function observe(scene) {
 }
 
 /** A one-line reason, short enough to sit next to a path in the summary. */
-function reason(error) {
+function reason(error: any): string {
   return (error.message || String(error)).split('\n')[0].slice(0, 120);
 }
 
@@ -176,7 +183,7 @@ function reason(error) {
  * would then also drop it from the coverage count, which is the one number
  * that must not agree with the code being measured.
  */
-function declaredExtensions(data) {
+function declaredExtensions(data: Uint8Array): string[] {
   let json = data;
   if (data.length >= 20 && String.fromCharCode(...data.subarray(0, 4)) === 'glTF') {
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
@@ -193,9 +200,9 @@ const models = await collect(corpusRoot);
 assert.ok(models.length >= 60, `the corpus shrank to ${models.length} files; expected the whole testdata tree`);
 
 /** Every file that did not come through, and what stopped it. */
-const problems = new Map();
+const problems = new Map<string, string>();
 /** Which extensions the corpus actually contains, for the coverage gate below. */
-const present = new Set();
+const present = new Set<string>();
 let carried = 0;
 for (const model of models) {
   const name = relative(repoRoot, model).replace(/\\/g, '/');

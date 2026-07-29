@@ -36,8 +36,8 @@ if (typeof gltfModule.GltfAsset?.prototype?.compressPrimitive !== 'function') {
   process.exit(0);
 }
 
-async function companions(model, manifest) {
-  const resources = Object.create(null);
+async function companions(model: string, manifest: any): Promise<Record<string, Uint8Array>> {
+  const resources: Record<string, Uint8Array> = Object.create(null);
   for (const entry of [...(manifest.buffers || []), ...(manifest.images || [])]) {
     if (typeof entry.uri !== 'string' || entry.uri.startsWith('data:')) continue;
     resources[entry.uri] = new Uint8Array(await readFile(resolve(dirname(model), decodeURIComponent(entry.uri))));
@@ -46,8 +46,8 @@ async function companions(model, manifest) {
 }
 
 /** Compress every primitive and return the GLB's JSON and its binary chunk. */
-async function compressed(relative) {
-  const model = resolve(repoRoot, relative);
+async function compressed(relativePath: string) {
+  const model = resolve(repoRoot, relativePath);
   const data = new Uint8Array(await readFile(model));
   const manifest = JSON.parse(new TextDecoder().decode(data));
   const asset = gltfModule.GltfAsset.withResources(data, await companions(model, manifest), '2.1');
@@ -73,8 +73,8 @@ async function compressed(relative) {
 // that no primitive refers to.
 {
   const { source, json } = await compressed('testdata/InstancedQuads.gltf');
-  const before = source.nodes.find((node) => node.extensions?.EXT_mesh_gpu_instancing);
-  const after = json.nodes.find((node) => node.extensions?.EXT_mesh_gpu_instancing);
+  const before = source.nodes.find((node: any) => node.extensions?.EXT_mesh_gpu_instancing);
+  const after = json.nodes.find((node: any) => node.extensions?.EXT_mesh_gpu_instancing);
   assert.ok(before && after, 'the instancing extension must survive compression');
   const attributes = after.extensions.EXT_mesh_gpu_instancing.attributes;
   assert.deepEqual(
@@ -82,7 +82,7 @@ async function compressed(relative) {
     Object.keys(before.extensions.EXT_mesh_gpu_instancing.attributes).sort(),
     'no instance attribute may be dropped',
   );
-  for (const [semantic, index] of Object.entries(attributes)) {
+  for (const [semantic, index] of Object.entries(attributes) as [string, number][]) {
     const accessor = json.accessors[index];
     assert.ok(accessor, `instancing ${semantic} points at accessor ${index}, which does not exist`);
     const original = source.accessors[before.extensions.EXT_mesh_gpu_instancing.attributes[semantic]];
@@ -95,36 +95,36 @@ async function compressed(relative) {
 
 // EXT_structural_metadata: property tables whose columns are buffer views,
 // including one of zero length.
-for (const relative of [
+for (const relativePath of [
   'testdata/ZeroLengthBufferView/ZeroLengthBufferView.gltf',
   'testdata/BoxMeta/glTF/BoxMeta.gltf',
 ]) {
-  const { source, json, binary } = await compressed(relative);
-  const columns = (manifest) => (manifest.extensions?.EXT_structural_metadata?.propertyTables || [])
-    .flatMap((table) => Object.entries(table.properties || {})
-      .flatMap(([property, slots]) => ['values', 'arrayOffsets', 'stringOffsets']
+  const { source, json, binary } = await compressed(relativePath);
+  const columns = (manifest: any) => (manifest.extensions?.EXT_structural_metadata?.propertyTables || [])
+    .flatMap((table: any) => Object.entries(table.properties || {})
+      .flatMap(([property, slots]: [string, any]) => ['values', 'arrayOffsets', 'stringOffsets']
         .filter((slot) => slots[slot] !== undefined)
         .map((slot) => ({ key: `${table.class}.${property}.${slot}`, view: slots[slot] }))));
 
   const before = columns(source);
   const after = columns(json);
-  assert.ok(before.length > 0, `${relative} must carry property-table columns to be worth testing`);
+  assert.ok(before.length > 0, `${relativePath} must carry property-table columns to be worth testing`);
   assert.deepEqual(
-    after.map((column) => column.key),
-    before.map((column) => column.key),
-    `${relative}: no property-table column may be dropped`,
+    after.map((column: any) => column.key),
+    before.map((column: any) => column.key),
+    `${relativePath}: no property-table column may be dropped`,
   );
 
   for (let index = 0; index < after.length; index += 1) {
     const view = json.bufferViews[after[index].view];
-    assert.ok(view, `${relative}: ${after[index].key} points at buffer view ${after[index].view}, which does not exist`);
+    assert.ok(view, `${relativePath}: ${after[index].key} points at buffer view ${after[index].view}, which does not exist`);
     const length = source.bufferViews[before[index].view].byteLength;
-    assert.equal(view.byteLength, length, `${relative}: ${after[index].key} now addresses a different buffer view`);
+    assert.equal(view.byteLength, length, `${relativePath}: ${after[index].key} now addresses a different buffer view`);
     // And the bytes are reachable: a view kept alive but left outside the
     // written buffer is no better than a dropped one.
     assert.ok(
       (view.byteOffset || 0) + view.byteLength <= binary.length,
-      `${relative}: ${after[index].key} addresses bytes past the end of the buffer`,
+      `${relativePath}: ${after[index].key} addresses bytes past the end of the buffer`,
     );
   }
 }

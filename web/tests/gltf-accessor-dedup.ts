@@ -13,6 +13,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { buildSceneDocumentFromGltf as BuildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
+import type { lowerSceneDocumentToGltf as LowerSceneDocumentToGltf } from '../src/scene-document-gltf.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -24,20 +26,20 @@ await gltfModule.default({ module_or_path: await readFile(resolve(pkg, 'gltf_bg.
 
 const { buildSceneDocumentFromGltf } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'gltf-scene-document.ts')).href
-);
+) as { buildSceneDocumentFromGltf: typeof BuildSceneDocumentFromGltf };
 const { lowerSceneDocumentToGltf } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'scene-document-gltf.ts')).href
-);
+) as { lowerSceneDocumentToGltf: typeof LowerSceneDocumentToGltf };
 
 const manifest = JSON.parse(await readFile(model, 'utf8'));
-const resources = {};
+const resources: Record<string, Uint8Array> = {};
 for (const entry of [...(manifest.buffers || []), ...(manifest.images || [])]) {
   if (typeof entry.uri === 'string' && !entry.uri.startsWith('data:')) {
     resources[entry.uri] = new Uint8Array(await readFile(resolve(dirname(model), entry.uri)));
   }
 }
 
-const references = manifest.meshes.flatMap((mesh) => mesh.primitives.flatMap((primitive) => [
+const references = manifest.meshes.flatMap((mesh: any) => mesh.primitives.flatMap((primitive: any) => [
   ...Object.values(primitive.attributes),
   ...(primitive.indices === undefined ? [] : [primitive.indices]),
 ]));
@@ -62,13 +64,13 @@ assert.notEqual(first.attributes.POSITION, first.indices, 'an attribute and an i
 // so sharing one would emit a buffer view with the wrong target.
 const lowered = lowerSceneDocumentToGltf(document);
 const output = JSON.parse(new TextDecoder().decode(lowered.json));
-const targets = new Map(output.accessors.map((accessor) => [
+const targets = new Map(output.accessors.map((accessor: any) => [
   accessor.bufferView,
   output.bufferViews[accessor.bufferView].target,
 ]));
 for (const mesh of output.meshes) {
   for (const primitive of mesh.primitives) {
-    for (const accessor of Object.values(primitive.attributes)) {
+    for (const accessor of Object.values(primitive.attributes) as number[]) {
       assert.equal(targets.get(output.accessors[accessor].bufferView), 34962, 'attributes must target ARRAY_BUFFER');
     }
     assert.equal(
@@ -80,8 +82,9 @@ for (const mesh of output.meshes) {
 }
 
 const { validateBytes } = await import('gltf-validator');
+const resourceMap = lowered.resources as Record<string, Uint8Array>;
 const report = await validateBytes(lowered.json, {
-  externalResourceFunction: async (uri) => lowered.resources[uri] ?? new Uint8Array(),
+  externalResourceFunction: async (uri: string) => resourceMap[uri] ?? new Uint8Array(),
 });
 assert.deepEqual(
   report.issues.messages.filter((issue) => issue.severity === 0),

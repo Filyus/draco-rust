@@ -13,6 +13,16 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type {
+  exportSceneDocumentToGlb as ExportSceneDocumentToGlb,
+  mergeMeshes as MergeMeshes,
+  prepareFbxAnimationForExport as PrepareFbxAnimationForExport,
+  prepareFbxSceneForExport as PrepareFbxSceneForExport,
+  prepareMeshesForExport as PrepareMeshesForExport,
+  runExport as RunExport,
+} from '../src/app/export-branches.ts';
+import type { createSceneDocument as CreateSceneDocument } from '../src/scene-document.ts';
+import type { modules as ModulesState, state as AppState } from '../src/app/state.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const {
@@ -22,7 +32,14 @@ const {
   prepareFbxAnimationForExport,
   prepareFbxSceneForExport,
   prepareMeshesForExport,
-} = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'export-branches.ts')).href);
+} = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'export-branches.ts')).href) as {
+  exportSceneDocumentToGlb: typeof ExportSceneDocumentToGlb;
+  runExport: typeof RunExport;
+  mergeMeshes: typeof MergeMeshes;
+  prepareFbxAnimationForExport: typeof PrepareFbxAnimationForExport;
+  prepareFbxSceneForExport: typeof PrepareFbxSceneForExport;
+  prepareMeshesForExport: typeof PrepareMeshesForExport;
+};
 
 const settings = { includeNormals: true, includeUvs: true };
 
@@ -58,8 +75,8 @@ const mesh = {
   uvSets: [{ name: 'UV1', mapping: 'byPolygonVertex', reference: 'direct', values: [0, 0], indices: [] }],
 };
 const [withAll] = prepareMeshesForExport([mesh], { includeNormals: true, includeUvs: true });
-assert.equal(withAll.normals.length, 9);
-assert.equal(withAll.uvs.length, 6);
+assert.equal(withAll.normals!.length, 9);
+assert.equal(withAll.uvs!.length, 6);
 assert.equal(withAll.uvSets[0].name, 'UV1');
 const [without] = prepareMeshesForExport([mesh], { includeNormals: false, includeUvs: false });
 assert.equal(without.normals, null);
@@ -98,14 +115,14 @@ assert.equal(morphClip.channels[0].morphTargetIndex, 1);
 const merged = mergeMeshes([
   { positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], indices: [0, 1, 2] },
   { positions: [2, 0, 0, 3, 0, 0, 2, 1, 0], indices: [0, 1, 2] },
-]);
+] as any);
 assert.deepEqual(merged.indices, [0, 1, 2, 3, 4, 5]);
 assert.equal(merged.positions.length, 18);
 
 // The element-at-a-time append in mergeMeshes is load-bearing: spreading a
 // buffer this size into push() overflows the call stack.
 const big = { positions: new Array(300000).fill(1), indices: [0, 1, 2] };
-assert.equal(mergeMeshes([big, big]).positions.length, 600000);
+assert.equal(mergeMeshes([big, big] as any).positions.length, 600000);
 
 /**
  * The Draco checkbox has to reach the document route.
@@ -116,12 +133,16 @@ assert.equal(mergeMeshes([big, big]).positions.length, 600000);
  * and does not need one — compression is a second pass over the GLB this route
  * already produces — which is exactly why the omission was invisible.
  */
-const { createSceneDocument } = await import(pathToFileURL(resolve(here, '..', 'src', 'scene-document.ts')).href);
+const { createSceneDocument } = await import(pathToFileURL(resolve(here, '..', 'src', 'scene-document.ts')).href) as {
+  createSceneDocument: typeof CreateSceneDocument;
+};
 const gltfModule = await import(pathToFileURL(resolve(here, '..', 'www', 'pkg', 'gltf.js')).href);
 await gltfModule.default({
   module_or_path: await readFile(resolve(here, '..', 'www', 'pkg', 'gltf_bg.wasm')),
 });
-const { modules } = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'state.ts')).href);
+const { modules } = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'state.ts')).href) as {
+  modules: typeof ModulesState;
+};
 modules.gltf.loaded = true;
 modules.gltf.module = gltfModule;
 
@@ -133,14 +154,14 @@ const triangle = createSceneDocument({
     count: 3,
     min: [0, 0, 0],
     max: [1, 1, 0],
-  }],
-  meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
-  nodes: [{ name: 'triangle', mesh: 0 }],
+  }] as any,
+  meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }] as any,
+  nodes: [{ name: 'triangle', mesh: 0 }] as any,
   rootNodes: [0],
 });
 
 /** The JSON chunk of a GLB, which is where the extension declarations live. */
-const glbManifest = (binary) => {
+const glbManifest = (binary: ArrayBuffer | Uint8Array | ArrayLike<number>) => {
   const bytes = new Uint8Array(binary);
   const length = new DataView(bytes.buffer, bytes.byteOffset, 20).getUint32(12, true);
   return JSON.parse(new TextDecoder().decode(bytes.subarray(20, 20 + length)));
@@ -150,7 +171,7 @@ const plain = exportSceneDocumentToGlb(triangle, { useDraco: false, encodingSpee
 assert.equal(plain.result.success, true);
 assert.equal(plain.result.draco_stats, null, 'an uncompressed export reports no compression');
 assert.equal(
-  glbManifest(plain.result.binary_data).extensionsRequired,
+  glbManifest(plain.result.binary_data!).extensionsRequired,
   undefined,
   'without the checkbox the GLB must not require Draco',
 );
@@ -160,17 +181,19 @@ if (typeof gltfModule.GltfAsset?.prototype?.compressPrimitive === 'function') {
   assert.equal(compressed.result.success, true);
   assert.deepEqual(compressed.warnings, [], 'a document this route wrote itself must compress cleanly');
   assert.ok(
-    (glbManifest(compressed.result.binary_data).extensionsRequired ?? []).includes('KHR_draco_mesh_compression'),
+    (glbManifest(compressed.result.binary_data!).extensionsRequired ?? []).includes('KHR_draco_mesh_compression'),
     'the checkbox must reach the writer, not just the settings object',
   );
-  assert.equal(compressed.result.draco_stats.primitives, 1);
-  assert.ok(compressed.result.draco_stats.compressed_size > 0);
+  assert.equal(compressed.result.draco_stats!.primitives, 1);
+  assert.ok(compressed.result.draco_stats!.compressed_size > 0);
 
   // And through the route that actually runs, not only the helper it calls:
   // the settings object reached `runExport` all along, and the loss was one
   // call site inside it that never passed the flag on.
-  const { state } = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'state.ts')).href);
-  state.currentMeshData = { document: null, scene: null, meshes: [] };
+  const { state } = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'state.ts')).href) as {
+    state: typeof AppState;
+  };
+  state.currentMeshData = { document: null, scene: null, meshes: [] } as any;
   state.currentFileType = 'fbx';
   state.currentSceneDocument = triangle;
   const routed = await runExport({

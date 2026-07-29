@@ -32,16 +32,16 @@ function releaseProfileAsset() {
   };
 }
 
-const releaseModule = { GltfAsset: { withResources: releaseProfileAsset } };
+const releaseModule = { GltfAsset: { withResources: releaseProfileAsset } } as any;
 const source = new Uint8Array([0x67, 0x6c, 0x54, 0x46]);
 
 for (const [label, open] of [
   ['preview', () => buildSceneFromGltf(source, {}, releaseModule, {})],
   ['document', () => buildSceneDocumentFromGltf(source, {}, releaseModule)],
-]) {
+] as const) {
   // The document builder throws synchronously and the preview asynchronously,
   // so the call itself goes inside the try rather than onto a promise chain.
-  let error = null;
+  let error: any = null;
   try {
     await open();
   } catch (thrown) {
@@ -68,8 +68,8 @@ const converterModule = {
       bufferViewBytes: () => new Uint8Array(),
     }),
   },
-};
-let passed = null;
+} as any;
+let passed: any = null;
 try {
   await buildSceneFromGltf(source, {}, converterModule, {});
 } catch (thrown) {

@@ -34,18 +34,18 @@ if (typeof gltfModule.GltfAsset?.prototype?.compressPrimitive !== 'function') {
 
 const data = new Uint8Array(await readFile(model));
 const manifest = JSON.parse(new TextDecoder().decode(data));
-const resources = Object.create(null);
+const resources: Record<string, Uint8Array> = Object.create(null);
 for (const entry of [...(manifest.buffers || []), ...(manifest.images || [])]) {
   if (typeof entry.uri !== 'string' || entry.uri.startsWith('data:')) continue;
   resources[entry.uri] = new Uint8Array(await readFile(resolve(dirname(model), decodeURIComponent(entry.uri))));
 }
 
-const COMPONENT_WIDTH = { 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4 };
+const COMPONENT_WIDTH: Record<number, number> = { 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4 };
 
 /** One string per vertex holding every attribute that vertex carries. */
-function vertexRecords(asset) {
+function vertexRecords(asset: any) {
   const geometry = asset.readPrimitive(0, 0);
-  const attributes = [];
+  const attributes: { semantic: string; components: number; componentType: number; bytes: Uint8Array }[] = [];
   for (let index = 0; index < geometry.attributeCount(); index += 1) {
     attributes.push({
       semantic: geometry.attributeSemantic(index),
@@ -55,9 +55,9 @@ function vertexRecords(asset) {
     });
   }
   attributes.sort((left, right) => left.semantic.localeCompare(right.semantic));
-  const stride = (attribute) => attribute.components * COMPONENT_WIDTH[attribute.componentType];
+  const stride = (attribute: typeof attributes[number]) => attribute.components * COMPONENT_WIDTH[attribute.componentType];
   const count = attributes[0].bytes.length / stride(attributes[0]);
-  const rows = [];
+  const rows: string[] = [];
   for (let vertex = 0; vertex < count; vertex += 1) {
     rows.push(attributes.map((attribute) => {
       const width = stride(attribute);
