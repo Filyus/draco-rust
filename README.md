@@ -5,9 +5,9 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Draco geometry compression in pure Rust, with the file formats and glTF scene
-handling around it. Nothing here links the C++ Draco library; compatibility with
-its bitstream is a property of the implementation, checked against reference
-fixtures and the C++ binaries themselves.
+handling around it. Nothing here links the original library; bitstream
+compatibility is a property of the implementation, checked against reference
+fixtures and the upstream binaries themselves.
 
 This project is independent and is not an official Google Draco release.
 
