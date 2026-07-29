@@ -386,7 +386,10 @@ Optimized packages are written to `web/www/pkg/`.
 
 `Pages: deploy converter` (`.github/workflows/pages.yml`) builds `--app` and
 publishes `web/www` to GitHub Pages on every push to `main` that touches
-`crates/**` or `web/**`, and on demand through `workflow_dispatch`. There is
+`crates/**` or `web/**`, and on demand through `workflow_dispatch`. It requires
+Pages to be enabled with **GitHub Actions** as the source; the workflow cannot
+turn it on itself, because creating the site is a repository setting that
+`GITHUB_TOKEN` may not change. There is
 nothing to configure for a subdirectory URL: `index.html` references `app.js`
 and `style.css` relatively, and [`src/app/modules.ts`](src/app/modules.ts)
 resolves every WASM package against `document.baseURI`, so the site works

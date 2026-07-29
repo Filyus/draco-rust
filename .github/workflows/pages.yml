@@ -56,13 +56,13 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      # Pages has never been turned on for this repository, and `enablement`
-      # switches its source to GitHub Actions on the first run rather than
-      # making the deploy fail until someone visits the settings page.
+      # Pages must already be enabled with "GitHub Actions" as its source. The
+      # `enablement: true` input cannot do it: creating the site is a repository
+      # setting, and `GITHUB_TOKEN` is refused with "Resource not accessible by
+      # integration". Enabling it is a one-time manual step, in the repository
+      # settings or through `gh api -X POST repos/OWNER/REPO/pages`.
       - name: Configure Pages
         uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       # `build.sh` with no arguments builds the release profile, which is the
       # size gate rather than the app: the converter needs `--app`, and so does
