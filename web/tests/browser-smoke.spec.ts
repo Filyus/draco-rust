@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   animatedTranslation,
+  attributedTriangle,
   basisTexturedGlb,
   embeddedTriangle,
   emissiveTransformQuad,
@@ -1935,6 +1936,72 @@ test('a flattened export keeps each node where the scene put it', async ({ page 
   expect(lowest).toBeLessThan(-3.5);
   expect(lowest).toBeGreaterThan(-4);
   expect(highest).toBeCloseTo(1, 3);
+});
+
+/**
+ * `.drc` in, `.drc` out, twice: every channel has to make the whole loop.
+ *
+ * Import and export are separate code paths that meet only here, and a channel
+ * dropped by either looks the same from outside. Two full turns rather than
+ * one, because a channel can survive being written once and still be lost by
+ * the reader that takes it back in.
+ */
+test('a .drc round trip keeps every attribute the flat mesh carries', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  const exportToDrc = async () => {
+    await page.locator('[data-choice-for="export-format"] [data-value="drc"]').click();
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#export-btn').click();
+    return readFile((await (await downloadPromise).path())!);
+  };
+  const channels = () => page.evaluate(async () => {
+    const { state } = await import('/app/state.js' as string);
+    const mesh = state.currentMeshData?.meshes?.[0];
+    const corners = (values: ArrayLike<number> | null | undefined, stride: number) => {
+      const rows = Array.from({ length: (values?.length ?? 0) / stride }, (_, index) =>
+        Array.from({ length: stride }, (_, part) => values![index * stride + part]));
+      // Draco renumbers points, so each channel is compared as a set of
+      // corners rather than in the order it happens to come back in.
+      return rows.map((row) => row.map((value) => Math.round(value * 100) / 100).join(',')).sort();
+    };
+    return {
+      positions: corners(mesh?.positions, 3),
+      normals: corners(mesh?.normals, 3),
+      uvs: corners(mesh?.uvs, 2),
+      colors: corners(mesh?.colors, 4),
+    };
+  });
+
+  await page.locator('#file-input').setInputFiles({
+    name: 'attributed.gltf',
+    mimeType: 'model/gltf+json',
+    buffer: Buffer.from(attributedTriangle()),
+  });
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  let previous = null;
+  for (const turn of [1, 2]) {
+    const payload = await exportToDrc();
+    await page.locator('#file-input').setInputFiles({
+      name: `turn-${turn}.drc`,
+      mimeType: 'application/octet-stream',
+      buffer: payload,
+    });
+    await expect(page.locator('#console')).toContainText(`Successfully parsed turn-${turn}.drc`);
+    const current = await channels();
+
+    expect(current.positions).toEqual(['0,0,0', '0.5,1,0', '1,0,0']);
+    expect(current.normals).toEqual(['0,0,1', '0,1,0', '1,0,0']);
+    expect(current.uvs).toEqual(['0,0', '0.5,1', '1,0']);
+    expect(current.colors).toEqual(['0,0,255,255', '0,255,0,255', '255,0,0,255']);
+    // The second turn must not drift from the first: quantization is applied
+    // again each time, and a channel that keeps moving is being requantized
+    // against a bound that shifts.
+    if (previous) expect(current).toEqual(previous);
+    previous = current;
+  }
 });
 
 /**

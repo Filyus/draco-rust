@@ -306,6 +306,58 @@ export function vertexColoredTriangle(): string {
   });
 }
 
+/**
+ * A triangle carrying every attribute a `.drc` round trip can preserve:
+ * positions, normals, texture coordinates and colours.
+ *
+ * Distinct values on every corner and every channel, so a channel that comes
+ * back attached to the wrong vertex — or not at all — is visible rather than
+ * coincidentally right.
+ */
+export function attributedTriangle(): string {
+  const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0.5, 1, 0]);
+  const normals = new Float32Array([0, 0, 1, 0, 1, 0, 1, 0, 0]);
+  const uvs = new Float32Array([0, 0, 1, 0, 0.5, 1]);
+  const colors = new Uint8Array([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255]);
+  const indices = new Uint16Array([0, 1, 2]);
+  const binary = Buffer.concat([
+    Buffer.from(positions.buffer),
+    Buffer.from(normals.buffer),
+    Buffer.from(uvs.buffer),
+    Buffer.from(colors.buffer),
+    Buffer.from(indices.buffer),
+  ]);
+  return JSON.stringify({
+    asset: { version: '2.0' },
+    buffers: [{ byteLength: binary.length, uri: `data:application/octet-stream;base64,${binary.toString('base64')}` }],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 36 },
+      { buffer: 0, byteOffset: 36, byteLength: 36 },
+      { buffer: 0, byteOffset: 72, byteLength: 24 },
+      { buffer: 0, byteOffset: 96, byteLength: 12 },
+      { buffer: 0, byteOffset: 108, byteLength: 6 },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
+      { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 2, componentType: 5126, count: 3, type: 'VEC2' },
+      { bufferView: 3, componentType: 5121, normalized: true, count: 3, type: 'VEC4' },
+      { bufferView: 4, componentType: 5123, count: 3, type: 'SCALAR' },
+    ],
+    meshes: [{
+      primitives: [{
+        attributes: {
+          POSITION: 0, NORMAL: 1, TEXCOORD_0: 2, COLOR_0: 3,
+        },
+        indices: 4,
+      }],
+    }],
+    nodes: [{ mesh: 0 }],
+    scenes: [{ nodes: [0] }],
+    scene: 0,
+  });
+}
+
 export interface MultiUvEmissiveQuadOptions {
   /** The textureInfo's own `texCoord` — what a viewer without the extension reads. */
   texCoord?: number;
