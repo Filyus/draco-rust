@@ -26,7 +26,7 @@ const bones = [
 ];
 // Generate the script with paths embedded separately so Blender can reset and
 // import each file in one deterministic process.
-function blenderScript(source, output) {
+function blenderScript(source: string, output: string): string {
     return `
 import bpy,json,math
 bones=${JSON.stringify(bones)}
@@ -66,7 +66,7 @@ try {
         if (result.status !== 0) throw new Error(`Blender ${label} import failed:\n${result.stderr || result.stdout}`);
         const line = result.stdout.split(/\r?\n/).find((value) => value.startsWith('DRACO_BLENDER_JSON='));
         assert.ok(line, `${label} Blender output: ${result.stderr || result.stdout}`);
-        const snapshots = JSON.parse(line.slice('DRACO_BLENDER_JSON='.length));
+        const snapshots = JSON.parse(line!.slice('DRACO_BLENDER_JSON='.length));
         assert.ok(snapshots.output.meshes > 0, `${label} exported meshes`);
         const names = Object.keys(snapshots.source.samples[0]).filter((name) => snapshots.output.samples[0][name]);
         let worst = 0;
@@ -95,7 +95,7 @@ try {
     assert.equal(foxResult.status, 0, `Fox Blender import: ${foxResult.stderr || foxResult.stdout}`);
     const foxLine = foxResult.stdout.split(/\r?\n/).find((value) => value.startsWith('DRACO_FOX_BLENDER_JSON='));
     assert.ok(foxLine, 'Fox Blender output');
-    const foxSnapshot = JSON.parse(foxLine.slice('DRACO_FOX_BLENDER_JSON='.length));
+    const foxSnapshot = JSON.parse(foxLine!.slice('DRACO_FOX_BLENDER_JSON='.length));
     assert.ok(foxSnapshot.meshes > 0, 'Fox exported mesh import');
     console.log(`PASS Fox SceneDocument -> FBX -> Blender: meshes=${foxSnapshot.meshes}, armatures=${foxSnapshot.armatures}`);
 } finally {

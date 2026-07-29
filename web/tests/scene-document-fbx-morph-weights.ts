@@ -11,6 +11,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { buildSceneDocumentFromGltf as BuildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
+import type { buildFbxSceneFromDocument as BuildFbxSceneFromDocument } from '../src/fbx-scene-document-writer.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -24,14 +26,14 @@ await fbxModule.default({ module_or_path: await readFile(resolve(pkg, 'fbx_bg.wa
 
 const { buildSceneDocumentFromGltf } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'gltf-scene-document.ts')).href
-);
+) as { buildSceneDocumentFromGltf: typeof BuildSceneDocumentFromGltf };
 const { buildFbxSceneFromDocument } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'fbx-scene-document-writer.ts')).href
-);
+) as { buildFbxSceneFromDocument: typeof BuildFbxSceneFromDocument };
 
 const source = new Uint8Array(await readFile(model));
 const manifest = JSON.parse(await readFile(model, 'utf8'));
-const resources = {};
+const resources: Record<string, Uint8Array> = {};
 for (const buffer of manifest.buffers || []) {
   if (buffer.uri && !buffer.uri.startsWith('data:')) {
     resources[buffer.uri] = new Uint8Array(await readFile(resolve(dirname(model), buffer.uri)));
@@ -39,13 +41,13 @@ for (const buffer of manifest.buffers || []) {
 }
 
 const document = buildSceneDocumentFromGltf(source, resources, gltfModule);
-const targetCount = document.meshes[0].primitives[0].targets.length;
+const targetCount = document.meshes[0].primitives[0].targets!.length;
 assert.equal(targetCount, 2, 'the fixture must carry two morph targets');
 
 const scene = buildFbxSceneFromDocument(document);
-const weightChannels = scene.animations[0].channels.filter((channel) => channel.path === 'morphweight');
+const weightChannels = scene.animations[0].channels.filter((channel: { path: string }) => channel.path === 'morphweight');
 assert.deepEqual(
-  [...new Set(weightChannels.map((channel) => channel.morphTargetIndex))].sort(),
+  [...new Set(weightChannels.map((channel: { morphTargetIndex: number }) => channel.morphTargetIndex))].sort(),
   [0, 1],
   'every morph target needs its own weight curve, not just the first',
 );

@@ -8,7 +8,7 @@ import {
     validateSceneDocument,
 } from '../src/scene-document.ts';
 
-function bytes(values) {
+function bytes(values: Float32Array | Uint16Array): Uint8Array {
     return new Uint8Array(values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength));
 }
 

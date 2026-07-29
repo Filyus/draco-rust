@@ -14,10 +14,15 @@ import { cloneSceneDocument } from '../src/scene-document.ts';
 import { sniffMime } from '../src/scene-resources.ts';
 import { lowerSceneDocumentToGltf, serializeSceneDocumentToGlb } from '../src/scene-document-gltf.ts';
 import { invertMat4, multiplyMat4 } from '../src/mat4.ts';
+import type { Viewer as ViewerClass } from '../src/viewer.ts';
+import type { buildSceneFromGltf as BuildSceneFromGltf } from '../src/gltf-loader.ts';
+import type { ViewerScene, ViewerNode } from '../src/viewer-scene.ts';
 import { here, foxBin, foxGltf, loadFbxViewerAdapter, loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.ts';
 
-const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'src', 'viewer.ts')));
-const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')));
+const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'src', 'viewer.ts')).href) as { Viewer: typeof ViewerClass };
+const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href) as {
+    buildSceneFromGltf: typeof BuildSceneFromGltf;
+};
 const { buildSceneFromFbx } = await loadFbxViewerAdapter();
 const gltf = await loadWasm('gltf');
 const fbx = await loadWasm('fbx');
@@ -31,15 +36,15 @@ const bones = [
     'mixamorig:RightUpLeg', 'mixamorig:RightLeg', 'mixamorig:RightFoot',
 ];
 
-function seek(scene, time) {
-    const probe = Object.create(Viewer.prototype);
-    probe.scene = scene;
-    probe.animation = { clipIndex: 0, time: 0 };
+function seek(scene: ViewerScene, time: number): void {
+    const probe = Object.create(Viewer.prototype) as InstanceType<typeof ViewerClass>;
+    (probe as any).scene = scene;
+    (probe as any).animation = { clipIndex: 0, time: 0 };
     assert.equal(probe.seekAnimation(time), true);
-    probe._updateWorldMatrices();
+    (probe as any)._updateWorldMatrices();
 }
 
-function maxSceneDrift(expected, actual) {
+function maxSceneDrift(expected: ViewerScene, actual: ViewerScene): number {
     const expectedNodes = new Map(expected.nodes.map((node) => [node.name, node]));
     const actualNodes = new Map(actual.nodes.map((node) => [node.name, node]));
     let worst = 0;
@@ -47,36 +52,36 @@ function maxSceneDrift(expected, actual) {
         const left = expectedNodes.get(name);
         const right = actualNodes.get(name);
         assert.ok(left && right, `missing animated bone ${name}`);
-        for (let index = 0; index < 16; index += 1) worst = Math.max(worst, Math.abs(left.world[index] - right.world[index]));
+        for (let index = 0; index < 16; index += 1) worst = Math.max(worst, Math.abs(left!.world[index] - right!.world[index]));
     }
     return worst;
 }
 
-function maxSkinPaletteDrift(expected, actual) {
+function maxSkinPaletteDrift(expected: ViewerScene, actual: ViewerScene): number {
     const expectedRenderable = expected.renderables.find((item) => item.skinIndex >= 0);
     const actualRenderable = actual.renderables.find((item) => item.skinIndex >= 0);
     assert.ok(expectedRenderable && actualRenderable, 'both scenes need a skinned renderable');
-    const expectedJoints = new Map(expected.skins[expectedRenderable.skinIndex].joints.map((joint) => [joint.node.name, joint]));
-    const actualJoints = new Map(actual.skins[actualRenderable.skinIndex].joints.map((joint) => [joint.node.name, joint]));
+    const expectedJoints = new Map(expected.skins[expectedRenderable!.skinIndex].joints.map((joint) => [joint.node.name, joint]));
+    const actualJoints = new Map(actual.skins[actualRenderable!.skinIndex].joints.map((joint) => [joint.node.name, joint]));
     let worst = 0;
     for (const name of bones) {
         const left = expectedJoints.get(name);
         const right = actualJoints.get(name);
         assert.ok(left && right, `missing skinned joint ${name}`);
-        const leftPalette = skinPalette(expectedRenderable.node.world, left.node.world, left.inverseBind);
-        const rightPalette = skinPalette(actualRenderable.node.world, right.node.world, right.inverseBind);
+        const leftPalette = skinPalette(expectedRenderable!.node.world, left!.node.world, left!.inverseBind);
+        const rightPalette = skinPalette(actualRenderable!.node.world, right!.node.world, right!.inverseBind);
         for (let index = 0; index < 16; index += 1) worst = Math.max(worst, Math.abs(leftPalette[index] - rightPalette[index]));
     }
     return worst;
 }
 
-function skinPalette(meshWorld, jointWorld, inverseBind) {
+function skinPalette(meshWorld: ArrayLike<number>, jointWorld: ArrayLike<number>, inverseBind: ArrayLike<number>): number[] {
     const inverseMesh = invertMat4(meshWorld);
     assert.ok(inverseMesh, 'mesh world must be invertible');
-    return multiplyMat4(multiplyMat4(inverseMesh, jointWorld), inverseBind);
+    return multiplyMat4(multiplyMat4(inverseMesh!, jointWorld), inverseBind)!;
 }
 
-function normalizeFbxRuntimeToMeters(scene) {
+function normalizeFbxRuntimeToMeters(scene: ViewerScene): void {
     for (const node of scene.nodes) {
         for (const trs of [node.trs, node.restTrs, node.animationTrs]) {
             if (trs?.translation) for (let index = 0; index < 3; index += 1) trs.translation[index] *= 0.01;
@@ -92,7 +97,7 @@ function normalizeFbxRuntimeToMeters(scene) {
     }
 }
 
-function blenderSamples(path, format, times) {
+function blenderSamples(path: string, format: 'fbx' | 'glb', times: number[]): any {
     if (!existsSync(blender)) return null;
     const importer = format === 'fbx'
         ? `bpy.ops.import_scene.fbx(filepath=${JSON.stringify(path)})`
@@ -139,15 +144,15 @@ print('DRACO_BLENDER_JSON='+json.dumps({'samples':samples,'rest':rest,'bounds':b
     return JSON.parse(line.slice('DRACO_BLENDER_JSON='.length));
 }
 
-function blenderPalette(pose, rest) {
-    return multiplyMat4(toColumnMajor(pose), invertMat4(toColumnMajor(rest)));
+function blenderPalette(pose: number[], rest: number[]): number[] {
+    return multiplyMat4(toColumnMajor(pose), invertMat4(toColumnMajor(rest)))!;
 }
 
-function toColumnMajor(rowMajor) {
+function toColumnMajor(rowMajor: number[]): Float32Array {
     return Float32Array.from(rowMajor.flatMap((_, index) => rowMajor[(index % 4) * 4 + Math.floor(index / 4)]));
 }
 
-function maxBlenderDrift(expected, actual) {
+function maxBlenderDrift(expected: any, actual: any): { world: number; skin: number; worstWorld: { sample: number; bone: string; component: number } } {
     let world = 0;
     let skin = 0;
     let worstWorld = { sample: 0, bone: '', component: 0 };
@@ -168,7 +173,7 @@ function maxBlenderDrift(expected, actual) {
     return { world, skin, worstWorld };
 }
 
-function maxBlenderBoundsDrift(expected, actual) {
+function maxBlenderBoundsDrift(expected: any, actual: any): { worst: number; rootOffset: number[]; mesh: string; sample: number; extreme: number; component: number } {
     // Blender's FBX importer applies one fixed source-axis placement to the
     // imported scene. Keep that established basis correction, but derive it
     // from a stable named mesh instead of whichever mesh a HashMap happened
@@ -179,7 +184,7 @@ function maxBlenderBoundsDrift(expected, actual) {
     const actualMeshes = Object.keys(actual.bounds).sort();
     assert.deepEqual(actualMeshes, expectedMeshes, 'Blender evaluated mesh identity');
     const basisMesh = expectedMeshes.find((name) => name.endsWith('_Surface') || name.endsWith('Surface')) ?? expectedMeshes[0];
-    const rootOffset = expected.bounds[basisMesh][0][0].map((value, component) =>
+    const rootOffset = expected.bounds[basisMesh][0][0].map((value: number, component: number) =>
         actual.bounds[basisMesh][0][0][component] - value);
     for (const mesh of expectedMeshes) {
         for (let sample = 0; sample < expected.bounds[mesh].length; sample += 1) {
@@ -197,7 +202,7 @@ function maxBlenderBoundsDrift(expected, actual) {
     return { worst, rootOffset, ...worstCase };
 }
 
-async function assertValidGlb(bytes, name) {
+async function assertValidGlb(bytes: Uint8Array, name: string): Promise<void> {
     assert.deepEqual(Array.from(bytes.slice(0, 4)), [0x67, 0x6c, 0x54, 0x46], `${name} must be a GLB`);
     const report = await validateBytes(bytes, { uri: `${name}.glb` });
     assert.equal(report.issues.numErrors, 0, `${name} GLB validation: ${JSON.stringify(report.issues.messages)}`);
@@ -286,10 +291,10 @@ assert.equal(texturedManifest.textures[ktxTexture].extensions.KHR_texture_basisu
 assert.equal(texturedManifest.textures[webpTexture].extensions.EXT_texture_webp.source >= 0, true);
 assert.equal(texturedManifest.textures[avifTexture].extensions.EXT_texture_avif.source >= 0, true);
 const texturedRoundtrip = buildSceneDocumentFromGltf(texturedLowered.json, texturedLowered.resources, gltf);
-const roundtripMaterial = texturedRoundtrip.materials.at(-1);
-assert.deepEqual(roundtripMaterial.baseColorTexture.transform, { offset: [0.25, 0.5], scale: [2, 3], rotation: 0.125, texCoord: 2 });
-assert.equal(roundtripMaterial.normalTexture.scale, 0.6);
-assert.equal(roundtripMaterial.occlusionTexture.strength, 0.4);
+const roundtripMaterial = texturedRoundtrip.materials.at(-1)!;
+assert.deepEqual(roundtripMaterial.baseColorTexture!.transform, { offset: [0.25, 0.5], scale: [2, 3], rotation: 0.125, texCoord: 2 });
+assert.equal(roundtripMaterial.normalTexture!.scale, 0.6);
+assert.equal(roundtripMaterial.occlusionTexture!.strength, 0.4);
 assert.equal(texturedRoundtrip.resources.some((resource) => resource.mimeType === 'image/ktx2'), true);
 assert.equal(texturedRoundtrip.resources.some((resource) => resource.mimeType === 'image/webp'), true);
 assert.equal(texturedRoundtrip.resources.some((resource) => resource.mimeType === 'image/avif'), true);
@@ -302,7 +307,7 @@ const lightsSource = new Uint8Array(await readFile(resolve(
     'glTF_Binary', 'PointLightIntensityTest.glb',
 )));
 const litDocument = buildSceneDocumentFromGltf(lightsSource, {}, gltf);
-assert.equal(litDocument.lights.length, 8, 'the asset declares eight punctual lights');
+assert.equal(litDocument.lights!.length, 8, 'the asset declares eight punctual lights');
 assert.equal(
     litDocument.nodes.filter((node) => node.light !== undefined).length,
     8,
@@ -321,7 +326,7 @@ const litRoundtrip = buildSceneDocumentFromGltf(litOutput.binary, {}, gltf);
 // just written: comparing a reader with itself passes even when both halves
 // have dropped the same field.
 assert.deepEqual(
-    litRoundtrip.lights.map((light) => [light.type, light.intensity, light.range]),
+    litRoundtrip.lights!.map((light) => [light.type, light.intensity, light.range]),
     Array.from({ length: 8 }, () => ['point', 1, 1.125]),
     'every light survives the round trip with the values the asset states',
 );
@@ -337,8 +342,8 @@ for (const [label, path] of [['Mixamo', mixamoFbx], ['Samba', sambaFbx]]) {
     const portable = buildSceneDocumentFromFbx(parsed);
     const output = serializeSceneDocumentToGlb(portable, gltf);
     await assertValidGlb(output.binary, `${label}-scene-document`);
-    const expected = await buildSceneFromFbx(parsed);
-    const actual = await buildSceneFromGltf(output.binary, {}, gltf);
+    const expected: ViewerScene = await buildSceneFromFbx(parsed);
+    const actual: ViewerScene = await buildSceneFromGltf(output.binary, {}, gltf);
     normalizeFbxRuntimeToMeters(expected);
     assert.equal(actual.animations.length, expected.animations.length, `${label} clip count`);
     assert.equal(actual.skins[0].joints.length, expected.skins[0].joints.length, `${label} skin joint count`);

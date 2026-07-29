@@ -15,7 +15,7 @@ if (skipUnless([foxGltf, foxBin], 'SceneDocument FBX writer')) process.exit(0);
 const fbxFixtures = !skipUnless([mixamoFbx, sambaFbx], 'SceneDocument FBX writer source models');
 
 const [fbx, gltf] = await Promise.all([loadWasm('fbx'), loadWasm('gltf')]);
-const allNodes = (nodes) => nodes.flatMap((node) => [node, ...allNodes(node.children || [])]);
+const allNodes = (nodes: any[]): any[] => nodes.flatMap((node) => [node, ...allNodes(node.children || [])]);
 
 for (const [label, path] of fbxFixtures ? [['Mixamo', mixamoFbx], ['Samba', sambaFbx]] : []) {
     const parsed = fbx.parse_fbx(await readBytes(path));
@@ -26,7 +26,7 @@ for (const [label, path] of fbxFixtures ? [['Mixamo', mixamoFbx], ['Samba', samb
     assert.equal(allNodes(scene.rootNodes).length, document.nodes.length, `${label} hierarchy count`);
     assert.equal(scene.materials.length, document.materials.length, `${label} material count`);
     assert.equal(scene.animations.length, document.animations.length, `${label} clip count`);
-    assert.ok(allNodes(scene.rootNodes).some((node) => node.meshes?.some((mesh) => mesh.skin)), `${label} skin payload`);
+    assert.ok(allNodes(scene.rootNodes).some((node) => node.meshes?.some((mesh: any) => mesh.skin)), `${label} skin payload`);
     const written = fbx.create_fbx_scene(scene, { version: 7500 });
     assert.equal(written.success, true, `${label} typed FBX write: ${written.error || ''}`);
     const reparsed = fbx.parse_fbx(new Uint8Array(written.binary_data));

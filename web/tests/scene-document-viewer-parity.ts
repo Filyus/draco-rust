@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { createSceneDocument } from '../src/scene-document.ts';
 import { buildViewerSceneFromDocument } from '../src/scene-document-viewer.ts';
 
-globalThis.WebGL2RenderingContext = class {};
+(globalThis as any).WebGL2RenderingContext = class {};
 const { Viewer } = await import('../src/viewer.ts');
 
-function bytes(values) {
+function bytes(values: Float32Array | Uint16Array | Int16Array): Uint8Array {
     return new Uint8Array(values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength));
 }
 
@@ -71,7 +71,7 @@ assert.equal(
     -1,
     'a primitive without a material must not borrow materials[0]',
 );
-assert.equal(scene.textures[0].image, undefined, 'runtime adapter must not inject browser image handles');
+assert.equal((scene.textures[0] as { image?: unknown }).image, undefined, 'runtime adapter must not inject browser image handles');
 assert.ok(scene.textures[0].bytes instanceof Uint8Array);
 
 const probe = Object.create(Viewer.prototype);

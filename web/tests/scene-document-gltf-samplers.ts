@@ -12,20 +12,25 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { stripeNormalMapPng } from './smoke-fixtures.ts';
+import type { createSceneDocument as CreateSceneDocument } from '../src/scene-document.ts';
+import type { lowerSceneDocumentToGltf as LowerSceneDocumentToGltf } from '../src/scene-document-gltf.ts';
+import type { buildSceneDocumentFromGltf as BuildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 const pkg = resolve(here, '..', 'www', 'pkg');
 
-const { createSceneDocument } = await import(pathToFileURL(resolve(here, '..', 'src', 'scene-document.ts')).href);
+const { createSceneDocument } = await import(pathToFileURL(resolve(here, '..', 'src', 'scene-document.ts')).href) as {
+  createSceneDocument: typeof CreateSceneDocument;
+};
 const { lowerSceneDocumentToGltf } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'scene-document-gltf.ts')).href
-);
+) as { lowerSceneDocumentToGltf: typeof LowerSceneDocumentToGltf };
 
 const png = new Uint8Array(stripeNormalMapPng());
 const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
 const uvs = new Float32Array([0, 0, 1, 0, 0, 1]);
-const bytes = (view) => new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
+const bytes = (view: Float32Array): Uint8Array => new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
 const repeat = { wrapS: 10497, wrapT: 10497, minFilter: 9987, magFilter: 9729 };
 
 const document = createSceneDocument({
@@ -54,7 +59,7 @@ const document = createSceneDocument({
 
 const manifest = JSON.parse(new TextDecoder().decode(lowerSceneDocumentToGltf(document).json));
 assert.equal(manifest.samplers.length, 2, 'four textures over two distinct settings need two samplers');
-assert.deepEqual(manifest.textures.map((texture) => texture.sampler), [0, 0, 0, 1]);
+assert.deepEqual(manifest.textures.map((texture: { sampler: number }) => texture.sampler), [0, 0, 0, 1]);
 // One image behind four textures was already shared; assert it stays that way.
 assert.equal(manifest.images.length, 1);
 
@@ -65,10 +70,10 @@ const gltfModule = await import(pathToFileURL(resolve(pkg, 'gltf.js')).href);
 await gltfModule.default({ module_or_path: await readFile(resolve(pkg, 'gltf_bg.wasm')) });
 const { buildSceneDocumentFromGltf } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'gltf-scene-document.ts')).href
-);
+) as { buildSceneDocumentFromGltf: typeof BuildSceneDocumentFromGltf };
 const source = JSON.parse(await readFile(model, 'utf8'));
-const resources = {};
-for (const uri of [...(source.buffers || []), ...(source.images || [])].map((entry) => entry.uri)) {
+const resources: Record<string, Uint8Array> = {};
+for (const uri of [...(source.buffers || []), ...(source.images || [])].map((entry: { uri?: string }) => entry.uri)) {
   if (typeof uri === 'string' && !uri.startsWith('data:')) {
     resources[uri] = new Uint8Array(await readFile(resolve(dirname(model), uri)));
   }

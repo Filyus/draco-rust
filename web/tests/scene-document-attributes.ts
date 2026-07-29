@@ -4,7 +4,7 @@ import { lowerSceneDocumentToGltf } from '../src/scene-document-gltf.ts';
 import { buildViewerSceneFromDocument } from '../src/scene-document-viewer.ts';
 import { assertValidSceneDocument, createSceneDocument } from '../src/scene-document.ts';
 
-function bytes(values) {
+function bytes(values: Float32Array | Uint16Array): Uint8Array {
     return new Uint8Array(values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength));
 }
 
@@ -60,7 +60,7 @@ assert.equal(viewerScene.meshes[0].primitives[0].attributes.TEXCOORD_1.component
 assert.match(viewerScene.warnings.join('\n'), /first four influences/);
 
 const fbxScene = buildFbxSceneFromDocument(document);
-const weightsPreserved = fbxScene.rootNodes[0].meshes[0].skin.clusters.reduce((total, cluster) => total + cluster.weights.length, 0);
+const weightsPreserved = fbxScene.rootNodes[0].meshes[0].skin.clusters.reduce((total: number, cluster: { weights: number[] }) => total + cluster.weights.length, 0);
 assert.equal(weightsPreserved, 24);
 // COLOR_0 and TANGENT used to be warned about instead of exported. They now
 // travel as LayerElementColor and LayerElementTangent, so the check is that
