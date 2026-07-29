@@ -284,7 +284,10 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
 
   log(`Loading ${file.name}...`, 'info');
 
-  fileInfo.style.display = 'flex';
+  // Grid, and stated here because this inline value is what the stylesheet's
+  // own `display` has to agree with: the bar lays the name and the remove
+  // button out in a row and gives the model picker the width of both.
+  fileInfo.style.display = 'grid';
   dropZone.style.display = 'none';
 
   state.currentFileType = extension;

@@ -233,12 +233,16 @@ input:focus-visible,
 .browse-btn:hover,
 .primary-btn:hover { background: #5288df; }
 
+/* A grid rather than a flex row, so the model picker can span the whole bar
+   under the name and the remove button instead of sharing a column with them.
+   Squeezed beside the name it was half the panel's width, and a list is only
+   ever as wide as the field it belongs to. */
 .file-info-bar {
     min-height: 51px;
     padding: 7px 8px 7px 11px;
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    justify-content: space-between;
     gap: 8px;
     border: 0;
     border-radius: 9px;
@@ -253,7 +257,7 @@ input:focus-visible,
 /* `min-width: 0` because the trigger's label is nowrap: hiding the overflow
    does not shrink what the column asks for, so without this the grid track
    sizes to the whole path and the panel spills over the viewport beside it. */
-.file-model { min-width: 0; margin-top: 6px; }
+.file-model { grid-column: 1 / -1; min-width: 0; margin-top: 2px; }
 .file-model[hidden] { display: none; }
 .file-model-caption {
     display: block;
@@ -698,11 +702,17 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
     border-right: 1.5px solid currentColor;
     border-bottom: 1.5px solid currentColor;
     color: #8298b7;
-    transform: rotate(45deg) translate(-1px, -1px);
+    /* Nudged in screen pixels, not in the glyph's own rotated frame, so the
+       figure below means what it says. Only two edges of the square are inked,
+       which puts the mark's centre of area 1.71px from the centre of its box
+       along the diagonal it is rotated onto — below it pointing down, above it
+       pointing up. Centred by its box instead, the mark rides low closed and
+       high open, which is what the arrow looked wrong for. */
+    transform: translateY(-1.71px) rotate(45deg);
     transform-origin: center;
     transition: transform 140ms ease, color 140ms ease;
 }
-.menu-picker-trigger[aria-expanded="true"] .menu-picker-chevron { color: #b9cce7; transform: rotate(225deg) translate(-1px, -1px); }
+.menu-picker-trigger[aria-expanded="true"] .menu-picker-chevron { color: #b9cce7; transform: translateY(1.71px) rotate(225deg); }
 
 .menu-picker-menu {
     position: absolute;

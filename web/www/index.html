@@ -87,17 +87,20 @@
                         <div class="file-meta">
                             <span class="file-name" id="file-name">model.obj</span>
                             <span class="file-size" id="file-size">12.5 MB</span>
-                            <div class="menu-picker file-model" id="file-model-picker" hidden>
-                                <span class="file-model-caption" id="file-model-caption">Model in this folder</span>
-                                <select id="file-model" class="menu-picker-native" aria-hidden="true" tabindex="-1"></select>
-                                <button type="button" class="menu-picker-trigger" id="file-model-trigger" aria-labelledby="file-model-caption file-model-label" aria-haspopup="listbox" aria-expanded="false" aria-controls="file-model-menu">
-                                    <span id="file-model-label">Model</span>
-                                    <span class="menu-picker-chevron" aria-hidden="true"></span>
-                                </button>
-                                <div class="menu-picker-menu" id="file-model-menu" role="listbox" aria-label="Model in this folder" hidden></div>
-                            </div>
                         </div>
                         <button id="clear-file" class="icon-btn" title="Remove file">✕</button>
+                        <!-- Across the whole bar rather than beside the name, so the
+                             field is the width of the panel like the variant picker
+                             is, and its list is the width of the field. -->
+                        <div class="menu-picker file-model" id="file-model-picker" hidden>
+                            <span class="file-model-caption" id="file-model-caption">Model in this folder</span>
+                            <select id="file-model" class="menu-picker-native" aria-hidden="true" tabindex="-1"></select>
+                            <button type="button" class="menu-picker-trigger" id="file-model-trigger" aria-labelledby="file-model-caption file-model-label" aria-haspopup="listbox" aria-expanded="false" aria-controls="file-model-menu">
+                                <span id="file-model-label">Model</span>
+                                <span class="menu-picker-chevron" aria-hidden="true"></span>
+                            </button>
+                            <div class="menu-picker-menu" id="file-model-menu" role="listbox" aria-label="Model in this folder" hidden></div>
+                        </div>
                     </div>
                 </section>
 

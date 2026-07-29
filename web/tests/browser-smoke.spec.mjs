@@ -2020,9 +2020,28 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   // value everything else reads.
   await page.locator('#viewer-variant-trigger').click();
   await expect(page.locator('#viewer-variant-menu')).toBeVisible();
+
+  // The chevron is two edges of a square, so its ink sits off the centre of its
+  // own box and the box has to ride against it — up while it points down, down
+  // while it points up, by the same amount. Compensated in one state only, it
+  // reads as an arrow that drifts when the list opens.
+  const chevron = () => page.evaluate(() => {
+    const trigger = document.getElementById('viewer-variant-trigger');
+    const box = trigger.getBoundingClientRect();
+    const mark = trigger.querySelector('.menu-picker-chevron').getBoundingClientRect();
+    return +((mark.top + mark.height / 2) - (box.top + box.height / 2)).toFixed(2);
+  });
+  // After the flip has finished: read at the click, it is still on its way and
+  // the number is whatever the 140ms transition had reached.
+  await page.waitForTimeout(300);
+  const openOffset = await chevron();
+  expect(openOffset).toBeGreaterThan(0);
+
   await page.locator('#viewer-variant-menu .menu-picker-option[data-value="1"]').click();
   await expect(page.locator('#viewer-variant')).toHaveValue('1');
   await expect(page.locator('#viewer-variant-menu')).toBeHidden();
+  await page.waitForTimeout(200);
+  expect(await chevron()).toBe(-openOffset);
   // Waiting on the console would be satisfied by the "Preview ready" the first
   // load already printed, so wait for the scene the picker rebuilds. It has to
   // be expect.poll rather than waitForFunction: the latter takes the promise an
@@ -3661,6 +3680,23 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
     }
 
     const picker = document.getElementById('file-model-picker');
+
+    // The field takes the whole bar — the name's left edge to the remove
+    // button's right — and the list is the width of the field, which is what
+    // the control has always done. Squeezed into a column beside the name it
+    // was less than half that, and every row came back cut to an ellipsis.
+    const triggerButton = document.getElementById('file-model-trigger');
+    triggerButton.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const menu = document.getElementById('file-model-menu');
+    const box = (element) => element.getBoundingClientRect();
+    const layout = {
+      sameWidth: Math.round(box(menu).width) === Math.round(box(triggerButton).width),
+      spansBar: box(triggerButton).left <= box(document.getElementById('file-name')).left + 1
+        && box(triggerButton).right >= box(document.getElementById('clear-file')).right - 1,
+    };
+    triggerButton.click();
+
     const chosen = () => ({
       path: state.currentModelPath,
       resources: Object.keys(state.currentSourceResources),
@@ -3678,6 +3714,7 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
 
     return {
       first,
+      layout,
       second: chosen(),
       offered: [...select.options].map((option) => [option.value, option.textContent]),
       pickerShown: !picker.hidden,
@@ -3694,6 +3731,8 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
   // they share, and the shorter path is the one that opened.
   expect(observed.pickerShown).toBe(true);
   expect(observed.fits).toBe(true);
+  expect(observed.layout.spansBar).toBe(true);
+  expect(observed.layout.sameWidth).toBe(true);
   expect(observed.offered).toEqual([
     ['Helmet/glTF/Helmet.gltf', 'glTF/Helmet.gltf'],
     ['Helmet/glTF-instancing/HelmetInstanced.gltf', 'glTF-instancing/HelmetInstanced.gltf'],
