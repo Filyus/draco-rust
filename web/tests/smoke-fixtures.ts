@@ -2,12 +2,12 @@ import { deflateSync } from 'node:zlib';
 
 export const TRIANGLE_BASE64 = 'AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA';
 
-export function triangleBytes() {
+export function triangleBytes(): Uint8Array {
   const binary = atob(TRIANGLE_BASE64);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-export function embeddedTriangle() {
+export function embeddedTriangle(): string {
   return JSON.stringify({
     asset: { version: '2.0' },
     buffers: [{
@@ -33,7 +33,7 @@ export function embeddedTriangle() {
   });
 }
 
-export function externalTriangle() {
+export function externalTriangle(): string {
   return JSON.stringify({
     asset: { version: '2.0' },
     buffers: [{ uri: 'missing.bin', byteLength: 36 }],
@@ -51,7 +51,7 @@ export function externalTriangle() {
 }
 
 /** CRC-32, the one checksum every PNG chunk carries. */
-function crc32(bytes) {
+function crc32(bytes: Buffer): number {
   let crc = 0xffffffff;
   for (const byte of bytes) {
     crc ^= byte;
@@ -62,7 +62,7 @@ function crc32(bytes) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function pngChunk(type, data) {
+function pngChunk(type: string, data: Buffer): Buffer {
   const header = Buffer.alloc(8);
   header.writeUInt32BE(data.length, 0);
   header.write(type, 4, 'ascii');
@@ -80,7 +80,7 @@ function pngChunk(type, data) {
  * environment map, which flattens gentle perturbations, so the fixture leans on
  * a steep tilt to make "the map is applied" separable from "it is not".
  */
-export function stripeNormalMapPng() {
+export function stripeNormalMapPng(): Buffer {
   const width = 8;
   const tilted = [251, 128, 161];
   const counterTilted = [5, 128, 161];
@@ -104,6 +104,11 @@ export function stripeNormalMapPng() {
   ]);
 }
 
+export interface NormalMappedQuadOptions {
+  normalMap?: boolean;
+  scale?: number;
+}
+
 /**
  * A textured quad, optionally normal-mapped, scaled down to `scale`.
  *
@@ -113,7 +118,7 @@ export function stripeNormalMapPng() {
  * metre-sized one. Rendering the same quad with and without the normal map
  * shows whether the map reaches the surface at all.
  */
-export function normalMappedQuad({ normalMap = true, scale = 0.02 } = {}) {
+export function normalMappedQuad({ normalMap = true, scale = 0.02 }: NormalMappedQuadOptions = {}): string {
   const positions = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
   const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]);
   const uvs = new Float32Array([0, 1, 1, 1, 1, 0, 0, 0]);
@@ -167,7 +172,7 @@ export function normalMappedQuad({ normalMap = true, scale = 0.02 } = {}) {
  * arrives. Green, because that placeholder is neutral and a channel that only
  * the decoded image can raise is what makes the two separable.
  */
-export function solidColorPng([red, green, blue] = [0, 255, 0]) {
+export function solidColorPng([red, green, blue]: [number, number, number] = [0, 255, 0]): Buffer {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(1, 0);
   header.writeUInt32BE(1, 4);
@@ -182,7 +187,7 @@ export function solidColorPng([red, green, blue] = [0, 255, 0]) {
 }
 
 /** A 2x1 truecolour PNG: red on the left half, green on the right. */
-function splitColorPng() {
+function splitColorPng(): Buffer {
   const row = Buffer.from([0, 255, 0, 0, 0, 255, 0]);
   const header = Buffer.alloc(13);
   header.writeUInt32BE(2, 0);
@@ -197,6 +202,10 @@ function splitColorPng() {
   ]);
 }
 
+export interface EmissiveTransformQuadOptions {
+  offset?: number;
+}
+
 /**
  * A quad whose emissive texture is squeezed onto one half of a two-colour map
  * by `KHR_texture_transform`.
@@ -209,7 +218,7 @@ function splitColorPng() {
  * produces the same half-red half-green frame for both, which is what makes the
  * pair separable rather than merely different.
  */
-export function emissiveTransformQuad({ offset = 0 } = {}) {
+export function emissiveTransformQuad({ offset = 0 }: EmissiveTransformQuadOptions = {}): string {
   const positions = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
   const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]);
   const uvs = new Float32Array([0, 1, 1, 1, 1, 0, 0, 0]);
@@ -261,7 +270,7 @@ export function emissiveTransformQuad({ offset = 0 } = {}) {
   });
 }
 
-export function animatedTranslation() {
+export function animatedTranslation(): string {
   return JSON.stringify({
     asset: { version: '2.0' },
     buffers: [{
@@ -296,18 +305,18 @@ export function animatedTranslation() {
  * The quad faces the camera and fills the view, so what the viewport shows is
  * the texture rather than a lit surface at an angle.
  */
-export function basisTexturedGlb(ktx2Bytes) {
+export function basisTexturedGlb(ktx2Bytes: Uint8Array): Uint8Array {
   const positions = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
   const uvs = new Float32Array([0, 1, 1, 1, 1, 0, 0, 0]);
   const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]);
   const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
 
-  const parts = [positions, uvs, normals, indices, ktx2Bytes];
-  const views = [];
+  const parts: Array<Float32Array | Uint16Array | Uint8Array> = [positions, uvs, normals, indices, ktx2Bytes];
+  const views: Array<{ buffer: number; byteOffset: number; byteLength: number }> = [];
   let offset = 0;
-  const chunks = [];
+  const chunks: Uint8Array[] = [];
   for (const part of parts) {
-    const bytes = new Uint8Array(part.buffer ? part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) : part);
+    const bytes = new Uint8Array(part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength));
     views.push({ buffer: 0, byteOffset: offset, byteLength: bytes.length });
     chunks.push(bytes);
     offset += bytes.length;

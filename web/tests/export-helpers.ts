@@ -10,11 +10,23 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { modules as ModulesState } from '../src/app/state.ts';
+import type {
+  ExportSettings,
+  exportToFbx as ExportToFbx,
+  exportToObj as ExportToObj,
+  exportToPly as ExportToPly,
+  prepareMeshesForExport as PrepareMeshesForExport,
+} from '../src/app/export-branches.ts';
+
+type NormalsAndUvs = Pick<ExportSettings, 'includeNormals' | 'includeUvs'>;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..', 'www', 'pkg');
 
-const { modules } = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'state.ts')).href);
+const { modules } = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'state.ts')).href) as {
+  modules: typeof ModulesState;
+};
 for (const name of ['obj', 'ply', 'fbx']) {
   const module = await import(pathToFileURL(resolve(pkg, `${name}.js`)).href);
   await module.default({ module_or_path: await readFile(resolve(pkg, `${name}_bg.wasm`)) });
@@ -26,9 +38,14 @@ const {
   exportToObj,
   exportToPly,
   prepareMeshesForExport,
-} = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'export-branches.ts')).href);
+} = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'export-branches.ts')).href) as {
+  exportToFbx: typeof ExportToFbx;
+  exportToObj: typeof ExportToObj;
+  exportToPly: typeof ExportToPly;
+  prepareMeshesForExport: typeof PrepareMeshesForExport;
+};
 
-const all = { includeNormals: true, includeUvs: true };
+const all: NormalsAndUvs = { includeNormals: true, includeUvs: true };
 const quad = [
   {
     name: 'front',

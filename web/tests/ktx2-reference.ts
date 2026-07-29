@@ -11,6 +11,7 @@
  * to compare against, not a dependency. It lives outside this repository, so a
  * machine without it skips the gate rather than failing it, and says so.
  */
+import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
@@ -19,7 +20,8 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 
 /** Where the three.js checkout keeps Binomial's build. */
-const REFERENCE_DIR = 'D:/Projects/Three.ts/three.js-master/examples/jsm/libs/basis';
+const REFERENCE_DIR = process.env.THREEJS_BASIS_DIR
+  || 'D:/Projects/Three.ts/three.js-master/examples/jsm/libs/basis';
 
 export const FIXTURES = resolve(here, '..', '..', 'testdata', 'ktx2');
 export const PKG = resolve(here, '..', 'www', 'pkg');
@@ -35,13 +37,18 @@ export const TARGET = {
   RGBA32: 13,
 };
 
+export interface ReferenceTranscoder {
+  transcode(name: string, level: number, target: number): Promise<Uint8Array>;
+  /** The same, for a file that was built rather than read. */
+  transcodeBytes(bytes: Uint8Array, level: number, target: number, name?: string): Uint8Array;
+  levels(name: string): Promise<number>;
+}
+
 /**
  * Load the reference transcoder, or explain why the gate cannot run.
- *
- * @returns {Promise<{ transcode(name: string, level: number, target: number): Uint8Array } | null>}
  */
-export async function loadReference() {
-  let wasmBinary;
+export async function loadReference(): Promise<ReferenceTranscoder | null> {
+  let wasmBinary: Buffer;
   try {
     wasmBinary = await readFile(resolve(REFERENCE_DIR, 'basis_transcoder.wasm'));
   } catch {
@@ -51,7 +58,7 @@ export async function loadReference() {
   // file, but it sits inside a checkout whose package.json declares modules,
   // so node loads it as ESM and hands back an empty namespace.
   const source = await readFile(resolve(REFERENCE_DIR, 'basis_transcoder.js'), 'utf8');
-  const scope = { exports: {} };
+  const scope = { exports: {} as any };
   new Function('module', 'exports', 'require', '__filename', '__dirname', source)(
     scope,
     scope.exports,
@@ -60,15 +67,14 @@ export async function loadReference() {
     REFERENCE_DIR,
   );
   const factory = scope.exports;
-  const basis = await new Promise((done) => { factory({ wasmBinary }).then(done); });
+  const basis: any = await new Promise((done) => { factory({ wasmBinary }).then(done); });
   basis.initializeBasis();
 
   return {
-    async transcode(name, level, target) {
+    async transcode(this: ReferenceTranscoder, name, level, target) {
       const bytes = new Uint8Array(await readFile(resolve(FIXTURES, `${name}.ktx2`)));
       return this.transcodeBytes(bytes, level, target, `${name}.ktx2`);
     },
-    /** The same, for a file that was built rather than read. */
     transcodeBytes(bytes, level, target, name = 'the given bytes') {
       const file = new basis.KTX2File(bytes);
       try {
@@ -99,7 +105,7 @@ export async function loadReference() {
 }
 
 /** Load our own transcoder out of the built WASM package. */
-export async function loadKtx2Module() {
+export async function loadKtx2Module(): Promise<any> {
   const module = await import(new URL(`file://${resolve(PKG, 'ktx2.js').replace(/\\/g, '/')}`).href);
   await module.default({ module_or_path: await readFile(resolve(PKG, 'ktx2_bg.wasm')) });
   return module;
@@ -113,11 +119,14 @@ export async function loadKtx2Module() {
  * all of it, every level, byte for byte — is the same question either way, and
  * writing it twice would let the two drift.
  *
- * @returns {Promise<number>} how many levels were compared.
+ * @returns how many levels were compared.
  */
-export async function compareAllLevels(ktx2, reference, files, codec) {
-  const assert = (await import('node:assert/strict')).default;
-  const { readFile } = await import('node:fs/promises');
+export async function compareAllLevels(
+  ktx2: any,
+  reference: ReferenceTranscoder,
+  files: string[],
+  codec: string,
+): Promise<number> {
   let compared = 0;
 
   for (const name of files) {
@@ -130,7 +139,7 @@ export async function compareAllLevels(ktx2, reference, files, codec) {
     for (let level = 0; level < file.levels; level++) {
       const want = await reference.transcode(name, level, TARGET.RGBA32);
       const image = file.decodeRgba(level);
-      const got = image.bytes();
+      const got: Uint8Array = image.bytes();
 
       assert.equal(
         got.length,
@@ -148,9 +157,9 @@ export async function compareAllLevels(ktx2, reference, files, codec) {
 /**
  * Where two byte strings first differ, worded so the failure names a pixel.
  *
- * @returns {string | null} null when they are identical.
+ * @returns null when they are identical.
  */
-export function firstDifference(want, got) {
+export function firstDifference(want: Uint8Array, got: Uint8Array): string | null {
   if (want.length !== got.length) return `${want.length} bytes expected, ${got.length} produced`;
   for (let index = 0; index < want.length; index++) {
     if (want[index] !== got[index]) {

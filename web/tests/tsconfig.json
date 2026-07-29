@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "noEmit": true,
+
+    // Tests run against Node directly and import node: modules the front-end
+    // never touches; the front-end config has no reason to carry that. The
+    // inherited "lib" (ES2022 + DOM) stays: tests import src modules that
+    // assume DOM ambient types (WebGL2RenderingContext and friends), and a
+    // type existing is harmless in a program that never runs in a browser.
+    "types": ["node"]
+  },
+  "include": ["."]
+}

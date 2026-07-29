@@ -4,7 +4,20 @@ const GLB_MAGIC = 0x46546c67;
 const JSON_CHUNK = 0x4e4f534a;
 const BIN_CHUNK = 0x004e4942;
 
-function firstDracoPayload(glb) {
+interface DracoPayload {
+  bytes: Uint8Array;
+  declaredPoints: number | undefined;
+  declaredIndices: number | undefined;
+}
+
+export interface DecodedDracoPrimitive {
+  points: number;
+  faces: number;
+  declaredPoints: number | undefined;
+  declaredIndices: number | undefined;
+}
+
+function firstDracoPayload(glb: Uint8Array | ArrayBuffer): DracoPayload {
   const bytes = glb instanceof Uint8Array ? glb : new Uint8Array(glb);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (bytes.byteLength < 20 || view.getUint32(0, true) !== GLB_MAGIC) {
@@ -18,8 +31,8 @@ function firstDracoPayload(glb) {
     throw new Error(`GLB length ${declaredLength} does not match ${bytes.byteLength} bytes`);
   }
 
-  let json;
-  let binary;
+  let json: any;
+  let binary: Uint8Array | undefined;
   for (let offset = 12; offset < declaredLength;) {
     if (offset + 8 > declaredLength) {
       throw new Error('truncated GLB chunk header');
@@ -66,7 +79,7 @@ function firstDracoPayload(glb) {
   };
 }
 
-export async function decodeFirstDracoPrimitive(glb) {
+export async function decodeFirstDracoPrimitive(glb: Uint8Array | ArrayBuffer): Promise<DecodedDracoPrimitive> {
   const payload = firstDracoPayload(glb);
   const module = await draco3d.createDecoderModule({});
   const decoder = new module.Decoder();

@@ -3,8 +3,8 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-if (typeof globalThis.WebGL2RenderingContext === 'undefined') {
-    globalThis.WebGL2RenderingContext = class {
+if (typeof (globalThis as any).WebGL2RenderingContext === 'undefined') {
+    (globalThis as any).WebGL2RenderingContext = class {
         static REPEAT = 0x2901;
         static LINEAR_MIPMAP_LINEAR = 0x2703;
         static LINEAR = 0x2601;
@@ -21,28 +21,28 @@ export const sambaFbx = process.env.SAMBA_FBX || resolve(fixtureRoot, 'Samba Dan
 export const foxGltf = process.env.FOX_GLTF || resolve(repoRoot, 'testdata', 'Fox', 'glTF', 'Fox.gltf');
 export const foxBin = process.env.FOX_BIN || resolve(repoRoot, 'testdata', 'Fox', 'glTF', 'Fox.bin');
 
-export function skipUnless(paths, label) {
+export function skipUnless(paths: string[], label: string): boolean {
     const missing = paths.filter((path) => !existsSync(path));
     if (missing.length === 0) return false;
     console.log(`SKIP ${label}: missing ${missing.join(', ')}`);
     return true;
 }
 
-export async function loadWasm(name) {
-    const module = await import(pathToFileURL(resolve(pkg, `${name}.js`)));
+export async function loadWasm(name: string): Promise<any> {
+    const module = await import(pathToFileURL(resolve(pkg, `${name}.js`)).href);
     const wasm = await readFile(resolve(pkg, `${name}_bg.wasm`));
     await module.default({ module_or_path: wasm });
     return module;
 }
 
-export async function loadFbxViewerAdapter() {
-    return import(pathToFileURL(resolve(here, '..', 'src', 'mesh-loader.ts')));
+export async function loadFbxViewerAdapter(): Promise<any> {
+    return import(pathToFileURL(resolve(here, '..', 'src', 'mesh-loader.ts')).href);
 }
 
-export async function readBytes(path) {
+export async function readBytes(path: string): Promise<Uint8Array> {
     return new Uint8Array(await readFile(path));
 }
 
-export function verbose(...values) {
+export function verbose(...values: unknown[]): void {
     if (process.env.DRACO_TEST_VERBOSE === '1') console.log(...values);
 }
