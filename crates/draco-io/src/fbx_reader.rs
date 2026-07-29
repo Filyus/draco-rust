@@ -1,4 +1,5 @@
-//! FBX scene reader: a tree of [`FbxNode`](crate::fbx_container::FbxNode) in, an [`FbxScene`](crate::FbxScene) out.
+//! FBX scene reader: a tree of [`FbxNode`](crate::fbx_container::FbxNode) in,
+//! an [`FbxScene`] out.
 //!
 //! Supports reading:
 //! - Vertex positions, normals, texture coordinates, colours, and tangents
