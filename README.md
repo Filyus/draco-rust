@@ -123,12 +123,6 @@ front-end build and the test suites, are in [`web/README.md`](web/README.md).
 | `fuzz/`, `.clusterfuzzlite/` | Fuzz targets and the continuous fuzzing setup. |
 | `testdata/`, `dev/`, `tools/` | Fixtures and development tooling. |
 
-## Contributing and releases
-
-Releases are per crate and prepared by hand: [`RELEASING.md`](RELEASING.md) for
-the process, [`RELEASING-AGENT.md`](RELEASING-AGENT.md) for the exact procedure,
-and [`AGENTS.md`](AGENTS.md) for how this repository expects changes to be made.
-
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE).
