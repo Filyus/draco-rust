@@ -65,6 +65,12 @@ pub mod ply_reader;
 #[cfg(feature = "ply-writer")]
 /// PLY writer.
 pub mod ply_writer;
+#[cfg(feature = "stl-reader")]
+/// STL reader.
+pub mod stl_reader;
+#[cfg(feature = "stl-writer")]
+/// STL writer.
+pub mod stl_writer;
 /// Shared reader and writer traits.
 pub mod traits;
 
@@ -107,4 +113,8 @@ pub use ply_format::PlyFormat;
 pub use ply_reader::PlyReader;
 #[cfg(feature = "ply-writer")]
 pub use ply_writer::PlyWriter;
+#[cfg(feature = "stl-reader")]
+pub use stl_reader::StlReader;
+#[cfg(feature = "stl-writer")]
+pub use stl_writer::{StlFormat, StlWriter};
 pub use traits::{PointCloudReader, PointCloudWriter, ReadFromBytes, Reader, WriteToBytes, Writer};

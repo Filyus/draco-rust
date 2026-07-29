@@ -33,8 +33,8 @@ default = [
     "compression",
     "point_cloud_decode",
 ]
-all-readers = ["fbx-reader", "obj-reader", "ply-reader"]
-all-writers = ["fbx-writer", "obj-writer", "ply-writer"]
+all-readers = ["fbx-reader", "obj-reader", "ply-reader", "stl-reader"]
+all-writers = ["fbx-writer", "obj-writer", "ply-writer", "stl-writer"]
 # Plain mesh formats (OBJ/PLY/FBX) only touch the geometry data model in
 # draco-core, never the Draco codec, so they do not enable encoder/decoder.
 # Only glTF uses KHR_draco_mesh_compression and thus pulls the codec.
@@ -52,6 +52,8 @@ obj-reader = []
 obj-writer = []
 ply-reader = ["dep:byteorder"]
 ply-writer = []
+stl-reader = []
+stl-writer = []
 point_cloud_decode = ["draco-core/point_cloud_decode"]
 compression = ["miniz_oxide"]
 # Repository-only fixtures and local external-tool tests.
