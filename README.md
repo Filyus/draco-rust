@@ -13,9 +13,10 @@ This project is independent and is not an official Google Draco release.
 
 ## Try it in a browser
 
-**[The converter runs at filyus.github.io/draco-rust](https://filyus.github.io/draco-rust/)** —
-no upload, no server: the WASM modules below do the work in the page, and the
-files never leave the machine.
+**[Draco 3D Studio](https://filyus.github.io/draco-rust/)** — a converter and
+viewer for the crates below, running at `filyus.github.io/draco-rust`. No
+upload, no server: the WASM modules do the work in the page, and the files never
+leave the machine.
 
 Open an OBJ, PLY, FBX or glTF/GLB asset and it reports what the file actually
 contains — hierarchy, materials, skins, morph targets, animation clips — renders
