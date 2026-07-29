@@ -188,12 +188,19 @@ jobs:
       - name: Install Node dependencies
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
 
       - name: Install web test tools
         run: npm ci --ignore-scripts
+        working-directory: web
+
+      # tests/ is real TypeScript, checked against the same tsconfig Node runs
+      # it through (rootDir covers src/ too, so a signature change on the
+      # front-end side that a test relies on fails here, not at runtime).
+      - name: Typecheck the test suite
+        run: npm run typecheck:tests
         working-directory: web
 
       - name: Build optimized WASM and enforce size budget
@@ -325,7 +332,7 @@ jobs:
       - name: Install Node dependencies
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
 
