@@ -38,10 +38,21 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
    If the tree is dirty, classify per `RELEASING.md`; never fold stray work into
    the release commit.
 
-2. **Decide the version** of `<crate>` from *its* public API surface (pre-1.0):
-   - new public API only -> minor (`0.Y+1.0`);
-   - bug/behavior fix only -> patch;
-   - removed/changed public API -> major.
+2. **Decide the version** of `<crate>` from *its* public API surface. Bump the
+   field Cargo treats as breaking, which is the leftmost non-zero one — so the
+   rule differs by the version the crate is already at:
+
+   | `<crate>` is at | removed/changed public API | new public API only | fix only |
+   |---|---|---|---|
+   | `1.Y.Z` (draco-core) | major `2.0.0` | minor `1.Y+1.0` | patch `1.Y.Z+1` |
+   | `0.Y.Z` (draco-io, draco-gltf) | minor `0.Y+1.0` | patch `0.Y.Z+1` | patch `0.Y.Z+1` |
+
+   For a `0.Y.Z` crate the minor **is** the breaking bump: `^0.3.0` admits
+   `0.3.x` and refuses `0.4.0`. Breaking changes there never imply `1.0.0` —
+   reaching `1.0.0` is the maintainer declaring the API stable, and the agent
+   proposes it only when asked.
+
+   A release usually mixes groups; take the strongest one that applies.
 
    Bump `version` in `crates/<crate>/Cargo.toml`. If `<crate>` is a dependency of a crate
    you are **also** releasing now, update that dependent's pin in the **same**
