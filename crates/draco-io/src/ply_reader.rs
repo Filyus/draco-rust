@@ -697,6 +697,29 @@ fn triangulate_vertex_indices(indices: &[u32], faces: &mut Vec<[u32; 3]>) {
     }
 }
 
+/// Which face property carries the polygon's corner indices.
+///
+/// `vertex_indices` when the file names it, and otherwise the first list on the
+/// element, which is what a file spelling it `vertex_index` leaves behind. Every
+/// other list there describes the face rather than being it — per-corner
+/// texture coordinates, most often, which Draco's own encoder writes next to the
+/// indices — so it is skipped whatever scalar type it declares. Choosing the
+/// property before the values are read is the point: reading each list in turn
+/// and keeping the first one made the choice depend on the declaration order,
+/// and made a float list next to the indices a parse error.
+fn face_index_property(properties: &[PlyPropertyDef]) -> Option<usize> {
+    let lists = || {
+        properties
+            .iter()
+            .enumerate()
+            .filter(|(_, property)| matches!(property.kind, PlyPropertyKind::List { .. }))
+    };
+    lists()
+        .find(|(_, property)| property.name == "vertex_indices")
+        .or_else(|| lists().next())
+        .map(|(index, _)| index)
+}
+
 fn parse_ascii_face_line(
     header: &PlyHeader,
     line: &str,
@@ -729,10 +752,11 @@ fn parse_ascii_face_line(
         return Ok(());
     }
 
+    let index_property = face_index_property(&header.face_properties);
     let mut cursor = 0usize;
     let mut polygon_indices: Option<Vec<u32>> = None;
 
-    for property in &header.face_properties {
+    for (position, property) in header.face_properties.iter().enumerate() {
         match property.kind {
             PlyPropertyKind::Scalar(_) => {
                 if cursor >= parts.len() {
@@ -752,18 +776,18 @@ fn parse_ascii_face_line(
                     return Ok(());
                 }
 
-                let values = parts[cursor..cursor + count]
-                    .iter()
-                    .map(|part| {
-                        part.parse::<u32>()
-                            .map_err(|_| invalid_ply("Bad face index value"))
-                    })
-                    .collect::<io::Result<Vec<u32>>>()?;
-                cursor += count;
-
-                if property.name == "vertex_indices" || polygon_indices.is_none() {
-                    polygon_indices = Some(values);
+                if index_property == Some(position) {
+                    polygon_indices = Some(
+                        parts[cursor..cursor + count]
+                            .iter()
+                            .map(|part| {
+                                part.parse::<u32>()
+                                    .map_err(|_| invalid_ply("Bad face index value"))
+                            })
+                            .collect::<io::Result<Vec<u32>>>()?,
+                    );
                 }
+                cursor += count;
             }
         }
     }
@@ -1249,11 +1273,12 @@ fn read_ply_binary_body(
         ));
     }
 
+    let index_property = face_index_property(&header.face_properties);
     let mut faces = Vec::with_capacity(header.face_count);
     for _ in 0..header.face_count {
         let mut polygon_indices: Option<Vec<u32>> = None;
 
-        for property in &header.face_properties {
+        for (position, property) in header.face_properties.iter().enumerate() {
             match property.kind {
                 PlyPropertyKind::Scalar(data_type) => skip_binary_scalar(&mut cursor, data_type)?,
                 PlyPropertyKind::List {
@@ -1261,13 +1286,16 @@ fn read_ply_binary_body(
                     item_type,
                 } => {
                     let count = read_binary_scalar_as_usize(&mut cursor, count_type, endian)?;
-                    let mut values = Vec::with_capacity(count);
-                    for _ in 0..count {
-                        values.push(read_binary_scalar_as_u32(&mut cursor, item_type, endian)?);
-                    }
-
-                    if property.name == "vertex_indices" || polygon_indices.is_none() {
+                    if index_property == Some(position) {
+                        let mut values = Vec::with_capacity(count);
+                        for _ in 0..count {
+                            values.push(read_binary_scalar_as_u32(&mut cursor, item_type, endian)?);
+                        }
                         polygon_indices = Some(values);
+                    } else {
+                        for _ in 0..count {
+                            skip_binary_scalar(&mut cursor, item_type)?;
+                        }
                     }
                 }
             }
@@ -1538,6 +1566,100 @@ end_header
         let error = reader.read_mesh().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("Color properties must be uint8"));
+    }
+
+    /// Per-corner texture coordinates sit next to the indices on the face
+    /// element, and Draco's own PLY encoder writes them there. Both are lists,
+    /// so a reader that takes every face list for indices reads floats as
+    /// vertex numbers — which is a hard parse error, not a wrong mesh.
+    #[test]
+    fn test_read_mesh_skips_non_index_face_lists() {
+        let file = NamedTempFile::new().unwrap();
+        let ply = r#"ply
+format ascii 1.0
+element vertex 4
+property float x
+property float y
+property float z
+element face 2
+property list uchar int vertex_indices
+property list uchar float texcoord
+end_header
+0 0 0
+1 0 0
+1 1 0
+0 1 0
+3 0 1 2 6 0 0 1 0 1 1
+4 0 1 2 3 8 0 0 1 0 1 1 0 1
+"#;
+
+        std::fs::write(file.path(), ply).unwrap();
+
+        let mut reader = PlyReader::open(file.path()).unwrap();
+        let mesh = reader.read_mesh().unwrap();
+
+        assert_eq!(mesh.num_points(), 4);
+        assert_eq!(mesh.num_faces(), 3);
+        assert_eq!(
+            mesh.face(draco_core::geometry_indices::FaceIndex(2)),
+            [0u32.into(), 2u32.into(), 3u32.into()]
+        );
+    }
+
+    /// The same file binary, where the float list is not merely mis-parsed but
+    /// mis-sized: skipping it has to consume exactly its own bytes, or every
+    /// face after the first reads from the wrong offset.
+    #[test]
+    fn test_read_binary_mesh_skips_non_index_face_lists() {
+        let file = NamedTempFile::new().unwrap();
+        let mut ply = Vec::new();
+        ply.extend_from_slice(
+            br#"ply
+format binary_little_endian 1.0
+element vertex 4
+property float x
+property float y
+property float z
+element face 2
+property list uchar int vertex_indices
+property list uchar float texcoord
+end_header
+"#,
+        );
+
+        for vertex in [
+            [0.0f32, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ] {
+            for component in vertex {
+                ply.extend_from_slice(&component.to_le_bytes());
+            }
+        }
+
+        for indices in [vec![0i32, 1, 2], vec![0, 2, 3]] {
+            ply.push(indices.len() as u8);
+            for index in &indices {
+                ply.extend_from_slice(&index.to_le_bytes());
+            }
+            ply.push((indices.len() * 2) as u8);
+            for corner in 0..indices.len() * 2 {
+                ply.extend_from_slice(&(corner as f32).to_le_bytes());
+            }
+        }
+
+        std::fs::write(file.path(), ply).unwrap();
+
+        let mut reader = PlyReader::open(file.path()).unwrap();
+        let mesh = reader.read_mesh().unwrap();
+
+        assert_eq!(mesh.num_points(), 4);
+        assert_eq!(mesh.num_faces(), 2);
+        assert_eq!(
+            mesh.face(draco_core::geometry_indices::FaceIndex(1)),
+            [0u32.into(), 2u32.into(), 3u32.into()]
+        );
     }
 
     #[test]
