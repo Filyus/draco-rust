@@ -20,10 +20,12 @@ leave the machine.
 
 Open an OBJ, PLY, FBX or glTF/GLB asset and it reports what the file actually
 contains — hierarchy, materials, skins, morph targets, animation clips — renders
-it, and exports GLB or FBX with Draco compression optional along the way. What
-each format can and cannot carry across that boundary is stated rather than
-silently dropped: see [`web/README.md`](web/README.md) for the conversion rules
-and the current limitations.
+it, and exports GLB or FBX with Draco compression optional along the way.
+
+Converting between formats loses things, and here it is said out loud: which
+attributes survive an FBX to glTF trip, which have no equivalent to survive
+into, and where the viewer's limits differ from the exporter's are all
+[written down per format](web/README.md#source-neutral-scene-conversion).
 
 ## Crates
 
@@ -129,8 +131,9 @@ cd web && npm ci && bash ./build.sh --app
 ```
 
 `build.sh` defaults to the lightweight release profile that the size budget is
-measured against; `--app` is the converter profile. Details, including the
-front-end build and the test suites, are in [`web/README.md`](web/README.md).
+measured against; `--app` is the converter profile, which the front-end needs.
+The [web workspace guide](web/README.md) covers the module features, the
+TypeScript build, and the Node and Playwright suites.
 
 ## Repository layout
 
