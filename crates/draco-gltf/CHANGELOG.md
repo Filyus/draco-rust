@@ -9,8 +9,48 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.1.0...draco-gltf-v0.2.0) - 2026-07-29
+
 ### Added
 
+- Lossless `Document` typed views and index types for full glTF scenes; unknown
+  fields, `extras`, and unregistered extension JSON survive edits and writes.
+- Pinned glTF 2.1-draft validation surface, GLB v3 containers, explicit
+  `files` asset loading, extension contracts, and packed geometry views.
+- Document-preserving Draco compression with measured output reporting.
+- `Import::to_gltf_output` for portable JSON plus companion buffers, alongside
+  GLB v2/v3 serialization through `Import::to_bytes`.
+- Bidirectional `PackedGeometry` primitive reads and writes, including minimal
+  standalone scenes, raw accessors, explicit Draco storage, and GLB v2/v3.
+- `Document::to_minified_json_bytes` for forced whitespace-free output.
+- `EXT_meshopt_compression` is decoded on import. An asset processed by
+  `gltfpack` points its buffer views at a zero-length fallback buffer and keeps
+  the bytes in a compressed range, which the loader used to refuse outright;
+  the vertex, index and index-sequence streams and the octahedral, quaternion
+  and exponential filters are now decoded into that fallback buffer, leaving
+  every accessor read downstream unchanged. GLB output rebases the extension's
+  compressed range along with the buffer views it merges, so an export no
+  longer depends on the compressed source happening to be written first.
+- Draco compression accepts a document carrying extensions that name no binary
+  data. The guard is whole-document -- an unregistered extension refuses the
+  file rather than risk rewriting accessor indices inside JSON nobody
+  interpreted -- and only the Draco handler was registered, so a material
+  saying how a surface is lit blocked compression of 31 of the 70 corpus
+  assets. Those specifications are now declared, each entry an assertion that
+  the extension owns no binary references. Unknown names still refuse.
+- `EXT_mesh_gpu_instancing` and `EXT_structural_metadata` binary references are
+  collected and renumbered by the Draco-only compactor, which drops and
+  renumbers whatever nothing points at. Previously both were refused, and each
+  would have failed differently: instancing accessors no primitive names would
+  have looked unreferenced and vanished, while a metadata property-table column
+  is a buffer view no accessor can describe, one fixture pointing at a
+  zero-length view a compactor treats as empty.
+- `EXT_mesh_features` feature IDs survive Draco compression. The extension
+  names no accessor or buffer view -- its `featureIds[].attribute` selects
+  `_FEATURE_ID_N` by name -- so what it needs is the encoder leaving those
+  attributes alone: a quantized feature ID is not an approximate one, it is a
+  different one, and nothing downstream could tell. Verified per vertex record
+  rather than per attribute, since Draco reorders vertices.
 - `PackedAttribute::source_accessor` and `PackedIndices::source_accessor`, with
   matching `with_source_accessor` builders, so a consumer can tell that two
   primitives were materialized from one document accessor — the usual case for
@@ -28,45 +68,52 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   validation. The compact `read` profile keeps basic structural checks and
   bounds-safe accessor materialization without paying for the global pass.
 
-### Fixed
-
-- Draco compression now derives accessor counts, component layouts, and
-  `POSITION` bounds from the encoded topology, including when the encoder drops
-  unused points. Decode rejects accessor counts that disagree with the stream.
-- Strict validation requires finite, ordered three-component bounds on
-  `POSITION` accessors.
-
-## [0.2.0] - 2026-07-18
-
-### Added
-
-- Lossless `Document` typed views and index types for full glTF scenes; unknown
-  fields, `extras`, and unregistered extension JSON survive edits and writes.
-- Pinned glTF 2.1-draft validation surface, GLB v3 containers, explicit
-  `files` asset loading, extension contracts, and packed geometry views.
-- Document-preserving Draco compression with measured output reporting.
-- `Import::to_gltf_output` for portable JSON plus companion buffers, alongside
-  GLB v2/v3 serialization through `Import::to_bytes`.
-- Bidirectional `PackedGeometry` primitive reads and writes, including minimal
-  standalone scenes, raw accessors, explicit Draco storage, and GLB v2/v3.
-- `Document::to_minified_json_bytes` for forced whitespace-free output.
-
 ### Changed
 
-- Breaking: replaced the previous external document API. Use `Document`, typed
-  views, and index types described in `MIGRATING_0_2.md`.
-- Full-scene operations now live in `draco-gltf`; `draco-io` provides only
-  container, resource, accessor, and bitstream contracts.
-- `CompressionMode::DracoOnly` is the default and requires Draco; use
-  `CompressionMode::Fallback` to retain ordinary geometry for non-Draco
+- **Breaking.** Replaced the previous external document API. Use `Document`,
+  typed views, and index types described in `MIGRATING_0_2.md`.
+- **Breaking.** Full-scene operations now live in `draco-gltf`; `draco-io`
+  provides only container, resource, accessor, and bitstream contracts.
+- **Breaking.** `CompressionMode::DracoOnly` is the default and requires Draco;
+  use `CompressionMode::Fallback` to retain ordinary geometry for non-Draco
   readers.
 - `Import` is the single geometry read/write entry point; feature `read`
   enables ordinary accessors, while Draco decode and encode remain explicit.
 - Packed geometry belongs to `draco-gltf`; `draco-io` remains the low-level
   container, resource, accessor and Draco contract layer.
+- Extension transform handlers are registered only when the `write` feature
+  asks whether a binary transform may touch a document. A reader build used
+  the registry only to decode Draco geometry and paid for twenty handlers it
+  never consulted: 115.0 KiB of WASM back down to 113.2.
 
 ### Fixed
 
+- A Draco primitive whose accessors declare fewer points than the stream
+  decodes is read rather than rejected. Draco stores connectivity per position
+  vertex and re-splits it at attribute seams, so a mesh with a normal or UV
+  seam decodes to more points than the accessor written before compression
+  says -- glTF-Pipeline, Blender and the Draco encoder all emit such files, and
+  20 of the 61 Draco primitives in Three.js's `ferrari.glb` disagree this way.
+  The upstream C++ decoder returns the same counts, so the geometry is right
+  and only the metadata is stale.
+- Normalization is read from the glTF accessor, which
+  `KHR_draco_mesh_compression` makes authoritative, rather than from the
+  decoded Draco attribute. Third-party encoders leave the Draco flag unset, so
+  a `COLOR_0` stored as normalized unsigned short arrived as raw `0..65535`
+  values, saturated into the base colour and rendered a fully textured model
+  flat white. A round trip through this crate's own encoder cannot show the
+  disagreement, because it writes the flag into the payload.
+- Primitives sharing a document accessor no longer each get their own copy on
+  import. Splitting one mesh by material is how most authored assets are built,
+  and the importer reads geometry per primitive already materialized, so the
+  bytes alone could not reveal the sharing: `DuplicateMeshes` turned 35
+  references to 5 accessors into 35 copies, in the document, in every GLB
+  written from it, and in every FBX built from it.
+- Draco compression now derives accessor counts, component layouts, and
+  `POSITION` bounds from the encoded topology, including when the encoder drops
+  unused points. Decode rejects accessor counts that disagree with the stream.
+- Strict validation requires finite, ordered three-component bounds on
+  `POSITION` accessors.
 - Draco compression and decompression are atomic; shared accessors, unknown
   JSON, registered extension references, and retained scene resources are
   preserved safely.
