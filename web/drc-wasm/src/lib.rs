@@ -67,8 +67,34 @@ pub struct ParseResult {
     pub error: Option<String>,
     /// Non-fatal remarks about the payload.
     pub warnings: Vec<String>,
-    /// Which attributes the payload declared, by name.
-    pub attributes: Vec<String>,
+    /// Every attribute the payload declared, in the order it declared them.
+    pub attributes: Vec<AttributeInfo>,
+}
+
+/// One attribute as the payload declares it.
+///
+/// Draco names four types and an open-ended `GENERIC`, and puts no limit on how
+/// many of each a payload carries: two texture-coordinate sets are ordinary,
+/// and glTF's own Draco extension stores joints and weights as generics. The
+/// flat mesh the shell works in has room for one of each named type and nothing
+/// generic at all, so this list is what makes the difference visible instead of
+/// the extra attributes simply not arriving.
+#[cfg(feature = "read")]
+#[derive(Serialize, Deserialize)]
+pub struct AttributeInfo {
+    /// `POSITION`, `NORMAL`, `COLOR`, `TEX_COORD` or `GENERIC`.
+    #[serde(rename = "type")]
+    pub attribute_type: String,
+    /// Scalar components per value.
+    pub components: u8,
+    /// Component type, as Draco names it.
+    pub data_type: String,
+    /// The id the payload assigned, which is how a consumer addresses it.
+    pub unique_id: u32,
+    /// Unique values stored, before the point mapping is applied.
+    pub values: usize,
+    /// Whether the shell's flat mesh received this attribute.
+    pub read: bool,
 }
 
 /// Decode a standalone Draco payload.
@@ -102,9 +128,16 @@ fn parse_drc_internal(data: &[u8]) -> ParseResult {
                     "Draco payload decoded to a point cloud: it carries no faces".to_string(),
                 );
             }
+            let attributes = describe_attributes(&mesh);
+            for attribute in attributes.iter().filter(|attribute| !attribute.read) {
+                warnings.push(format!(
+                    "Draco payload carries a {} attribute ({} components, id {}) that the flat                      mesh has no place for; it was decoded and dropped",
+                    attribute.attribute_type, attribute.components, attribute.unique_id,
+                ));
+            }
             ParseResult {
                 success: true,
-                attributes: attribute_names(&mesh),
+                attributes,
                 meshes: vec![mesh_to_js_data(&mesh)],
                 error: None,
                 warnings,
@@ -121,18 +154,41 @@ fn parse_drc_internal(data: &[u8]) -> ParseResult {
 }
 
 #[cfg(feature = "read")]
-fn attribute_names(mesh: &Mesh) -> Vec<String> {
-    let named = [
-        (GeometryAttributeType::Position, "POSITION"),
-        (GeometryAttributeType::Normal, "NORMAL"),
-        (GeometryAttributeType::Color, "COLOR"),
-        (GeometryAttributeType::TexCoord, "TEX_COORD"),
-    ];
-    named
-        .iter()
-        .filter(|(attribute_type, _)| mesh.named_attribute_id(*attribute_type) >= 0)
-        .map(|(_, name)| (*name).to_string())
+fn describe_attributes(mesh: &Mesh) -> Vec<AttributeInfo> {
+    // `named_attribute_id` answers with the first attribute of a type, which is
+    // exactly what the flat mesh reads. So the first of each named type is the
+    // one marked as received, and every attribute after it -- a second texture
+    // coordinate set, a second colour set, anything generic -- is recorded as
+    // present and not read rather than not recorded at all.
+    let mut seen = Vec::new();
+    (0..mesh.num_attributes())
+        .map(|id| {
+            let attribute = mesh.attribute(id);
+            let attribute_type = attribute.attribute_type();
+            let first = !seen.contains(&attribute_type);
+            seen.push(attribute_type);
+            AttributeInfo {
+                attribute_type: attribute_type_name(attribute_type).to_string(),
+                components: attribute.num_components(),
+                data_type: format!("{:?}", attribute.data_type()),
+                unique_id: attribute.unique_id(),
+                values: attribute.size(),
+                read: first && attribute_type != GeometryAttributeType::Generic,
+            }
+        })
         .collect()
+}
+
+#[cfg(feature = "read")]
+fn attribute_type_name(attribute_type: GeometryAttributeType) -> &'static str {
+    match attribute_type {
+        GeometryAttributeType::Position => "POSITION",
+        GeometryAttributeType::Normal => "NORMAL",
+        GeometryAttributeType::Color => "COLOR",
+        GeometryAttributeType::TexCoord => "TEX_COORD",
+        GeometryAttributeType::Generic => "GENERIC",
+        GeometryAttributeType::Invalid => "INVALID",
+    }
 }
 
 #[cfg(feature = "read")]
@@ -538,6 +594,12 @@ fn float_attribute(
 mod tests {
     use super::*;
 
+    fn declares(attributes: &[AttributeInfo], name: &str) -> bool {
+        attributes
+            .iter()
+            .any(|attribute| attribute.attribute_type == name)
+    }
+
     fn quad() -> MeshInput {
         MeshInput {
             positions: vec![
@@ -594,8 +656,8 @@ mod tests {
         let mesh = &parsed.meshes[0];
         assert_eq!(mesh.indices.len(), 6);
         assert_eq!(mesh.positions.len(), 12);
-        assert!(parsed.attributes.contains(&"POSITION".to_string()));
-        assert!(parsed.attributes.contains(&"TEX_COORD".to_string()));
+        assert!(declares(&parsed.attributes, "POSITION"));
+        assert!(declares(&parsed.attributes, "TEX_COORD"));
         // The same six corners at the same places, however the encoder chose to
         // number them.
         assert_eq!(
@@ -646,7 +708,7 @@ mod tests {
 
         let parsed = parse_drc_internal(&exported.binary_data.unwrap());
         assert!(parsed.success, "{:?}", parsed.error);
-        assert!(parsed.attributes.contains(&"COLOR".to_string()));
+        assert!(declares(&parsed.attributes, "COLOR"));
         let colors = &parsed.meshes[0].colors;
         assert_eq!(colors.len(), 16);
         // Draco renumbers the points, so the colours come back as a set.
@@ -683,6 +745,59 @@ mod tests {
             exported.draco_stats.unwrap().method.as_deref(),
             Some("sequential"),
         );
+    }
+
+    /// A payload may carry more than the flat mesh has room for: Draco puts no
+    /// limit on how many attributes of a type it stores, and glTF's own Draco
+    /// extension keeps joints and weights as generics. Those used to arrive and
+    /// vanish without a word; now the file says what it contains and the shell
+    /// is told what it did not get.
+    #[test]
+    fn test_extra_attributes_are_declared_and_reported() {
+        use draco_core::encoder_buffer::EncoderBuffer;
+        use draco_core::encoder_options::EncoderOptions;
+        use draco_core::mesh_encoder::MeshEncoder;
+
+        let input = quad();
+        let (mut mesh, _) = mesh_input_to_core_mesh(&input, &ExportOptions::default()).unwrap();
+        let vertices = input.positions.len() / 3;
+        // A second texture coordinate set and one generic attribute, which is
+        // the shape a lightmapped, skinned asset arrives in.
+        mesh.add_attribute(float_attribute(
+            GeometryAttributeType::TexCoord,
+            2,
+            &vec![0.25f32; vertices * 2],
+            vertices,
+        ));
+        mesh.add_attribute(float_attribute(
+            GeometryAttributeType::Generic,
+            4,
+            &vec![0.5f32; vertices * 4],
+            vertices,
+        ));
+
+        let mut encoder = MeshEncoder::new();
+        encoder.set_mesh(mesh);
+        let mut output = EncoderBuffer::new();
+        encoder.encode(&EncoderOptions::new(), &mut output).unwrap();
+
+        let parsed = parse_drc_internal(output.data());
+        assert!(parsed.success, "{:?}", parsed.error);
+        assert_eq!(parsed.attributes.len(), 5, "{:?}", parsed.attributes.len());
+        let unread: Vec<&str> = parsed
+            .attributes
+            .iter()
+            .filter(|attribute| !attribute.read)
+            .map(|attribute| attribute.attribute_type.as_str())
+            .collect();
+        assert_eq!(unread, vec!["TEX_COORD", "GENERIC"]);
+        assert_eq!(parsed.warnings.len(), 2, "{:?}", parsed.warnings);
+        assert!(parsed
+            .warnings
+            .iter()
+            .all(|warning| warning.contains("dropped")));
+        // And the one of each type the flat mesh does read still arrives.
+        assert_eq!(parsed.meshes[0].uvs.len(), vertices * 2);
     }
 
     #[test]
