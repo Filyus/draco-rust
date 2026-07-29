@@ -2,28 +2,58 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
+/**
+ * `draco3d` and `gltf-validator` ship no types of their own; this covers only
+ * what this script actually calls against them.
+ */
+interface Draco3dModule {
+  Decoder: new () => any;
+  DecoderBuffer: new () => any;
+  Mesh: new () => any;
+  DracoFloat32Array: new () => any;
+  DracoInt32Array: new () => any;
+  TRIANGULAR_MESH: number;
+  destroy(instance: any): void;
+}
+interface Draco3d {
+  createDecoderModule(config: Record<string, unknown>): Promise<Draco3dModule>;
+}
+interface GltfValidator {
+  validateBytes(bytes: Uint8Array, options: {
+    uri: string;
+    format: string;
+    maxIssues: number;
+    writeTimestamp: boolean;
+  }): Promise<{ issues: { numErrors: number; messages: unknown[] } }>;
+}
+
 // Resolve CI-only validator/decoder dependencies from the single web package.
 const require = createRequire(new URL('../../web/package.json', import.meta.url));
-const draco3d = require('draco3d');
-const validator = require('gltf-validator');
+const draco3d = require('draco3d') as Draco3d;
+const validator = require('gltf-validator') as GltfValidator;
 
 const [outputPath, sourcePath] = process.argv.slice(2);
 if (!outputPath || !sourcePath) {
-  throw new Error('usage: node gltf-interop.mjs <rust-output.glb> <source.gltf>');
+  throw new Error('usage: node gltf-interop.ts <rust-output.glb> <source.gltf>');
 }
 
 const JSON_CHUNK = 0x4e4f534a;
 const BIN_CHUNK = 0x004e4942;
 const GLB_MAGIC = 0x46546c67;
 
-function checkedRange(bytes, offset, length, label) {
+function checkedRange(bytes: Uint8Array, offset: number, length: number, label: string): Uint8Array {
   if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || offset + length > bytes.length) {
     throw new Error(`${label} range ${offset}..${offset + length} exceeds ${bytes.length} bytes`);
   }
   return bytes.subarray(offset, offset + length);
 }
 
-function parseGlb(bytes) {
+interface ParsedGlb {
+  json: any;
+  buffers: Uint8Array[];
+}
+
+function parseGlb(bytes: Uint8Array): ParsedGlb {
   if (bytes.length < 12) throw new Error('GLB header is truncated');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (view.getUint32(0, true) !== GLB_MAGIC) throw new Error('Rust output is not GLB');
@@ -31,8 +61,8 @@ function parseGlb(bytes) {
   if (view.getUint32(8, true) !== bytes.length) throw new Error('GLB declared length mismatch');
 
   let offset = 12;
-  let json;
-  let bin;
+  let json: any;
+  let bin: Uint8Array | undefined;
   while (offset < bytes.length) {
     if (offset + 8 > bytes.length) throw new Error('GLB chunk header is truncated');
     const length = view.getUint32(offset, true);
@@ -52,10 +82,10 @@ function parseGlb(bytes) {
   return { json, buffers: [bin ?? new Uint8Array()] };
 }
 
-async function loadSource(filename) {
+async function loadSource(filename: string): Promise<ParsedGlb> {
   const json = JSON.parse(await fs.readFile(filename, 'utf8'));
   const base = path.dirname(filename);
-  const buffers = await Promise.all((json.buffers ?? []).map(async (buffer, index) => {
+  const buffers = await Promise.all((json.buffers ?? []).map(async (buffer: any, index: number) => {
     if (typeof buffer.uri !== 'string' || buffer.uri.startsWith('data:')) {
       throw new Error(`source buffer ${index} must be an external fixture file`);
     }
@@ -68,15 +98,15 @@ async function loadSource(filename) {
   return { json, buffers };
 }
 
-const COMPONENTS = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT2: 4, MAT3: 9, MAT4: 16 };
-const COMPONENT_TYPES = {
+const COMPONENTS: Record<string, number> = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT2: 4, MAT3: 9, MAT4: 16 };
+const COMPONENT_TYPES: Record<number, [number, 'getUint8' | 'getUint16' | 'getUint32' | 'getFloat32']> = {
   5121: [1, 'getUint8'],
   5123: [2, 'getUint16'],
   5125: [4, 'getUint32'],
   5126: [4, 'getFloat32'],
 };
 
-function readAccessor(document, buffers, accessorIndex) {
+function readAccessor(document: any, buffers: Uint8Array[], accessorIndex: number): number[][] {
   const accessor = document.accessors?.[accessorIndex];
   if (!accessor || !Number.isSafeInteger(accessor.count) || accessor.bufferView === undefined) {
     throw new Error(`accessor ${accessorIndex} is missing or has no bufferView`);
@@ -95,9 +125,9 @@ function readAccessor(document, buffers, accessorIndex) {
   const finalEnd = accessor.count === 0 ? start : start + (accessor.count - 1) * stride + rowSize;
   checkedRange(buffer, start, finalEnd - start, `accessor ${accessorIndex}`);
   const data = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-  const rows = [];
+  const rows: number[][] = [];
   for (let row = 0; row < accessor.count; row += 1) {
-    const values = [];
+    const values: number[] = [];
     for (let componentIndex = 0; componentIndex < componentCount; componentIndex += 1) {
       const offset = start + row * stride + componentIndex * componentSize;
       values.push(data[getter](offset, true));
@@ -107,14 +137,14 @@ function readAccessor(document, buffers, accessorIndex) {
   return rows;
 }
 
-function coordinateKey(position) {
+function coordinateKey(position: number[]): string {
   return position.map((value) => {
     const rounded = Math.round(value * 1000) / 1000;
     return Object.is(rounded, -0) ? '0.000' : rounded.toFixed(3);
   }).join(',');
 }
 
-function orientedTriangleKey(positions, face) {
+function orientedTriangleKey(positions: number[][], face: number[]): string {
   const points = face.map((index) => {
     if (!Number.isInteger(index) || index < 0 || index >= positions.length) {
       throw new Error(`face index ${index} is outside ${positions.length} positions`);
@@ -129,8 +159,8 @@ function orientedTriangleKey(positions, face) {
   return rotations.sort()[0];
 }
 
-function sourceTopology(source) {
-  const result = [];
+function sourceTopology(source: ParsedGlb): string[][] {
+  const result: string[][] = [];
   for (const mesh of source.json.meshes ?? []) {
     for (const primitive of mesh.primitives ?? []) {
       if ((primitive.mode ?? 4) !== 4) throw new Error('interop source must use TRIANGLES');
@@ -139,7 +169,7 @@ function sourceTopology(source) {
         ? positions.map((_, index) => index)
         : readAccessor(source.json, source.buffers, primitive.indices).map(([index]) => index);
       if (indices.length === 0 || indices.length % 3 !== 0) throw new Error('interop source has invalid triangle indices');
-      const keys = [];
+      const keys: string[] = [];
       for (let i = 0; i < indices.length; i += 3) {
         keys.push(orientedTriangleKey(positions, indices.slice(i, i + 3)));
       }
@@ -149,8 +179,8 @@ function sourceTopology(source) {
   return result;
 }
 
-async function decodedTopology(output, module) {
-  const result = [];
+async function decodedTopology(output: ParsedGlb, module: Draco3dModule): Promise<string[][]> {
+  const result: string[][] = [];
   for (const meshDef of output.json.meshes ?? []) {
     for (const primitive of meshDef.primitives ?? []) {
       const extension = primitive.extensions?.KHR_draco_mesh_compression;
@@ -184,7 +214,7 @@ async function decodedTopology(output, module) {
           if (!decoder.GetAttributeFloatForAllPoints(decodedMesh, attribute, values)) {
             throw new Error('official decoder could not materialize POSITION values');
           }
-          const positions = [];
+          const positions: number[][] = [];
           for (let point = 0; point < decodedMesh.num_points(); point += 1) {
             positions.push([
               values.GetValue(point * 3),
@@ -192,7 +222,7 @@ async function decodedTopology(output, module) {
               values.GetValue(point * 3 + 2),
             ]);
           }
-          const keys = [];
+          const keys: string[] = [];
           for (let index = 0; index < decodedMesh.num_faces(); index += 1) {
             if (!decoder.GetFaceFromMesh(decodedMesh, index, face)) throw new Error(`official decoder could not read face ${index}`);
             keys.push(orientedTriangleKey(positions, [face.GetValue(0), face.GetValue(1), face.GetValue(2)]));

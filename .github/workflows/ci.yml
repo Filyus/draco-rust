@@ -340,6 +340,11 @@ jobs:
         run: npm ci --ignore-scripts
         working-directory: web
 
+      # gltf-interop.ts has no package.json of its own; it borrows the
+      # TypeScript install web/ just fetched rather than needing a second one.
+      - name: Typecheck the interop script
+        run: web/node_modules/.bin/tsc --noEmit -p .github/scripts/tsconfig.json
+
       - name: Decode official Box_Draco with Rust
         run: >-
           cargo run --manifest-path crates/Cargo.toml -p draco-gltf
@@ -355,7 +360,7 @@ jobs:
 
       - name: Validate and decode Rust output independently
         run: >-
-          node .github/scripts/gltf-interop.mjs
+          node .github/scripts/gltf-interop.ts
           target/gltf-interop/rust-box.glb
           testdata/Box/glTF/Box.gltf
 
