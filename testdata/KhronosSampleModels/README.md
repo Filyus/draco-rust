@@ -35,7 +35,7 @@ same scene at several times the size, and nothing here reads a `.gltf`
 differently from a `.glb` except the corpus gate, which already has plenty of
 both.
 
-`web/tests/gltf-corpus-parity.mjs` walks all of `testdata` and now also asserts
+`web/tests/gltf-corpus-parity.ts` walks all of `testdata` and now also asserts
 that every extension the viewer claims to interpret is used by some file in it.
 Four were not, before these arrived — dispersion and transmission among them,
 after a month of work on exactly that path. Hand-built fixtures state what a

@@ -14,7 +14,7 @@ any corpus, and the reader decoded those bytes as float32: not a subtly wrong
 matrix but a read off the end of the buffer.
 
 Authored rather than found, because there was nothing to find. It is a copy
-of the float fixture on purpose: `web/tests/viewer-instancing.mjs` asserts the
+of the float fixture on purpose: `web/tests/viewer-instancing.ts` asserts the
 two compose to the same matrices, which is an assertion it can only make
 because quantization is the single difference between them. The gate needs no
 expected values of its own — the float file is the expected value.
