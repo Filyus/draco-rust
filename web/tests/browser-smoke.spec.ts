@@ -2005,6 +2005,98 @@ test('a .drc round trip keeps every attribute the flat mesh carries', async ({ p
 });
 
 /**
+ * A `.drc` keeps the attributes nothing here understands.
+ *
+ * Draco puts no limit on how many attributes of a type a payload holds, and the
+ * flat mesh the shell works in has one slot per named type and none for
+ * generics. Those used to be decoded and dropped. They now travel whole —
+ * type, component count, component type and id — and the writer puts them back
+ * without anything in between having read their meaning.
+ */
+test('a .drc keeps a second UV set and a generic attribute through the app', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  // Built in the page, because only the module can produce a payload carrying
+  // attributes the shell has no way to author.
+  const source = await page.evaluate(async () => {
+    const drc = await import('/pkg/drc.js' as string);
+    await drc.default({ module_or_path: new URL('pkg/drc_bg.wasm', document.baseURI) });
+    const written = drc.create_drc({
+      positions: [0, 0, 0, 1, 0, 0, 0.5, 1, 0],
+      indices: [0, 1, 2],
+      uvs: [0, 0, 1, 0, 0.5, 1],
+      extras: [
+        {
+          type: 'TEX_COORD',
+          components: 2,
+          dataType: 'float32',
+          uniqueId: 7,
+          normalized: false,
+          values: [0.25, 0.75, 0.5, 0.5, 0.125, 0.875],
+        },
+        {
+          type: 'GENERIC',
+          components: 4,
+          dataType: 'uint8',
+          uniqueId: 9,
+          normalized: true,
+          values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        },
+      ],
+    }, {});
+    return Array.from(written.binary_data as Uint8Array);
+  });
+
+  await page.locator('#file-input').setInputFiles({
+    name: 'extras.drc',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from(source),
+  });
+  await expect(page.locator('#console')).toContainText('Successfully parsed extras.drc');
+  // Carried is not understood, and the panel has to say which it is.
+  await expect(page.locator('#scene-warning-list')).toContainText('nothing here interprets');
+
+  await page.locator('[data-choice-for="export-format"] [data-value="drc"]').click();
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('#export-btn').click();
+  const rewritten = await readFile((await (await downloadPromise).path())!);
+
+  await page.locator('#file-input').setInputFiles({
+    name: 'extras-again.drc',
+    mimeType: 'application/octet-stream',
+    buffer: rewritten,
+  });
+  await expect(page.locator('#console')).toContainText('Successfully parsed extras-again.drc');
+  const extras = await page.evaluate(async () => {
+    const { state } = await import('/app/state.js' as string);
+    return (state.currentMeshData?.meshes?.[0]?.extras ?? []).map((extra: any) => ({
+      ...extra,
+      values: Array.from(extra.values as ArrayLike<number>),
+    }));
+  });
+
+  expect(extras).toEqual([
+    {
+      type: 'TEX_COORD',
+      components: 2,
+      dataType: 'float32',
+      uniqueId: 7,
+      normalized: false,
+      values: [0.25, 0.75, 0.5, 0.5, 0.125, 0.875],
+    },
+    {
+      type: 'GENERIC',
+      components: 4,
+      dataType: 'uint8',
+      uniqueId: 9,
+      normalized: true,
+      values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    },
+  ]);
+});
+
+/**
  * Vertex colours reach the formats that can hold them.
  *
  * They reached none of them. The glTF flattener never read `COLOR_0`, the

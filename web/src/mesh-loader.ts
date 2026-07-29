@@ -26,6 +26,27 @@ export interface LoadedLayerSet {
 }
 
 /**
+ * An attribute a reader carried but did not interpret.
+ *
+ * Draco puts no limit on how many attributes of a type a payload holds, and the
+ * flat mesh has one slot per named type and none for generics. Rather than
+ * decode those and drop them, the reader hands them over whole — type,
+ * component count, component type and the id a consumer addresses them by —
+ * and the writer that understands the format puts them back unchanged. Nothing
+ * between the two reads their meaning, which is what makes it safe: a generic
+ * attribute holding skin weights travels the same way as a second UV set.
+ */
+export interface OpaqueAttribute {
+  type: string;
+  components: number;
+  dataType: string;
+  uniqueId: number;
+  normalized: boolean;
+  /** One tuple per vertex, `components` long. */
+  values: ArrayLike<number>;
+}
+
+/**
  * One mesh as the flat readers hand it over.
  *
  * Numeric fields cross the wasm boundary as plain or typed arrays depending on
@@ -56,6 +77,8 @@ export interface LoadedMesh {
   uvSets?: LoadedLayerSet[];
   normalSets?: LoadedLayerSet[];
   colorSets?: LoadedLayerSet[];
+  /** Draco only: whatever the payload carried that no slot above names. */
+  extras?: OpaqueAttribute[];
 }
 
 /** A material as the OBJ companion-library reader builds it. */

@@ -82,15 +82,25 @@ is a different route from Draco inside glTF: there the payload is a
 `KHR_draco_mesh_compression` extension and `gltf-wasm` owns it. The export
 panel's quantization controls reach both, because both end at the same encoder.
 
+Draco puts no limit on how many attributes of a type a payload holds -- a second
+texture-coordinate set is ordinary, and glTF's own extension keeps joints and
+weights as generics -- while the flat mesh the shell works in has one slot per
+named type and none for generics. The rest are carried rather than dropped: the
+reader hands them over whole, with their type, component count, component type
+and the id a consumer addresses them by, and the writer puts them back
+unchanged. Nothing in between reads their meaning, which is what makes it safe,
+and the file says so -- each one is reported as carried but uninterpreted, and
+exporting to any other format warns that it is being left behind.
+
 ## Converter preview
 
 The bundled converter includes a dependency-free WebGL2 preview. It loads raw
 and Draco primitives through `gltf-wasm`, shades metallic-roughness materials
 with image-based lighting and punctual lights, and plays glTF node and skin
-animations with timeline controls. It also previews the flat OBJ, PLY, and FBX
-meshes returned by their WASM modules -- OBJ, PLY, STL and `.drc` among them. Whatever it cannot honour is reported as
-a warning rather than changed in the exported asset: the preview never writes
-back to the document it is showing.
+animations with timeline controls. It also previews the flat meshes their own
+WASM modules return, for OBJ, PLY, STL, `.drc` and FBX. Whatever it cannot
+honour is reported as a warning rather than changed in the exported asset: the
+preview never writes back to the document it is showing.
 
 Shading happens in linear light throughout. The scene is drawn into a
 half-float frame with multisampling, and one output pass does the whole display

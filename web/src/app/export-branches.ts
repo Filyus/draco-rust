@@ -1,4 +1,4 @@
-import type { LoadedLayerSet, LoadedMesh } from '../mesh-loader.ts';
+import type { LoadedLayerSet, LoadedMesh, OpaqueAttribute } from '../mesh-loader.ts';
 import type { SceneCapabilities, SceneDocument } from '../scene-document.ts';
 import { buildFbxSceneFromDocument } from '../fbx-scene-document-writer.ts';
 import { buildFbxSceneFromGltf, buildFlatSceneMeshesFromGltf } from '../gltf-loader.ts';
@@ -304,6 +304,16 @@ async function exportFlattenedMeshes(settings: ExportSettings, loaded: LoadedFil
       `${format.toUpperCase()} holds one mesh: ${meshes.length} meshes were merged into one`,
     );
   }
+  // Uninterpreted attributes only exist because a .drc brought them, and only
+  // a .drc can take them back. Every other target drops them, and that is worth
+  // one line rather than a silent difference in the file that comes out.
+  const opaque = meshes.flatMap((mesh) => mesh.extras);
+  if (format !== 'drc' && opaque.length > 0) {
+    warnings.push(
+      `${format.toUpperCase()} has nowhere for ${opaque.length} attribute(s) the source carried `
+      + `without interpreting: ${opaque.map((extra) => `${extra.type} (id ${extra.uniqueId})`).join(', ')}`,
+    );
+  }
   if (format === 'stl' && (settings.includeNormals || settings.includeUvs)) {
     warnings.push(
       'STL holds triangle positions only: normals are recomputed per facet from the winding, '
@@ -359,6 +369,12 @@ export function prepareMeshesForExport(
     // No checkbox governs colours: PLY and Draco are the only targets that can
     // hold them, and a file carrying them has nowhere else for them to go.
     colors: mesh.colors ? Array.from(mesh.colors) : null,
+    // Carried, not read. Only the writer that produced them can put them back,
+    // and it does so by the description rather than by any meaning.
+    extras: (mesh.extras || []).map((extra) => ({
+      ...extra,
+      values: Array.from(extra.values),
+    })),
     // No checkbox governs colours: PLY and Draco are the only targets that can
     // hold them, and a file carrying them has nowhere else for them to go.
     controlPoints: mesh.controlPoints ? Array.from(mesh.controlPoints) : null,
@@ -562,9 +578,17 @@ export function mergeMeshes(meshes: PreparedMesh[]) {
     normals: [] as number[],
     uvs: [] as number[],
     colors: [] as number[],
+    extras: [] as OpaqueAttribute[],
   };
 
   let vertexOffset = 0;
+  // Uninterpreted attributes merge by their own description rather than by
+  // position: two meshes carrying the same id and layout are one attribute of
+  // the merged mesh, and two that differ stay separate. Zero is the only
+  // filler available for something nobody here understands.
+  const extraValues = new Map<string, number[]>();
+  const describeExtra = (extra: OpaqueAttribute) =>
+    [extra.type, extra.components, extra.dataType, extra.uniqueId, extra.normalized].join('/');
 
   // Appended one element at a time on purpose. `push(...values)` passes the
   // whole array as arguments and blows the call stack somewhere past a
@@ -600,6 +624,16 @@ export function mergeMeshes(meshes: PreparedMesh[]) {
     appendChannel(merged.normals, mesh.normals, 3, [0, 0, 0]);
     appendChannel(merged.uvs, mesh.uvs, 2, [0, 0]);
     appendChannel(merged.colors, mesh.colors, 4, [255, 255, 255, 255]);
+    for (const extra of mesh.extras || []) {
+      const key = describeExtra(extra);
+      let values = extraValues.get(key);
+      if (!values) {
+        values = [];
+        extraValues.set(key, values);
+        merged.extras.push({ ...extra, values });
+      }
+      appendChannel(values, extra.values, extra.components, Array(extra.components).fill(0));
+    }
     vertexOffset += vertices;
   }
 
@@ -612,6 +646,12 @@ export function mergeMeshes(meshes: PreparedMesh[]) {
   ] as [number[], number, number[]][]) {
     if (channel.length === 0) continue;
     while (channel.length < vertexOffset * stride) append(channel, filler);
+  }
+  for (const extra of merged.extras) {
+    const values = extra.values as number[];
+    while (values.length < vertexOffset * extra.components) {
+      append(values, Array(extra.components).fill(0));
+    }
   }
 
   return merged;
