@@ -27,11 +27,29 @@ and the current limitations.
 
 ## Crates
 
-| Crate | Scope |
-|---|---|
-| [`draco-core`](crates/draco-core)<br>[![crates.io](https://img.shields.io/crates/v/draco-core.svg)](https://crates.io/crates/draco-core)&nbsp;[![docs.rs](https://docs.rs/draco-core/badge.svg)](https://docs.rs/draco-core) | The codec: Draco bitstream encode and decode for triangle meshes and point clouds, and the geometry model everything else speaks. |
-| [`draco-io`](crates/draco-io)<br>[![crates.io](https://img.shields.io/crates/v/draco-io.svg)](https://crates.io/crates/draco-io)&nbsp;[![docs.rs](https://docs.rs/draco-io/badge.svg)](https://docs.rs/draco-io) | Formats: OBJ, PLY, binary and ASCII FBX, plus strict glTF/GLB container, resource and accessor contracts. |
-| [`draco-gltf`](crates/draco-gltf)<br>[![crates.io](https://img.shields.io/crates/v/draco-gltf.svg)](https://crates.io/crates/draco-gltf)&nbsp;[![docs.rs](https://docs.rs/draco-gltf/badge.svg)](https://docs.rs/draco-gltf) | Whole glTF 2.0 and pinned 2.1-draft documents, losslessly: typed scene views, packed-geometry read/write, document-preserving Draco compression, GLB v2/v3. |
+### [`draco-core`](crates/draco-core)
+
+[![crates.io](https://img.shields.io/crates/v/draco-core.svg)](https://crates.io/crates/draco-core)
+[![docs.rs](https://docs.rs/draco-core/badge.svg)](https://docs.rs/draco-core)
+
+The codec: Draco bitstream encode and decode for triangle meshes and point
+clouds, and the geometry model everything else speaks.
+
+### [`draco-io`](crates/draco-io)
+
+[![crates.io](https://img.shields.io/crates/v/draco-io.svg)](https://crates.io/crates/draco-io)
+[![docs.rs](https://docs.rs/draco-io/badge.svg)](https://docs.rs/draco-io)
+
+Formats: OBJ, PLY, binary and ASCII FBX, plus strict glTF/GLB container,
+resource and accessor contracts.
+
+### [`draco-gltf`](crates/draco-gltf)
+
+[![crates.io](https://img.shields.io/crates/v/draco-gltf.svg)](https://crates.io/crates/draco-gltf)
+[![docs.rs](https://docs.rs/draco-gltf/badge.svg)](https://docs.rs/draco-gltf)
+
+Whole glTF 2.0 and pinned 2.1-draft documents, losslessly: typed scene views,
+packed-geometry read/write, document-preserving Draco compression, GLB v2/v3.
 
 Full glTF applications should depend on `draco-gltf`. `draco-io` deliberately
 exposes no glTF scene API — it is the layer below, for callers that want a
