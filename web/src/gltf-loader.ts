@@ -959,10 +959,17 @@ function accumulateAabb(box: Aabb, mesh: Pick<ViewerMesh, 'primitives'>) {
     if (!pos) continue;
     const view = bytesAsTyped(pos.componentType, pos.bytes as Uint8Array);
     const components = pos.components;
+    // KHR_mesh_quantization stores POSITION as a normalized integer as
+    // readily as a float, and the GPU reads it through the same flag, so the
+    // box has to agree with what is drawn or the camera frames a model
+    // 32767 times its size.
+    const scale = pos.normalized && isNormalizedIntegerType(pos.componentType)
+      ? (value: number) => normalizeComponent(value, pos.componentType)
+      : (value: number) => value;
     for (let i = 0; i < pos.count; i++) {
-      const x = view[i * components];
-      const y = view[i * components + 1];
-      const z = view[i * components + 2];
+      const x = scale(view[i * components]);
+      const y = scale(view[i * components + 1]);
+      const z = scale(view[i * components + 2]);
       if (x < box.min[0]) box.min[0] = x;
       if (y < box.min[1]) box.min[1] = y;
       if (z < box.min[2]) box.min[2] = z;

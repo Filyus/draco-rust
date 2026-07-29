@@ -140,4 +140,31 @@ assert.deepEqual(
     'the frame must come from what is drawn, not from every mesh in the document',
 );
 
+// KHR_mesh_quantization stores POSITION as a normalized integer as readily as
+// a float, and the GPU reads it through the accessor's own `normalized` flag.
+// Measured raw, ShaderBall.glb spans 32767 units instead of two, and the
+// camera dutifully frames that box — the model draws at its true size, a speck
+// at the origin of an apparently empty viewport.
+const quantized = createSceneDocument({
+    accessors: [
+        {
+            bytes: bytes(new Int16Array([0, 0, 0, 32767, 0, 0, 0, 16384, 0])),
+            componentType: 5122,
+            components: 3,
+            count: 3,
+            normalized: true,
+        },
+    ],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+    nodes: [{ name: 'Quantized', translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1], mesh: 0 }],
+    rootNodes: [0],
+});
+
+const quantizedScene = buildViewerSceneFromDocument(quantized);
+assert.deepEqual(
+    quantizedScene.aabb.max.map((value) => Math.round(value * 1000) / 1000),
+    [1, 0.5, 0],
+    'a normalized POSITION must be measured as the unit fraction the GPU draws',
+);
+
 console.log('SceneDocument viewer parity passed');

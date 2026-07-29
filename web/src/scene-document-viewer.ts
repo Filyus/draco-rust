@@ -435,7 +435,13 @@ function meshAabb(mesh: SceneMesh, accessors: RuntimeAccessor[]) {
   for (const primitive of mesh.primitives) {
     const accessor = accessors[primitive.attributes.POSITION];
     if (!accessor || accessor.components !== 3) continue;
-    const values = readAccessor(accessor);
+    // Through the same reader the rest of the file uses, because
+    // KHR_mesh_quantization stores POSITION as a normalized SHORT just as
+    // readily as a float. Read raw, ShaderBall.glb measured 32767 units
+    // across instead of two, and the camera framed the box it was given: the
+    // model drew at its true size, a speck at the origin of an empty
+    // viewport.
+    const values = floatAccessor(accessor);
     for (let index = 0; index < values.length; index += 3) {
       for (let component = 0; component < 3; component += 1) {
         aabb.min[component] = Math.min(aabb.min[component], values[index + component]);
@@ -489,14 +495,4 @@ function collectRenderables(
     renderables,
     aabb: Number.isFinite(aabb.min[0]) ? aabb : { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] },
   };
-}
-
-function readAccessor(accessor: RuntimeAccessor): number[] {
-  const bytes = componentByteSize(accessor.componentType);
-  const view = new DataView(accessor.bytes.buffer, accessor.bytes.byteOffset, accessor.bytes.byteLength);
-  const values = new Array(accessor.count * accessor.components);
-  for (let index = 0; index < values.length; index += 1) {
-    values[index] = readComponent(view, index * bytes, accessor.componentType);
-  }
-  return values;
 }
