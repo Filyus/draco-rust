@@ -11,6 +11,7 @@ import {
   embeddedTriangle,
   emissiveTransformQuad,
   externalTriangle,
+  multiUvEmissiveQuad,
   normalMappedQuad,
   solidColorPng,
   triangleBytes,
@@ -1762,6 +1763,69 @@ test('the texture transform reaches slots other than base color', async ({ page 
   expect(measure.identical).toBe(false);
   expect(measure.left.red).toBeGreaterThan(measure.left.green * 4 + 0.02);
   expect(measure.right.green).toBeGreaterThan(measure.right.red * 4 + 0.02);
+});
+
+/**
+ * A texture slot samples the UV set its material names, not always the first.
+ *
+ * Both routes to the second set are checked, because they fail separately: the
+ * textureInfo's own `texCoord`, and `KHR_texture_transform.texCoord`, which
+ * replaces it. The latter is the fallback form the sample assets use — the
+ * textureInfo names the set an unaware viewer reads, so a viewer that honours
+ * the extension but drops its `texCoord` renders exactly the unaware frame.
+ */
+test('a texture slot reads the UV set its material names', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  const shot = async (name: string, gltf: string) => {
+    await page.locator('#file-input').setInputFiles({
+      name,
+      mimeType: 'model/gltf+json',
+      buffer: Buffer.from(gltf),
+    });
+    await expect(page.locator('#console')).toContainText(`Successfully parsed ${name}`);
+    await expect(page.locator('#console')).toContainText('Preview ready');
+    const image = await page.locator('#viewer-canvas').screenshot();
+    await page.locator('#clear-file').click();
+    return image.toString('base64');
+  };
+
+  const frames = [
+    await shot('uv0.gltf', multiUvEmissiveQuad({ texCoord: 0 })),
+    await shot('uv1.gltf', multiUvEmissiveQuad({ texCoord: 1 })),
+    await shot('uv1-transform.gltf', multiUvEmissiveQuad({ texCoord: 0, transformTexCoord: 1 })),
+  ];
+
+  const measured = await page.evaluate(async (shots: string[]) => {
+    const decode = async (base64: string) => {
+      const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const context = canvas.getContext('2d')!;
+      context.drawImage(bitmap, 0, 0);
+      return context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+    };
+    // The backdrop fills most of the frame, so the emitting quad is measured
+    // over the pixels where one channel actually dominates.
+    const dominance = (pixels: Uint8ClampedArray) => {
+      let redPixels = 0;
+      let greenPixels = 0;
+      for (let index = 0; index < pixels.length; index += 4) {
+        const [r, g, blue] = [pixels[index], pixels[index + 1], pixels[index + 2]];
+        if (r > g + 40 && r > blue + 40) redPixels += 1;
+        if (g > r + 40 && g > blue + 40) greenPixels += 1;
+      }
+      const total = pixels.length / 4;
+      return { red: redPixels / total, green: greenPixels / total };
+    };
+    return Promise.all(shots.map(async (shot) => dominance(await decode(shot))));
+  }, frames);
+
+  const [uv0, uv1, uv1ViaTransform] = measured;
+  expect(uv0.red).toBeGreaterThan(uv0.green * 4 + 0.02);
+  expect(uv1.green).toBeGreaterThan(uv1.red * 4 + 0.02);
+  expect(uv1ViaTransform.green).toBeGreaterThan(uv1ViaTransform.red * 4 + 0.02);
 });
 
 /**

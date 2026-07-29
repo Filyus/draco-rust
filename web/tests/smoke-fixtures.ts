@@ -270,6 +270,87 @@ export function emissiveTransformQuad({ offset = 0 }: EmissiveTransformQuadOptio
   });
 }
 
+export interface MultiUvEmissiveQuadOptions {
+  /** The textureInfo's own `texCoord` — what a viewer without the extension reads. */
+  texCoord?: number;
+  /** `KHR_texture_transform.texCoord`, which replaces the slot's when present. */
+  transformTexCoord?: number;
+}
+
+/**
+ * A quad carrying two UV sets that select opposite halves of a two-colour map.
+ *
+ * `TEXCOORD_0` covers the red half and `TEXCOORD_1` the green one, so the frame
+ * is one flat colour and names the set that was sampled. Nothing else differs
+ * between the variants: a renderer that only ever reads `TEXCOORD_0` paints
+ * every one of them red.
+ *
+ * `transformTexCoord` is the same choice made through
+ * `KHR_texture_transform.texCoord`, the fallback form — the textureInfo names
+ * the set an unaware viewer reads, the extension the set an aware one does.
+ */
+export function multiUvEmissiveQuad(
+  { texCoord = 0, transformTexCoord }: MultiUvEmissiveQuadOptions = {},
+): string {
+  const positions = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
+  const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]);
+  const uv0 = new Float32Array([0, 1, 0.5, 1, 0.5, 0, 0, 0]);
+  const uv1 = new Float32Array([0.5, 1, 1, 1, 1, 0, 0.5, 0]);
+  const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+  const binary = Buffer.concat([
+    Buffer.from(positions.buffer),
+    Buffer.from(normals.buffer),
+    Buffer.from(uv0.buffer),
+    Buffer.from(uv1.buffer),
+    Buffer.from(indices.buffer),
+  ]);
+  const transform = transformTexCoord === undefined ? undefined : {
+    KHR_texture_transform: { texCoord: transformTexCoord },
+  };
+  return JSON.stringify({
+    asset: { version: '2.0' },
+    ...(transform ? { extensionsUsed: ['KHR_texture_transform'] } : {}),
+    buffers: [{ byteLength: binary.length, uri: `data:application/octet-stream;base64,${binary.toString('base64')}` }],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 48 },
+      { buffer: 0, byteOffset: 48, byteLength: 48 },
+      { buffer: 0, byteOffset: 96, byteLength: 32 },
+      { buffer: 0, byteOffset: 128, byteLength: 32 },
+      { buffer: 0, byteOffset: 160, byteLength: 12 },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 4, type: 'VEC3', min: [-1, -1, 0], max: [1, 1, 0] },
+      { bufferView: 1, componentType: 5126, count: 4, type: 'VEC3' },
+      { bufferView: 2, componentType: 5126, count: 4, type: 'VEC2' },
+      { bufferView: 3, componentType: 5126, count: 4, type: 'VEC2' },
+      { bufferView: 4, componentType: 5123, count: 6, type: 'SCALAR' },
+    ],
+    images: [{
+      mimeType: 'image/png',
+      uri: `data:image/png;base64,${splitColorPng().toString('base64')}`,
+    }],
+    textures: [{ source: 0, sampler: 0 }],
+    samplers: [{ wrapS: 33071, wrapT: 33071, minFilter: 9728, magFilter: 9728 }],
+    materials: [{
+      pbrMetallicRoughness: { baseColorFactor: [0, 0, 0, 1], metallicFactor: 0, roughnessFactor: 1 },
+      emissiveFactor: [1, 1, 1],
+      emissiveTexture: { index: 0, texCoord, ...(transform ? { extensions: transform } : {}) },
+    }],
+    meshes: [{
+      primitives: [{
+        attributes: {
+          POSITION: 0, NORMAL: 1, TEXCOORD_0: 2, TEXCOORD_1: 3,
+        },
+        indices: 4,
+        material: 0,
+      }],
+    }],
+    nodes: [{ mesh: 0 }],
+    scenes: [{ nodes: [0] }],
+    scene: 0,
+  });
+}
+
 export function animatedTranslation(): string {
   return JSON.stringify({
     asset: { version: '2.0' },
