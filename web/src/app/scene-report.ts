@@ -18,6 +18,15 @@ import { state } from './state.ts';
 
 export function renderSceneDocumentSummary(sceneDocument: SceneDocument, extraWarnings = []) {
   if (!sceneDocument) {
+    // The scene figures sit in the same readout as the geometry ones, which the
+    // mesh summary rewrites for every file. Left alone they keep whatever the
+    // last document said, so opening a .drc after a glTF reported the glTF's
+    // nodes and materials as if the payload carried them. `meshes` is excluded
+    // because it is the same element the mesh summary just filled in, and this
+    // runs after it.
+    for (const [name, field] of Object.entries(sceneStatFields)) {
+      if (name !== 'meshes') field.textContent = '—';
+    }
     syncVariantPicker(null);
     scenePanel.hidden = true;
     sceneInfo.hidden = true;

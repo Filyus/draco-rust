@@ -1895,6 +1895,87 @@ for (const target of [
 }
 
 /**
+ * A flattened export keeps the scene's placement.
+ *
+ * OBJ, PLY, STL and `.drc` have nowhere to put a node hierarchy, so the
+ * transforms have to be baked into the coordinates. They were not: every node
+ * was written in its mesh's own space, so a two-object scene came out with both
+ * objects stacked on the origin — the sphere ended up inside the cube, and the
+ * only visible symptom was that the second object had vanished.
+ */
+test('a flattened export keeps each node where the scene put it', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles([
+    path.join(repoRoot, 'testdata', 'two_objects_inverse_materials.gltf'),
+    path.join(repoRoot, 'testdata', 'two_objects_inverse_materials.bin'),
+  ]);
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  await page.locator('[data-choice-for="export-format"] [data-value="stl"]').click();
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('#export-btn').click();
+  const bytes = await readFile((await (await downloadPromise).path())!);
+
+  // Both objects span z in [-1, 1] in their own space; the scene translates the
+  // sphere to z = -2.818, so the placed scene reaches -3.818 and the unplaced
+  // one stops at -1.
+  const triangles = bytes.readUInt32LE(80);
+  expect(triangles).toBe(92);
+  let lowest = Infinity;
+  let highest = -Infinity;
+  for (let triangle = 0; triangle < triangles; triangle += 1) {
+    for (let corner = 0; corner < 3; corner += 1) {
+      const z = bytes.readFloatLE(84 + triangle * 50 + 12 + corner * 12 + 8);
+      lowest = Math.min(lowest, z);
+      highest = Math.max(highest, z);
+    }
+  }
+  expect(lowest).toBeLessThan(-3.5);
+  expect(lowest).toBeGreaterThan(-4);
+  expect(highest).toBeCloseTo(1, 3);
+});
+
+/**
+ * Nothing a previous file put on screen may survive the next one.
+ *
+ * Two readouts did. The scene figures — nodes, materials, skins — are written
+ * only from a SceneDocument, and a format that has none left the last
+ * document's numbers standing beside the new file's geometry. The compression
+ * panel describes a file that was *written*, and stayed up over the file
+ * opened after it, where its byte count read as a property of the new file.
+ */
+test('opening a file clears what the previous one reported', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles(
+    path.join(repoRoot, 'testdata', 'Box', 'glTF_Binary', 'Box.glb'),
+  );
+  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#scene-node-stat')).toHaveText('2');
+
+  await page.locator('[data-choice-for="export-format"] [data-value="drc"]').click();
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('#export-btn').click();
+  const bytes = await readFile((await (await downloadPromise).path())!);
+  await expect(page.locator('#compression-stats')).toBeVisible();
+
+  // A .drc carries geometry and nothing else: no nodes, no materials, and no
+  // statement about how the file that produced it was written.
+  await page.locator('#file-input').setInputFiles({
+    name: 'stale.drc',
+    mimeType: 'application/octet-stream',
+    buffer: bytes,
+  });
+  await expect(page.locator('#console')).toContainText('Successfully parsed stale.drc');
+  await expect(page.locator('#scene-node-stat')).toHaveText('—');
+  await expect(page.locator('#scene-material-stat')).toHaveText('—');
+  await expect(page.locator('#compression-stats')).toBeHidden();
+  // The geometry readout shares the row and must still be the new file's.
+  await expect(page.locator('#triangle-count')).toHaveText('12');
+});
+
+/**
  * A file the decoder cannot read must be reported, not thrown.
  *
  * The Draco decoder trusts lengths the payload states, so a truncated one

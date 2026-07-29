@@ -1,7 +1,7 @@
 import type { LoadedLayerSet, LoadedMesh } from '../mesh-loader.ts';
 import type { SceneCapabilities, SceneDocument } from '../scene-document.ts';
 import { buildFbxSceneFromDocument } from '../fbx-scene-document-writer.ts';
-import { buildFbxSceneFromGltf, buildFlatMeshesFromGltf } from '../gltf-loader.ts';
+import { buildFbxSceneFromGltf, buildFlatSceneMeshesFromGltf } from '../gltf-loader.ts';
 import { serializeSceneDocumentToGlb } from '../scene-document-gltf.ts';
 import type { FbxSceneData, LoadedFile } from './state.ts';
 import { modules, state } from './state.ts';
@@ -278,8 +278,11 @@ export function exportGltfDocument(settings: ExportSettings): ExportOutcome {
 async function exportFlattenedMeshes(settings: ExportSettings, loaded: LoadedFile): Promise<ExportOutcome> {
   const { format } = settings;
   const warnings: string[] = [];
+  // Placed rather than raw: the target has no hierarchy to put node transforms
+  // into, so they are baked into the coordinates here. Without that a scene's
+  // objects all come out stacked on the origin, inside one another.
   const sourceMeshes = loaded.document
-    ? buildFlatMeshesFromGltf(
+    ? buildFlatSceneMeshesFromGltf(
       state.currentSourceData!,
       state.currentSourceResources,
       modules.gltf.module,

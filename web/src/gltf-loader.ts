@@ -38,6 +38,7 @@ import {
   extractGltfCubicSegment,
   quaternionKeysToFbxEuler,
 } from './fbx-scene-adapter.ts';
+import { invertMat4, multiplyMat4 } from './mat4.ts';
 import { MATERIAL_EXTENSION_SLOTS, materialExtensionFactors } from './material-extensions.ts';
 import { assertConverterProfile } from './wasm-modules.ts';
 import type { GltfAsset, GltfModule, PackedAccessor, PackedGeometry } from './wasm-modules.ts';
@@ -182,6 +183,11 @@ export function buildFlatMeshesFromGltf(
           const meshName = definitions[meshIndex]?.name || `mesh_${meshIndex}`;
           meshes.push({
             name: primitiveCount === 1 ? meshName : `${meshName}_${primitiveIndex}`,
+            // Where this came from. A primitive with no positions or no
+            // triangles is skipped above, so the list is not one entry per
+            // declared primitive and cannot be walked by counting.
+            meshIndex,
+            primitiveIndex,
             positions: packedAttributeNumbers(position),
             indices,
             normals: normal?.components === 3 && normal.count === position.count
@@ -208,6 +214,138 @@ export function buildFlatMeshesFromGltf(
   } finally {
     asset.free();
   }
+}
+
+/** The roots of the document's scene, or every parentless node. */
+function sceneRootNodes(document: GltfJson): number[] {
+  const nodes: GltfJson[] = document.nodes || [];
+  const sceneIndex = typeof document.scene === 'number' ? document.scene : 0;
+  return document.scenes?.[sceneIndex]?.nodes
+    || document.scenes?.[0]?.nodes
+    || nodes
+      .map((_: GltfJson, index: number) => index)
+      .filter((index: number) => !nodes.some((node: GltfJson) => node.children?.includes(index)));
+}
+
+/** Every node's world matrix, column-major, in the document's own space. */
+function gltfWorldMatrices(document: GltfJson): (number[] | null)[] {
+  const nodes: GltfJson[] = document.nodes || [];
+  const worlds: (number[] | null)[] = nodes.map(() => null);
+  const visit = (index: number, parent: number[] | null) => {
+    const node = nodes[index];
+    if (!node || worlds[index]) return;
+    const local = Array.isArray(node.matrix) && node.matrix.length === 16
+      ? Array.from<number>(node.matrix)
+      : composeTrs(
+        node.translation || [0, 0, 0],
+        node.rotation || [0, 0, 0, 1],
+        node.scale || [1, 1, 1],
+      );
+    worlds[index] = parent ? multiplyMat4(parent, local) : local;
+    for (const child of node.children || []) visit(child as number, worlds[index]);
+  };
+  for (const root of sceneRootNodes(document)) visit(root as number, null);
+  return worlds;
+}
+
+/** Apply a column-major matrix to a flat `[x, y, z, ...]` array. */
+function transformPositions(values: ArrayLike<number>, matrix: number[]): number[] {
+  const out: number[] = new Array(values.length);
+  for (let index = 0; index + 2 < values.length; index += 3) {
+    const [x, y, z] = [values[index], values[index + 1], values[index + 2]];
+    out[index] = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12];
+    out[index + 1] = matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13];
+    out[index + 2] = matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14];
+  }
+  return out;
+}
+
+/**
+ * Apply a matrix to normals: the inverse transpose, renormalized.
+ *
+ * The matrix itself is only correct for normals when it carries no non-uniform
+ * scale, and a node scaled on one axis is ordinary. A singular matrix has no
+ * inverse to use, and there the rotation part is the best available answer.
+ */
+function transformNormals(values: ArrayLike<number>, matrix: number[]): number[] {
+  const inverse = invertMat4(matrix);
+  const out: number[] = new Array(values.length);
+  for (let index = 0; index + 2 < values.length; index += 3) {
+    const [x, y, z] = [values[index], values[index + 1], values[index + 2]];
+    const transformed = inverse
+      ? [
+        inverse[0] * x + inverse[1] * y + inverse[2] * z,
+        inverse[4] * x + inverse[5] * y + inverse[6] * z,
+        inverse[8] * x + inverse[9] * y + inverse[10] * z,
+      ]
+      : [
+        matrix[0] * x + matrix[4] * y + matrix[8] * z,
+        matrix[1] * x + matrix[5] * y + matrix[9] * z,
+        matrix[2] * x + matrix[6] * y + matrix[10] * z,
+      ];
+    const length = Math.hypot(...transformed) || 1;
+    out[index] = transformed[0] / length;
+    out[index + 1] = transformed[1] / length;
+    out[index + 2] = transformed[2] / length;
+  }
+  return out;
+}
+
+/**
+ * The scene's triangles, placed where the scene puts them.
+ *
+ * `buildFlatMeshesFromGltf` returns each mesh definition once, in the space its
+ * accessors are written in. That is what the FBX route wants, because it
+ * rebuilds the hierarchy and puts the transforms back. Every other flat target
+ * — OBJ, PLY, STL, `.drc` — has nowhere to put a hierarchy, so the placement
+ * has to be baked into the coordinates or the whole scene collapses onto the
+ * origin: two objects a metre apart come out inside one another.
+ *
+ * A mesh several nodes instance is returned once per node, since that is what
+ * the scene contains. A document with no scene graph at all is returned
+ * untouched rather than emptied.
+ */
+export function buildFlatSceneMeshesFromGltf(
+  sourceData: Uint8Array,
+  resources: ResourceMap,
+  gltfModule: GltfModule,
+): GltfJson[] {
+  const flat = buildFlatMeshesFromGltf(sourceData, resources, gltfModule);
+  const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
+  let document: GltfJson;
+  try {
+    document = JSON.parse(new TextDecoder().decode(asset.json()));
+  } finally {
+    asset.free();
+  }
+
+  const nodes: GltfJson[] = document.nodes || [];
+  if (!nodes.some((node) => typeof node.mesh === 'number')) return flat;
+
+  const byMesh = new Map<number, GltfJson[]>();
+  for (const mesh of flat) {
+    const list = byMesh.get(mesh.meshIndex) || [];
+    list.push(mesh);
+    byMesh.set(mesh.meshIndex, list);
+  }
+
+  const worlds = gltfWorldMatrices(document);
+  const placed: GltfJson[] = [];
+  nodes.forEach((node, index) => {
+    if (typeof node.mesh !== 'number') return;
+    const world = worlds[index];
+    // Not reachable from the scene, so not part of what is being exported.
+    if (!world) return;
+    for (const mesh of byMesh.get(node.mesh) || []) {
+      placed.push({
+        ...mesh,
+        name: node.name ? `${node.name}_${mesh.name}` : mesh.name,
+        positions: transformPositions(mesh.positions, world),
+        normals: mesh.normals ? transformNormals(mesh.normals, world) : null,
+      });
+    }
+  });
+  return placed;
 }
 
 /** Build the hierarchy and local transforms representable by FBX export. */

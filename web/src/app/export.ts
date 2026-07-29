@@ -30,6 +30,19 @@ export function updateExportOptions() {
   }
 }
 
+/**
+ * Put away what the last export reported.
+ *
+ * The panel describes a file that was written, not the one that is open, so it
+ * has to go the moment a different file is loaded. Left up, it read as a
+ * property of the new file — opening a 1.8 KB `.drc` right after exporting one
+ * showed "Compressed Size: 1.8 KB" beside it, which is the same number for an
+ * entirely different reason.
+ */
+export function clearCompressionStats() {
+  compressionStats.style.display = 'none';
+}
+
 /** The export controls as the routes want them: plain values, read once. */
 function exportSettings(): ExportSettings {
   return {
