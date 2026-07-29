@@ -547,6 +547,8 @@ pub struct MeshInput {
     pub normals: Option<Vec<f32>>,
     /// Vertex colors as [r, g, b, a, ...] 0-255 (optional)
     pub colors: Option<Vec<u8>>,
+    /// Per-vertex texture coordinates as [u0, v0, u1, v1, ...] (optional)
+    pub uvs: Option<Vec<f32>>,
 }
 
 /// Export options.
@@ -557,6 +559,8 @@ pub struct ExportOptions {
     pub include_normals: Option<bool>,
     /// Include colors in output
     pub include_colors: Option<bool>,
+    /// Include texture coordinates in output
+    pub include_uvs: Option<bool>,
     /// Decimal precision for coordinates
     pub precision: Option<u32>,
     /// Output format: "ascii" or "binary_little_endian"
@@ -720,6 +724,30 @@ fn mesh_input_to_core_mesh(input: &MeshInput, options: &ExportOptions) -> Result
                 );
                 color_att.buffer_mut().write(0, &colors[..vertex_count * 4]);
                 mesh.add_attribute(color_att);
+            }
+        }
+    }
+
+    // PLY carries per-vertex `s`/`t`, which is what the writer emits and the
+    // reader reads back; the per-corner list some encoders write on the face
+    // element is a different thing and is not this.
+    if options.include_uvs.unwrap_or(true) {
+        if let Some(uvs) = &input.uvs {
+            if uvs.len() >= vertex_count * 2 {
+                let mut uv_att = PointAttribute::new();
+                uv_att.init(
+                    GeometryAttributeType::TexCoord,
+                    2,
+                    DataType::Float32,
+                    false,
+                    vertex_count,
+                );
+                for (i, chunk) in uvs.chunks_exact(2).take(vertex_count).enumerate() {
+                    let bytes: Vec<u8> =
+                        chunk.iter().flat_map(|value| value.to_le_bytes()).collect();
+                    uv_att.buffer_mut().write(i * 8, &bytes);
+                }
+                mesh.add_attribute(uv_att);
             }
         }
     }
@@ -894,6 +922,7 @@ mod writer_tests {
             indices: vec![0, 1, 2],
             normals: None,
             colors: None,
+            uvs: None,
         };
 
         let result = create_ply_internal(&mesh, &ExportOptions::default());
@@ -903,5 +932,31 @@ mod writer_tests {
         assert!(data.contains("ply"));
         assert!(data.contains("element vertex 3"));
         assert!(data.contains("element face 1"));
+    }
+
+    /// PLY holds per-vertex colours and texture coordinates, and both used to
+    /// be dropped on the way out: the binding had no field for the coordinates
+    /// at all, and the shell never passed the colours it had read.
+    #[test]
+    fn test_create_ply_writes_colours_and_texture_coordinates() {
+        let mesh = MeshInput {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+            colors: Some(vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255]),
+            uvs: Some(vec![0.0, 0.0, 1.0, 0.0, 0.5, 1.0]),
+        };
+
+        let result = create_ply_internal(&mesh, &ExportOptions::default());
+        assert!(result.success, "{:?}", result.error);
+        let data = result.data.unwrap();
+        assert!(data.contains("property uchar red"), "{data}");
+        assert!(data.contains("property float texture_u"), "{data}");
+        // The first vertex is opaque red at the texture origin.
+        let first = data
+            .lines()
+            .nth(data.lines().position(|line| line == "end_header").unwrap() + 1)
+            .unwrap();
+        assert!(first.contains("255 0 0"), "{first}");
     }
 }

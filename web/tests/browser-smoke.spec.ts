@@ -15,6 +15,7 @@ import {
   normalMappedQuad,
   solidColorPng,
   triangleBytes,
+  vertexColoredTriangle,
 } from './smoke-fixtures.ts';
 import { decodeFirstDracoPrimitive } from './draco-interop.ts';
 
@@ -1937,6 +1938,57 @@ test('a flattened export keeps each node where the scene put it', async ({ page 
 });
 
 /**
+ * Vertex colours reach the formats that can hold them.
+ *
+ * They reached none of them. The glTF flattener never read `COLOR_0`, the
+ * shape handed to the writers had no field for colours, and the merge step
+ * dropped what did arrive — so a vertex-coloured model exported to PLY or
+ * `.drc`, both of which carry colours natively, came out plain.
+ */
+test('vertex colours survive an export to PLY and to .drc', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles({
+    name: 'vertex-colours.gltf',
+    mimeType: 'model/gltf+json',
+    buffer: Buffer.from(vertexColoredTriangle()),
+  });
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  const exportTo = async (format: string) => {
+    await page.locator(`[data-choice-for="export-format"] [data-value="${format}"]`).click();
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#export-btn').click();
+    return readFile((await (await downloadPromise).path())!);
+  };
+
+  const ply = (await exportTo('ply')).toString('utf8');
+  expect(ply).toContain('property uchar red');
+  // The corners, in the file's own order: opaque red, green, blue.
+  const vertexLines = ply.split(/\r?\n/).slice(ply.split(/\r?\n/).indexOf('end_header') + 1, -2);
+  expect(vertexLines[0]).toContain('255 0 0 255');
+  expect(vertexLines[1]).toContain('0 255 0 255');
+  expect(vertexLines[2]).toContain('0 0 255 255');
+
+  // Draco renumbers points as it encodes, so the payload is checked for the
+  // three colours rather than for their order.
+  const drc = await exportTo('drc');
+  await page.locator('#file-input').setInputFiles({
+    name: 'colours.drc',
+    mimeType: 'application/octet-stream',
+    buffer: drc,
+  });
+  await expect(page.locator('#console')).toContainText('Successfully parsed colours.drc');
+  const decoded = await page.evaluate(async () => {
+    const { state } = await import('/app/state.js' as string);
+    return Array.from(state.currentMeshData?.meshes?.[0]?.colors ?? []);
+  });
+  const corners = Array.from({ length: decoded.length / 4 }, (_, index) =>
+    decoded.slice(index * 4, index * 4 + 4).join(','));
+  expect(corners.sort()).toEqual(['0,0,255,255', '0,255,0,255', '255,0,0,255']);
+});
+
+/**
  * Nothing a previous file put on screen may survive the next one.
  *
  * Two readouts did. The scene figures — nodes, materials, skins — are written
@@ -1959,6 +2011,9 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
   await page.locator('#export-btn').click();
   const bytes = await readFile((await (await downloadPromise).path())!);
   await expect(page.locator('#compression-stats')).toBeVisible();
+  // Which method the encoder settled on is its decision, not the caller's, and
+  // the panel used to have no way to name it.
+  await expect(page.locator('#stats-method')).toHaveText('edgebreaker');
 
   // A .drc carries geometry and nothing else: no nodes, no materials, and no
   // statement about how the file that produced it was written.

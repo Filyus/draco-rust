@@ -356,6 +356,11 @@ export function prepareMeshesForExport(
     indices: Array.from(mesh.indices || []),
     normals: settings.includeNormals ? Array.from(mesh.normals || []) : null,
     uvs: settings.includeUvs ? Array.from(mesh.uvs || []) : null,
+    // No checkbox governs colours: PLY and Draco are the only targets that can
+    // hold them, and a file carrying them has nowhere else for them to go.
+    colors: mesh.colors ? Array.from(mesh.colors) : null,
+    // No checkbox governs colours: PLY and Draco are the only targets that can
+    // hold them, and a file carrying them has nowhere else for them to go.
     controlPoints: mesh.controlPoints ? Array.from(mesh.controlPoints) : null,
     polygonVertexIndices: mesh.polygonVertexIndices
       ? Array.from(mesh.polygonVertexIndices)
@@ -465,7 +470,10 @@ export async function exportToObj(
   return modules.obj.module.create_obj_multi(meshes, options);
 }
 
-export async function exportToPly(meshes: PreparedMesh[], settings: Pick<ExportSettings, 'includeNormals'>) {
+export async function exportToPly(
+  meshes: PreparedMesh[],
+  settings: Pick<ExportSettings, 'includeNormals' | 'includeUvs'>,
+) {
   if (!modules.ply.loaded) {
     return { success: false, error: 'PLY module not loaded' };
   }
@@ -473,6 +481,7 @@ export async function exportToPly(meshes: PreparedMesh[], settings: Pick<ExportS
   const merged = mergeMeshes(meshes);
   const options = {
     include_normals: settings.includeNormals,
+    include_uvs: settings.includeUvs,
     include_colors: true,
     precision: 6,
     format: 'ascii',
@@ -552,6 +561,7 @@ export function mergeMeshes(meshes: PreparedMesh[]) {
     indices: [] as number[],
     normals: [] as number[],
     uvs: [] as number[],
+    colors: [] as number[],
   };
 
   let vertexOffset = 0;
@@ -562,15 +572,46 @@ export function mergeMeshes(meshes: PreparedMesh[]) {
   const append = (into: number[], values: ArrayLike<number>) => {
     for (let index = 0; index < values.length; index += 1) into.push(values[index]);
   };
+  /**
+   * Append a per-vertex channel, filling in for meshes that lack it.
+   *
+   * A channel is addressed by vertex index, so one mesh without normals and a
+   * later one with them do not concatenate: every value after the gap would
+   * belong to the wrong vertex. The filler is what the format means by absent —
+   * a zero normal, an origin UV, opaque white.
+   */
+  const appendChannel = (
+    into: number[],
+    values: ArrayLike<number> | null | undefined,
+    stride: number,
+    filler: number[],
+  ) => {
+    if (!values) return;
+    while (into.length < vertexOffset * stride) append(into, filler);
+    append(into, values);
+  };
 
   for (const mesh of meshes) {
+    const vertices = mesh.positions.length / 3;
     append(merged.positions, mesh.positions);
     if (mesh.indices) {
       for (const idx of mesh.indices) merged.indices.push(idx + vertexOffset);
     }
-    if (mesh.normals) append(merged.normals, mesh.normals);
-    if (mesh.uvs) append(merged.uvs, mesh.uvs);
-    vertexOffset += mesh.positions.length / 3;
+    appendChannel(merged.normals, mesh.normals, 3, [0, 0, 0]);
+    appendChannel(merged.uvs, mesh.uvs, 2, [0, 0]);
+    appendChannel(merged.colors, mesh.colors, 4, [255, 255, 255, 255]);
+    vertexOffset += vertices;
+  }
+
+  // A channel no mesh supplied stays empty; one some meshes supplied is filled
+  // out to the end so its length still matches the vertex count.
+  for (const [channel, stride, filler] of [
+    [merged.normals, 3, [0, 0, 0]],
+    [merged.uvs, 2, [0, 0]],
+    [merged.colors, 4, [255, 255, 255, 255]],
+  ] as [number[], number, number[]][]) {
+    if (channel.length === 0) continue;
+    while (channel.length < vertexOffset * stride) append(channel, filler);
   }
 
   return merged;

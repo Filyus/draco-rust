@@ -180,6 +180,7 @@ export function buildFlatMeshesFromGltf(
           const weights0 = attributes.get('WEIGHTS_0');
           const joints1 = attributes.get('JOINTS_1');
           const weights1 = attributes.get('WEIGHTS_1');
+          const color = attributes.get('COLOR_0');
           const meshName = definitions[meshIndex]?.name || `mesh_${meshIndex}`;
           meshes.push({
             name: primitiveCount === 1 ? meshName : `${meshName}_${primitiveIndex}`,
@@ -204,6 +205,9 @@ export function buildFlatMeshesFromGltf(
               ? packedAttributeNumbers(joints1) : null,
             weights1: weights1?.components === 4 && weights1.count === position.count
               ? packedAttributeNumbers(weights1) : null,
+            colors: color && color.count === position.count
+              ? rgbaBytes(packedAttributeNumbers(color), color.components)
+              : null,
           });
         } finally {
           packed.free();
@@ -587,6 +591,28 @@ function composeTrs(translation: ArrayLike<number>, rotation: ArrayLike<number>,
     (2 * (xz + wy)) * sz, (2 * (yz - wx)) * sz, (1 - 2 * (xx + yy)) * sz, 0,
     translation[0], translation[1], translation[2], 1,
   ];
+}
+
+/**
+ * `COLOR_0` as the RGBA bytes every flat writer wants.
+ *
+ * glTF states colours as floats in 0..1, or as normalized integers that
+ * `packedAttributeNumbers` has already brought to the same range, so one scale
+ * covers both. A three-component set is opaque: glTF says so, and PLY and Draco
+ * have no way to spell "no alpha stated".
+ */
+function rgbaBytes(values: number[], components: number): number[] {
+  const byte = (value: number) => Math.round(Math.min(Math.max(value, 0), 1) * 255);
+  const out: number[] = [];
+  for (let index = 0; index + components <= values.length; index += components) {
+    out.push(
+      byte(values[index]),
+      byte(values[index + 1]),
+      byte(values[index + 2]),
+      components >= 4 ? byte(values[index + 3]) : 255,
+    );
+  }
+  return out;
 }
 
 function packedAttributeNumbers(attribute: GltfJson): number[] {

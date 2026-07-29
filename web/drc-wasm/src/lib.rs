@@ -303,9 +303,10 @@ pub struct DracoStats {
     pub speed: i32,
     /// Bytes of Draco payload.
     pub compressed_size: usize,
-    /// Left unnamed: the binding does not report which method was chosen.
+    /// `edgebreaker` or `sequential`, as the encoder settled it.
     pub method: Option<String>,
-    /// Likewise for the prediction scheme.
+    /// Left unnamed: the encoder chooses one per attribute and records none of
+    /// them, so there is no single answer to report here.
     pub prediction_scheme: Option<String>,
 }
 
@@ -365,13 +366,23 @@ fn create_drc_internal(input: &MeshInput, options: &ExportOptions) -> ExportResu
     match encoder.encode(&settings, &mut output) {
         Ok(()) => {
             let bytes = output.data().to_vec();
+            // Which method it settled on is a decision, not an echo of the
+            // request: with no explicit choice the encoder takes sequential at
+            // speed 10 and edgebreaker below it.
+            let method = encoder
+                .encoded_mesh_info()
+                .map(|info| match info.encoding_method {
+                    1 => "edgebreaker".to_string(),
+                    0 => "sequential".to_string(),
+                    other => format!("method {other}"),
+                });
             ExportResult {
                 success: true,
                 draco_stats: Some(DracoStats {
                     primitives: 1,
                     speed,
                     compressed_size: bytes.len(),
-                    method: None,
+                    method,
                     prediction_scheme: None,
                 }),
                 binary_data: Some(bytes),
@@ -614,6 +625,64 @@ mod tests {
                 "cut to {cut} bytes reported nothing"
             );
         }
+    }
+
+    /// Colours are the attribute the flat export path used to drop on the
+    /// floor, and the encoding method is what the statistics panel had no way
+    /// to name. Both are checked where they are produced.
+    #[test]
+    fn test_colours_survive_and_the_method_is_named() {
+        let mut input = quad();
+        input.colors = Some(vec![
+            255, 0, 0, 255, //
+            0, 255, 0, 255, //
+            0, 0, 255, 255, //
+            255, 255, 0, 255,
+        ]);
+        let exported = create_drc_internal(&input, &ExportOptions::default());
+        assert!(exported.success, "{:?}", exported.error);
+        let stats = exported.draco_stats.unwrap();
+        assert_eq!(stats.method.as_deref(), Some("edgebreaker"));
+
+        let parsed = parse_drc_internal(&exported.binary_data.unwrap());
+        assert!(parsed.success, "{:?}", parsed.error);
+        assert!(parsed.attributes.contains(&"COLOR".to_string()));
+        let colors = &parsed.meshes[0].colors;
+        assert_eq!(colors.len(), 16);
+        // Draco renumbers the points, so the colours come back as a set.
+        let mut seen: Vec<[u8; 4]> = colors
+            .chunks_exact(4)
+            .map(|c| [c[0], c[1], c[2], c[3]])
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            vec![
+                [0, 0, 255, 255],
+                [0, 255, 0, 255],
+                [255, 0, 0, 255],
+                [255, 255, 0, 255],
+            ],
+        );
+    }
+
+    /// Sequential is not a request the caller makes here; it is what the
+    /// encoder settles on at the fastest speed, and the panel reports the
+    /// decision rather than the ask.
+    #[test]
+    fn test_the_fastest_speed_reports_sequential() {
+        let exported = create_drc_internal(
+            &quad(),
+            &ExportOptions {
+                encoding_speed: Some(10),
+                ..Default::default()
+            },
+        );
+        assert!(exported.success, "{:?}", exported.error);
+        assert_eq!(
+            exported.draco_stats.unwrap().method.as_deref(),
+            Some("sequential"),
+        );
     }
 
     #[test]
