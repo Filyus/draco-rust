@@ -47,27 +47,27 @@ if (!line) throw new Error('Blender did not emit Samba pose samples');
 const expected = JSON.parse(line.slice('DRACO_BLENDER_JSON='.length));
 
 const fbx = await loadWasm('fbx');
-const { buildSceneFromFbx } = await import(pathToFileURL(resolve(here, '..', 'src', 'mesh-loader.ts')));
-const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'src', 'viewer.ts')));
-const { invertMat4, multiplyMat4 } = await import(pathToFileURL(resolve(here, '..', 'src', 'mat4.ts')));
+const { buildSceneFromFbx } = await import(pathToFileURL(resolve(here, '..', 'src', 'mesh-loader.ts')).href);
+const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'src', 'viewer.ts')).href);
+const { invertMat4, multiplyMat4 } = await import(pathToFileURL(resolve(here, '..', 'src', 'mat4.ts')).href);
 const parsed = fbx.parse_fbx(await readBytes(sambaFbx));
 const scene = await buildSceneFromFbx(parsed);
-const probe = Object.create(Viewer.prototype);
+const probe: any = Object.create(Viewer.prototype);
 probe.scene = scene;
 probe.animation = { clipIndex: 0, time: 0 };
-let worstWorld = { error: 0 };
-let worstSkin = { error: 0 };
+let worstWorld: { error: number; bone?: string; time?: number } = { error: 0 };
+let worstSkin: { error: number; bone?: string } = { error: 0 };
 const perBone = new Map(bones.map((bone) => [bone, { error: 0, time: 0 }]));
 for (let sample = 0; sample < times.length; sample += 1) {
     if (!probe.seekAnimation(times[sample])) throw new Error(`viewer seek failed at ${times[sample]}`);
     probe._updateWorldMatrices();
     for (let index = 0; index < bones.length; index += 1) {
-        const node = scene.nodes.find((candidate) => candidate.name === bones[index]);
+        const node = scene.nodes.find((candidate: any) => candidate.name === bones[index]);
         const blenderMatrix = expected.samples[sample][index];
         for (let column = 0; column < 4; column += 1) for (let row = 0; row < 4; row += 1) {
             const error = Math.abs(node.world[column * 4 + row] - blenderMatrix[row * 4 + column]);
             if (error > worstWorld.error) worstWorld = { error, bone: bones[index], time: times[sample] };
-            const boneError = perBone.get(bones[index]);
+            const boneError = perBone.get(bones[index])!;
             if (error > boneError.error) {
                 boneError.error = error;
                 boneError.time = times[sample];
@@ -79,7 +79,7 @@ for (const skin of scene.skins) for (const joint of skin.joints) {
     const name = joint.node?.name;
     if (!expected.rest[name]) continue;
     const rest = expected.rest[name];
-    const inverseRest = invertMat4(Float32Array.from(rest.flatMap((_, index) => rest[(index % 4) * 4 + Math.floor(index / 4)])));
+    const inverseRest = invertMat4(Float32Array.from(rest.flatMap((_: number, index: number) => rest[(index % 4) * 4 + Math.floor(index / 4)])));
     const actual = multiplyMat4(joint.node.world, joint.inverseBind);
     const expectedPalette = multiplyMat4(joint.node.world, inverseRest);
     for (let index = 0; index < 16; index += 1) {
@@ -89,8 +89,8 @@ for (const skin of scene.skins) for (const joint of skin.joints) {
 }
 if (worstWorld.error > 0.05) {
     const channels = (parsed.scene?.animations?.[0]?.channels || [])
-        .filter((channel) => bones.includes(channel.nodeName))
-        .map((channel) => ({ node: channel.nodeName, path: channel.path, first: Array.from(channel.sampler?.output || []).slice(0, 4) }));
+        .filter((channel: any) => bones.includes(channel.nodeName))
+        .map((channel: any) => ({ node: channel.nodeName, path: channel.path, first: Array.from(channel.sampler?.output || []).slice(0, 4) }));
     const largest = [...perBone.entries()]
         .sort((left, right) => right[1].error - left[1].error)
         .slice(0, 6)

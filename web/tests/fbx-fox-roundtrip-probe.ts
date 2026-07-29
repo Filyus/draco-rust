@@ -7,10 +7,10 @@ import { pathToFileURL } from 'node:url';
 
 if (skipUnless([foxGltf, foxBin], 'Fox FBX round-trip probe')) process.exit(0);
 const [fbx, gltf] = await Promise.all([loadWasm('fbx'), loadWasm('gltf')]);
-const { buildFbxSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')));
+const { buildFbxSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href);
 const scene = buildFbxSceneFromGltf(await readBytes(foxGltf), { 'Fox.bin': await readBytes(foxBin) }, gltf, { legacyCompatibility: true });
-const findWithTranslation = (nodes) => {
-    let best = null;
+const findWithTranslation = (nodes: any[]): any => {
+    let best: any = null;
     let bestMagnitude = 0;
     for (const node of nodes) {
         if (node.matrix) {
@@ -27,11 +27,11 @@ if (!node?.matrix) throw new Error('Fox has no translated node matrix');
 const written = fbx.create_fbx_scene(scene, { version: 7500, legacyCompatibility: true });
 if (!written.success) throw new Error(`Fox FBX write failed: ${written.error}`);
 const reparsed = fbx.parse_fbx(new Uint8Array(written.binary_data));
-const findByName = (nodes, name) => nodes.flatMap((candidate) => [candidate, ...findAll(candidate.children || [])]).find((candidate) => candidate.name === name);
-const findAll = (nodes) => nodes.flatMap((candidate) => [candidate, ...findAll(candidate.children || [])]);
+const findByName = (nodes: any[], name: string): any => nodes.flatMap((candidate) => [candidate, ...findAll(candidate.children || [])]).find((candidate) => candidate.name === name);
+const findAll = (nodes: any[]): any[] => nodes.flatMap((candidate) => [candidate, ...findAll(candidate.children || [])]);
 const after = findByName(reparsed.scene?.rootNodes || [], node.name)?.matrix;
 if (!after) throw new Error(`Fox reparse omitted node ${node.name}`);
-const maxDiff = Math.max(...node.matrix.map((value, index) => Math.abs(value - after[index])));
+const maxDiff = Math.max(...node.matrix.map((value: number, index: number) => Math.abs(value - after[index])));
 if (maxDiff >= 1e-3) throw new Error(`Fox matrix drift after round-trip: ${maxDiff}`);
 if (process.env.DRACO_WRITE_DEBUG_ARTIFACTS === '1') {
     const scratch = resolve(here, '..', '..', '.scratch');

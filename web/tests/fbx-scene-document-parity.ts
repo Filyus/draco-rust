@@ -8,7 +8,7 @@ import { buildViewerSceneFromDocument } from '../src/scene-document-viewer.ts';
 import { here, loadFbxViewerAdapter, loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.ts';
 
 const { buildSceneFromFbx } = await loadFbxViewerAdapter();
-const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'src', 'viewer.ts')));
+const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'src', 'viewer.ts')).href);
 const fbx = await loadWasm('fbx');
 
 const bones = [
@@ -19,21 +19,21 @@ const bones = [
     'mixamorig:RightUpLeg', 'mixamorig:RightLeg', 'mixamorig:RightFoot',
 ];
 
-function sample(scene, time) {
-    const probe = Object.create(Viewer.prototype);
+function sample(scene: any, time: number): number[][] {
+    const probe: any = Object.create(Viewer.prototype);
     probe.scene = scene;
     probe.animation = { clipIndex: 0, time: 0 };
     assert.equal(probe.seekAnimation(time), true);
     probe._updateWorldMatrices();
-    const byName = new Map(scene.nodes.map((node) => [node.name, node]));
+    const byName = new Map(scene.nodes.map((node: any) => [node.name, node]));
     return bones.map((name) => {
-        const node = byName.get(name);
+        const node: any = byName.get(name);
         assert.ok(node, `missing ${name}`);
         return Array.from(node.world);
     });
 }
 
-function normalizeFbxWorldToMeters(matrix) {
+function normalizeFbxWorldToMeters(matrix: number[]): number[] {
     const output = [...matrix];
     output[12] *= 0.01;
     output[13] *= 0.01;

@@ -25,7 +25,11 @@ const { buildFbxSceneFromGltf } = await import(pathToFileURL(resolve(here, '..',
 const geometry = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
 const image = `data:image/png;base64,${stripeNormalMapPng().toString('base64')}`;
 
-function asset({ textures, materials, extensionsUsed }) {
+function asset({ textures, materials, extensionsUsed }: {
+  textures: any[];
+  materials: any[];
+  extensionsUsed?: string[];
+}) {
   return new TextEncoder().encode(JSON.stringify({
     asset: { version: '2.0' },
     buffers: [{
@@ -68,7 +72,7 @@ for (const extension of ['EXT_texture_webp', 'EXT_texture_avif', 'KHR_texture_ba
     `a texture whose image comes through ${extension} exported with no payload`,
   );
   assert.ok(
-    alternate.warnings.some((warning) => /importers cannot decode them/.test(warning)),
+    alternate.warnings.some((warning: string) => /importers cannot decode them/.test(warning)),
     'carrying a codec FBX importers cannot read has to be reported',
   );
 }
@@ -95,11 +99,11 @@ const rich = buildFbxSceneFromGltf(
   {},
   gltfModule,
 );
-assert.ok(rich.warnings.some((warning) => /wrap mode/.test(warning)), 'clamp and mirror wraps must be reported');
-assert.ok(rich.warnings.some((warning) => /UV transform/.test(warning)), 'a dropped texture transform must be reported');
-assert.ok(rich.warnings.some((warning) => /Phong/.test(warning)), 'dropped material layers must be reported');
+assert.ok(rich.warnings.some((warning: string) => /wrap mode/.test(warning)), 'clamp and mirror wraps must be reported');
+assert.ok(rich.warnings.some((warning: string) => /UV transform/.test(warning)), 'a dropped texture transform must be reported');
+assert.ok(rich.warnings.some((warning: string) => /Phong/.test(warning)), 'dropped material layers must be reported');
 assert.ok(
-  rich.warnings.some((warning) => /FBX writer cannot express/.test(warning)),
+  rich.warnings.some((warning: string) => /FBX writer cannot express/.test(warning)),
   'the extension list FBX cannot express must be reported',
 );
 

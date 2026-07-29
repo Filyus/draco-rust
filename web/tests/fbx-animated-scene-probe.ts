@@ -13,16 +13,16 @@ const scene = await buildSceneFromFbx(parsed);
 if (scene.nodes.length === 0 || scene.renderables.length === 0 || scene.skins.length === 0) {
     throw new Error(`Samba Dancing scene adaptation is incomplete: ${JSON.stringify({ nodes: scene.nodes.length, renderables: scene.renderables.length, skins: scene.skins.length })}`);
 }
-if (scene.animations.length === 0 || scene.animations.some((clip) => !Number.isFinite(clip.duration) || clip.duration <= 0 || clip.channels.length === 0)) {
+if (scene.animations.length === 0 || scene.animations.some((clip: any) => !Number.isFinite(clip.duration) || clip.duration <= 0 || clip.channels.length === 0)) {
     throw new Error('Samba Dancing animation clips are missing or invalid');
 }
 for (const clip of scene.animations) {
     for (const channel of clip.channels) {
-        if (channel.sampler.input.some((value) => !Number.isFinite(value))
-            || channel.sampler.output.some((value) => !Number.isFinite(value))) {
+        if (channel.sampler.input.some((value: number) => !Number.isFinite(value))
+            || channel.sampler.output.some((value: number) => !Number.isFinite(value))) {
             throw new Error(`Samba Dancing contains non-finite ${channel.path} samples`);
         }
     }
 }
-verbose({ fixture: sambaFbx, nodes: scene.nodes.length, skins: scene.skins.length, clips: scene.animations.map((clip) => ({ name: clip.name, duration: clip.duration, channels: clip.channels.length })) });
+verbose({ fixture: sambaFbx, nodes: scene.nodes.length, skins: scene.skins.length, clips: scene.animations.map((clip: any) => ({ name: clip.name, duration: clip.duration, channels: clip.channels.length })) });
 console.log(`OBSERVED Samba Dancing scene boundary: ${scene.nodes.length} nodes, ${scene.skins.length} skins, ${scene.animations.length} animation clips (not a motion-acceptance test)`);

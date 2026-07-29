@@ -7,11 +7,11 @@ import { loadWasm, mixamoFbx, readBytes, sambaFbx, skipUnless } from './fbx-test
 
 if (skipUnless([mixamoFbx, sambaFbx], 'FBX source-provenance round-trip')) process.exit(0);
 
-function allNodes(nodes) {
+function allNodes(nodes: any[]): any[] {
     return nodes.flatMap((node) => [node, ...allNodes(node.children || [])]);
 }
 
-function nodesByName(scene) {
+function nodesByName(scene: any): Map<string, any> {
     const nodes = allNodes(scene.rootNodes || []);
     return new Map(nodes.map((node) => [node.name, node]));
 }
@@ -21,12 +21,12 @@ for (const [label, path] of [['Mixamo', mixamoFbx], ['Samba', sambaFbx]]) {
     const bytes = await readBytes(path);
     const source = fbx.parse_fbx(bytes);
     assert.equal(source.success, true, `${label} source parse`);
-    const expectedRootOrder = source.scene.rootNodes.map((node) => node.name);
+    const expectedRootOrder = source.scene.rootNodes.map((node: any) => node.name);
     for (let repeat = 0; repeat < 8; repeat += 1) {
         const repeated = fbx.parse_fbx(bytes);
         assert.equal(repeated.success, true, `${label} repeated source parse ${repeat}`);
         assert.deepEqual(
-            repeated.scene.rootNodes.map((node) => node.name),
+            repeated.scene.rootNodes.map((node: any) => node.name),
             expectedRootOrder,
             `${label} source root order must be deterministic`,
         );

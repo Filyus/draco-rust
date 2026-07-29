@@ -22,7 +22,7 @@ const bones = [
     'mixamorig:RightUpLeg', 'mixamorig:RightLeg', 'mixamorig:RightFoot',
 ];
 
-function blenderSamples(path, times) {
+function blenderSamples(path: string, times: number[]): any {
     const script = `
 import bpy,json,math
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -63,7 +63,7 @@ print('DRACO_BLENDER_JSON='+json.dumps({'samples':samples,'rest':rest,'palette':
     return JSON.parse(line.slice('DRACO_BLENDER_JSON='.length));
 }
 
-function maxMatrixDrift(expected, actual, property) {
+function maxMatrixDrift(expected: any, actual: any, property: string): { error: number; sample: number; bone: string; component: number } {
     let worst = { error: 0, sample: 0, bone: '', component: 0 };
     const expectedSamples = property === 'samples' ? expected.samples : [expected[property]];
     const actualSamples = property === 'samples' ? actual.samples : [actual[property]];
@@ -81,10 +81,10 @@ function maxMatrixDrift(expected, actual, property) {
     return worst;
 }
 
-function maxBoundsDrift(expected, actual) {
+function maxBoundsDrift(expected: any, actual: any): { error: number; mesh: string; sample: number; extreme: number; axis: number } {
     let worst = { error: 0, mesh: '', sample: 0, extreme: 0, axis: 0 };
     assert.deepEqual(Object.keys(actual.bounds).sort(), Object.keys(expected.bounds).sort(), 'skinned mesh names');
-    for (const [mesh, expectedSamples] of Object.entries(expected.bounds)) {
+    for (const [mesh, expectedSamples] of Object.entries(expected.bounds) as [string, any][]) {
         for (let sample = 0; sample < expectedSamples.length; sample += 1) {
             for (let extreme = 0; extreme < 2; extreme += 1) for (let axis = 0; axis < 3; axis += 1) {
                 const error = Math.abs(expectedSamples[sample][extreme][axis] - actual.bounds[mesh][sample][extreme][axis]);

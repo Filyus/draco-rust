@@ -19,8 +19,8 @@ if (!existsSync(BLENDER) || !existsSync(MIXAMO)) {
     process.exit(0);
 }
 
-if (typeof globalThis.WebGL2RenderingContext === 'undefined') {
-    globalThis.WebGL2RenderingContext = class {
+if (typeof (globalThis as any).WebGL2RenderingContext === 'undefined') {
+    (globalThis as any).WebGL2RenderingContext = class {
         static REPEAT = 0x2901;
         static LINEAR_MIPMAP_LINEAR = 0x2703;
         static LINEAR = 0x2601;
@@ -60,20 +60,20 @@ if (!line) throw new Error('Blender did not emit Mixamo world-position samples')
 const blenderSamples = JSON.parse(line.slice('DRACO_BLENDER_JSON='.length));
 
 const fbx = await loadWasm('fbx');
-const { buildSceneFromFbx } = await import(pathToFileURL(resolve(here, '..', 'src', 'mesh-loader.ts')));
-const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'src', 'viewer.ts')));
+const { buildSceneFromFbx } = await import(pathToFileURL(resolve(here, '..', 'src', 'mesh-loader.ts')).href);
+const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'src', 'viewer.ts')).href);
 const parsed = fbx.parse_fbx(await readBytes(MIXAMO));
 const scene = await buildSceneFromFbx(parsed);
-const probe = Object.create(Viewer.prototype);
+const probe: any = Object.create(Viewer.prototype);
 probe.scene = scene;
 probe.animation = { clipIndex: 0, time: 0 };
 
-const viewerSamples = [];
+const viewerSamples: number[][][] = [];
 for (const time of times) {
     if (!probe.seekAnimation(time)) throw new Error(`viewer seek failed at ${time}`);
     probe._updateWorldMatrices();
     viewerSamples.push(bones.map((name) => {
-        const node = scene.nodes.find((candidate) => candidate.name === name);
+        const node = scene.nodes.find((candidate: any) => candidate.name === name);
         if (!node) throw new Error(`viewer is missing ${name}`);
         return [node.world[12], node.world[13], node.world[14]];
     }));
@@ -86,7 +86,7 @@ const rootOffset = viewerSamples[0][0].map((value, index) => value - blenderSamp
 let worst = { error: 0, time: 0, bone: '' };
 for (let sample = 0; sample < times.length; sample += 1) {
     for (let bone = 0; bone < bones.length; bone += 1) {
-        const expected = blenderSamples[sample][bone].map((value, index) => value + rootOffset[index]);
+        const expected = blenderSamples[sample][bone].map((value: number, index: number) => value + rootOffset[index]);
         const actual = viewerSamples[sample][bone];
         const error = Math.hypot(...actual.map((value, index) => value - expected[index]));
         if (error > worst.error) worst = { error, time: times[sample], bone: bones[bone] };
