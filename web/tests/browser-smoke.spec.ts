@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -32,14 +33,28 @@ const mixamoFixtureRoot = process.env.FBX_FIXTURES
 const mixamoFbx = process.env.MIXAMO_FBX || path.resolve(mixamoFixtureRoot, 'mixamo.fbx');
 const sambaFbx = process.env.SAMBA_FBX || path.resolve(mixamoFixtureRoot, 'Samba Dancing.fbx');
 
-async function waitForConverterReady(page) {
+async function waitForConverterReady(page: Page) {
   await expect(page.locator('#console')).toContainText('Ready to convert 3D files!');
+}
+
+// Test-only globals stashed on `window` inside page.evaluate/addInitScript
+// closures further below, to observe what the WebGL2 monkeypatches there
+// captured. These never exist outside this spec's own instrumentation.
+declare global {
+  interface Window {
+    __textureUploads: {
+      compressed: Array<{ level: number; format: number; width: number; height: number; bytes: number }>;
+      plain: number;
+    };
+    __frameSamples: number[][];
+    __frameOriginals: Record<string, (...args: any[]) => any>;
+  }
 }
 
 test('glTF asset API reads document, geometry, accessors, GLB, and resources', async ({ page }) => {
   await page.goto('/index.html');
   const result = await page.evaluate(async ({ animated, embedded, external, resource }) => {
-    const api = await import('/pkg/gltf.js');
+    const api = await import('/pkg/gltf.js' as string);
     await api.default();
 
     const data = new TextEncoder().encode(embedded);
@@ -126,9 +141,9 @@ test('glTF can build a portable SceneDocument without browser image handles', as
   await page.goto('/index.html');
   const result = await page.evaluate(async ({ animated }) => {
     const [api, sceneDocument, viewerAdapter] = await Promise.all([
-      import('/pkg/gltf.js'),
-      import('/gltf-scene-document.js'),
-      import('/scene-document-viewer.js'),
+      import('/pkg/gltf.js' as string),
+      import('/gltf-scene-document.js' as string),
+      import('/scene-document-viewer.js' as string),
     ]);
     await api.default();
     const document = sceneDocument.buildSceneDocumentFromGltf(
@@ -155,9 +170,9 @@ test('portable SceneDocument serializes through typed glTF WASM to GLB', async (
   await page.goto('/index.html');
   const result = await page.evaluate(async ({ animated }) => {
     const [api, importer, exporter] = await Promise.all([
-      import('/pkg/gltf.js'),
-      import('/gltf-scene-document.js'),
-      import('/scene-document-gltf.js'),
+      import('/pkg/gltf.js' as string),
+      import('/gltf-scene-document.js' as string),
+      import('/scene-document-gltf.js' as string),
     ]);
     await api.default();
     const document = importer.buildSceneDocumentFromGltf(
@@ -207,7 +222,7 @@ test('FBX SceneDocument exports to GLB and reloads without flattening', async ({
     await expect(page.locator('#console')).toContainText('SceneDocument capabilities:');
     const downloadedPath = await download.path();
     expect(downloadedPath).not.toBeNull();
-    const bytes = await readFile(downloadedPath);
+    const bytes = await readFile(downloadedPath!);
     expect(bytes.subarray(0, 4).toString('binary')).toBe('glTF');
     expect(bytes.length).toBeGreaterThan(20);
 
@@ -243,7 +258,7 @@ test('FBX SceneDocument exports through the typed FBX writer', async ({ page }) 
   const download = await downloadPromise;
   const downloadedPath = await download.path();
   expect(downloadedPath).not.toBeNull();
-  const bytes = await readFile(downloadedPath);
+  const bytes = await readFile(downloadedPath!);
   expect(bytes.subarray(0, 21).toString('binary')).toBe('Kaydara FBX Binary  \u0000');
   await page.locator('#file-input').setInputFiles({
     name: 'scene-document-roundtrip.fbx',
@@ -282,7 +297,7 @@ test('clicking the animated preview keeps focus on the viewport, not the clip pi
   await expect(page.locator('#viewer-animation')).toBeVisible();
 
   const box = await page.locator('#viewer-canvas').boundingBox();
-  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  await page.mouse.click(box!.x + box!.width * 0.5, box!.y + box!.height * 0.5);
   expect(await page.evaluate(() => document.activeElement?.id)).toBe('viewer-canvas');
 
   // Opening the picker and closing it with Escape hands focus back to the
@@ -299,9 +314,9 @@ test('clicking the animated preview keeps focus on the viewport, not the clip pi
   await page.mouse.move(0, 0);
   await page.waitForTimeout(300);
   const clipPaint = await page.evaluate(() => {
-    const rendered = (element) => {
-      const layers = [];
-      for (let node = element; node; node = node.parentElement) {
+    const rendered = (element: Element | null) => {
+      const layers: number[][] = [];
+      for (let node: Element | null = element; node; node = node.parentElement) {
         const match = getComputedStyle(node).backgroundColor.match(/rgba?\(([^)]+)\)/);
         if (!match) continue;
         const [red, green, blue, alpha = 1] = match[1].split(',').map(Number.parseFloat);
@@ -311,14 +326,14 @@ test('clicking the animated preview keeps focus on the viewport, not the clip pi
       }
       let [red, green, blue] = layers.pop() ?? [0, 0, 0];
       while (layers.length > 0) {
-        const [r, g, b, a] = layers.pop();
+        const [r, g, b, a] = layers.pop()!;
         red = r * a + red * (1 - a);
         green = g * a + green * (1 - a);
         blue = b * a + blue * (1 - a);
       }
       return [red, green, blue].map(Math.round).join(',');
     };
-    const menu = document.querySelector('#anim-clip-menu');
+    const menu = document.querySelector('#anim-clip-menu')!;
     return {
       field: rendered(document.querySelector('#anim-clip-trigger')),
       selected: rendered(menu.querySelector('.menu-picker-option.selected')),
@@ -422,7 +437,7 @@ test('scene details stays hidden before load and exposes a hierarchy tree after 
   // Warnings live in their own collapsible panel that only appears when there is something to show.
   const warningsVisible = await page.locator('#scene-warnings-section').isVisible();
   if (warningsVisible) {
-    expect(await page.locator('#scene-warnings').evaluate((element) => element.open)).toBe(false);
+    expect(await page.locator('#scene-warnings').evaluate((element) => (element as HTMLDetailsElement).open)).toBe(false);
     expect(Number(await page.locator('#scene-warning-count').textContent())).toBeGreaterThan(0);
   }
   const layout = await page.locator('.sidebar').first().evaluate((element) => ({
@@ -436,7 +451,7 @@ test('scene details stays hidden before load and exposes a hierarchy tree after 
 test('glTF CUBICSPLINE scales tangents by keyframe duration', async ({ page }) => {
   await page.goto('/index.html');
   const values = await page.evaluate(async () => {
-    const { cubicSplineInterpolate } = await import('/viewer.js');
+    const { cubicSplineInterpolate } = await import('/viewer.js' as string);
     return {
       twoSeconds: cubicSplineInterpolate(0, 1, 0, 0, 0.5, 2),
       halfSecond: cubicSplineInterpolate(0, 1, 0, 0, 0.5, 0.5),
@@ -450,7 +465,7 @@ test('glTF CUBICSPLINE scales tangents by keyframe duration', async ({ page }) =
 test('preview Reset restores the default orbit camera direction', async ({ page }) => {
   await page.goto('/index.html');
   const camera = await page.evaluate(async () => {
-    const { Viewer } = await import('/viewer.js');
+    const { Viewer } = await import('/viewer.js' as string);
     const viewer = Object.create(Viewer.prototype);
     viewer.camera = {
       target: new Float32Array([8, 9, 10]),
@@ -488,7 +503,7 @@ test('preview Reset restores the default orbit camera direction', async ({ page 
 test('viewport pan slides inside the camera plane and vertical orbit follows the drag', async ({ page }) => {
   await page.goto('/index.html');
   const state = await page.evaluate(async () => {
-    const { Viewer } = await import('/viewer.js');
+    const { Viewer } = await import('/viewer.js' as string);
     const viewer = Object.create(Viewer.prototype);
     viewer.camera = {
       target: new Float32Array([0, 0, 0]),
@@ -526,7 +541,7 @@ test('viewport pan slides inside the camera plane and vertical orbit follows the
 test('viewport orbit turns around the scene centre after the target has moved', async ({ page }) => {
   await page.goto('/index.html');
   const state = await page.evaluate(async () => {
-    const { Viewer } = await import('/viewer.js');
+    const { Viewer } = await import('/viewer.js' as string);
     const viewer = Object.create(Viewer.prototype);
     viewer.camera = {
       // Flown 5 units forward, so the look-at point is no longer the model.
@@ -559,7 +574,7 @@ test('viewport orbit turns around the scene centre after the target has moved', 
 test('viewport wheel zoom keeps the point under the cursor and scales its limits to the scene', async ({ page }) => {
   await page.goto('/index.html');
   const state = await page.evaluate(async () => {
-    const { Viewer } = await import('/viewer.js');
+    const { Viewer } = await import('/viewer.js' as string);
     const viewer = Object.create(Viewer.prototype);
     viewer.camera = {
       target: new Float32Array([0, 0, 0]),
@@ -601,7 +616,7 @@ test('viewport wheel zoom keeps the point under the cursor and scales its limits
 test('viewport movement keys fly the orbit target along the camera axes', async ({ page }) => {
   await page.goto('/index.html');
   const state = await page.evaluate(async () => {
-    const { Viewer } = await import('/viewer.js');
+    const { Viewer } = await import('/viewer.js' as string);
     const viewer = Object.create(Viewer.prototype);
     viewer.camera = {
       target: new Float32Array([0, 0, 0]),
@@ -652,7 +667,7 @@ test('viewport movement keys fly the orbit target along the camera axes', async 
 test('preview seek applies the selected animation frame immediately', async ({ page }) => {
   await page.goto('/index.html');
   const state = await page.evaluate(async () => {
-    const { Viewer } = await import('/viewer.js');
+    const { Viewer } = await import('/viewer.js' as string);
     const viewer = Object.create(Viewer.prototype);
     const node = {
       localMatrix: new Float32Array(16),
@@ -710,9 +725,9 @@ test('manual camera interaction synchronizes the Auto-rotate button', async ({ p
   const canvas = page.locator('#viewer-canvas');
   const box = await canvas.boundingBox();
   expect(box).not.toBeNull();
-  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  await page.mouse.move(box!.x + box!.width * 0.5, box!.y + box!.height * 0.5);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.55, box.y + box.height * 0.5);
+  await page.mouse.move(box!.x + box!.width * 0.55, box!.y + box!.height * 0.5);
   await page.mouse.up();
 
   await expect(autoRotate).toHaveAttribute('aria-pressed', 'false');
@@ -723,8 +738,8 @@ test('the viewer redraws on its own when the scene or a display flag changes', a
   await page.goto('/index.html');
   const result = await page.evaluate(async () => {
     const [{ Viewer }, { buildSceneFromMeshes }] = await Promise.all([
-      import('/viewer.js'),
-      import('/mesh-loader.js'),
+      import('/viewer.js' as string),
+      import('/mesh-loader.js' as string),
     ]);
     const canvas = document.createElement('canvas');
     canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
@@ -740,7 +755,7 @@ test('the viewer redraws on its own when the scene or a display flag changes', a
 
     // Deliberately never calls viewer._render(): the loop has to notice each
     // change by itself, which is what makes idle frames skippable.
-    const nextFrames = (count) => new Promise((resolve) => {
+    const nextFrames = (count: number) => new Promise<void>((resolve) => {
       let remaining = count;
       const step = () => (remaining-- > 0 ? requestAnimationFrame(step) : resolve());
       step();
@@ -784,8 +799,8 @@ test('preview Base color bypasses environment lighting and studio IBL has usable
   await page.goto('/index.html');
   const pixels = await page.evaluate(async () => {
     const [{ Viewer }, { buildSceneFromMeshes }] = await Promise.all([
-      import('/viewer.js'),
-      import('/mesh-loader.js'),
+      import('/viewer.js' as string),
+      import('/mesh-loader.js' as string),
     ]);
     const canvas = document.createElement('canvas');
     canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
@@ -836,7 +851,7 @@ test('preview Base color bypasses environment lighting and studio IBL has usable
   expect(pixels.baseColor[1]).toBe(pixels.baseColor[0]);
   expect(pixels.baseColor[2]).toBe(pixels.baseColor[0]);
   expect(pixels.baseColor[3]).toBe(255);
-  const displayLuminance = ([red, green, blue]) => 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  const displayLuminance = ([red, green, blue]: number[]) => 0.2126 * red + 0.7152 * green + 0.0722 * blue;
   expect(displayLuminance(pixels.whiteRough)).toBeGreaterThan(155);
   expect(displayLuminance(pixels.whiteRough)).toBeLessThan(220);
   expect(displayLuminance(pixels.grayRough)).toBeGreaterThan(105);
@@ -847,7 +862,7 @@ test('preview Base color bypasses environment lighting and studio IBL has usable
 test('preview smoothing preserves authored 90-degree creases', async ({ page }) => {
   await page.goto('/index.html');
   const normals = await page.evaluate(async () => {
-    const { buildSmoothNormalAttribute } = await import('/viewer.js');
+    const { buildSmoothNormalAttribute } = await import('/viewer.js' as string);
     const positions = new Float32Array([
       0, 0, 0, 1, 0, 0, 0, 1, 0,
       0, 0, 0, 0, 0, 1, 1, 0, 0,
@@ -877,7 +892,7 @@ test('scaled cube fixture uses valid node instances of one mesh', async ({ page 
   const source = Array.from(await readFile(path.join(fixture, 'cube_att.gltf')));
   const buffer = Array.from(await readFile(path.join(fixture, 'buffer0.bin')));
   const result = await page.evaluate(async ({ source, buffer }) => {
-    const api = await import('/pkg/gltf.js');
+    const api = await import('/pkg/gltf.js' as string);
     await api.default();
     const asset = api.GltfAsset.withResources(
       new Uint8Array(source),
@@ -888,7 +903,7 @@ test('scaled cube fixture uses valid node instances of one mesh', async ({ page 
     const roots = document.scenes?.[document.scene ?? 0]?.nodes ?? [];
     return {
       roots,
-      meshNodes: document.nodes.filter((node) => node.mesh === 0).length,
+      meshNodes: document.nodes.filter((node: any) => node.mesh === 0).length,
       meshes: document.meshes.length,
     };
   }, { source, buffer });
@@ -942,7 +957,7 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   await smoothNormals.click();
   await expect(smoothNormals).toHaveAttribute('aria-pressed', 'false');
   const webglError = await page.evaluate(
-    () => document.getElementById('viewer-canvas')?.getContext('webgl2')?.getError(),
+    () => (document.getElementById('viewer-canvas') as HTMLCanvasElement | null)?.getContext('webgl2')?.getError(),
   );
   expect(webglError).toBe(0);
 
@@ -959,7 +974,7 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   if (await dracoToggle.isEnabled()) {
     const downloadedPath = await download.path();
     expect(downloadedPath).not.toBeNull();
-    const decoded = await decodeFirstDracoPrimitive(await readFile(downloadedPath));
+    const decoded = await decodeFirstDracoPrimitive(await readFile(downloadedPath!));
     expect(decoded.points).toBe(1728);
     expect(decoded.faces).toBe(576);
     expect(decoded.declaredPoints).toBe(decoded.points);
@@ -1039,16 +1054,16 @@ for (const source of IMAGE_SOURCES) {
   // the host, and the only way to find out whether the host used it is to ask
   // for the pixels back.
   const decoded = await page.evaluate(async () => {
-    const { state } = await import('/app/state.js');
-    const texture = state.viewer.scene.textures.find((entry) => entry && entry.image);
+    const { state } = await import('/app/state.js' as string);
+    const texture = state.viewer.scene.textures.find((entry: any) => entry && entry.image);
     if (!texture) return { found: false };
 
     const canvas = document.createElement('canvas');
     canvas.width = texture.image.width;
     canvas.height = texture.image.height;
-    const context = canvas.getContext('2d', { willReadFrequently: true });
+    const context = canvas.getContext('2d', { willReadFrequently: true })!;
     context.drawImage(texture.image, 0, 0);
-    const at = (x, y) => Array.from(context.getImageData(x, y, 1, 1).data).slice(0, 3);
+    const at = (x: number, y: number) => Array.from(context.getImageData(x, y, 1, 1).data).slice(0, 3);
 
     const quarter = Math.floor(canvas.width / 4);
     const threeQuarters = Math.floor((canvas.width * 3) / 4);
@@ -1104,11 +1119,11 @@ test('preview uploads its textures to the GPU', async ({ page }) => {
   // carry every image and still draw untextured, which is what an untextured
   // model looks like — flat white.
   const textures = await page.evaluate(async () => {
-    const { state } = await import('/app/state.js');
+    const { state } = await import('/app/state.js' as string);
     const scene = state.viewer.scene;
     const gl = state.viewer.glResources.textures;
     return {
-      withBitmap: scene.textures.filter((t) => t && t.image).length,
+      withBitmap: scene.textures.filter((t: any) => t && t.image).length,
       uploaded: gl.filter(Boolean).length,
       distinct: new Set(gl.filter(Boolean)).size,
     };
@@ -1177,14 +1192,14 @@ test('3D preview renders a GLB into the WebGL2 canvas', async ({ page }) => {
   await expect(baseColor).toHaveClass(/active/);
 
   const hasContext = await page.evaluate(() => {
-    const canvas = document.getElementById('viewer-canvas');
+    const canvas = (document.getElementById('viewer-canvas') as HTMLCanvasElement | null);
     const gl = canvas && canvas.getContext('webgl2');
     return Boolean(gl);
   });
   expect(hasContext).toBe(true);
 
   const webglError = await page.evaluate(() => {
-    const gl = document.getElementById('viewer-canvas')?.getContext('webgl2');
+    const gl = (document.getElementById('viewer-canvas') as HTMLCanvasElement | null)?.getContext('webgl2');
     return gl?.getError();
   });
   expect(webglError).toBe(0);
@@ -1227,7 +1242,7 @@ test('converter exports a glTF document through the FBX writer', async ({ page }
 
   const downloadedPath = await download.path();
   expect(downloadedPath).not.toBeNull();
-  const bytes = await readFile(downloadedPath);
+  const bytes = await readFile(downloadedPath!);
   expect(bytes.subarray(0, 21).toString('binary')).toBe('Kaydara FBX Binary  \u0000');
   await expect(page.locator('#console')).toContainText('Export complete!');
   await expect(page.locator('#console')).not.toContainText('Document export to FBX is not supported');
@@ -1242,7 +1257,7 @@ test('converter exports a glTF document through the FBX writer', async ({ page }
 });
 
 test('preview renders a glTF morph target animation', async ({ page }) => {
-  const pageErrors = [];
+  const pageErrors: string[] = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
   await page.goto('/index.html');
@@ -1262,7 +1277,7 @@ test('preview renders a glTF morph target animation', async ({ page }) => {
   expect(pageErrors).toEqual([]);
 
   const webglError = await page.evaluate(() => {
-    const gl = document.getElementById('viewer-canvas')?.getContext('webgl2');
+    const gl = (document.getElementById('viewer-canvas') as HTMLCanvasElement | null)?.getContext('webgl2');
     return gl?.getError();
   });
   expect(webglError).toBe(0);
@@ -1272,16 +1287,16 @@ test('preview animates every target of a long morph cycle', async ({ page }) => 
   await page.goto('/index.html');
   const samples = await page.evaluate(async () => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
-      import('/viewer.js'),
-      import('/scene-document.js'),
-      import('/scene-document-viewer.js'),
+      import('/viewer.js' as string),
+      import('/scene-document.js' as string),
+      import('/scene-document-viewer.js' as string),
     ]);
 
     const TARGETS = 6;
-    const bytes = (values) => new Uint8Array(
+    const bytes = (values: Float32Array | Uint16Array | Uint8Array) => new Uint8Array(
       values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
     );
-    const accessor = (values, components) => ({
+    const accessor = (values: Float32Array | Uint16Array | Uint8Array, components: number) => ({
       bytes: bytes(values), componentType: 5126, components, count: values.length / components,
     });
     // Every target sweeps the quad far off screen, so a frame that drops its
@@ -1350,7 +1365,7 @@ test('preview animates every target of a long morph cycle', async ({ page }) => 
     viewer.camera.azimuth = 0;
     viewer.camera.elevation = 0;
 
-    const sample = (time) => {
+    const sample = (time: number) => {
       viewer.seekAnimation(time);
       viewer._render();
       const rgba = new Uint8Array(4);
@@ -1378,21 +1393,21 @@ test('preview blends more than four morph targets at once', async ({ page }) => 
   await page.goto('/index.html');
   const samples = await page.evaluate(async () => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
-      import('/viewer.js'),
-      import('/scene-document.js'),
-      import('/scene-document-viewer.js'),
+      import('/viewer.js' as string),
+      import('/scene-document.js' as string),
+      import('/scene-document-viewer.js' as string),
     ]);
 
-    const bytes = (values) => new Uint8Array(
+    const bytes = (values: Float32Array | Uint16Array | Uint8Array) => new Uint8Array(
       values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
     );
-    const accessor = (values, components) => ({
+    const accessor = (values: Float32Array | Uint16Array | Uint8Array, components: number) => ({
       bytes: bytes(values), componentType: 5126, components, count: values.length / components,
     });
     // Six targets that cancel out: the first four push the quad up by 1, the
     // last two pull it down by 2. Blending all six leaves the quad centred,
     // while blending only the four strongest sweeps it off screen.
-    const shift = (dy) => accessor(new Float32Array(Array.from(
+    const shift = (dy: number) => accessor(new Float32Array(Array.from(
       { length: 12 }, (_, i) => (i % 3 === 1 ? dy : 0),
     )), 3);
     const deltas = [shift(1), shift(1), shift(1), shift(1), shift(-2), shift(-2)];
@@ -1444,7 +1459,7 @@ test('preview blends more than four morph targets at once', async ({ page }) => 
     viewer.camera.azimuth = 0;
     viewer.camera.elevation = 0;
 
-    const sample = (weights) => {
+    const sample = (weights: number[]) => {
       scene.nodes[0].weights.set(weights);
       viewer._render();
       const rgba = new Uint8Array(4);
@@ -1573,7 +1588,7 @@ test('normal maps shade a model far smaller than one unit', async ({ page }) => 
   await page.goto('/index.html');
   await waitForConverterReady(page);
 
-  const shot = async (name, gltf) => {
+  const shot = async (name: string, gltf: string) => {
     await page.locator('#file-input').setInputFiles({
       name,
       mimeType: 'model/gltf+json',
@@ -1592,11 +1607,11 @@ test('normal maps shade a model far smaller than one unit', async ({ page }) => 
   // Both frames are decoded in the page: the screenshots are PNGs, and the
   // browser is the only PNG decoder this suite has.
   const difference = await page.evaluate(async ([a, b]) => {
-    const decode = async (base64) => {
+    const decode = async (base64: string) => {
       const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
       const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
       const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-      const context = canvas.getContext('2d');
+      const context = canvas.getContext('2d')!;
       context.drawImage(bitmap, 0, 0);
       return context.getImageData(0, 0, bitmap.width, bitmap.height).data;
     };
@@ -1666,14 +1681,14 @@ for (const [model, extension] of Object.entries(MATERIAL_COMPARISONS)) {
     // Read back through a screenshot, because the viewer's context does not
     // preserve its drawing buffer and reads back blank between frames.
     const shot = (await page.locator('#viewer-canvas').screenshot()).toString('base64');
-    const distinct = await page.evaluate(async (base64) => {
+    const distinct = await page.evaluate(async (base64: string) => {
       const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
       const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
       const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-      const context = canvas.getContext('2d');
+      const context = canvas.getContext('2d')!;
       context.drawImage(bitmap, 0, 0);
       const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
-      const seen = new Set();
+      const seen = new Set<number>();
       for (let index = 0; index < data.length; index += 4) {
         seen.add((data[index] >> 3 << 10) | (data[index + 1] >> 3 << 5) | (data[index + 2] >> 3));
       }
@@ -1696,7 +1711,7 @@ test('the texture transform reaches slots other than base color', async ({ page 
   await page.goto('/index.html');
   await waitForConverterReady(page);
 
-  const shot = async (name, gltf) => {
+  const shot = async (name: string, gltf: string) => {
     await page.locator('#file-input').setInputFiles({
       name,
       mimeType: 'model/gltf+json',
@@ -1713,17 +1728,17 @@ test('the texture transform reaches slots other than base color', async ({ page 
   const green = await shot('emissive-right.gltf', emissiveTransformQuad({ offset: 0.5 }));
 
   const measure = await page.evaluate(async ([a, b]) => {
-    const decode = async (base64) => {
+    const decode = async (base64: string) => {
       const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
       const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
       const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-      const context = canvas.getContext('2d');
+      const context = canvas.getContext('2d')!;
       context.drawImage(bitmap, 0, 0);
       return context.getImageData(0, 0, bitmap.width, bitmap.height).data;
     };
     // The backdrop fills most of the frame, so the emitting quad is measured
     // over the pixels where one channel actually dominates.
-    const dominance = (pixels) => {
+    const dominance = (pixels: Uint8ClampedArray) => {
       let redPixels = 0;
       let greenPixels = 0;
       for (let index = 0; index < pixels.length; index += 4) {
@@ -1786,19 +1801,19 @@ test('one surface program per set of texture slots, not per material', async ({ 
   const observed = await page.evaluate(async (pngBytes) => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }, { hydrateSceneTextures }] =
       await Promise.all([
-        import('/viewer.js'),
-        import('/scene-document.js'),
-        import('/scene-document-viewer.js'),
-        import('/scene-document-textures.js'),
+        import('/viewer.js' as string),
+        import('/scene-document.js' as string),
+        import('/scene-document-viewer.js' as string),
+        import('/scene-document-textures.js' as string),
       ]);
 
-    const bytes = (values) => new Uint8Array(
+    const bytes = (values: Float32Array | Uint16Array | Uint8Array) => new Uint8Array(
       values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
     );
-    const accessor = (values, components, componentType = 5126) => ({
+    const accessor = (values: Float32Array | Uint16Array | Uint8Array, components: number, componentType: number = 5126) => ({
       bytes: bytes(values), componentType, components, count: values.length / components,
     });
-    const quad = (material) => ({
+    const quad = (material: number) => ({
       attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 },
       indices: 3,
       material,
@@ -1976,9 +1991,9 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   // reflow: a small fixture parses and previews inside one frame, so the jump
   // is real but not always observable.
   const filledBySummary = await page.evaluate(async () => {
-    const { renderSceneDocumentSummary } = await import('/app/scene-report.js');
-    const { state } = await import('/app/state.js');
-    document.querySelector('#viewer-variant').replaceChildren();
+    const { renderSceneDocumentSummary } = await import('/app/scene-report.js' as string);
+    const { state } = await import('/app/state.js' as string);
+    document.querySelector('#viewer-variant')!.replaceChildren();
     renderSceneDocumentSummary(state.currentSceneDocument);
     return [...document.querySelectorAll('#viewer-variant option')].map((option) => option.textContent);
   });
@@ -2002,7 +2017,7 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   await expect(page.locator('#viewer-variant-menu')).toBeHidden();
 
   const emissiveOf = async () => page.evaluate(async () => {
-    const { state } = await import('/app/state.js');
+    const { state } = await import('/app/state.js' as string);
     const scene = state.viewer.scene;
     const index = scene.meshes[0].primitives[0].materialIndex;
     return { index, emissive: [...(scene.materials[index]?.emissiveFactor ?? [])] };
@@ -2011,7 +2026,7 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   const ruby = await emissiveOf();
   // Where the user had put the camera, and what was playing, before the switch.
   const viewBefore = await page.evaluate(async () => {
-    const { state } = await import('/app/state.js');
+    const { state } = await import('/app/state.js' as string);
     const viewer = state.viewer;
     viewer.camera.azimuth += 0.7;
     viewer.camera.elevation -= 0.3;
@@ -2041,9 +2056,9 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   // correction back, and the corrections were figures read off one browser's
   // rasterizer.
   const chevron = () => page.evaluate(() => {
-    const trigger = document.getElementById('viewer-variant-trigger');
+    const trigger = document.getElementById('viewer-variant-trigger')!;
     const box = trigger.getBoundingClientRect();
-    const mark = trigger.querySelector('.menu-picker-chevron').getBoundingClientRect();
+    const mark = trigger.querySelector('.menu-picker-chevron')!.getBoundingClientRect();
     return +((mark.top + mark.height / 2) - (box.top + box.height / 2)).toFixed(2);
   });
   expect(await chevron()).toBe(0);
@@ -2075,14 +2090,14 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   // own; folding it into this string would make the comparison differ for a
   // reason that has nothing to do with what the user can see.
   const paint = () => page.evaluate(() => {
-    const style = getComputedStyle(document.querySelector('#viewer-variant-trigger'));
+    const style = getComputedStyle(document.querySelector('#viewer-variant-trigger')!);
     return `${style.borderColor}|${style.backgroundColor}`;
   });
   // Pointer away and focus dropped, then left to settle: these colours are
   // transitioned, so reading either end of the comparison too early samples a
   // value part way between and the comparison stops meaning anything.
   await page.mouse.move(0, 0);
-  await page.evaluate(() => document.querySelector('#viewer-variant-trigger').blur());
+  await page.evaluate(() => (document.querySelector('#viewer-variant-trigger') as HTMLElement).blur());
   await page.waitForTimeout(300);
   const resting = await paint();
   await page.locator('#viewer-variant-trigger').click();
@@ -2120,7 +2135,7 @@ test('KHR_materials_variants offers every choice and shows the one picked', asyn
   // they had put it — which is what loading a scene normally does, and what
   // this path has to opt out of.
   const viewAfter = await page.evaluate(async () => {
-    const { state } = await import('/app/state.js');
+    const { state } = await import('/app/state.js' as string);
     const viewer = state.viewer;
     return {
       azimuth: viewer.camera.azimuth,
@@ -2180,11 +2195,11 @@ test('the variant list stays within its control and its panel', async ({ page })
   await page.locator('#viewer-variant-trigger').click();
   await expect(page.locator('#viewer-variant-menu')).toBeVisible();
   const geometry = await page.evaluate(() => {
-    const box = (selector) => {
-      const rect = document.querySelector(selector).getBoundingClientRect();
+    const box = (selector: string) => {
+      const rect = document.querySelector(selector)!.getBoundingClientRect();
       return { left: Math.round(rect.left), right: Math.round(rect.right), bottom: Math.round(rect.bottom) };
     };
-    const menu = document.querySelector('#viewer-variant-menu');
+    const menu = document.querySelector('#viewer-variant-menu')!;
     return {
       trigger: box('#viewer-variant-trigger'),
       menu: box('#viewer-variant-menu'),
@@ -2207,9 +2222,9 @@ test('the variant list stays within its control and its panel', async ({ page })
   // row on a menu tinted to look like the field. Only the colour that reaches
   // the screen settles it.
   const paints = await page.evaluate(() => {
-    const rendered = (element) => {
-      const layers = [];
-      for (let node = element; node; node = node.parentElement) {
+    const rendered = (element: Element | null) => {
+      const layers: number[][] = [];
+      for (let node: Element | null = element; node; node = node.parentElement) {
         const match = getComputedStyle(node).backgroundColor.match(/rgba?\(([^)]+)\)/);
         if (!match) continue;
         const [red, green, blue, alpha = 1] = match[1].split(',').map(Number.parseFloat);
@@ -2219,16 +2234,16 @@ test('the variant list stays within its control and its panel', async ({ page })
       }
       let [red, green, blue] = layers.pop() ?? [0, 0, 0];
       while (layers.length > 0) {
-        const [r, g, b, a] = layers.pop();
+        const [r, g, b, a] = layers.pop()!;
         red = r * a + red * (1 - a);
         green = g * a + green * (1 - a);
         blue = b * a + blue * (1 - a);
       }
       return [red, green, blue].map(Math.round).join(',');
     };
-    const of = (element) => ({
-      paint: `${rendered(element)}|${getComputedStyle(element).color}`,
-      height: Math.round(element.getBoundingClientRect().height),
+    const of = (element: Element | null) => ({
+      paint: `${rendered(element)}|${getComputedStyle(element!).color}`,
+      height: Math.round(element!.getBoundingClientRect().height),
     });
     return {
       field: of(document.querySelector('#viewer-variant-trigger')),
@@ -2241,19 +2256,19 @@ test('the variant list stays within its control and its panel', async ({ page })
   await page.locator('#viewer-variant-option-1').hover();
   await page.waitForTimeout(300);
   const hovered = await page.evaluate(() => {
-    const style = getComputedStyle(document.querySelector('#viewer-variant-option-1'));
+    const style = getComputedStyle(document.querySelector('#viewer-variant-option-1')!);
     return `${style.backgroundColor}|${style.color}`;
   });
   // Compared against the chosen row's own declaration, since both sit on the
   // same backdrop; what matters here is only that they are not the same fill.
   const selectedDeclared = await page.evaluate(() => {
-    const style = getComputedStyle(document.querySelector('.menu-picker-option.selected'));
+    const style = getComputedStyle(document.querySelector('.menu-picker-option.selected')!);
     return `${style.backgroundColor}|${style.color}`;
   });
   expect(hovered).not.toBe(selectedDeclared);
   // Not lifted off the surface either: a shadow is what makes a list read as a
   // popup that arrived over the page rather than as part of what opened it.
-  expect(await page.evaluate(() => getComputedStyle(document.querySelector('#viewer-variant-menu')).boxShadow)).toBe('none');
+  expect(await page.evaluate(() => getComputedStyle(document.querySelector('#viewer-variant-menu')!).boxShadow)).toBe('none');
   await page.mouse.move(0, 0);
 
   expect(geometry.menu.left).toBe(geometry.trigger.left);
@@ -2328,16 +2343,16 @@ test('the two pickers are the same control', async ({ page }) => {
   });
   await expect(page.locator('#console')).toContainText('Preview ready');
 
-  const shapeOf = (field, menu) => page.evaluate(([fieldId, menuId]) => {
+  const shapeOf = (field: string, menu: string) => page.evaluate(([fieldId, menuId]) => {
     // Everything that makes it look like itself, not only its size: the two
     // used to agree on metrics and still differ by a border, a corner radius
     // and a fill, because each surface dressed its own.
-    const measure = (element) => {
-      const style = getComputedStyle(element);
+    const measure = (element: Element | null) => {
+      const style = getComputedStyle(element!);
       return {
         // What a row and the field it stands for must share.
         text: [
-          Math.round(element.getBoundingClientRect().height),
+          Math.round(element!.getBoundingClientRect().height),
           style.padding,
           style.fontSize,
           style.fontWeight,
@@ -2370,8 +2385,8 @@ test('the two pickers are the same control', async ({ page }) => {
   expect(clip).toEqual(variant);
   // Including the list itself, which is where the difference showed.
   const menus = await page.evaluate(() => {
-    const paint = (selector) => {
-      const style = getComputedStyle(document.querySelector(selector));
+    const paint = (selector: string) => {
+      const style = getComputedStyle(document.querySelector(selector)!);
       return [style.backgroundColor, style.border, style.borderRadius, style.boxShadow].join('|');
     };
     return { variant: paint('#viewer-variant-menu'), clip: paint('#anim-clip-menu') };
@@ -2397,7 +2412,7 @@ test('EXT_mesh_gpu_instancing draws the mesh once per instance transform', async
   await expect(page.locator('#console')).toContainText('Preview ready');
 
   const samples = await page.evaluate(async () => {
-    const { state } = await import('/app/state.js');
+    const { state } = await import('/app/state.js' as string);
     const viewer = state.viewer;
     viewer.showGrid = false;
     viewer.camera.target.set([0, 0, 0]);
@@ -2451,19 +2466,19 @@ test('KHR_lights_punctual lights the scene from the node that places it', async 
   // the position once, the second frame would look like the first.
   const observed = await page.evaluate(async () => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
-      import('/viewer.js'),
-      import('/scene-document.js'),
-      import('/scene-document-viewer.js'),
+      import('/viewer.js' as string),
+      import('/scene-document.js' as string),
+      import('/scene-document-viewer.js' as string),
     ]);
 
-    const bytes = (values) => new Uint8Array(
+    const bytes = (values: Float32Array | Uint16Array | Uint8Array) => new Uint8Array(
       values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
     );
-    const accessor = (values, components, componentType = 5126) => ({
+    const accessor = (values: Float32Array | Uint16Array | Uint8Array, components: number, componentType: number = 5126) => ({
       bytes: bytes(values), componentType, components, count: values.length / components,
     });
     // A white rough quad facing the camera, lit by nothing but the light.
-    const document_ = (lights, lightNode) => createSceneDocument({
+    const document_ = (lights: any, lightNode: any) => createSceneDocument({
       ...(lights ? { lights } : {}),
       materials: [{ baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 0.9 }],
       accessors: [
@@ -2484,7 +2499,7 @@ test('KHR_lights_punctual lights the scene from the node that places it', async 
     document.body.appendChild(canvas);
     const viewer = new Viewer(canvas);
     viewer.showGrid = false;
-    const sample = (lights, lightNode) => {
+    const sample = (lights: any, lightNode: any) => {
       viewer.setScene(buildViewerSceneFromDocument(document_(lights, lightNode)));
       viewer.camera.target.set([0, 0, 0]);
       viewer.camera.distance = 3;
@@ -2500,7 +2515,7 @@ test('KHR_lights_punctual lights the scene from the node that places it', async 
       return Array.from(rgba);
     };
 
-    const placed = (translation) => ({
+    const placed = (translation: number[]) => ({
       name: 'Lamp', translation, rotation: [0, 0, 0, 1], scale: [1, 1, 1], light: 0,
     });
     const unlit = sample(null, null);
@@ -2534,18 +2549,18 @@ test('KHR_materials_anisotropy stretches the specular lobe along its rotation', 
   // the rotation were ignored, the two would be the same frame.
   const observed = await page.evaluate(async () => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
-      import('/viewer.js'),
-      import('/scene-document.js'),
-      import('/scene-document-viewer.js'),
+      import('/viewer.js' as string),
+      import('/scene-document.js' as string),
+      import('/scene-document-viewer.js' as string),
     ]);
 
-    const bytes = (values) => new Uint8Array(
+    const bytes = (values: Float32Array | Uint16Array | Uint8Array) => new Uint8Array(
       values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
     );
-    const accessor = (values, components, componentType = 5126) => ({
+    const accessor = (values: Float32Array | Uint16Array | Uint8Array, components: number, componentType: number = 5126) => ({
       bytes: bytes(values), componentType, components, count: values.length / components,
     });
-    const document_ = (comb) => createSceneDocument({
+    const document_ = (comb: any) => createSceneDocument({
       materials: [{ baseColorFactor: [1, 1, 1, 1], metallicFactor: 1, roughnessFactor: 0.15, ...comb }],
       accessors: [
         accessor(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3),
@@ -2562,7 +2577,7 @@ test('KHR_materials_anisotropy stretches the specular lobe along its rotation', 
     document.body.appendChild(canvas);
     const viewer = new Viewer(canvas);
     viewer.showGrid = false;
-    const sample = (comb) => {
+    const sample = (comb: any) => {
       viewer.setScene(buildViewerSceneFromDocument(document_(comb)));
       viewer.camera.target.set([0, 0, 0]);
       viewer.camera.distance = 3;
@@ -2587,7 +2602,7 @@ test('KHR_materials_anisotropy stretches the specular lobe along its rotation', 
     return { isotropic, combedAcross, combedAlong, glError };
   });
 
-  const brightness = (pixel) => pixel[0] + pixel[1] + pixel[2];
+  const brightness = (pixel: number[]) => pixel[0] + pixel[1] + pixel[2];
   expect(observed.glError).toBe(0);
   // Combing the surface changes what the lobe gathers.
   expect(Math.abs(brightness(observed.combedAcross) - brightness(observed.isotropic))).toBeGreaterThan(6);
@@ -2604,18 +2619,18 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
   // refracts a frame that was captured at the wrong moment.
   const observed = await page.evaluate(async () => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
-      import('/viewer.js'),
-      import('/scene-document.js'),
-      import('/scene-document-viewer.js'),
+      import('/viewer.js' as string),
+      import('/scene-document.js' as string),
+      import('/scene-document-viewer.js' as string),
     ]);
 
-    const bytes = (values) => new Uint8Array(
+    const bytes = (values: Float32Array | Uint16Array | Uint8Array) => new Uint8Array(
       values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
     );
-    const accessor = (values, components, componentType = 5126) => ({
+    const accessor = (values: Float32Array | Uint16Array | Uint8Array, components: number, componentType: number = 5126) => ({
       bytes: bytes(values), componentType, components, count: values.length / components,
     });
-    const document_ = (front, emissiveStrength = 1) => createSceneDocument({
+    const document_ = (front: any, emissiveStrength = 1) => createSceneDocument({
       materials: [
         // Behind: a green emitter, so what shows through is unmistakably it.
         {
@@ -2653,7 +2668,7 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
     // pass - and then drawing the transmissive quad too early would still look
     // right.
     let glError = 0;
-    const sample = (front, emissiveStrength) => {
+    const sample = (front: any, emissiveStrength?: number) => {
       const canvas = document.createElement('canvas');
       canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:64px;height:64px';
       document.body.appendChild(canvas);
@@ -2737,12 +2752,16 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
   // thickness - which is the extension rather than a brighter or dimmer
   // refraction. Not "green stays put": every channel is now built from a dozen
   // wavelengths of its own, and only the whole spectrum has a fixed point.
-  const largestShift = (channel, a, b) => a.row.reduce((most, value, index) => (
-    index % 4 === channel ? Math.max(most, Math.abs(value - b.row[index])) : most
-  ), 0);
-  const widestSplit = (sample) => sample.row.reduce((most, value, index) => (
-    index % 4 === 0 ? Math.max(most, Math.abs(value - sample.row[index + 2])) : most
-  ), 0);
+  const largestShift = (channel: number, a: { row: number[] }, b: { row: number[] }) => a.row.reduce(
+    (most: number, value: number, index: number) => (
+      index % 4 === channel ? Math.max(most, Math.abs(value - b.row[index])) : most
+    ), 0,
+  );
+  const widestSplit = (sample: { row: number[] }) => sample.row.reduce(
+    (most: number, value: number, index: number) => (
+      index % 4 === 0 ? Math.max(most, Math.abs(value - sample.row[index + 2])) : most
+    ), 0,
+  );
   expect(largestShift(0, observed.dispersed, observed.thick)).toBeGreaterThan(5);
   expect(widestSplit(observed.dispersed)).toBeGreaterThan(widestSplit(observed.thick) * 3);
 
@@ -2770,21 +2789,21 @@ test('KHR_materials_iridescence tints the specular lobe by film thickness', asyn
   // changes except a distance in nanometres.
   const observed = await page.evaluate(async () => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
-      import('/viewer.js'),
-      import('/scene-document.js'),
-      import('/scene-document-viewer.js'),
+      import('/viewer.js' as string),
+      import('/scene-document.js' as string),
+      import('/scene-document-viewer.js' as string),
     ]);
 
-    const bytes = (values) => new Uint8Array(
+    const bytes = (values: Float32Array | Uint16Array | Uint8Array) => new Uint8Array(
       values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
     );
-    const accessor = (values, components, componentType = 5126) => ({
+    const accessor = (values: Float32Array | Uint16Array | Uint8Array, components: number, componentType: number = 5126) => ({
       bytes: bytes(values), componentType, components, count: values.length / components,
     });
     // A smooth black dielectric: its specular reflectance is the 4% the core
     // model implies, which leaves the film room to change it. A white metal
     // reflects everything already, and interference has nothing to add.
-    const document_ = (film) => createSceneDocument({
+    const document_ = (film: any) => createSceneDocument({
       materials: [{
         baseColorFactor: [0, 0, 0, 1],
         metallicFactor: 0,
@@ -2811,7 +2830,7 @@ test('KHR_materials_iridescence tints the specular lobe by film thickness', asyn
     // and the finest sampling available is what keeps the margins about the
     // material rather than about how coarsely it was sampled.
     viewer.supersample = true;
-    const sample = (film) => {
+    const sample = (film: any) => {
       viewer.setScene(buildViewerSceneFromDocument(document_(film)));
       viewer.camera.target.set([0, 0, 0]);
       viewer.camera.distance = 3;
@@ -2842,7 +2861,7 @@ test('KHR_materials_iridescence tints the specular lobe by film thickness', asyn
     return { plain, thin, thick, glError };
   });
 
-  const hue = (pixel) => [pixel[0] - pixel[1], pixel[1] - pixel[2]];
+  const hue = (pixel: number[]) => [pixel[0] - pixel[1], pixel[1] - pixel[2]];
   expect(observed.glError).toBe(0);
   // The film colours a surface that was neutral without it.
   expect(Math.abs(hue(observed.thin)[0] - hue(observed.plain)[0])
@@ -2860,20 +2879,20 @@ test('KHR_materials_sheen shows on the surface it is set on', async ({ page }) =
   // no GLSL behind it passes every other check in the suite.
   const observed = await page.evaluate(async () => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
-      import('/viewer.js'),
-      import('/scene-document.js'),
-      import('/scene-document-viewer.js'),
+      import('/viewer.js' as string),
+      import('/scene-document.js' as string),
+      import('/scene-document-viewer.js' as string),
     ]);
 
-    const bytes = (values) => new Uint8Array(
+    const bytes = (values: Float32Array | Uint16Array | Uint8Array) => new Uint8Array(
       values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
     );
-    const accessor = (values, components, componentType = 5126) => ({
+    const accessor = (values: Float32Array | Uint16Array | Uint8Array, components: number, componentType: number = 5126) => ({
       bytes: bytes(values), componentType, components, count: values.length / components,
     });
     // Rough and black: everything the frame shows comes from the sheen lobe,
     // and a lit dielectric would drown it.
-    const document_ = (sheen) => createSceneDocument({
+    const document_ = (sheen: any) => createSceneDocument({
       materials: [{
         baseColorFactor: [0, 0, 0, 1],
         metallicFactor: 0,
@@ -2897,7 +2916,7 @@ test('KHR_materials_sheen shows on the surface it is set on', async ({ page }) =
     viewer.showGrid = false;
     // Off-axis, because a sheen lobe is retroreflective: head-on it returns
     // the least it ever will.
-    const sample = (sheen) => {
+    const sample = (sheen: any) => {
       viewer.setScene(buildViewerSceneFromDocument(document_(sheen)));
       viewer.camera.target.set([0, 0, 0]);
       viewer.camera.distance = 3;
@@ -2949,15 +2968,15 @@ test('the frame stays light until the output pass, which spreads glare and maps 
   // and a transmissive one reading such a frame would refract it twice over.
   const observed = await page.evaluate(async () => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
-      import('/viewer.js'),
-      import('/scene-document.js'),
-      import('/scene-document-viewer.js'),
+      import('/viewer.js' as string),
+      import('/scene-document.js' as string),
+      import('/scene-document-viewer.js' as string),
     ]);
 
-    const bytes = (values) => new Uint8Array(
+    const bytes = (values: Float32Array | Uint16Array | Uint8Array) => new Uint8Array(
       values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
     );
-    const accessor = (values, components, componentType = 5126) => ({
+    const accessor = (values: Float32Array | Uint16Array | Uint8Array, components: number, componentType: number = 5126) => ({
       bytes: bytes(values), componentType, components, count: values.length / components,
     });
     // A blended quad in front of an opaque one, in the wrong order in the
@@ -2972,7 +2991,7 @@ test('the frame stays light until the output pass, which spreads glare and maps 
       { baseColorFactor: [1, 0, 0, 1], emissiveFactor: [1, 0, 0], emissiveStrength: 25 },
       { baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 0, transmissionFactor: 1 },
     ];
-    const sceneOf = (count) => createSceneDocument({
+    const sceneOf = (count: number) => createSceneDocument({
       materials: materials.slice(0, count),
       accessors: [
         accessor(new Float32Array([-1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1]), 3),
@@ -3014,7 +3033,7 @@ test('the frame stays light until the output pass, which spreads glare and maps 
     // Glare is measured on its own below; everything in between is compared
     // against the tone curve, which has to be the only thing acting.
     viewer.bloomStrength = 0;
-    const frame = (count) => {
+    const frame = (count: number) => {
       viewer.setScene(buildViewerSceneFromDocument(sceneOf(count)));
       viewer.camera.target.set([0, 0, 0]);
       viewer.camera.distance = 5;
@@ -3024,14 +3043,14 @@ test('the frame stays light until the output pass, which spreads glare and maps 
     };
 
     const gl = viewer.gl;
-    const readFloat = (framebuffer, x, y) => {
+    const readFloat = (framebuffer: any, x: number, y: number) => {
       const pixel = new Float32Array(4);
       gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
       gl.readPixels(x, y, 1, 1, gl.RGBA, gl.FLOAT, pixel);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       return [...pixel];
     };
-    const readCanvas = (x, y) => {
+    const readCanvas = (x: number, y: number) => {
       const pixel = new Uint8Array(4);
       gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
       return [...pixel];
@@ -3046,7 +3065,7 @@ test('the frame stays light until the output pass, which spreads glare and maps 
     frame(3);
     const capturePixel = readFloat(scene.captureFramebuffer, centre[0], centre[1]);
     // Where the canvas's corner texel sits in a frame drawn wider than it.
-    const inFrame = (x, size, renderSize) => Math.round(
+    const inFrame = (x: number, size: number, renderSize: number) => Math.round(
       renderSize * (0.5 + ((x + 0.5) / size * 2 - 1) * 0.5 / scene.guard));
     const cornerAt = [
       inFrame(1, gl.drawingBufferWidth, scene.renderWidth),
@@ -3124,11 +3143,11 @@ test('the frame stays light until the output pass, which spreads glare and maps 
   // The frame is light, and the output pass is what makes it a picture: tone
   // mapped and encoded, the corner of the frame is the corner of the canvas.
   // Equal without the curve would mean something had mapped tones too early.
-  const toneCurve = (x) => {
+  const toneCurve = (x: number) => {
     const value = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
     return Math.min(Math.max(value, 0), 1);
   };
-  const toneMap = (rgb) => {
+  const toneMap = (rgb: number[]) => {
     const level = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
     if (level <= 0) return [0, 0, 0];
     const mapped = toneCurve(level);
@@ -3160,8 +3179,8 @@ test('every material extension factor the table declares reaches the shader', as
   // the shader goes on using whatever the core model implies.
   const observed = await page.evaluate(async () => {
     const [{ Viewer }, { MATERIAL_EXTENSION_UNIFORMS }] = await Promise.all([
-      import('/viewer.js'),
-      import('/material-extensions.js'),
+      import('/viewer.js' as string),
+      import('/material-extensions.js' as string),
     ]);
     const canvas = document.createElement('canvas');
     canvas.style.cssText = 'position:fixed;left:-100px;top:0;width:8px;height:8px';
@@ -3171,9 +3190,9 @@ test('every material extension factor the table declares reaches the shader', as
     // every richer permutation too.
     const surface = viewer.surfacePrograms.get([]);
     const missing = MATERIAL_EXTENSION_UNIFORMS
-      .filter(({ uniform }) => surface.uniforms[uniform] == null)
-      .map(({ property, uniform }) => `${property} -> ${uniform}`);
-    const declared = MATERIAL_EXTENSION_UNIFORMS.map(({ uniform }) => uniform);
+      .filter(({ uniform }: any) => surface.uniforms[uniform] == null)
+      .map(({ property, uniform }: any) => `${property} -> ${uniform}`);
+    const declared = MATERIAL_EXTENSION_UNIFORMS.map(({ uniform }: any) => uniform);
     viewer.dispose();
     canvas.remove();
     return { missing, declared };
@@ -3198,16 +3217,16 @@ test('a morphed mesh keeps its material textures', async ({ page }) => {
   const observed = await page.evaluate(async (pngBytes) => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }, { hydrateSceneTextures }] =
       await Promise.all([
-        import('/viewer.js'),
-        import('/scene-document.js'),
-        import('/scene-document-viewer.js'),
-        import('/scene-document-textures.js'),
+        import('/viewer.js' as string),
+        import('/scene-document.js' as string),
+        import('/scene-document-viewer.js' as string),
+        import('/scene-document-textures.js' as string),
       ]);
 
-    const bytes = (values) => new Uint8Array(
+    const bytes = (values: Float32Array | Uint16Array | Uint8Array) => new Uint8Array(
       values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
     );
-    const accessor = (values, components, componentType = 5126) => ({
+    const accessor = (values: Float32Array | Uint16Array | Uint8Array, components: number, componentType: number = 5126) => ({
       bytes: bytes(values), componentType, components, count: values.length / components,
     });
 
@@ -3287,16 +3306,16 @@ test('a SceneDocument texture only reaches the GPU once it is hydrated', async (
   const samples = await page.evaluate(async (pngBytes) => {
     const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }, { hydrateSceneTextures }] =
       await Promise.all([
-        import('/viewer.js'),
-        import('/scene-document.js'),
-        import('/scene-document-viewer.js'),
-        import('/scene-document-textures.js'),
+        import('/viewer.js' as string),
+        import('/scene-document.js' as string),
+        import('/scene-document-viewer.js' as string),
+        import('/scene-document-textures.js' as string),
       ]);
 
-    const bytes = (values) => new Uint8Array(
+    const bytes = (values: Float32Array | Uint16Array | Uint8Array) => new Uint8Array(
       values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength),
     );
-    const accessor = (values, components, componentType = 5126) => ({
+    const accessor = (values: Float32Array | Uint16Array | Uint8Array, components: number, componentType: number = 5126) => ({
       bytes: bytes(values), componentType, components, count: values.length / components,
     });
 
@@ -3332,7 +3351,7 @@ test('a SceneDocument texture only reaches the GPU once it is hydrated', async (
     document.body.appendChild(canvas);
     const viewer = new Viewer(canvas);
 
-    const render = (scene) => {
+    const render = (scene: any) => {
       viewer.setScene(scene);
       viewer.showGrid = false;
       viewer.camera.target.set([0, 0, 0]);
@@ -3379,12 +3398,12 @@ test('textures reading one image are hydrated into one bitmap', async ({ page })
   const observed = await page.evaluate(async (pngBytes) => {
     const [{ createSceneDocument }, { buildViewerSceneFromDocument }, { hydrateSceneTextures }] =
       await Promise.all([
-        import('/scene-document.js'),
-        import('/scene-document-viewer.js'),
-        import('/scene-document-textures.js'),
+        import('/scene-document.js' as string),
+        import('/scene-document-viewer.js' as string),
+        import('/scene-document-textures.js' as string),
       ]);
 
-    const sampler = (wrap) => ({ wrapS: wrap, wrapT: wrap, minFilter: 9728, magFilter: 9728 });
+    const sampler = (wrap: number) => ({ wrapS: wrap, wrapT: wrap, minFilter: 9728, magFilter: 9728 });
     const document_ = createSceneDocument({
       resources: [
         { mimeType: 'image/png', bytes: new Uint8Array(pngBytes), name: 'shared.png' },
@@ -3412,14 +3431,14 @@ test('textures reading one image are hydrated into one bitmap', async ({ page })
     const scene = buildViewerSceneFromDocument(document_);
     // The bytes travel as the document holds them; a copy per texture is the
     // same duplication one step earlier.
-    const shareBytes = scene.textures.every((texture, index) => (
+    const shareBytes = scene.textures.every((texture: any, index: number) => (
       texture.bytes === document_.resources[document_.textures[index].resource].bytes
     ));
     await hydrateSceneTextures(scene);
     return {
       shareBytes,
-      images: scene.textures.map((texture) => Boolean(texture.image)),
-      distinctImages: new Set(scene.textures.map((texture) => texture.image)).size,
+      images: scene.textures.map((texture: any) => Boolean(texture.image)),
+      distinctImages: new Set(scene.textures.map((texture: any) => texture.image)).size,
       sharedPair: scene.textures[0].image === scene.textures[1].image,
       separatePair: scene.textures[0].image === scene.textures[2].image,
       warnings: scene.warnings,
@@ -3454,15 +3473,15 @@ test('the glTF preview comes from the scene document the export reads', async ({
   await expect(page.locator('#console')).not.toContainText('previewing through the direct glTF reader');
 
   const source = await page.evaluate(async () => {
-    const { state } = await import('/app/state.js');
+    const { state } = await import('/app/state.js' as string);
     const scene = state.viewer.scene;
     return {
       document: !!state.currentSceneDocument,
       textures: scene.textures.length,
       // Only the document adapter hands over the source bytes; the direct
       // reader arrives with a decoded image and no bytes at all.
-      carriesBytes: scene.textures.every((texture) => texture.bytes instanceof Uint8Array),
-      hydrated: scene.textures.every((texture) => !!texture.image),
+      carriesBytes: scene.textures.every((texture: any) => texture.bytes instanceof Uint8Array),
+      hydrated: scene.textures.every((texture: any) => !!texture.image),
     };
   });
   expect(source.document).toBe(true);
@@ -3487,16 +3506,16 @@ test('a file the document cannot be built from still previews, and says so', asy
   // therefore driven directly: with no document in hand the preview has to
   // fall back to the reader that used to be the only path, and say why.
   const fallback = await page.evaluate(async () => {
-    const { state } = await import('/app/state.js');
-    const { loadPreview } = await import('/app/preview.js');
+    const { state } = await import('/app/state.js' as string);
+    const { loadPreview } = await import('/app/preview.js' as string);
     state.currentSceneDocument = null;
     await loadPreview('gltf');
     const scene = state.viewer.scene;
     return {
       textures: scene.textures.length,
       // The direct reader decodes during the load and never carries bytes.
-      hydrated: scene.textures.every((texture) => !!texture.image),
-      carriesBytes: scene.textures.some((texture) => texture.bytes instanceof Uint8Array),
+      hydrated: scene.textures.every((texture: any) => !!texture.image),
+      carriesBytes: scene.textures.some((texture: any) => texture.bytes instanceof Uint8Array),
     };
   });
 
@@ -3519,17 +3538,26 @@ test('a KTX2 texture reaches the GPU without being decoded to pixels', async ({ 
   await page.addInitScript(() => {
     window.__textureUploads = { compressed: [], plain: 0 };
     const compressed = WebGL2RenderingContext.prototype.compressedTexImage2D;
-    WebGL2RenderingContext.prototype.compressedTexImage2D = function (target, level, format, width, height, border, data) {
+    // These monkeypatches capture whatever shape a call happens to arrive in,
+    // which is exactly what the DOM lib's overloaded signatures cannot express
+    // for a `function` reassigned onto the prototype: cast to `any` at the
+    // point of assignment rather than fight the overload set.
+    (WebGL2RenderingContext.prototype as any).compressedTexImage2D = function (
+      this: WebGL2RenderingContext, ...args: any[]
+    ) {
+      const [, level, format, width, height, , data] = args;
       window.__textureUploads.compressed.push({ level, format, width, height, bytes: data ? data.byteLength : 0 });
-      return compressed.apply(this, arguments);
+      return (compressed as any).apply(this, args);
     };
     const plain = WebGL2RenderingContext.prototype.texImage2D;
-    WebGL2RenderingContext.prototype.texImage2D = function (target, level, internalFormat, ...rest) {
+    (WebGL2RenderingContext.prototype as any).texImage2D = function (
+      this: WebGL2RenderingContext, ...rest: any[]
+    ) {
       // The one-texel white placeholder every texture starts with is not an
       // upload of anything; counting it would hide the case being tested.
       const source = rest[rest.length - 1];
       if (source instanceof ImageBitmap || source instanceof HTMLImageElement) window.__textureUploads.plain++;
-      return plain.apply(this, arguments);
+      return (plain as any).apply(this, rest);
     };
   });
 
@@ -3575,9 +3603,9 @@ test('a KTX2 texture reaches the GPU without being decoded to pixels', async ({ 
     window.__frameSamples = [];
     window.__frameOriginals = {};
     for (const name of ['drawElements', 'drawElementsInstanced', 'drawArrays', 'drawArraysInstanced']) {
-      const original = WebGL2RenderingContext.prototype[name];
+      const original = (WebGL2RenderingContext.prototype as any)[name];
       window.__frameOriginals[name] = original;
-      WebGL2RenderingContext.prototype[name] = function (...args) {
+      (WebGL2RenderingContext.prototype as any)[name] = function (this: WebGL2RenderingContext, ...args: any[]) {
         const result = original.apply(this, args);
         if (window.__frameSamples.length < 64) {
           const pixel = new Uint8Array(4);
@@ -3596,7 +3624,7 @@ test('a KTX2 texture reaches the GPU without being decoded to pixels', async ({ 
   await expect.poll(() => page.evaluate(() => window.__frameSamples.length)).toBeGreaterThan(0);
   const drawn = await page.evaluate(() => {
     for (const [name, original] of Object.entries(window.__frameOriginals)) {
-      WebGL2RenderingContext.prototype[name] = original;
+      (WebGL2RenderingContext.prototype as any)[name] = original;
     }
     return window.__frameSamples;
   });
@@ -3621,7 +3649,7 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
   const observed = await page.evaluate(async () => {
     const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     const encoder = new TextEncoder();
-    const gltf = (uri) => encoder.encode(JSON.stringify({
+    const gltf = (uri: string) => encoder.encode(JSON.stringify({
       asset: { version: '2.0' },
       scene: 0,
       scenes: [{ nodes: [0] }],
@@ -3637,9 +3665,9 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
 
     // Which files were actually opened. A folder is affordable only because
     // most of it is never read, so this is the assertion that matters most.
-    const opened = [];
-    const fileFor = (name, bytes) => {
-      const file = new File([bytes], name);
+    const opened: string[] = [];
+    const fileFor = (name: string, bytes: Uint8Array) => {
+      const file = new File([bytes as BlobPart], name);
       const original = file.arrayBuffer.bind(file);
       Object.defineProperty(file, 'arrayBuffer', {
         value: () => { opened.push(name); return original(); },
@@ -3660,15 +3688,15 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
     };
 
     // The smallest stand-in for a FileSystemEntry the walker accepts.
-    const entryFor = (name, node) => (node instanceof File ? {
+    const entryFor = (name: string, node: any): any => (node instanceof File ? {
       isFile: true, isDirectory: false, name,
-      file: (onSuccess) => onSuccess(node),
+      file: (onSuccess: any) => onSuccess(node),
     } : {
       isFile: false, isDirectory: true, name,
       createReader() {
         let done = false;
         return {
-          readEntries(onSuccess) {
+          readEntries(onSuccess: any) {
             if (done) return onSuccess([]);
             done = true;
             onSuccess(Object.entries(node).map(([key, value]) => entryFor(key, value)));
@@ -3682,24 +3710,24 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
     Object.defineProperty(event, 'dataTransfer', {
       value: { items: [{ webkitGetAsEntry: () => root }], files: [] },
     });
-    document.getElementById('drop-zone').dispatchEvent(event);
+    document.getElementById('drop-zone')!.dispatchEvent(event);
 
-    const { state } = await import('/app/state.js');
+    const { state } = await import('/app/state.js' as string);
     for (let attempt = 0; attempt < 100 && !state.currentSourceData; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
 
-    const picker = document.getElementById('file-model-picker');
+    const picker = document.getElementById('file-model-picker')!;
 
     // The field takes the whole bar — the name's left edge to the remove
     // button's right — and the list is the width of the field, which is what
     // the control has always done. Squeezed into a column beside the name it
     // was less than half that, and every row came back cut to an ellipsis.
-    const triggerButton = document.getElementById('file-model-trigger');
+    const triggerButton = document.getElementById('file-model-trigger')!;
     triggerButton.click();
     await new Promise((resolve) => setTimeout(resolve, 50));
     const menu = document.getElementById('file-model-menu');
-    const box = (element) => element.getBoundingClientRect();
+    const box = (element: Element | null) => element!.getBoundingClientRect();
     const layout = {
       sameWidth: Math.round(box(menu).width) === Math.round(box(triggerButton).width),
       spansBar: box(triggerButton).left <= box(document.getElementById('file-name')).left + 1
@@ -3714,7 +3742,7 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
     const first = chosen();
 
     // And the other model out of the same drop, without asking for it again.
-    const select = document.getElementById('file-model');
+    const select = document.getElementById('file-model') as HTMLSelectElement;
     select.value = 'Helmet/glTF-instancing/HelmetInstanced.gltf';
     select.dispatchEvent(new Event('change', { bubbles: true }));
     for (let attempt = 0; attempt < 100
@@ -3727,13 +3755,13 @@ test('a dropped folder offers its models and resolves a sibling directory', asyn
       layout,
       second: chosen(),
       offered: [...select.options].map((option) => [option.value, option.textContent]),
-      pickerShown: !picker.hidden,
+      pickerShown: !(picker as HTMLElement).hidden,
       opened,
       selected: state.currentSelection.length,
       // A path is longer than the panel it sits in, and the label is nowrap, so
       // the control has to truncate rather than push the panel wider.
       fits: picker.getBoundingClientRect().right
-        <= document.getElementById('file-info').getBoundingClientRect().right + 1,
+        <= document.getElementById('file-info')!.getBoundingClientRect().right + 1,
     };
   });
 
@@ -3784,13 +3812,15 @@ test('a folder chosen with the button opens the same way a dropped one does', as
   // take the column's width and the question does not arise. Checked at
   // several widths because the defect only appeared at one of them.
   const buttons = await page.evaluate(() => {
-    const sidebar = document.querySelector('.sidebar');
+    const sidebar = document.querySelector('.sidebar') as HTMLElement;
     const original = sidebar.style.width;
-    const measured = [];
+    const measured: Array<{
+      width: string; count: number; widths: number[]; wrapped: boolean; overflows: boolean;
+    }> = [];
     for (const width of ['360px', '300px', '260px', '220px', '190px']) {
       sidebar.style.width = width;
       const labels = [...document.querySelectorAll('.browse-row label')];
-      const zone = document.getElementById('drop-zone').getBoundingClientRect();
+      const zone = document.getElementById('drop-zone')!.getBoundingClientRect();
       measured.push({
         width,
         count: labels.length,
@@ -3819,12 +3849,12 @@ test('a folder chosen with the button opens the same way a dropped one does', as
   await expect(page.locator('#console')).not.toContainText('not in the selection');
 
   const observed = await page.evaluate(async () => {
-    const { state } = await import('/app/state.js');
+    const { state } = await import('/app/state.js' as string);
     return {
       path: state.currentModelPath,
       resources: Object.keys(state.currentSourceResources).sort(),
       selected: state.currentSelection.length,
-      pickerShown: !document.getElementById('file-model-picker').hidden,
+      pickerShown: !(document.getElementById('file-model-picker') as HTMLElement).hidden,
     };
   });
 
