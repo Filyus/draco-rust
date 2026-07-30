@@ -212,12 +212,10 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
     git ls-remote --tags origin | grep "<crate>-v"
     gh release view <crate>-vX.Y.Z --json assets --jq '.assets[].name'
     ```
-    The expected zips are the modules that wrap `<crate>`: obj, ply, stl and fbx
-    for `draco-io`, gltf for `draco-gltf`, drc for `draco-core`. `ktx2` is
-    shipped with nothing — `draco-texture` is `publish = false` — and the
-    packaging step prints that rather than leaving it silent. A module that
-    belongs to no crate fails that step on purpose, so a new one cannot be built
-    and forgotten.
+    Expect one zip per built module — currently seven: obj, ply, stl, fbx, gltf,
+    drc, ktx2 — all stamped with this release's version. The whole set goes on
+    every release, and the list comes from the build rather than from the
+    workflow, so a new module needs nothing added anywhere.
 
     Watch the run by **id**, and prove the watcher prints before trusting its
     silence: two attempts at this release reported nothing for half an hour

@@ -1,7 +1,9 @@
 name: "Release: WASM assets"
 
-# Each web module wraps one crate, so a crate's release publishes the browser
-# assets for its own modules and stamps them with its own version.
+# A crate release publishes the whole set of browser modules, built from that
+# tag and stamped with its version. The set is one thing: the modules compile the
+# crates together, so shipping a subset per crate left some of them stale and one
+# of them never shipped at all.
 #
 # The push trigger is a fallback, not the usual route: publish.yml pushes its tag
 # with GITHUB_TOKEN, and GitHub raises no workflow events for those, so it
@@ -77,59 +79,38 @@ jobs:
 
           tag="${{ steps.release.outputs.tag }}"
           case "$tag" in
-            draco-core-v*) crate="draco-core"; version="${tag#draco-core-v}" ;;
-            draco-io-v*) crate="draco-io"; version="${tag#draco-io-v}" ;;
-            draco-gltf-v*) crate="draco-gltf"; version="${tag#draco-gltf-v}" ;;
+            draco-core-v*) version="${tag#draco-core-v}" ;;
+            draco-io-v*) version="${tag#draco-io-v}" ;;
+            draco-gltf-v*) version="${tag#draco-gltf-v}" ;;
             *) echo "unsupported release tag: $tag" >&2; exit 1 ;;
           esac
           mkdir -p dist
 
-          # Which crate each module wraps, and therefore whose version the asset
-          # may carry. Every tag used to ship every module: a draco-io release
-          # attached a draco-gltf-wasm zip stamped with the draco-io version,
-          # naming a draco-gltf release that did not exist.
-          # An empty owner means "ships with nothing", which is a decision rather
-          # than an omission -- ktx2-wasm wraps draco-texture, and that crate is
-          # `publish = false`, so no tag or crates.io version exists for an asset
-          # to carry. Recorded here so the check below can tell it apart from a
-          # module nobody placed.
-          declare -A owner=(
-            [obj]="draco-io"
-            [ply]="draco-io"
-            [stl]="draco-io"
-            [fbx]="draco-io"
-            [gltf]="draco-gltf"
-            [drc]="draco-core"
-            [ktx2]=""
-          )
-
-          # A module that is built and appears nowhere above is a module someone
-          # forgot to place -- which is how stl and drc came to be built on every
-          # release and shipped on none. Fail here rather than ship a short set.
-          for built in web/www/pkg/*_bg.wasm; do
-            name="$(basename "$built" _bg.wasm)"
-            if [ -z "${owner[$name]+set}" ]; then
-              echo "Module '$name' is built but assigned to no crate; add it to the owner map" >&2
-              echo "(an empty value means it deliberately ships with no release)." >&2
-              exit 1
-            fi
-          done
-
+          # Every module the build produced, taken from the build rather than
+          # from a list here: a list is a second place to update, and the two
+          # drifted -- stl and drc were built on every release and named in no
+          # list, so they shipped on none.
+          #
+          # All of them go on every release, because a module's bytes are a
+          # function of the whole tree and not of one crate: obj, ply, stl and fbx
+          # each compile draco-core and draco-io, gltf compiles draco-gltf and
+          # draco-io. Selecting by "which crate does this wrap" left gltf stale
+          # through releases that changed it, and drc shipped nowhere at all.
+          # The version is the release's; which crate's release built a module is
+          # not something a consumer of the module needs from its file name.
+          # nullglob, or an unmatched pattern survives as a literal and the count
+          # below is 1 rather than 0 -- the empty case would slip past its own
+          # guard and fail later on a `cp` of a filename with a `*` in it.
+          shopt -s nullglob
           modules=()
-          skipped=()
-          for name in "${!owner[@]}"; do
-            case "${owner[$name]}" in
-              "$crate") modules+=("$name") ;;
-              "") skipped+=("$name") ;;
-            esac
+          for built in web/www/pkg/*_bg.wasm; do
+            modules+=("$(basename "$built" _bg.wasm)")
           done
-          # Say what is not being shipped, so a short set is never silent.
-          [ "${#skipped[@]}" -gt 0 ] && echo "Not shipped with any release: ${skipped[*]}"
           if [ "${#modules[@]}" -eq 0 ]; then
-            echo "No web modules belong to $crate; nothing to package." >&2
+            echo "No built WASM modules found in web/www/pkg." >&2
             exit 1
           fi
-          echo "Packaging for $crate v$version: ${modules[*]}"
+          echo "Packaging v$version from $tag: ${modules[*]}"
 
           for module in "${modules[@]}"; do
             package_name="draco-${module//_/-}-wasm-v${version}"

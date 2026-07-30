@@ -7,13 +7,14 @@ its own changelog and its own `<crate>-vX.Y.Z` release tags:
 - **draco-io** — [`crates/draco-io/CHANGELOG.md`](crates/draco-io/CHANGELOG.md)
 - **draco-gltf** — [`crates/draco-gltf/CHANGELOG.md`](crates/draco-gltf/CHANGELOG.md)
 
-The `web/` WASM wrappers and converter are not published to crates.io. Each
-wrapper ships as a zipped release asset with the crate it wraps, stamped with
-that crate's version and built by `Release: WASM assets`: obj, ply, stl and fbx
-with `draco-io`, gltf with `draco-gltf`, drc with `draco-core`. The converter
-itself is deployed to GitHub Pages by `Pages: deploy converter`, from `main`
-rather than from a tag — it demonstrates the current code, and pinning it to a
-crate release would show neither crate's version honestly.
+The `web/` WASM wrappers and converter are not published to crates.io. Every
+wrapper ships as a zipped release asset on every crate release, built from that
+tag by `Release: WASM assets` and stamped with its version. The set travels
+together because it is built together: a module compiles several crates, so
+shipping a subset per crate leaves the rest describing an older tree. The
+converter itself is deployed to GitHub Pages by `Pages: deploy converter`, from
+`main` rather than from a tag — it demonstrates the current code, and pinning it
+to a crate release would show neither crate's version honestly.
 
 **draco-io v0.3.0 and draco-gltf v0.2.0 carry no browser assets.** The tag those
 releases were made from was pushed with `GITHUB_TOKEN`, for which GitHub raises
@@ -34,9 +35,8 @@ See [`RELEASING.md`](RELEASING.md) for the release process.
   typed-FBX writer limitations. See [`web/README.md`](web/README.md).
 - Added STL and standalone Draco (`.drc`) as import **and** export formats,
   through the new `stl-wasm` and `drc-wasm` modules. `stl-wasm` wraps
-  `draco-io`'s reader and writer; `drc-wasm` wraps `draco-core` directly, which
-  makes it the first web module to ship with a `draco-core` release rather than
-  a `draco-io` one.
+  `draco-io`'s reader and writer; `drc-wasm` wraps `draco-core` directly, the
+  first web module to depend on neither `draco-io` nor `draco-gltf`.
 - Carried a `.drc`'s attributes through a round trip instead of dropping the ones
   the flat mesh has no slot for. A second texture-coordinate or colour set is
   handed over with its type, component count, component type and unique id, and
