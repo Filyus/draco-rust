@@ -13,13 +13,20 @@ and GitHub release.
 
 ## Roles (keep them separate)
 
-- **Agent**: prepares the bump + changelog for one crate, shows the diff, and —
-  only after the maintainer OKs the wording — creates and pushes the release
-  commit. Stops there unless asked to start the publish workflow; being asked
-  once covers the crates of that release, and covers nothing past the gate.
-- **Maintainer**: reviews the changelog wording before the push, and approves the
-  `release` GitHub environment after CI + preflight. Only that approval publishes.
+- **Agent**: prepares the bump + changelog for one crate and shows the diff.
+  **That is the one stop.** After the maintainer OKs the wording it runs the rest
+  without asking again: commit, push, wait for `Rust CI` and `Fuzz`, start the
+  publish workflow, and then watch `Release: WASM assets` through to the attached
+  zips. Asking again before the gate buys nothing — the gate is a button, and it
+  cannot be pressed early by anyone but the maintainer.
+- **Maintainer**: reviews the changelog wording before the push — the wording is
+  what ships, as the GitHub Release body — and presses approve on the `release`
+  GitHub environment when the pipeline reaches it. Only that approval publishes.
   The agent cannot and must not approve it.
+  - That gate exists because the environment carries a required-reviewer rule in
+    the repository settings, not because the workflow names an environment. It
+    also allows self-review, so it is a confirmation rather than a second pair of
+    eyes.
 
 ## Dependency order
 
@@ -107,6 +114,10 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
    This pause is owed for every crate separately: a maintainer who delegated the
    commands still reviews each changelog, and silence is not an OK.
 
+   It is also the **only** pause in the release. Everything after it is
+   mechanical and reversible until the `release` environment gate, which no
+   amount of asking can pass on the maintainer's behalf.
+
 7. **After the maintainer OKs**, commit exactly the release files with the exact
    subject, then push:
    ```sh
@@ -117,7 +128,8 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
    crate name), or the publish workflow refuses to publish.
 
 8. **Once `Rust CI` and `Fuzz` are both green for that commit, start the publish
-   workflow for `<crate>`** (it does not run automatically):
+   workflow for `<crate>`** — without asking; step 6 already covered it (it does
+   not run automatically):
    ```sh
    gh workflow run publish.yml --ref main -f crate=<crate>
    ```
@@ -143,8 +155,16 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
    - the rewrite discards the working tree. Commit or copy aside anything
      uncommitted first — `git reset --hard` takes unrelated drafts with it.
 
-10. **Stop.** Do not publish, tag, create releases, or approve the `release`
-    environment unless the maintainer explicitly asks for that specific action.
+10. **Wait at the gate, then see the release finished.** Do not publish, tag,
+    create releases, or approve the `release` environment — the pipeline does the
+    first three itself once the maintainer presses approve, and the approval is
+    theirs alone.
+
+    After it publishes, the release is still not done: `publish.yml` asks
+    `Release: WASM assets` for a run, because the tag it pushed raises no events
+    of its own. Watch that run and check the module zips are attached to the
+    GitHub Release. Skipping this is how draco-io v0.3.0 and draco-gltf v0.2.0
+    came to be published with no assets at all.
 
 ## Changelog taxonomy
 

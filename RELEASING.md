@@ -189,7 +189,10 @@ tag with the one-off workflow.
    is published, then tags): run `First release only: create tag`
    (`tag-first-release.yml`) with the crate, the version, and the confirmation
    string — e.g. for `draco-gltf`: `crate=draco-gltf`, `version=0.1.0`,
-   `confirm=tag draco-gltf`. The tag triggers the GitHub Release.
+   `confirm=tag draco-gltf`. That workflow also starts `Release: WASM assets`,
+   which creates the GitHub Release and attaches the crate's module zips — it
+   has to ask, because a tag pushed with `GITHUB_TOKEN` raises no workflow
+   events and so triggers nothing by itself.
 6. Configure Trusted Publishing for `<crate>` before its next release.
 
 ## One-Time Setup

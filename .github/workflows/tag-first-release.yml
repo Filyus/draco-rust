@@ -33,6 +33,8 @@ concurrency:
 
 permissions:
   contents: write
+  # To start Release: WASM assets; see the step at the end of the job.
+  actions: write
 
 env:
   CRATE: ${{ inputs.crate }}
@@ -103,3 +105,15 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "$CRATE $REQUESTED_VERSION"
           git push origin "refs/tags/$tag"
+
+      # GitHub raises no workflow events for a ref pushed with GITHUB_TOKEN, so
+      # the tag above starts nothing on its own -- the same reason draco-io
+      # v0.3.0 and draco-gltf v0.2.0 ended up with no browser assets. Ask for the
+      # run, which is also what creates the GitHub Release for this tag.
+      - name: Build WASM release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$CRATE-v$REQUESTED_VERSION"
+          gh workflow run release.yml --ref main --field tag="$tag"
+          echo "Requested Release: WASM assets for $tag."
