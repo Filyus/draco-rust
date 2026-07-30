@@ -9,6 +9,17 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The FBX writer's default `GlobalSettings` now describe the orientation its
+  geometry actually has. The glTF-to-FBX axis change writes `(x, y, z)` as
+  `(x, z, -y)`, which puts glTF's `+Y` up along FBX `-Z` and its `+Z` front
+  along FBX `+Y`; `UpAxisSign` and `FrontAxisSign` stated the opposite, so the
+  file described an orientation it did not contain. A reader that resolves those
+  fields turned such a scene over. Only the two integers change -- the geometry
+  and every other node are byte-identical -- and a document that carries its own
+  `GlobalSettings`, which is every rewrite of a source file, is unaffected.
+
 ## [0.3.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.2.0...draco-io-v0.3.0) - 2026-07-29
 
 ### Added

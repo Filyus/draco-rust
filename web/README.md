@@ -113,13 +113,31 @@ The four real-world fixtures on hand -- Mixamo, Samba Dancing, `morph_test` and
 the Stanford bunny -- all state 1, which is why the constant went unnoticed and
 why honouring the field moves none of them.
 
-The axis convention is a separate matter and still unhandled on import. The
-writer declares its own — `UpAxis = 2`, `FrontAxis = 1` with sign −1,
-`CoordAxis = 0`, which is exactly the glTF Y-up to FBX Z-up change it applies to
-the geometry — and the same four fixtures declare Y-up with no change needed,
-which is why an importer that ignores the fields looks correct on them. Reading
-them would mean re-basing positions, normals, node matrices, skin binds and
-animated rotations, so it is not folded in here.
+## FBX axes
+
+The other six `GlobalSettings` fields say which axis is up, which points front
+and which points right, each with a sign. glTF fixes all three — `+Y` up, `+Z`
+front, `+X` right — so reading an FBX means mapping one system onto the other,
+and the importer used to skip that entirely. Correct for exactly the files that
+are already Y-up, which is all four fixtures, and wrong for anything else.
+
+The change of basis reaches everything a basis touches: positions and normals
+rotate, tangents rotate while their handedness stays, node matrices and skin
+binds are conjugated (`B · M · B⁻¹`, because a transform has to receive and
+return glTF-space points), animated rotations are conjugated as quaternions, and
+per-axis scale permutes rather than rotates. Conjugation is linear, which is what
+lets a cubic sampler's tangents go through the same call as its keys.
+
+A Y-up file takes none of that: the basis reports itself as the identity and each
+site returns its input untouched, rather than passing it through arithmetic that
+ought to cancel out.
+
+The writer's side of the same round trip was also wrong, and in the opposite
+direction: its axis change writes glTF `(x, y, z)` as `(x, z, -y)`, which puts up
+along FBX `-Z`, while its default `UpAxisSign` and `FrontAxisSign` claimed the
+reverse. The file described an orientation it did not contain, so believing it —
+which the importer now does — turned the scene over. Fixed in `draco-io`; the
+geometry bytes are unchanged.
 
 Draco puts no limit on how many attributes of a type a payload holds -- a second
 texture-coordinate set is ordinary, and glTF's own extension keeps joints and

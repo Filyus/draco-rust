@@ -821,12 +821,18 @@ fn global_settings_node(source: Option<&crate::fbx_scene::FbxGlobalSettings>) ->
     let source = source.cloned().unwrap_or_default();
     let mut properties = vec![
         int_property_node("UpAxis", "int", "Integer", "", source.up_axis.unwrap_or(2)),
+        // The writer's own axis change puts glTF's +Y up along FBX -Z and
+        // glTF's +Z front along FBX +Y: (x, y, z) becomes (x, z, -y). These
+        // two signs used to say the opposite, so the file described an
+        // orientation it did not contain, and a reader that believed the
+        // fields -- this workspace's own importer now does -- turned the
+        // scene over. The bytes are unchanged; only the description is.
         int_property_node(
             "UpAxisSign",
             "int",
             "Integer",
             "",
-            source.up_axis_sign.unwrap_or(1),
+            source.up_axis_sign.unwrap_or(-1),
         ),
         int_property_node(
             "FrontAxis",
@@ -840,7 +846,7 @@ fn global_settings_node(source: Option<&crate::fbx_scene::FbxGlobalSettings>) ->
             "int",
             "Integer",
             "",
-            source.front_axis_sign.unwrap_or(-1),
+            source.front_axis_sign.unwrap_or(1),
         ),
         int_property_node(
             "CoordAxis",

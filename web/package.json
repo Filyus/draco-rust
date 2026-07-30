@@ -20,6 +20,7 @@
     "test:gltf-scene-document": "node tests/gltf-scene-document-parity.ts",
     "test:fbx-scene-document": "node tests/fbx-scene-document-parity.ts",
     "test:fbx-scene-provenance": "node tests/fbx-scene-provenance.ts",
+    "test:fbx-axis-basis": "node tests/fbx-axis-basis.ts",
     "test:fbx-source-provenance": "node tests/fbx-source-provenance-roundtrip.ts",
     "test:fbx-source-provenance-blender": "node tests/fbx-source-provenance-blender-roundtrip.ts",
     "test:scene-document-fbx": "node tests/scene-document-fbx-roundtrip.ts",

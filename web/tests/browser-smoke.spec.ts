@@ -2339,18 +2339,21 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
 });
 
 /**
- * An FBX round trip comes back the size it went out.
+ * An FBX round trip comes back the size and the way up it went out.
  *
- * `UnitScaleFactor` is the number of centimetres in one FBX unit, so a file
- * saying 1 is in centimetres and one saying 100 is in metres. The importer
- * applied a flat 0.01 — right for the first and wrong for the second, and this
- * repository's own writer emits 100. Every scene written here and read back
- * came in a hundred times too small, and the GLB it turned into carried that.
+ * Both halves were wrong and neither showed on the corpus. `UnitScaleFactor` is
+ * the number of centimetres in one FBX unit, so a file saying 1 is in
+ * centimetres and one saying 100 is in metres; the importer applied a flat 0.01
+ * and this workspace's writer emits 100, so everything written here came back a
+ * hundredth of its size. And the six axis fields were ignored on import while
+ * the writer described an orientation its geometry did not have, so the scene
+ * came back turned over as well.
  *
- * Mixamo, Blender's exporter and the Stanford bunny all say 1, so honouring the
- * field leaves them exactly where the constant had them.
+ * Mixamo, Samba Dancing, `morph_test` and the Stanford bunny all state
+ * centimetres and Y-up, which is why a constant and an ignored field looked
+ * correct for years, and why honouring both moves none of them.
  */
-test('an FBX round trip preserves the scene scale', async ({ page }) => {
+test('an FBX round trip preserves the scene scale and orientation', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);
   await page.locator('#file-input').setInputFiles([
@@ -2374,15 +2377,26 @@ test('an FBX round trip preserves the scene scale', async ({ page }) => {
   const glb = await exportAs('glb');
   const manifest = JSON.parse(glb.subarray(20, 20 + glb.readUInt32LE(12)).toString('utf8'));
 
-  // The source cube spans -1..1 on every axis. Compared as an extent rather
-  // than as coordinates: the axis convention is a separate question, and the
-  // size is not.
+  // The source cube spans -1..1 on every axis, so a scene that came back a
+  // hundredth of its size fails on the extent alone.
   const bounds = manifest.accessors.filter((accessor: any) => accessor.min?.length === 3);
   expect(bounds.length).toBeGreaterThan(0);
   for (const accessor of bounds) {
     const extents = accessor.max.map((value: number, axis: number) => value - accessor.min[axis]);
     expect(Math.max(...extents)).toBeCloseTo(2, 2);
   }
+
+  // And the placement comes back on the axis it left on. The sphere sits at
+  // z = -2.818 in the source; the writer turns that into FBX's own axes and the
+  // reader turns it back, which is only true if both agree on what the file
+  // says its axes are.
+  const placed = manifest.nodes
+    .map((node: any) => node.matrix?.slice(12, 15) ?? node.translation)
+    .filter((translation: number[] | undefined) => translation?.some((value) => Math.abs(value) > 1e-6));
+  expect(placed).toHaveLength(1);
+  expect(placed[0][0]).toBeCloseTo(0, 3);
+  expect(placed[0][1]).toBeCloseTo(0, 3);
+  expect(placed[0][2]).toBeCloseTo(-2.818, 2);
 });
 
 /**
