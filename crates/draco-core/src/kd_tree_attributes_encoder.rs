@@ -146,8 +146,9 @@ impl KdTreeAttributesEncoder {
         options: &EncoderOptions,
         out_buffer: &mut EncoderBuffer,
     ) -> bool {
-        // Draco C++: compression_level = min(10 - speed, 6).
-        let speed = options.get_encoding_speed();
+        // Draco C++: compression_level = min(10 - GetSpeed(), 6), and GetSpeed
+        // is the larger of the encoding and decoding speeds.
+        let speed = options.get_speed();
         let mut compression_level: u8 = (10 - speed).clamp(0, 6) as u8;
         if compression_level == 6 && self.num_components > 15 {
             compression_level = 5;

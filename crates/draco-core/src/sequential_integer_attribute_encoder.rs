@@ -1130,7 +1130,10 @@ impl SequentialIntegerAttributeEncoder {
         out_buffer.encode_u8(1);
 
         let symbol_options = SymbolEncodingOptions {
-            compression_level: 10 - options.get_encoding_speed(),
+            // The larger of the two speeds, as SetSymbolEncodingCompressionLevel
+            // is handed `10 - GetSpeed()`. Reading the encoding speed alone
+            // agrees only while the two are set to the same value.
+            compression_level: 10 - options.get_speed(),
         };
 
         let _start_len = out_buffer.size();

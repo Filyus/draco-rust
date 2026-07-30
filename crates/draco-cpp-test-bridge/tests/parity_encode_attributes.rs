@@ -195,10 +195,14 @@ fn build_rust_mesh(sample: &Sample) -> Mesh {
 }
 
 fn encode_rust(sample: &Sample, speed: i32) -> Vec<u8> {
+    encode_rust_at(sample, speed, speed)
+}
+
+fn encode_rust_at(sample: &Sample, encoding_speed: i32, decoding_speed: i32) -> Vec<u8> {
     let mesh = build_rust_mesh(sample);
     let mut options = EncoderOptions::new();
-    options.set_global_int("encoding_speed", speed);
-    options.set_global_int("decoding_speed", speed);
+    options.set_global_int("encoding_speed", encoding_speed);
+    options.set_global_int("decoding_speed", decoding_speed);
 
     let mut attribute_id = 0;
     options.set_attribute_int(attribute_id, "quantization_bits", POSITION_BITS);
@@ -667,4 +671,72 @@ fn integer_normals_encode_and_round_trip() {
         .decode(&mut input, &mut decoded)
         .expect("and it must decode again");
     assert_eq!(decoded.num_points(), num_points);
+}
+
+/// The two speed knobs, set apart.
+///
+/// Draco takes the LARGER of the encoding and decoding speeds wherever it asks
+/// "how fast", so a caller who wants slow encoding but fast decoding gets the
+/// fast behaviour. Every other case in this file sets both to the same value,
+/// which makes the distinction invisible -- and makes it easy to reach for the
+/// encoding speed alone and never notice.
+#[test]
+fn asymmetric_speeds_match_cpp() {
+    if !draco_cpp_test_bridge::is_available() {
+        println!("SKIP asymmetric speeds: no C++ bridge");
+        return;
+    }
+
+    let samples = vec![grid(10, (true, false, false)), grid(12, (true, true, true))];
+    let pairs = [(0, 10), (10, 0), (0, 5), (5, 0), (2, 7), (7, 2)];
+
+    let mut mismatches = Vec::new();
+    let mut compared = 0;
+
+    for sample in &samples {
+        for (encoding_speed, decoding_speed) in pairs {
+            let rust = encode_rust_at(sample, encoding_speed, decoding_speed);
+            let Some(cpp) = draco_cpp_test_bridge::encode_cpp_mesh_attributed(
+                &sample.positions,
+                &sample.faces,
+                CppMeshAttributes {
+                    normals: sample.normals.as_deref(),
+                    uvs: sample.uvs.as_deref(),
+                    colors: sample.colors.as_deref(),
+                    normal_bits: NORMAL_BITS,
+                    uv_bits: UV_BITS,
+                    color_bits: COLOR_BITS,
+                },
+                encoding_speed,
+                decoding_speed,
+                POSITION_BITS,
+            ) else {
+                mismatches.push(format!(
+                    "{} enc {encoding_speed} dec {decoding_speed}: C++ encode failed",
+                    label(sample)
+                ));
+                continue;
+            };
+            compared += 1;
+            if let Some(offset) = first_difference(&rust, &cpp) {
+                mismatches.push(format!(
+                    "{} enc {encoding_speed} dec {decoding_speed}: C++ {} bytes, Rust {} bytes, first difference at {offset}",
+                    label(sample),
+                    cpp.len(),
+                    rust.len(),
+                ));
+            }
+        }
+    }
+
+    println!("compared {compared} encodes with the two speeds set apart");
+    assert!(
+        mismatches.is_empty(),
+        "encoder output differs from C++ Draco when the speeds differ:
+{}",
+        mismatches.join(
+            "
+"
+        )
+    );
 }
