@@ -17,7 +17,7 @@ import { invertMat4, multiplyMat4 } from '../src/mat4.ts';
 import type { Viewer as ViewerClass } from '../src/viewer.ts';
 import type { buildSceneFromGltf as BuildSceneFromGltf } from '../src/gltf-loader.ts';
 import type { ViewerScene, ViewerNode } from '../src/viewer-scene.ts';
-import { here, foxBin, foxGltf, loadFbxViewerAdapter, loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.ts';
+import { blenderExecutable, here, foxBin, foxGltf, loadFbxViewerAdapter, loadWasm, mixamoFbx, readBytes, sambaFbx } from './fbx-test-utils.ts';
 
 const { Viewer } = await import(pathToFileURL(resolve(here, '..', 'src', 'viewer.ts')).href) as { Viewer: typeof ViewerClass };
 const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href) as {
@@ -26,7 +26,7 @@ const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 's
 const { buildSceneFromFbx } = await loadFbxViewerAdapter();
 const gltf = await loadWasm('gltf');
 const fbx = await loadWasm('fbx');
-const blender = process.env.BLENDER || 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe';
+const blender = blenderExecutable();
 
 const bones = [
     'mixamorig:Hips', 'mixamorig:Spine', 'mixamorig:Spine1', 'mixamorig:Spine2',

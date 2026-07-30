@@ -9,12 +9,11 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { here, loadWasm, mixamoFbx, readBytes } from './fbx-test-utils.ts';
+import { blenderExecutable, here, loadWasm, mixamoFbx, readBytes } from './fbx-test-utils.ts';
 
-const BLENDER = process.env.BLENDER
-    || 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe';
+const BLENDER = blenderExecutable();
 const MIXAMO = mixamoFbx;
-if (!existsSync(BLENDER) || !existsSync(MIXAMO)) {
+if (!BLENDER || !existsSync(MIXAMO)) {
     console.log('SKIP Blender Mixamo motion probe (local Blender or fixture missing)');
     process.exit(0);
 }

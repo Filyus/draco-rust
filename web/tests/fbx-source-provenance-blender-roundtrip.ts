@@ -3,16 +3,19 @@
 // source-only FBX provenance, including Model transform-stack properties and
 // Blender's armature evaluation.
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
-import { loadWasm, mixamoFbx, readBytes, sambaFbx, skipUnless } from './fbx-test-utils.ts';
+import { blenderExecutable, loadWasm, mixamoFbx, readBytes, sambaFbx, skipUnless } from './fbx-test-utils.ts';
 
-const blender = process.env.BLENDER || 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe';
-if (skipUnless([mixamoFbx, sambaFbx, blender], 'FBX source-provenance Blender round-trip')) process.exit(0);
+const blender = blenderExecutable();
+const label = 'FBX source-provenance Blender round-trip';
+if (!blender || skipUnless([mixamoFbx, sambaFbx], label)) {
+    if (!blender) console.log(`SKIP ${label}: no Blender (set BLENDER in web/.env)`);
+    process.exit(0);
+}
 
 const bones = [
     'mixamorig:Hips', 'mixamorig:Spine', 'mixamorig:Spine1', 'mixamorig:Spine2',

@@ -2,7 +2,6 @@
 // provenance is retained only as an optional adapter input; the output still
 // comes from SceneDocument mesh/skin/clip data.
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
@@ -10,10 +9,10 @@ import { tmpdir } from 'node:os';
 import { buildSceneDocumentWithFbxProvenance } from '../src/fbx-scene-document.ts';
 import { buildSceneDocumentFromGltf } from '../src/gltf-scene-document.ts';
 import { buildFbxSceneFromDocument } from '../src/fbx-scene-document-writer.ts';
-import { foxBin, foxGltf, here, loadWasm, mixamoFbx, readBytes, sambaFbx, skipUnless } from './fbx-test-utils.ts';
+import { blenderExecutable, foxBin, foxGltf, here, loadWasm, mixamoFbx, readBytes, sambaFbx, skipUnless } from './fbx-test-utils.ts';
 
-const blender = process.env.BLENDER || 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe';
-if (skipUnless([mixamoFbx, sambaFbx], 'SceneDocument FBX Blender round-trip') || !existsSync(blender)) process.exit(0);
+const blender = blenderExecutable();
+if (skipUnless([mixamoFbx, sambaFbx], 'SceneDocument FBX Blender round-trip') || !blender) process.exit(0);
 
 const fbx = await loadWasm('fbx');
 const scratch = await mkdtemp(resolve(tmpdir(), 'draco-scene-document-fbx-'));

@@ -23,6 +23,7 @@
     "test:fbx-axis-basis": "node tests/fbx-axis-basis.ts",
     "test:fbx-export-space": "node tests/fbx-export-space.ts",
     "test:fbx-blender-axis-spaces": "node tests/fbx-blender-axis-spaces.ts",
+    "test:no-absolute-paths": "node tests/no-absolute-paths.ts",
     "test:fbx-source-provenance": "node tests/fbx-source-provenance-roundtrip.ts",
     "test:fbx-source-provenance-blender": "node tests/fbx-source-provenance-blender-roundtrip.ts",
     "test:scene-document-fbx": "node tests/scene-document-fbx-roundtrip.ts",

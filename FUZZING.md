@@ -115,10 +115,13 @@ recommended.
 On Windows MSVC the AddressSanitizer runtime DLL is frequently not on `PATH`,
 which makes the target fail at startup with `STATUS_DLL_NOT_FOUND`
 (`0xc0000135`). Put the runtime that ships with Visual Studio on `PATH` for the
-session — adjust the MSVC version to match your install:
+session. Ask the installation for its own location rather than typing a version
+in, so this keeps working across upgrades:
 
 ```powershell
-$env:PATH = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64;$env:PATH"
+$vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+$msvc = Get-ChildItem "$vs\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1
+$env:PATH = "$($msvc.FullName)\bin\Hostx64\x64;$env:PATH"
 cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
 ```
 

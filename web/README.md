@@ -508,6 +508,24 @@ the Node scene gates included — needs `--app` built over it afterwards.
 
 Optimized packages are written to `web/www/pkg/`.
 
+### Paths that name a disk
+
+They live in `web/.env`, which is gitignored, and are documented — without real
+values — in `.env.example`. Nothing in the code carries one. `test:no-absolute-paths`
+enforces that across every tracked text file in the repository: a Windows drive
+letter or a path under a filesystem root such as `/usr`, `/tmp` or `/Applications`
+fails it, in Rust and Markdown as much as in TypeScript.
+
+It was written because six Blender-gated suites each named one developer's
+install as their fallback. That is a machine's configuration committed as source:
+right on one computer, stale there after the next upgrade, and elsewhere a skip
+that looks like a missing dependency. Blender is now found through `BLENDER`,
+then `PATH`, then the install root Windows advertises. Two `draco-io` examples and
+three documents had the same leak and lost it.
+
+Root-relative URLs are not paths and are not flagged — the shell serves pages
+from `/`.
+
 ## Deployment
 
 `Pages: deploy converter` (`.github/workflows/pages.yml`) builds `--app` and

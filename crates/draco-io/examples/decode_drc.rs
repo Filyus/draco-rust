@@ -5,13 +5,14 @@ use draco_core::mesh_decoder::MeshDecoder;
 use std::path::Path;
 
 fn main() {
-    // Get filename from args or use default
+    // The file to decode comes from the caller. The default used to be one
+    // machine's C++ Draco output directory, which worked nowhere else.
     let args: Vec<String> = std::env::args().collect();
-    let test_file = if args.len() > 1 {
-        Path::new(&args[1]).to_path_buf()
-    } else {
-        Path::new(r"D:\Projects\Draco\output\sphere_cpp_encoded.drc").to_path_buf()
+    let Some(path) = args.get(1) else {
+        eprintln!("usage: cargo run --example decode_drc -- <file.drc>");
+        std::process::exit(2);
     };
+    let test_file = Path::new(path).to_path_buf();
 
     let data = std::fs::read(&test_file).expect("Failed to read file");
     let mut decoder = MeshDecoder::new();

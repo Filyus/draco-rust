@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, readdirSync } from 'node:fs';
+import { delimiter, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const here = dirname(fileURLToPath(import.meta.url));
@@ -35,6 +35,49 @@ export const sambaFbx = process.env.SAMBA_FBX || resolve(fixtureRoot, 'Samba Dan
 export const foxGltf = process.env.FOX_GLTF || resolve(repoRoot, 'testdata', 'Fox', 'glTF', 'Fox.gltf');
 export const foxBin = process.env.FOX_BIN || resolve(repoRoot, 'testdata', 'Fox', 'glTF', 'Fox.bin');
 
+/**
+ * Where Blender is, without writing down where it is on one machine.
+ *
+ * Six Blender-gated suites each carried the same absolute path to one
+ * developer's install as their fallback, which is a machine's configuration
+ * sitting in the repository: right nowhere else, and stale the moment that
+ * machine upgrades. `BLENDER` in `web/.env` names it; failing that this looks
+ * where the operating system says to look — `PATH`, then the install roots
+ * Windows advertises through `PROGRAMFILES` — so a default install is found
+ * without anything being hardcoded. `test:no-absolute-paths` keeps it that way.
+ *
+ * Returns an empty string when there is no Blender, which every caller reports
+ * as a skip.
+ */
+export function blenderExecutable(): string {
+    const named = process.env.BLENDER;
+    if (named) return existsSync(named) ? named : '';
+
+    const names = process.platform === 'win32' ? ['blender.exe'] : ['blender'];
+    for (const directory of (process.env.PATH || '').split(delimiter)) {
+        if (!directory) continue;
+        for (const name of names) {
+            const candidate = resolve(directory, name);
+            if (existsSync(candidate)) return candidate;
+        }
+    }
+
+    // Windows installs Blender per version under Program Files and puts none of
+    // it on PATH. Newest version wins, which is what a person would pick.
+    const roots = [process.env.PROGRAMFILES, process.env.ProgramW6432, process.env['PROGRAMFILES(X86)']];
+    const installs: string[] = [];
+    for (const root of roots) {
+        const vendor = root && resolve(root, 'Blender Foundation');
+        if (!vendor || !existsSync(vendor)) continue;
+        for (const entry of readdirSync(vendor)) {
+            const candidate = resolve(vendor, entry, 'blender.exe');
+            if (existsSync(candidate)) installs.push(candidate);
+        }
+    }
+    installs.sort((left, right) => right.localeCompare(left, 'en', { numeric: true }));
+    return installs[0] || '';
+}
+
 export function skipUnless(paths: string[], label: string): boolean {
     const missing = paths.filter((path) => !existsSync(path));
     if (missing.length === 0) return false;
@@ -60,3 +103,4 @@ export async function readBytes(path: string): Promise<Uint8Array> {
 export function verbose(...values: unknown[]): void {
     if (process.env.DRACO_TEST_VERBOSE === '1') console.log(...values);
 }
+

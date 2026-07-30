@@ -3,7 +3,8 @@
 How `draco-core` maps onto upstream C++ Draco. `draco-core` is the raw `.drc`
 **bitstream** layer only; file and scene formats live one level up in `draco-io`
 (OBJ / PLY / FBX) and `draco-gltf` (full glTF / GLB scenes). The C++ reference is
-the local checkout at `D:\Projects\Draco\src`.
+a local checkout of upstream Draco, wherever it is kept; the tools that compare
+against it take its path from the environment rather than assuming one.
 
 ## Status labels
 

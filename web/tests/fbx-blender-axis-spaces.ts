@@ -28,7 +28,6 @@
  * our code, but the oracle is not ours to ship.
  */
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
@@ -36,12 +35,12 @@ import { tmpdir } from 'node:os';
 import { buildSceneDocumentFromFbx } from '../src/fbx-scene-document.ts';
 import { buildFbxSceneFromDocument } from '../src/fbx-scene-document-writer.ts';
 import { buildSceneDocumentFromMeshes } from '../src/mesh-scene-document.ts';
-import { loadWasm, readBytes } from './fbx-test-utils.ts';
+import { blenderExecutable, loadWasm, readBytes } from './fbx-test-utils.ts';
 import type { FbxExportSpaceName } from '../src/fbx-space.ts';
 
-const blender = process.env.BLENDER || 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe';
-if (!existsSync(blender)) {
-    console.log(`SKIP FBX Blender axis spaces: missing ${blender}`);
+const blender = blenderExecutable();
+if (!blender) {
+    console.log('SKIP FBX Blender axis spaces: no Blender (set BLENDER in web/.env)');
     process.exit(0);
 }
 

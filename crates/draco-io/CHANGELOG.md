@@ -9,6 +9,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The `decode_drc` and `decode_rust_lamp` examples require the `.drc` path as an
+  argument and print a usage line without one. Each defaulted to a file in one
+  machine's C++ Draco output directory, which no other checkout has.
+
 ### Fixed
 
 - The FBX writer's default `GlobalSettings` are Y-up and metres, which is glTF's

@@ -34,11 +34,11 @@ fetched only when a KTX2 texture turns up, that settles it.
 Reproducing:
 
 ```sh
-wasm-pack build tools/basisu-probe --release --target web --out-dir /tmp/probe
-wasm-opt /tmp/probe/probe_bg.wasm -o /tmp/probe_opt.wasm -Oz --converge \
+wasm-pack build tools/basisu-probe --release --target web --out-dir target/probe
+wasm-opt target/probe/probe_bg.wasm -o target/probe_opt.wasm -Oz --converge \
   --low-memory-unused --enable-bulk-memory --enable-nontrapping-float-to-int \
   --enable-sign-ext --enable-mutable-globals
-gzip -9 -c /tmp/probe_opt.wasm | wc -c
+gzip -9 -c target/probe_opt.wasm | wc -c
 ```
 
 ## Is it useful as a second oracle?
