@@ -337,13 +337,14 @@ fn encoder_output_matches_cpp_with_attributes() {
 /// The decoders, on the same payload.
 ///
 /// Bytes are the encoder's business. This is the reader's: given one file, do
-/// the two implementations return the same mesh? Points are matched by
-/// position rather than by index, because the two decoders number points
-/// differently once edgebreaker is in play, and a renumbering is not a defect
-/// as long as each point keeps its own attributes.
+/// the two implementations return the same mesh?
 ///
-/// Asserted from speed 1 up. Speed 0 is reported: there the same point comes
-/// back with a different normal, which is a real divergence and still open.
+/// Compared point for point, by index. An earlier version paired points by
+/// position on the belief that the two decoders number them differently once
+/// edgebreaker is in play; they do not, and that belief came from reading Rust
+/// attributes by entry instead of through their point map. Position pairing is
+/// the weaker test -- it cannot see an attribute attached to the wrong point,
+/// which is exactly the defect this is here to catch.
 #[test]
 fn decoders_agree_on_the_same_payload() {
     if !draco_cpp_test_bridge::is_available() {
@@ -391,22 +392,40 @@ fn decoders_agree_on_the_same_payload() {
                 continue;
             };
 
-            let ours = pair_by_position(&rust_positions, &rust_normals);
-            let theirs = pair_by_position(&cpp_positions, &cpp_normals);
-            if ours.len() != theirs.len() {
+            if rust_positions.len() != cpp_positions.len()
+                || rust_normals.len() != cpp_normals.len()
+            {
                 mismatches.push(format!(
                     "{} speed {speed}: {} points vs {}",
                     label(sample),
-                    ours.len(),
-                    theirs.len()
+                    rust_positions.len() / 3,
+                    cpp_positions.len() / 3
                 ));
                 continue;
             }
 
-            let worst = ours
+            let worst_position = rust_positions
                 .iter()
-                .zip(&theirs)
-                .flat_map(|(a, b)| (0..3).map(move |c| (a.1[c] - b.1[c]).abs()))
+                .zip(&cpp_positions)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            if worst_position > 1e-6 {
+                mismatches.push(format!(
+                    "{} speed {speed}: point {} differs in position by up to {worst_position:.6}",
+                    label(sample),
+                    rust_positions
+                        .chunks_exact(3)
+                        .zip(cpp_positions.chunks_exact(3))
+                        .position(|(a, b)| (0..3).any(|c| (a[c] - b[c]).abs() > 1e-6))
+                        .unwrap_or(0)
+                ));
+                continue;
+            }
+
+            let worst = rust_normals
+                .iter()
+                .zip(&cpp_normals)
+                .map(|(a, b)| (a - b).abs())
                 .fold(0.0f32, f32::max);
             if worst > 1e-6 {
                 mismatches.push(format!(
@@ -462,18 +481,6 @@ fn read_rust(mesh: &Mesh, kind: GeometryAttributeType) -> Vec<f32> {
         }
     }
     values
-}
-
-/// Points as (position, normal), ordered by position so two decoders that
-/// number points differently still line up.
-fn pair_by_position(positions: &[f32], normals: &[f32]) -> Vec<([f32; 3], [f32; 3])> {
-    let mut pairs: Vec<([f32; 3], [f32; 3])> = positions
-        .chunks_exact(3)
-        .zip(normals.chunks_exact(3))
-        .map(|(p, n)| ([p[0], p[1], p[2]], [n[0], n[1], n[2]]))
-        .collect();
-    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-    pairs
 }
 
 /// The C++ decoder, on a Rust-encoded stream.
