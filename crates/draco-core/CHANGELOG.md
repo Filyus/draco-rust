@@ -20,6 +20,16 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- An attribute with interior seams -- a vertex carrying more than one texture
+  coordinate -- was encoded with its values in the wrong order, so a decoder
+  returned them attached to the wrong points. The attribute's own corner table
+  is now walked depth first, seeded by the edgebreaker corner order, as Draco
+  does; it was previously enumerated by vertex index, which is the identity
+  permutation rather than an encoding order. Affected encoder speeds 0 to 5,
+  where each attribute keeps its own connectivity; from speed 6 up the mesh is
+  split on seams into a single connectivity and was already correct. Reachable
+  from this crate's API, not from the glTF, OBJ or FBX readers, which hand the
+  encoder one attribute value per point.
 - Texture coordinates were predicted from the original float positions while the
   decoder predicts from the quantized ones, so the two disagreed and the decoded
   UVs were wrong at speeds 0 to 3. The portable position attribute now also
