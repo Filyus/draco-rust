@@ -139,6 +139,66 @@ fn edgebreaker_emits_attribute_seam_data_when_position_dedup_splits_uvs() {
 
     assert!(decoded.num_faces() > 0);
     assert!(decoded.named_attribute_id(GeometryAttributeType::TexCoord) >= 0);
+
+    // And the values, not only the shape. A seamed attribute whose encode order
+    // does not match the decode traversal comes back with every UV attached to
+    // the wrong point, while the counts and the attribute list stay perfectly
+    // convincing.
+    assert_pairings_are_from_the_input(&decoded);
+}
+
+/// The input this mesh was built from, as (position, uv) pairs per point.
+const SEAM_PAIRINGS: [([f32; 3], [f32; 2]); 6] = [
+    ([0.0, 0.0, 0.0], [0.0, 0.0]),
+    ([1.0, 0.0, 0.0], [1.0, 0.0]),
+    ([0.0, 1.0, 0.0], [0.0, 1.0]),
+    ([1.0, 0.0, 0.0], [0.2, 0.0]),
+    ([1.0, 1.0, 0.0], [1.0, 1.0]),
+    ([0.0, 1.0, 0.0], [0.2, 1.0]),
+];
+
+/// Every decoded point must carry one of the pairings the mesh was built from.
+///
+/// Checking positions and UVs separately would pass on a mis-ordered stream:
+/// both sets survive intact, only the pairing between them is destroyed.
+fn assert_pairings_are_from_the_input(decoded: &Mesh) {
+    let read = |kind: GeometryAttributeType, components: usize| -> Vec<f32> {
+        let id = decoded.named_attribute_id(kind);
+        let attribute = decoded.attribute(id);
+        let stride = attribute.byte_stride() as usize;
+        let mut values = Vec::new();
+        for point in 0..decoded.num_points() {
+            let entry = attribute.mapped_index(PointIndex(point as u32));
+            let mut bytes = vec![0u8; stride];
+            attribute
+                .buffer()
+                .read(entry.0 as usize * stride, &mut bytes);
+            for c in 0..components {
+                values.push(f32::from_le_bytes(
+                    bytes[c * 4..c * 4 + 4].try_into().unwrap(),
+                ));
+            }
+        }
+        values
+    };
+
+    let positions = read(GeometryAttributeType::Position, 3);
+    let uvs = read(GeometryAttributeType::TexCoord, 2);
+
+    for (point, (p, u)) in positions
+        .chunks_exact(3)
+        .zip(uvs.chunks_exact(2))
+        .enumerate()
+    {
+        let known = SEAM_PAIRINGS.iter().any(|(want_p, want_u)| {
+            (0..3).all(|c| (want_p[c] - p[c]).abs() < 0.01)
+                && (0..2).all(|c| (want_u[c] - u[c]).abs() < 0.01)
+        });
+        assert!(
+            known,
+            "point {point} came back as position {p:?} with uv {u:?},              which is not one of the pairings the mesh was built from"
+        );
+    }
 }
 
 #[test]

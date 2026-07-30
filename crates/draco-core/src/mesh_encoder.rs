@@ -89,6 +89,9 @@ pub struct MeshEncoder {
     /// Attributes in their portable (quantized) form, for the current group.
     /// Prediction schemes read their parent attribute from here.
     portable_attributes: Vec<(i32, PointAttribute)>,
+    /// Kept past `encode_edgebreaker_connectivity` for its corner order, which
+    /// an attribute with interior seams needs to walk its own corner table.
+    edgebreaker_encoder: Option<MeshEdgebreakerEncoder>,
     method: i32,
     /// Maps point indices to vertex indices in the corner table.
     /// Used when position-based deduplication is enabled.
@@ -208,6 +211,7 @@ impl MeshEncoder {
             active_vertex_to_data_map: None,
             attribute_traversal: None,
             portable_attributes: Vec::new(),
+            edgebreaker_encoder: None,
             method: 0,
             point_to_vertex_map: None,
             use_single_connectivity: false,
@@ -254,6 +258,7 @@ impl MeshEncoder {
         self.options = options.clone();
         self.encoded_mesh_info = None;
         self.portable_attributes.clear();
+        self.edgebreaker_encoder = None;
 
         if self.mesh.is_none() {
             return Err(DracoError::DracoError("Mesh not set".to_string()));
@@ -517,6 +522,11 @@ impl MeshEncoder {
         // Draco stores corner mapping in attribute (data) order.
         self.data_to_corner_map = Some(data_to_corner_map);
         self.vertex_to_data_map = Some(vertex_to_data_map);
+
+        // Held for the corner order it carries: an attribute with interior
+        // seams walks its own corner table seeded from that order, and this is
+        // the last point at which it exists.
+        self.edgebreaker_encoder = Some(encoder);
 
         Ok(())
     }
@@ -1140,26 +1150,23 @@ impl MeshEncoder {
             ));
         }
 
-        let mut point_ids = Vec::with_capacity(attr_ct.vertex_corners.len());
-        let mut data_to_corner_map = Vec::with_capacity(attr_ct.vertex_corners.len());
-        let mut vertex_to_data_map = vec![-1i32; attr_ct.num_vertices()];
-        for (data_id, &corner) in attr_ct.vertex_corners.iter().enumerate() {
-            if corner == crate::geometry_indices::INVALID_CORNER_INDEX {
-                point_ids.push(PointIndex(0));
-                data_to_corner_map.push(crate::geometry_indices::INVALID_CORNER_INDEX.0);
-                continue;
-            }
-            let face = mesh.face(FaceIndex(corner.0 / 3));
-            let point_id = face[(corner.0 % 3) as usize];
-            point_ids.push(point_id);
-            data_to_corner_map.push(corner.0);
-            let vertex = attr_ct.vertex(corner);
-            if vertex != crate::geometry_indices::INVALID_VERTEX_INDEX
-                && (vertex.0 as usize) < vertex_to_data_map.len()
-            {
-                vertex_to_data_map[vertex.0 as usize] = data_id as i32;
-            }
-        }
+        // Walk the attribute's own table depth first, seeded by the edgebreaker
+        // corner order, as upstream does with
+        // `DepthFirstTraverser<MeshAttributeCornerTable>` and
+        // `SetCornerOrder(processed_connectivity_corners_)`.
+        //
+        // Enumerating `vertex_corners` instead, as this used to, yields the
+        // identity permutation of attribute-vertex indices -- `vertex_corners[v]`
+        // has vertex `v` by construction -- which is not an encoding order at
+        // all. The decoder walks the table it rebuilds from the seam bits, so
+        // the values came back attached to the wrong points.
+        let Some(encoder) = self.edgebreaker_encoder.as_ref() else {
+            return Err(DracoError::DracoError(
+                "Attribute seams need the edgebreaker corner order".to_string(),
+            ));
+        };
+        let (point_ids, data_to_corner_map, vertex_to_data_map) =
+            encoder.generate_depth_first_traversal(mesh, &attr_ct);
 
         self.active_corner_table = Some(attr_ct);
         self.active_data_to_corner_map = Some(data_to_corner_map);

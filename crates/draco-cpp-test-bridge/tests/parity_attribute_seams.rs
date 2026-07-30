@@ -17,11 +17,9 @@ use draco_core::geometry_indices::{AttributeValueIndex, PointIndex};
 use draco_core::mesh::Mesh;
 use draco_core::mesh_encoder::MeshEncoder;
 
-/// From speed 6 up, both encoders set `split_mesh_on_seams` and cut the mesh
-/// into a single connectivity, and there the bytes match. Below it each
-/// attribute keeps its own connectivity -- the `MeshAttributeCornerTable` path
-/// -- and the two still diverge. Lower this as that path is brought into line.
-const ASSERTED_FROM_SPEED: i32 = 6;
+/// Every speed is asserted. Kept as a named constant so that narrowing the
+/// guarantee again is a visible edit rather than a quiet one.
+const ASSERTED_FROM_SPEED: i32 = 0;
 
 const POSITION_BITS: i32 = 14;
 const UV_BITS: i32 = 12;
@@ -261,4 +259,77 @@ fn encoder_output_matches_cpp_across_seams() {
         "encoder output differs from C++ Draco on meshes with attribute seams:\n{}",
         mismatches.join("\n")
     );
+}
+
+/// The C++ decoder, on a Rust-encoded seamed stream.
+///
+/// Byte parity implies this, but it is the assertion that says what actually
+/// went wrong when the traversal was missing: values came back attached to the
+/// wrong points, which a byte comparison reports only as a size difference.
+#[test]
+fn cpp_decoder_reads_rust_seamed_uvs() {
+    if !draco_cpp_test_bridge::is_available() {
+        println!("SKIP seam interop: no C++ bridge");
+        return;
+    }
+
+    let samples = vec![two_triangle_seam(), split_strip(12), split_strip(40)];
+    let mut mismatches = Vec::new();
+
+    for sample in &samples {
+        for speed in 0..=10 {
+            let payload = encode_rust(sample, speed);
+            let (Some(positions), Some(uvs)) = (
+                draco_cpp_test_bridge::decode_cpp_attribute_values(
+                    &payload,
+                    draco_cpp_test_bridge::cpp_attribute::POSITION,
+                ),
+                draco_cpp_test_bridge::decode_cpp_attribute_values(
+                    &payload,
+                    draco_cpp_test_bridge::cpp_attribute::TEX_COORD,
+                ),
+            ) else {
+                mismatches.push(format!(
+                    "{} speed {speed}: C++ refused the Rust stream",
+                    sample.name
+                ));
+                continue;
+            };
+
+            // Every decoded point must reproduce one of the input's
+            // (position, uv) pairings. A wrong traversal keeps both sets intact
+            // and only mispairs them, so checking either alone sees nothing.
+            let wrong = positions
+                .chunks_exact(3)
+                .zip(uvs.chunks_exact(2))
+                .filter(|(p, u)| !is_input_pairing(sample, p, u))
+                .count();
+            if wrong > 0 {
+                mismatches.push(format!(
+                    "{} speed {speed}: {wrong} of {} points carry a pairing not in the input",
+                    sample.name,
+                    positions.len() / 3
+                ));
+            }
+        }
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "the C++ decoder does not read back the pairings the Rust encoder was given:\n{}",
+        mismatches.join("\n")
+    );
+}
+
+/// Whether a decoded (position, uv) pair is one the sample was built from.
+/// Positions are quantized to 14 bits and UVs to 12 over a unit range, so the
+/// tolerance is far above the quantization step and far below the gap between
+/// two distinct input values.
+fn is_input_pairing(sample: &SeamSample, position: &[f32], uv: &[f32]) -> bool {
+    (0..sample.position_map.len()).any(|point| {
+        let v = sample.position_map[point] as usize;
+        let w = sample.uv_map[point] as usize;
+        (0..3).all(|c| (sample.positions[v * 3 + c] - position[c]).abs() < 0.01)
+            && (0..2).all(|c| (sample.uvs[w * 2 + c] - uv[c]).abs() < 0.01)
+    })
 }
