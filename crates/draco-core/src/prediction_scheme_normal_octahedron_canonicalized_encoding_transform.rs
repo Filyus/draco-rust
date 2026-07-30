@@ -27,6 +27,13 @@ impl PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform {
         }
     }
 
+    /// Quantization bits behind the transform's max value, which the
+    /// geometric-normal encoder needs to set up its octahedron toolbox --
+    /// upstream reads it as `transform().quantization_bits()`.
+    pub fn quantization_bits(&self) -> i32 {
+        self.base.base().quantization_bits()
+    }
+
     /// Selects the canonicalized (id 3) vs legacy non-canonicalized (id 2)
     /// octahedron transform. Defaults to canonicalized.
     pub fn set_canonicalized(&mut self, canonicalized: bool) {

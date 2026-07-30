@@ -25,11 +25,10 @@ use crate::prediction_scheme::{
 };
 use crate::prediction_scheme_constrained_multi_parallelogram::MeshPredictionSchemeConstrainedMultiParallelogramEncoder;
 use crate::prediction_scheme_delta::PredictionSchemeDeltaEncoder;
-use crate::prediction_scheme_geometric_normal::{
-    MeshPredictionSchemeGeometricNormalEncoder, PredictionSchemeGeometricNormalEncodingTransform,
-};
+use crate::prediction_scheme_geometric_normal::MeshPredictionSchemeGeometricNormalEncoder;
 #[cfg(feature = "legacy_bitstream_encode")]
 use crate::prediction_scheme_multi_parallelogram::MeshPredictionSchemeMultiParallelogramEncoder;
+use crate::prediction_scheme_normal_octahedron_canonicalized_encoding_transform::PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform;
 use crate::prediction_scheme_parallelogram::MeshPredictionSchemeParallelogramEncoder;
 use crate::prediction_scheme_selection::select_prediction_method;
 #[cfg(feature = "legacy_bitstream_encode")]
@@ -835,7 +834,19 @@ impl SequentialIntegerAttributeEncoder {
                             let mut mesh_data = MeshPredictionSchemeData::new();
                             mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
 
-                            let transform = PredictionSchemeGeometricNormalEncodingTransform::new();
+                            // Same canonicalized octahedron transform the delta
+                            // path uses; upstream templates the geometric-normal
+                            // encoder on it rather than defining one of its own.
+                            let quantization_bits =
+                                options.get_attribute_int(att_id, "quantization_bits", -1);
+                            if !(2..=30).contains(&quantization_bits) {
+                                return false;
+                            }
+                            let max_value = ((1u64 << (quantization_bits as u32)) - 1) as i32;
+                            let transform =
+                                PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform::new(
+                                    max_value,
+                                );
                             let mut predictor =
                                 MeshPredictionSchemeGeometricNormalEncoder::new(transform);
                             selected_transform_type = predictor.get_transform_type();

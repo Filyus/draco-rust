@@ -32,6 +32,8 @@ use crate::encoder_buffer::EncoderBuffer;
 #[cfg(feature = "encoder")]
 use crate::prediction_scheme::{PredictionSchemeEncoder, PredictionSchemeEncodingTransform};
 #[cfg(feature = "encoder")]
+use crate::prediction_scheme_normal_octahedron_canonicalized_encoding_transform::PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform;
+#[cfg(feature = "encoder")]
 use crate::rans_bit_encoder::RAnsBitEncoder;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -531,7 +533,11 @@ impl PredictionSchemeEncodingTransform<i32, i32>
 
 #[cfg(feature = "encoder")]
 pub struct MeshPredictionSchemeGeometricNormalEncoder<'a> {
-    transform: PredictionSchemeGeometricNormalEncodingTransform,
+    transform: PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform,
+    /// Held apart from the transform, as the C++ encoder holds
+    /// `octahedron_tool_box_`: the transform canonicalises the correction, the
+    /// toolbox turns predicted integer vectors into octahedral coordinates.
+    octahedron_tool_box: OctahedronToolBox,
     mesh_data: Option<MeshPredictionSchemeData<'a>>,
     pos_attribute: Option<&'a PointAttribute>,
     prediction_mode: NormalPredictionMode,
@@ -540,9 +546,10 @@ pub struct MeshPredictionSchemeGeometricNormalEncoder<'a> {
 
 #[cfg(feature = "encoder")]
 impl<'a> MeshPredictionSchemeGeometricNormalEncoder<'a> {
-    pub fn new(transform: PredictionSchemeGeometricNormalEncodingTransform) -> Self {
+    pub fn new(transform: PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform) -> Self {
         Self {
             transform,
+            octahedron_tool_box: OctahedronToolBox::new(),
             mesh_data: None,
             pos_attribute: None,
             prediction_mode: NormalPredictionMode::TriangleArea,
@@ -721,6 +728,16 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
             return false;
         }
 
+        // SetQuantizationBits(transform().quantization_bits()) -- without this
+        // the toolbox stays at its default and center_value is 0, which
+        // collapses every prediction to the origin.
+        if !self
+            .octahedron_tool_box
+            .set_quantization_bits(self.transform.quantization_bits())
+        {
+            return false;
+        }
+
         self.flip_normal_bit_encoder.start_encoding();
 
         let mesh_data = self.mesh_data.as_ref().unwrap();
@@ -737,13 +754,11 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
 
             self.compute_predicted_value(corner_id, &mut pred_normal_3d, map);
 
-            self.transform
-                .octahedron_tool_box
+            self.octahedron_tool_box
                 .canonicalize_integer_vector(&mut pred_normal_3d);
 
             // Compute octahedral coordinates for both possible directions
             let (s_pos, t_pos) = self
-                .transform
                 .octahedron_tool_box
                 .integer_vector_to_quantized_octahedral_coords(&pred_normal_3d);
             pos_pred_normal_oct[0] = s_pos;
@@ -751,7 +766,6 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
 
             let neg_normal_3d = [-pred_normal_3d[0], -pred_normal_3d[1], -pred_normal_3d[2]];
             let (s_neg, t_neg) = self
-                .transform
                 .octahedron_tool_box
                 .integer_vector_to_quantized_octahedral_coords(&neg_normal_3d);
             neg_pred_normal_oct[0] = s_neg;
@@ -765,46 +779,22 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
             self.transform
                 .compute_correction(in_val, &neg_pred_normal_oct, &mut neg_correction);
 
-            pos_correction[0] = self
-                .transform
-                .octahedron_tool_box
-                .mod_max_positive(pos_correction[0]);
-            pos_correction[1] = self
-                .transform
-                .octahedron_tool_box
-                .mod_max_positive(pos_correction[1]);
-            neg_correction[0] = self
-                .transform
-                .octahedron_tool_box
-                .mod_max_positive(neg_correction[0]);
-            neg_correction[1] = self
-                .transform
-                .octahedron_tool_box
-                .mod_max_positive(neg_correction[1]);
+            pos_correction[0] = self.octahedron_tool_box.mod_max(pos_correction[0]);
+            pos_correction[1] = self.octahedron_tool_box.mod_max(pos_correction[1]);
+            neg_correction[0] = self.octahedron_tool_box.mod_max(neg_correction[0]);
+            neg_correction[1] = self.octahedron_tool_box.mod_max(neg_correction[1]);
 
             let pos_abs_sum = pos_correction[0].abs() + pos_correction[1].abs();
             let neg_abs_sum = neg_correction[0].abs() + neg_correction[1].abs();
 
             if pos_abs_sum < neg_abs_sum {
                 self.flip_normal_bit_encoder.encode_bit(false);
-                out_corr[offset] = self
-                    .transform
-                    .octahedron_tool_box
-                    .make_positive(pos_correction[0]);
-                out_corr[offset + 1] = self
-                    .transform
-                    .octahedron_tool_box
-                    .make_positive(pos_correction[1]);
+                out_corr[offset] = self.octahedron_tool_box.make_positive(pos_correction[0]);
+                out_corr[offset + 1] = self.octahedron_tool_box.make_positive(pos_correction[1]);
             } else {
                 self.flip_normal_bit_encoder.encode_bit(true);
-                out_corr[offset] = self
-                    .transform
-                    .octahedron_tool_box
-                    .make_positive(neg_correction[0]);
-                out_corr[offset + 1] = self
-                    .transform
-                    .octahedron_tool_box
-                    .make_positive(neg_correction[1]);
+                out_corr[offset] = self.octahedron_tool_box.make_positive(neg_correction[0]);
+                out_corr[offset + 1] = self.octahedron_tool_box.make_positive(neg_correction[1]);
             }
         }
         true
