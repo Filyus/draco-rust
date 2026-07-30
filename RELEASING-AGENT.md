@@ -92,19 +92,60 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
    - Drop internal-only groups, and commits touching only test infra, the local
      C++ bridge, debug output, CI wiring, or benchmarks.
 
-4. **Version-facing docs.** If the minor changed, update install snippets in the
-   root `README.md` and `crates/<crate>/README.md`. Touch no other docs in the release
-   commit.
+4. **Version-facing docs.** The changelog is the one the pipeline checks, so it
+   is the one that never gets forgotten. These are the ones that do — nothing
+   fails, and it shows on the crates.io page:
+   - install snippets in the root `README.md` and `crates/<crate>/README.md`,
+     when the minor changed;
+   - `keywords` and `categories` in `crates/<crate>/Cargo.toml` — capped at five
+     keywords, so a new format may mean choosing;
+   - the format/feature tables and support matrices in
+     `crates/<crate>/README.md`, and the format list in the root `README.md`;
+   - `crates/<crate>/src/lib.rs` module docs, where they enumerate what exists.
+
+   Work from the release's own contents: list every format, feature or public
+   type it adds or renames, then grep the docs for each name. v0.3.1 shipped with
+   `stl` missing from `keywords` and from the format table, because the changelog
+   was written and the enumerations were not re-read.
+
+   Touch no other docs in the release commit.
 
 5. **Run the checks that can fail on the code**, before there is a release
    commit to protect — a preflight failure after the push has to be repaired by
-   rewriting `main`:
+   rewriting `main`.
+
+   The release-specific ones:
    ```sh
    rustup update nightly   # which rustdoc lints fire changes with the toolchain
    RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc \
      --manifest-path crates/<crate>/Cargo.toml --no-deps --all-features
    cargo semver-checks --manifest-path crates/<crate>/Cargo.toml
+   cargo metadata --manifest-path crates/Cargo.toml >/dev/null  # the new version still resolves
+   cargo publish --dry-run --manifest-path crates/<crate>/Cargo.toml
    ```
+
+   **And the ones `Rust CI` runs, which are not release-specific and are what
+   actually fails.** Preparing v0.3.1 pushed a red `main` twice: first a
+   `web/` crate that did not compile under `cargo test` and two clippy lints in
+   modules added that cycle, then a browser fixture that was a gitignored
+   decoding artifact. Neither is anything the three commands above look at.
+   ```sh
+   cargo fmt --manifest-path crates/Cargo.toml --all -- --check
+   cargo fmt --manifest-path web/Cargo.toml --all -- --check
+   cargo clippy --manifest-path crates/Cargo.toml --workspace --all-targets --all-features -- -D warnings
+   cargo clippy --manifest-path web/Cargo.toml --workspace --all-targets -- -D warnings
+   cargo test --manifest-path crates/Cargo.toml -p <crate> --features test
+   cargo test --manifest-path web/Cargo.toml --workspace
+   npm run --prefix web test:browser        # needs ./build.sh --app over it first
+   ```
+   Plus the `--no-default-features` feature combinations for `<crate>` from
+   `.github/workflows/ci.yml` — a release that adds a feature is exactly when
+   feature gating slips. Read that file rather than this list: the workflow is
+   the gate, and this list is a copy that can fall behind it.
+
+   A test may only read fixtures the repository carries. `git ls-files
+   --error-unmatch <path>` on each; `testdata/` holds ignored decoder output
+   (`*.drc.ply`, `*.drc.obj`) that exists only on the machine that produced it.
 
 6. **Show the diff and pause:**
    ```sh
@@ -162,9 +203,26 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
 
     After it publishes, the release is still not done: `publish.yml` asks
     `Release: WASM assets` for a run, because the tag it pushed raises no events
-    of its own. Watch that run and check the module zips are attached to the
-    GitHub Release. Skipping this is how draco-io v0.3.0 and draco-gltf v0.2.0
-    came to be published with no assets at all.
+    of its own. Skipping this is how draco-io v0.3.0 and draco-gltf v0.2.0 came
+    to be published with no assets at all.
+
+    So check all four things exist, from outside the repository:
+    ```sh
+    curl -s https://crates.io/api/v1/crates/<crate> | grep -o '"max_version":"[^"]*"'
+    git ls-remote --tags origin | grep "<crate>-v"
+    gh release view <crate>-vX.Y.Z --json assets --jq '.assets[].name'
+    ```
+    The expected zips are the modules that wrap `<crate>`: obj, ply, stl and fbx
+    for `draco-io`, gltf for `draco-gltf`, drc for `draco-core`. `ktx2` is
+    shipped with nothing — `draco-texture` is `publish = false` — and the
+    packaging step prints that rather than leaving it silent. A module that
+    belongs to no crate fails that step on purpose, so a new one cannot be built
+    and forgotten.
+
+    Watch the run by **id**, and prove the watcher prints before trusting its
+    silence: two attempts at this release reported nothing for half an hour
+    each — one queried `gh run list --commit` with an abbreviated SHA, which
+    returns nothing, and one had a `SyntaxError` in its own parsing.
 
 ## Changelog taxonomy
 
