@@ -2339,6 +2339,53 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
 });
 
 /**
+ * An FBX round trip comes back the size it went out.
+ *
+ * `UnitScaleFactor` is the number of centimetres in one FBX unit, so a file
+ * saying 1 is in centimetres and one saying 100 is in metres. The importer
+ * applied a flat 0.01 — right for the first and wrong for the second, and this
+ * repository's own writer emits 100. Every scene written here and read back
+ * came in a hundred times too small, and the GLB it turned into carried that.
+ *
+ * Mixamo, Blender's exporter and the Stanford bunny all say 1, so honouring the
+ * field leaves them exactly where the constant had them.
+ */
+test('an FBX round trip preserves the scene scale', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles([
+    path.join(repoRoot, 'testdata', 'two_objects_inverse_materials.gltf'),
+    path.join(repoRoot, 'testdata', 'two_objects_inverse_materials.bin'),
+  ]);
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  const exportAs = async (format: string) => {
+    await page.locator(`[data-choice-for="export-format"] [data-value="${format}"]`).click();
+    const download = page.waitForEvent('download');
+    await page.locator('#export-btn').click();
+    return readFile((await (await download).path())!);
+  };
+  await page.locator('#file-input').setInputFiles({
+    name: 'scale.fbx',
+    mimeType: 'application/octet-stream',
+    buffer: await exportAs('fbx'),
+  });
+  await expect(page.locator('#console')).toContainText('Successfully parsed scale.fbx');
+  const glb = await exportAs('glb');
+  const manifest = JSON.parse(glb.subarray(20, 20 + glb.readUInt32LE(12)).toString('utf8'));
+
+  // The source cube spans -1..1 on every axis. Compared as an extent rather
+  // than as coordinates: the axis convention is a separate question, and the
+  // size is not.
+  const bounds = manifest.accessors.filter((accessor: any) => accessor.min?.length === 3);
+  expect(bounds.length).toBeGreaterThan(0);
+  for (const accessor of bounds) {
+    const extents = accessor.max.map((value: number, axis: number) => value - accessor.min[axis]);
+    expect(Math.max(...extents)).toBeCloseTo(2, 2);
+  }
+});
+
+/**
  * The same for a source whose scene came from FBX.
  *
  * It had the same defect and a different cause: the FBX reader's flat meshes

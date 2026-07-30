@@ -100,6 +100,27 @@ scene that keeps its local coordinates collapses onto the origin.
 the glTF outputs with Khronos's validator. The gaps it was written for were not
 visible one conversion at a time.
 
+## FBX units
+
+`UnitScaleFactor` is the number of centimetres in one FBX unit, and FBX's base
+unit is the centimetre: a file saying 1 is in centimetres, one saying 100 is in
+metres. The importer reads the field rather than assuming, which it did not
+before -- it applied a flat 0.01, right for the first case and wrong for the
+second, and this workspace's own writer emits 100. So a scene written here and
+read back arrived a hundred times too small, and so did the GLB it became.
+
+The four real-world fixtures on hand -- Mixamo, Samba Dancing, `morph_test` and
+the Stanford bunny -- all state 1, which is why the constant went unnoticed and
+why honouring the field moves none of them.
+
+The axis convention is a separate matter and still unhandled on import. The
+writer declares its own — `UpAxis = 2`, `FrontAxis = 1` with sign −1,
+`CoordAxis = 0`, which is exactly the glTF Y-up to FBX Z-up change it applies to
+the geometry — and the same four fixtures declare Y-up with no change needed,
+which is why an importer that ignores the fields looks correct on them. Reading
+them would mean re-basing positions, normals, node matrices, skin binds and
+animated rotations, so it is not folded in here.
+
 Draco puts no limit on how many attributes of a type a payload holds -- a second
 texture-coordinate set is ordinary, and glTF's own extension keeps joints and
 weights as generics -- while the flat mesh the shell works in has one slot per
