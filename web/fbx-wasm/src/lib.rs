@@ -2183,7 +2183,9 @@ mod writer_tests {
             morph_targets: Vec::new(),
         };
 
-        let result = create_fbx_internal(&[mesh]);
+        // No `globalSettings`: the writer's own defaults, which is what a caller
+        // that states no space gets.
+        let result = create_fbx_internal(&[mesh], None);
         assert!(result.success);
         assert!(result.binary_data.is_some());
 

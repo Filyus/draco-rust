@@ -636,10 +636,10 @@ fn mesh_input_to_core_mesh(
     input: &MeshInput,
     options: &ExportOptions,
 ) -> Result<(Mesh, Vec<(i32, i32)>), String> {
-    if input.positions.len() % 3 != 0 {
+    if !input.positions.len().is_multiple_of(3) {
         return Err("positions length must be divisible by 3".to_string());
     }
-    if input.indices.len() % 3 != 0 {
+    if !input.indices.len().is_multiple_of(3) {
         return Err("indices length must be divisible by 3".to_string());
     }
     let vertex_count = input.positions.len() / 3;
@@ -840,7 +840,7 @@ mod tests {
                 0.0, 1.0, 0.0,
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
-            normals: Some(vec![0.0, 0.0, 1.0].repeat(4)),
+            normals: Some([0.0, 0.0, 1.0].repeat(4)),
             uvs: Some(vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]),
             colors: None,
             extras: None,

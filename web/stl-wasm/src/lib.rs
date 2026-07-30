@@ -296,10 +296,10 @@ fn create_stl_internal(input: &MeshInput, options: &ExportOptions) -> ExportResu
 
 #[cfg(feature = "write")]
 fn mesh_input_to_core_mesh(input: &MeshInput) -> Result<Mesh, String> {
-    if input.positions.len() % 3 != 0 {
+    if !input.positions.len().is_multiple_of(3) {
         return Err("positions length must be divisible by 3".to_string());
     }
-    if input.indices.len() % 3 != 0 {
+    if !input.indices.len().is_multiple_of(3) {
         return Err("indices length must be divisible by 3".to_string());
     }
 
