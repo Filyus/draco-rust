@@ -88,6 +88,11 @@ jobs:
           # may carry. Every tag used to ship every module: a draco-io release
           # attached a draco-gltf-wasm zip stamped with the draco-io version,
           # naming a draco-gltf release that did not exist.
+          # An empty owner means "ships with nothing", which is a decision rather
+          # than an omission -- ktx2-wasm wraps draco-texture, and that crate is
+          # `publish = false`, so no tag or crates.io version exists for an asset
+          # to carry. Recorded here so the check below can tell it apart from a
+          # module nobody placed.
           declare -A owner=(
             [obj]="draco-io"
             [ply]="draco-io"
@@ -95,23 +100,31 @@ jobs:
             [fbx]="draco-io"
             [gltf]="draco-gltf"
             [drc]="draco-core"
+            [ktx2]=""
           )
 
-          # A module that is built and belongs to nobody is a module someone
+          # A module that is built and appears nowhere above is a module someone
           # forgot to place -- which is how stl and drc came to be built on every
           # release and shipped on none. Fail here rather than ship a short set.
           for built in web/www/pkg/*_bg.wasm; do
             name="$(basename "$built" _bg.wasm)"
             if [ -z "${owner[$name]+set}" ]; then
-              echo "Module '$name' is built but assigned to no crate; add it to the owner map." >&2
+              echo "Module '$name' is built but assigned to no crate; add it to the owner map" >&2
+              echo "(an empty value means it deliberately ships with no release)." >&2
               exit 1
             fi
           done
 
           modules=()
+          skipped=()
           for name in "${!owner[@]}"; do
-            if [ "${owner[$name]}" = "$crate" ]; then modules+=("$name"); fi
+            case "${owner[$name]}" in
+              "$crate") modules+=("$name") ;;
+              "") skipped+=("$name") ;;
+            esac
           done
+          # Say what is not being shipped, so a short set is never silent.
+          [ "${#skipped[@]}" -gt 0 ] && echo "Not shipped with any release: ${skipped[*]}"
           if [ "${#modules[@]}" -eq 0 ]; then
             echo "No web modules belong to $crate; nothing to package." >&2
             exit 1
