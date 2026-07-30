@@ -282,6 +282,11 @@ fn encoder_output_matches_cpp_with_attributes() {
         grid(10, (false, false, true)),
         grid(12, (true, true, true)),
         fan(48),
+        // 1682 faces, past the num_faces < 1000 cutoff upstream calls a tiny
+        // mesh. Below speed 5 that switches the connectivity encoder from
+        // MESH_EDGEBREAKER_STANDARD to MESH_EDGEBREAKER_VALENCE, which none of
+        // the smaller samples reach.
+        grid(30, (true, false, false)),
     ];
 
     let mut compared = 0;
