@@ -8,7 +8,22 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [1.0.4](https://github.com/Filyus/draco-rust/compare/draco-core-v1.0.3...draco-core-v1.0.4) - 2026-07-20
+## [1.0.5](https://github.com/Filyus/draco-rust/compare/draco-core-v1.0.4...draco-core-v1.0.5) - 2026-07-30
+
+### Changed
+
+- `SUPPORT_MATRIX.md` records what happens to a glTF extension carried across a
+  Draco transform: extensions with no binary references are declared, the two
+  that own references remap them, and an unregistered one refuses rather than
+  being guessed at. `EXT_structural_metadata` / `EXT_mesh_features` says what is
+  actually preserved — property-table buffer views kept alive across compaction,
+  feature IDs riding on attributes the encoder returns unchanged — instead of
+  "known slots participate in safe remapping".
+- STL is named where the crate boundary is described: the module docs, the
+  workspace-crate list, and the matrix row for the formats `draco-io` owns. It
+  has been read and written there since `draco-io` 0.3.1.
+- The C++ reference is described as a local checkout located through the
+  environment, rather than by one machine's path.
 
 ### Fixed
 
