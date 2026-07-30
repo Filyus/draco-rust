@@ -9,6 +9,24 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- STL, read and written, behind the new `stl-reader` and `stl-writer` features.
+  Both join `all-readers` / `all-writers` and therefore `default`. `StlReader`
+  offers the same `open` / `from_bytes` / `read_from_bytes` / `read_mesh` shape as
+  the other readers; `StlWriter` implements `Writer` and `WriteToBytes` and takes
+  `with_format(StlFormat::Binary | StlFormat::Ascii)`, binary by default.
+  - Which container a file is in is decided by its length -- `84 + 50 · N` for the
+    declared triangle count -- rather than by whether it opens with `solid`. That
+    keyword is not a discriminator: binary writers put arbitrary text in the
+    80-byte header, and plenty of them start it with the word. The declared count
+    is checked against the bytes actually present, so a truncated file is an
+    error instead of a short mesh.
+  - The binary header this writer emits starts with `Draco`, so a file it wrote
+    can never be mistaken for ASCII by a reader that does look at the keyword.
+  - STL stores no indices and no shared vertices, so a mesh is written as
+    unshared corners with a facet normal derived from the winding.
+
 ### Changed
 
 - The `decode_drc` and `decode_rust_lamp` examples require the `.drc` path as an
@@ -17,6 +35,15 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- PLY faces are read from the element's index list rather than from whichever
+  list came first. A face element may carry several: `vertex_indices` alongside a
+  per-corner `texcoord`, which some exporters write and which the Draco corpus
+  itself contains. The reader took the first one it met, so those files decoded
+  with texture coordinates in place of indices -- vertex numbers far past the end
+  of the mesh, and a parse error rather than a wrong picture. `vertex_indices` is
+  now preferred by name, with the first list as the fallback for files that spell
+  it otherwise, and the remaining lists are skipped by their declared type in
+  both the ASCII and the binary path.
 - The FBX writer's default `GlobalSettings` are Y-up and metres, which is glTF's
   own orientation and what every FBX in the wild on hand declares. They were
   Z-up, with `UpAxisSign` and `FrontAxisSign` contradicting even that, so a file
