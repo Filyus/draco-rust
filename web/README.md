@@ -127,6 +127,16 @@ declaration together, so they cannot disagree. A re-export follows its source's
 declared space instead of the option, which is what makes it a round trip rather
 than a conversion.
 
+`test:fbx-export-space` round-trips both spaces, but through our own reader on
+both ends, so it proves the two halves agree and nothing about whether either
+agrees with the world. `test:fbx-blender-axis-spaces` breaks that circle: Blender
+authors the same triangle as Y-up, as Z-up, and again with a `UnitScaleFactor` of
+100 instead of 1, and has to read back the same world from what we write in
+either space. Ignoring the axes, ignoring the unit, or converting the wrong way
+each fail it. A declaration that is unconventional but self-consistent passes,
+and should — FBX permits it and Blender honours whatever the file says. It skips
+itself where Blender is not installed, which is why it is not in CI.
+
 ## FBX texture coordinates
 
 FBX puts V's origin at the opposite end of the image from glTF, so every
