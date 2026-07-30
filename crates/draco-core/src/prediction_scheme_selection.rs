@@ -23,7 +23,10 @@ pub fn select_prediction_method(
     options: &EncoderOptions,
     encoder: &dyn GeometryEncoder,
 ) -> PredictionSchemeMethod {
-    let speed = options.get_encoding_speed();
+    // The larger of the two speeds, as upstream's SelectPredictionMethod reads
+    // options.GetSpeed(). Asking for the encoding speed alone ignores a caller
+    // who wants fast decoding of a slowly encoded mesh.
+    let speed = options.get_speed();
 
     if speed >= 10 {
         return PredictionSchemeMethod::Difference;

@@ -41,11 +41,47 @@ use crate::prediction_scheme_wrap::PredictionSchemeWrapEncodingTransform;
 use crate::sequential_attribute_encoder::SequentialAttributeEncoder;
 use crate::symbol_encoding::{encode_symbols, SymbolEncodingOptions};
 
+/// Which transform family this encoder builds its prediction schemes with.
+///
+/// Upstream expresses the same choice as a virtual: the base
+/// `SequentialIntegerAttributeEncoder::CreateIntPredictionScheme` names
+/// `PredictionSchemeWrapEncodingTransform`, and `SequentialNormalAttributeEncoder`
+/// overrides it to name the canonicalized octahedron transform instead. That is
+/// the only axis that varies between the two, so it is the only thing this
+/// carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IntPredictionTransformFamily {
+    /// Every attribute but an octahedral normal.
+    #[default]
+    Wrap,
+    /// Octahedral normals, carrying the transform's `max_quantized_value` and
+    /// whether to emit the canonicalized transform (id 3) or the pre-0.10.0
+    /// non-canonicalized one (id 2).
+    NormalOctahedron {
+        max_quantized_value: i32,
+        canonicalized: bool,
+    },
+}
+
+impl IntPredictionTransformFamily {
+    fn build_octahedron(
+        max_quantized_value: i32,
+        canonicalized: bool,
+    ) -> PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform {
+        let mut transform = PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform::new(
+            max_quantized_value,
+        );
+        transform.set_canonicalized(canonicalized);
+        transform
+    }
+}
+
 pub struct SequentialIntegerAttributeEncoder {
     pub base: SequentialAttributeEncoder,
     prediction_scheme: Option<Box<dyn PredictionSchemeEncoder<'static, i32, i32>>>,
     /// Stores the quantization transform if one was applied, for later encoding
     quantization_transform: Option<AttributeQuantizationTransform>,
+    transform_family: IntPredictionTransformFamily,
 }
 
 impl Default for SequentialIntegerAttributeEncoder {
@@ -60,9 +96,25 @@ impl SequentialIntegerAttributeEncoder {
             base: SequentialAttributeEncoder::new(),
             prediction_scheme: None,
             quantization_transform: None,
+            transform_family: IntPredictionTransformFamily::Wrap,
         }
     }
 
+    /// Selects the transform family the prediction schemes are built with.
+    ///
+    /// Counterpart of overriding `CreateIntPredictionScheme`. Defaults to wrap,
+    /// so only the normal encoder needs to call this.
+    pub fn set_transform_family(&mut self, family: IntPredictionTransformFamily) {
+        self.transform_family = family;
+    }
+
+    /// Installs a ready-made prediction scheme, bypassing selection entirely.
+    ///
+    /// Nothing in the crate calls this any more -- the normal encoder used to,
+    /// and that is what kept normals off the geometric scheme. The `'static`
+    /// bound also means no mesh scheme can be passed here, since they all borrow
+    /// the corner table; those are built per method inside `encode_values`.
+    /// Retained for external callers until the next breaking release.
     pub fn set_prediction_scheme(
         &mut self,
         scheme: Box<dyn PredictionSchemeEncoder<'static, i32, i32>>,
@@ -216,7 +268,9 @@ impl SequentialIntegerAttributeEncoder {
         }
 
         // 2. Prediction Selection
-        let preferred_scheme = options.get_prediction_scheme();
+        // Per attribute, then global, then the automatic choice -- upstream's
+        // GetPredictionMethodFromOptions reads it off the attribute.
+        let preferred_scheme = options.get_attribute_prediction_scheme(att_id);
         let mut selected_method;
 
         if preferred_scheme != -1 {
@@ -238,6 +292,7 @@ impl SequentialIntegerAttributeEncoder {
         let mut corrections = vec![0i32; num_values];
         let mut selected_transform_type = PredictionSchemeTransformType::Wrap;
         let mut predictor_delta = None;
+        let mut predictor_delta_octahedron = None;
         let mut predictor_parallelogram = None;
         #[cfg(feature = "legacy_bitstream_encode")]
         let mut predictor_multi_parallelogram = None;
@@ -265,21 +320,48 @@ impl SequentialIntegerAttributeEncoder {
             }
         } else {
             match selected_method {
-                PredictionSchemeMethod::Difference => {
-                    let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                    let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                    selected_transform_type = predictor.get_transform_type();
-                    if !predictor.compute_correction_values(
-                        &values,
-                        &mut corrections,
-                        num_values,
-                        num_components,
-                        None,
-                    ) {
-                        return false;
+                // Delta over whichever transform family this encoder was given.
+                // The decoder makes the same split on the way back in, keyed on
+                // the transform byte -- see the Difference arm of
+                // `sequential_integer_attribute_decoder.rs`.
+                PredictionSchemeMethod::Difference => match self.transform_family {
+                    IntPredictionTransformFamily::NormalOctahedron {
+                        max_quantized_value,
+                        canonicalized,
+                    } => {
+                        let transform = IntPredictionTransformFamily::build_octahedron(
+                            max_quantized_value,
+                            canonicalized,
+                        );
+                        let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                        selected_transform_type = predictor.get_transform_type();
+                        if !predictor.compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        ) {
+                            return false;
+                        }
+                        predictor_delta_octahedron = Some(predictor);
                     }
-                    predictor_delta = Some(predictor);
-                }
+                    IntPredictionTransformFamily::Wrap => {
+                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                        let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                        selected_transform_type = predictor.get_transform_type();
+                        if !predictor.compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        ) {
+                            return false;
+                        }
+                        predictor_delta = Some(predictor);
+                    }
+                },
                 PredictionSchemeMethod::MeshPredictionParallelogram => {
                     if let Some(_mesh) = encoder.mesh() {
                         if let Some(corner_table) = encoder.corner_table() {
@@ -834,40 +916,95 @@ impl SequentialIntegerAttributeEncoder {
                             let mut mesh_data = MeshPredictionSchemeData::new();
                             mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
 
-                            // Same canonicalized octahedron transform the delta
-                            // path uses; upstream templates the geometric-normal
-                            // encoder on it rather than defining one of its own.
-                            let quantization_bits =
-                                options.get_attribute_int(att_id, "quantization_bits", -1);
-                            if !(2..=30).contains(&quantization_bits) {
-                                return false;
-                            }
-                            let max_value = ((1u64 << (quantization_bits as u32)) - 1) as i32;
-                            let transform =
-                                PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform::new(
-                                    max_value,
+                            // This scheme predicts in octahedral coordinates, so
+                            // it only means anything over the octahedron
+                            // transform -- upstream templates it on that and
+                            // reads the quantization bits back off it.
+                            if let IntPredictionTransformFamily::NormalOctahedron {
+                                max_quantized_value,
+                                canonicalized,
+                            } = self.transform_family
+                            {
+                                let transform = IntPredictionTransformFamily::build_octahedron(
+                                    max_quantized_value,
+                                    canonicalized,
                                 );
-                            let mut predictor =
-                                MeshPredictionSchemeGeometricNormalEncoder::new(transform);
-                            selected_transform_type = predictor.get_transform_type();
+                                let mut predictor =
+                                    MeshPredictionSchemeGeometricNormalEncoder::new(transform);
+                                selected_transform_type = predictor.get_transform_type();
 
-                            predictor.init(&mesh_data);
+                                predictor.init(&mesh_data);
 
-                            let entry_to_point_id_map: Vec<u32> =
-                                point_ids.iter().map(|p| p.0).collect();
+                                // The parent the predictor reads positions from,
+                                // in quantized space -- upstream binds it in
+                                // SetPredictionSchemeParentAttributes. Without it
+                                // `is_initialized` is false and the call below
+                                // refuses.
+                                let pos_att_id =
+                                    point_cloud.named_attribute_id(GeometryAttributeType::Position);
+                                if pos_att_id < 0 {
+                                    return false;
+                                }
+                                let Some(pos_att) = encoder.get_portable_attribute(pos_att_id)
+                                else {
+                                    debug_log!("No portable position for GeometricNormal");
+                                    return false;
+                                };
+                                if !predictor.set_parent_attribute(pos_att) {
+                                    debug_log!("Failed to set parent for GeometricNormal");
+                                    return false;
+                                }
 
-                            if !predictor.compute_correction_values(
-                                &values,
-                                &mut corrections,
-                                num_values,
-                                num_components,
-                                Some(crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(
-                                    &entry_to_point_id_map,
-                                )),
-                            ) {
-                                return false;
+                                let entry_to_point_id_map: Vec<u32> =
+                                    point_ids.iter().map(|p| p.0).collect();
+
+                                if !predictor.compute_correction_values(
+                                    &values,
+                                    &mut corrections,
+                                    num_values,
+                                    num_components,
+                                    Some(
+                                        crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(
+                                            &entry_to_point_id_map,
+                                        ),
+                                    ),
+                                ) {
+                                    return false;
+                                }
+                                predictor_geometric_normal = Some(predictor);
+                            } else {
+                                // Reached by a normal attribute whose values are
+                                // already integral, so nothing quantized it and
+                                // there are no octahedral coordinates to predict.
+                                //
+                                // Upstream reaches the same combination and
+                                // handles it badly: its encoder factory has no
+                                // per-transform specialization where the
+                                // decoder's does, so it builds this scheme over
+                                // the wrap transform and asks that for
+                                // quantization bits -- a stub returning -1 behind
+                                // DRACO_DCHECK(false), carrying upstream's own
+                                // TODO. Debug asserts; release predicts from an
+                                // uninitialized toolbox.
+                                //
+                                // Take instead the fallback the same factory uses
+                                // when a mesh scheme cannot be built, and encode a
+                                // delta.
+                                selected_method = PredictionSchemeMethod::Difference;
+                                let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                                let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                                selected_transform_type = predictor.get_transform_type();
+                                if !predictor.compute_correction_values(
+                                    &values,
+                                    &mut corrections,
+                                    num_values,
+                                    num_components,
+                                    None,
+                                ) {
+                                    return false;
+                                }
+                                predictor_delta = Some(predictor);
                             }
-                            predictor_geometric_normal = Some(predictor);
                         } else {
                             // Compatibility fallback: match C++ factory behavior and use
                             // Difference when a mesh-only prediction scheme cannot be created.
@@ -922,6 +1059,9 @@ impl SequentialIntegerAttributeEncoder {
             pred_data_opt = Some(pred_data);
         }
         if !try_encode_prediction_data(predictor_delta, &mut pred_data_opt) {
+            return false;
+        }
+        if !try_encode_prediction_data(predictor_delta_octahedron, &mut pred_data_opt) {
             return false;
         }
         if !try_encode_prediction_data(predictor_parallelogram, &mut pred_data_opt) {
@@ -1005,11 +1145,20 @@ impl SequentialIntegerAttributeEncoder {
 
         // 5. Convert corrections to symbols (ZigZag) if needed
         // For normal octahedron encoding, corrections are already positive, so skip ZigZag
-        let are_corrections_positive = if let Some(ref scheme) = self.prediction_scheme {
-            scheme.are_corrections_positive()
-        } else {
-            false
-        };
+        //
+        // Decided from the transform that is about to be written, which is what
+        // the decoder reads it back from. Asking the scheme would only answer for
+        // a scheme installed through `set_prediction_scheme`; every mesh
+        // predictor is a local here and would fall through to the default of
+        // false, zigzagging octahedral corrections the decoder will not undo.
+        let are_corrections_positive = matches!(
+            selected_transform_type,
+            PredictionSchemeTransformType::NormalOctahedron
+                | PredictionSchemeTransformType::NormalOctahedronCanonicalized
+        ) || self
+            .prediction_scheme
+            .as_ref()
+            .is_some_and(|scheme| scheme.are_corrections_positive());
 
         let symbols: Vec<u32> = if are_corrections_positive {
             // Corrections are already unsigned - just cast

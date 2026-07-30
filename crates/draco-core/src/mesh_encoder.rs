@@ -1174,12 +1174,15 @@ impl MeshEncoder {
         point_ids: &[PointIndex],
         out_buffer: &mut EncoderBuffer,
     ) -> Status {
-        // Pass one: bring every attribute into its portable form before any of
-        // them is encoded, mirroring C++
-        // SequentialAttributeEncodersController::TransformAttributesToPortableFormat.
-        // A prediction scheme that reads a parent attribute needs the parent's
-        // portable values, and with a single pass the parent would not exist yet
-        // for anything encoded before it.
+        // Three passes over the group, one per step of C++
+        // SequentialAttributeEncodersController: transform every attribute to its
+        // portable form, encode them all, then encode the data their transforms
+        // need. Each pass is marked below.
+        //
+        // Pass one, TransformAttributesToPortableFormat. It has to finish before
+        // any attribute is encoded: a prediction scheme that reads a parent needs
+        // the parent's portable values, and in a single pass the parent would not
+        // exist yet for anything encoded ahead of it.
         let mut quantization_transforms: Vec<Option<AttributeQuantizationTransform>> = Vec::new();
         {
             let mesh = self
@@ -1267,6 +1270,8 @@ impl MeshEncoder {
             }
         }
 
+        // Pass two, EncodePortableAttributes: the values themselves, in attribute
+        // order.
         let mesh = self
             .mesh
             .as_ref()
@@ -1372,6 +1377,11 @@ impl MeshEncoder {
             }
         }
 
+        // Pass three, EncodeDataNeededByPortableTransforms: the parameters a
+        // decoder needs to undo each transform -- quantization ranges, and the
+        // octahedron's bit count. Separate from pass two because upstream emits
+        // every attribute's values first and only then every attribute's
+        // transform data, so the two cannot be interleaved.
         for (local_i, &decoder_type) in decoder_types.iter().enumerate() {
             match decoder_type {
                 3 => {

@@ -710,7 +710,9 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
         &mut self,
         in_data: &[i32],
         out_corr: &mut [i32],
-        size: usize,
+        // Unused, as upstream leaves it: the loop below is bounded by the corner
+        // map, not by the scalar count.
+        _size: usize,
         num_components: usize,
         entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
     ) -> bool {
@@ -749,7 +751,11 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
         let mut pos_correction = [0i32; 2];
         let mut neg_correction = [0i32; 2];
 
-        for i in 0..size {
+        // Over the corner map, not over `size`: upstream loops to
+        // `data_to_corner_map()->size()`, and `size` counts scalar values, which
+        // for a 2-component octahedral attribute is twice the entry count.
+        let corner_map_size = data_to_corner_map.len();
+        for i in 0..corner_map_size {
             let corner_id = CornerIndex(data_to_corner_map[i]);
 
             self.compute_predicted_value(corner_id, &mut pred_normal_3d, map);

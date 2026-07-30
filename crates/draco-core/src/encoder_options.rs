@@ -73,6 +73,16 @@ impl EncoderOptions {
         self.get_global_int("prediction_scheme", -1)
     }
 
+    /// Returns the prediction scheme forced for one attribute, falling back to
+    /// the global setting and then to -1 for the encoder default.
+    ///
+    /// Upstream reads this per attribute (`GetPredictionMethodFromOptions`), and
+    /// `GetAttributeInt` itself falls back to the global option, so a value set
+    /// either way is honoured.
+    pub fn get_attribute_prediction_scheme(&self, att_id: i32) -> i32 {
+        self.get_attribute_int(att_id, "prediction_scheme", -1)
+    }
+
     /// Forces a prediction scheme by numeric Draco method id.
     pub fn set_prediction_scheme(&mut self, value: i32) {
         self.set_global_int("prediction_scheme", value);

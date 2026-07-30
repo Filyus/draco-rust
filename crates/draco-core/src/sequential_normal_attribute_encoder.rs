@@ -13,10 +13,9 @@ use crate::encoder_options::EncoderOptions;
 use crate::geometry_indices::PointIndex;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_encoder::GeometryEncoder;
-use crate::prediction_scheme_normal_octahedron_canonicalized_encoding_transform::PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform;
-use crate::sequential_integer_attribute_encoder::SequentialIntegerAttributeEncoder;
-
-use crate::prediction_scheme_delta::PredictionSchemeDeltaEncoder;
+use crate::sequential_integer_attribute_encoder::{
+    IntPredictionTransformFamily, SequentialIntegerAttributeEncoder,
+};
 
 pub struct SequentialNormalAttributeEncoder {
     base: SequentialIntegerAttributeEncoder,
@@ -64,12 +63,7 @@ impl SequentialNormalAttributeEncoder {
     }
 
     pub fn encode_data_needed_by_portable_transform(&self, out_buffer: &mut EncoderBuffer) -> bool {
-        // attribute_octahedron_transform_.EncodeParameters(out_buffer)
-        // Wait, AttributeOctahedronTransform doesn't have EncodeParameters in Rust?
-        // Let's check AttributeOctahedronTransform.
-        // It has generate_portable_attribute.
-        // But EncodeParameters is needed.
-        // In C++, AttributeOctahedronTransform::EncodeParameters writes quantization_bits.
+        // The one byte AttributeOctahedronTransform::EncodeParameters writes.
         out_buffer.encode(self.attribute_octahedron_transform.quantization_bits() as u8);
         true
     }
@@ -112,19 +106,23 @@ impl SequentialNormalAttributeEncoder {
         // quantization_bits can be 31; avoid signed shift overflow.
         let max_value: i32 = ((1u64 << (quantization_bits as u32)) - 1) as i32;
 
-        let mut transform =
-            PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform::new(max_value);
         let (major, minor) = options.get_version();
         let bitstream_version = crate::version::bitstream_version(major, minor);
-        if cfg!(feature = "legacy_bitstream_encode")
+        let canonicalized = !(cfg!(feature = "legacy_bitstream_encode")
             && bitstream_version != 0
-            && bitstream_version < 0x0102
-        {
-            transform.set_canonicalized(false);
-        }
+            && bitstream_version < 0x0102);
 
-        let prediction_scheme = Box::new(PredictionSchemeDeltaEncoder::new(transform));
-        self.base.set_prediction_scheme(prediction_scheme);
+        // Name the transform family and let the base select the method, exactly
+        // as SequentialNormalAttributeEncoder::CreateIntPredictionScheme does
+        // upstream: the override decides the transform, the shared code decides
+        // between geometric normal and difference. Installing a delta scheme
+        // here instead would short-circuit that choice, which is why normals
+        // were never predicted geometrically.
+        self.base
+            .set_transform_family(IntPredictionTransformFamily::NormalOctahedron {
+                max_quantized_value: max_value,
+                canonicalized,
+            });
 
         self.base.encode_values(
             point_cloud,

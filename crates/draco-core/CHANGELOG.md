@@ -8,8 +8,35 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Normals and texture coordinates are predicted the way Draco predicts them at
+  encoder speeds 0 to 3: geometric-normal prediction for normals, and portable
+  tex-coord prediction reading quantized positions. The encoder now agrees with
+  C++ Draco byte for byte on every attributed mesh in the parity suite, at every
+  speed. On meshes whose normals are already smooth, those schemes can cost more
+  than a plain delta -- that is upstream's tradeoff, and the output is now
+  identical to what C++ Draco produces for the same input.
+
 ### Fixed
 
+- Texture coordinates were predicted from the original float positions while the
+  decoder predicts from the quantized ones, so the two disagreed and the decoded
+  UVs were wrong at speeds 0 to 3. The portable position attribute now also
+  carries the point map its predictors index it by, without which the lookup
+  returned whichever vertex happened to sit at that entry.
+- Corrections from a mesh prediction scheme are no longer zig-zagged when the
+  transform already makes them positive. The decoder decides this from the
+  transform written to the stream, and the encoder now decides it the same way
+  instead of consulting a scheme object that mesh predictors never populate.
+- A normal attribute with integral values no longer fails the encode outright.
+  It selects geometric-normal prediction, which has no octahedral quantization
+  to work from, and now falls back to a delta as Draco's own scheme factory does
+  when a mesh scheme cannot be built.
+- At speed 0 the position attribute alone is walked in max-prediction-degree
+  order; every other attribute is walked depth first. The encoder declared and
+  used the position's order for all of them, producing streams that named an
+  order they were not written in.
 - Octahedral normal quantization is computed in `f64`, as upstream does, rather
   than in `f32`. The rounding rule was already the same; only the width of the
   intermediate differed, and that decides the result whenever the value being

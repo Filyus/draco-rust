@@ -5,13 +5,11 @@
 //! (octahedral transform) and texture coordinates, and neither is reachable
 //! through a bridge that takes positions and faces alone.
 //!
-//! Every case runs at all eleven speed settings, and speeds 4 and above are
-//! asserted: a difference there fails the test and names the byte it happened
-//! at. Speeds 0 to 3 are reported rather than asserted, because one prediction
-//! scheme only those speeds use -- geometric normal -- is still encoded as a
-//! delta. Every case left in that report carries normals; texture coordinates
-//! and colours match across the whole range. Narrowing the assertion is what
-//! keeps the rest of the range guarded while that is open.
+//! Every case runs at all eleven speed settings and every one of them is
+//! asserted: a difference fails the test and names the byte it happened at.
+//! That includes speeds 0 to 3, where the two schemes reserved for them --
+//! geometric normal for normals, portable tex coords for texture coordinates --
+//! decide the bytes.
 use draco_core::draco_types::DataType;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::encoder_options::EncoderOptions;
@@ -21,9 +19,9 @@ use draco_core::mesh::Mesh;
 use draco_core::mesh_encoder::MeshEncoder;
 use draco_cpp_test_bridge::CppMeshAttributes;
 
-/// Below this speed the two encoders still choose differently for normals; see
-/// the module note. Raise it to 0 once geometric normal prediction lands.
-const ASSERTED_FROM_SPEED: i32 = 4;
+/// Every speed is asserted. Kept as a named constant so that narrowing the
+/// guarantee again is a visible edit rather than a quiet one.
+const ASSERTED_FROM_SPEED: i32 = 0;
 
 const POSITION_BITS: i32 = 14;
 const NORMAL_BITS: i32 = 10;
@@ -476,4 +474,185 @@ fn pair_by_position(positions: &[f32], normals: &[f32]) -> Vec<([f32; 3], [f32; 
         .collect();
     pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
     pairs
+}
+
+/// The C++ decoder, on a Rust-encoded stream.
+///
+/// Byte parity is the strong statement, but it only holds where both encoders
+/// choose the same scheme. This asks the weaker, independent question: whatever
+/// we wrote, does the reference implementation read our normals back? A
+/// prediction scheme whose encoder and decoder disagree produces plausible bytes
+/// and wrong vectors, which a byte comparison shows only as a size difference.
+#[test]
+fn cpp_decoder_reads_rust_normals() {
+    if !draco_cpp_test_bridge::is_available() {
+        println!("SKIP: no C++ bridge");
+        return;
+    }
+
+    // The grid only. Points come back renumbered, so the input normal has to be
+    // found by position, and that needs positions a lookup can tell apart -- the
+    // fan winds through nearly three turns and stacks vertices almost on top of
+    // each other, where the nearest match is a coin toss rather than a defect.
+    let samples = vec![grid(10, (true, false, false)), grid(12, (true, true, true))];
+    let mut failures = Vec::new();
+
+    for sample in &samples {
+        let normals = sample.normals.as_ref().expect("sample carries normals");
+        for speed in 0..=10 {
+            let payload = encode_rust(sample, speed);
+            let (Some(positions), Some(decoded)) = (
+                draco_cpp_test_bridge::decode_cpp_attribute_values(
+                    &payload,
+                    draco_cpp_test_bridge::cpp_attribute::POSITION,
+                ),
+                draco_cpp_test_bridge::decode_cpp_attribute_values(
+                    &payload,
+                    draco_cpp_test_bridge::cpp_attribute::NORMAL,
+                ),
+            ) else {
+                failures.push(format!(
+                    "{} speed {speed}: C++ refused the Rust stream",
+                    label(sample)
+                ));
+                continue;
+            };
+            if decoded.len() != normals.len() {
+                failures.push(format!(
+                    "{} speed {speed}: {} normals back, {} in",
+                    label(sample),
+                    decoded.len() / 3,
+                    normals.len() / 3
+                ));
+                continue;
+            }
+
+            // Points come back renumbered, so pair them by position against the
+            // input, which the samples build on a lattice we can look up.
+            let mut worst = 0.0f32;
+            for (p, n) in positions.chunks_exact(3).zip(decoded.chunks_exact(3)) {
+                let Some(want) = nearest_input_normal(sample, p) else {
+                    continue;
+                };
+                for c in 0..3 {
+                    worst = worst.max((n[c] - want[c]).abs());
+                }
+            }
+            // Normals are quantized to 10 bits over the octahedron, so a step is
+            // a few thousandths; anything past 0.05 is a different vector.
+            if worst > 0.05 {
+                failures.push(format!(
+                    "{} speed {speed}: normals off by up to {worst:.4}",
+                    label(sample)
+                ));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "the C++ decoder does not read back what the Rust encoder wrote:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// The input normal of whichever sample point sits closest to `position`.
+fn nearest_input_normal(sample: &Sample, position: &[f32]) -> Option<[f32; 3]> {
+    let normals = sample.normals.as_ref()?;
+    let mut best = None;
+    let mut best_distance = f32::MAX;
+    for (i, p) in sample.positions.chunks_exact(3).enumerate() {
+        let d = (0..3).map(|c| (p[c] - position[c]).powi(2)).sum::<f32>();
+        if d < best_distance {
+            best_distance = d;
+            best = Some([normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]]);
+        }
+    }
+    best
+}
+
+/// A normal attribute that is already integral has no octahedral quantization,
+/// so the geometric-normal scheme cannot predict it. Upstream reaches this
+/// combination and asks a wrap transform for quantization bits -- a stub behind
+/// a failed assertion. This must fall back to a delta and encode.
+#[test]
+fn integer_normals_encode_and_round_trip() {
+    let num_points = 25usize;
+    let n = 5usize;
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(num_points);
+
+    let mut positions = Vec::new();
+    for y in 0..n {
+        for x in 0..n {
+            positions.extend([x as f32, y as f32, ((x * y) % 3) as f32 * 0.25]);
+        }
+    }
+    add_float_attribute(
+        &mut mesh,
+        GeometryAttributeType::Position,
+        3,
+        &positions,
+        num_points,
+    );
+
+    // Int32 normals, and deliberately no quantization_bits for them.
+    let mut normal = PointAttribute::new();
+    normal.init(
+        GeometryAttributeType::Normal,
+        3,
+        DataType::Int32,
+        false,
+        num_points,
+    );
+    for point in 0..num_points {
+        for component in 0..3 {
+            let value = ((point + component) % 7) as i32 - 3;
+            normal
+                .buffer_mut()
+                .update(&value.to_le_bytes(), Some((point * 3 + component) * 4));
+        }
+    }
+    mesh.add_attribute(normal);
+
+    let mut faces = Vec::new();
+    for y in 0..n - 1 {
+        for x in 0..n - 1 {
+            let i = (y * n + x) as u32;
+            let n32 = n as u32;
+            faces.extend([i, i + 1, i + n32]);
+            faces.extend([i + 1, i + n32 + 1, i + n32]);
+        }
+    }
+    mesh.set_num_faces(faces.len() / 3);
+    for face in 0..faces.len() / 3 {
+        mesh.set_face(
+            FaceIndex(face as u32),
+            [
+                PointIndex(faces[face * 3]),
+                PointIndex(faces[face * 3 + 1]),
+                PointIndex(faces[face * 3 + 2]),
+            ],
+        );
+    }
+
+    // Speed 0 is where the normal attribute selects geometric normal.
+    let mut options = EncoderOptions::new();
+    options.set_global_int("encoding_speed", 0);
+    options.set_global_int("decoding_speed", 0);
+    options.set_attribute_int(0, "quantization_bits", POSITION_BITS);
+
+    let mut encoder = MeshEncoder::new();
+    encoder.set_mesh(mesh);
+    let mut buffer = EncoderBuffer::new();
+    encoder
+        .encode(&options, &mut buffer)
+        .expect("an integer normal attribute must encode, not fail selection");
+
+    let mut decoded = Mesh::new();
+    let mut input = draco_core::decoder_buffer::DecoderBuffer::new(buffer.data());
+    draco_core::mesh_decoder::MeshDecoder::new()
+        .decode(&mut input, &mut decoded)
+        .expect("and it must decode again");
+    assert_eq!(decoded.num_points(), num_points);
 }
