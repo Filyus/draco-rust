@@ -8,6 +8,18 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Octahedral normal quantization is computed in `f64`, as upstream does, rather
+  than in `f32`. The rounding rule was already the same; only the width of the
+  intermediate differed, and that decides the result whenever the value being
+  floored lands exactly on `.5`. Ordinary normals do that regularly -- for
+  `(0, 0.7071, 0.7071)` the octahedral coordinate is exactly `511.5` at 10 bits
+  -- so the encoder picked the neighbouring coordinate and wrote a normal
+  roughly one quantization step away from the one C++ Draco writes for the same
+  input. Byte parity with the C++ encoder on attributed meshes went from 24 of
+  55 cases to 38, with every remaining difference confined to speeds 0 to 3.
+
 ## [1.0.5](https://github.com/Filyus/draco-rust/compare/draco-core-v1.0.4...draco-core-v1.0.5) - 2026-07-30
 
 ### Changed

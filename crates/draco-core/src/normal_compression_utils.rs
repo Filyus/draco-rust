@@ -204,15 +204,21 @@ impl OctahedronToolBox {
     }
 
     pub fn float_vector_to_quantized_octahedral_coords(&self, vector: &[f32; 3]) -> (i32, i32) {
-        let abs_sum = vector[0].abs() + vector[1].abs() + vector[2].abs();
+        // Double, as upstream does it, and not for extra accuracy: the value
+        // being floored lands exactly on `.5` for ordinary normals -- (0, k, k)
+        // among them -- and single precision resolves that tie the other way.
+        // The two encoders then pick neighbouring octahedral coordinates for
+        // the same input.
+        let abs_sum =
+            (vector[0] as f64).abs() + (vector[1] as f64).abs() + (vector[2] as f64).abs();
 
         // Adjust values such that abs sum equals 1.
-        let mut scaled_vector = [0.0; 3];
+        let mut scaled_vector = [0.0f64; 3];
         if abs_sum > 1e-6 {
             let scale = 1.0 / abs_sum;
-            scaled_vector[0] = vector[0] * scale;
-            scaled_vector[1] = vector[1] * scale;
-            scaled_vector[2] = vector[2] * scale;
+            scaled_vector[0] = vector[0] as f64 * scale;
+            scaled_vector[1] = vector[1] as f64 * scale;
+            scaled_vector[2] = vector[2] as f64 * scale;
         } else {
             scaled_vector[0] = 1.0;
             scaled_vector[1] = 0.0;
@@ -221,8 +227,8 @@ impl OctahedronToolBox {
 
         // Scale vector such that the sum equals the center value.
         let mut int_vec = [0; 3];
-        int_vec[0] = (scaled_vector[0] * self.center_value as f32 + 0.5).floor() as i32;
-        int_vec[1] = (scaled_vector[1] * self.center_value as f32 + 0.5).floor() as i32;
+        int_vec[0] = (scaled_vector[0] * self.center_value as f64 + 0.5).floor() as i32;
+        int_vec[1] = (scaled_vector[1] * self.center_value as f64 + 0.5).floor() as i32;
 
         // Make sure the sum is exactly the center value.
         int_vec[2] = self.center_value - int_vec[0].abs() - int_vec[1].abs();
