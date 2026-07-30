@@ -565,6 +565,95 @@ size_t draco_encode_mesh_attributed(
     return encoded_size;
 }
 
+
+// Encoding of a mesh whose attributes do not share one connectivity: a vertex
+// may carry several UVs, so the position attribute has fewer unique values than
+// the mesh has points and both attributes come with an explicit point map.
+// This is what produces attribute seams, and it is unreachable through
+// draco_encode_mesh_attributed, which identity-maps every attribute.
+size_t draco_encode_mesh_seamed(
+    uint32_t num_points,
+    uint32_t num_position_values,
+    const float* positions,
+    const uint32_t* position_map,
+    uint32_t num_uv_values,
+    const float* uvs,
+    const uint32_t* uv_map,
+    uint32_t num_faces,
+    const uint32_t* faces,
+    int encoding_speed,
+    int decoding_speed,
+    int position_bits,
+    int uv_bits,
+    uint8_t* output_buffer,
+    size_t output_buffer_size
+) {
+    draco::Mesh mesh;
+    mesh.set_num_points(num_points);
+    mesh.SetNumFaces(num_faces);
+
+    draco::GeometryAttribute pos_ga;
+    pos_ga.Init(draco::GeometryAttribute::POSITION, nullptr, 3, draco::DT_FLOAT32,
+                false, sizeof(float) * 3, 0);
+    int pos_att_id = mesh.AddAttribute(pos_ga, position_map == nullptr, num_position_values);
+    draco::PointAttribute* pos_att = mesh.attribute(pos_att_id);
+    for (uint32_t i = 0; i < num_position_values; ++i) {
+        pos_att->SetAttributeValue(draco::AttributeValueIndex(i), &positions[i * 3]);
+    }
+    if (position_map != nullptr) {
+        for (uint32_t p = 0; p < num_points; ++p) {
+            pos_att->SetPointMapEntry(draco::PointIndex(p),
+                                      draco::AttributeValueIndex(position_map[p]));
+        }
+    }
+
+    if (uvs != nullptr) {
+        draco::GeometryAttribute uv_ga;
+        uv_ga.Init(draco::GeometryAttribute::TEX_COORD, nullptr, 2, draco::DT_FLOAT32,
+                   false, sizeof(float) * 2, 0);
+        int uv_att_id = mesh.AddAttribute(uv_ga, uv_map == nullptr, num_uv_values);
+        draco::PointAttribute* uv_att = mesh.attribute(uv_att_id);
+        for (uint32_t i = 0; i < num_uv_values; ++i) {
+            uv_att->SetAttributeValue(draco::AttributeValueIndex(i), &uvs[i * 2]);
+        }
+        if (uv_map != nullptr) {
+            for (uint32_t p = 0; p < num_points; ++p) {
+                uv_att->SetPointMapEntry(draco::PointIndex(p),
+                                         draco::AttributeValueIndex(uv_map[p]));
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < num_faces; ++i) {
+        draco::Mesh::Face face;
+        face[0] = draco::PointIndex(faces[i * 3]);
+        face[1] = draco::PointIndex(faces[i * 3 + 1]);
+        face[2] = draco::PointIndex(faces[i * 3 + 2]);
+        mesh.SetFace(draco::FaceIndex(i), face);
+    }
+
+    draco::Encoder encoder;
+    encoder.SetSpeedOptions(encoding_speed, decoding_speed);
+    encoder.SetAttributeQuantization(draco::GeometryAttribute::POSITION, position_bits);
+    if (uvs != nullptr) {
+        encoder.SetAttributeQuantization(draco::GeometryAttribute::TEX_COORD, uv_bits);
+    }
+
+    draco::EncoderBuffer buffer;
+    draco::Status status = encoder.EncodeMeshToBuffer(mesh, &buffer);
+    if (!status.ok()) {
+        return 0;
+    }
+
+    size_t encoded_size = buffer.size();
+    if (encoded_size > output_buffer_size) {
+        return 0;
+    }
+
+    std::memcpy(output_buffer, buffer.data(), encoded_size);
+    return encoded_size;
+}
+
 // Single-shot encoding with explicit sequential mesh connectivity mode.
 // When compress_connectivity is non-zero, this writes connectivity_method = 0,
 // whose payload stores delta-coded symbols.

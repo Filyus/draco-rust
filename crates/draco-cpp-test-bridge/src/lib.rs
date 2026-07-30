@@ -95,6 +95,26 @@ mod ffi {
             output_buffer_size: usize,
         ) -> usize;
 
+        /// Mesh whose attributes carry explicit point maps, so one vertex can
+        /// hold several UVs and the encoder has to emit attribute seams.
+        #[allow(clippy::too_many_arguments)]
+        pub fn draco_encode_mesh_seamed(
+            num_points: u32,
+            num_position_values: u32,
+            positions: *const f32,
+            position_map: *const u32,
+            num_uv_values: u32,
+            uvs: *const f32,
+            uv_map: *const u32,
+            num_faces: u32,
+            faces: *const u32,
+            encoding_speed: c_int,
+            decoding_speed: c_int,
+            position_bits: c_int,
+            uv_bits: c_int,
+            output_buffer: *mut u8,
+            output_buffer_size: usize,
+        ) -> usize;
         /// Single-shot sequential mesh encoding with optional compressed connectivity.
         pub fn draco_encode_mesh_sequential(
             num_points: u32,
@@ -1024,4 +1044,70 @@ mod tests {
             println!("C++ test bridge is disabled");
         }
     }
+}
+
+/// One value per point is the usual case and the one
+/// [`encode_cpp_mesh_attributed`] covers. This is the other one: `position_map`
+/// and `uv_map` say which value each point uses, so a vertex shared by two
+/// faces can carry a different UV in each, and the encoder has to split the
+/// attribute's connectivity from the position's.
+#[cfg(not(cpp_test_bridge_disabled))]
+#[allow(clippy::too_many_arguments)]
+pub fn encode_cpp_mesh_seamed(
+    positions: &[f32],
+    position_map: &[u32],
+    uvs: &[f32],
+    uv_map: &[u32],
+    faces: &[u32],
+    encoding_speed: i32,
+    decoding_speed: i32,
+    position_bits: i32,
+    uv_bits: i32,
+) -> Option<Vec<u8>> {
+    let num_points = position_map.len() as u32;
+    let num_faces = (faces.len() / 3) as u32;
+    let buffer_size = (num_points as usize * 32 + faces.len() * 4 + 4096).max(65536);
+    let mut buffer = vec![0u8; buffer_size];
+
+    let encoded_size = unsafe {
+        ffi::draco_encode_mesh_seamed(
+            num_points,
+            (positions.len() / 3) as u32,
+            positions.as_ptr(),
+            position_map.as_ptr(),
+            (uvs.len() / 2) as u32,
+            uvs.as_ptr(),
+            uv_map.as_ptr(),
+            num_faces,
+            faces.as_ptr(),
+            encoding_speed,
+            decoding_speed,
+            position_bits,
+            uv_bits,
+            buffer.as_mut_ptr(),
+            buffer_size,
+        )
+    };
+
+    if encoded_size == 0 {
+        return None;
+    }
+    buffer.truncate(encoded_size);
+    Some(buffer)
+}
+
+#[cfg(cpp_test_bridge_disabled)]
+#[allow(clippy::too_many_arguments)]
+pub fn encode_cpp_mesh_seamed(
+    _positions: &[f32],
+    _position_map: &[u32],
+    _uvs: &[f32],
+    _uv_map: &[u32],
+    _faces: &[u32],
+    _encoding_speed: i32,
+    _decoding_speed: i32,
+    _position_bits: i32,
+    _uv_bits: i32,
+) -> Option<Vec<u8>> {
+    None
 }
