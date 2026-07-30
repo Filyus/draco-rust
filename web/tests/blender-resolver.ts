@@ -95,7 +95,34 @@ try {
         assert.equal(blenderExecutable(), '', 'a stale BLENDER reports nothing, not a fallback');
     });
 
-    console.log('PASS Blender resolver: PATH on Unix and Windows, decoys rejected, BLENDER honoured');
+    // --- `.env` is a default, not an override.
+    //
+    // `fbx-test-utils` loads `web/.env` at import, and everything downstream
+    // assumes a variable already in the environment survives it: that is what
+    // makes `BLENDER=... npm run test:fbx-mixamo` a one-off against a different
+    // build, and what keeps CI's own variables from being replaced by whatever a
+    // runner happens to have checked out. The precedence is Node's rather than
+    // ours, which is exactly why it is pinned here -- if a future Node inverted
+    // it, nothing else in this repository would notice.
+    const envFile = resolve(scratch, '.env');
+    writeFileSync(envFile, 'DRACO_ENV_PRECEDENCE_PROBE=from-file\n');
+    process.env.DRACO_ENV_PRECEDENCE_PROBE = 'from-environment';
+    process.loadEnvFile(envFile);
+    assert.equal(
+        process.env.DRACO_ENV_PRECEDENCE_PROBE,
+        'from-environment',
+        'a variable already set must survive web/.env being loaded over it',
+    );
+    delete process.env.DRACO_ENV_PRECEDENCE_PROBE;
+    process.loadEnvFile(envFile);
+    assert.equal(
+        process.env.DRACO_ENV_PRECEDENCE_PROBE,
+        'from-file',
+        'and web/.env must supply it when the environment does not',
+    );
+    delete process.env.DRACO_ENV_PRECEDENCE_PROBE;
+
+    console.log('PASS Blender resolver: PATH on Unix and Windows, decoys rejected, BLENDER honoured over .env');
 } finally {
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;

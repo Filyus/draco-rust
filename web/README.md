@@ -511,7 +511,11 @@ Optimized packages are written to `web/www/pkg/`.
 ### Paths that name a disk
 
 They live in `web/.env`, which is gitignored, and are documented — without real
-values — in `.env.example`. Nothing in the code carries one. `test:no-absolute-paths`
+values — in `.env.example`. Nothing in the code carries one. The file is a
+default rather than an override: a variable already in the environment wins over
+it, so `BLENDER=… npm run test:fbx-mixamo` is a one-off against another build
+without editing anything, and CI's own variables are not replaced by whatever a
+runner has on disk. `test:no-absolute-paths`
 enforces that across every tracked text file in the repository: a Windows drive
 letter or a path under a filesystem root such as `/usr`, `/tmp` or `/Applications`
 fails it, in Rust and Markdown as much as in TypeScript.
