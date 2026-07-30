@@ -1031,21 +1031,6 @@ pub fn encode_with_handles(
 
 // --------------------------------------------------------------------------------------
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_cpp_test_bridge_available() {
-        if is_available() {
-            let (major, minor, revision) = get_version();
-            println!("Draco C++ version: {}.{}.{}", major, minor, revision);
-        } else {
-            println!("C++ test bridge is disabled");
-        }
-    }
-}
-
 /// One value per point is the usual case and the one
 /// [`encode_cpp_mesh_attributed`] covers. This is the other one: `position_map`
 /// and `uv_map` say which value each point uses, so a vertex shared by two
@@ -1110,4 +1095,19 @@ pub fn encode_cpp_mesh_seamed(
     _uv_bits: i32,
 ) -> Option<Vec<u8>> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cpp_test_bridge_available() {
+        if is_available() {
+            let (major, minor, revision) = get_version();
+            println!("Draco C++ version: {}.{}.{}", major, minor, revision);
+        } else {
+            println!("C++ test bridge is disabled");
+        }
+    }
 }
