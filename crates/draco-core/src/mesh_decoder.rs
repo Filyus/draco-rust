@@ -1801,12 +1801,6 @@ impl MeshDecoder {
                 INVALID_CORNER_INDEX
             };
 
-        let clear_stacks = |stacks: &mut [Vec<CornerIndex>; 3]| {
-            stacks[0].clear();
-            stacks[1].clear();
-            stacks[2].clear();
-        };
-
         let traverse_from_corner =
             |start_corner: CornerIndex,
              point_ids: &mut Vec<PointIndex>,
@@ -1817,15 +1811,16 @@ impl MeshDecoder {
              stacks: &mut [Vec<CornerIndex>; 3],
              best_priority: &mut usize,
              vertex_to_data_map: &mut Vec<i32>| {
-                let start_face = corner_table.face(start_corner);
-                if start_face == crate::geometry_indices::INVALID_FACE_INDEX {
-                    return;
-                }
-                if visited_faces[start_face.0 as usize] {
+                if corner_table.face(start_corner) == crate::geometry_indices::INVALID_FACE_INDEX {
                     return;
                 }
 
-                clear_stacks(stacks);
+                // Deliberately no visited-face guard and no stack reset, matching
+                // upstream MaxPredictionDegreeTraverser::TraverseFromCorner. The
+                // depth-first traverser has both; this one has neither, because a
+                // face is marked visited having visited only one of its vertices,
+                // so the three pre-visits below still have work to do on a face
+                // that was already traversed.
                 stacks[0].push(start_corner);
                 *best_priority = 0;
 
@@ -1948,9 +1943,6 @@ impl MeshDecoder {
         // See C++ MeshTraversalSequencer::GenerateSequenceInternal() - when corner_order_ is null,
         // it does: for (int i = 0; i < num_faces; ++i) ProcessCorner(CornerIndex(3 * i));
         for f in 0..num_faces {
-            if visited_faces[f] {
-                continue;
-            }
             let first_corner = corner_table.first_corner(FaceIndex(f as u32));
             traverse_from_corner(
                 first_corner,

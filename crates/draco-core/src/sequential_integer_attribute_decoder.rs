@@ -748,13 +748,21 @@ impl SequentialIntegerAttributeDecoder {
                         crate::geometry_attribute::GeometryAttributeType::Position,
                     );
                     if pos_att_id >= 0 {
-                        let pos_att = if let Some(attribute) = portable_parent_attribute {
-                            attribute
-                        } else {
-                            let Ok(attribute) = point_cloud.try_attribute(pos_att_id) else {
-                                return false;
-                            };
-                            attribute
+                        // Upstream InitPredictionScheme has two branches, and so
+                        // does this. Bitstreams below 2.0 predict from the
+                        // attribute itself, which by then already holds
+                        // dequantized values; 2.0 and above predict from the
+                        // portable one. The caller signals the first case by
+                        // passing no portable attribute, so the fallback here is
+                        // that branch and not a safety net.
+                        let pos_att = match portable_parent_attribute {
+                            Some(attribute) => attribute,
+                            None => {
+                                let Ok(attribute) = point_cloud.try_attribute(pos_att_id) else {
+                                    return false;
+                                };
+                                attribute
+                            }
                         };
                         if !predictor.set_parent_attribute(pos_att) {
                             debug_log!("Failed to set parent attribute for GeometricNormal");
