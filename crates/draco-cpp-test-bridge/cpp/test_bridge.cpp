@@ -456,6 +456,115 @@ size_t draco_encode_mesh_single(
     return encoded_size;
 }
 
+// Single-shot encoding with the attributes a real mesh carries, not positions
+// alone. Byte parity on positions says little about the encoder: the prediction
+// schemes that could diverge are the ones for normals (octahedral transform)
+// and texture coordinates, and neither is reachable while the bridge takes only
+// positions and faces.
+//
+// A null pointer means the mesh does not carry that attribute. Attributes are
+// added in the order normal, texture coordinate, colour, and the Rust side must
+// add them in the same order: Draco numbers attributes by insertion and encodes
+// them in that order.
+size_t draco_encode_mesh_attributed(
+    uint32_t num_points,
+    const float* positions,
+    uint32_t num_faces,
+    const uint32_t* faces,
+    const float* normals,
+    const float* uvs,
+    const uint8_t* colors,
+    int encoding_speed,
+    int decoding_speed,
+    int position_bits,
+    int normal_bits,
+    int uv_bits,
+    int color_bits,
+    uint8_t* output_buffer,
+    size_t output_buffer_size
+) {
+    draco::Mesh mesh;
+    mesh.set_num_points(num_points);
+    mesh.SetNumFaces(num_faces);
+
+    draco::GeometryAttribute pos_ga;
+    pos_ga.Init(draco::GeometryAttribute::POSITION, nullptr, 3, draco::DT_FLOAT32,
+                false, sizeof(float) * 3, 0);
+    int pos_att_id = mesh.AddAttribute(pos_ga, true, num_points);
+    draco::PointAttribute* pos_att = mesh.attribute(pos_att_id);
+    for (uint32_t i = 0; i < num_points; ++i) {
+        pos_att->SetAttributeValue(draco::AttributeValueIndex(i), &positions[i * 3]);
+    }
+
+    if (normals != nullptr) {
+        draco::GeometryAttribute ga;
+        ga.Init(draco::GeometryAttribute::NORMAL, nullptr, 3, draco::DT_FLOAT32,
+                false, sizeof(float) * 3, 0);
+        int id = mesh.AddAttribute(ga, true, num_points);
+        draco::PointAttribute* att = mesh.attribute(id);
+        for (uint32_t i = 0; i < num_points; ++i) {
+            att->SetAttributeValue(draco::AttributeValueIndex(i), &normals[i * 3]);
+        }
+    }
+
+    if (uvs != nullptr) {
+        draco::GeometryAttribute ga;
+        ga.Init(draco::GeometryAttribute::TEX_COORD, nullptr, 2, draco::DT_FLOAT32,
+                false, sizeof(float) * 2, 0);
+        int id = mesh.AddAttribute(ga, true, num_points);
+        draco::PointAttribute* att = mesh.attribute(id);
+        for (uint32_t i = 0; i < num_points; ++i) {
+            att->SetAttributeValue(draco::AttributeValueIndex(i), &uvs[i * 2]);
+        }
+    }
+
+    if (colors != nullptr) {
+        draco::GeometryAttribute ga;
+        ga.Init(draco::GeometryAttribute::COLOR, nullptr, 4, draco::DT_UINT8,
+                true, sizeof(uint8_t) * 4, 0);
+        int id = mesh.AddAttribute(ga, true, num_points);
+        draco::PointAttribute* att = mesh.attribute(id);
+        for (uint32_t i = 0; i < num_points; ++i) {
+            att->SetAttributeValue(draco::AttributeValueIndex(i), &colors[i * 4]);
+        }
+    }
+
+    for (uint32_t i = 0; i < num_faces; ++i) {
+        draco::Mesh::Face face;
+        face[0] = draco::PointIndex(faces[i * 3]);
+        face[1] = draco::PointIndex(faces[i * 3 + 1]);
+        face[2] = draco::PointIndex(faces[i * 3 + 2]);
+        mesh.SetFace(draco::FaceIndex(i), face);
+    }
+
+    draco::Encoder encoder;
+    encoder.SetSpeedOptions(encoding_speed, decoding_speed);
+    encoder.SetAttributeQuantization(draco::GeometryAttribute::POSITION, position_bits);
+    if (normals != nullptr) {
+        encoder.SetAttributeQuantization(draco::GeometryAttribute::NORMAL, normal_bits);
+    }
+    if (uvs != nullptr) {
+        encoder.SetAttributeQuantization(draco::GeometryAttribute::TEX_COORD, uv_bits);
+    }
+    if (colors != nullptr) {
+        encoder.SetAttributeQuantization(draco::GeometryAttribute::COLOR, color_bits);
+    }
+
+    draco::EncoderBuffer buffer;
+    draco::Status status = encoder.EncodeMeshToBuffer(mesh, &buffer);
+    if (!status.ok()) {
+        return 0;
+    }
+
+    size_t encoded_size = buffer.size();
+    if (encoded_size > output_buffer_size) {
+        return 0;
+    }
+
+    std::memcpy(output_buffer, buffer.data(), encoded_size);
+    return encoded_size;
+}
+
 // Single-shot encoding with explicit sequential mesh connectivity mode.
 // When compress_connectivity is non-zero, this writes connectivity_method = 0,
 // whose payload stores delta-coded symbols.
@@ -779,6 +888,57 @@ int draco_profile_decode(
 }
 
 // Decode a mesh once and return stable structural/data fingerprints.
+// Decode a payload and hand back one attribute's values as floats, per point.
+//
+// A hash can say "different" and nothing else. Telling an encoder defect from a
+// decoder one needs the values themselves: read the same payload with both
+// implementations and see which pair agrees.
+//
+// `attribute_type` uses Draco's own numbering (0 POSITION, 1 NORMAL,
+// 2 COLOR, 3 TEX_COORD, 4 GENERIC). Returns the number of floats written, or 0.
+size_t draco_decode_attribute_values(
+    const uint8_t* encoded_data,
+    size_t encoded_size,
+    int attribute_type,
+    float* output,
+    size_t output_capacity
+) {
+    draco::DecoderBuffer buffer;
+    buffer.Init(reinterpret_cast<const char*>(encoded_data), encoded_size);
+
+    draco::Decoder decoder;
+    auto decode_result = decoder.DecodeMeshFromBuffer(&buffer);
+    if (!decode_result.ok()) {
+        return 0;
+    }
+    auto mesh = std::move(decode_result).value();
+
+    const draco::PointAttribute* att = mesh->GetNamedAttribute(
+        static_cast<draco::GeometryAttribute::Type>(attribute_type));
+    if (att == nullptr) {
+        return 0;
+    }
+
+    const int components = att->num_components();
+    const size_t needed = static_cast<size_t>(mesh->num_points()) * components;
+    if (needed > output_capacity) {
+        return 0;
+    }
+
+    // GetMappedValue dequantizes through the attribute transform, which is what
+    // the Rust side reports too, so the two are comparable.
+    for (draco::PointIndex i(0); i < mesh->num_points(); ++i) {
+        std::vector<float> value(components);
+        if (!att->ConvertValue<float>(att->mapped_index(i), components, value.data())) {
+            return 0;
+        }
+        for (int c = 0; c < components; ++c) {
+            output[i.value() * components + c] = value[c];
+        }
+    }
+    return needed;
+}
+
 int draco_decode_mesh_fingerprint(
     const uint8_t* encoded_data,
     size_t encoded_size,

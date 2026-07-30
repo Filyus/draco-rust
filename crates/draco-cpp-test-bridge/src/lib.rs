@@ -76,6 +76,25 @@ mod ffi {
             output_buffer_size: usize,
         ) -> usize;
 
+        #[allow(clippy::too_many_arguments)]
+        pub fn draco_encode_mesh_attributed(
+            num_points: u32,
+            positions: *const f32,
+            num_faces: u32,
+            faces: *const u32,
+            normals: *const f32,
+            uvs: *const f32,
+            colors: *const u8,
+            encoding_speed: c_int,
+            decoding_speed: c_int,
+            position_bits: c_int,
+            normal_bits: c_int,
+            uv_bits: c_int,
+            color_bits: c_int,
+            output_buffer: *mut u8,
+            output_buffer_size: usize,
+        ) -> usize;
+
         /// Single-shot sequential mesh encoding with optional compressed connectivity.
         pub fn draco_encode_mesh_sequential(
             num_points: u32,
@@ -169,6 +188,14 @@ mod ffi {
         ) -> c_int;
 
         /// Decode a mesh once and return stable structural/data fingerprints.
+        pub fn draco_decode_attribute_values(
+            encoded_data: *const u8,
+            encoded_size: usize,
+            attribute_type: c_int,
+            output: *mut f32,
+            output_capacity: usize,
+        ) -> usize;
+
         pub fn draco_decode_mesh_fingerprint(
             encoded_data: *const u8,
             encoded_size: usize,
@@ -367,6 +394,133 @@ pub fn encode_cpp_mesh(
 
     buffer.truncate(encoded_size);
     Some(buffer)
+}
+
+/// Draco's own attribute type numbering, for the decode helper below.
+pub mod cpp_attribute {
+    /// `GeometryAttribute::POSITION`.
+    pub const POSITION: i32 = 0;
+    /// `GeometryAttribute::NORMAL`.
+    pub const NORMAL: i32 = 1;
+    /// `GeometryAttribute::COLOR`.
+    pub const COLOR: i32 = 2;
+    /// `GeometryAttribute::TEX_COORD`.
+    pub const TEX_COORD: i32 = 3;
+}
+
+/// Decode a payload with C++ Draco and return one attribute's values.
+///
+/// The fingerprint helpers answer "same or not". This answers "how far apart",
+/// which is what separates an encoder defect from a decoder one: read the same
+/// payload with both implementations and see which pair agrees.
+#[cfg(not(cpp_test_bridge_disabled))]
+pub fn decode_cpp_attribute_values(encoded: &[u8], attribute_type: i32) -> Option<Vec<f32>> {
+    // Generous: four components per point at the largest point count these
+    // tests build, and the call reports the true length back.
+    let mut values = vec![0.0f32; 1 << 20];
+    let written = unsafe {
+        ffi::draco_decode_attribute_values(
+            encoded.as_ptr(),
+            encoded.len(),
+            attribute_type,
+            values.as_mut_ptr(),
+            values.len(),
+        )
+    };
+    if written == 0 {
+        return None;
+    }
+    values.truncate(written);
+    Some(values)
+}
+
+#[cfg(cpp_test_bridge_disabled)]
+pub fn decode_cpp_attribute_values(_encoded: &[u8], _attribute_type: i32) -> Option<Vec<f32>> {
+    None
+}
+
+/// What a mesh carries besides positions. `None` means the attribute is absent.
+///
+/// Positions alone cannot show whether the two encoders agree: the prediction
+/// schemes that could differ belong to normals and texture coordinates.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CppMeshAttributes<'a> {
+    /// Three floats per point.
+    pub normals: Option<&'a [f32]>,
+    /// Two floats per point.
+    pub uvs: Option<&'a [f32]>,
+    /// Four normalized bytes per point.
+    pub colors: Option<&'a [u8]>,
+    /// Quantization bits, one per attribute, in the same order.
+    pub normal_bits: i32,
+    pub uv_bits: i32,
+    pub color_bits: i32,
+}
+
+/// Encode a mesh with attributes through C++ Draco and return the bytes.
+///
+/// Attributes are added in the order normal, texture coordinate, colour. Draco
+/// numbers attributes by insertion and encodes them in that order, so a caller
+/// comparing against another encoder has to add them the same way.
+#[cfg(not(cpp_test_bridge_disabled))]
+pub fn encode_cpp_mesh_attributed(
+    positions: &[f32],
+    faces: &[u32],
+    attributes: CppMeshAttributes<'_>,
+    encoding_speed: i32,
+    decoding_speed: i32,
+    position_bits: i32,
+) -> Option<Vec<u8>> {
+    let num_points = (positions.len() / 3) as u32;
+    let num_faces = (faces.len() / 3) as u32;
+
+    let buffer_size = (num_points as usize * 32 + faces.len() * 4 + 4096).max(65536);
+    let mut buffer = vec![0u8; buffer_size];
+
+    let encoded_size = unsafe {
+        ffi::draco_encode_mesh_attributed(
+            num_points,
+            positions.as_ptr(),
+            num_faces,
+            faces.as_ptr(),
+            attributes
+                .normals
+                .map_or(std::ptr::null(), |values| values.as_ptr()),
+            attributes
+                .uvs
+                .map_or(std::ptr::null(), |values| values.as_ptr()),
+            attributes
+                .colors
+                .map_or(std::ptr::null(), |values| values.as_ptr()),
+            encoding_speed,
+            decoding_speed,
+            position_bits,
+            attributes.normal_bits,
+            attributes.uv_bits,
+            attributes.color_bits,
+            buffer.as_mut_ptr(),
+            buffer_size,
+        )
+    };
+
+    if encoded_size == 0 {
+        return None;
+    }
+
+    buffer.truncate(encoded_size);
+    Some(buffer)
+}
+
+#[cfg(cpp_test_bridge_disabled)]
+pub fn encode_cpp_mesh_attributed(
+    _positions: &[f32],
+    _faces: &[u32],
+    _attributes: CppMeshAttributes<'_>,
+    _encoding_speed: i32,
+    _decoding_speed: i32,
+    _position_bits: i32,
+) -> Option<Vec<u8>> {
+    None
 }
 
 #[cfg(cpp_test_bridge_disabled)]
