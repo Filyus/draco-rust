@@ -7,10 +7,11 @@
 //!
 //! Every case runs at all eleven speed settings, and speeds 4 and above are
 //! asserted: a difference there fails the test and names the byte it happened
-//! at. Speeds 0 to 3 are reported rather than asserted, because two prediction
-//! schemes only those speeds use -- geometric normal for normals, portable tex
-//! coords for texture coordinates -- still diverge. Narrowing the assertion is
-//! what keeps the rest of the range guarded while that is open.
+//! at. Speeds 0 to 3 are reported rather than asserted, because one prediction
+//! scheme only those speeds use -- geometric normal -- is still encoded as a
+//! delta. Every case left in that report carries normals; texture coordinates
+//! and colours match across the whole range. Narrowing the assertion is what
+//! keeps the rest of the range guarded while that is open.
 use draco_core::draco_types::DataType;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::encoder_options::EncoderOptions;
@@ -20,8 +21,8 @@ use draco_core::mesh::Mesh;
 use draco_core::mesh_encoder::MeshEncoder;
 use draco_cpp_test_bridge::CppMeshAttributes;
 
-/// Below this speed the two encoders still choose differently; see the module
-/// note. Raise it as those schemes are brought into line.
+/// Below this speed the two encoders still choose differently for normals; see
+/// the module note. Raise it to 0 once geometric normal prediction lands.
 const ASSERTED_FROM_SPEED: i32 = 4;
 
 const POSITION_BITS: i32 = 14;
@@ -359,7 +360,6 @@ fn decoders_agree_on_the_same_payload() {
     ];
 
     let mut mismatches = Vec::new();
-    let mut known_open = Vec::new();
 
     for sample in &samples {
         for speed in 0..=10 {
@@ -411,22 +411,14 @@ fn decoders_agree_on_the_same_payload() {
                 .flat_map(|(a, b)| (0..3).map(move |c| (a.1[c] - b.1[c]).abs()))
                 .fold(0.0f32, f32::max);
             if worst > 1e-6 {
-                let note = format!(
+                mismatches.push(format!(
                     "{} speed {speed}: same point, normals differ by up to {worst:.6}",
                     label(sample)
-                );
-                if speed < 1 {
-                    known_open.push(note);
-                } else {
-                    mismatches.push(note);
-                }
+                ));
             }
         }
     }
 
-    if !known_open.is_empty() {
-        println!("known open, speed 0:\n{}", known_open.join("\n"));
-    }
     assert!(
         mismatches.is_empty(),
         "the two decoders return different meshes for the same payload:\n{}",
@@ -453,8 +445,17 @@ fn read_rust(mesh: &Mesh, kind: GeometryAttributeType) -> Vec<f32> {
     let stride = attribute.byte_stride() as usize;
     let mut values = Vec::new();
     for point in 0..mesh.num_points() {
+        // Through the attribute's own point map, never point * stride. Two
+        // attributes of the same mesh do not share one point-to-entry
+        // permutation: at speed 0 the position is walked by prediction degree
+        // and everything else depth first. Reading by entry silently pairs one
+        // point's position with another point's normal, which looks exactly
+        // like a decoder bug and is not one.
+        let entry = attribute.mapped_index(PointIndex(point as u32));
         let mut bytes = vec![0u8; stride];
-        attribute.buffer().read(point * stride, &mut bytes);
+        attribute
+            .buffer()
+            .read(entry.0 as usize * stride, &mut bytes);
         for component in 0..components {
             let start = component * 4;
             values.push(f32::from_le_bytes(
