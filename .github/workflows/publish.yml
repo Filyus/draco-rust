@@ -229,6 +229,8 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      # To start Release: WASM assets; see the step at the end of this job.
+      actions: write
 
     steps:
       - name: Checkout release commit
@@ -333,3 +335,17 @@ jobs:
             --title "$CRATE $VERSION" \
             --notes-file release-notes.md \
             --verify-tag
+
+      # GitHub raises no workflow events for a ref pushed with GITHUB_TOKEN, so
+      # `Release: WASM assets` never saw the tag created above and its browser
+      # assets were quietly never built -- draco-io v0.3.0 and draco-gltf v0.2.0
+      # were both published without any. Ask for the run rather than relying on
+      # the push trigger, which stays for a tag pushed by hand.
+      - name: Build WASM release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          tag="$CRATE-v$VERSION"
+          gh workflow run release.yml --ref main --field tag="$tag"
+          echo "Requested Release: WASM assets for $tag."

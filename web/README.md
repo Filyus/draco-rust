@@ -553,8 +553,12 @@ unchanged at a repository path.
 
 The deploy is deliberately not tied to a crate tag. It shows what `main` does,
 while [`Release: WASM assets`](../.github/workflows/release.yml) is what carries
-a version: it builds the release profile from each `draco-io` and `draco-gltf`
-tag and attaches the per-module zips to that GitHub Release.
+a version: it builds the release profile from a crate's tag and attaches that
+crate's module zips to its GitHub Release — obj, ply, stl and fbx go with
+`draco-io`, gltf with `draco-gltf`, and drc with `draco-core`, since that is the
+crate each one wraps and therefore the only version an asset can honestly claim.
+A module that is built and assigned to no crate fails the packaging step, so a
+new one cannot be forgotten the way stl and drc were.
 
 The front-end is TypeScript in `web/src/`, compiled by `tsc` into `web/www/`
 as plain ES modules — no bundler, and `index.html` still loads a single

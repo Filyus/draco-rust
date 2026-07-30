@@ -147,7 +147,21 @@ are intended, and the changelog section is the one reviewed.
 
 After approval, the workflow: authenticates to crates.io through Trusted
 Publishing; publishes `<crate>`; creates annotated tag `<crate>-vX.Y.Z`; extracts the
-`crates/<crate>/CHANGELOG.md` section for `X.Y.Z`; and creates the GitHub Release.
+`crates/<crate>/CHANGELOG.md` section for `X.Y.Z`; creates the GitHub Release; and
+starts `Release: WASM assets` for the tag.
+
+That last step is a dispatch rather than the tag's own push event, and has to be:
+GitHub raises no workflow events for a ref pushed with `GITHUB_TOKEN`, so the
+push trigger on `Release: WASM assets` never sees a tag this workflow created.
+It went unnoticed until draco-io v0.3.0 and draco-gltf v0.2.0 were both published
+with no browser assets attached at all. So the release is not finished when the
+publish workflow is: watch that the asset run goes green too, and check the zips
+are on the Release.
+
+Each crate ships the modules that wrap it, stamped with its own version —
+`draco-io` carries obj, ply, stl and fbx; `draco-gltf` carries gltf;
+`draco-core` carries drc. A module that is built but assigned to no crate fails
+the packaging step rather than being silently left out.
 
 ## First Release
 

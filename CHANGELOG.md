@@ -7,12 +7,21 @@ its own changelog and its own `<crate>-vX.Y.Z` release tags:
 - **draco-io** — [`crates/draco-io/CHANGELOG.md`](crates/draco-io/CHANGELOG.md)
 - **draco-gltf** — [`crates/draco-gltf/CHANGELOG.md`](crates/draco-gltf/CHANGELOG.md)
 
-The `web/` WASM wrappers and converter are not published to crates.io. The
-wrappers ship as zipped release assets, built by `Release: WASM assets` from
-each `draco-io` and `draco-gltf` tag. The converter itself is deployed to GitHub
-Pages by `Pages: deploy converter`, from `main` rather than from a tag — it
-demonstrates the current code, and pinning it to a crate release would show
-neither crate's version honestly.
+The `web/` WASM wrappers and converter are not published to crates.io. Each
+wrapper ships as a zipped release asset with the crate it wraps, stamped with
+that crate's version and built by `Release: WASM assets`: obj, ply, stl and fbx
+with `draco-io`, gltf with `draco-gltf`, drc with `draco-core`. The converter
+itself is deployed to GitHub Pages by `Pages: deploy converter`, from `main`
+rather than from a tag — it demonstrates the current code, and pinning it to a
+crate release would show neither crate's version honestly.
+
+**draco-io v0.3.0 and draco-gltf v0.2.0 carry no browser assets.** The tag those
+releases were made from was pushed with `GITHUB_TOKEN`, for which GitHub raises
+no workflow events, so `Release: WASM assets` never ran for either. Both crates
+are on crates.io as normal; only the zipped WASM wrappers are absent. Fixed for
+subsequent releases — the publish workflow now starts that run itself — and
+those two are not being backfilled, since a release's assets should be the ones
+its own pipeline produced.
 
 See [`RELEASING.md`](RELEASING.md) for the release process.
 
@@ -26,8 +35,8 @@ See [`RELEASING.md`](RELEASING.md) for the release process.
 - Added STL and standalone Draco (`.drc`) as import **and** export formats,
   through the new `stl-wasm` and `drc-wasm` modules. `stl-wasm` wraps
   `draco-io`'s reader and writer; `drc-wasm` wraps `draco-core` directly, which
-  makes it the first web module belonging to neither crate that ships release
-  assets. Neither is packaged by `Release: WASM assets` yet.
+  makes it the first web module to ship with a `draco-core` release rather than
+  a `draco-io` one.
 - Carried a `.drc`'s attributes through a round trip instead of dropping the ones
   the flat mesh has no slot for. A second texture-coordinate or colour set is
   handed over with its type, component count, component type and unique id, and
