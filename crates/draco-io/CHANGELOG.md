@@ -9,6 +9,28 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/Filyus/draco-rust/compare/draco-io-v0.3.1...draco-io-v0.3.2) - 2026-07-30
+
+### Changed
+
+- `keywords` names STL, which the crate has read and written since 0.3.1 without
+  saying so anywhere a search would find. Five is the crates.io maximum, so
+  `gltf` came off rather than STL being left out: `draco-gltf` owns glTF
+  documents, and this crate's glTF role is containers and accessors, so a search
+  for glTF is better answered there.
+- STL is named in the format and feature tables, in the crate's opening line and
+  `API.md`, and in the `traits` module docs. It had been announced in the 0.3.1
+  changelog and nowhere else.
+- FBX documentation moves to [`FBX.md`](FBX.md), which ships with the crate. It
+  was 179 of the README's 335 lines, in a document whose job is to say what the
+  crate reads and writes. The support matrix now leads it, and the prose behind
+  it is split by subject rather than being one block under a single heading.
+- A claim that `Definitions` property templates are not resolved is removed. They
+  are — `fbx_templates` resolves them, with the object's own value winning — and
+  the paragraph contradicted both the section above it and the support table.
+- The crate's opening line no longer says "binary FBX": the ASCII container has
+  been read and written since 0.3.0.
+
 ## [0.3.1](https://github.com/Filyus/draco-rust/compare/draco-io-v0.3.0...draco-io-v0.3.1) - 2026-07-30
 
 ### Added

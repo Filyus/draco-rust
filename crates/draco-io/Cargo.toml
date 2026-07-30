@@ -1,6 +1,6 @@
 [package]
 name = "draco-io"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description = "Rust IO helpers for Draco geometry compression formats"
 license = "Apache-2.0"
