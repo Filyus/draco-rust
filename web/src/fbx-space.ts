@@ -76,10 +76,8 @@ export const FBX_METERS_Y_UP: FbxGlobalSettings = {
  *
  * A good deal of existing FBX is Z-up, and a consumer that ignores the declared
  * axes will show a Y-up file lying on its side, so the convention is worth
- * keeping reachable. It is not the default, and not only because Y-up needs no
- * conversion: the writer turns positions and node transforms but not animated
- * rotations, so a rotating node written into this space rotates about the wrong
- * axis. Static geometry is unaffected.
+ * keeping reachable. Y-up is the default because it needs no conversion at all,
+ * which is one fewer thing that can be wrong.
  *
  * The two signs describe what the conversion actually does — glTF `(x, y, z)`
  * written as `(x, z, -y)` puts up along `-Z` — rather than what it was once

@@ -119,9 +119,7 @@ Which space an FBX export is written in is a choice, because FBX declares its
 own rather than fixing one. `meters-y-up` is the default: glTF's own axes and
 metres, which makes the conversion the identity, the round trip exact, and the
 file look like every FBX on hand from another tool. `meters-z-up` writes the
-Z-up convention a great deal of existing FBX uses; it turns positions and node
-transforms but not animated rotations, so a rotating node written into it
-rotates about the wrong axis, and static geometry is unaffected.
+Z-up convention a great deal of existing FBX uses.
 
 Either way the file states the space it is in, and the importer reads that
 statement rather than assuming — one `FbxSpace` drives the conversion and the

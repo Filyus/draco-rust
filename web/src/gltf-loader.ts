@@ -543,7 +543,7 @@ function buildFbxAnimations(
         ? extractGltfCubicSegment(values, channel.path === 'rotation' ? 4 : 3, 1)
         : values;
       const output = channel.path === 'rotation'
-        ? quaternionKeysToFbxEuler(keyValues)
+        ? quaternionKeysToFbxEuler(keyValues, space)
         : channel.path === 'translation'
           ? convertGltfVectorArrayToFbx(keyValues, space)
           : convertGltfScaleKeysToFbx(keyValues);

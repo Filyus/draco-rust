@@ -12,6 +12,7 @@ import { identityMat4, invertMat4 } from './mat4.ts';
 import { hasMaterialExtensionValues } from './material-extensions.ts';
 import { readGltfMaterial, resolveSampler, resolveTextureSource } from './gltf-interpretation.ts';
 import type { InterpretedTexture } from './gltf-interpretation.ts';
+import { multiplyQuaternion } from './fbx-space.ts';
 import type { FbxSpace } from './fbx-space.ts';
 import type { ResourceMap } from './scene-resources.ts';
 import type { GltfAsset, NumericArray } from './wasm-modules.ts';
@@ -239,17 +240,29 @@ export function buildFbxTextures(
   return textures;
 }
 
-/** Convert glTF quaternion key values to FBX XYZ Euler key values. */
-export function quaternionKeysToFbxEuler(values: Numbers): number[] {
+/**
+ * Convert glTF quaternion key values to FBX XYZ Euler key values.
+ *
+ * The basis change comes first, and it comes from the target space. It used to
+ * be written out by hand as `(x, z, -y)` — the one Z-up conversion this writer
+ * emitted — which was right for exactly that space and silently wrong for any
+ * other. Once the space became a choice, a Y-up export was turning its animated
+ * rotations by ninety degrees while leaving everything else alone.
+ *
+ * Still a quaternion product rather than a matrix per frame, which is what the
+ * hand-written form was for.
+ */
+export function quaternionKeysToFbxEuler(values: Numbers, space: FbxSpace): number[] {
   const result: number[] = [];
+  // glTF -> FBX, so the rotation is conjugated by the inverse of the basis the
+  // importer reads: q' = b* q b.
+  const [bx, by, bz, bw] = space.rotation;
+  const conjugate = [-bx, -by, -bz, bw];
   for (let index = 0; index + 3 < values.length; index += 4) {
-    // q' = C⁻¹ q C, where C is the glTF Y-up -> FBX Z-up basis.
-    // The simplified component form is stable and avoids converting each
-    // frame through a matrix before Euler decomposition.
-    const [x, y, z, w] = values.slice(index, index + 4);
-    const qx = x;
-    const qy = z;
-    const qz = -y;
+    const key = Array.from(values.slice(index, index + 4));
+    const [qx, qy, qz, w] = space.identity
+      ? key
+      : multiplyQuaternion(multiplyQuaternion(conjugate, key), space.rotation);
     const euler = [
       Math.atan2(2 * (w * qx + qy * qz), 1 - 2 * (qx * qx + qy * qy)),
       Math.asin(Math.max(-1, Math.min(1, 2 * (w * qy - qz * qx)))),

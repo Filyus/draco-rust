@@ -47,6 +47,39 @@ const source = buildSceneDocumentFromMeshes([{
 }]);
 source.nodes[0].translation = [...TRANSLATION];
 
+/**
+ * A quarter turn about glTF's +Y, animated.
+ *
+ * Rotations are the one channel the writer converted by hand rather than from
+ * the space -- the conversion was spelled out for the one Z-up convention it
+ * used to emit -- so a Y-up export was turning them and nothing else. A curve is
+ * the only way to reach that path: a static node's rotation goes through its
+ * matrix instead.
+ */
+const QUARTER_TURN_Y = [0, Math.SQRT1_2, 0, Math.SQRT1_2];
+source.animations.push({
+  name: 'Turn',
+  duration: 1,
+  samplers: [{
+    input: appendFloats(source, [0, 1], 1),
+    output: appendFloats(source, [...QUARTER_TURN_Y, ...QUARTER_TURN_Y], 4),
+    interpolation: 'LINEAR',
+  }],
+  channels: [{ sampler: 0, node: 0, path: 'rotation' }],
+});
+
+function appendFloats(document: typeof source, values: number[], components: number): number {
+  const index = document.accessors.length;
+  document.accessors.push({
+    bytes: new Uint8Array(Float32Array.from(values).buffer),
+    componentType: 5126,
+    components,
+    count: values.length / components,
+    normalized: false,
+  });
+  return index;
+}
+
 function readPositions(document: ReturnType<typeof buildSceneDocumentFromFbx>): number[] {
   const primitive = document.meshes[0].primitives[0];
   const accessor = document.accessors[primitive.attributes.POSITION];
@@ -84,6 +117,21 @@ for (const space of ['meters-y-up', 'meters-z-up'] as FbxExportSpaceName[]) {
 
   close(readPositions(document), POSITIONS, `${space} positions`);
   close(nodeTranslation(document), TRANSLATION, `${space} node translation`);
+
+  // The animated rotation has to come back as the same quarter turn about the
+  // same axis. FBX stores Euler degrees, so the comparison happens after the
+  // importer has turned them back into a quaternion, either sign of it.
+  const clip = document.animations[0];
+  const rotation = clip.channels.find((entry) => entry.path === 'rotation');
+  assert.ok(rotation, `${space}: the rotation channel survived`);
+  const keys = document.accessors[clip.samplers[rotation.sampler].output];
+  const first = Array.from(new Float32Array(
+    keys.bytes.buffer, keys.bytes.byteOffset, 4,
+  ));
+  const flipped = first.map((value) => -value);
+  const matches = QUARTER_TURN_Y.every((value, axis) => Math.abs(first[axis] - value) < 1e-3)
+    || QUARTER_TURN_Y.every((value, axis) => Math.abs(flipped[axis] - value) < 1e-3);
+  assert.ok(matches, `${space}: rotation key came back as ${first.join(', ')}`);
 
   const settings = parsed.scene.globalSettings;
   assert.equal(settings.unitScaleFactor, 100, `${space}: metres`);

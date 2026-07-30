@@ -435,7 +435,7 @@ function buildAnimations(document: SceneDocument, space: FbxSpace, warnings: str
         }));
       }
       let output;
-      if (channel.path === 'rotation') output = quaternionKeysToFbxEuler(keyValues);
+      if (channel.path === 'rotation') output = quaternionKeysToFbxEuler(keyValues, space);
       else if (channel.path === 'translation') output = convertGltfVectorArrayToFbx(keyValues, space);
       else output = keyValues;
       if (output.length !== input.length * 3) {
