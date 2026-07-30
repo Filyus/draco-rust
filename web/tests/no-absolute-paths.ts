@@ -1,8 +1,8 @@
 /**
  * No machine's own paths in the repository's code.
  *
- * Six Blender-gated suites each carried `C:/Program Files/...` to one
- * developer's install as their fallback. It reads as a convenience and is
+ * Six Blender-gated suites each carried a Program Files path to one developer's
+ * install as their fallback. It reads as a convenience and is
  * really a machine's configuration committed as source: correct on exactly one
  * computer, silently stale after an upgrade there, and a skip everywhere else
  * that looks like a missing dependency. The same shape had already leaked in for
@@ -54,8 +54,8 @@ const DRIVE = /(^|[^A-Za-z0-9_])[A-Za-z]:[\\/]/;
 const POSIX = new RegExp(`(^|['"\`(=\\s])${SLASH}(${POSIX_ROOTS.join('|')})${SLASH}`);
 
 /**
- * A `/tmp/…` literal is the same mistake in a portable disguise: it is a real
- * place, wrong on Windows, and `os.tmpdir()` is the answer. Checked separately
+ * A hardcoded temp directory is the same mistake in a portable disguise: it is a
+ * real place, wrong on Windows, and `os.tmpdir()` is the answer. Checked separately
  * only because it needs a word boundary the roots above get from their slash.
  */
 const TEMP = new RegExp(`(^|['"\`(=\\s])${SLASH}tmp${SLASH}`);

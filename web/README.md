@@ -520,8 +520,16 @@ It was written because six Blender-gated suites each named one developer's
 install as their fallback. That is a machine's configuration committed as source:
 right on one computer, stale there after the next upgrade, and elsewhere a skip
 that looks like a missing dependency. Blender is now found through `BLENDER`,
-then `PATH`, then the install root Windows advertises. Two `draco-io` examples and
-three documents had the same leak and lost it.
+then `PATH` — a distribution package or a snap — then, on Windows only, the
+install root the system advertises. A macOS `.app` bundle and a Flatpak are not
+searched for, because either would mean writing down a fixed location or a
+launcher's syntax; `BLENDER` names them. Two `draco-io` examples and three
+documents had the same leak and lost it.
+
+`test:blender-resolver` covers the search itself, forcing each platform rather
+than detecting it, and needs no Blender. It exists because every caller skips
+itself when the resolver finds nothing: a resolver broken on Linux would turn
+six suites off while they all still exit zero.
 
 Root-relative URLs are not paths and are not flagged — the shell serves pages
 from `/`.
