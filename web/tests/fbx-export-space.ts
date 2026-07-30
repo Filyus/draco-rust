@@ -39,11 +39,15 @@ const { buildSceneDocumentFromFbx } = await import(
 const POSITIONS = [1, 2, 3, -4, 5, -6, 7, -8, 9];
 const TRANSLATION = [0.25, -1.5, 2.75];
 
+/** Off-centre in V, so a flip cannot land on the value it started from. */
+const UVS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+
 const source = buildSceneDocumentFromMeshes([{
   name: 'Probe',
   positions: POSITIONS,
   indices: [0, 1, 2],
   normals: [0, 1, 0, 0, 1, 0, 0, 1, 0],
+  uvs: UVS,
 }]);
 source.nodes[0].translation = [...TRANSLATION];
 
@@ -80,14 +84,23 @@ function appendFloats(document: typeof source, values: number[], components: num
   return index;
 }
 
-function readPositions(document: ReturnType<typeof buildSceneDocumentFromFbx>): number[] {
+function readAttribute(
+  document: ReturnType<typeof buildSceneDocumentFromFbx>,
+  semantic: string,
+): number[] {
   const primitive = document.meshes[0].primitives[0];
-  const accessor = document.accessors[primitive.attributes.POSITION];
+  const index = primitive.attributes[semantic];
+  assert.ok(index !== undefined, `the imported mesh must carry ${semantic}`);
+  const accessor = document.accessors[index];
   return Array.from(new Float32Array(
     accessor.bytes.buffer,
     accessor.bytes.byteOffset,
     accessor.bytes.byteLength / 4,
   ));
+}
+
+function readPositions(document: ReturnType<typeof buildSceneDocumentFromFbx>): number[] {
+  return readAttribute(document, 'POSITION');
 }
 
 function nodeTranslation(document: ReturnType<typeof buildSceneDocumentFromFbx>): number[] {
@@ -116,6 +129,10 @@ for (const space of ['meters-y-up', 'meters-z-up'] as FbxExportSpaceName[]) {
   const document = buildSceneDocumentFromFbx(parsed);
 
   close(readPositions(document), POSITIONS, `${space} positions`);
+  // Texture coordinates have nothing to do with the space -- FBX puts V's origin
+  // at the other end of the image, whatever its axes are -- so a round trip has
+  // to return them whichever space it went through.
+  close(readAttribute(document, 'TEXCOORD_0'), UVS, `${space} texture coordinates`);
   close(nodeTranslation(document), TRANSLATION, `${space} node translation`);
 
   // The animated rotation has to come back as the same quarter turn about the

@@ -331,12 +331,18 @@ function appendMesh(source: FbxJson, materialMap: number[], document: SceneDocum
   if (source.normals?.length === vertexCount * 3) {
     attributes.NORMAL = appendFloatAccessor(document, rebaseVector3(source.normals, space), 3);
   }
-  if (source.uvs?.length === vertexCount * 2) attributes.TEXCOORD_0 = appendFloatAccessor(document, source.uvs, 2);
+  // FBX puts V's origin at the opposite end of the image from glTF, which is why
+  // the writer flips it on the way out. The way in did not, so the pair was
+  // asymmetric: a glTF exported to FBX and read back had its textures upside
+  // down, and an FBX exported to GLB carried the flip into the result.
+  if (source.uvs?.length === vertexCount * 2) {
+    attributes.TEXCOORD_0 = appendFloatAccessor(document, flipUvV(source.uvs), 2);
+  }
   // Extra FBX UV layers become TEXCOORD_1.. so a second set -- a lightmap,
   // typically -- survives into glTF instead of being dropped at import.
   for (let set = 1; set < Math.min(source.uvLayers?.length ?? 0, 8); set += 1) {
     const values = source.uvLayers[set];
-    if (values?.length === vertexCount * 2) attributes[`TEXCOORD_${set}`] = appendFloatAccessor(document, values, 2);
+    if (values?.length === vertexCount * 2) attributes[`TEXCOORD_${set}`] = appendFloatAccessor(document, flipUvV(values), 2);
   }
   // FBX LayerElementColor is linear RGBA on the polygon-corner domain, which
   // is already what the render mesh hands us.
@@ -603,6 +609,15 @@ function materialGroups(indices: FbxJson, materialIndices: FbxJson, fallback: nu
 
 function morphWeights(mesh: FbxJson): number[] {
   return Array.from<FbxJson, number>(mesh?.morphTargets || [], (target) => (Number(target.defaultWeight) || 0) / 100);
+}
+
+/** V runs the other way in FBX; the same one line serves both directions. */
+function flipUvV(values: ArrayLike<number>): Float32Array {
+  const output = new Float32Array(values.length);
+  for (let index = 0; index < values.length; index += 1) {
+    output[index] = index % 2 === 1 ? 1 - values[index] : values[index];
+  }
+  return output;
 }
 
 function appendFloatAccessor(document: SceneDocument, values: ArrayLike<number>, components: number): number {

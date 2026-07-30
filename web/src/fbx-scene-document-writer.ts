@@ -18,6 +18,7 @@ import {
   convertGltfMatrixToFbx,
   convertGltfVectorArrayToFbx,
   lowerPbrToFbxPhong,
+  convertGltfScaleKeysToFbx,
   quaternionKeysToFbxEuler,
 } from './fbx-scene-adapter.ts';
 import { assertFbxProvenance } from './fbx-scene-provenance.ts';
@@ -437,7 +438,9 @@ function buildAnimations(document: SceneDocument, space: FbxSpace, warnings: str
       let output;
       if (channel.path === 'rotation') output = quaternionKeysToFbxEuler(keyValues, space);
       else if (channel.path === 'translation') output = convertGltfVectorArrayToFbx(keyValues, space);
-      else output = keyValues;
+      // Scale permutes with the axes. This route never did it at all, which was
+      // invisible while the only space it wrote was one nobody animated scale in.
+      else output = convertGltfScaleKeysToFbx(keyValues, space);
       if (output.length !== input.length * 3) {
         warnings.push(`Animation ${clip.name}: ${channel.path} sampler was omitted from FBX export`);
         return [];

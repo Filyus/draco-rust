@@ -33,6 +33,7 @@ import {
   buildFbxSkins,
   buildFbxTextures,
   buildFbxWorldMatrices,
+  convertGltfScaleKeysToFbx,
   convertGltfVectorArrayToFbx,
   fbxRowMajorMatrix,
   extractGltfCubicSegment,
@@ -546,7 +547,7 @@ function buildFbxAnimations(
         ? quaternionKeysToFbxEuler(keyValues, space)
         : channel.path === 'translation'
           ? convertGltfVectorArrayToFbx(keyValues, space)
-          : convertGltfScaleKeysToFbx(keyValues);
+          : convertGltfScaleKeysToFbx(keyValues, space);
       if (output.length !== input.length * 3) {
         warnings.push(`Animation ${animation.name}: invalid ${channel.path} sampler was skipped for FBX export`);
         return [];
@@ -571,14 +572,6 @@ function buildFbxAnimations(
     });
     return channels.length > 0 ? { name: animation.name, duration: animation.duration, channels } : null;
   }).filter(Boolean);
-}
-
-function convertGltfScaleKeysToFbx(values: number[]): number[] {
-  const converted = Array.from(values);
-  for (let offset = 0; offset + 2 < converted.length; offset += 3) {
-    [converted[offset + 1], converted[offset + 2]] = [converted[offset + 2], converted[offset + 1]];
-  }
-  return converted;
 }
 
 // Scale is carried by `UnitScaleFactor = 100.0` in the writer's GlobalSettings

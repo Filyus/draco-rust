@@ -280,6 +280,26 @@ export function quaternionKeysToFbxEuler(values: Numbers, space: FbxSpace): numb
   return result;
 }
 
+/**
+ * Animated per-axis scale, in the target space.
+ *
+ * Scale follows the axes and not their signs, so this is a permutation rather
+ * than a rotation: glTF component `r` lands on FBX axis `axes[r]`. It used to be
+ * a hand-written Y/Z swap in the glTF route and nothing at all in the document
+ * route -- the same split the rotation keys had, found by looking for the rest
+ * of it.
+ */
+export function convertGltfScaleKeysToFbx(values: ArrayLike<number>, space: FbxSpace): number[] {
+  const converted = Array.from(values);
+  if (space.identity) return converted;
+  for (let offset = 0; offset + 2 < converted.length; offset += 3) {
+    for (let component = 0; component < 3; component += 1) {
+      converted[offset + space.axes[component]] = values[offset + component];
+    }
+  }
+  return converted;
+}
+
 /** Split glTF CUBICSPLINE [in, value, out] key payloads. */
 export function extractGltfCubicSegment(values: Numbers, components: number, segment: number): number[] {
   const result: number[] = [];
