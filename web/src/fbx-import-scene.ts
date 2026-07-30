@@ -35,7 +35,14 @@ export async function buildSceneFromFbx(
 
   const flatMeshes: FbxJson[] = [];
   const collectMeshes = (node: FbxJson) => {
-    flatMeshes.push(...(node.meshes || []));
+    // Copied rather than referenced, and V turned on the way past. FBX puts V's
+    // origin at the opposite end of the image from glTF, which the preview
+    // consumes; without this a textured FBX showed mirrored against the very
+    // GLB this application exports from it. A copy because the same mesh objects
+    // are what the export path reads, and it turns V itself.
+    flatMeshes.push(...(node.meshes || []).map((mesh: FbxJson) => (mesh.uvs?.length
+      ? { ...mesh, uvs: flipUvV(mesh.uvs) }
+      : mesh)));
     for (const child of node.children || []) collectMeshes(child);
   };
   for (const root of roots) collectMeshes(root);
@@ -59,6 +66,15 @@ export async function buildSceneFromFbx(
       .filter(Boolean);
   }
   return scene;
+}
+
+/** V runs the other way in FBX, whichever direction it is being carried. */
+function flipUvV(values: ArrayLike<number>): Float32Array {
+  const output = new Float32Array(values.length);
+  for (let index = 0; index < values.length; index += 1) {
+    output[index] = index % 2 === 1 ? 1 - values[index] : values[index];
+  }
+  return output;
 }
 
 function applyFbxMaterials(scene: ViewerSceneDraft, parsed: FbxJson, flatMeshes: FbxJson[]) {

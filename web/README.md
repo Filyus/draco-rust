@@ -127,6 +127,18 @@ declaration together, so they cannot disagree. A re-export follows its source's
 declared space instead of the option, which is what makes it a round trip rather
 than a conversion.
 
+## FBX texture coordinates
+
+FBX puts V's origin at the opposite end of the image from glTF, so every
+crossing turns it: the writer on the way out, the document importer on the way
+in, and the preview on its own way in — it reads the FBX reader directly rather
+than through the document. All three used to be one: only the writer turned it,
+so a glTF exported to FBX and read back came home upside down, and a textured FBX
+previewed mirrored against the GLB exported from the same file.
+
+A re-export is the exception, and not one: it puts back the coordinates it read,
+which have not been turned.
+
 ## FBX axes
 
 The other six `GlobalSettings` fields say which axis is up, which points front

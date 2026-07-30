@@ -2339,6 +2339,59 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
 });
 
 /**
+ * What the preview shows an FBX as, and what it exports it as, have to agree.
+ *
+ * FBX puts V's origin at the opposite end of the image from glTF. The writer
+ * turns it, the document importer now turns it back — and the preview reads its
+ * own way in, straight from the FBX reader, so it was showing every textured FBX
+ * mirrored against the GLB this application makes from the same file. Compared
+ * against the coordinates the model started with, so neither half is taken as
+ * the reference.
+ */
+test('an FBX previews with the texture coordinates it exports', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles({
+    name: 'uvs.gltf',
+    mimeType: 'model/gltf+json',
+    buffer: Buffer.from(attributedTriangle()),
+  });
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  await page.locator('[data-choice-for="export-format"] [data-value="fbx"]').click();
+  const download = page.waitForEvent('download');
+  await page.locator('#export-btn').click();
+  await page.locator('#file-input').setInputFiles({
+    name: 'uvs.fbx',
+    mimeType: 'application/octet-stream',
+    buffer: await readFile((await (await download).path())!),
+  });
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  const uvs = await page.evaluate(async () => {
+    const { state } = await import('/app/state.js' as string);
+    const read = (bytes: Uint8Array | undefined) => (bytes
+      ? Array.from(new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4))
+      : []);
+    const primitive = state.viewer?.scene?.meshes?.[0]?.primitives?.[0];
+    const document = state.currentSceneDocument;
+    const accessor = document?.accessors?.[
+      document.meshes[0].primitives[0].attributes.TEXCOORD_0
+    ];
+    return {
+      preview: read(primitive?.attributes?.TEXCOORD_0?.bytes),
+      exported: read(accessor?.bytes),
+    };
+  });
+
+  // The fixture's own coordinates, both halves compared to them rather than to
+  // each other: agreeing on the wrong answer is the failure this replaces.
+  const expected = [0, 0, 1, 0, 0.5, 1];
+  expect(uvs.exported.map((value) => Math.round(value * 1e4) / 1e4)).toEqual(expected);
+  expect(uvs.preview.map((value) => Math.round(value * 1e4) / 1e4)).toEqual(expected);
+});
+
+/**
  * An FBX round trip comes back the size and the way up it went out.
  *
  * Both halves were wrong and neither showed on the corpus. `UnitScaleFactor` is
