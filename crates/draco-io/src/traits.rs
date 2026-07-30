@@ -1,7 +1,7 @@
 //! Common traits for geometry readers and writers.
 //!
 //! These traits define the shared mesh and point-cloud API for the OBJ, PLY,
-//! and FBX adapters in this crate. They intentionally do not model a lossless
+//! STL, and FBX adapters in this crate. They intentionally do not model a lossless
 //! scene document; full glTF scene workflows use `draco-gltf::Document` and
 //! `draco-gltf::Import` instead.
 //!

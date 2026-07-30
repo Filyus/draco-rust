@@ -6,7 +6,12 @@ description = "Rust IO helpers for Draco geometry compression formats"
 license = "Apache-2.0"
 repository = "https://github.com/Filyus/draco-rust"
 readme = "README.md"
-keywords = ["draco", "gltf", "obj", "ply", "fbx"]
+# Five is the crates.io maximum, so this is the family plus the four mesh
+# formats read and written end to end. `gltf` came off rather than STL being
+# left out: `draco-gltf` is the crate that owns glTF documents, and what this
+# one does there is containers and accessors, so a search for glTF is better
+# answered by that crate than by this.
+keywords = ["draco", "obj", "ply", "stl", "fbx"]
 categories = ["compression", "encoding", "graphics", "parser-implementations"]
 exclude = [
     "tests/cpp_decode_test.rs",

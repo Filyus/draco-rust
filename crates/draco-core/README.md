@@ -153,7 +153,7 @@ same spirit by keeping legacy encode support explicit.
 
 ## Workspace Crates
 
-- `draco-io`: OBJ / PLY / FBX readers and writers, plus the document-preserving glTF compressor core that `draco-gltf` reuses.
+- `draco-io`: OBJ / PLY / STL / FBX readers and writers, plus the document-preserving glTF compressor core that `draco-gltf` reuses.
 - `draco-gltf`: load and save full glTF / GLB scenes with Draco-compressed geometry — decode via `draco-core`, document-preserving (re)compress via `draco-io`. The main glTF consumer.
 - `draco-cpp-test-bridge`: test infrastructure for C++ parity.
 

@@ -2,7 +2,7 @@
 //!
 //! `draco-core` implements the raw Draco `.drc` bitstream layer for triangle
 //! meshes and point clouds. It intentionally stops at the geometry compression
-//! model: file containers such as glTF/GLB, OBJ, PLY, and FBX live in
+//! model: file containers such as glTF/GLB, OBJ, PLY, STL, and FBX live in
 //! `draco-io`.
 //!
 //! # Main Entry Points

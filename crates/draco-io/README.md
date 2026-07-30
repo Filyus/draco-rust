@@ -6,8 +6,9 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/Filyus/draco-rust/blob/main/LICENSE)
 
 `draco-io` is the low-level format I/O layer for the Draco Rust workspace. It
-reads and writes OBJ, PLY, and binary FBX geometry and provides strict glTF/GLB
-container, resource, accessor, and Draco-geometry contracts.
+reads and writes OBJ, PLY, STL and FBX geometry — each in both of its containers
+where it has two — and provides strict glTF/GLB container, resource, accessor,
+and Draco-geometry contracts.
 
 For complete, lossless glTF documents, scene preservation, and
 document-preserving Draco compression, use
@@ -35,6 +36,7 @@ draco-io = { version = "0.3", default-features = false, features = ["obj-reader"
 | --- | :---: | :---: | --- |
 | OBJ | Yes | Yes | Meshes, normals, texture coordinates, named groups, and point clouds. |
 | PLY | Yes | Yes | ASCII and binary geometry, normals, colors, and point clouds. |
+| STL | Yes | Yes | Binary and ASCII triangles. No indices or attributes: the format stores unshared corners and a facet normal, and nothing else. |
 | FBX | Yes | Yes | Binary and ASCII FBX 7.x scene data. See the FBX matrix below. |
 | glTF / GLB | Containers and geometry contracts | Containers | GLB inspection, JSON/bin extraction, resource resolution, accessors, and optional `KHR_draco_mesh_compression` geometry decode. Full-document operations belong to `draco-gltf`. |
 
@@ -311,9 +313,10 @@ For format-agnostic use, `Reader`, `Writer`, `ReadFromBytes`, and
 
 | Feature | Default | Purpose |
 | --- | :---: | --- |
-| `all-readers` / `all-writers` | Yes | Enable all OBJ, PLY, and FBX readers or writers. |
+| `all-readers` / `all-writers` | Yes | Enable all OBJ, PLY, STL, and FBX readers or writers. |
 | `obj-reader` / `obj-writer` | Yes | Wavefront OBJ support. |
 | `ply-reader` / `ply-writer` | Yes | Stanford PLY support. |
+| `stl-reader` / `stl-writer` | Yes | STL support, binary and ASCII. |
 | `fbx-reader` / `fbx-writer` | Yes | FBX support, binary and ASCII. |
 | `gltf-container` | No | Parse glTF/GLB and load referenced buffers; no mesh decoding. |
 | `gltf-geometry` | No | Convert ordinary glTF accessors into `draco-core` meshes. |
