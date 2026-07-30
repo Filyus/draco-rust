@@ -41,6 +41,18 @@ pub trait GeometryEncoder {
     fn get_vertex_to_data_map(&self) -> Option<&[i32]> {
         None
     }
+    /// Returns the portable (quantized) form of an attribute, once the encoder
+    /// has transformed it. Prediction schemes that read a parent attribute --
+    /// tex coords and geometric normals both predict from the position -- must
+    /// use this and not the original floats, because the decoder only ever has
+    /// the portable values to predict from. Counterpart of C++
+    /// `PointCloudEncoder::GetPortableAttribute`.
+    fn get_portable_attribute(
+        &self,
+        _att_id: i32,
+    ) -> Option<&crate::geometry_attribute::PointAttribute> {
+        None
+    }
 }
 
 /// Encoder for Draco point cloud bitstreams.

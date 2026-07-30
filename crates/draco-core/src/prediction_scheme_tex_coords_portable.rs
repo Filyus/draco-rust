@@ -798,9 +798,13 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
             }
         }
 
-        let data_offset = if prev_data_id < data_id {
-            (prev_data_id * 2) as usize
-        } else if next_data_id < data_id {
+        // Upstream has a `prev_data_id < data_id` branch ahead of these two, but
+        // it writes the offset with a plain `if` and the next branch is another
+        // plain `if` whose `else` covers everything remaining -- so whatever the
+        // previous corner set is overwritten on every path. Reproducing it as an
+        // if/else-if chain would pick the previous corner where Draco picks the
+        // next one or the last encoded value.
+        let data_offset = if next_data_id < data_id {
             (next_data_id * 2) as usize
         } else if data_id > 0 {
             ((data_id - 1) * 2) as usize

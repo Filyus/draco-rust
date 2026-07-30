@@ -82,6 +82,13 @@ pub struct MeshEncoder {
     active_corner_table: Option<CornerTable>,
     active_data_to_corner_map: Option<Vec<u32>>,
     active_vertex_to_data_map: Option<Vec<i32>>,
+    /// Depth-first order for the non-position attribute groups, present only
+    /// when the position group uses a different one (speed 0).
+    #[allow(clippy::type_complexity)]
+    attribute_traversal: Option<(Vec<PointIndex>, Vec<u32>, Vec<i32>)>,
+    /// Attributes in their portable (quantized) form, for the current group.
+    /// Prediction schemes read their parent attribute from here.
+    portable_attributes: Vec<(i32, PointAttribute)>,
     method: i32,
     /// Maps point indices to vertex indices in the corner table.
     /// Used when position-based deduplication is enabled.
@@ -165,6 +172,23 @@ impl GeometryEncoder for MeshEncoder {
             .as_deref()
             .or(self.vertex_to_data_map.as_deref())
     }
+
+    fn get_portable_attribute(&self, att_id: i32) -> Option<&PointAttribute> {
+        // Falls back to the attribute itself when it has no portable form, as
+        // SequentialAttributeEncoder::GetPortableAttribute does. An attribute
+        // that needs no transform -- an already-integral one, say -- is its own
+        // portable form upstream, and a predictor asking for it must get it
+        // rather than a null it would treat as a failure.
+        self.portable_attributes
+            .iter()
+            .find(|(id, _)| *id == att_id)
+            .map(|(_, att)| att)
+            .or_else(|| {
+                self.mesh
+                    .as_ref()
+                    .and_then(|mesh| mesh.try_attribute(att_id).ok())
+            })
+    }
 }
 
 impl MeshEncoder {
@@ -182,6 +206,8 @@ impl MeshEncoder {
             active_corner_table: None,
             active_data_to_corner_map: None,
             active_vertex_to_data_map: None,
+            attribute_traversal: None,
+            portable_attributes: Vec::new(),
             method: 0,
             point_to_vertex_map: None,
             use_single_connectivity: false,
@@ -227,6 +253,7 @@ impl MeshEncoder {
     pub fn encode(&mut self, options: &EncoderOptions, out_buffer: &mut EncoderBuffer) -> Status {
         self.options = options.clone();
         self.encoded_mesh_info = None;
+        self.portable_attributes.clear();
 
         if self.mesh.is_none() {
             return Err(DracoError::DracoError("Mesh not set".to_string()));
@@ -468,12 +495,23 @@ impl MeshEncoder {
             &self.edgebreaker_attribute_connectivity,
             out_buffer,
             self.options.get_speed() as usize,
+            self.use_single_connectivity,
         )?;
         #[cfg(feature = "debug_logs")]
         {
             debug_log!("DEBUG: encode_edgebreaker_connectivity: point_ids.len()={}, data_to_corner_map.len()={}, vertex_to_data_map.len()={}",
                  point_ids.len(), data_to_corner_map.len(), vertex_to_data_map.len());
         }
+        // At speed 0 the position walks the mesh by max prediction degree while
+        // every other attribute stays depth first, so the two orders part ways
+        // and the non-position groups need their own. At any other speed the
+        // position order already is the depth-first one.
+        self.attribute_traversal = if self.options.get_speed() == 0 && mesh.num_attributes() > 1 {
+            Some(encoder.generate_depth_first_traversal(mesh, corner_table))
+        } else {
+            None
+        };
+
         self.point_ids = point_ids;
 
         // Draco stores corner mapping in attribute (data) order.
@@ -938,7 +976,13 @@ impl MeshEncoder {
         let major = out_buffer.version_major();
         let minor = out_buffer.version_minor();
         let writes_traversal_method = crate::version::bitstream_version(major, minor) >= 0x0102;
-        let traversal_method: u8 = if self.options.get_speed() == 0 { 1 } else { 0 };
+        // Prediction degree is the position group's traversal alone, and only at
+        // speed 0. Every other group is walked depth first, whatever the speed --
+        // upstream guards on the attribute being POSITION, and the groups here
+        // carry att_data_id -1 for exactly that one. Declaring it for the rest
+        // mislabels a stream whose values were written in depth-first order.
+        let position_prediction_degree = self.options.get_speed() == 0
+            && !(self.use_single_connectivity && mesh.num_attributes() > 1);
         for (att_data_id, _) in &groups {
             out_buffer.encode_u8(*att_data_id as u8);
             let element_type = if *att_data_id >= 0
@@ -950,6 +994,12 @@ impl MeshEncoder {
             };
             out_buffer.encode_u8(element_type);
             if writes_traversal_method {
+                let is_position_group = *att_data_id < 0;
+                let traversal_method: u8 = if position_prediction_degree && is_position_group {
+                    1
+                } else {
+                    0
+                };
                 out_buffer.encode_u8(traversal_method);
             }
         }
@@ -1055,7 +1105,17 @@ impl MeshEncoder {
             })?;
 
         if attr_conn.no_interior_seams {
+            // Same corner table as the position, but not necessarily the same
+            // walk over it: `attribute_traversal` is set when the position took
+            // the max-prediction-degree order and this attribute must not.
             self.active_corner_table = None;
+            if let Some((point_ids, data_to_corner_map, vertex_to_data_map)) =
+                self.attribute_traversal.clone()
+            {
+                self.active_data_to_corner_map = Some(data_to_corner_map);
+                self.active_vertex_to_data_map = Some(vertex_to_data_map);
+                return Ok(point_ids);
+            }
             self.active_data_to_corner_map = None;
             self.active_vertex_to_data_map = None;
             return Ok(self.point_ids.clone());
@@ -1114,19 +1174,109 @@ impl MeshEncoder {
         point_ids: &[PointIndex],
         out_buffer: &mut EncoderBuffer,
     ) -> Status {
+        // Pass one: bring every attribute into its portable form before any of
+        // them is encoded, mirroring C++
+        // SequentialAttributeEncodersController::TransformAttributesToPortableFormat.
+        // A prediction scheme that reads a parent attribute needs the parent's
+        // portable values, and with a single pass the parent would not exist yet
+        // for anything encoded before it.
+        let mut quantization_transforms: Vec<Option<AttributeQuantizationTransform>> = Vec::new();
+        {
+            let mesh = self
+                .mesh
+                .as_ref()
+                .expect("mesh must be set before encoding");
+            let mut portables: Vec<(i32, PointAttribute)> = Vec::new();
+            for (local_i, &att_id) in attr_ids.iter().enumerate() {
+                if decoder_types[local_i] != 2 {
+                    quantization_transforms.push(None);
+                    continue;
+                }
+                let att = mesh.attribute(att_id);
+                let is_parent_attribute = att.attribute_type() == GeometryAttributeType::Position
+                    && self.options.get_speed() < 4;
+                let quantization_bits =
+                    self.options
+                        .get_attribute_int(att_id, "quantization_bits", -1);
+                let mut q_transform = AttributeQuantizationTransform::new();
+                if !q_transform.compute_parameters(att, quantization_bits) {
+                    return Err(DracoError::DracoError(
+                        "Failed to compute quantization parameters".to_string(),
+                    ));
+                }
+                let mut portable = PointAttribute::default();
+                if !q_transform.transform_attribute(att, point_ids, &mut portable) {
+                    return Err(DracoError::DracoError(
+                        "Failed to quantize attribute".to_string(),
+                    ));
+                }
+
+                // Rebuild the portable attribute's point map, as upstream does
+                // in SequentialIntegerAttributeEncoder::TransformAttributeToPortableFormat.
+                // The values were written in encoding order, but a prediction
+                // scheme reads its parent as `mapped_index(point_id)`; without
+                // this the lookup returns whichever vertex happens to sit at
+                // that index in the traversal, and encoder and decoder predict
+                // from different positions.
+                //
+                // Upstream guards this with `is_parent_encoder()`. The two
+                // schemes that declare a parent -- tex coords portable and
+                // geometric normal -- both name the position and are both
+                // selected only below speed 4; every other scheme declares
+                // none. So this is the same guard, decided up front rather than
+                // by a flag set during scheme construction.
+                if is_parent_attribute {
+                    let num_points = mesh.num_points();
+                    let mut value_to_value = vec![0u32; att.size().max(1)];
+                    for (entry, &point_id) in point_ids.iter().enumerate() {
+                        let src = att.mapped_index(point_id);
+                        if (src.0 as usize) < value_to_value.len() {
+                            value_to_value[src.0 as usize] = entry as u32;
+                        }
+                    }
+                    portable.set_explicit_mapping(num_points);
+                    for point in 0..num_points {
+                        let src = att.mapped_index(PointIndex(point as u32));
+                        let entry = value_to_value
+                            .get(src.0 as usize)
+                            .copied()
+                            .unwrap_or_default();
+                        portable.try_set_point_map_entry(
+                            PointIndex(point as u32),
+                            crate::geometry_indices::AttributeValueIndex(entry),
+                        )?;
+                    }
+                }
+
+                portables.push((att_id, portable));
+                quantization_transforms.push(Some(q_transform));
+            }
+            // Accumulated across groups, not replaced: attributes are encoded one
+            // group at a time and the position lives in its own, so replacing
+            // here would take the position's portable values away from every
+            // later group's predictors.
+            for (att_id, portable) in portables {
+                match self
+                    .portable_attributes
+                    .iter_mut()
+                    .find(|(id, _)| *id == att_id)
+                {
+                    Some((_, existing)) => *existing = portable,
+                    None => self.portable_attributes.push((att_id, portable)),
+                }
+            }
+        }
+
         let mesh = self
             .mesh
             .as_ref()
             .expect("mesh must be set before encoding");
-        let mut quantization_transforms: Vec<Option<AttributeQuantizationTransform>> = Vec::new();
         let mut normal_encoders: Vec<Option<SequentialNormalAttributeEncoder>> = Vec::new();
 
         for (local_i, &att_id) in attr_ids.iter().enumerate() {
             let att = mesh.attribute(att_id);
             let decoder_type = decoder_types[local_i];
-            let quantization_bits = self
-                .options
-                .get_attribute_int(att_id, "quantization_bits", -1);
+            let _ = att;
 
             match decoder_type {
                 3 => {
@@ -1152,21 +1302,18 @@ impl MeshEncoder {
                         ));
                     }
                     normal_encoders.push(Some(encoder));
-                    quantization_transforms.push(None);
                 }
                 2 => {
-                    let mut q_transform = AttributeQuantizationTransform::new();
-                    if !q_transform.compute_parameters(att, quantization_bits) {
-                        return Err(DracoError::DracoError(
-                            "Failed to compute quantization parameters".to_string(),
-                        ));
-                    }
-                    let mut portable = PointAttribute::default();
-                    if !q_transform.transform_attribute(att, point_ids, &mut portable) {
-                        return Err(DracoError::DracoError(
-                            "Failed to quantize attribute".to_string(),
-                        ));
-                    }
+                    let portable = self
+                        .portable_attributes
+                        .iter()
+                        .find(|(id, _)| *id == att_id)
+                        .map(|(_, att)| att)
+                        .ok_or_else(|| {
+                            DracoError::DracoError(format!(
+                                "Missing portable attribute for {att_id}"
+                            ))
+                        })?;
 
                     let mut att_encoder = SequentialIntegerAttributeEncoder::new();
                     att_encoder.init(att_id);
@@ -1176,7 +1323,7 @@ impl MeshEncoder {
                         out_buffer,
                         &self.options,
                         self,
-                        Some(&portable),
+                        Some(portable),
                         true,
                     ) {
                         return Err(DracoError::DracoError(format!(
@@ -1184,7 +1331,6 @@ impl MeshEncoder {
                             att_id
                         )));
                     }
-                    quantization_transforms.push(Some(q_transform));
                     normal_encoders.push(None);
                 }
                 1 => {
@@ -1204,7 +1350,6 @@ impl MeshEncoder {
                             att_id
                         )));
                     }
-                    quantization_transforms.push(None);
                     normal_encoders.push(None);
                 }
                 0 => {
@@ -1216,7 +1361,6 @@ impl MeshEncoder {
                             att_id
                         )));
                     }
-                    quantization_transforms.push(None);
                     normal_encoders.push(None);
                 }
                 _ => {

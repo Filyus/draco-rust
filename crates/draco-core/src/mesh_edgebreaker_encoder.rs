@@ -143,6 +143,9 @@ pub struct MeshEdgebreakerEncoder {
     // Tracks which holes have been visited during encoding
     visited_holes: Vec<bool>,
     encoding_speed: usize,
+    /// One connectivity shared by more than one attribute; suppresses the
+    /// speed-0 prediction-degree order for the position.
+    single_connectivity_multi_attribute: bool,
     #[cfg(feature = "debug_logs")]
     verbose_logging: bool,
 
@@ -185,6 +188,7 @@ impl MeshEdgebreakerEncoder {
             vertex_hole_id: vec![-1; num_vertices],
             visited_holes: Vec::new(),
             encoding_speed: 5, // Default
+            single_connectivity_multi_attribute: false,
             #[cfg(feature = "debug_logs")]
             verbose_logging: crate::debug_env_enabled("DRACO_VERBOSE"),
             #[cfg(feature = "edgebreaker_valence_encode")]
@@ -257,6 +261,7 @@ impl MeshEdgebreakerEncoder {
         attribute_connectivity: &[EdgebreakerAttributeConnectivity],
         out_buffer: &mut EncoderBuffer,
         speed: usize,
+        single_connectivity: bool,
     ) -> Result<(Vec<PointIndex>, Vec<u32>, Vec<i32>), DracoError> {
         self.visited_faces = vec![false; mesh.num_faces()];
         // Use corner_table.num_vertices() instead of mesh.num_points()
@@ -273,6 +278,7 @@ impl MeshEdgebreakerEncoder {
         self.symbol_to_encoder_corner.clear();
         self.encoded_faces.clear();
         self.encoding_speed = speed;
+        self.single_connectivity_multi_attribute = single_connectivity && mesh.num_attributes() > 1;
 
         // C++ uses standard encoding for:
         // 1. speed >= 5, OR
@@ -530,8 +536,12 @@ impl MeshEdgebreakerEncoder {
                     .collect::<Vec<_>>()
             );
         }
-        let (point_ids, data_to_corner_map, vertex_to_data_map) =
-            self.generate_attribute_traversal(mesh, corner_table);
+        let (point_ids, data_to_corner_map, vertex_to_data_map) = self
+            .generate_attribute_traversal(
+                mesh,
+                corner_table,
+                self.position_uses_prediction_degree(),
+            );
 
         if self.verbose_logging() {
             debug_log!(
@@ -556,6 +566,29 @@ impl MeshEdgebreakerEncoder {
         Ok((point_ids, data_to_corner_map, vertex_to_data_map))
     }
 
+    /// Whether the position attribute is walked by max prediction degree.
+    ///
+    /// Speed 0 alone, and upstream then takes it back when one connectivity is
+    /// shared by more than one attribute -- see
+    /// `mesh_edgebreaker_encoder_impl.cc:165-175`, whose comment says the
+    /// prediction degree has not been shown to pay off for the non-position
+    /// attributes that would have to share the order.
+    pub(crate) fn position_uses_prediction_degree(&self) -> bool {
+        self.encoding_speed == 0 && !self.single_connectivity_multi_attribute
+    }
+
+    /// The depth-first order, which is what every attribute other than the
+    /// position uses. It coincides with the position order at every speed but 0,
+    /// where the position alone switches to max prediction degree; asking for it
+    /// separately is what keeps the other attributes off that order.
+    pub(crate) fn generate_depth_first_traversal(
+        &self,
+        mesh: &Mesh,
+        corner_table: &CornerTable,
+    ) -> (Vec<PointIndex>, Vec<u32>, Vec<i32>) {
+        self.generate_attribute_traversal(mesh, corner_table, false)
+    }
+
     /// Generates attribute traversal order using DFS on the encoder's corner table.
     /// This matches C++ MeshTraversalSequencer::GenerateSequenceInternal with SetCornerOrder.
     /// The C++ encoder uses processed_connectivity_corners_ as seeds for DFS.
@@ -563,6 +596,7 @@ impl MeshEdgebreakerEncoder {
         &self,
         mesh: &Mesh,
         corner_table: &CornerTable,
+        use_prediction_degree: bool,
     ) -> (Vec<PointIndex>, Vec<u32>, Vec<i32>) {
         let num_vertices = corner_table.num_vertices();
         let num_faces = corner_table.num_faces();
@@ -636,7 +670,7 @@ impl MeshEdgebreakerEncoder {
 
         // Choose traversal method based on encoding speed
         // Speed 0 uses MaxPredictionDegree traversal for better compression (matches C++)
-        if self.encoding_speed == 0 {
+        if use_prediction_degree {
             if debug_cmp {
                 debug_log!("RUST: Using MaxPredictionDegree traversal (speed 0)");
             }
@@ -1197,13 +1231,15 @@ impl MeshEdgebreakerEncoder {
             data_to_corner_map.push(corner_id.0);
         }
 
-        // Process each seed corner from corner_order
+        // Process each seed corner from corner_order.
+        //
+        // No visited-face guard here, unlike the depth-first traverser: upstream
+        // MaxPredictionDegreeTraverser::TraverseFromCorner has none. Marking a
+        // face visited only visits that corner's own vertex, so a visited face
+        // can still carry unvisited ones, and the three pre-visits below are
+        // where they get picked up. Skipping the seed drops them to a later
+        // position in the sequence.
         for &seed_corner in corner_order {
-            let seed_face = FaceIndex(seed_corner.0 / 3);
-            if visited_faces[seed_face.0 as usize] {
-                continue;
-            }
-
             // Initialize traversal from seed corner
             traversal_stacks[0].push(seed_corner);
             best_priority = 0;

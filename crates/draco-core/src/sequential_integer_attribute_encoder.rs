@@ -723,15 +723,24 @@ impl SequentialIntegerAttributeEncoder {
                                 MeshPredictionSchemeTexCoordsPortableEncoder::new(transform);
                             selected_transform_type = predictor.get_transform_type();
 
-                            let pos_att = encoder
+                            // The portable position, not the original floats: the
+                            // predictor works in quantized space and the decoder
+                            // has nothing else to predict from. C++ reaches it
+                            // through PointCloudEncoder::GetPortableAttribute in
+                            // SequentialAttributeEncoder::InitPredictionScheme,
+                            // and fails outright when it is missing.
+                            let pos_att_id = encoder
                                 .point_cloud()
                                 .unwrap()
-                                .named_attribute(GeometryAttributeType::Position);
-                            if let Some(pos_att) = pos_att {
-                                if !predictor.set_parent_attribute(pos_att) {
-                                    return false;
-                                }
-                            } else {
+                                .named_attribute_id(GeometryAttributeType::Position);
+                            if pos_att_id < 0 {
+                                return false;
+                            }
+                            let Some(pos_att) = encoder.get_portable_attribute(pos_att_id) else {
+                                debug_log!("No portable position attribute for TexCoordsPortable");
+                                return false;
+                            };
+                            if !predictor.set_parent_attribute(pos_att) {
                                 return false;
                             }
 
