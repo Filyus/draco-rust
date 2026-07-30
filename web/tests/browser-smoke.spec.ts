@@ -2049,7 +2049,12 @@ test('every source format converts to every target format', async ({ page }) => 
       buffer: await readFile(testdata('mat_test.obj')),
       companions: [testdata('mat_test.mtl')],
     },
-    { name: 'matrix.ply', buffer: await readFile(testdata('cube_att.obj.edgebreaker.cl10.2.2.drc.ply')) },
+    // cube_att.ply is checked in and carries the two-list face element -- a
+    // `texcoord` list next to `vertex_indices` -- which is the case the reader's
+    // index-list selection exists for. The decoded `.drc.ply` used here first is
+    // an artifact of decoding, matched by `*.drc.ply` in .gitignore, so it exists
+    // on the machine that produced it and nowhere else.
+    { name: 'matrix.ply', buffer: await readFile(testdata('cube_att.ply')) },
     { name: 'matrix.drc', buffer: await readFile(testdata('cube_att.obj.edgebreaker.cl10.2.2.drc')) },
   ];
 
