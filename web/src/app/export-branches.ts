@@ -1,4 +1,5 @@
 import type { LoadedLayerSet, LoadedMesh, OpaqueAttribute } from '../mesh-loader.ts';
+import { FBX_METERS_Y_UP } from '../fbx-space.ts';
 import { buildSceneDocumentFromMeshes, flattenSceneDocument } from '../mesh-scene-document.ts';
 import type { MeshDocumentOptions } from '../mesh-scene-document.ts';
 import type { SceneCapabilities, SceneDocument } from '../scene-document.ts';
@@ -631,11 +632,23 @@ function asGltfIfAsked(outcome: ExportOutcome, format: string): ExportOutcome {
   };
 }
 
+/**
+ * FBX from a bare mesh list.
+ *
+ * The flat entry point writes each mesh as its own root and has no hierarchy to
+ * place them with, so the geometry goes out in glTF's own coordinates. That is
+ * only correct if the file says so, which is what the declaration is for: it
+ * used to fall back to the writer's defaults, and those described a space this
+ * path never wrote.
+ */
 export async function exportToFbx(meshes: PreparedMesh[]) {
   if (!modules.fbx.loaded) {
     return { success: false, error: 'FBX module not loaded' };
   }
-  return modules.fbx.module.create_fbx(meshes, { version: 7500 });
+  return modules.fbx.module.create_fbx(meshes, {
+    version: 7500,
+    globalSettings: FBX_METERS_Y_UP,
+  });
 }
 
 export async function exportToFbxScene(scene: FbxSceneData, legacyCompatibility = false) {

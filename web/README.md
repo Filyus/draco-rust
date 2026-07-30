@@ -113,6 +113,22 @@ The four real-world fixtures on hand -- Mixamo, Samba Dancing, `morph_test` and
 the Stanford bunny -- all state 1, which is why the constant went unnoticed and
 why honouring the field moves none of them.
 
+## FBX space
+
+Which space an FBX export is written in is a choice, because FBX declares its
+own rather than fixing one. `meters-y-up` is the default: glTF's own axes and
+metres, which makes the conversion the identity, the round trip exact, and the
+file look like every FBX on hand from another tool. `meters-z-up` writes the
+Z-up convention a great deal of existing FBX uses; it turns positions and node
+transforms but not animated rotations, so a rotating node written into it
+rotates about the wrong axis, and static geometry is unaffected.
+
+Either way the file states the space it is in, and the importer reads that
+statement rather than assuming — one `FbxSpace` drives the conversion and the
+declaration together, so they cannot disagree. A re-export follows its source's
+declared space instead of the option, which is what makes it a round trip rather
+than a conversion.
+
 ## FBX axes
 
 The other six `GlobalSettings` fields say which axis is up, which points front

@@ -12,6 +12,7 @@ import { identityMat4, invertMat4 } from './mat4.ts';
 import { hasMaterialExtensionValues } from './material-extensions.ts';
 import { readGltfMaterial, resolveSampler, resolveTextureSource } from './gltf-interpretation.ts';
 import type { InterpretedTexture } from './gltf-interpretation.ts';
+import type { FbxSpace } from './fbx-space.ts';
 import type { ResourceMap } from './scene-resources.ts';
 import type { GltfAsset, NumericArray } from './wasm-modules.ts';
 
@@ -67,21 +68,15 @@ interface FbxSourceMesh {
   weights1?: ArrayLike<number>;
 }
 
-// glTF is right-handed Y-up; the FBX emitted for Blender is right-handed
-// Z-up. With row vectors this rotates -90 degrees around X: (x, y, z) ->
-// (x, z, -y). Keep this at the single glTF -> FBX boundary.
-const GLTF_TO_FBX_BASIS = [
-  1, 0, 0, 0,
-  0, 0, -1, 0,
-  0, 1, 0, 0,
-  0, 0, 0, 1,
-];
-const FBX_TO_GLTF_BASIS = [
-  1, 0, 0, 0,
-  0, 0, 1, 0,
-  0, -1, 0, 0,
-  0, 0, 0, 1,
-];
+// The bases used to be a pair of constants here, for the one Z-up convention
+// this writer emitted. They come from the target space now, because the space is
+// a choice -- and because the importer resolves the same seven GlobalSettings
+// fields, so having one derivation is what keeps the two directions inverses.
+//
+// `FbxSpace` stores its basis column-major for column vectors; FBX uses row
+// vectors, and for a signed permutation the two storage orders differ by a
+// transpose, which is also what changes a column-vector matrix into a row-vector
+// one. The two cancel, so the same sixteen numbers serve both readings.
 
 function multiplyMat4(a: ArrayLike<number>, b: ArrayLike<number>): FbxMatrix {
   return Array.from({ length: 16 }, (_, index) => {
@@ -91,18 +86,40 @@ function multiplyMat4(a: ArrayLike<number>, b: ArrayLike<number>): FbxMatrix {
   });
 }
 
-export function convertGltfVectorArrayToFbx(values: ArrayLike<number>): number[] {
+/** glTF vectors in the target space, and in its units. */
+export function convertGltfVectorArrayToFbx(
+  values: ArrayLike<number>,
+  space: FbxSpace,
+): number[] {
+  const scale = 1 / space.metersPerUnit;
+  if (space.identity && scale === 1) return Array.from(values);
+  const basis = space.inverse;
   const converted = Array.from(values);
   for (let offset = 0; offset + 2 < converted.length; offset += 3) {
-    const y = converted[offset + 1];
-    converted[offset + 1] = converted[offset + 2];
-    converted[offset + 2] = -y;
+    const [x, y, z] = [converted[offset], converted[offset + 1], converted[offset + 2]];
+    converted[offset] = (x * basis[0] + y * basis[4] + z * basis[8]) * scale;
+    converted[offset + 1] = (x * basis[1] + y * basis[5] + z * basis[9]) * scale;
+    converted[offset + 2] = (x * basis[2] + y * basis[6] + z * basis[10]) * scale;
   }
   return converted;
 }
 
-export function convertGltfMatrixToFbx(matrix: ArrayLike<number>): FbxMatrix {
-  return multiplyMat4(multiplyMat4(FBX_TO_GLTF_BASIS, matrix), GLTF_TO_FBX_BASIS);
+/**
+ * A glTF transform in the target space.
+ *
+ * `G⁻¹ · M · G` with row vectors, which is the same conjugation the importer
+ * performs in the other direction: a transform has to receive and return points
+ * that are already in the space it is written into.
+ */
+export function convertGltfMatrixToFbx(matrix: ArrayLike<number>, space: FbxSpace): FbxMatrix {
+  const conjugated = space.identity
+    ? Array.from(matrix, Number)
+    : multiplyMat4(multiplyMat4(space.basis, matrix), space.inverse);
+  const scale = 1 / space.metersPerUnit;
+  conjugated[12] *= scale;
+  conjugated[13] *= scale;
+  conjugated[14] *= scale;
+  return conjugated;
 }
 
 /** The PBR values an FBX Phong material is lowered from, whatever read them. */
@@ -260,17 +277,22 @@ export function extractGltfCubicSegment(values: Numbers, components: number, seg
   return result;
 }
 
-export function fbxRowMajorMatrix(node: GltfJson, composeTrs: ComposeTrs): FbxMatrix {
+export function fbxRowMajorMatrix(
+  node: GltfJson,
+  composeTrs: ComposeTrs,
+  space: FbxSpace,
+): FbxMatrix {
   const gltfMatrix = Array.from<number>(Array.isArray(node.matrix) && node.matrix.length === 16
     ? node.matrix
     : composeTrs(node.translation || [0, 0, 0], node.rotation || [0, 0, 0, 1], node.scale || [1, 1, 1]));
-  return convertGltfMatrixToFbx(gltfMatrix);
+  return convertGltfMatrixToFbx(gltfMatrix, space);
 }
 
 export function buildFbxWorldMatrices(
   nodes: GltfJson[],
   roots: number[],
   composeTrs: ComposeTrs,
+  space: FbxSpace,
 ): (FbxMatrix | null)[] {
   const worlds: (FbxMatrix | null)[] = Array.from({ length: nodes.length }, () => null);
   // Scale is carried entirely by `UnitScaleFactor = 100.0` in the writer's
@@ -280,7 +302,7 @@ export function buildFbxWorldMatrices(
   // longer needed.
   const visit = (index: number, parent: FbxMatrix | null) => {
     if (worlds[index]) return;
-    const local = fbxRowMajorMatrix(nodes[index] || {}, composeTrs);
+    const local = fbxRowMajorMatrix(nodes[index] || {}, composeTrs, space);
     // FBX uses row vectors. The local transform therefore precedes its
     // parent's transform in the composed world matrix.
     worlds[index] = parent ? multiplyMat4(local, parent) : local;
@@ -299,11 +321,12 @@ export function buildFbxSkins(
   warnings: string[],
   readAccessorAsTyped: ReadAccessorAsTyped,
   composeTrs: ComposeTrs,
+  space: FbxSpace,
 ): FbxSkin[] {
   return definitions.map((definition, index) => {
     const joints: FbxJoint[] = (definition.joints || []).map((nodeIndex: number) => ({
       nodeId: nodeIndex + 1,
-      bind: worlds[nodeIndex] || fbxRowMajorMatrix({}, composeTrs),
+      bind: worlds[nodeIndex] || fbxRowMajorMatrix({}, composeTrs, space),
     }));
     if (typeof definition.inverseBindMatrices === 'number') {
       const accessor = readAccessorAsTyped(asset, definition.inverseBindMatrices);
@@ -312,7 +335,7 @@ export function buildFbxSkins(
       } else {
         for (let jointIndex = 0; jointIndex < joints.length && jointIndex < accessor.count; jointIndex += 1) {
           const inverse = Array.from(accessor.data.subarray(jointIndex * 16, jointIndex * 16 + 16));
-          const bind = invertMat4(convertGltfMatrixToFbx(inverse)) || joints[jointIndex].bind;
+          const bind = invertMat4(convertGltfMatrixToFbx(inverse, space)) || joints[jointIndex].bind;
           joints[jointIndex].bind = bind;
         }
       }
@@ -337,9 +360,10 @@ export function buildFbxMeshSkin(
   meshNodeId: number,
   meshBindTransform: FbxMatrix | null,
   composeTrs: ComposeTrs,
+  space: FbxSpace,
 ) {
   if (!skin || !mesh.joints0 || !mesh.weights0) return null;
-  const meshBind = meshBindTransform || fbxRowMajorMatrix({}, composeTrs);
+  const meshBind = meshBindTransform || fbxRowMajorMatrix({}, composeTrs, space);
   const clusters: FbxCluster[] = skin.joints.map((joint) => ({
     jointNodeId: joint.nodeId,
     controlPointIndices: [],
@@ -385,6 +409,7 @@ export function buildFbxMorphTargets(
   targetDefinitions: GltfJson[],
   weights: ArrayLike<number>,
   readAccessorAsTyped: ReadAccessorAsTyped,
+  space: FbxSpace,
 ) {
   return targetDefinitions.flatMap((target, index) => {
     if (typeof target.POSITION !== 'number') return [];
@@ -398,8 +423,10 @@ export function buildFbxMorphTargets(
     return [{
       name: `target_${index}`,
       controlPointIndices: Array.from({ length: accessor.count }, (_, point) => point),
-      positionDeltas: convertGltfVectorArrayToFbx(accessor.data),
-      normalDeltas: normalDeltas && convertGltfVectorArrayToFbx(normalDeltas),
+      positionDeltas: convertGltfVectorArrayToFbx(accessor.data, space),
+      // Normals turn with the space and take none of its unit factor.
+      normalDeltas: normalDeltas
+        && convertGltfVectorArrayToFbx(normalDeltas, { ...space, metersPerUnit: 1 }),
       defaultWeight: Number(weights[index]) || 0,
       fullWeight: 100,
     }];

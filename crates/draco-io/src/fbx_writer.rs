@@ -820,26 +820,26 @@ fn header_extension_node() -> FbxNode {
 fn global_settings_node(source: Option<&crate::fbx_scene::FbxGlobalSettings>) -> FbxNode {
     let source = source.cloned().unwrap_or_default();
     let mut properties = vec![
-        int_property_node("UpAxis", "int", "Integer", "", source.up_axis.unwrap_or(2)),
-        // The writer's own axis change puts glTF's +Y up along FBX -Z and
-        // glTF's +Z front along FBX +Y: (x, y, z) becomes (x, z, -y). These
-        // two signs used to say the opposite, so the file described an
-        // orientation it did not contain, and a reader that believed the
-        // fields -- this workspace's own importer now does -- turned the
-        // scene over. The bytes are unchanged; only the description is.
+        // Y-up: glTF's own orientation, and what every FBX this repository has
+        // from another tool declares. These defaults describe nothing the caller
+        // wrote -- a caller that turns coordinates has to say so by supplying
+        // GlobalSettings of its own, and every path in the web converter does.
+        // They used to be Z-up, with two signs contradicting even that, so a
+        // file could describe an orientation it did not contain.
+        int_property_node("UpAxis", "int", "Integer", "", source.up_axis.unwrap_or(1)),
         int_property_node(
             "UpAxisSign",
             "int",
             "Integer",
             "",
-            source.up_axis_sign.unwrap_or(-1),
+            source.up_axis_sign.unwrap_or(1),
         ),
         int_property_node(
             "FrontAxis",
             "int",
             "Integer",
             "",
-            source.front_axis.unwrap_or(1),
+            source.front_axis.unwrap_or(2),
         ),
         int_property_node(
             "FrontAxisSign",

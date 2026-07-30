@@ -1241,7 +1241,7 @@ pub struct SceneInput {
 }
 
 #[cfg(feature = "write")]
-#[derive(Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GlobalSettingsInput {
     pub up_axis: Option<i32>,
@@ -1480,9 +1480,16 @@ impl From<AnimInterpolationInput> for FbxAnimInterpolation {
 /// Export options.
 #[cfg(feature = "write")]
 #[derive(Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportOptions {
     /// FBX version (default: 7500 for FBX 7.5)
     pub version: Option<u32>,
+    /// The space the caller wrote the geometry in, declared verbatim.
+    ///
+    /// A flat mesh list carries no hierarchy and no statement about its own
+    /// coordinates, so without this the file fell back to the writer's default
+    /// axes -- which said one thing while the caller had written another.
+    pub global_settings: Option<GlobalSettingsInput>,
 }
 
 /// Export result.
@@ -1511,8 +1518,7 @@ pub fn create_fbx(meshes_js: JsValue, options_js: JsValue) -> JsValue {
     };
 
     let options: ExportOptions = serde_wasm_bindgen::from_value(options_js).unwrap_or_default();
-    let _ = options;
-    let result = create_fbx_internal(&meshes);
+    let result = create_fbx_internal(&meshes, options.global_settings);
     serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
 }
 
@@ -1958,14 +1964,20 @@ fn mesh_input_to_core_mesh(input: &MeshInput) -> Result<Mesh, String> {
 }
 
 #[cfg(feature = "write")]
-fn create_fbx_internal(meshes: &[MeshInput]) -> ExportResult {
+fn create_fbx_internal(
+    meshes: &[MeshInput],
+    global_settings: Option<GlobalSettingsInput>,
+) -> ExportResult {
     // The legacy `create_fbx` entry point receives a flat mesh list with no
     // hierarchy, so every mesh becomes its own root Model. Materials,
     // textures and animation are not expressible here; callers that need them
     // go through `create_fbx_scene`. Serialization itself is shared with that
     // path so the two cannot emit divergent FBX.
     let scene = match flat_meshes_to_scene(meshes) {
-        Ok(scene) => scene,
+        Ok(mut scene) => {
+            scene.global_settings = global_settings.map(Into::into);
+            scene
+        }
         Err(error) => {
             return ExportResult {
                 success: false,

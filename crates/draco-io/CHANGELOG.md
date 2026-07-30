@@ -11,14 +11,17 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- The FBX writer's default `GlobalSettings` now describe the orientation its
-  geometry actually has. The glTF-to-FBX axis change writes `(x, y, z)` as
-  `(x, z, -y)`, which puts glTF's `+Y` up along FBX `-Z` and its `+Z` front
-  along FBX `+Y`; `UpAxisSign` and `FrontAxisSign` stated the opposite, so the
-  file described an orientation it did not contain. A reader that resolves those
-  fields turned such a scene over. Only the two integers change -- the geometry
-  and every other node are byte-identical -- and a document that carries its own
-  `GlobalSettings`, which is every rewrite of a source file, is unaffected.
+- The FBX writer's default `GlobalSettings` are Y-up and metres, which is glTF's
+  own orientation and what every FBX in the wild on hand declares. They were
+  Z-up, with `UpAxisSign` and `FrontAxisSign` contradicting even that, so a file
+  could describe an orientation it did not contain and a reader that resolved
+  those fields turned the scene over. The defaults describe nothing a caller
+  wrote: a caller that converts coordinates supplies its own `GlobalSettings`,
+  which every path in the web converter now does. A document carrying its own
+  settings -- every rewrite of a source file -- is unaffected.
+- `create_fbx`'s options are no longer discarded. `globalSettings` on them is
+  written verbatim, so a flat mesh list can state the space its coordinates are
+  in instead of inheriting defaults that described a different one.
 
 ## [0.3.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.2.0...draco-io-v0.3.0) - 2026-07-29
 

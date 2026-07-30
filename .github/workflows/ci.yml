@@ -235,6 +235,7 @@ jobs:
           npm run test:gltf-quantized-morph
           npm run test:scene-document-fbx-morph
           npm run test:fbx-axis-basis
+          npm run test:fbx-export-space
           npm run test:export-branches
           npm run test:fbx-export-interpretation
           npm run test:scene-document-samplers

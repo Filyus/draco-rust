@@ -7,6 +7,8 @@
  * fbx-wasm.create_fbx_scene; no flattened mesh writer is involved.
  */
 
+import { DEFAULT_FBX_EXPORT_SPACE, FBX_EXPORT_SPACES, fbxSpace } from './fbx-space.ts';
+import type { FbxExportSpaceName, FbxSpace } from './fbx-space.ts';
 import { assertValidSceneDocument } from './scene-document.ts';
 import { hasMaterialExtensionValues } from './material-extensions.ts';
 import type { SceneDocument, ScenePrimitive } from './scene-document.ts';
@@ -29,6 +31,13 @@ type FbxJson = any;
 
 export interface FbxWriteOptions {
   provenance?: FbxSceneProvenance | null;
+  /**
+   * Which space to write, when there is no provenance to follow.
+   *
+   * A re-export ignores this: it goes back into the space its source declared,
+   * which is what makes it a round trip rather than a conversion.
+   */
+  space?: FbxExportSpaceName;
 }
 
 /** Unit handling depends on whether a source FBX scene is being reused. */
@@ -52,6 +61,12 @@ export function buildFbxSceneFromDocument(document: SceneDocument, options: FbxW
   const sourceNodes = indexSourceNodes(sourceScene?.rootNodes || []);
   const sourceMeshes = indexSourceMeshes(sourceScene?.rootNodes || []);
   const sourceUnits = Boolean(provenance);
+  // Where the geometry is written. A re-export goes back into the space its
+  // source declared -- that is what makes it a round trip -- and everything else
+  // into the space the caller asked for.
+  const space = fbxSpace(provenance
+    ? sourceScene?.globalSettings
+    : FBX_EXPORT_SPACES[options.space || DEFAULT_FBX_EXPORT_SPACE]);
   const worlds = buildDocumentWorlds(document);
   const warnings = [...document.warnings];
   // FBX has light nodes of its own, but this writer emits geometry and
@@ -61,7 +76,9 @@ export function buildFbxSceneFromDocument(document: SceneDocument, options: FbxW
   }
 
   const scene = {
-    ...(sourceScene?.globalSettings ? { globalSettings: sourceScene.globalSettings } : {}),
+    // Declared rather than left to the writer's defaults: the file has to say
+    // which space it is in, and this is the only place that knows.
+    globalSettings: { ...space.settings },
     rootNodes: document.rootNodes.map((index) => buildNode(
       document,
       index,
@@ -69,13 +86,14 @@ export function buildFbxSceneFromDocument(document: SceneDocument, options: FbxW
       sourceMeshes,
       worlds,
       sourceUnits,
+      space,
       warnings,
     )),
     materials: buildMaterials(document, warnings),
     textures: buildTextures(document),
     animations: sourceScene?.animations?.length
       ? structuredClone(sourceScene.animations)
-      : buildAnimations(document, sourceUnits, warnings),
+      : buildAnimations(document, space, warnings),
     warnings,
   };
   return scene;
@@ -88,13 +106,14 @@ function buildNode(
   sourceMeshes: SourceMeshIndex,
   worlds: number[][],
   sourceUnits: SourceUnits,
+  space: FbxSpace,
   warnings: string[],
 ): FbxJson {
   const node = document.nodes[index] || {};
   const source = node.name === undefined ? undefined : sourceNodes.get(node.name);
   const matrix = source?.matrix?.length === 16
     ? Array.from(source.matrix)
-    : convertNodeMatrix(node, sourceUnits);
+    : convertNodeMatrix(node, space);
   const meshes = node.mesh === undefined ? [] : buildNodeMeshes(
     document,
     node,
@@ -103,6 +122,7 @@ function buildNode(
     sourceMeshes,
     worlds,
     sourceUnits,
+    space,
     warnings,
   );
   return {
@@ -118,6 +138,7 @@ function buildNode(
       sourceMeshes,
       worlds,
       sourceUnits,
+      space,
       warnings,
     )),
   };
@@ -131,6 +152,7 @@ function buildNodeMeshes(
   sourceMeshes: SourceMeshIndex,
   worlds: number[][],
   sourceUnits: SourceUnits,
+  space: FbxSpace,
   warnings: string[],
 ): FbxJson[] {
   const mesh = document.meshes[meshIndex];
@@ -151,14 +173,16 @@ function buildNodeMeshes(
     }
     const meshInput: FbxJson = {
       name: mesh.name ? `${mesh.name}_${primitiveIndex}` : `mesh_${meshIndex}_${primitiveIndex}`,
-      positions: sourceUnits ? scaleValues(positions, 100) : convertGltfVectorArrayToFbx(positions),
+      positions: convertGltfVectorArrayToFbx(positions, space),
       indices,
       normals: optionalAttribute(document, primitive, 'NORMAL', null),
       uvs: optionalAttribute(document, primitive, 'TEXCOORD_0', null),
       materialIndices: Array.from({ length: Math.floor(indices.length / 3) }, () => primitive.material ?? -1),
-      morphTargets: buildMorphTargets(document, primitive, sourceUnits),
+      morphTargets: buildMorphTargets(document, primitive, space),
     };
-    if (meshInput.normals && !sourceUnits) meshInput.normals = convertGltfVectorArrayToFbx(meshInput.normals);
+    // Normals turn with the space but take none of its unit factor, so they go
+    // through a space that keeps the axes and drops the scale.
+    if (meshInput.normals) meshInput.normals = convertGltfVectorArrayToFbx(meshInput.normals, unitlessSpace(space));
     if (meshInput.uvs && !sourceUnits) meshInput.uvs = flipUvV(meshInput.uvs);
     if (!sourceUnits) {
       const uvSets = [];
@@ -229,7 +253,7 @@ function buildNodeMeshes(
     if (Number.isInteger(skinIndex) && document.skins[skinIndex]) {
       meshInput.skin = sourceUnits && sourceMesh?.skin
         ? structuredClone(sourceMesh.skin)
-        : buildSkin(document, primitive, skinIndex, nodeIndex, worlds, sourceUnits, warnings);
+        : buildSkin(document, primitive, skinIndex, nodeIndex, worlds, space, warnings);
     }
     if (sourceUnits && sourceMesh?.controlPoints?.length) {
       meshInput.controlPoints = sourceMesh.controlPoints.flat();
@@ -257,7 +281,7 @@ function buildSkin(
   skinIndex: number,
   nodeIndex: number,
   worlds: number[][],
-  sourceUnits: SourceUnits,
+  space: FbxSpace,
   warnings: string[],
 ): FbxJson {
   const skin = document.skins[skinIndex];
@@ -282,8 +306,8 @@ function buildSkin(
   const meshWorld = worlds[nodeIndex] || identityMatrix();
   const clusters = joints.map((jointIndex, jointSlot) => {
     const jointWorld = inverseBinds[jointSlot] ? (invertMat4(inverseBinds[jointSlot]) || identityMatrix()) : worlds[jointIndex] || identityMatrix();
-    const convertedJoint = convertMatrixForFbx(jointWorld, sourceUnits);
-    const convertedMesh = convertMatrixForFbx(meshWorld, sourceUnits);
+    const convertedJoint = convertGltfMatrixToFbx(jointWorld, space);
+    const convertedMesh = convertGltfMatrixToFbx(meshWorld, space);
     const meshBind = multiplyMat4(convertedMesh, invertMat4(convertedJoint) || identityMatrix());
     const controlPointIndices = [];
     const weights = [];
@@ -308,19 +332,19 @@ function buildSkin(
     };
   }).filter((cluster) => cluster.weights.length > 0);
   const bindPose = [
-    { nodeId: nodeIndex + 1, matrix: convertMatrixForFbx(meshWorld, sourceUnits) },
+    { nodeId: nodeIndex + 1, matrix: convertGltfMatrixToFbx(meshWorld, space) },
     ...joints.map((jointIndex, slot) => ({
       nodeId: jointIndex + 1,
-      matrix: convertMatrixForFbx(
+      matrix: convertGltfMatrixToFbx(
         inverseBinds[slot] ? (invertMat4(inverseBinds[slot]) || identityMatrix()) : worlds[jointIndex] || identityMatrix(),
-        sourceUnits,
+        space,
       ),
     })),
   ];
   return { clusters, bindPose };
 }
 
-function buildMorphTargets(document: SceneDocument, primitive: ScenePrimitive, sourceUnits: SourceUnits): FbxJson[] {
+function buildMorphTargets(document: SceneDocument, primitive: ScenePrimitive, space: FbxSpace): FbxJson[] {
   return (primitive.targets || []).flatMap((target, index) => {
     if (target.POSITION === undefined) return [];
     const position = readAccessorValues(document, target.POSITION);
@@ -328,8 +352,8 @@ function buildMorphTargets(document: SceneDocument, primitive: ScenePrimitive, s
     return [{
       name: `target_${index}`,
       controlPointIndices: Array.from({ length: position.length / 3 }, (_, value) => value),
-      positionDeltas: sourceUnits ? scaleValues(position, 100) : convertGltfVectorArrayToFbx(position),
-      ...(normal ? { normalDeltas: sourceUnits ? normal : convertGltfVectorArrayToFbx(normal) } : {}),
+      positionDeltas: convertGltfVectorArrayToFbx(position, space),
+      ...(normal ? { normalDeltas: convertGltfVectorArrayToFbx(normal, unitlessSpace(space)) } : {}),
       defaultWeight: 0,
       fullWeight: 100,
     }];
@@ -374,7 +398,7 @@ function buildTextures(document: SceneDocument): FbxJson[] {
   });
 }
 
-function buildAnimations(document: SceneDocument, sourceUnits: SourceUnits, warnings: string[]): FbxJson[] {
+function buildAnimations(document: SceneDocument, space: FbxSpace, warnings: string[]): FbxJson[] {
   return document.animations.map((clip) => ({
     name: clip.name,
     duration: clip.duration,
@@ -412,7 +436,7 @@ function buildAnimations(document: SceneDocument, sourceUnits: SourceUnits, warn
       }
       let output;
       if (channel.path === 'rotation') output = quaternionKeysToFbxEuler(keyValues);
-      else if (channel.path === 'translation') output = convertGltfVectorArrayToFbx(keyValues);
+      else if (channel.path === 'translation') output = convertGltfVectorArrayToFbx(keyValues, space);
       else output = keyValues;
       if (output.length !== input.length * 3) {
         warnings.push(`Animation ${clip.name}: ${channel.path} sampler was omitted from FBX export`);
@@ -424,7 +448,7 @@ function buildAnimations(document: SceneDocument, sourceUnits: SourceUnits, warn
         path: channel.path,
         sampler: {
           input,
-          output: sourceUnits && channel.path === 'translation' ? scaleValues(output, 100) : output,
+          output,
           interpolation: cubic && channel.path !== 'rotation' ? 'cubic' : 'linear',
           inTangents: null,
           outTangents: null,
@@ -441,20 +465,14 @@ function extractCubic(values: number[], components: number, segment: number): nu
   return output;
 }
 
-function convertNodeMatrix(node: FbxJson, sourceUnits: SourceUnits): number[] {
+function convertNodeMatrix(node: FbxJson, space: FbxSpace): number[] {
   const matrix = node.matrix || composeMatrix(node.translation, node.rotation, node.scale);
-  return convertMatrixForFbx(matrix, sourceUnits);
+  return convertGltfMatrixToFbx(matrix, space);
 }
 
-function convertMatrixForFbx(matrix: ArrayLike<number>, sourceUnits: SourceUnits): number[] {
-  if (sourceUnits) {
-    const output = Array.from(matrix);
-    output[12] *= 100;
-    output[13] *= 100;
-    output[14] *= 100;
-    return output;
-  }
-  return convertGltfMatrixToFbx(matrix);
+/** The same space with its unit factor removed, for the streams that only turn. */
+function unitlessSpace(space: FbxSpace): FbxSpace {
+  return space.metersPerUnit === 1 ? space : { ...space, metersPerUnit: 1 };
 }
 
 function buildDocumentWorlds(document: SceneDocument): number[][] {

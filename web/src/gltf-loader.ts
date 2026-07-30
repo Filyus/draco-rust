@@ -38,6 +38,8 @@ import {
   extractGltfCubicSegment,
   quaternionKeysToFbxEuler,
 } from './fbx-scene-adapter.ts';
+import { DEFAULT_FBX_EXPORT_SPACE, FBX_EXPORT_SPACES, fbxSpace } from './fbx-space.ts';
+import type { FbxExportSpaceName, FbxSpace } from './fbx-space.ts';
 import { invertMat4, multiplyMat4 } from './mat4.ts';
 import { MATERIAL_EXTENSION_SLOTS, materialExtensionFactors } from './material-extensions.ts';
 import { assertConverterProfile } from './wasm-modules.ts';
@@ -357,9 +359,10 @@ export function buildFbxSceneFromGltf(
   sourceData: Uint8Array,
   resources: ResourceMap,
   gltfModule: GltfModule,
-  options: { legacyCompatibility?: boolean } = {},
+  options: { legacyCompatibility?: boolean; space?: FbxExportSpaceName } = {},
 ) {
   const legacyCompatibility = options.legacyCompatibility === true;
+  const space = fbxSpace(FBX_EXPORT_SPACES[options.space || DEFAULT_FBX_EXPORT_SPACE]);
   const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
   try {
     assertConverterProfile(asset);
@@ -372,8 +375,10 @@ export function buildFbxSceneFromGltf(
         const material = primitives[primitiveIndex]?.material;
         return {
           ...mesh,
-          positions: convertGltfVectorArrayToFbx(mesh.positions),
-          normals: mesh.normals && convertGltfVectorArrayToFbx(mesh.normals),
+          positions: convertGltfVectorArrayToFbx(mesh.positions, space),
+          // Normals turn with the space and take none of its unit factor.
+          normals: mesh.normals
+            && convertGltfVectorArrayToFbx(mesh.normals, { ...space, metersPerUnit: 1 }),
           // glTF texture coordinates are consumed with a top-left
           // image origin in the web preview. FBX's UV convention as
           // interpreted by Blender uses the opposite V direction.
@@ -390,6 +395,7 @@ export function buildFbxSceneFromGltf(
             primitives[primitiveIndex]?.targets || [],
             definitions[meshIndex]?.weights || [],
             readAccessorAsTyped,
+            space,
           ),
         };
       });
@@ -418,9 +424,9 @@ export function buildFbxSceneFromGltf(
         );
       }
     });
-    const worlds = buildFbxWorldMatrices(nodes, roots, composeTrs);
+    const worlds = buildFbxWorldMatrices(nodes, roots, composeTrs, space);
     const skins = buildFbxSkins(
-      asset, document.skins || [], worlds, warnings, readAccessorAsTyped, composeTrs,
+      asset, document.skins || [], worlds, warnings, readAccessorAsTyped, composeTrs, space,
     );
     const buildNode = (index: number, isRoot = false): GltfJson => {
       const node = nodes[index] || {};
@@ -428,14 +434,14 @@ export function buildFbxSceneFromGltf(
         id: index + 1,
         name: node.name || `node_${index}`,
         matrix: scaleFbxRootMatrix(
-          fbxRowMajorMatrix(node, composeTrs),
+          fbxRowMajorMatrix(node, composeTrs, space),
         ),
         meshes: typeof node.mesh === 'number'
           ? (meshesByDefinition[node.mesh] || []).map((mesh: GltfJson) => ({
             ...mesh,
             skin: typeof node.skin === 'number'
               ? buildFbxMeshSkin(
-                mesh, skins[node.skin], index + 1, worlds[index], composeTrs,
+                mesh, skins[node.skin], index + 1, worlds[index], composeTrs, space,
               )
               : null,
             morphTargets: (mesh.morphTargets || []).map((target: GltfJson, targetIndex: number) => ({
@@ -460,11 +466,15 @@ export function buildFbxSceneFromGltf(
       },
     ));
     return {
+      // The file has to say which space it is in, and this is the only place
+      // that knows: the writer's defaults are a guess for callers that pass
+      // nothing, not a description of what was written here.
+      globalSettings: { ...space.settings },
       rootNodes: roots.map((root: number) => buildNode(root, true)),
       materials: buildFbxMaterials(document.materials || [], warnings),
       textures: buildFbxTextures(asset, document, resources, resolveUriBytes, warnings),
       animations: buildFbxAnimations(
-        asset, document.animations || [], nodeRecords, warnings, legacyCompatibility,
+        asset, document.animations || [], nodeRecords, warnings, space, legacyCompatibility,
       ),
       warnings,
     };
@@ -479,6 +489,7 @@ function buildFbxAnimations(
   definitions: GltfJson[],
   nodes: GltfJson[],
   warnings: string[],
+  space: FbxSpace,
   legacyCompatibility = false,
 ): GltfJson[] {
   return buildAnimations(asset, definitions, nodes, warnings).map((animation) => {
@@ -534,7 +545,7 @@ function buildFbxAnimations(
       const output = channel.path === 'rotation'
         ? quaternionKeysToFbxEuler(keyValues)
         : channel.path === 'translation'
-          ? convertGltfVectorArrayToFbx(keyValues)
+          ? convertGltfVectorArrayToFbx(keyValues, space)
           : convertGltfScaleKeysToFbx(keyValues);
       if (output.length !== input.length * 3) {
         warnings.push(`Animation ${animation.name}: invalid ${channel.path} sampler was skipped for FBX export`);

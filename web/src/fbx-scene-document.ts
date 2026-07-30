@@ -7,6 +7,8 @@
  */
 
 import { cloneTrs, decomposeMat4, identityMat4, invertMat4, multiplyMat4 } from './mat4.ts';
+import { fbxSpace, multiplyQuaternion } from './fbx-space.ts';
+import type { FbxSpace } from './fbx-space.ts';
 import { adaptFbxAnimation } from './fbx-animation-adapter.ts';
 import { adaptFbxMaterial } from './fbx-material-adapter.ts';
 import { assertValidSceneDocument, createSceneDocument } from './scene-document.ts';
@@ -54,67 +56,10 @@ interface FbxImportState {
   nodes: FbxJson[];
 }
 
-/**
- * The change of basis from the file's axis system to glTF's.
- *
- * FBX states its own orientation in six `GlobalSettings` fields: which axis is
- * up, which points front, which points right, each with a sign. glTF fixes all
- * three — +Y up, +Z front, +X right — so reading an FBX means mapping one onto
- * the other. The importer used to ignore the fields entirely, which is correct
- * for exactly the files that happen to be Y-up: every real-world fixture here
- * is, which is why it went unnoticed, and this workspace's own writer is not,
- * which is why a round trip came back rotated.
- *
- * `identity` is not an optimization. It is the guarantee that a Y-up file is
- * untouched rather than passed through arithmetic that ought to cancel out.
- */
-interface FbxBasis {
-  /** FBX → glTF, column-major, and its inverse for conjugating transforms. */
-  matrix: number[];
-  inverse: number[];
-  /** The same rotation as a quaternion, for re-basing animated rotations. */
-  rotation: number[];
-  /** Which FBX axis feeds each glTF axis, for permuting per-axis scale. */
-  axes: [number, number, number];
-  identity: boolean;
-}
-
-function fbxBasis(parsed: FbxJson): FbxBasis {
-  const settings = parsed?.scene?.globalSettings || parsed?.globalSettings || {};
-  const axis = (value: unknown, fallback: number) => {
-    const index = Number(value);
-    return index === 0 || index === 1 || index === 2 ? index : fallback;
-  };
-  const sign = (value: unknown) => (Number(value) < 0 ? -1 : 1);
-  // Y-up when the file says nothing, which is what ignoring the fields amounted
-  // to and what every file without GlobalSettings was already read as.
-  const right = axis(settings.coordAxis, 0);
-  const up = axis(settings.upAxis, 1);
-  const front = axis(settings.frontAxis, 2);
-  const signs = [sign(settings.coordAxisSign), sign(settings.upAxisSign), sign(settings.frontAxisSign)];
-  const axes: [number, number, number] = [right, up, front];
-
-  const matrix = new Array(16).fill(0);
-  matrix[15] = 1;
-  // Row r of the basis reads glTF axis r off FBX axis `axes[r]`; column-major
-  // storage puts that entry at `column * 4 + row`.
-  for (let row = 0; row < 3; row += 1) matrix[axes[row] * 4 + row] = signs[row];
-  const identity = axes[0] === 0 && axes[1] === 1 && axes[2] === 2
-    && signs.every((value) => value === 1);
-
-  return {
-    matrix,
-    inverse: invertMat4(matrix) || identityMat4(),
-    rotation: decomposeMat4(matrix).rotation,
-    axes,
-    identity,
-  };
-}
-
 /** Rotate a flat `[x, y, z, ...]` stream into glTF axes, and scale it. */
-function rebaseVector3(values: ArrayLike<number>, basis: FbxBasis, scale = 1): Float32Array {
+function rebaseVector3(values: ArrayLike<number>, space: FbxSpace, scale = 1): Float32Array {
   const output = new Float32Array(values.length);
-  const { matrix } = basis;
+  const matrix = space.basis;
   for (let index = 0; index + 2 < values.length; index += 3) {
     const [x, y, z] = [values[index], values[index + 1], values[index + 2]];
     output[index] = (matrix[0] * x + matrix[4] * y + matrix[8] * z) * scale;
@@ -127,33 +72,21 @@ function rebaseVector3(values: ArrayLike<number>, basis: FbxBasis, scale = 1): F
 /**
  * The same transform expressed in glTF axes: `B · M · B⁻¹`.
  *
- * A basis change on a transform is a conjugation, not a multiplication — the
+ * A space change on a transform is a conjugation, not a multiplication — the
  * matrix has to receive glTF-space points and hand back glTF-space points, so it
- * is entered and left through the basis. Uniform scale conjugates to itself, so
+ * is entered and left through the space. Uniform scale conjugates to itself, so
  * the unit factor stays a plain multiply on the translation column.
  */
-function rebaseMatrix(matrix: ArrayLike<number>, basis: FbxBasis, scale: number): Float32Array {
+function rebaseMatrix(matrix: ArrayLike<number>, space: FbxSpace, scale: number): Float32Array {
   const source = Array.from(matrix, Number);
-  const rebased = basis.identity
+  const rebased = space.identity
     ? source
-    : multiplyMat4(multiplyMat4(basis.matrix, source), basis.inverse) || source;
+    : multiplyMat4(multiplyMat4(space.basis, source), space.inverse) || source;
   const output = Float32Array.from(rebased);
   output[12] *= scale;
   output[13] *= scale;
   output[14] *= scale;
   return output;
-}
-
-/** Hamilton product, in glTF's `xyzw` order. */
-function multiplyQuaternion(left: ArrayLike<number>, right: ArrayLike<number>): number[] {
-  const [lx, ly, lz, lw] = [left[0], left[1], left[2], left[3]];
-  const [rx, ry, rz, rw] = [right[0], right[1], right[2], right[3]];
-  return [
-    lw * rx + lx * rw + ly * rz - lz * ry,
-    lw * ry - lx * rz + ly * rw + lz * rx,
-    lw * rz + lx * ry - ly * rx + lz * rw,
-    lw * rw - lx * rx - ly * ry - lz * rz,
-  ];
 }
 
 /**
@@ -163,12 +96,12 @@ function multiplyQuaternion(left: ArrayLike<number>, right: ArrayLike<number>): 
  * through the same call as its key values — they live in the same space and are
  * the same shape.
  */
-function rebaseQuaternions(values: ArrayLike<number>, basis: FbxBasis): Float32Array {
+function rebaseQuaternions(values: ArrayLike<number>, space: FbxSpace): Float32Array {
   const output = new Float32Array(values.length);
-  const inverse = [-basis.rotation[0], -basis.rotation[1], -basis.rotation[2], basis.rotation[3]];
+  const inverse = [-space.rotation[0], -space.rotation[1], -space.rotation[2], space.rotation[3]];
   for (let index = 0; index + 3 < values.length; index += 4) {
     const rotated = multiplyQuaternion(
-      multiplyQuaternion(basis.rotation, [
+      multiplyQuaternion(space.rotation, [
         values[index], values[index + 1], values[index + 2], values[index + 3],
       ]),
       inverse,
@@ -179,40 +112,22 @@ function rebaseQuaternions(values: ArrayLike<number>, basis: FbxBasis): Float32A
 }
 
 /** `xyzw` tangents: the direction turns, the handedness in `w` stays. */
-function rebaseTangents(values: ArrayLike<number>, basis: FbxBasis): Float32Array {
+function rebaseTangents(values: ArrayLike<number>, space: FbxSpace): Float32Array {
   const output = new Float32Array(values.length);
   for (let index = 0; index + 3 < values.length; index += 4) {
-    output.set(rebaseVector3([values[index], values[index + 1], values[index + 2]], basis), index);
+    output.set(rebaseVector3([values[index], values[index + 1], values[index + 2]], space), index);
     output[index + 3] = values[index + 3];
   }
   return output;
 }
 
 /** Per-axis scale follows the axes themselves; the signs do not apply to it. */
-function rebaseScales(values: ArrayLike<number>, basis: FbxBasis): Float32Array {
+function rebaseScales(values: ArrayLike<number>, space: FbxSpace): Float32Array {
   const output = new Float32Array(values.length);
   for (let index = 0; index + 2 < values.length; index += 3) {
-    for (let row = 0; row < 3; row += 1) output[index + row] = values[index + basis.axes[row]];
+    for (let row = 0; row < 3; row += 1) output[index + row] = values[index + space.axes[row]];
   }
   return output;
-}
-
-/**
- * Metres per FBX unit, as the file itself states it.
- *
- * `UnitScaleFactor` is the number of centimetres in one unit, and FBX's base
- * unit is the centimetre — so a file saying 1 is in centimetres and one saying
- * 100 is in metres. This used to be the constant 0.01, which is the right
- * answer only for the first: every file this repository's own writer produces
- * says 100, and reading those divided the scene by a hundred. Mixamo, Blender
- * and the Stanford bunny all say 1, so honouring the field leaves them exactly
- * where the constant put them.
- */
-function metersPerFbxUnit(parsed: FbxJson): number {
-  const stated = parsed?.scene?.globalSettings?.unitScaleFactor
-    ?? parsed?.globalSettings?.unitScaleFactor;
-  const factor = Number(stated);
-  return Number.isFinite(factor) && factor > 0 ? factor / 100 : 0.01;
 }
 
 /** Adapt a semantic `fbx-wasm` parse result into a portable SceneDocument. */
@@ -224,17 +139,17 @@ export function buildSceneDocumentFromFbx(
   if (!Array.isArray(roots) || roots.length === 0) {
     throw new Error('FBX SceneDocument import requires semantic binary FBX scene data');
   }
+  const space = fbxSpace(parsed?.scene?.globalSettings || parsed?.globalSettings);
   const document = createSceneDocument({ warnings: [
     ...(parsed.warnings || []),
-    `FBX geometry and transforms were normalized to meters at ${metersPerFbxUnit(parsed)} m per unit, as UnitScaleFactor states`,
+    `FBX geometry and transforms were read in the space the file declares: ${space.metersPerUnit} m per unit, and its own up and front axes`,
     'FBX source unit/axis settings remain in the optional FBX provenance sidecar; SceneDocument uses canonical glTF meter/Y-up space',
   ] });
-  const scale = metersPerFbxUnit(parsed);
-  const basis = fbxBasis(parsed);
+  const scale = space.metersPerUnit;
   const { materialMap } = collectFbxMaterials(parsed, resources, document);
-  const state = buildFbxNodeState(roots, document, scale, basis);
-  attachMeshesAndSkins(roots, state, materialMap, document, scale, basis);
-  appendFbxAnimations(parsed?.scene?.animations || parsed?.animations || [], state, document, scale, basis);
+  const state = buildFbxNodeState(roots, document, scale, space);
+  attachMeshesAndSkins(roots, state, materialMap, document, scale, space);
+  appendFbxAnimations(parsed?.scene?.animations || parsed?.animations || [], state, document, scale, space);
   assertValidSceneDocument(document);
   return document;
 }
@@ -304,7 +219,7 @@ function collectFbxMaterials(parsed: FbxJson, resources: ResourceMap, document: 
   return { materialMap };
 }
 
-function buildFbxNodeState(roots: FbxJson[], document: SceneDocument, scale: number, basis: FbxBasis): FbxImportState {
+function buildFbxNodeState(roots: FbxJson[], document: SceneDocument, scale: number, space: FbxSpace): FbxImportState {
   const bindPoseByNodeId = new Map<number, number[]>();
   const collectBindPoses = (source: FbxJson) => {
     for (const mesh of source.meshes || []) {
@@ -328,11 +243,11 @@ function buildFbxNodeState(roots: FbxJson[], document: SceneDocument, scale: num
     // FBX adapter reads -- is in one space instead of two.
     const rawLocalMatrix = rebaseMatrix(bind
       ? (parentBind ? (multiplyMat4(invertMat4(parentBind), bind) || bind) : bind)
-      : sourceMatrix || identityMat4(), basis, 1);
+      : sourceMatrix || identityMat4(), space, 1);
     const localMatrix = scaleMatrixTranslation(rawLocalMatrix, scale);
     const bindTrs = decomposeMat4(rawLocalMatrix);
     const animationTrs = sourceMatrix && !source.hasComplexTransformStack
-      ? decomposeMat4(rebaseMatrix(sourceMatrix, basis, 1))
+      ? decomposeMat4(rebaseMatrix(sourceMatrix, space, 1))
       : cloneTrs(bindTrs);
     const index = nodes.length;
     const sceneNode: SceneNode = {
@@ -370,13 +285,13 @@ function buildFbxNodeState(roots: FbxJson[], document: SceneDocument, scale: num
   return { stateById, stateByName, bindPoseByNodeId, nodes };
 }
 
-function attachMeshesAndSkins(roots: FbxJson[], state: FbxImportState, materialMap: number[], document: SceneDocument, scale: number, basis: FbxBasis) {
+function attachMeshesAndSkins(roots: FbxJson[], state: FbxImportState, materialMap: number[], document: SceneDocument, scale: number, space: FbxSpace) {
   const append = (source: FbxJson, ownerState: FbxNodeState) => {
     const ownerNode = document.nodes[ownerState.documentNode];
     const meshBindings = [];
     for (const sourceMesh of source.meshes || []) {
-      const meshIndex = appendMesh(sourceMesh, materialMap, document, scale, basis);
-      const skinIndex = appendSkin(sourceMesh, ownerState, state, document, scale, basis);
+      const meshIndex = appendMesh(sourceMesh, materialMap, document, scale, space);
+      const skinIndex = appendSkin(sourceMesh, ownerState, state, document, scale, space);
       meshBindings.push({ meshIndex, skinIndex });
     }
     if (meshBindings.length === 1) {
@@ -406,15 +321,15 @@ function attachMeshesAndSkins(roots: FbxJson[], state: FbxImportState, materialM
   }
 }
 
-function appendMesh(source: FbxJson, materialMap: number[], document: SceneDocument, scale: number, basis: FbxBasis) {
+function appendMesh(source: FbxJson, materialMap: number[], document: SceneDocument, scale: number, space: FbxSpace) {
   const vertexCount = (source.positions?.length || 0) / 3;
   const attributes: AttributeMap = {
-    POSITION: appendFloatAccessor(document, rebaseVector3(source.positions || [], basis, scale), 3),
+    POSITION: appendFloatAccessor(document, rebaseVector3(source.positions || [], space, scale), 3),
   };
-  // Normals rotate but do not scale, and the basis is a signed permutation, so
+  // Normals rotate but do not scale, and the space is a signed permutation, so
   // its inverse transpose is itself -- the same call serves both.
   if (source.normals?.length === vertexCount * 3) {
-    attributes.NORMAL = appendFloatAccessor(document, rebaseVector3(source.normals, basis), 3);
+    attributes.NORMAL = appendFloatAccessor(document, rebaseVector3(source.normals, space), 3);
   }
   if (source.uvs?.length === vertexCount * 2) attributes.TEXCOORD_0 = appendFloatAccessor(document, source.uvs, 2);
   // Extra FBX UV layers become TEXCOORD_1.. so a second set -- a lightmap,
@@ -430,7 +345,7 @@ function appendMesh(source: FbxJson, materialMap: number[], document: SceneDocum
   // into xyzw, which is already glTF's TANGENT layout. Files older than 7500
   // have no handedness array, so w was defaulted to +1 there.
   if (source.tangents?.length === vertexCount * 4) {
-    attributes.TANGENT = appendFloatAccessor(document, rebaseTangents(source.tangents, basis), 4);
+    attributes.TANGENT = appendFloatAccessor(document, rebaseTangents(source.tangents, space), 4);
   }
   for (let set = 1; set < (source.uvSets?.length || 0) && set < 8; set += 1) {
     const expanded = expandFbxLayer(source, source.uvSets[set], 2, vertexCount);
@@ -447,7 +362,7 @@ function appendMesh(source: FbxJson, materialMap: number[], document: SceneDocum
     attributes[`JOINTS_${set}`] = appendAccessor(document, { bytes: bytesFromU16(influence!.joints), componentType: 5123, components: 4, count: vertexCount, normalized: false });
     attributes[`WEIGHTS_${set}`] = appendFloatAccessor(document, influence!.weights, 4);
   }
-  const targets = appendMorphTargets(source, vertexCount, document, scale, basis);
+  const targets = appendMorphTargets(source, vertexCount, document, scale, space);
   const indices = source.indices || [];
   const groups = materialGroups(indices, source.materialIndices, source.material, materialMap, document, source.name);
   const primitives: ScenePrimitive[] = groups.map((group) => ({
@@ -554,7 +469,7 @@ function expandFbxLayer(source: FbxJson, layer: FbxJson, components: number, ver
   return output.length === vertexCount * components ? output : null;
 }
 
-function appendSkin(sourceMesh: FbxJson, ownerState: FbxNodeState, state: FbxImportState, document: SceneDocument, scale: number, basis: FbxBasis) {
+function appendSkin(sourceMesh: FbxJson, ownerState: FbxNodeState, state: FbxImportState, document: SceneDocument, scale: number, space: FbxSpace) {
   const clusters = sourceMesh.skin?.clusters || [];
   if (clusters.length === 0) return -1;
   const bindPose = new Map<unknown, number[]>((sourceMesh.skin.bindPose || []).filter((entry: FbxJson) => validMatrix(entry.matrix)).map((entry: FbxJson) => [entry.nodeId, entry.matrix]));
@@ -566,10 +481,10 @@ function appendSkin(sourceMesh: FbxJson, ownerState: FbxNodeState, state: FbxImp
       document.warnings.push(`FBX skin cluster targets missing joint ${cluster.jointNodeId} and was omitted`);
       continue;
     }
-    const meshBind = rebaseMatrix(bindPose.get(ownerState.id) || cluster.meshBindTransform || identityMat4(), basis, scale);
+    const meshBind = rebaseMatrix(bindPose.get(ownerState.id) || cluster.meshBindTransform || identityMat4(), space, scale);
     const jointBind = rebaseMatrix(jointState.hasComplexTransformStack
       ? (bindPose.get(cluster.jointNodeId) || cluster.jointBindTransform || identityMat4())
-      : (cluster.jointBindTransform || bindPose.get(cluster.jointNodeId) || identityMat4()), basis, scale);
+      : (cluster.jointBindTransform || bindPose.get(cluster.jointNodeId) || identityMat4()), space, scale);
     const inverse = invertMat4(jointBind) || identityMat4();
     joints.push(jointState.documentNode);
     matrices.push(...(multiplyMat4(inverse, meshBind) || inverse));
@@ -581,7 +496,7 @@ function appendSkin(sourceMesh: FbxJson, ownerState: FbxNodeState, state: FbxImp
   return index;
 }
 
-function appendMorphTargets(source: FbxJson, vertexCount: number, document: SceneDocument, scale: number, basis: FbxBasis) {
+function appendMorphTargets(source: FbxJson, vertexCount: number, document: SceneDocument, scale: number, space: FbxSpace) {
   return (source.morphTargets || []).map((target: FbxJson) => {
     const position = new Float32Array(vertexCount * 3);
     const renderIndices = target.renderPointIndices || [];
@@ -589,7 +504,7 @@ function appendMorphTargets(source: FbxJson, vertexCount: number, document: Scen
     for (let entry = 0; entry < renderIndices.length; entry += 1) {
       const render = renderIndices[entry] * 3;
       const delta = entry * 3;
-      if (render + 2 < position.length && delta + 2 < renderDeltas.length) position.set(rebaseVector3(renderDeltas.slice(delta, delta + 3), basis, scale), render);
+      if (render + 2 < position.length && delta + 2 < renderDeltas.length) position.set(rebaseVector3(renderDeltas.slice(delta, delta + 3), space, scale), render);
     }
     const output: AttributeMap = { POSITION: appendFloatAccessor(document, position, 3) };
     if (target.renderNormalDeltas?.length) {
@@ -605,7 +520,7 @@ function appendMorphTargets(source: FbxJson, vertexCount: number, document: Scen
   });
 }
 
-function appendFbxAnimations(clips: FbxJson[], state: FbxImportState, document: SceneDocument, scale: number, basis: FbxBasis) {
+function appendFbxAnimations(clips: FbxJson[], state: FbxImportState, document: SceneDocument, scale: number, space: FbxSpace) {
   for (const clip of clips) {
     const adapted = adaptFbxAnimation(clip, state.stateById, state.stateByName);
     if (!adapted) continue;
@@ -621,7 +536,7 @@ function appendFbxAnimations(clips: FbxJson[], state: FbxImportState, document: 
       for (const path of ['translation', 'rotation', 'scale'] as const) {
         const sourceChannel = nodeChannels.find((channel: FbxJson) => channel.path === path);
         const channel = sourceChannel
-          ? rebaseFbxAnimationChannel(sourceChannel, scale, basis)
+          ? rebaseFbxAnimationChannel(sourceChannel, scale, space)
           : constantFbxChannel(node, path, time, scale);
         // Only TRS paths reach here; weight channels are appended by
         // the loop below, which is where a target count is meaningful.
@@ -656,12 +571,12 @@ function constantFbxChannel(node: FbxNodeState, path: 'translation' | 'rotation'
  * sampler safe to run through unchanged: its tangents sit in the same space and
  * have the same shape as its keys, so the whole output stream is one call.
  */
-function rebaseFbxAnimationChannel(channel: FbxJson, scale: number, basis: FbxBasis) {
+function rebaseFbxAnimationChannel(channel: FbxJson, scale: number, space: FbxSpace) {
   const output = channel.path === 'translation'
-    ? rebaseVector3(channel.sampler.output, basis, scale)
-    : basis.identity ? null
-      : channel.path === 'rotation' ? rebaseQuaternions(channel.sampler.output, basis)
-        : channel.path === 'scale' ? rebaseScales(channel.sampler.output, basis) : null;
+    ? rebaseVector3(channel.sampler.output, space, scale)
+    : space.identity ? null
+      : channel.path === 'rotation' ? rebaseQuaternions(channel.sampler.output, space)
+        : channel.path === 'scale' ? rebaseScales(channel.sampler.output, space) : null;
   if (!output) return channel;
   return { ...channel, sampler: { ...channel.sampler, output } };
 }
