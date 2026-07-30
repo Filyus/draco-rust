@@ -77,9 +77,11 @@ impl EncoderOptions {
     /// the global setting and then to -1 for the encoder default.
     ///
     /// Upstream reads this per attribute (`GetPredictionMethodFromOptions`), and
-    /// `GetAttributeInt` itself falls back to the global option, so a value set
-    /// either way is honoured.
-    pub fn get_attribute_prediction_scheme(&self, att_id: i32) -> i32 {
+    /// `get_attribute_int` itself falls back to the global option, so a value
+    /// set either way is honoured. Crate-internal: callers outside can already
+    /// express both halves with `set_attribute_int` and `set_prediction_scheme`,
+    /// and a getter with no matching per-attribute setter would be a half API.
+    pub(crate) fn get_attribute_prediction_scheme(&self, att_id: i32) -> i32 {
         self.get_attribute_int(att_id, "prediction_scheme", -1)
     }
 

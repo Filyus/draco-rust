@@ -78,7 +78,6 @@ impl IntPredictionTransformFamily {
 
 pub struct SequentialIntegerAttributeEncoder {
     pub base: SequentialAttributeEncoder,
-    prediction_scheme: Option<Box<dyn PredictionSchemeEncoder<'static, i32, i32>>>,
     /// Stores the quantization transform if one was applied, for later encoding
     quantization_transform: Option<AttributeQuantizationTransform>,
     transform_family: IntPredictionTransformFamily,
@@ -94,7 +93,6 @@ impl SequentialIntegerAttributeEncoder {
     pub fn new() -> Self {
         Self {
             base: SequentialAttributeEncoder::new(),
-            prediction_scheme: None,
             quantization_transform: None,
             transform_family: IntPredictionTransformFamily::Wrap,
         }
@@ -106,20 +104,6 @@ impl SequentialIntegerAttributeEncoder {
     /// so only the normal encoder needs to call this.
     pub fn set_transform_family(&mut self, family: IntPredictionTransformFamily) {
         self.transform_family = family;
-    }
-
-    /// Installs a ready-made prediction scheme, bypassing selection entirely.
-    ///
-    /// Nothing in the crate calls this any more -- the normal encoder used to,
-    /// and that is what kept normals off the geometric scheme. The `'static`
-    /// bound also means no mesh scheme can be passed here, since they all borrow
-    /// the corner table; those are built per method inside `encode_values`.
-    /// Retained for external callers until the next breaking release.
-    pub fn set_prediction_scheme(
-        &mut self,
-        scheme: Box<dyn PredictionSchemeEncoder<'static, i32, i32>>,
-    ) {
-        self.prediction_scheme = Some(scheme);
     }
 
     pub fn init(&mut self, attribute_id: i32) -> bool {
@@ -306,162 +290,130 @@ impl SequentialIntegerAttributeEncoder {
         let mut vertex_to_data_map = Vec::new();
         let mut data_to_corner_map = Vec::new();
 
-        if let Some(ref mut scheme) = self.prediction_scheme {
-            selected_method = scheme.get_prediction_method();
-            selected_transform_type = scheme.get_transform_type();
-            if !scheme.compute_correction_values(
-                &values,
-                &mut corrections,
-                num_values,
-                num_components,
-                None,
-            ) {
-                return false;
-            }
-        } else {
-            match selected_method {
-                // Delta over whichever transform family this encoder was given.
-                // The decoder makes the same split on the way back in, keyed on
-                // the transform byte -- see the Difference arm of
-                // `sequential_integer_attribute_decoder.rs`.
-                PredictionSchemeMethod::Difference => match self.transform_family {
-                    IntPredictionTransformFamily::NormalOctahedron {
+        match selected_method {
+            // Delta over whichever transform family this encoder was given.
+            // The decoder makes the same split on the way back in, keyed on
+            // the transform byte -- see the Difference arm of
+            // `sequential_integer_attribute_decoder.rs`.
+            PredictionSchemeMethod::Difference => match self.transform_family {
+                IntPredictionTransformFamily::NormalOctahedron {
+                    max_quantized_value,
+                    canonicalized,
+                } => {
+                    let transform = IntPredictionTransformFamily::build_octahedron(
                         max_quantized_value,
                         canonicalized,
-                    } => {
-                        let transform = IntPredictionTransformFamily::build_octahedron(
-                            max_quantized_value,
-                            canonicalized,
-                        );
-                        let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                        selected_transform_type = predictor.get_transform_type();
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
-                            return false;
-                        }
-                        predictor_delta_octahedron = Some(predictor);
+                    );
+                    let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                    selected_transform_type = predictor.get_transform_type();
+                    if !predictor.compute_correction_values(
+                        &values,
+                        &mut corrections,
+                        num_values,
+                        num_components,
+                        None,
+                    ) {
+                        return false;
                     }
-                    IntPredictionTransformFamily::Wrap => {
-                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                        let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                        selected_transform_type = predictor.get_transform_type();
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
-                            return false;
-                        }
-                        predictor_delta = Some(predictor);
+                    predictor_delta_octahedron = Some(predictor);
+                }
+                IntPredictionTransformFamily::Wrap => {
+                    let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                    let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                    selected_transform_type = predictor.get_transform_type();
+                    if !predictor.compute_correction_values(
+                        &values,
+                        &mut corrections,
+                        num_values,
+                        num_components,
+                        None,
+                    ) {
+                        return false;
                     }
-                },
-                PredictionSchemeMethod::MeshPredictionParallelogram => {
-                    if let Some(_mesh) = encoder.mesh() {
-                        if let Some(corner_table) = encoder.corner_table() {
-                            // Generate maps
-                            // For Edgebreaker, vertex_to_data_map is indexed by corner table VertexIndex.
-                            // For Sequential, it's indexed by mesh PointIndex (which equals VertexIndex).
-                            let is_edgebreaker = encoder.get_encoding_method() == Some(1);
+                    predictor_delta = Some(predictor);
+                }
+            },
+            PredictionSchemeMethod::MeshPredictionParallelogram => {
+                if let Some(_mesh) = encoder.mesh() {
+                    if let Some(corner_table) = encoder.corner_table() {
+                        // Generate maps
+                        // For Edgebreaker, vertex_to_data_map is indexed by corner table VertexIndex.
+                        // For Sequential, it's indexed by mesh PointIndex (which equals VertexIndex).
+                        let is_edgebreaker = encoder.get_encoding_method() == Some(1);
 
-                            // vertex_to_data_map must be indexed by corner table VertexIndex
-                            let map_size = corner_table.num_vertices();
-                            vertex_to_data_map.resize(map_size, -1);
-                            data_to_corner_map.resize(num_points, 0);
+                        // vertex_to_data_map must be indexed by corner table VertexIndex
+                        let map_size = corner_table.num_vertices();
+                        vertex_to_data_map.resize(map_size, -1);
+                        data_to_corner_map.resize(num_points, 0);
 
-                            if is_edgebreaker {
-                                // For Edgebreaker, get both maps from the encoder.
-                                // These maps were computed during connectivity encoding and
-                                // are consistent with each other.
-                                if let Some(map) = encoder.get_data_to_corner_map() {
-                                    if map.len() == num_points {
-                                        data_to_corner_map.copy_from_slice(map);
-                                    }
-                                }
-                                if let Some(map) = encoder.get_vertex_to_data_map() {
-                                    // Use the pre-computed vertex_to_data_map from the encoder
-                                    replace_vec_from_slice(&mut vertex_to_data_map, map);
-                                }
-                            } else {
-                                // Sequential encoding: PointIndex == VertexIndex (1:1 mapping)
-                                for (i, &point_id) in point_ids.iter().enumerate() {
-                                    if (point_id.0 as usize) < vertex_to_data_map.len()
-                                        && vertex_to_data_map[point_id.0 as usize] == -1
-                                    {
-                                        vertex_to_data_map[point_id.0 as usize] = i as i32;
-                                    }
-                                    let ci = corner_table.left_most_corner(
-                                        crate::geometry_indices::VertexIndex(point_id.0),
-                                    );
-                                    data_to_corner_map[i] = ci.0;
+                        if is_edgebreaker {
+                            // For Edgebreaker, get both maps from the encoder.
+                            // These maps were computed during connectivity encoding and
+                            // are consistent with each other.
+                            if let Some(map) = encoder.get_data_to_corner_map() {
+                                if map.len() == num_points {
+                                    data_to_corner_map.copy_from_slice(map);
                                 }
                             }
-
-                            let mut mesh_data = MeshPredictionSchemeData::new();
-                            mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
-
-                            #[cfg(feature = "debug_logs")]
-                            {
-                                let head = vertex_to_data_map.iter().take(16).collect::<Vec<_>>();
-                                let tail =
-                                    vertex_to_data_map.iter().rev().take(16).collect::<Vec<_>>();
-                                debug_log!(
-                                    "Parallelogram encoder: vertex_to_data_map size={}, head={:?}, tail(reversed)={:?}",
-                                    vertex_to_data_map.len(),
-                                    head,
-                                    tail
-                                );
-                                debug_log!(
-                                    "Parallelogram encoder: data_to_corner_map head={:?}",
-                                    data_to_corner_map.iter().take(16).collect::<Vec<_>>()
-                                );
+                            if let Some(map) = encoder.get_vertex_to_data_map() {
+                                // Use the pre-computed vertex_to_data_map from the encoder
+                                replace_vec_from_slice(&mut vertex_to_data_map, map);
                             }
+                        } else {
+                            // Sequential encoding: PointIndex == VertexIndex (1:1 mapping)
+                            for (i, &point_id) in point_ids.iter().enumerate() {
+                                if (point_id.0 as usize) < vertex_to_data_map.len()
+                                    && vertex_to_data_map[point_id.0 as usize] == -1
+                                {
+                                    vertex_to_data_map[point_id.0 as usize] = i as i32;
+                                }
+                                let ci = corner_table.left_most_corner(
+                                    crate::geometry_indices::VertexIndex(point_id.0),
+                                );
+                                data_to_corner_map[i] = ci.0;
+                            }
+                        }
 
-                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                            let mut predictor = MeshPredictionSchemeParallelogramEncoder::new(
-                                current_attribute,
-                                transform,
-                                mesh_data,
+                        let mut mesh_data = MeshPredictionSchemeData::new();
+                        mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+
+                        #[cfg(feature = "debug_logs")]
+                        {
+                            let head = vertex_to_data_map.iter().take(16).collect::<Vec<_>>();
+                            let tail = vertex_to_data_map.iter().rev().take(16).collect::<Vec<_>>();
+                            debug_log!(
+                                "Parallelogram encoder: vertex_to_data_map size={}, head={:?}, tail(reversed)={:?}",
+                                vertex_to_data_map.len(),
+                                head,
+                                tail
                             );
-                            selected_transform_type = predictor.get_transform_type();
-
-                            if !predictor.compute_correction_values(
-                                &values,
-                                &mut corrections,
-                                num_values,
-                                num_components,
-                                None,
-                            ) {
-                                return false;
-                            }
-                            predictor_parallelogram = Some(predictor);
-                        } else {
-                            // Compatibility fallback: match C++ factory behavior and use
-                            // Difference when a mesh-only prediction scheme cannot be created.
-                            selected_method = PredictionSchemeMethod::Difference;
-                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                            let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                            selected_transform_type = predictor.get_transform_type();
-                            if !predictor.compute_correction_values(
-                                &values,
-                                &mut corrections,
-                                num_values,
-                                num_components,
-                                None,
-                            ) {
-                                return false;
-                            }
-                            predictor_delta = Some(predictor);
+                            debug_log!(
+                                "Parallelogram encoder: data_to_corner_map head={:?}",
+                                data_to_corner_map.iter().take(16).collect::<Vec<_>>()
+                            );
                         }
+
+                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                        let mut predictor = MeshPredictionSchemeParallelogramEncoder::new(
+                            current_attribute,
+                            transform,
+                            mesh_data,
+                        );
+                        selected_transform_type = predictor.get_transform_type();
+
+                        if !predictor.compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        ) {
+                            return false;
+                        }
+                        predictor_parallelogram = Some(predictor);
                     } else {
-                        // Compatibility fallback: mesh-only prediction schemes degrade to
-                        // Difference for non-mesh geometry, matching C++.
+                        // Compatibility fallback: match C++ factory behavior and use
+                        // Difference when a mesh-only prediction scheme cannot be created.
                         selected_method = PredictionSchemeMethod::Difference;
                         let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                         let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
@@ -477,168 +429,169 @@ impl SequentialIntegerAttributeEncoder {
                         }
                         predictor_delta = Some(predictor);
                     }
-                }
-                PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
-                    if let Some(_mesh) = encoder.mesh() {
-                        if let Some(corner_table) = encoder.corner_table() {
-                            // Generate maps - vertex_to_data_map indexed by corner table VertexIndex
-                            let is_edgebreaker = encoder.get_encoding_method() == Some(1);
-
-                            let map_size = corner_table.num_vertices();
-                            vertex_to_data_map.resize(map_size, -1);
-                            data_to_corner_map.resize(num_points, 0);
-
-                            if is_edgebreaker {
-                                // For Edgebreaker, get both maps from the encoder.
-                                if let Some(map) = encoder.get_data_to_corner_map() {
-                                    if map.len() == num_points {
-                                        data_to_corner_map.copy_from_slice(map);
-                                    }
-                                }
-                                if let Some(map) = encoder.get_vertex_to_data_map() {
-                                    replace_vec_from_slice(&mut vertex_to_data_map, map);
-                                }
-                            } else {
-                                for (i, &point_id) in point_ids.iter().enumerate() {
-                                    if (point_id.0 as usize) < vertex_to_data_map.len()
-                                        && vertex_to_data_map[point_id.0 as usize] == -1
-                                    {
-                                        vertex_to_data_map[point_id.0 as usize] = i as i32;
-                                    }
-                                    let ci = corner_table.left_most_corner(
-                                        crate::geometry_indices::VertexIndex(point_id.0),
-                                    );
-                                    data_to_corner_map[i] = ci.0;
-                                }
-                            }
-
-                            let mut mesh_data = MeshPredictionSchemeData::new();
-                            mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
-
-                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                            let mut predictor =
-                                MeshPredictionSchemeConstrainedMultiParallelogramEncoder::new(
-                                    transform, mesh_data,
-                                );
-                            let (vmaj, vmin) = options.get_version();
-                            predictor.set_bitstream_version(crate::version::bitstream_version(
-                                vmaj, vmin,
-                            ));
-                            selected_transform_type = predictor.get_transform_type();
-
-                            if !predictor.compute_correction_values(
-                                &values,
-                                &mut corrections,
-                                num_values,
-                                num_components,
-                                None,
-                            ) {
-                                return false;
-                            }
-                            predictor_constrained_multi_parallelogram = Some(predictor);
-                        } else {
-                            // Compatibility fallback: match C++ factory behavior and use
-                            // Difference when a mesh-only prediction scheme cannot be created.
-                            selected_method = PredictionSchemeMethod::Difference;
-                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                            let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                            if !predictor.compute_correction_values(
-                                &values,
-                                &mut corrections,
-                                num_values,
-                                num_components,
-                                None,
-                            ) {
-                                return false;
-                            }
-                            predictor_delta = Some(predictor);
-                        }
-                    } else {
-                        // Compatibility fallback: mesh-only prediction schemes degrade to
-                        // Difference for non-mesh geometry, matching C++.
-                        selected_method = PredictionSchemeMethod::Difference;
-                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                        let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
-                            return false;
-                        }
-                        predictor_delta = Some(predictor);
+                } else {
+                    // Compatibility fallback: mesh-only prediction schemes degrade to
+                    // Difference for non-mesh geometry, matching C++.
+                    selected_method = PredictionSchemeMethod::Difference;
+                    let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                    let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                    selected_transform_type = predictor.get_transform_type();
+                    if !predictor.compute_correction_values(
+                        &values,
+                        &mut corrections,
+                        num_values,
+                        num_components,
+                        None,
+                    ) {
+                        return false;
                     }
+                    predictor_delta = Some(predictor);
                 }
-                #[cfg(feature = "legacy_bitstream_encode")]
-                PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                    if let Some(_mesh) = encoder.mesh() {
-                        if let Some(corner_table) = encoder.corner_table() {
-                            let is_edgebreaker = encoder.get_encoding_method() == Some(1);
+            }
+            PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
+                if let Some(_mesh) = encoder.mesh() {
+                    if let Some(corner_table) = encoder.corner_table() {
+                        // Generate maps - vertex_to_data_map indexed by corner table VertexIndex
+                        let is_edgebreaker = encoder.get_encoding_method() == Some(1);
 
-                            let map_size = corner_table.num_vertices();
-                            vertex_to_data_map.resize(map_size, -1);
-                            data_to_corner_map.resize(num_points, 0);
+                        let map_size = corner_table.num_vertices();
+                        vertex_to_data_map.resize(map_size, -1);
+                        data_to_corner_map.resize(num_points, 0);
 
-                            if is_edgebreaker {
-                                if let Some(map) = encoder.get_data_to_corner_map() {
-                                    if map.len() == num_points {
-                                        data_to_corner_map.copy_from_slice(map);
-                                    }
-                                }
-                                if let Some(map) = encoder.get_vertex_to_data_map() {
-                                    replace_vec_from_slice(&mut vertex_to_data_map, map);
-                                }
-                            } else {
-                                for (i, &point_id) in point_ids.iter().enumerate() {
-                                    if (point_id.0 as usize) < vertex_to_data_map.len()
-                                        && vertex_to_data_map[point_id.0 as usize] == -1
-                                    {
-                                        vertex_to_data_map[point_id.0 as usize] = i as i32;
-                                    }
-                                    let ci = corner_table.left_most_corner(
-                                        crate::geometry_indices::VertexIndex(point_id.0),
-                                    );
-                                    data_to_corner_map[i] = ci.0;
+                        if is_edgebreaker {
+                            // For Edgebreaker, get both maps from the encoder.
+                            if let Some(map) = encoder.get_data_to_corner_map() {
+                                if map.len() == num_points {
+                                    data_to_corner_map.copy_from_slice(map);
                                 }
                             }
+                            if let Some(map) = encoder.get_vertex_to_data_map() {
+                                replace_vec_from_slice(&mut vertex_to_data_map, map);
+                            }
+                        } else {
+                            for (i, &point_id) in point_ids.iter().enumerate() {
+                                if (point_id.0 as usize) < vertex_to_data_map.len()
+                                    && vertex_to_data_map[point_id.0 as usize] == -1
+                                {
+                                    vertex_to_data_map[point_id.0 as usize] = i as i32;
+                                }
+                                let ci = corner_table.left_most_corner(
+                                    crate::geometry_indices::VertexIndex(point_id.0),
+                                );
+                                data_to_corner_map[i] = ci.0;
+                            }
+                        }
 
-                            let mut mesh_data = MeshPredictionSchemeData::new();
-                            mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+                        let mut mesh_data = MeshPredictionSchemeData::new();
+                        mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
 
-                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                            let mut predictor = MeshPredictionSchemeMultiParallelogramEncoder::new(
+                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                        let mut predictor =
+                            MeshPredictionSchemeConstrainedMultiParallelogramEncoder::new(
                                 transform, mesh_data,
                             );
-                            selected_transform_type = predictor.get_transform_type();
+                        let (vmaj, vmin) = options.get_version();
+                        predictor
+                            .set_bitstream_version(crate::version::bitstream_version(vmaj, vmin));
+                        selected_transform_type = predictor.get_transform_type();
 
-                            if !predictor.compute_correction_values(
-                                &values,
-                                &mut corrections,
-                                num_values,
-                                num_components,
-                                None,
-                            ) {
-                                return false;
-                            }
-                            predictor_multi_parallelogram = Some(predictor);
-                        } else {
-                            selected_method = PredictionSchemeMethod::Difference;
-                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                            let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                            selected_transform_type = predictor.get_transform_type();
-                            if !predictor.compute_correction_values(
-                                &values,
-                                &mut corrections,
-                                num_values,
-                                num_components,
-                                None,
-                            ) {
-                                return false;
-                            }
-                            predictor_delta = Some(predictor);
+                        if !predictor.compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        ) {
+                            return false;
                         }
+                        predictor_constrained_multi_parallelogram = Some(predictor);
+                    } else {
+                        // Compatibility fallback: match C++ factory behavior and use
+                        // Difference when a mesh-only prediction scheme cannot be created.
+                        selected_method = PredictionSchemeMethod::Difference;
+                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                        let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                        if !predictor.compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        ) {
+                            return false;
+                        }
+                        predictor_delta = Some(predictor);
+                    }
+                } else {
+                    // Compatibility fallback: mesh-only prediction schemes degrade to
+                    // Difference for non-mesh geometry, matching C++.
+                    selected_method = PredictionSchemeMethod::Difference;
+                    let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                    let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                    if !predictor.compute_correction_values(
+                        &values,
+                        &mut corrections,
+                        num_values,
+                        num_components,
+                        None,
+                    ) {
+                        return false;
+                    }
+                    predictor_delta = Some(predictor);
+                }
+            }
+            #[cfg(feature = "legacy_bitstream_encode")]
+            PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
+                if let Some(_mesh) = encoder.mesh() {
+                    if let Some(corner_table) = encoder.corner_table() {
+                        let is_edgebreaker = encoder.get_encoding_method() == Some(1);
+
+                        let map_size = corner_table.num_vertices();
+                        vertex_to_data_map.resize(map_size, -1);
+                        data_to_corner_map.resize(num_points, 0);
+
+                        if is_edgebreaker {
+                            if let Some(map) = encoder.get_data_to_corner_map() {
+                                if map.len() == num_points {
+                                    data_to_corner_map.copy_from_slice(map);
+                                }
+                            }
+                            if let Some(map) = encoder.get_vertex_to_data_map() {
+                                replace_vec_from_slice(&mut vertex_to_data_map, map);
+                            }
+                        } else {
+                            for (i, &point_id) in point_ids.iter().enumerate() {
+                                if (point_id.0 as usize) < vertex_to_data_map.len()
+                                    && vertex_to_data_map[point_id.0 as usize] == -1
+                                {
+                                    vertex_to_data_map[point_id.0 as usize] = i as i32;
+                                }
+                                let ci = corner_table.left_most_corner(
+                                    crate::geometry_indices::VertexIndex(point_id.0),
+                                );
+                                data_to_corner_map[i] = ci.0;
+                            }
+                        }
+
+                        let mut mesh_data = MeshPredictionSchemeData::new();
+                        mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+
+                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                        let mut predictor = MeshPredictionSchemeMultiParallelogramEncoder::new(
+                            transform, mesh_data,
+                        );
+                        selected_transform_type = predictor.get_transform_type();
+
+                        if !predictor.compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        ) {
+                            return false;
+                        }
+                        predictor_multi_parallelogram = Some(predictor);
                     } else {
                         selected_method = PredictionSchemeMethod::Difference;
                         let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
@@ -655,177 +608,319 @@ impl SequentialIntegerAttributeEncoder {
                         }
                         predictor_delta = Some(predictor);
                     }
+                } else {
+                    selected_method = PredictionSchemeMethod::Difference;
+                    let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                    let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                    selected_transform_type = predictor.get_transform_type();
+                    if !predictor.compute_correction_values(
+                        &values,
+                        &mut corrections,
+                        num_values,
+                        num_components,
+                        None,
+                    ) {
+                        return false;
+                    }
+                    predictor_delta = Some(predictor);
                 }
-                #[cfg(not(feature = "legacy_bitstream_encode"))]
-                PredictionSchemeMethod::MeshPredictionMultiParallelogram => return false,
-                #[cfg(feature = "legacy_bitstream_encode")]
-                PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                    if let Some(_mesh) = encoder.mesh() {
-                        if let Some(corner_table) = encoder.corner_table() {
-                            let is_edgebreaker = encoder.get_encoding_method() == Some(1);
+            }
+            #[cfg(not(feature = "legacy_bitstream_encode"))]
+            PredictionSchemeMethod::MeshPredictionMultiParallelogram => return false,
+            #[cfg(feature = "legacy_bitstream_encode")]
+            PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
+                if let Some(_mesh) = encoder.mesh() {
+                    if let Some(corner_table) = encoder.corner_table() {
+                        let is_edgebreaker = encoder.get_encoding_method() == Some(1);
 
-                            let map_size = corner_table.num_vertices();
-                            vertex_to_data_map.resize(map_size, -1);
-                            data_to_corner_map.resize(num_points, 0);
+                        let map_size = corner_table.num_vertices();
+                        vertex_to_data_map.resize(map_size, -1);
+                        data_to_corner_map.resize(num_points, 0);
 
-                            if is_edgebreaker {
-                                if let Some(map) = encoder.get_data_to_corner_map() {
-                                    if map.len() == num_points {
-                                        data_to_corner_map.copy_from_slice(map);
-                                    }
-                                }
-                                if let Some(map) = encoder.get_vertex_to_data_map() {
-                                    replace_vec_from_slice(&mut vertex_to_data_map, map);
-                                }
-                            } else {
-                                for (i, &point_id) in point_ids.iter().enumerate() {
-                                    if (point_id.0 as usize) < vertex_to_data_map.len()
-                                        && vertex_to_data_map[point_id.0 as usize] == -1
-                                    {
-                                        vertex_to_data_map[point_id.0 as usize] = i as i32;
-                                    }
-                                    let ci = corner_table.left_most_corner(
-                                        crate::geometry_indices::VertexIndex(point_id.0),
-                                    );
-                                    data_to_corner_map[i] = ci.0;
+                        if is_edgebreaker {
+                            if let Some(map) = encoder.get_data_to_corner_map() {
+                                if map.len() == num_points {
+                                    data_to_corner_map.copy_from_slice(map);
                                 }
                             }
+                            if let Some(map) = encoder.get_vertex_to_data_map() {
+                                replace_vec_from_slice(&mut vertex_to_data_map, map);
+                            }
+                        } else {
+                            for (i, &point_id) in point_ids.iter().enumerate() {
+                                if (point_id.0 as usize) < vertex_to_data_map.len()
+                                    && vertex_to_data_map[point_id.0 as usize] == -1
+                                {
+                                    vertex_to_data_map[point_id.0 as usize] = i as i32;
+                                }
+                                let ci = corner_table.left_most_corner(
+                                    crate::geometry_indices::VertexIndex(point_id.0),
+                                );
+                                data_to_corner_map[i] = ci.0;
+                            }
+                        }
 
-                            let mut mesh_data = MeshPredictionSchemeData::new();
-                            mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+                        let mut mesh_data = MeshPredictionSchemeData::new();
+                        mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
 
-                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                        let mut predictor =
+                            MeshPredictionSchemeTexCoordsDeprecatedEncoder::new(transform);
+                        selected_transform_type = predictor.get_transform_type();
+
+                        let pos_att = encoder
+                            .point_cloud()
+                            .unwrap()
+                            .named_attribute(GeometryAttributeType::Position);
+                        let Some(pos_att) = pos_att else {
+                            return false;
+                        };
+                        if !predictor.set_parent_attribute(pos_att) {
+                            return false;
+                        }
+                        predictor.init(&mesh_data);
+
+                        let entry_to_point_id_map: Vec<u32> =
+                            point_ids.iter().map(|p| p.0).collect();
+
+                        if !predictor.compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            Some(crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(
+                                &entry_to_point_id_map,
+                            )),
+                        ) {
+                            return false;
+                        }
+                        predictor_tex_coords_deprecated = Some(predictor);
+                    } else {
+                        selected_method = PredictionSchemeMethod::Difference;
+                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                        let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                        selected_transform_type = predictor.get_transform_type();
+                        if !predictor.compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        ) {
+                            return false;
+                        }
+                        predictor_delta = Some(predictor);
+                    }
+                } else {
+                    selected_method = PredictionSchemeMethod::Difference;
+                    let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                    let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                    selected_transform_type = predictor.get_transform_type();
+                    if !predictor.compute_correction_values(
+                        &values,
+                        &mut corrections,
+                        num_values,
+                        num_components,
+                        None,
+                    ) {
+                        return false;
+                    }
+                    predictor_delta = Some(predictor);
+                }
+            }
+            #[cfg(not(feature = "legacy_bitstream_encode"))]
+            PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => return false,
+            PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
+                if let Some(_mesh) = encoder.mesh() {
+                    if let Some(corner_table) = encoder.corner_table() {
+                        let is_edgebreaker = encoder.get_encoding_method() == Some(1);
+
+                        // vertex_to_data_map indexed by corner table VertexIndex
+                        let map_size = corner_table.num_vertices();
+                        vertex_to_data_map.resize(map_size, -1);
+                        data_to_corner_map.resize(num_points, 0);
+
+                        if is_edgebreaker {
+                            // For Edgebreaker, get both maps from the encoder.
+                            if let Some(map) = encoder.get_data_to_corner_map() {
+                                if map.len() == num_points {
+                                    data_to_corner_map.copy_from_slice(map);
+                                }
+                            }
+                            if let Some(map) = encoder.get_vertex_to_data_map() {
+                                replace_vec_from_slice(&mut vertex_to_data_map, map);
+                            }
+                        } else {
+                            for (i, &point_id) in point_ids.iter().enumerate() {
+                                if (point_id.0 as usize) < vertex_to_data_map.len()
+                                    && vertex_to_data_map[point_id.0 as usize] == -1
+                                {
+                                    vertex_to_data_map[point_id.0 as usize] = i as i32;
+                                }
+                                let ci = corner_table.left_most_corner(
+                                    crate::geometry_indices::VertexIndex(point_id.0),
+                                );
+                                data_to_corner_map[i] = ci.0;
+                            }
+                        }
+
+                        let mut mesh_data = MeshPredictionSchemeData::new();
+                        mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+
+                        let transform = PredictionSchemeTexCoordsPortableEncodingTransform::new();
+                        let mut predictor =
+                            MeshPredictionSchemeTexCoordsPortableEncoder::new(transform);
+                        selected_transform_type = predictor.get_transform_type();
+
+                        // The portable position, not the original floats: the
+                        // predictor works in quantized space and the decoder
+                        // has nothing else to predict from. C++ reaches it
+                        // through PointCloudEncoder::GetPortableAttribute in
+                        // SequentialAttributeEncoder::InitPredictionScheme,
+                        // and fails outright when it is missing.
+                        let pos_att_id = encoder
+                            .point_cloud()
+                            .unwrap()
+                            .named_attribute_id(GeometryAttributeType::Position);
+                        if pos_att_id < 0 {
+                            return false;
+                        }
+                        let Some(pos_att) = encoder.get_portable_attribute(pos_att_id) else {
+                            debug_log!("No portable position attribute for TexCoordsPortable");
+                            return false;
+                        };
+                        if !predictor.set_parent_attribute(pos_att) {
+                            return false;
+                        }
+
+                        predictor.init(&mesh_data);
+
+                        let entry_to_point_id_map: Vec<u32> =
+                            point_ids.iter().map(|p| p.0).collect();
+
+                        if !predictor.compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            Some(crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(
+                                &entry_to_point_id_map,
+                            )),
+                        ) {
+                            return false;
+                        }
+                        predictor_tex_coords_portable = Some(predictor);
+                    } else {
+                        // Compatibility fallback: match C++ factory behavior and use
+                        // Difference when a mesh-only prediction scheme cannot be created.
+                        selected_method = PredictionSchemeMethod::Difference;
+                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                        let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                        selected_transform_type = predictor.get_transform_type();
+                        if !predictor.compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        ) {
+                            return false;
+                        }
+                        predictor_delta = Some(predictor);
+                    }
+                } else {
+                    // Compatibility fallback: mesh-only prediction schemes degrade to
+                    // Difference for non-mesh geometry, matching C++.
+                    selected_method = PredictionSchemeMethod::Difference;
+                    let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                    let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                    selected_transform_type = predictor.get_transform_type();
+                    if !predictor.compute_correction_values(
+                        &values,
+                        &mut corrections,
+                        num_values,
+                        num_components,
+                        None,
+                    ) {
+                        return false;
+                    }
+                    predictor_delta = Some(predictor);
+                }
+            }
+            PredictionSchemeMethod::MeshPredictionGeometricNormal => {
+                if let Some(_mesh) = encoder.mesh() {
+                    if let Some(corner_table) = encoder.corner_table() {
+                        let is_edgebreaker = encoder.get_encoding_method() == Some(1);
+
+                        // vertex_to_data_map indexed by corner table VertexIndex
+                        let map_size = corner_table.num_vertices();
+                        vertex_to_data_map.resize(map_size, -1);
+                        data_to_corner_map.resize(num_points, 0);
+
+                        if is_edgebreaker {
+                            // For Edgebreaker, get both maps from the encoder.
+                            if let Some(map) = encoder.get_data_to_corner_map() {
+                                if map.len() == num_points {
+                                    data_to_corner_map.copy_from_slice(map);
+                                }
+                            }
+                            if let Some(map) = encoder.get_vertex_to_data_map() {
+                                replace_vec_from_slice(&mut vertex_to_data_map, map);
+                            }
+                        } else {
+                            for (i, &point_id) in point_ids.iter().enumerate() {
+                                if (point_id.0 as usize) < vertex_to_data_map.len()
+                                    && vertex_to_data_map[point_id.0 as usize] == -1
+                                {
+                                    vertex_to_data_map[point_id.0 as usize] = i as i32;
+                                }
+                                let ci = corner_table.left_most_corner(
+                                    crate::geometry_indices::VertexIndex(point_id.0),
+                                );
+                                data_to_corner_map[i] = ci.0;
+                            }
+                        }
+
+                        let mut mesh_data = MeshPredictionSchemeData::new();
+                        mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+
+                        // This scheme predicts in octahedral coordinates, so
+                        // it only means anything over the octahedron
+                        // transform -- upstream templates it on that and
+                        // reads the quantization bits back off it.
+                        if let IntPredictionTransformFamily::NormalOctahedron {
+                            max_quantized_value,
+                            canonicalized,
+                        } = self.transform_family
+                        {
+                            let transform = IntPredictionTransformFamily::build_octahedron(
+                                max_quantized_value,
+                                canonicalized,
+                            );
                             let mut predictor =
-                                MeshPredictionSchemeTexCoordsDeprecatedEncoder::new(transform);
+                                MeshPredictionSchemeGeometricNormalEncoder::new(transform);
                             selected_transform_type = predictor.get_transform_type();
 
-                            let pos_att = encoder
-                                .point_cloud()
-                                .unwrap()
-                                .named_attribute(GeometryAttributeType::Position);
-                            let Some(pos_att) = pos_att else {
-                                return false;
-                            };
-                            if !predictor.set_parent_attribute(pos_att) {
-                                return false;
-                            }
                             predictor.init(&mesh_data);
 
-                            let entry_to_point_id_map: Vec<u32> =
-                                point_ids.iter().map(|p| p.0).collect();
-
-                            if !predictor.compute_correction_values(
-                                &values,
-                                &mut corrections,
-                                num_values,
-                                num_components,
-                                Some(crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(
-                                    &entry_to_point_id_map,
-                                )),
-                            ) {
-                                return false;
-                            }
-                            predictor_tex_coords_deprecated = Some(predictor);
-                        } else {
-                            selected_method = PredictionSchemeMethod::Difference;
-                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                            let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                            selected_transform_type = predictor.get_transform_type();
-                            if !predictor.compute_correction_values(
-                                &values,
-                                &mut corrections,
-                                num_values,
-                                num_components,
-                                None,
-                            ) {
-                                return false;
-                            }
-                            predictor_delta = Some(predictor);
-                        }
-                    } else {
-                        selected_method = PredictionSchemeMethod::Difference;
-                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                        let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                        selected_transform_type = predictor.get_transform_type();
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
-                            return false;
-                        }
-                        predictor_delta = Some(predictor);
-                    }
-                }
-                #[cfg(not(feature = "legacy_bitstream_encode"))]
-                PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => return false,
-                PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
-                    if let Some(_mesh) = encoder.mesh() {
-                        if let Some(corner_table) = encoder.corner_table() {
-                            let is_edgebreaker = encoder.get_encoding_method() == Some(1);
-
-                            // vertex_to_data_map indexed by corner table VertexIndex
-                            let map_size = corner_table.num_vertices();
-                            vertex_to_data_map.resize(map_size, -1);
-                            data_to_corner_map.resize(num_points, 0);
-
-                            if is_edgebreaker {
-                                // For Edgebreaker, get both maps from the encoder.
-                                if let Some(map) = encoder.get_data_to_corner_map() {
-                                    if map.len() == num_points {
-                                        data_to_corner_map.copy_from_slice(map);
-                                    }
-                                }
-                                if let Some(map) = encoder.get_vertex_to_data_map() {
-                                    replace_vec_from_slice(&mut vertex_to_data_map, map);
-                                }
-                            } else {
-                                for (i, &point_id) in point_ids.iter().enumerate() {
-                                    if (point_id.0 as usize) < vertex_to_data_map.len()
-                                        && vertex_to_data_map[point_id.0 as usize] == -1
-                                    {
-                                        vertex_to_data_map[point_id.0 as usize] = i as i32;
-                                    }
-                                    let ci = corner_table.left_most_corner(
-                                        crate::geometry_indices::VertexIndex(point_id.0),
-                                    );
-                                    data_to_corner_map[i] = ci.0;
-                                }
-                            }
-
-                            let mut mesh_data = MeshPredictionSchemeData::new();
-                            mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
-
-                            let transform =
-                                PredictionSchemeTexCoordsPortableEncodingTransform::new();
-                            let mut predictor =
-                                MeshPredictionSchemeTexCoordsPortableEncoder::new(transform);
-                            selected_transform_type = predictor.get_transform_type();
-
-                            // The portable position, not the original floats: the
-                            // predictor works in quantized space and the decoder
-                            // has nothing else to predict from. C++ reaches it
-                            // through PointCloudEncoder::GetPortableAttribute in
-                            // SequentialAttributeEncoder::InitPredictionScheme,
-                            // and fails outright when it is missing.
-                            let pos_att_id = encoder
-                                .point_cloud()
-                                .unwrap()
-                                .named_attribute_id(GeometryAttributeType::Position);
+                            // The parent the predictor reads positions from,
+                            // in quantized space -- upstream binds it in
+                            // SetPredictionSchemeParentAttributes. Without it
+                            // `is_initialized` is false and the call below
+                            // refuses.
+                            let pos_att_id =
+                                point_cloud.named_attribute_id(GeometryAttributeType::Position);
                             if pos_att_id < 0 {
                                 return false;
                             }
                             let Some(pos_att) = encoder.get_portable_attribute(pos_att_id) else {
-                                debug_log!("No portable position attribute for TexCoordsPortable");
+                                debug_log!("No portable position for GeometricNormal");
                                 return false;
                             };
                             if !predictor.set_parent_attribute(pos_att) {
+                                debug_log!("Failed to set parent for GeometricNormal");
                                 return false;
                             }
-
-                            predictor.init(&mesh_data);
 
                             let entry_to_point_id_map: Vec<u32> =
                                 point_ids.iter().map(|p| p.0).collect();
@@ -841,10 +936,25 @@ impl SequentialIntegerAttributeEncoder {
                             ) {
                                 return false;
                             }
-                            predictor_tex_coords_portable = Some(predictor);
+                            predictor_geometric_normal = Some(predictor);
                         } else {
-                            // Compatibility fallback: match C++ factory behavior and use
-                            // Difference when a mesh-only prediction scheme cannot be created.
+                            // Reached by a normal attribute whose values are
+                            // already integral, so nothing quantized it and
+                            // there are no octahedral coordinates to predict.
+                            //
+                            // Upstream reaches the same combination and
+                            // handles it badly: its encoder factory has no
+                            // per-transform specialization where the
+                            // decoder's does, so it builds this scheme over
+                            // the wrap transform and asks that for
+                            // quantization bits -- a stub returning -1 behind
+                            // DRACO_DCHECK(false), carrying upstream's own
+                            // TODO. Debug asserts; release predicts from an
+                            // uninitialized toolbox.
+                            //
+                            // Take instead the fallback the same factory uses
+                            // when a mesh scheme cannot be built, and encode a
+                            // delta.
                             selected_method = PredictionSchemeMethod::Difference;
                             let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                             let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
@@ -861,8 +971,8 @@ impl SequentialIntegerAttributeEncoder {
                             predictor_delta = Some(predictor);
                         }
                     } else {
-                        // Compatibility fallback: mesh-only prediction schemes degrade to
-                        // Difference for non-mesh geometry, matching C++.
+                        // Compatibility fallback: match C++ factory behavior and use
+                        // Difference when a mesh-only prediction scheme cannot be created.
                         selected_method = PredictionSchemeMethod::Difference;
                         let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                         let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
@@ -878,186 +988,33 @@ impl SequentialIntegerAttributeEncoder {
                         }
                         predictor_delta = Some(predictor);
                     }
-                }
-                PredictionSchemeMethod::MeshPredictionGeometricNormal => {
-                    if let Some(_mesh) = encoder.mesh() {
-                        if let Some(corner_table) = encoder.corner_table() {
-                            let is_edgebreaker = encoder.get_encoding_method() == Some(1);
-
-                            // vertex_to_data_map indexed by corner table VertexIndex
-                            let map_size = corner_table.num_vertices();
-                            vertex_to_data_map.resize(map_size, -1);
-                            data_to_corner_map.resize(num_points, 0);
-
-                            if is_edgebreaker {
-                                // For Edgebreaker, get both maps from the encoder.
-                                if let Some(map) = encoder.get_data_to_corner_map() {
-                                    if map.len() == num_points {
-                                        data_to_corner_map.copy_from_slice(map);
-                                    }
-                                }
-                                if let Some(map) = encoder.get_vertex_to_data_map() {
-                                    replace_vec_from_slice(&mut vertex_to_data_map, map);
-                                }
-                            } else {
-                                for (i, &point_id) in point_ids.iter().enumerate() {
-                                    if (point_id.0 as usize) < vertex_to_data_map.len()
-                                        && vertex_to_data_map[point_id.0 as usize] == -1
-                                    {
-                                        vertex_to_data_map[point_id.0 as usize] = i as i32;
-                                    }
-                                    let ci = corner_table.left_most_corner(
-                                        crate::geometry_indices::VertexIndex(point_id.0),
-                                    );
-                                    data_to_corner_map[i] = ci.0;
-                                }
-                            }
-
-                            let mut mesh_data = MeshPredictionSchemeData::new();
-                            mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
-
-                            // This scheme predicts in octahedral coordinates, so
-                            // it only means anything over the octahedron
-                            // transform -- upstream templates it on that and
-                            // reads the quantization bits back off it.
-                            if let IntPredictionTransformFamily::NormalOctahedron {
-                                max_quantized_value,
-                                canonicalized,
-                            } = self.transform_family
-                            {
-                                let transform = IntPredictionTransformFamily::build_octahedron(
-                                    max_quantized_value,
-                                    canonicalized,
-                                );
-                                let mut predictor =
-                                    MeshPredictionSchemeGeometricNormalEncoder::new(transform);
-                                selected_transform_type = predictor.get_transform_type();
-
-                                predictor.init(&mesh_data);
-
-                                // The parent the predictor reads positions from,
-                                // in quantized space -- upstream binds it in
-                                // SetPredictionSchemeParentAttributes. Without it
-                                // `is_initialized` is false and the call below
-                                // refuses.
-                                let pos_att_id =
-                                    point_cloud.named_attribute_id(GeometryAttributeType::Position);
-                                if pos_att_id < 0 {
-                                    return false;
-                                }
-                                let Some(pos_att) = encoder.get_portable_attribute(pos_att_id)
-                                else {
-                                    debug_log!("No portable position for GeometricNormal");
-                                    return false;
-                                };
-                                if !predictor.set_parent_attribute(pos_att) {
-                                    debug_log!("Failed to set parent for GeometricNormal");
-                                    return false;
-                                }
-
-                                let entry_to_point_id_map: Vec<u32> =
-                                    point_ids.iter().map(|p| p.0).collect();
-
-                                if !predictor.compute_correction_values(
-                                    &values,
-                                    &mut corrections,
-                                    num_values,
-                                    num_components,
-                                    Some(
-                                        crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(
-                                            &entry_to_point_id_map,
-                                        ),
-                                    ),
-                                ) {
-                                    return false;
-                                }
-                                predictor_geometric_normal = Some(predictor);
-                            } else {
-                                // Reached by a normal attribute whose values are
-                                // already integral, so nothing quantized it and
-                                // there are no octahedral coordinates to predict.
-                                //
-                                // Upstream reaches the same combination and
-                                // handles it badly: its encoder factory has no
-                                // per-transform specialization where the
-                                // decoder's does, so it builds this scheme over
-                                // the wrap transform and asks that for
-                                // quantization bits -- a stub returning -1 behind
-                                // DRACO_DCHECK(false), carrying upstream's own
-                                // TODO. Debug asserts; release predicts from an
-                                // uninitialized toolbox.
-                                //
-                                // Take instead the fallback the same factory uses
-                                // when a mesh scheme cannot be built, and encode a
-                                // delta.
-                                selected_method = PredictionSchemeMethod::Difference;
-                                let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                                let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                                selected_transform_type = predictor.get_transform_type();
-                                if !predictor.compute_correction_values(
-                                    &values,
-                                    &mut corrections,
-                                    num_values,
-                                    num_components,
-                                    None,
-                                ) {
-                                    return false;
-                                }
-                                predictor_delta = Some(predictor);
-                            }
-                        } else {
-                            // Compatibility fallback: match C++ factory behavior and use
-                            // Difference when a mesh-only prediction scheme cannot be created.
-                            selected_method = PredictionSchemeMethod::Difference;
-                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                            let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                            selected_transform_type = predictor.get_transform_type();
-                            if !predictor.compute_correction_values(
-                                &values,
-                                &mut corrections,
-                                num_values,
-                                num_components,
-                                None,
-                            ) {
-                                return false;
-                            }
-                            predictor_delta = Some(predictor);
-                        }
-                    } else {
-                        // Compatibility fallback: mesh-only prediction schemes degrade to
-                        // Difference for non-mesh geometry, matching C++.
-                        selected_method = PredictionSchemeMethod::Difference;
-                        let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
-                        let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                        selected_transform_type = predictor.get_transform_type();
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
-                            return false;
-                        }
-                        predictor_delta = Some(predictor);
+                } else {
+                    // Compatibility fallback: mesh-only prediction schemes degrade to
+                    // Difference for non-mesh geometry, matching C++.
+                    selected_method = PredictionSchemeMethod::Difference;
+                    let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                    let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                    selected_transform_type = predictor.get_transform_type();
+                    if !predictor.compute_correction_values(
+                        &values,
+                        &mut corrections,
+                        num_values,
+                        num_components,
+                        None,
+                    ) {
+                        return false;
                     }
+                    predictor_delta = Some(predictor);
                 }
-                PredictionSchemeMethod::None => {
-                    corrections.copy_from_slice(&values);
-                }
-                _ => return false,
             }
+            PredictionSchemeMethod::None => {
+                corrections.copy_from_slice(&values);
+            }
+            _ => return false,
         }
 
         // Precompute prediction-data bytes so we can append them after symbols.
         let mut pred_data_opt: Option<Vec<u8>> = None;
-        if let Some(ref mut scheme) = self.prediction_scheme {
-            let mut pred_data = Vec::new();
-            if !scheme.encode_prediction_data(&mut pred_data) {
-                return false;
-            }
-            pred_data_opt = Some(pred_data);
-        }
         if !try_encode_prediction_data(predictor_delta, &mut pred_data_opt) {
             return false;
         }
@@ -1147,18 +1104,15 @@ impl SequentialIntegerAttributeEncoder {
         // For normal octahedron encoding, corrections are already positive, so skip ZigZag
         //
         // Decided from the transform that is about to be written, which is what
-        // the decoder reads it back from. Asking the scheme would only answer for
-        // a scheme installed through `set_prediction_scheme`; every mesh
-        // predictor is a local here and would fall through to the default of
-        // false, zigzagging octahedral corrections the decoder will not undo.
+        // the decoder reads it back from. Asking the prediction scheme instead
+        // would not work here: every one of them is a local, built inside the
+        // match above because they borrow the corner table, so there is no
+        // object left to ask by this point.
         let are_corrections_positive = matches!(
             selected_transform_type,
             PredictionSchemeTransformType::NormalOctahedron
                 | PredictionSchemeTransformType::NormalOctahedronCanonicalized
-        ) || self
-            .prediction_scheme
-            .as_ref()
-            .is_some_and(|scheme| scheme.are_corrections_positive());
+        );
 
         let symbols: Vec<u32> = if are_corrections_positive {
             // Corrections are already unsigned - just cast
