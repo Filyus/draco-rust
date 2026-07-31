@@ -140,6 +140,46 @@ impl PartialEq for Error {
 }
 
 #[cfg(feature = "encoder")]
+/// Advances `arr` to its next lexicographic permutation in place (`false` <
+/// `true`), matching `std::next_permutation`. Returns `false` and leaves
+/// `arr` sorted ascending when the sequence was already the last
+/// permutation.
+///
+/// The encoder's config search needs this exact ordering, not just the same
+/// *set* of configurations: ties in encoded cost between two configurations
+/// are broken by whichever the search visits first, and the config, not just
+/// its cost, is itself part of the encoded stream (which parallelogram edges
+/// are marked as creases). Enumerating configurations in a different order --
+/// bitmask-ascending, say -- picks a different, equally valid, wrong-for-parity
+/// winner whenever a tie occurs.
+#[cfg(feature = "encoder")]
+fn next_permutation(arr: &mut [bool]) -> bool {
+    if arr.len() < 2 {
+        return false;
+    }
+    let mut i = arr.len() - 1;
+    loop {
+        if i == 0 {
+            arr.reverse();
+            return false;
+        }
+        i -= 1;
+        // arr[i] < arr[i + 1], spelled out since clippy reads `<` on bool as
+        // a mistake -- here it is exactly the false-before-true order the
+        // permutation needs.
+        if !arr[i] && arr[i + 1] {
+            break;
+        }
+    }
+    let mut j = arr.len() - 1;
+    while arr[j] <= arr[i] {
+        j -= 1;
+    }
+    arr.swap(i, j);
+    arr[i + 1..].reverse();
+    true
+}
+
 impl PartialOrd for Error {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match self.num_bits.partial_cmp(&other.num_bits) {
@@ -382,96 +422,34 @@ where
                 }
             }
 
-            let mut best_error = Error {
-                num_bits: i64::MAX,
-                residual_error: i64::MAX,
-            };
-            let mut best_config = 0u8;
-            let mut best_num_used = 0;
+            // Set from the delta baseline immediately below -- there is always
+            // at least that one candidate, so no placeholder value is needed.
+            let mut best_error;
+            let mut best_config;
+            let mut best_num_used;
 
             // C++ increments total_parallelograms BEFORE evaluating any configurations.
             // This is critical for matching the overhead calculation exactly.
             let context = num_parallelograms - 1;
             total_parallelograms[context] += num_parallelograms as i64;
 
-            let num_configs = 1 << num_parallelograms;
-            // Config 0 is valid (all creases = delta prediction)
-            for config in 0..num_configs {
-                let mut num_used = 0;
-                for k in 0..num_components {
-                    multi_pred_vals[k] = DataType::default();
-                }
-
-                for i in 0..num_parallelograms {
-                    if (config & (1 << i)) != 0 {
-                        num_used += 1;
-                    }
-                }
-
-                if num_used == 0 {
-                    // Delta prediction (config 0: all parallelograms marked as creases)
-                    predicted_val.fill(DataType::default());
-                    if data_id > 0 {
-                        let prev_offset = (data_id - 1) * num_components;
-                        for c in 0..num_components {
-                            predicted_val[c] = in_data[prev_offset + c];
-                        }
-                    }
-
-                    let mut error = Error::new();
+            // Delta prediction (no parallelogram used), evaluated once up front --
+            // matches C++'s baseline computed before the config search, not
+            // config 0 of a bitmask loop.
+            {
+                predicted_val.fill(DataType::default());
+                if data_id > 0 {
+                    let prev_offset = (data_id - 1) * num_components;
                     for c in 0..num_components {
-                        // For entropy tracking, C++ uses predicted - actual
-                        let val = in_data[data_offset + c].into();
-                        let pred = predicted_val[c].into();
-                        let dif = pred - val; // predicted - actual, like C++
-                        error.residual_error += dif.abs();
-                        entropy_symbols[c] = Self::convert_signed_int_to_symbol(dif);
+                        predicted_val[c] = in_data[prev_offset + c];
                     }
-
-                    let entropy_data = self.entropy_tracker.peek(&entropy_symbols);
-                    error.num_bits =
-                        ShannonEntropyTracker::get_number_of_data_bits_static(&entropy_data)
-                            + ShannonEntropyTracker::get_number_of_r_ans_table_bits_static(
-                                &entropy_data,
-                            );
-
-                    // Add overhead bits - C++ uses total cumulative overhead
-                    // For config 0: no parallelograms used, so total_used stays the same
-                    let overhead_bits = Self::compute_overhead_bits(
-                        total_used_parallelograms[context],
-                        total_parallelograms[context],
-                    );
-                    error.num_bits += overhead_bits;
-
-                    if error < best_error {
-                        best_error = error;
-                        best_config = config as u8;
-                        best_num_used = 0;
-                    }
-                    continue;
-                }
-
-                // Multi-parallelogram prediction
-                // Encoder must use same accumulation as decoder: AddAsUnsigned (wrapping add)
-                for k in 0..num_components {
-                    let mut sum: i32 = 0;
-                    for i in 0..num_parallelograms {
-                        if (config & (1 << i)) != 0 {
-                            let pred_val: i64 = pred_vals[i][k].into();
-                            // AddAsUnsigned: convert to unsigned, add, convert back
-                            sum = (sum as u32).wrapping_add(pred_val as u32) as i32;
-                        }
-                    }
-                    // C++ uses truncating integer division (not rounding)
-                    let val = sum / num_used;
-                    multi_pred_vals[k] = DataType::from(val);
                 }
 
                 let mut error = Error::new();
                 for c in 0..num_components {
                     // For entropy tracking, C++ uses predicted - actual
                     let val = in_data[data_offset + c].into();
-                    let pred = multi_pred_vals[c].into();
+                    let pred = predicted_val[c].into();
                     let dif = pred - val; // predicted - actual, like C++
                     error.residual_error += dif.abs();
                     entropy_symbols[c] = Self::convert_signed_int_to_symbol(dif);
@@ -484,19 +462,89 @@ where
                             &entropy_data,
                         );
 
-                // Add overhead bits - C++ computes overhead assuming this config is chosen
-                // If num_used parallelograms are used, total_used increases by num_used
+                // For the baseline: no parallelograms used, so total_used stays
+                // the same.
                 let overhead_bits = Self::compute_overhead_bits(
-                    total_used_parallelograms[context] + num_used as i64,
+                    total_used_parallelograms[context],
                     total_parallelograms[context],
                 );
-
                 error.num_bits += overhead_bits;
 
-                if error < best_error {
-                    best_error = error;
-                    best_config = config as u8;
-                    best_num_used = num_used;
+                best_error = error;
+                best_config = 0;
+                best_num_used = 0;
+            }
+
+            // Multi-parallelogram configurations, searched by increasing count of
+            // parallelograms used and, within each count, in the same
+            // next_permutation order C++ visits them in -- see next_permutation's
+            // doc comment for why the order itself, not just the set of configs
+            // it covers, has to match.
+            let mut excluded = vec![true; num_parallelograms];
+            for num_used in 1..=num_parallelograms {
+                for slot in excluded.iter_mut().take(num_used) {
+                    *slot = false;
+                }
+                for slot in excluded.iter_mut().skip(num_used) {
+                    *slot = true;
+                }
+                loop {
+                    let mut config: u32 = 0;
+                    for (i, &is_excluded) in excluded.iter().enumerate() {
+                        if !is_excluded {
+                            config |= 1 << i;
+                        }
+                    }
+
+                    // Encoder must use same accumulation as decoder: AddAsUnsigned
+                    // (wrapping add).
+                    for k in 0..num_components {
+                        let mut sum: i32 = 0;
+                        for i in 0..num_parallelograms {
+                            if (config & (1 << i)) != 0 {
+                                let pred_val: i64 = pred_vals[i][k].into();
+                                sum = (sum as u32).wrapping_add(pred_val as u32) as i32;
+                            }
+                        }
+                        // C++ uses truncating integer division (not rounding).
+                        let val = sum / num_used as i32;
+                        multi_pred_vals[k] = DataType::from(val);
+                    }
+
+                    let mut error = Error::new();
+                    for c in 0..num_components {
+                        // For entropy tracking, C++ uses predicted - actual
+                        let val = in_data[data_offset + c].into();
+                        let pred = multi_pred_vals[c].into();
+                        let dif = pred - val; // predicted - actual, like C++
+                        error.residual_error += dif.abs();
+                        entropy_symbols[c] = Self::convert_signed_int_to_symbol(dif);
+                    }
+
+                    let entropy_data = self.entropy_tracker.peek(&entropy_symbols);
+                    error.num_bits =
+                        ShannonEntropyTracker::get_number_of_data_bits_static(&entropy_data)
+                            + ShannonEntropyTracker::get_number_of_r_ans_table_bits_static(
+                                &entropy_data,
+                            );
+
+                    // Overhead bits assuming this config is chosen: total_used
+                    // increases by num_used.
+                    let overhead_bits = Self::compute_overhead_bits(
+                        total_used_parallelograms[context] + num_used as i64,
+                        total_parallelograms[context],
+                    );
+                    error.num_bits += overhead_bits;
+
+                    if error < best_error {
+                        best_error = error;
+                        best_config = config as u8;
+                        best_num_used = num_used as i32;
+                    }
+
+                    if !next_permutation(&mut excluded) {
+                        break;
+                    }
                 }
             }
 

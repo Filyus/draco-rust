@@ -2,33 +2,54 @@
 //!
 //! The rest of the parity suite pins hand-picked shapes. This generates them
 //! instead, from a fixed seed, so a run is reproducible but the input space is
-//! not limited to what someone thought to write down. It found three defects
-//! so far, in growing sample sizes: an encode-side panic on degenerate meshes
-//! carrying texture coordinates; a vertex reachable only through a degenerate
-//! (zero-area) face getting written an attribute value the header's vertex
-//! count never accounted for, corrupting every byte after it while `encode()`
-//! still returned `Ok`; and a mesh whose every face is degenerate reaching
-//! code that assumes at least one encoded point and panicking, where C++
-//! rejects the same input outright.
+//! not limited to what someone thought to write down. It found four defects,
+//! in growing sample sizes:
 //!
-//! With those three fixed, 2632 non-manifold and degenerate meshes sampled
-//! across two 6000-iteration runs matched C++ byte for byte -- strong evidence
-//! this class of input is no longer a special case. `is_asserted` does not yet
-//! say so, though: a fourth, unrelated, still-open divergence surfaced in the
-//! *grid* category in that same run (well-formed, position-only, speed 1,
-//! moderate quantization -- not the 30-bit region below), rare enough that the
-//! default 400-iteration sweep does not reliably hit it. Widening
-//! `is_asserted` to non-manifold geometry while that one is unresolved would
-//! read as a stronger claim than is actually backed.
+//! 1. An encode-side panic on degenerate meshes carrying texture coordinates.
+//! 2. A vertex reachable only through a degenerate (zero-area) face getting
+//!    written an attribute value the header's vertex count never accounted
+//!    for, corrupting every byte after it while `encode()` still returned
+//!    `Ok`.
+//! 3. A mesh whose every face is degenerate reaching code that assumes at
+//!    least one encoded point and panicking, where C++ rejects the same input
+//!    outright.
+//! 4. The constrained-multi-parallelogram predictor's per-vertex configuration
+//!    search visited candidates in bitmask order; C++ visits them by
+//!    increasing parallelogram count, and within each count in
+//!    `std::next_permutation` order. Both searches are exhaustive over the
+//!    same set and pick a genuinely optimal configuration, so this never
+//!    produced a wrong *value* -- but whenever two configurations tied on
+//!    cost, "first visited wins" picked a different tied winner, and which
+//!    configuration is chosen is itself part of the encoded stream (crease
+//!    flags per parallelogram edge). Matching the visiting order fixed the
+//!    dominant cause of divergence in the two categories below.
+//!
+//! With all four fixed, 5874 of 5875 well-formed and non-manifold meshes
+//! sampled in a 6000-iteration run matched C++ byte for byte, including every
+//! `soup` and `degenerate` case -- strong evidence non-manifold geometry is no
+//! longer a special case, and `is_asserted` says so now. The one holdout
+//! (`grid`, positions + normals + texcoords, 250 points, speed 1, 19/14/29-bit
+//! quantization) decodes to identical values on both sides -- confirmed by
+//! decoding both streams and comparing every point -- so it is the same kind
+//! of tie as defect 4, just not one this fix resolves: isolating it by
+//! attribute pinned the difference to the texcoord attribute's own
+//! constrained-multi-parallelogram search, but reconstructing the exact
+//! sequence of `f64` comparisons that produced the tie (`ComputeBinaryShannonEntropy`
+//! composes `log2` and `ceil`) wasn't possible without instrumenting the
+//! upstream binary, and the same random parameters at other mesh sizes never
+//! reproduced it. `is_asserted` does not carve this one out -- it needs
+//! specific floating-point-adjacent data to trigger, the default
+//! 400-iteration sweep has never hit it, and no clean predicate on the case's
+//! parameters (unlike the 30-bit region below) identifies it. A future
+//! failure on this exact shape is this defect, not a new one.
 //!
 //! Three things are asserted, in decreasing strength:
 //!
 //! 1. **No panics, ever.** A library whose API returns `Result` must not abort
 //!    on input it dislikes, whatever the geometry.
 //! 2. **Both encoders agree on whether an input is encodable at all.**
-//! 3. **Byte parity on well-formed grid meshes below 30-bit quantization** --
-//!    narrower than what is now believed true (see above), until the speed-1
-//!    grid divergence is understood.
+//! 3. **Byte parity on well-formed meshes below 30-bit quantization** --
+//!    including non-manifold and degenerate ones.
 //!
 //! One region is measured and reported rather than asserted: **30-bit
 //! quantization**, upstream's own documented maximum. Prediction residuals
@@ -85,15 +106,13 @@ struct Case {
 impl Case {
     /// Whether byte parity is a defined expectation for this input.
     ///
-    /// Only well-formed geometry below upstream's maximum quantization
-    /// qualifies. `soup` and `degenerate` meshes are non-manifold, which
-    /// Draco's corner table cannot represent, so how each implementation
-    /// splits them is outside the format; and at 30 bits the prediction
-    /// residuals leave `int32`, where both implementations overflow.
+    /// Below upstream's maximum quantization, this covers every shape this
+    /// file generates -- `soup` and `degenerate` included. At 30 bits the
+    /// prediction residuals leave `int32` and both implementations overflow,
+    /// which is measured separately rather than asserted here.
     fn is_asserted(&self) -> bool {
         const MAX_DEFINED_QUANTIZATION: i32 = 29;
-        self.kind == "grid"
-            && self.position_bits <= MAX_DEFINED_QUANTIZATION
+        self.position_bits <= MAX_DEFINED_QUANTIZATION
             && (self.normals.is_none() || self.normal_bits <= MAX_DEFINED_QUANTIZATION)
             && (self.uvs.is_none() || self.uv_bits <= MAX_DEFINED_QUANTIZATION)
             && (self.colors.is_none() || self.color_bits <= MAX_DEFINED_QUANTIZATION)
