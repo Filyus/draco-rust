@@ -1159,4 +1159,102 @@ size_t draco_encode_point_cloud(
     std::memcpy(output_buffer, buffer.data(), encoded_size);
     return encoded_size;
 }
+
+// A mesh or point cloud carrying one POSITION attribute plus one GENERIC
+// attribute of an arbitrary data type -- covers attribute types and scalar
+// widths the other bridge functions don't reach (application-defined
+// attributes, and DT_INT64/DT_UINT64/DT_FLOAT64/DT_BOOL). `generic_data_type`
+// is a draco::DataType value; `generic_data` is already packed at
+// DataTypeLength(generic_data_type) * generic_num_components bytes per point.
+size_t draco_encode_generic(
+    int is_mesh,
+    uint32_t num_points,
+    const float* positions,
+    uint32_t num_faces,
+    const uint32_t* faces,
+    int generic_data_type,
+    int generic_num_components,
+    const uint8_t* generic_data,
+    int generic_quantization_bits,
+    int encoding_method,
+    int encoding_speed,
+    int decoding_speed,
+    int position_bits,
+    uint8_t* output_buffer,
+    size_t output_buffer_size
+) {
+    const draco::DataType dt = static_cast<draco::DataType>(generic_data_type);
+    const int component_size = draco::DataTypeLength(dt);
+    const int stride = component_size * generic_num_components;
+
+    draco::Mesh mesh_storage;
+    draco::PointCloud pc_storage;
+    draco::PointCloud* geometry = is_mesh
+        ? static_cast<draco::PointCloud*>(&mesh_storage)
+        : &pc_storage;
+    geometry->set_num_points(num_points);
+    if (is_mesh) {
+        mesh_storage.SetNumFaces(num_faces);
+    }
+
+    draco::GeometryAttribute pos_ga;
+    pos_ga.Init(draco::GeometryAttribute::POSITION, nullptr, 3, draco::DT_FLOAT32,
+                false, sizeof(float) * 3, 0);
+    int pos_att_id = geometry->AddAttribute(pos_ga, true, num_points);
+    draco::PointAttribute* pos_att = geometry->attribute(pos_att_id);
+    for (uint32_t i = 0; i < num_points; ++i) {
+        pos_att->SetAttributeValue(draco::AttributeValueIndex(i), &positions[i * 3]);
+    }
+
+    draco::GeometryAttribute gen_ga;
+    gen_ga.Init(draco::GeometryAttribute::GENERIC, nullptr, generic_num_components, dt,
+                false, stride, 0);
+    int gen_att_id = geometry->AddAttribute(gen_ga, true, num_points);
+    draco::PointAttribute* gen_att = geometry->attribute(gen_att_id);
+    for (uint32_t i = 0; i < num_points; ++i) {
+        gen_att->SetAttributeValue(draco::AttributeValueIndex(i), generic_data + i * stride);
+    }
+
+    if (is_mesh) {
+        for (uint32_t i = 0; i < num_faces; ++i) {
+            draco::Mesh::Face face;
+            face[0] = draco::PointIndex(faces[i * 3]);
+            face[1] = draco::PointIndex(faces[i * 3 + 1]);
+            face[2] = draco::PointIndex(faces[i * 3 + 2]);
+            mesh_storage.SetFace(draco::FaceIndex(i), face);
+        }
+    }
+
+    draco::Encoder encoder;
+    encoder.SetSpeedOptions(encoding_speed, decoding_speed);
+    if (!is_mesh) {
+        if (encoding_method == 0) {
+            encoder.SetEncodingMethod(draco::POINT_CLOUD_SEQUENTIAL_ENCODING);
+        } else if (encoding_method == 1) {
+            encoder.SetEncodingMethod(draco::POINT_CLOUD_KD_TREE_ENCODING);
+        }
+    }
+    if (position_bits > 0) {
+        encoder.SetAttributeQuantization(draco::GeometryAttribute::POSITION, position_bits);
+    }
+    if (generic_quantization_bits > 0) {
+        encoder.SetAttributeQuantization(draco::GeometryAttribute::GENERIC, generic_quantization_bits);
+    }
+
+    draco::EncoderBuffer buffer;
+    draco::Status status = is_mesh
+        ? encoder.EncodeMeshToBuffer(mesh_storage, &buffer)
+        : encoder.EncodePointCloudToBuffer(pc_storage, &buffer);
+    if (!status.ok()) {
+        return 0;
+    }
+
+    size_t encoded_size = buffer.size();
+    if (encoded_size > output_buffer_size) {
+        return 0;
+    }
+
+    std::memcpy(output_buffer, buffer.data(), encoded_size);
+    return encoded_size;
+}
 } // extern "C"

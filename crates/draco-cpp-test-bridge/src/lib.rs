@@ -133,6 +133,29 @@ mod ffi {
             output_buffer: *mut u8,
             output_buffer_size: usize,
         ) -> usize;
+        /// A mesh or point cloud carrying one POSITION attribute plus one GENERIC
+        /// attribute of an arbitrary `draco::DataType`. `generic_data` is already
+        /// packed at `DataTypeLength(generic_data_type) * generic_num_components`
+        /// bytes per point. `is_mesh` selects geometry kind; `faces`/`num_faces`
+        /// are ignored for a point cloud.
+        #[allow(clippy::too_many_arguments)]
+        pub fn draco_encode_generic(
+            is_mesh: c_int,
+            num_points: u32,
+            positions: *const f32,
+            num_faces: u32,
+            faces: *const u32,
+            generic_data_type: c_int,
+            generic_num_components: c_int,
+            generic_data: *const u8,
+            generic_quantization_bits: c_int,
+            encoding_method: c_int,
+            encoding_speed: c_int,
+            decoding_speed: c_int,
+            position_bits: c_int,
+            output_buffer: *mut u8,
+            output_buffer_size: usize,
+        ) -> usize;
         /// Single-shot sequential mesh encoding with optional compressed connectivity.
         pub fn draco_encode_mesh_sequential(
             num_points: u32,
@@ -1175,6 +1198,79 @@ pub fn encode_cpp_point_cloud(
 pub fn encode_cpp_point_cloud(
     _positions: &[f32],
     _attributes: CppPointCloudAttributes<'_>,
+    _encoding_method: Option<i32>,
+    _encoding_speed: i32,
+    _decoding_speed: i32,
+    _position_bits: i32,
+) -> Option<Vec<u8>> {
+    None
+}
+
+/// A generic attribute's raw bytes plus the `draco::DataType` tag they were
+/// packed for, so the C++ side reconstructs the same layout without a second
+/// encoding of the type.
+pub struct CppGenericAttribute<'a> {
+    pub data_type: i32,
+    pub num_components: i32,
+    pub bytes: &'a [u8],
+    pub quantization_bits: i32,
+}
+
+/// Encodes a mesh or point cloud carrying one POSITION attribute plus one
+/// GENERIC attribute of an arbitrary data type, with C++ Draco. Covers what
+/// the other bridge functions cannot reach: application-defined attributes,
+/// and scalar widths other than `Float32`/`Uint8` (`Int64`/`Uint64`/`Float64`).
+#[cfg(not(cpp_test_bridge_disabled))]
+#[allow(clippy::too_many_arguments)]
+pub fn encode_cpp_generic(
+    is_mesh: bool,
+    positions: &[f32],
+    faces: &[u32],
+    attribute: CppGenericAttribute<'_>,
+    encoding_method: Option<i32>,
+    encoding_speed: i32,
+    decoding_speed: i32,
+    position_bits: i32,
+) -> Option<Vec<u8>> {
+    let num_points = (positions.len() / 3) as u32;
+    let num_faces = (faces.len() / 3) as u32;
+    let buffer_size = (num_points as usize * 32 + faces.len() * 4 + 4096).max(65536);
+    let mut buffer = vec![0u8; buffer_size];
+
+    let encoded_size = unsafe {
+        ffi::draco_encode_generic(
+            i32::from(is_mesh),
+            num_points,
+            positions.as_ptr(),
+            num_faces,
+            faces.as_ptr(),
+            attribute.data_type,
+            attribute.num_components,
+            attribute.bytes.as_ptr(),
+            attribute.quantization_bits,
+            encoding_method.unwrap_or(-1),
+            encoding_speed,
+            decoding_speed,
+            position_bits,
+            buffer.as_mut_ptr(),
+            buffer_size,
+        )
+    };
+
+    if encoded_size == 0 {
+        return None;
+    }
+    buffer.truncate(encoded_size);
+    Some(buffer)
+}
+
+#[cfg(cpp_test_bridge_disabled)]
+#[allow(clippy::too_many_arguments)]
+pub fn encode_cpp_generic(
+    _is_mesh: bool,
+    _positions: &[f32],
+    _faces: &[u32],
+    _attribute: CppGenericAttribute<'_>,
     _encoding_method: Option<i32>,
     _encoding_speed: i32,
     _decoding_speed: i32,
