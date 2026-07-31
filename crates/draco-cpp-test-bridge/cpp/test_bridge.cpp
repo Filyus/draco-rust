@@ -1077,4 +1077,86 @@ int draco_decode_point_cloud_fingerprint(
     return 0;
 }
 
+
+// Point cloud encoding. `encoding_method` is -1 to leave the choice to Draco's
+// own selection rule, 0 to force sequential, 1 to force kd-tree.
+size_t draco_encode_point_cloud(
+    uint32_t num_points,
+    const float* positions,
+    const float* normals,
+    const uint8_t* colors,
+    int encoding_method,
+    int encoding_speed,
+    int decoding_speed,
+    int position_bits,
+    int normal_bits,
+    int color_bits,
+    uint8_t* output_buffer,
+    size_t output_buffer_size
+) {
+    draco::PointCloud pc;
+    pc.set_num_points(num_points);
+
+    draco::GeometryAttribute pos_ga;
+    pos_ga.Init(draco::GeometryAttribute::POSITION, nullptr, 3, draco::DT_FLOAT32,
+                false, sizeof(float) * 3, 0);
+    int pos_att_id = pc.AddAttribute(pos_ga, true, num_points);
+    draco::PointAttribute* pos_att = pc.attribute(pos_att_id);
+    for (uint32_t i = 0; i < num_points; ++i) {
+        pos_att->SetAttributeValue(draco::AttributeValueIndex(i), &positions[i * 3]);
+    }
+
+    if (normals != nullptr) {
+        draco::GeometryAttribute ga;
+        ga.Init(draco::GeometryAttribute::NORMAL, nullptr, 3, draco::DT_FLOAT32,
+                false, sizeof(float) * 3, 0);
+        int id = pc.AddAttribute(ga, true, num_points);
+        draco::PointAttribute* att = pc.attribute(id);
+        for (uint32_t i = 0; i < num_points; ++i) {
+            att->SetAttributeValue(draco::AttributeValueIndex(i), &normals[i * 3]);
+        }
+    }
+
+    if (colors != nullptr) {
+        draco::GeometryAttribute ga;
+        ga.Init(draco::GeometryAttribute::COLOR, nullptr, 3, draco::DT_UINT8,
+                true, sizeof(uint8_t) * 3, 0);
+        int id = pc.AddAttribute(ga, true, num_points);
+        draco::PointAttribute* att = pc.attribute(id);
+        for (uint32_t i = 0; i < num_points; ++i) {
+            att->SetAttributeValue(draco::AttributeValueIndex(i), &colors[i * 3]);
+        }
+    }
+
+    draco::Encoder encoder;
+    encoder.SetSpeedOptions(encoding_speed, decoding_speed);
+    if (encoding_method == 0) {
+        encoder.SetEncodingMethod(draco::POINT_CLOUD_SEQUENTIAL_ENCODING);
+    } else if (encoding_method == 1) {
+        encoder.SetEncodingMethod(draco::POINT_CLOUD_KD_TREE_ENCODING);
+    }
+    if (position_bits > 0) {
+        encoder.SetAttributeQuantization(draco::GeometryAttribute::POSITION, position_bits);
+    }
+    if (normals != nullptr && normal_bits > 0) {
+        encoder.SetAttributeQuantization(draco::GeometryAttribute::NORMAL, normal_bits);
+    }
+    if (colors != nullptr && color_bits > 0) {
+        encoder.SetAttributeQuantization(draco::GeometryAttribute::COLOR, color_bits);
+    }
+
+    draco::EncoderBuffer buffer;
+    draco::Status status = encoder.EncodePointCloudToBuffer(pc, &buffer);
+    if (!status.ok()) {
+        return 0;
+    }
+
+    size_t encoded_size = buffer.size();
+    if (encoded_size > output_buffer_size) {
+        return 0;
+    }
+
+    std::memcpy(output_buffer, buffer.data(), encoded_size);
+    return encoded_size;
+}
 } // extern "C"

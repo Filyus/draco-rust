@@ -115,6 +115,24 @@ mod ffi {
             output_buffer: *mut u8,
             output_buffer_size: usize,
         ) -> usize;
+
+        /// Point cloud encoding. `encoding_method` is -1 to leave the choice to
+        /// Draco's own selection rule, 0 for sequential, 1 for kd-tree.
+        #[allow(clippy::too_many_arguments)]
+        pub fn draco_encode_point_cloud(
+            num_points: u32,
+            positions: *const f32,
+            normals: *const f32,
+            colors: *const u8,
+            encoding_method: c_int,
+            encoding_speed: c_int,
+            decoding_speed: c_int,
+            position_bits: c_int,
+            normal_bits: c_int,
+            color_bits: c_int,
+            output_buffer: *mut u8,
+            output_buffer_size: usize,
+        ) -> usize;
         /// Single-shot sequential mesh encoding with optional compressed connectivity.
         pub fn draco_encode_mesh_sequential(
             num_points: u32,
@@ -1093,6 +1111,74 @@ pub fn encode_cpp_mesh_seamed(
     _decoding_speed: i32,
     _position_bits: i32,
     _uv_bits: i32,
+) -> Option<Vec<u8>> {
+    None
+}
+
+/// Attributes a point cloud may carry, alongside their quantization.
+pub struct CppPointCloudAttributes<'a> {
+    pub normals: Option<&'a [f32]>,
+    pub colors: Option<&'a [u8]>,
+    pub normal_bits: i32,
+    pub color_bits: i32,
+}
+
+/// Encodes a point cloud with C++ Draco.
+///
+/// `encoding_method` of `None` leaves the choice to Draco, which is the case
+/// worth testing: the selection rule picks kd-tree for a quantized cloud at any
+/// speed below 10, and getting that wrong changes the whole payload.
+#[cfg(not(cpp_test_bridge_disabled))]
+#[allow(clippy::too_many_arguments)]
+pub fn encode_cpp_point_cloud(
+    positions: &[f32],
+    attributes: CppPointCloudAttributes<'_>,
+    encoding_method: Option<i32>,
+    encoding_speed: i32,
+    decoding_speed: i32,
+    position_bits: i32,
+) -> Option<Vec<u8>> {
+    let num_points = (positions.len() / 3) as u32;
+    let buffer_size = (num_points as usize * 32 + 4096).max(65536);
+    let mut buffer = vec![0u8; buffer_size];
+
+    let encoded_size = unsafe {
+        ffi::draco_encode_point_cloud(
+            num_points,
+            positions.as_ptr(),
+            attributes
+                .normals
+                .map_or(std::ptr::null(), |values| values.as_ptr()),
+            attributes
+                .colors
+                .map_or(std::ptr::null(), |values| values.as_ptr()),
+            encoding_method.unwrap_or(-1),
+            encoding_speed,
+            decoding_speed,
+            position_bits,
+            attributes.normal_bits,
+            attributes.color_bits,
+            buffer.as_mut_ptr(),
+            buffer_size,
+        )
+    };
+
+    if encoded_size == 0 {
+        return None;
+    }
+    buffer.truncate(encoded_size);
+    Some(buffer)
+}
+
+#[cfg(cpp_test_bridge_disabled)]
+#[allow(clippy::too_many_arguments)]
+pub fn encode_cpp_point_cloud(
+    _positions: &[f32],
+    _attributes: CppPointCloudAttributes<'_>,
+    _encoding_method: Option<i32>,
+    _encoding_speed: i32,
+    _decoding_speed: i32,
+    _position_bits: i32,
 ) -> Option<Vec<u8>> {
     None
 }
