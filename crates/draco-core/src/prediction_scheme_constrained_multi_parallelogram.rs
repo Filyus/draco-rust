@@ -180,6 +180,7 @@ fn next_permutation(arr: &mut [bool]) -> bool {
     true
 }
 
+#[cfg(feature = "encoder")]
 impl PartialOrd for Error {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match self.num_bits.partial_cmp(&other.num_bits) {
