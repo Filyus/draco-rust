@@ -238,6 +238,8 @@ struct LegacyCornerRecord {
 
 #[derive(Clone, Copy, Debug)]
 enum LegacyDecoderVersion {
+    V0_9_1,
+    V0_10_0,
     V1_0_0,
     V1_1_0,
 }
@@ -245,6 +247,8 @@ enum LegacyDecoderVersion {
 impl LegacyDecoderVersion {
     fn env_var(self) -> &'static str {
         match self {
+            Self::V0_9_1 => "DRACO_LEGACY_DECODER_0_9_1",
+            Self::V0_10_0 => "DRACO_LEGACY_DECODER_0_10_0",
             Self::V1_0_0 => "DRACO_LEGACY_DECODER_1_0_0",
             Self::V1_1_0 => "DRACO_LEGACY_DECODER_1_1_0",
         }
@@ -252,6 +256,8 @@ impl LegacyDecoderVersion {
 
     fn label(self) -> &'static str {
         match self {
+            Self::V0_9_1 => "0.9.1",
+            Self::V0_10_0 => "0.10.0",
             Self::V1_0_0 => "1.0.0",
             Self::V1_1_0 => "1.1.0",
         }
@@ -731,6 +737,144 @@ fn generated_legacy_cube_attributes_match_cpp_decoder() {
         assert_legacy_corner_records_match(fixture, &cpp_records, &rust_records);
 
         let _ = fs::remove_file(obj_path);
+    }
+}
+
+/// The two pre-2.2 connectivity encodings -- predictive (0.9.1) and valence
+/// (0.10.0) -- decoded by the actual historical binaries that wrote them, not
+/// only by this crate's own decoder against a reference geometry baked in at a
+/// different time. `legacy_valence_edgebreaker_streams_decode_to_reference_geometry`
+/// in `drc_edge_cases_test.rs` checks point/face counts against a constant;
+/// this checks the positions themselves, against the C++ decoder for the exact
+/// bitstream that predates every other fixture in this suite.
+#[test]
+fn legacy_bunny_positions_match_the_historical_decoder() {
+    let fixtures = [
+        (
+            "legacy_draco/bun_zipper.mesh_eb_predictive.0.9.1.drc",
+            LegacyDecoderVersion::V0_9_1,
+        ),
+        (
+            "legacy_draco/bun_zipper.mesh_eb_valence.0.10.0.drc",
+            LegacyDecoderVersion::V0_10_0,
+        ),
+    ];
+
+    for (fixture, decoder_version) in fixtures {
+        let Some(decoder_path) = legacy_decoder_path(decoder_version) else {
+            eprintln!(
+                "Skipping {fixture}: set a matching DRACO_LEGACY_DECODER_* env var to enable legacy decoder comparison"
+            );
+            continue;
+        };
+        let drc_path = repo_testdata_dir().join(fixture);
+        let obj_path = std::env::temp_dir().join(format!(
+            "draco_legacy_bunny_{}_{}.obj",
+            decoder_version.label(),
+            fixture.replace(['/', '\\', '.'], "_")
+        ));
+
+        let output = Command::new(decoder_path)
+            .arg("-i")
+            .arg(&drc_path)
+            .arg("-o")
+            .arg(&obj_path)
+            .output()
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{fixture}: failed to run legacy Draco decoder {}: {e}",
+                    decoder_version.label()
+                )
+            });
+        assert!(
+            output.status.success(),
+            "{fixture}: legacy Draco decoder {} failed\nstdout:\n{}\nstderr:\n{}",
+            decoder_version.label(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let cpp_obj = fs::read_to_string(&obj_path)
+            .unwrap_or_else(|e| panic!("{fixture}: failed to read C++ decoded OBJ: {e}"));
+        let cpp_positions = parse_obj_positions(&cpp_obj);
+
+        let bytes = read_file_bytes(&drc_path);
+        let mut buffer = DecoderBuffer::new(&bytes);
+        let mut mesh = Mesh::new();
+        MeshDecoder::new()
+            .decode(&mut buffer, &mut mesh)
+            .unwrap_or_else(|e| panic!("{fixture}: Rust decode failed: {e:?}"));
+
+        let position_id = mesh.named_attribute_id(GeometryAttributeType::Position);
+        assert!(position_id >= 0, "{fixture}: Rust decode missing POSITION");
+        let position_attribute = mesh.attribute(position_id);
+        let rust_positions: Vec<[f32; 3]> = (0..mesh.num_points())
+            .map(|point| read_position(position_attribute, PointIndex(point as u32)))
+            .collect();
+
+        assert_eq!(
+            rust_positions.len(),
+            cpp_positions.len(),
+            "{fixture}: point count mismatch"
+        );
+        assert_position_sets_match(&cpp_positions, &rust_positions, fixture);
+
+        let _ = fs::remove_file(obj_path);
+    }
+}
+
+/// Parses `v x y z` lines from an OBJ, in file order.
+fn parse_obj_positions(obj: &str) -> Vec<[f32; 3]> {
+    obj.lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            match parts.as_slice() {
+                ["v", x, y, z, ..] => Some([
+                    x.parse().expect("OBJ x position"),
+                    y.parse().expect("OBJ y position"),
+                    z.parse().expect("OBJ z position"),
+                ]),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn read_position(attribute: &PointAttribute, point: PointIndex) -> [f32; 3] {
+    let value_index = attribute.mapped_index(point).0 as usize;
+    let offset = value_index * attribute.byte_stride() as usize;
+    let data = attribute.buffer().data();
+    let mut out = [0f32; 3];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let start = offset + i * 4;
+        *slot = f32::from_le_bytes(data[start..start + 4].try_into().expect("f32 bytes"));
+    }
+    out
+}
+
+/// Legacy positions come out of the two decoders in different orders, so they
+/// are compared as a set -- but a dense mesh like the bunny (35k points in a
+/// bounding box a few tenths of a unit wide) packs points closer together than
+/// a generous tolerance, so nearest-unmatched greedy matching is the wrong tool
+/// here: an early point can consume a later point's only close match and leave
+/// it correctly-decoded but unpaired. Sorting both lists identically pairs
+/// duplicates and near-duplicates with their counterparts regardless of which
+/// decoder emitted them in which order.
+fn assert_position_sets_match(expected: &[[f32; 3]], actual: &[[f32; 3]], context: &str) {
+    const TOLERANCE: f32 = 0.01;
+    let key = |p: &[f32; 3]| (p[0].to_bits(), p[1].to_bits(), p[2].to_bits());
+    let mut expected = expected.to_vec();
+    let mut actual = actual.to_vec();
+    expected.sort_unstable_by_key(key);
+    actual.sort_unstable_by_key(key);
+
+    for (i, (&e, &a)) in expected.iter().zip(actual.iter()).enumerate() {
+        assert!(
+            (e[0] - a[0]).abs() <= TOLERANCE
+                && (e[1] - a[1]).abs() <= TOLERANCE
+                && (e[2] - a[2]).abs() <= TOLERANCE,
+            "{context}: sorted position {i} differs: C++ {e:?}, Rust {a:?}"
+        );
     }
 }
 

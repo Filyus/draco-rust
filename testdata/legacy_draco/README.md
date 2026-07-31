@@ -8,6 +8,8 @@ modern Draco output.
 The repository does not assume any local legacy tool directory. Optional tests
 that compare against legacy decoders can be enabled by setting:
 
+- `DRACO_LEGACY_DECODER_0_9_1`
+- `DRACO_LEGACY_DECODER_0_10_0`
 - `DRACO_LEGACY_DECODER_1_0_0`
 - `DRACO_LEGACY_DECODER_1_1_0`
 
@@ -19,6 +21,7 @@ that compare against legacy decoders can be enabled by setting:
 | `cube_att.mesh_eb.1.1.0.drc` | `../cube_att.obj` | Draco 1.1.0 | `-cl 10` | `v2.1 mesh method=1` |
 | `point_cloud_pos_norm.seq.1.0.0.drc` | `../point_cloud_test_pos_norm.ply` | Draco 1.0.0 | `-point_cloud -cl 0` | `v2.0 point_cloud method=0` |
 | `point_cloud_pos_norm.seq.1.1.0.drc` | `../point_cloud_test_pos_norm.ply` | Draco 1.1.0 | `-point_cloud -cl 0` | `v2.1 point_cloud method=0` |
+| `point_cloud_pos_norm.kd.1.3.0.drc` | `../point_cloud_test_pos_norm.ply` | Draco 1.3.0 | `-point_cloud -cl 10` | `v2.3 point_cloud method=1`. 1.3.0 is the first release with the KD-tree point-cloud encoder; confirms the point-cloud bitstream version comes from the geometry type alone, not the method -- sequential point clouds at this same release still claim v2.3, not v1.3. |
 | `bun_zipper.mesh_eb_predictive.0.9.1.drc` | `../bun_zipper.ply` | Draco 0.9.1 | `-cl 10` | `v1.1 mesh method=1, predictive traversal` |
 | `bun_zipper.mesh_eb_valence.0.10.0.drc` | `../bun_zipper.ply` | Draco 0.10.0 | `-cl 10` | `v1.2 mesh method=1, valence traversal` |
 | `bun_zipper.mesh_eb_valence.1.0.0.drc` | `../bun_zipper.ply` | Draco 1.0.0 | `-cl 10` | `v2.0 mesh method=1, valence traversal` |

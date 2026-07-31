@@ -302,6 +302,7 @@ fn cpp_and_rust_decode_fingerprints_match_for_point_cloud_fixtures() {
     let cases = [
         "legacy_draco/point_cloud_pos_norm.seq.1.0.0.drc",
         "legacy_draco/point_cloud_pos_norm.seq.1.1.0.drc",
+        "legacy_draco/point_cloud_pos_norm.kd.1.3.0.drc",
         "production_draco/bpy_point_cloud.seq.v2.3.pos_norm_color.drc",
         "production_draco/bpy_point_cloud.kd.v2.3.pos_norm_color.drc",
     ];
