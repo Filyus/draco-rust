@@ -521,7 +521,14 @@ fn vec2_div_scalar(a: &[i64; 2], s: i64) -> [i64; 2] {
     [a[0].wrapping_div(s), a[1].wrapping_div(s)]
 }
 
-#[cfg(feature = "decoder")]
+/// The three overflow guards upstream applies before the scaled-space
+/// multiplications below them.
+///
+/// Upstream keeps one predictor shared by its encoder and decoder, so these
+/// run on both sides there; this file has a separate encoding and decoding
+/// half, and both must call this or the two implementations disagree about
+/// which meshes are encodable at all.
+#[cfg(any(feature = "decoder", feature = "encoder"))]
 fn tex_coords_prediction_overflow_checks(
     n_uv: &[i64; 2],
     pn_uv: &[i64; 2],
@@ -547,17 +554,17 @@ fn tex_coords_prediction_overflow_checks(
     true
 }
 
-#[cfg(feature = "decoder")]
+#[cfg(any(feature = "decoder", feature = "encoder"))]
 fn exceeds_i64_product_limit_u64(a_abs: u64, b_abs: u64) -> bool {
     a_abs != 0 && b_abs > (i64::MAX as u64) / a_abs
 }
 
-#[cfg(feature = "decoder")]
+#[cfg(any(feature = "decoder", feature = "encoder"))]
 fn vec2_absmax(v: &[i64; 2]) -> u64 {
     v[0].unsigned_abs().max(v[1].unsigned_abs())
 }
 
-#[cfg(feature = "decoder")]
+#[cfg(any(feature = "decoder", feature = "encoder"))]
 fn vec3_absmax(v: &[i64; 3]) -> u64 {
     v[0].unsigned_abs()
         .max(v[1].unsigned_abs())
@@ -776,6 +783,22 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
                 let cn = vec3_sub(&tip_pos, &next_pos);
                 let cn_dot_pn = vec3_dot(&pn, &cn);
                 let pn_uv = vec2_sub(&p_uv, &n_uv);
+
+                // Same guards the decoding half above applies, and for the same
+                // reason: past these bounds the scaled-space products leave
+                // `i64`. Upstream shares one predictor between its encoder and
+                // decoder and so checks on both sides; without this the encoder
+                // silently wrapped and produced a stream for input C++ Draco
+                // refuses to encode at all.
+                if !tex_coords_prediction_overflow_checks(
+                    &n_uv,
+                    &pn_uv,
+                    &pn,
+                    cn_dot_pn,
+                    pn_norm2_squared,
+                ) {
+                    return false;
+                }
 
                 let x_uv = vec2_add(
                     &vec2_mul(&n_uv, pn_norm2_squared as i64),

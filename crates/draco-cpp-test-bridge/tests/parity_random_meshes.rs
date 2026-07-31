@@ -2,7 +2,7 @@
 //!
 //! The rest of the parity suite pins hand-picked shapes. This generates them
 //! instead, from a fixed seed, so a run is reproducible but the input space is
-//! not limited to what someone thought to write down. It found four defects,
+//! not limited to what someone thought to write down. It found six defects,
 //! in growing sample sizes:
 //!
 //! 1. An encode-side panic on degenerate meshes carrying texture coordinates.
@@ -23,25 +23,28 @@
 //!    configuration is chosen is itself part of the encoded stream (crease
 //!    flags per parallelogram edge). Matching the visiting order fixed the
 //!    dominant cause of divergence in the two categories below.
+//! 5. A defect in **upstream C++**, not here, found by tracing the one case
+//!    defect 4 left behind. `ApproximateRAnsFrequencyTableBits` took its
+//!    `max_value` as `int32_t`, but the caller derives it from a symbol that
+//!    can reach `UINT32_MAX` -- a zigzag-encoded residual near `INT32_MIN`,
+//!    which high quantization plus a bad parallelogram average produces. The
+//!    value arrived reinterpreted as negative, so upstream's estimate of a
+//!    catastrophically expensive configuration came out *cheaper* than every
+//!    sane one, and C++ picked it. Rust, computing the same estimate in
+//!    `i64`/`u64` throughout, correctly rejected that configuration -- so the
+//!    two disagreed by 22 bytes on a mesh where Rust was right. Fixed in the
+//!    local C++ checkout; the parity numbers below are measured against it.
+//! 6. The encoding half of the portable texcoord predictor was missing the
+//!    three overflow guards upstream applies before its scaled-space
+//!    multiplications. Upstream shares one predictor between encoder and
+//!    decoder so both are guarded; this port has separate halves and only the
+//!    decoding one checked. Rust therefore wrapped silently and produced a
+//!    stream for non-manifold input C++ refuses to encode at all.
 //!
-//! With all four fixed, 5874 of 5875 well-formed and non-manifold meshes
-//! sampled in a 6000-iteration run matched C++ byte for byte, including every
-//! `soup` and `degenerate` case -- strong evidence non-manifold geometry is no
-//! longer a special case, and `is_asserted` says so now. The one holdout
-//! (`grid`, positions + normals + texcoords, 250 points, speed 1, 19/14/29-bit
-//! quantization) decodes to identical values on both sides -- confirmed by
-//! decoding both streams and comparing every point -- so it is the same kind
-//! of tie as defect 4, just not one this fix resolves: isolating it by
-//! attribute pinned the difference to the texcoord attribute's own
-//! constrained-multi-parallelogram search, but reconstructing the exact
-//! sequence of `f64` comparisons that produced the tie (`ComputeBinaryShannonEntropy`
-//! composes `log2` and `ceil`) wasn't possible without instrumenting the
-//! upstream binary, and the same random parameters at other mesh sizes never
-//! reproduced it. `is_asserted` does not carve this one out -- it needs
-//! specific floating-point-adjacent data to trigger, the default
-//! 400-iteration sweep has never hit it, and no clean predicate on the case's
-//! parameters (unlike the 30-bit region below) identifies it. A future
-//! failure on this exact shape is this defect, not a new one.
+//! With all six fixed, every well-formed, non-manifold and degenerate mesh
+//! sampled in a 6000-iteration run matches C++ byte for byte, and the two
+//! agree on every input either one rejects. `is_asserted` says so: below
+//! upstream's maximum quantization it now carves out nothing.
 //!
 //! Three things are asserted, in decreasing strength:
 //!
@@ -463,7 +466,7 @@ fn random_sweep() {
     println!("compared {compared}, both rejected {both_rejected}, by kind {by_kind:?}");
     if !reported.is_empty() {
         println!(
-            "known open, not asserted ({} cases: non-manifold geometry, or 30-bit quantization):",
+            "known open, not asserted ({} cases, all at 30-bit quantization):",
             reported.len()
         );
         for note in reported.iter().take(5) {
