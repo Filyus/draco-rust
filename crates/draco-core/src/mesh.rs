@@ -200,10 +200,17 @@ impl Mesh {
                 }
             }
 
-            // Update attribute buffer - resize and write the new data
+            // Update the attribute through `resize_unique_entries` rather than
+            // resizing its buffer directly: the buffer is only half of an
+            // attribute's size, and leaving `size()` at the pre-dedup count
+            // makes the attribute claim entries its buffer no longer holds.
+            // Anything that walks the attribute by `size()` then reads past the
+            // end -- reachable from any mesh with vertices no face references,
+            // which is ordinary in scanned geometry.
             let att_mut = self.attribute_mut(att_idx);
-            att_mut.buffer_mut().resize(new_buffer.len());
-            att_mut.buffer_mut().write(0, &new_buffer);
+            if att_mut.resize_unique_entries(num_unique).is_ok() {
+                att_mut.buffer_mut().write(0, &new_buffer);
+            }
         }
 
         // Update point count
@@ -222,5 +229,81 @@ impl Deref for Mesh {
 impl DerefMut for Mesh {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.point_cloud
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::draco_types::DataType;
+    use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+
+    /// A mesh whose vertices are not all referenced by faces -- ordinary in
+    /// scanned geometry, where the raw point set outlives the triangulation.
+    ///
+    /// Deduplication drops the unreferenced ones, and every attribute has to
+    /// come away describing the points that are left. It used to rewrite the
+    /// buffer but leave `size()` at the old count, so the attribute claimed
+    /// entries whose bytes were gone and readers walked off the end.
+    #[test]
+    fn deduplicate_point_ids_shrinks_attribute_size_with_its_buffer() {
+        let mut mesh = Mesh::new();
+        let num_points = 5;
+        mesh.set_num_points(num_points);
+        mesh.set_num_faces(1);
+
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            num_points,
+        );
+        for point in 0..num_points {
+            for component in 0..3 {
+                let value = (point * 3 + component) as f32;
+                attribute
+                    .buffer_mut()
+                    .update(&value.to_le_bytes(), Some((point * 3 + component) * 4));
+            }
+        }
+        mesh.add_attribute(attribute);
+
+        // Only three of the five points are reachable through a face.
+        mesh.set_face(FaceIndex(0), [PointIndex(4), PointIndex(2), PointIndex(0)]);
+
+        mesh.deduplicate_point_ids();
+
+        assert_eq!(
+            mesh.num_points(),
+            3,
+            "unreferenced points should be dropped"
+        );
+        let attribute = mesh.attribute(0);
+        assert_eq!(
+            attribute.size(),
+            3,
+            "attribute still claims entries it no longer stores"
+        );
+        assert_eq!(
+            attribute.buffer().data().len(),
+            3 * attribute.byte_stride() as usize,
+            "buffer and size disagree"
+        );
+
+        // The surviving values must be the ones the faces pointed at, in the
+        // order the faces first reach them.
+        let read = |entry: usize| -> f32 {
+            let offset = entry * attribute.byte_stride() as usize;
+            f32::from_le_bytes(
+                attribute.buffer().data()[offset..offset + 4]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        assert_eq!(read(0), 12.0, "first face corner was old point 4");
+        assert_eq!(read(1), 6.0, "second face corner was old point 2");
+        assert_eq!(read(2), 0.0, "third face corner was old point 0");
     }
 }
