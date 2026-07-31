@@ -242,6 +242,7 @@ enum LegacyDecoderVersion {
     V0_10_0,
     V1_0_0,
     V1_1_0,
+    V1_3_0,
 }
 
 impl LegacyDecoderVersion {
@@ -251,6 +252,7 @@ impl LegacyDecoderVersion {
             Self::V0_10_0 => "DRACO_LEGACY_DECODER_0_10_0",
             Self::V1_0_0 => "DRACO_LEGACY_DECODER_1_0_0",
             Self::V1_1_0 => "DRACO_LEGACY_DECODER_1_1_0",
+            Self::V1_3_0 => "DRACO_LEGACY_DECODER_1_3_0",
         }
     }
 
@@ -260,6 +262,7 @@ impl LegacyDecoderVersion {
             Self::V0_10_0 => "0.10.0",
             Self::V1_0_0 => "1.0.0",
             Self::V1_1_0 => "1.1.0",
+            Self::V1_3_0 => "1.3.0",
         }
     }
 }
@@ -875,6 +878,345 @@ fn assert_position_sets_match(expected: &[[f32; 3]], actual: &[[f32; 3]], contex
                 && (e[2] - a[2]).abs() <= TOLERANCE,
             "{context}: sorted position {i} differs: C++ {e:?}, Rust {a:?}"
         );
+    }
+}
+
+/// A vertex as the historical decoder's binary little-endian PLY writes it:
+/// position, optionally a normal, optionally an RGBA color. Narrow on purpose
+/// -- it understands exactly the property sets the fixtures in this file use,
+/// discovered from the header rather than assumed, and panics on anything else
+/// instead of silently reading past it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LegacyPlyVertex {
+    position: [f32; 3],
+    normal: Option<[f32; 3]>,
+    color: Option<[u8; 4]>,
+}
+
+fn parse_legacy_binary_ply(bytes: &[u8]) -> Vec<LegacyPlyVertex> {
+    const MARKER: &[u8] = b"end_header\n";
+    let header_end = bytes
+        .windows(MARKER.len())
+        .position(|w| w == MARKER)
+        .expect("no PLY header terminator")
+        + MARKER.len();
+    let header = std::str::from_utf8(&bytes[..header_end]).expect("PLY header is not UTF-8");
+    assert!(
+        header.contains("format binary_little_endian"),
+        "expected a binary little-endian PLY"
+    );
+
+    // (name, offset, size) for every vertex property, in file order.
+    let mut properties: Vec<(&str, usize, usize)> = Vec::new();
+    let mut stride = 0usize;
+    let mut num_vertices = 0usize;
+    let mut in_vertex_element = false;
+
+    for line in header.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        match fields.as_slice() {
+            ["element", "vertex", count] => {
+                in_vertex_element = true;
+                num_vertices = count.parse().expect("vertex count");
+            }
+            ["element", ..] => in_vertex_element = false,
+            ["property", kind, name] if in_vertex_element => {
+                let size = match *kind {
+                    "uchar" => 1,
+                    "float" => 4,
+                    other => panic!("unsupported PLY property type {other}"),
+                };
+                properties.push((name, stride, size));
+                stride += size;
+            }
+            _ => {}
+        }
+    }
+
+    let body = &bytes[header_end..];
+    assert!(
+        body.len() >= num_vertices * stride,
+        "PLY body shorter than its header promises"
+    );
+
+    let float_at = |record: &[u8], name: &str| -> Option<f32> {
+        let &(_, offset, size) = properties.iter().find(|(n, _, _)| *n == name)?;
+        assert_eq!(size, 4, "PLY property {name} is not a float");
+        Some(f32::from_le_bytes(
+            record[offset..offset + 4].try_into().unwrap(),
+        ))
+    };
+    let byte_at = |record: &[u8], name: &str| -> Option<u8> {
+        let &(_, offset, _) = properties.iter().find(|(n, _, _)| *n == name)?;
+        Some(record[offset])
+    };
+
+    (0..num_vertices)
+        .map(|i| {
+            let record = &body[i * stride..(i + 1) * stride];
+            let position = [
+                float_at(record, "x").expect("PLY missing x"),
+                float_at(record, "y").expect("PLY missing y"),
+                float_at(record, "z").expect("PLY missing z"),
+            ];
+            let normal = match (
+                float_at(record, "nx"),
+                float_at(record, "ny"),
+                float_at(record, "nz"),
+            ) {
+                (Some(x), Some(y), Some(z)) => Some([x, y, z]),
+                _ => None,
+            };
+            let color = match (
+                byte_at(record, "red"),
+                byte_at(record, "green"),
+                byte_at(record, "blue"),
+                byte_at(record, "alpha"),
+            ) {
+                (Some(r), Some(g), Some(b), Some(a)) => Some([r, g, b, a]),
+                _ => None,
+            };
+            LegacyPlyVertex {
+                position,
+                normal,
+                color,
+            }
+        })
+        .collect()
+}
+
+fn run_legacy_decoder_to_ply(
+    decoder_path: &Path,
+    drc_path: &Path,
+    label: &str,
+    context: &str,
+) -> Vec<LegacyPlyVertex> {
+    let ply_path = std::env::temp_dir().join(format!(
+        "draco_legacy_ply_{label}_{}.ply",
+        context.replace(['/', '\\', '.'], "_")
+    ));
+
+    let output = Command::new(decoder_path)
+        .arg("-i")
+        .arg(drc_path)
+        .arg("-o")
+        .arg(&ply_path)
+        .output()
+        .unwrap_or_else(|e| panic!("{context}: failed to run legacy Draco decoder {label}: {e}"));
+    assert!(
+        output.status.success(),
+        "{context}: legacy Draco decoder {label} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let bytes = fs::read(&ply_path)
+        .unwrap_or_else(|e| panic!("{context}: failed to read C++ decoded PLY: {e}"));
+    let vertices = parse_legacy_binary_ply(&bytes);
+    let _ = fs::remove_file(ply_path);
+    vertices
+}
+
+/// Colors are RGBA `Uint8`, so quantization never applies to them -- exactly
+/// the case fixed today in the point-cloud attribute-encoder selection, where
+/// an integer attribute with quantization requested for it used to be
+/// announced as quantized and then written raw. This mesh fixture predates
+/// that fix by several major bitstream versions; if the encoder that produced
+/// it ever made the same choice C++ makes, decoding it correctly has always
+/// depended on getting this right.
+#[test]
+fn legacy_mesh_colors_match_the_historical_decoder() {
+    let fixture = "legacy_draco/test.mesh_eb_color.1.1.0.drc";
+    let Some(decoder_path) = legacy_decoder_path(LegacyDecoderVersion::V1_1_0) else {
+        eprintln!(
+            "Skipping {fixture}: set a matching DRACO_LEGACY_DECODER_* env var to enable legacy decoder comparison"
+        );
+        return;
+    };
+
+    let drc_path = repo_testdata_dir().join(fixture);
+    let cpp_vertices = run_legacy_decoder_to_ply(&decoder_path, &drc_path, "1.1.0", fixture);
+
+    let bytes = read_file_bytes(&drc_path);
+    let mut buffer = DecoderBuffer::new(&bytes);
+    let mut mesh = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut buffer, &mut mesh)
+        .unwrap_or_else(|e| panic!("{fixture}: Rust decode failed: {e:?}"));
+
+    let position_id = mesh.named_attribute_id(GeometryAttributeType::Position);
+    let color_id = mesh.named_attribute_id(GeometryAttributeType::Color);
+    assert!(
+        position_id >= 0 && color_id >= 0,
+        "{fixture}: missing attributes"
+    );
+    let position_attribute = mesh.attribute(position_id);
+    let color_attribute = mesh.attribute(color_id);
+
+    assert_eq!(
+        mesh.num_points(),
+        cpp_vertices.len(),
+        "{fixture}: point count mismatch"
+    );
+
+    let mut cpp_sorted = cpp_vertices.clone();
+    cpp_sorted.sort_unstable_by_key(|v| {
+        (
+            v.position[0].to_bits(),
+            v.position[1].to_bits(),
+            v.position[2].to_bits(),
+        )
+    });
+    let mut rust_vertices: Vec<LegacyPlyVertex> = (0..mesh.num_points())
+        .map(|point| {
+            let point = PointIndex(point as u32);
+            let mut color = [0u8; 4];
+            let color_index = color_attribute.mapped_index(point).0 as usize;
+            let color_offset = color_index * color_attribute.byte_stride() as usize;
+            color_attribute.buffer().read(color_offset, &mut color);
+            LegacyPlyVertex {
+                position: read_position(position_attribute, point),
+                normal: None,
+                color: Some(color),
+            }
+        })
+        .collect();
+    rust_vertices.sort_unstable_by_key(|v| {
+        (
+            v.position[0].to_bits(),
+            v.position[1].to_bits(),
+            v.position[2].to_bits(),
+        )
+    });
+
+    for (i, (cpp, rust)) in cpp_sorted.iter().zip(rust_vertices.iter()).enumerate() {
+        assert!(
+            (cpp.position[0] - rust.position[0]).abs() <= 0.01
+                && (cpp.position[1] - rust.position[1]).abs() <= 0.01
+                && (cpp.position[2] - rust.position[2]).abs() <= 0.01,
+            "{fixture}: sorted vertex {i} position differs: C++ {:?}, Rust {:?}",
+            cpp.position,
+            rust.position
+        );
+        assert_eq!(
+            cpp.color, rust.color,
+            "{fixture}: sorted vertex {i} color differs"
+        );
+    }
+}
+
+/// The point-cloud counterpart: colors carried through the sequential encoder
+/// at two pre-2.2 bitstream versions, and through the KD-tree encoder at 1.3.0
+/// -- the first release that has one, and the first release where a `Uint8`
+/// color sits next to a quantized position and normal in the same eligibility
+/// check. All three fixtures were generated for this test rather than
+/// inherited, from `../point_cloud_test_pos_norm_color.ply`.
+#[test]
+fn legacy_point_cloud_colors_match_the_historical_decoder() {
+    let fixtures = [
+        (
+            "legacy_draco/point_cloud_pos_norm_color.seq.1.0.0.drc",
+            LegacyDecoderVersion::V1_0_0,
+        ),
+        (
+            "legacy_draco/point_cloud_pos_norm_color.seq.1.1.0.drc",
+            LegacyDecoderVersion::V1_1_0,
+        ),
+        (
+            "legacy_draco/point_cloud_pos_norm_color.kd.1.3.0.drc",
+            LegacyDecoderVersion::V1_3_0,
+        ),
+    ];
+
+    for (fixture, decoder_version) in fixtures {
+        let Some(decoder_path) = legacy_decoder_path(decoder_version) else {
+            eprintln!(
+                "Skipping {fixture}: set a matching DRACO_LEGACY_DECODER_* env var to enable legacy decoder comparison"
+            );
+            continue;
+        };
+
+        let drc_path = repo_testdata_dir().join(fixture);
+        let mut cpp_vertices =
+            run_legacy_decoder_to_ply(&decoder_path, &drc_path, decoder_version.label(), fixture);
+        cpp_vertices.sort_unstable_by_key(|v| {
+            (
+                v.position[0].to_bits(),
+                v.position[1].to_bits(),
+                v.position[2].to_bits(),
+            )
+        });
+
+        let bytes = read_file_bytes(&drc_path);
+        let mut buffer = DecoderBuffer::new(&bytes);
+        let mut pc = PointCloud::new();
+        PointCloudDecoder::new()
+            .decode(&mut buffer, &mut pc)
+            .unwrap_or_else(|e| panic!("{fixture}: Rust decode failed: {e:?}"));
+
+        let position_id = pc.named_attribute_id(GeometryAttributeType::Position);
+        let normal_id = pc.named_attribute_id(GeometryAttributeType::Normal);
+        let color_id = pc.named_attribute_id(GeometryAttributeType::Color);
+        assert!(
+            position_id >= 0 && normal_id >= 0 && color_id >= 0,
+            "{fixture}: missing attributes"
+        );
+        let position_attribute = pc.attribute(position_id);
+        let normal_attribute = pc.attribute(normal_id);
+        let color_attribute = pc.attribute(color_id);
+
+        assert_eq!(
+            pc.num_points(),
+            cpp_vertices.len(),
+            "{fixture}: point count mismatch"
+        );
+
+        let mut rust_vertices: Vec<LegacyPlyVertex> = (0..pc.num_points())
+            .map(|point| {
+                let point = PointIndex(point as u32);
+                let mut color = [0u8; 4];
+                let color_index = color_attribute.mapped_index(point).0 as usize;
+                let color_offset = color_index * color_attribute.byte_stride() as usize;
+                color_attribute.buffer().read(color_offset, &mut color);
+                LegacyPlyVertex {
+                    position: read_position(position_attribute, point),
+                    normal: Some(read_position(normal_attribute, point)),
+                    color: Some(color),
+                }
+            })
+            .collect();
+        rust_vertices.sort_unstable_by_key(|v| {
+            (
+                v.position[0].to_bits(),
+                v.position[1].to_bits(),
+                v.position[2].to_bits(),
+            )
+        });
+
+        for (i, (cpp, rust)) in cpp_vertices.iter().zip(rust_vertices.iter()).enumerate() {
+            let cpp_normal = cpp
+                .normal
+                .unwrap_or_else(|| panic!("{fixture}: C++ vertex {i} missing normal"));
+            let rust_normal = rust.normal.unwrap();
+            assert!(
+                (cpp.position[0] - rust.position[0]).abs() <= 0.01
+                    && (cpp.position[1] - rust.position[1]).abs() <= 0.01
+                    && (cpp.position[2] - rust.position[2]).abs() <= 0.01,
+                "{fixture}: sorted vertex {i} position differs: C++ {:?}, Rust {:?}",
+                cpp.position,
+                rust.position
+            );
+            assert!(
+                (cpp_normal[0] - rust_normal[0]).abs() <= 0.02
+                    && (cpp_normal[1] - rust_normal[1]).abs() <= 0.02
+                    && (cpp_normal[2] - rust_normal[2]).abs() <= 0.02,
+                "{fixture}: sorted vertex {i} normal differs: C++ {cpp_normal:?}, Rust {rust_normal:?}"
+            );
+            assert_eq!(
+                cpp.color, rust.color,
+                "{fixture}: sorted vertex {i} color differs"
+            );
+        }
     }
 }
 
