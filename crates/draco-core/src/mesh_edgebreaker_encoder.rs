@@ -728,26 +728,18 @@ impl MeshEdgebreakerEncoder {
             }
         }
 
-        // Handle any unvisited vertices (isolated vertices or disconnected components)
-        for vi in 0..num_vertices {
-            if !visited_vertices[vi] {
-                visited_vertices[vi] = true;
-                let data_id = point_ids.len() as i32;
-                vertex_to_data_map[vi] = data_id;
-                // Find a corner that references this vertex
-                let corner = corner_table.left_most_corner(VertexIndex(vi as u32));
-                if corner != INVALID_CORNER_INDEX {
-                    let mesh_face = FaceIndex(corner.0 / 3);
-                    let corner_offset = (corner.0 % 3) as usize;
-                    point_ids.push(mesh.face(mesh_face)[corner_offset]);
-                    data_to_corner_map.push(corner.0);
-                } else {
-                    // Isolated vertex - use vertex index as point
-                    point_ids.push(PointIndex(vi as u32));
-                    data_to_corner_map.push(u32::MAX);
-                }
-            }
-        }
+        // Vertices the traversal above never reached -- ones whose only faces
+        // are degenerate, or that no face references at all -- get no
+        // attribute-value slot, matching C++'s MeshAttributeIndicesEncodingObserver:
+        // OnNewVertexVisited is the only place a vertex enters point_ids, and
+        // it fires exclusively from face traversal. vertex_to_data_map keeps its
+        // -1 sentinel for these, same as C++'s
+        // vertex_to_encoded_attribute_value_index_map. The header already
+        // subtracts num_isolated_vertices from the encoded vertex count
+        // (num_encoded_vertices below), so giving these vertices a value here
+        // would write more values than the header promises and desync the
+        // decoder reading them back.
+        let _ = visited_vertices;
 
         // Debug: print specific data_to_corner_map entries
         if debug_cmp {

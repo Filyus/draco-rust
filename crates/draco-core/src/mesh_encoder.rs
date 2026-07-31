@@ -445,6 +445,20 @@ impl MeshEncoder {
             let mut corner_table = CornerTable::new(0);
             corner_table.init(&faces);
 
+            // A mesh whose every face is degenerate has no connectivity to
+            // traverse: `point_ids` comes back empty, and everything downstream
+            // that assumes at least one encoded point panics rather than
+            // failing cleanly. C++ rejects the same input outright --
+            // `MeshEdgebreakerEncoderImpl::Init` checks
+            // `num_faces() == NumDegeneratedFaces()` before doing anything else.
+            if corner_table.num_faces() > 0
+                && corner_table.num_faces() == corner_table.num_degenerated_faces()
+            {
+                return Err(DracoError::DracoError(
+                    "All triangles are degenerate.".to_string(),
+                ));
+            }
+
             self.corner_table = Some(corner_table);
             self.point_to_vertex_map = Some(point_to_vertex_map);
             self.edgebreaker_attribute_connectivity.clear();

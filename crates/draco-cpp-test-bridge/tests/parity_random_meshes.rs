@@ -2,28 +2,40 @@
 //!
 //! The rest of the parity suite pins hand-picked shapes. This generates them
 //! instead, from a fixed seed, so a run is reproducible but the input space is
-//! not limited to what someone thought to write down. It is what found the
-//! encode-side panic this crate had on degenerate meshes carrying texture
-//! coordinates, and the two limits recorded below.
+//! not limited to what someone thought to write down. It found three defects
+//! so far, in growing sample sizes: an encode-side panic on degenerate meshes
+//! carrying texture coordinates; a vertex reachable only through a degenerate
+//! (zero-area) face getting written an attribute value the header's vertex
+//! count never accounted for, corrupting every byte after it while `encode()`
+//! still returned `Ok`; and a mesh whose every face is degenerate reaching
+//! code that assumes at least one encoded point and panicking, where C++
+//! rejects the same input outright.
+//!
+//! With those three fixed, 2632 non-manifold and degenerate meshes sampled
+//! across two 6000-iteration runs matched C++ byte for byte -- strong evidence
+//! this class of input is no longer a special case. `is_asserted` does not yet
+//! say so, though: a fourth, unrelated, still-open divergence surfaced in the
+//! *grid* category in that same run (well-formed, position-only, speed 1,
+//! moderate quantization -- not the 30-bit region below), rare enough that the
+//! default 400-iteration sweep does not reliably hit it. Widening
+//! `is_asserted` to non-manifold geometry while that one is unresolved would
+//! read as a stronger claim than is actually backed.
 //!
 //! Three things are asserted, in decreasing strength:
 //!
 //! 1. **No panics, ever.** A library whose API returns `Result` must not abort
 //!    on input it dislikes, whatever the geometry.
 //! 2. **Both encoders agree on whether an input is encodable at all.**
-//! 3. **Byte parity on well-formed meshes below 30-bit quantization.**
+//! 3. **Byte parity on well-formed grid meshes below 30-bit quantization** --
+//!    narrower than what is now believed true (see above), until the speed-1
+//!    grid divergence is understood.
 //!
-//! Two regions are measured and reported rather than asserted, because in both
-//! the reference is not a reference:
-//!
-//! - **Non-manifold and degenerate meshes.** Both encoders accept them and
-//!   produce different bytes. Draco's own corner table cannot represent this
-//!   geometry, and how each implementation splits it is not part of the format.
-//! - **Quantization at 30 bits**, upstream's own documented maximum. Prediction
-//!   residuals there exceed `int32` and both implementations are in overflow
-//!   territory; C++ Draco reads out of bounds in `ShannonEntropyTracker` on
-//!   some of these inputs, which is a bug reported upstream rather than
-//!   behaviour to reproduce.
+//! One region is measured and reported rather than asserted: **30-bit
+//! quantization**, upstream's own documented maximum. Prediction residuals
+//! there exceed `int32` and both implementations are in overflow territory;
+//! C++ Draco reads out of bounds in `ShannonEntropyTracker` on some of these
+//! inputs, which is a bug reported upstream rather than behaviour to
+//! reproduce.
 use draco_core::draco_types::DataType;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::encoder_options::EncoderOptions;
