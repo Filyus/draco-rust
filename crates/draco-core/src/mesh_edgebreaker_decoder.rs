@@ -229,7 +229,11 @@ impl MeshEdgebreakerDecoder {
             ));
         }
 
-        out_mesh.try_set_num_faces(num_faces as usize)?;
+        // Deliberately not sized from |num_faces| here. The faces are written
+        // further down from the corner table the traversal actually built, so
+        // reserving for the declared count buys nothing and lets a few hundred
+        // bytes of malformed input ask for gigabytes -- ahead of the checks
+        // below that would have rejected the stream anyway.
         out_mesh.set_num_points(num_encoded_vertices as usize);
 
         // Read hole/topology split events.
@@ -594,7 +598,7 @@ impl MeshEdgebreakerDecoder {
         symbols: &[u32],
         topology_split_data: &[TopologySplitEventData],
         mesh: &mut Mesh,
-        _total_num_faces: usize,
+        total_num_faces: usize,
         max_num_vertices: usize,
         num_attribute_data: u8,
         num_symbols: usize,
@@ -687,8 +691,10 @@ impl MeshEdgebreakerDecoder {
             has_start_face_bits = start_face_decoder.start_decoding(in_buffer);
         }
 
+        // The declared face count bounds the traversal; the mesh itself is
+        // sized below from the corner table the traversal actually produced.
         let mut connectivity_decoder = EdgebreakerConnectivityDecoder::try_new(
-            mesh.num_faces() as i32,
+            total_num_faces as i32,
             max_num_vertices as i32,
         )?;
 
@@ -870,6 +876,9 @@ impl MeshEdgebreakerDecoder {
         // Store the corner table and truncate to the actual vertex count
         let mut ct = connectivity_decoder.corner_table;
         ct.vertex_corners.truncate(num_vertices);
+        // Size the mesh from what was decoded rather than from what the header
+        // claimed, now that the two are known to agree.
+        mesh.try_set_num_faces(ct.num_faces())?;
         self.corner_table = Some(ct);
         connectivity_decoder.is_vert_hole.truncate(num_vertices);
         self.is_vert_hole = connectivity_decoder.is_vert_hole;

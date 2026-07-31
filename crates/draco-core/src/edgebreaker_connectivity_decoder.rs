@@ -30,6 +30,10 @@ pub trait EdgebreakerTraversalDecoder {
 pub struct EdgebreakerConnectivityDecoder {
     pub corner_table: CornerTable,
     pub is_vert_hole: Vec<bool>,
+    /// Face and vertex counts the bitstream declared. They bound the decode,
+    /// but nothing is allocated for them up front -- see [`Self::try_new`].
+    declared_num_faces: i32,
+    max_num_vertices: usize,
     active_corner_stack: Vec<CornerIndex>,
     topology_split_active_corners: HashMap<i32, CornerIndex>,
     invalid_vertices: Vec<VertexIndex>,
@@ -38,39 +42,42 @@ pub struct EdgebreakerConnectivityDecoder {
 impl EdgebreakerConnectivityDecoder {
     pub fn new(num_faces: i32, max_num_vertices: i32) -> Self {
         Self {
-            corner_table: CornerTable::new(num_faces as usize),
-            is_vert_hole: vec![true; max_num_vertices as usize],
+            corner_table: CornerTable::new(0),
+            is_vert_hole: Vec::new(),
+            declared_num_faces: num_faces,
+            max_num_vertices: max_num_vertices.max(0) as usize,
             active_corner_stack: Vec::new(),
             topology_split_active_corners: HashMap::new(),
             invalid_vertices: Vec::new(),
         }
     }
 
-    /// Fallible constructor mirroring [`EdgebreakerConnectivityDecoder::new`]
-    /// that reserves the corner table and per-vertex hole table through
-    /// `try_reserve`. Bitstream-controlled `num_faces` / `max_num_vertices`
-    /// counts that cannot be allocated return a `DracoError` instead of aborting
-    /// the process.
+    /// Fallible constructor mirroring [`EdgebreakerConnectivityDecoder::new`].
+    ///
+    /// Neither table is sized from `num_faces` / `max_num_vertices`: those are
+    /// counts the bitstream asserts, and honouring them before anything has
+    /// checked them lets a few hundred bytes of malformed input ask for
+    /// gigabytes. Both grow as faces and vertices are actually decoded, so the
+    /// memory a stream costs is proportional to the geometry it really carries,
+    /// and the declared counts are kept only to bound the decode.
     pub fn try_new(
         num_faces: i32,
         max_num_vertices: i32,
     ) -> Result<Self, crate::status::DracoError> {
-        let corner_table = CornerTable::try_new(num_faces.max(0) as usize)?;
-        let num_vertices = max_num_vertices.max(0) as usize;
-        let mut is_vert_hole = Vec::new();
-        is_vert_hole.try_reserve_exact(num_vertices).map_err(|_| {
-            crate::status::DracoError::DracoError(
-                "Failed to allocate vertex hole table".to_string(),
-            )
-        })?;
-        is_vert_hole.resize(num_vertices, true);
-        Ok(Self {
-            corner_table,
-            is_vert_hole,
-            active_corner_stack: Vec::new(),
-            topology_split_active_corners: HashMap::new(),
-            invalid_vertices: Vec::new(),
-        })
+        Ok(Self::new(num_faces, max_num_vertices))
+    }
+
+    /// Marks `vertex` as not lying on a hole, growing the table to reach it.
+    ///
+    /// Entries are `true` until written, which is what sizing the table up
+    /// front from the declared vertex count used to give for free.
+    fn mark_vert_not_hole(&mut self, vertex: VertexIndex, context: &str) -> Result<(), String> {
+        let index = self.vertex_index(vertex, context)?;
+        if index >= self.is_vert_hole.len() {
+            self.is_vert_hole.resize(index + 1, true);
+        }
+        self.is_vert_hole[index] = false;
+        Ok(())
     }
 
     pub fn decode_connectivity<T: EdgebreakerTraversalDecoder>(
@@ -79,12 +86,18 @@ impl EdgebreakerConnectivityDecoder {
         traversal_decoder: &mut T,
         remove_invalid_vertices: bool,
     ) -> Result<i32, String> {
-        let max_num_vertices = self.is_vert_hole.len() as i32;
+        let max_num_vertices = self.max_num_vertices as i32;
         let mut num_faces = 0;
 
         for symbol_id in 0..num_symbols {
             let face = FaceIndex(num_faces as u32);
             num_faces += 1;
+            // Faces are created strictly in order, and every corner written
+            // below belongs either to this face or to one already built, so
+            // growing a face at a time always suffices.
+            self.corner_table
+                .try_grow_to_face(face.0 as usize)
+                .map_err(|e| e.to_string())?;
 
             let mut check_topology_split = false;
             let symbol = traversal_decoder.decode_symbol()?;
@@ -132,8 +145,7 @@ impl EdgebreakerConnectivityDecoder {
                 self.corner_table
                     .set_left_most_corner(vert_a_prev, corner + 2);
 
-                let vertex_x_index = self.vertex_index(vertex_x, "TOPOLOGY_C")?;
-                self.is_vert_hole[vertex_x_index] = false;
+                self.mark_vert_not_hole(vertex_x, "TOPOLOGY_C")?;
                 self.replace_active_corner(corner, "TOPOLOGY_C")?;
             } else if symbol == 3 || symbol == 2 {
                 // Right or Left
@@ -331,7 +343,7 @@ impl EdgebreakerConnectivityDecoder {
         while let Some(corner) = self.active_corner_stack.pop() {
             let interior_face = traversal_decoder.decode_start_face_configuration();
             if interior_face {
-                if num_faces >= self.corner_table.num_faces() as i32 {
+                if num_faces >= self.declared_num_faces {
                     return Err("More faces than expected in start face config".to_string());
                 }
                 let corner_a = corner;
@@ -355,6 +367,9 @@ impl EdgebreakerConnectivityDecoder {
 
                 let face = FaceIndex(num_faces as u32);
                 num_faces += 1;
+                self.corner_table
+                    .try_grow_to_face(face.0 as usize)
+                    .map_err(|e| e.to_string())?;
                 let new_corner = CornerIndex(3 * face.0);
                 self.set_opposite_corners(new_corner, corner_a)?;
                 self.set_opposite_corners(new_corner + 1, corner_b)?;
@@ -368,8 +383,7 @@ impl EdgebreakerConnectivityDecoder {
 
                 for i in 0..3 {
                     let vertex = self.corner_table.vertex(new_corner + i);
-                    let vertex_index = self.vertex_index(vertex, "start face config")?;
-                    self.is_vert_hole[vertex_index] = false;
+                    self.mark_vert_not_hole(vertex, "start face config")?;
                 }
                 // Pass new_corner directly, matching C++ init_corners_.push_back(new_corner)
                 traversal_decoder.on_start_face_decoded(new_corner);
@@ -379,8 +393,18 @@ impl EdgebreakerConnectivityDecoder {
             }
         }
 
-        if num_faces != self.corner_table.num_faces() as i32 {
+        if num_faces != self.declared_num_faces {
             return Err("Unexpected number of faces at end".to_string());
+        }
+
+        // Give the table its full extent now that the real vertex count is
+        // known. Callers index it by vertex and treat a missing entry as a
+        // boundary test rather than as `true`, so it has to cover every vertex
+        // the traversal created -- it just no longer has to be sized for the
+        // count the bitstream merely claimed.
+        let decoded_num_vertices = self.corner_table.num_vertices();
+        if self.is_vert_hole.len() < decoded_num_vertices {
+            self.is_vert_hole.resize(decoded_num_vertices, true);
         }
 
         let mut num_vertices = self.corner_table.num_vertices() as i32;
@@ -487,7 +511,7 @@ impl EdgebreakerConnectivityDecoder {
     }
 
     fn vertex_index(&self, vertex: VertexIndex, context: &str) -> Result<usize, String> {
-        if vertex == INVALID_VERTEX_INDEX || vertex.0 as usize >= self.is_vert_hole.len() {
+        if vertex == INVALID_VERTEX_INDEX || vertex.0 as usize >= self.max_num_vertices {
             return Err(format!(
                 "Invalid vertex {} while decoding {context}",
                 vertex.0

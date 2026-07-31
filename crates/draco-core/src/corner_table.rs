@@ -68,6 +68,43 @@ impl CornerTable {
         })
     }
 
+    /// Grows the corner storage so `face` and its three corners are
+    /// addressable, leaving `num_faces()` equal to the number of faces that
+    /// have actually been created.
+    ///
+    /// Edgebreaker decoding creates faces strictly in order and only ever
+    /// writes corners of the face it just created or of faces already built,
+    /// so growing one face at a time is always sufficient. Sizing the table
+    /// from the face count the bitstream *claims* instead lets a few hundred
+    /// bytes of malformed input ask for gigabytes before any of the checks
+    /// that would reject it have run.
+    pub fn try_grow_to_face(&mut self, face: usize) -> Result<(), crate::status::DracoError> {
+        let num_corners = face
+            .checked_add(1)
+            .and_then(|faces| faces.checked_mul(3))
+            .ok_or_else(|| {
+                crate::status::DracoError::DracoError("Corner table size overflow".to_string())
+            })?;
+        if num_corners <= self.corner_to_vertex_map.len() {
+            return Ok(());
+        }
+
+        let extra = num_corners - self.corner_to_vertex_map.len();
+        self.corner_to_vertex_map.try_reserve(extra).map_err(|_| {
+            crate::status::DracoError::DracoError("Failed to allocate corner table".to_string())
+        })?;
+        self.corner_to_vertex_map
+            .resize(num_corners, INVALID_VERTEX_INDEX);
+
+        let extra = num_corners - self.opposite_corners.len();
+        self.opposite_corners.try_reserve(extra).map_err(|_| {
+            crate::status::DracoError::DracoError("Failed to allocate corner table".to_string())
+        })?;
+        self.opposite_corners
+            .resize(num_corners, INVALID_CORNER_INDEX);
+        Ok(())
+    }
+
     pub fn map_corner_to_vertex(&mut self, corner: CornerIndex, vertex: VertexIndex) {
         self.corner_to_vertex_map[corner.0 as usize] = vertex;
     }
