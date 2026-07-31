@@ -35,9 +35,9 @@ All decode and encode in `draco-core`.
 
 | Draco path | C++ | `draco-core` | Notes |
 |---|---:|:--|---|
-| Point cloud, sequential | yes | yes | Core parity path. |
-| Point cloud, KD-tree | yes | yes | Core parity path. |
-| Triangle mesh, sequential | yes | yes | Core parity path. |
+| Point cloud, sequential | yes | yes | Byte-identical to C++ Draco over the 132 encodes in `parity_point_clouds.rs`: four clouds, every speed, and the method left unset as well as forced. |
+| Point cloud, KD-tree | yes | yes | Same suite. Reproducing the order `std::partition` leaves is part of it -- see `PointDVector::partition`. |
+| Triangle mesh, sequential | yes | yes | Byte-identical over the 66 encodes in `parity_encode_attributes.rs` and the 33 seamed ones in `parity_attribute_seams.rs`, at every speed. |
 | Triangle mesh, EdgeBreaker standard | yes | yes | Main compressed mesh path. |
 | Triangle mesh, EdgeBreaker valence | yes | yes | Behind `edgebreaker_valence_*`; decode covers every version, encode writes current streams by default and round-trips 1.2→current with `legacy_bitstream_encode`. |
 | Triangle mesh, EdgeBreaker predictive (type `1`) | yes (≤ `0.9.1`) | decode yes, encode explicit | Legacy connectivity; behind the legacy features. See [Legacy & compatibility](#legacy--compatibility). |

@@ -10,6 +10,15 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- A point cloud encoded without an explicit `encoding_method` now uses the
+  KD-tree encoder, as Draco does, instead of the sequential one. Upstream picks
+  KD-tree for any cloud whose attributes it can handle at any speed below 10,
+  and the default speed is 5, so this was the common case: the same input
+  produced a different method byte and an entirely different payload from the
+  reference encoder. Callers that want the previous output should ask for it
+  with `set_encoding_method(0)`; those that already did are unaffected. The
+  KD-tree encoder reorders points, so anything comparing decoded points by index
+  needs to compare them as a set instead.
 - Normals and texture coordinates are predicted the way Draco predicts them at
   encoder speeds 0 to 3: geometric-normal prediction for normals, and portable
   tex-coord prediction reading quantized positions. The encoder now agrees with
@@ -20,6 +29,21 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Point clouds now encode byte for byte as C++ Draco does, on both the
+  sequential and the KD-tree path, at every speed. Four faults stood between:
+  an integer attribute with quantization requested for it was announced as
+  quantized and then written raw, desyncing every attribute after it in the
+  stream; a normal attribute nobody asked to quantize selected the octahedral
+  encoder, which cannot encode one, and the encode failed; the KD-tree method on
+  a cloud with no attributes indexed attribute zero and panicked; and the
+  KD-tree traversal left points in a different order than upstream's within each
+  split, which the bitstream records wherever a node holds one or two points.
+  Which encoder writes an attribute is now decided once, from the data type
+  first, and the identifier byte in the stream is that same decision rather than
+  a second guess at it.
+- The point-cloud bitstream version is 2.3 for both methods, as upstream writes
+  it. The sequential path claimed 1.3, which also wrote the attribute count as a
+  fixed `u32` where every reader expects a varint.
 - An attribute with interior seams -- a vertex carrying more than one texture
   coordinate -- was encoded with its values in the wrong order, so a decoder
   returned them attached to the wrong points. The attribute's own corner table
