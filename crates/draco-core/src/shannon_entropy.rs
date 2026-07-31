@@ -46,15 +46,31 @@ impl ShannonEntropyTracker {
         let mut ret_data = self.entropy_data;
         ret_data.num_values += symbols.len() as i32;
 
-        for &symbol in symbols {
-            let symbol = symbol as usize;
-            if self.frequencies.len() <= symbol {
-                self.frequencies.resize(symbol + 1, 0);
+        for (i, &symbol) in symbols.iter().enumerate() {
+            let index = symbol as usize;
+
+            // The table is indexed by symbol value, so covering a symbol costs
+            // memory proportional to it, and a symbol is a zig-zagged residual
+            // -- bounded only by `u32`. Grow only when the symbols are really
+            // being added: a peek is scoring a candidate the caller may reject,
+            // and a single rejected one whose residuals overflowed would
+            // otherwise hold gigabytes for the rest of the encode. A symbol the
+            // table does not cover has frequency zero, so while peeking its
+            // count is just how often it already appeared in this same call.
+            let mut frequency = 0;
+            if index < self.frequencies.len() {
+                frequency = self.frequencies[index];
+            } else if push_changes {
+                self.frequencies.resize(index + 1, 0);
+            } else {
+                for &earlier in &symbols[..i] {
+                    if earlier == symbol {
+                        frequency += 1;
+                    }
+                }
             }
 
             let mut old_symbol_entropy_norm = 0.0;
-            let frequency = self.frequencies[symbol];
-
             if frequency > 1 {
                 old_symbol_entropy_norm = (frequency as f64) * (frequency as f64).log2();
             } else if frequency == 0 {
@@ -66,9 +82,11 @@ impl ShannonEntropyTracker {
 
             // C++ modifies frequency during loop, then reverts if peeking.
             // We do the same for efficiency (avoids cloning the entire table).
-            self.frequencies[symbol] += 1;
-            let new_frequency = self.frequencies[symbol];
-            let new_symbol_entropy_norm = (new_frequency as f64) * (new_frequency as f64).log2();
+            frequency += 1;
+            if index < self.frequencies.len() {
+                self.frequencies[index] = frequency;
+            }
+            let new_symbol_entropy_norm = (frequency as f64) * (frequency as f64).log2();
 
             ret_data.entropy_norm += new_symbol_entropy_norm - old_symbol_entropy_norm;
         }
@@ -76,9 +94,13 @@ impl ShannonEntropyTracker {
         if push_changes {
             self.entropy_data = ret_data;
         } else {
-            // Revert frequency table changes (like C++)
+            // Revert frequency table changes (like C++). Symbols the table does
+            // not cover were never written above, so they need no reverting.
             for &symbol in symbols {
-                self.frequencies[symbol as usize] -= 1;
+                let index = symbol as usize;
+                if index < self.frequencies.len() {
+                    self.frequencies[index] -= 1;
+                }
             }
         }
 
