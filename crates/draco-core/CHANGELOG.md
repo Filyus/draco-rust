@@ -29,6 +29,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Encoding a mesh with vertices no face references no longer panics. Point
+  deduplication rewrote each attribute's buffer to hold only the surviving
+  points but left the attribute reporting its old `size()`, so anything walking
+  it by that count read past the buffer's end -- which the quantization
+  transform does while computing min/max. Clean meshes hid this, because there
+  the surviving count equals the original; raw scanned geometry does not. The
+  Stanford bunny in `testdata` carries 35,947 vertices of which 1,113 are in no
+  triangle, and loading and encoding it failed outright.
 - The mesh encoder no longer panics on a mesh whose faces are degenerate. Three
   distinct faults, all reachable through `encode()` on geometry a caller can
   legitimately hand it: the tex-coord predictor indexed a corner table entry
