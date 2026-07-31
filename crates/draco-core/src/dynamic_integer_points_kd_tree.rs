@@ -90,18 +90,42 @@ impl PointDVector {
 
     /// Partitions points in `[begin, end)` by `point[axis] < value`.
     /// Returns split index such that `[begin, split)` are `< value`.
+    ///
+    /// Which permutation this leaves is part of the bitstream, not an internal
+    /// detail: a node holding one or two points writes their remaining bits in
+    /// the order the partition left them, so two partitions that agree on the
+    /// split index but not on the order produce different files carrying the
+    /// same points. Upstream calls `std::partition`, whose permutation the
+    /// standard does not specify -- but MSVC's STL and libstdc++ both implement
+    /// the same classic two-ended scan, reproduced here: skip the leading
+    /// elements that already belong, skip the trailing ones that do not, swap
+    /// that pair, repeat.
     pub fn partition(&mut self, begin: usize, end: usize, axis: usize, value: u32) -> usize {
-        let mut left = begin;
-        let mut right = end;
-        while left < right {
-            if self.point(left)[axis] < value {
-                left += 1;
-            } else {
-                right -= 1;
-                self.swap_points(left, right);
+        let mut first = begin;
+        let mut last = end;
+        loop {
+            loop {
+                if first == last {
+                    return first;
+                }
+                if self.point(first)[axis] >= value {
+                    break;
+                }
+                first += 1;
             }
+            loop {
+                // `last > first >= 0` here, so this cannot underflow.
+                last -= 1;
+                if first == last {
+                    return first;
+                }
+                if self.point(last)[axis] < value {
+                    break;
+                }
+            }
+            self.swap_points(first, last);
+            first += 1;
         }
-        left
     }
 }
 
