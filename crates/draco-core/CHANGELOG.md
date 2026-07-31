@@ -48,6 +48,18 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is whichever was visited first, and which configuration won is itself written
   to the stream as crease flags. This was the dominant source of byte
   differences on meshes dense enough to offer a vertex several parallelograms.
+- Decoding a malformed mesh no longer allocates for geometry the stream only
+  claims to contain. The edgebreaker decoder sized the mesh, the corner table
+  and the per-vertex hole table from the face and vertex counts in the header,
+  before the checks that would reject the stream had run; a 374-byte fuzz input
+  claiming 724 million faces cost 8.7 GB and a second, and was then rejected on
+  a payload size that could never have fit the buffer. The corner table now
+  grows a face at a time as faces are decoded, and the mesh is sized from it,
+  so memory follows the geometry actually present. No accepted stream changes,
+  and the counts still bound the traversal. Notably without a
+  faces-per-byte cap: edgebreaker connectivity is rANS-coded and can go below a
+  bit per face, so any such limit would be a guess about compression that a
+  valid stream could fall foul of.
 - Encoding a mesh at high quantization no longer allocates gigabytes for
   predictions it discards. The entropy tracker's frequency table is indexed by
   symbol value, so it costs memory proportional to the largest symbol rather
