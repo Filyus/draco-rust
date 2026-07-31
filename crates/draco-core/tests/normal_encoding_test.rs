@@ -91,6 +91,11 @@ fn test_normal_encoding_decoding() {
     let att_id = pc.add_attribute(att);
 
     let mut options = EncoderOptions::default();
+    // Sequential, asked for. This is the octahedral normal encoder's test, and
+    // that encoder belongs to the sequential path -- the KD-tree coder, which
+    // the default now selects, quantizes normals as plain floats and reorders
+    // the points besides.
+    options.set_encoding_method(0);
     options.set_attribute_int(att_id, "quantization_bits", 10); // 10 bits for better precision
 
     let mut encoder = PointCloudEncoder::new();

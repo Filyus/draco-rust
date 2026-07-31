@@ -36,6 +36,10 @@ fn test_point_cloud_encode_decode() {
     encoder.set_point_cloud(pc);
 
     let mut options = EncoderOptions::new();
+    // Sequential, asked for. This test compares decoded values by index, which
+    // only holds for the sequential path -- the KD-tree coder reorders points,
+    // and is what the default selects for a quantized float cloud.
+    options.set_encoding_method(0);
     options.set_attribute_int(0, "quantization_bits", 14);
 
     let mut enc_buffer = EncoderBuffer::new();

@@ -14,10 +14,12 @@ use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::point_cloud::PointCloud;
 use draco_core::point_cloud_decoder::PointCloudDecoder;
 use draco_core::point_cloud_encoder::PointCloudEncoder;
-use draco_core::version::{
-    DEFAULT_MESH_VERSION, DEFAULT_POINT_CLOUD_KD_TREE_VERSION,
-    DEFAULT_POINT_CLOUD_SEQUENTIAL_VERSION,
-};
+use draco_core::version::{DEFAULT_MESH_VERSION, DEFAULT_POINT_CLOUD_VERSION};
+
+/// The oldest point-cloud bitstream this crate still writes when asked for it
+/// explicitly. It is no longer any method's default -- upstream writes 2.3 for
+/// every point cloud -- so this test names it rather than importing a constant.
+const LEGACY_POINT_CLOUD_VERSION: (u8, u8) = (1, 3);
 
 fn create_test_pc() -> PointCloud {
     let mut pc = PointCloud::new();
@@ -117,10 +119,7 @@ fn test_point_cloud_roundtrip_v1_3() {
     encoder.set_point_cloud(pc);
 
     let mut options = EncoderOptions::new();
-    options.set_version(
-        DEFAULT_POINT_CLOUD_SEQUENTIAL_VERSION.0,
-        DEFAULT_POINT_CLOUD_SEQUENTIAL_VERSION.1,
-    );
+    options.set_version(LEGACY_POINT_CLOUD_VERSION.0, LEGACY_POINT_CLOUD_VERSION.1);
     options.set_encoding_method(0); // Sequential
     options.set_attribute_int(0, "quantization_bits", 14);
 
@@ -142,10 +141,7 @@ fn test_point_cloud_roundtrip_v2_3() {
     encoder.set_point_cloud(pc);
 
     let mut options = EncoderOptions::new();
-    options.set_version(
-        DEFAULT_POINT_CLOUD_KD_TREE_VERSION.0,
-        DEFAULT_POINT_CLOUD_KD_TREE_VERSION.1,
-    );
+    options.set_version(DEFAULT_POINT_CLOUD_VERSION.0, DEFAULT_POINT_CLOUD_VERSION.1);
     options.set_encoding_method(1); // KD-Tree
     options.set_attribute_int(0, "quantization_bits", 14);
 

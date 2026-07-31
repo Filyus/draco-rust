@@ -39,13 +39,16 @@ pub const DEFAULT_MESH_VERSION: (u8, u8) = (
     DRACO_MESH_BITSTREAM_VERSION_MINOR,
 );
 
-/// Default version for PointCloud encoding (Sequential).
-/// Uses v1.3 for sequential (matches C++ behavior for sequential point clouds).
-pub const DEFAULT_POINT_CLOUD_SEQUENTIAL_VERSION: (u8, u8) = (1, 3);
-
-/// Default version for PointCloud encoding (KD-Tree).
-/// Uses the latest point cloud bitstream version (v2.3).
-pub const DEFAULT_POINT_CLOUD_KD_TREE_VERSION: (u8, u8) = (
+/// Default version for PointCloud encoding, both methods.
+///
+/// Upstream picks the version from the geometry type alone -- see
+/// `PointCloudEncoder::EncodeHeader`, which writes
+/// `kDracoPointCloudBitstreamVersion` for anything whose encoder type is
+/// `POINT_CLOUD` -- so the sequential and KD-tree methods share it. An earlier
+/// comment here claimed C++ wrote 1.3 for sequential point clouds; it does not,
+/// and writing 1.3 also turned the attribute count into a `u32` where upstream
+/// writes a varint.
+pub const DEFAULT_POINT_CLOUD_VERSION: (u8, u8) = (
     DRACO_POINT_CLOUD_BITSTREAM_VERSION_MAJOR,
     DRACO_POINT_CLOUD_BITSTREAM_VERSION_MINOR,
 );

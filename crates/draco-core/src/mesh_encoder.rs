@@ -13,7 +13,7 @@ use crate::mesh_edgebreaker_encoder::{EdgebreakerAttributeConnectivity, MeshEdge
 use crate::metadata::METADATA_FLAG_MASK;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_encoder::GeometryEncoder;
-use crate::sequential_attribute_encoder::SequentialAttributeEncoder;
+use crate::sequential_attribute_encoder::{select_sequential_encoder, SequentialAttributeEncoder};
 use crate::sequential_integer_attribute_encoder::SequentialIntegerAttributeEncoder;
 use crate::sequential_normal_attribute_encoder::SequentialNormalAttributeEncoder;
 use crate::status::{DracoError, Status};
@@ -778,22 +778,7 @@ impl MeshEncoder {
             for i in 0..mesh.num_attributes() {
                 let att = mesh.attribute(i);
                 let quantization_bits = self.options.get_attribute_int(i, "quantization_bits", -1);
-                let is_quantized = quantization_bits > 0
-                    && (att.data_type() == DataType::Float32
-                        || att.data_type() == DataType::Float64);
-                let is_normal = att.attribute_type() == GeometryAttributeType::Normal;
-
-                let decoder_type: u8 = if is_quantized {
-                    if is_normal {
-                        3
-                    } else {
-                        2
-                    }
-                } else if att.data_type() != DataType::Float32 {
-                    1
-                } else {
-                    0
-                };
+                let decoder_type = select_sequential_encoder(att, quantization_bits) as u8;
                 out_buffer.encode_u8(decoder_type);
                 decoder_types.push(decoder_type);
             }
@@ -1078,21 +1063,7 @@ impl MeshEncoder {
         let quantization_bits = self
             .options
             .get_attribute_int(att_id, "quantization_bits", -1);
-        let is_quantized = quantization_bits > 0
-            && (att.data_type() == DataType::Float32 || att.data_type() == DataType::Float64);
-        let is_normal = att.attribute_type() == GeometryAttributeType::Normal;
-
-        if is_quantized {
-            if is_normal {
-                3
-            } else {
-                2
-            }
-        } else if att.data_type() != DataType::Float32 {
-            1
-        } else {
-            0
-        }
+        select_sequential_encoder(att, quantization_bits) as u8
     }
 
     fn prepare_active_attribute_connectivity(
