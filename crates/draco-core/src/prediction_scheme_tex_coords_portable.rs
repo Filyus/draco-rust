@@ -707,9 +707,9 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
         pos
     }
 
-    fn get_tex_coord_for_entry_id(&self, entry_id: i32, data: &[i32]) -> [i64; 2] {
+    fn get_tex_coord_for_entry_id(&self, entry_id: i32, data: &[i32]) -> Option<[i64; 2]> {
         let offset = (entry_id * 2) as usize;
-        [data[offset] as i64, data[offset + 1] as i64]
+        Some([*data.get(offset)? as i64, *data.get(offset + 1)? as i64])
     }
 
     fn compute_predicted_value(
@@ -720,22 +720,44 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
         entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'_>,
         predicted_value: &mut [i32; 2],
     ) -> bool {
-        let mesh_data = self.mesh_data.as_ref().unwrap();
-        let corner_table = mesh_data.corner_table().unwrap();
-        let vertex_to_data_map = mesh_data.vertex_to_data_map().unwrap();
+        let Some(mesh_data) = self.mesh_data.as_ref() else {
+            return false;
+        };
+        let Some(corner_table) = mesh_data.corner_table() else {
+            return false;
+        };
+        let Some(vertex_to_data_map) = mesh_data.vertex_to_data_map() else {
+            return false;
+        };
 
         let next_corner_id = corner_table.next(corner_id);
         let prev_corner_id = corner_table.previous(corner_id);
 
+        // A corner on a mesh Draco cannot build a complete corner table for --
+        // non-manifold, or with degenerate faces -- has no vertex, and
+        // `vertex()` reports that as an invalid index rather than failing. Look
+        // it up rather than index with it: upstream reaches the same lookup
+        // through `std::vector::at`, and a mesh that gets here is one C++
+        // Draco rejects, so refusing to predict ends the encode the same way.
+        // The decoding half of this file already guards these; the encoding
+        // half never was.
         let next_vert_id = corner_table.vertex(next_corner_id).0 as usize;
         let prev_vert_id = corner_table.vertex(prev_corner_id).0 as usize;
 
-        let next_data_id = vertex_to_data_map[next_vert_id];
-        let prev_data_id = vertex_to_data_map[prev_vert_id];
+        let Some(&next_data_id) = vertex_to_data_map.get(next_vert_id) else {
+            return false;
+        };
+        let Some(&prev_data_id) = vertex_to_data_map.get(prev_vert_id) else {
+            return false;
+        };
 
         if prev_data_id < data_id && next_data_id < data_id {
-            let n_uv = self.get_tex_coord_for_entry_id(next_data_id, data);
-            let p_uv = self.get_tex_coord_for_entry_id(prev_data_id, data);
+            let Some(n_uv) = self.get_tex_coord_for_entry_id(next_data_id, data) else {
+                return false;
+            };
+            let Some(p_uv) = self.get_tex_coord_for_entry_id(prev_data_id, data) else {
+                return false;
+            };
 
             if n_uv == p_uv {
                 predicted_value[0] = p_uv[0] as i32;
@@ -775,7 +797,9 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
                 let pred_0 = vec2_div_scalar(&vec2_add(&x_uv, &cx_uv), pn_norm2_squared as i64);
                 let pred_1 = vec2_div_scalar(&vec2_sub(&x_uv, &cx_uv), pn_norm2_squared as i64);
 
-                let c_uv = self.get_tex_coord_for_entry_id(data_id, data);
+                let Some(c_uv) = self.get_tex_coord_for_entry_id(data_id, data) else {
+                    return false;
+                };
 
                 let diff_0 = vec2_sub(&c_uv, &pred_0);
                 let diff_1 = vec2_sub(&c_uv, &pred_1);

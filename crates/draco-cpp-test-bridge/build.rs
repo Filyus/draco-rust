@@ -25,8 +25,18 @@ fn main() {
     println!("cargo:rerun-if-env-changed=DRACO_CPP_SOURCE_DIR");
     println!("cargo:rerun-if-env-changed=DRACO_CPP_BUILD_DIR");
 
-    // Check if libraries exist
-    let lib_path = draco_build.join("src/draco/Release");
+    // Two CMake layouts are in the wild. Draco used to place its libraries
+    // under `src/draco/`; current upstream puts them at the build root. Probe
+    // for the one that exists rather than requiring a particular Draco vintage,
+    // so a checkout can be pointed at either.
+    let (lib_path, component_root) = {
+        let nested = draco_build.join("src/draco/Release");
+        if nested.exists() {
+            (nested, draco_build.join("src/draco"))
+        } else {
+            (draco_build.join("Release"), draco_build.clone())
+        }
+    };
     if !lib_path.exists() {
         println!(
             "cargo:warning=C++ Draco library not found at {:?}. C++ test bridge will be disabled.",
@@ -87,11 +97,16 @@ fn main() {
         "draco_points_dec",
         "draco_points_enc",
         "draco_point_cloud",
+        // Named `draco_src_io` in older layouts, `draco_io` in current
+        // upstream; `draco_compression_options` only exists in the latter.
+        // Missing entries are skipped below, so listing both is harmless.
         "draco_src_io",
+        "draco_io",
+        "draco_compression_options",
     ];
 
     for lib_name in component_libs {
-        let lib_dir = draco_build.join(format!("src/draco/{}.dir/Release", lib_name));
+        let lib_dir = component_root.join(format!("{}.dir/Release", lib_name));
         if lib_dir.exists() {
             println!("cargo:rustc-link-search=native={}", lib_dir.display());
             println!("cargo:rustc-link-lib=static={}", lib_name);
