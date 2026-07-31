@@ -29,6 +29,40 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The mesh encoder no longer panics on a mesh whose faces are degenerate. Three
+  distinct faults, all reachable through `encode()` on geometry a caller can
+  legitimately hand it: the tex-coord predictor indexed a corner table entry
+  that a zero-area face leaves unset; a mesh whose faces are *all* degenerate
+  reached code assuming at least one encoded point, where C++ Draco rejects the
+  input outright and now so does this; and a vertex reachable only through a
+  degenerate face was written an attribute value the connectivity header's
+  vertex count never accounted for, which corrupted every byte after it while
+  `encode()` still returned `Ok`. The last is the serious one -- it produced a
+  silently wrong stream rather than an error.
+- The constrained multi-parallelogram predictor picks the same configuration
+  C++ Draco picks when two configurations cost the same. Its per-vertex search
+  enumerated candidates in bitmask order; Draco enumerates them by increasing
+  number of parallelograms used and, within each count, in `std::next_permutation`
+  order. Both searches cover the same set and both find a genuinely optimal
+  configuration, so no decoded value was ever wrong -- but on a tie the winner
+  is whichever was visited first, and which configuration won is itself written
+  to the stream as crease flags. This was the dominant source of byte
+  differences on meshes dense enough to offer a vertex several parallelograms.
+- Encoding a mesh at high quantization no longer allocates gigabytes for
+  predictions it discards. The entropy tracker's frequency table is indexed by
+  symbol value, so it costs memory proportional to the largest symbol rather
+  than to the number of distinct ones, and `peek` -- which scores a candidate
+  the predictor may well reject -- grew it just as `push` does and never gave
+  the growth back. One rejected candidate whose averaged prediction overflowed
+  held a couple of billion entries for the rest of the encode. Measured across
+  400 randomly generated meshes at 1 to 30 quantization bits, peak memory fell
+  from 21.9 GB to 7.0 GB and wall clock from 65 s to 41 s, with byte-identical
+  output.
+- The portable tex-coord predictor applies Draco's three overflow checks when
+  encoding, not only when decoding. Upstream shares one predictor between its
+  encoder and decoder so both sides check; the two halves here are separate and
+  the encoding one did not, so it wrapped silently and produced a stream for
+  non-manifold meshes C++ Draco declines to encode at all.
 - Point clouds now encode byte for byte as C++ Draco does, on both the
   sequential and the KD-tree path, at every speed. Four faults stood between:
   an integer attribute with quantization requested for it was announced as
