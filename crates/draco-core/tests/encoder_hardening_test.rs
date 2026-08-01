@@ -105,6 +105,34 @@ fn seamed_quad(num_generic: usize) -> Mesh {
     mesh
 }
 
+/// A point cloud of `n` distinct float32 positions.
+fn cloud(n: usize) -> PointCloud {
+    let mut pc = PointCloud::new();
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        n,
+    );
+    for i in 0..n {
+        let offset = i * 12;
+        position
+            .buffer_mut()
+            .write(offset, &(i as f32).to_le_bytes());
+        position
+            .buffer_mut()
+            .write(offset + 4, &(i as f32 * 0.5).to_le_bytes());
+        position
+            .buffer_mut()
+            .write(offset + 8, &(n as f32).to_le_bytes());
+    }
+    pc.set_num_points(n);
+    pc.add_attribute(position);
+    pc
+}
+
 fn encode_mesh(mesh: Mesh, options: &EncoderOptions) -> Result<Vec<u8>, String> {
     let mut encoder = MeshEncoder::new();
     encoder.set_mesh(mesh);
@@ -368,6 +396,50 @@ fn a_reused_encoder_encodes_what_a_fresh_one_does() {
     MeshDecoder::new()
         .decode(&mut DecoderBuffer::new(second.data()), &mut decoded)
         .expect("the reused encoder's stream must decode");
+}
+
+#[test]
+fn a_reused_point_cloud_encoder_encodes_what_a_fresh_one_does() {
+    // The mesh encoder carried a cache across encodes and got this wrong; the
+    // point-cloud encoder holds no derived state, so it is right by
+    // construction. Pinned anyway, because "by construction" is what changes
+    // when someone adds a cache - and switching the method between the two
+    // encodes is what made the mesh version fail.
+    let mut sequential = EncoderOptions::new();
+    sequential.set_global_int("encoding_method", 0);
+    sequential.set_attribute_int(0, "quantization_bits", 11);
+    let mut kd_tree = EncoderOptions::new();
+    kd_tree.set_global_int("encoding_method", 1);
+    kd_tree.set_attribute_int(0, "quantization_bits", 11);
+
+    for (first, second) in [
+        (&kd_tree, &sequential),
+        (&sequential, &kd_tree),
+        (&sequential, &sequential),
+    ] {
+        let mut fresh = PointCloudEncoder::new();
+        fresh.set_point_cloud(cloud(6));
+        let mut expected = EncoderBuffer::new();
+        fresh.encode(second, &mut expected).expect("fresh encode");
+
+        let mut reused = PointCloudEncoder::new();
+        reused.set_point_cloud(cloud(20));
+        let mut first_buffer = EncoderBuffer::new();
+        reused
+            .encode(first, &mut first_buffer)
+            .expect("first encode");
+        reused.set_point_cloud(cloud(6));
+        let mut second_buffer = EncoderBuffer::new();
+        reused
+            .encode(second, &mut second_buffer)
+            .expect("second encode");
+
+        assert_eq!(
+            expected.data(),
+            second_buffer.data(),
+            "a reused point-cloud encoder produced a different stream than a fresh one"
+        );
+    }
 }
 
 #[test]
