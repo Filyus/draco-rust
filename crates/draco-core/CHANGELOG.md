@@ -6,6 +6,17 @@ independently; its release tags are `draco-core-vX.Y.Z`.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- A tex-coord prediction scheme forced onto an attribute that is not a texture
+  coordinate is refused. Both tex-coord predictors work on two components, and a
+  normal presents two once the octahedron transform has folded it from three, so
+  the scheme was accepted for normals and wrote values the normal decoder cannot
+  read back. Three-component attributes were already refused, which is why only
+  normals slipped through.
+
 ## [1.2.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.1.0...draco-core-v1.2.0) - 2026-08-01
 
 A hardening release for the encoding side. Geometry handed to an encoder

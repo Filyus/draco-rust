@@ -443,6 +443,42 @@ fn a_reused_point_cloud_encoder_encodes_what_a_fresh_one_does() {
 }
 
 #[test]
+fn a_tex_coord_prediction_scheme_is_refused_for_other_attributes() {
+    // Both tex-coord predictors work on two components, and a normal presents
+    // two once the octahedron transform has folded it from three - so a scheme
+    // meant for UVs was accepted for normals and wrote values the normal
+    // decoder cannot read back. Three-component attributes were already
+    // refused, which is why only normals slipped through.
+    for scheme in [3i32, 5] {
+        let mut mesh = quad();
+        let mut normal = PointAttribute::new();
+        normal.init(
+            GeometryAttributeType::Normal,
+            3,
+            DataType::Float32,
+            false,
+            4,
+        );
+        for i in 0..4 {
+            normal.buffer_mut().write(i * 12 + 8, &1.0f32.to_le_bytes());
+        }
+        mesh.add_attribute(normal);
+
+        let mut options = EncoderOptions::new();
+        options.set_attribute_int(0, "quantization_bits", 10);
+        options.set_attribute_int(1, "quantization_bits", 10);
+        options.set_attribute_int(1, "prediction_scheme", scheme);
+
+        let error = encode_mesh(mesh, &options)
+            .expect_err(&format!("scheme {scheme} on a normal must be refused"));
+        assert!(
+            error.contains("predicts texture coordinates"),
+            "unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
 fn more_attribute_groups_than_the_count_field_holds_is_refused() {
     // The group count is one byte, so 256 groups truncated to 0 and the decoder
     // read the following bytes as attribute data. The boundary is measured:

@@ -298,6 +298,7 @@ impl MeshEncoder {
         crate::version::validate_encodable_version(major, minor, DEFAULT_MESH_VERSION)?;
         Self::validate_face_indices(self.mesh.as_ref().unwrap())?;
         self.validate_predictive_traversal()?;
+        self.validate_prediction_schemes(self.mesh.as_ref().unwrap())?;
 
         // 1. Encode Header
         self.encode_header(out_buffer)?;
@@ -317,6 +318,36 @@ impl MeshEncoder {
             .filter(|metadata| !metadata.is_empty())
         {
             metadata.encode(buffer)?;
+        }
+        Ok(())
+    }
+
+    /// Rejects a tex-coord prediction scheme forced onto an attribute that is
+    /// not a texture coordinate.
+    ///
+    /// Both tex-coord predictors work on two components and predict from the
+    /// position, so the encoder builds one for any attribute that presents two
+    /// components. A normal does, once the octahedron transform has folded it
+    /// from three - so a scheme meant for UVs was accepted for normals and
+    /// wrote values the normal decoder cannot read back. Three-component
+    /// attributes were already refused, which is why only normals slipped
+    /// through.
+    fn validate_prediction_schemes(&self, mesh: &Mesh) -> Status {
+        const TEX_COORDS_DEPRECATED: i32 = 3;
+        const TEX_COORDS_PORTABLE: i32 = 5;
+
+        for att_id in 0..mesh.num_attributes() {
+            let scheme = self.options.get_attribute_prediction_scheme(att_id);
+            if !matches!(scheme, TEX_COORDS_DEPRECATED | TEX_COORDS_PORTABLE) {
+                continue;
+            }
+            let attribute_type = mesh.attribute(att_id).attribute_type();
+            if attribute_type != GeometryAttributeType::TexCoord {
+                return Err(DracoError::DracoError(format!(
+                    "Prediction scheme {scheme} predicts texture coordinates and cannot be used \
+                     for attribute {att_id}, which is a {attribute_type:?}"
+                )));
+            }
         }
         Ok(())
     }
