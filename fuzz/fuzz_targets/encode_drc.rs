@@ -42,6 +42,7 @@ use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::point_cloud::PointCloud;
 use draco_core::point_cloud_decoder::PointCloudDecoder;
 use draco_core::point_cloud_encoder::PointCloudEncoder;
+use draco_core::status::DracoError;
 use libfuzzer_sys::fuzz_target;
 
 const MAX_POINTS: usize = 2048;
@@ -356,7 +357,7 @@ fn fuzz_mesh(spec: &GeometrySpec, payload: &[u8], input: &[u8]) {
     let mut decoded = Mesh::new();
     let mut decoder_buffer = DecoderBuffer::new(buffer.data());
     if let Err(error) = MeshDecoder::new().decode(&mut decoder_buffer, &mut decoded) {
-        if !round_trip_is_claimed(spec, buffer.data()) {
+        if !round_trip_is_claimed(spec, &error) {
             return;
         }
         panic!(
@@ -383,7 +384,7 @@ fn fuzz_point_cloud(spec: &GeometrySpec, payload: &[u8], input: &[u8]) {
     let mut decoded = PointCloud::new();
     let mut decoder_buffer = DecoderBuffer::new(buffer.data());
     if let Err(error) = PointCloudDecoder::new().decode(&mut decoder_buffer, &mut decoded) {
-        if !round_trip_is_claimed(spec, buffer.data()) {
+        if !round_trip_is_claimed(spec, &error) {
             return;
         }
         panic!(
@@ -395,15 +396,15 @@ fn fuzz_point_cloud(spec: &GeometrySpec, payload: &[u8], input: &[u8]) {
 }
 
 /// Whether oracle 2 - anything the encoder accepted decodes - applies to this
-/// encode.
+/// encode, or whether the failure is one of the still-open findings.
 ///
-/// Decided from the geometry and the stream, never from the decoder's error
+/// Decided from the geometry and from the error's *variant*, never from its
 /// text: an error message is not an interface, and a suppression keyed on one
 /// silently stops suppressing when the wording changes and silently starts
 /// covering an unrelated failure that happens to share a phrase.
 ///
-/// Two exclusions, both still-open findings from this target's own campaigns
-/// and both recorded in `hardening_status.yaml`:
+/// Two exclusions, both still-open findings recorded in
+/// `hardening_status.yaml`:
 ///
 /// 1. **An explicitly requested non-default bitstream version.** Legacy encode
 ///    is version-gated field by field and several of those gates disagree with
@@ -411,17 +412,14 @@ fn fuzz_point_cloud(spec: &GeometrySpec, payload: &[u8], input: &[u8]) {
 ///    because oracle 1 - no panics - applies to them; only the round-trip claim
 ///    is held to the default version, which is what the crate documents.
 ///
-/// 2. **A geometry the decoder's count-vs-size preflight will refuse.** That
-///    guard assumes a stream carries at least one bit per point or face, which
-///    is false for geometry whose values are all equal: it entropy-codes to a
-///    size independent of the count. The condition below restates the guard
-///    rather than recognising its message, so it stops excluding anything the
-///    moment the guard is fixed. It restates it conservatively - one *byte* per
-///    point where the guard allows one bit, and only in the stream past a
-///    generous header allowance, because the guard measures what is left after
-///    the header while this measures the whole stream. What still reaches the
-///    assert is well clear of the guard rather than adjacent to it.
-fn round_trip_is_claimed(spec: &GeometrySpec, stream: &[u8]) -> bool {
+/// 2. **`CountExceedsBitstream`.** The decoder's header preflight assumes a
+///    stream carries at least one bit per point or face, which is false for
+///    geometry whose values are all equal: it entropy-codes to a size
+///    independent of the count. Matching the variant costs nothing and excludes
+///    exactly those runs - an earlier version of this predicted the guard from
+///    the stream length instead, which was far coarser and quietly excluded
+///    most of the corpus from the oracle.
+fn round_trip_is_claimed(spec: &GeometrySpec, error: &DracoError) -> bool {
     if std::env::var_os("ENCODE_DRC_NO_DECODE_ORACLE").is_some() {
         // Triage knob: with oracle 2 off, a campaign runs past every
         // encoder/decoder disagreement and reports only panics. Used when one
@@ -431,10 +429,7 @@ fn round_trip_is_claimed(spec: &GeometrySpec, stream: &[u8]) -> bool {
     if spec.version.is_some() {
         return false;
     }
-    // Header, metadata and per-attribute descriptors precede the counts the
-    // guard checks; 64 bytes covers them for the geometry this target builds.
-    let payload_budget = stream.len().saturating_sub(64);
-    spec.num_points <= payload_budget && spec.faces.len() <= payload_budget
+    !matches!(error, DracoError::CountExceedsBitstream { .. })
 }
 
 /// Hex of the whole fuzz input, printed with an oracle failure.
