@@ -42,6 +42,24 @@ pub trait GeometryDecoder {
     }
 }
 
+/// Whether a prediction transform byte follows this prediction method byte.
+///
+/// Upstream writes the transform only when the method is not `PREDICTION_NONE`,
+/// which is `-2` and reaches the stream as `0xFE`. `0xFF` is `-1`, which this
+/// crate once wrote for the same meaning, so both are read as "nothing follows"
+/// -- the same pair `SequentialIntegerAttributeDecoder` accepts.
+///
+/// The pre-1.2 shims below need this because they walk the prediction header by
+/// hand to reach the quantization parameters behind it. Testing `0xFF` alone
+/// made them step one byte into a `PREDICTION_NONE` stream and read the
+/// parameters shifted: the range came out zero and every position dequantized to
+/// the origin, with the point and face counts still right and the decode still
+/// reporting success. Draco writes `PREDICTION_NONE` at compression level 0.
+#[cfg(feature = "point_cloud_decode")]
+fn carries_transform_byte(method_byte: u8) -> bool {
+    method_byte != 0xFF && method_byte != 0xFE
+}
+
 /// Decoder for Draco point cloud bitstreams.
 ///
 /// `PointCloudDecoder` reads a point-cloud `.drc` bitstream and reconstructs a
@@ -450,7 +468,7 @@ impl PointCloudDecoder {
                                 let method_byte = buffer.decode_u8().map_err(|_| {
                                     DracoError::general("read pred method".to_string())
                                 })?;
-                                if method_byte != 0xFF {
+                                if carries_transform_byte(method_byte) {
                                     let _transform_byte = buffer.decode_u8().map_err(|_| {
                                         DracoError::general("read transform".to_string())
                                     })?;
@@ -462,7 +480,11 @@ impl PointCloudDecoder {
                                     ))
                                 })?;
                                 let bytes_consumed = buffer.position() - saved_pos;
-                                let pred_header_bytes = if method_byte != 0xFF { 2 } else { 1 };
+                                let pred_header_bytes = if carries_transform_byte(method_byte) {
+                                    2
+                                } else {
+                                    1
+                                };
                                 let skip = bytes_consumed - pred_header_bytes;
                                 buffer
                                     .set_position(saved_pos)
@@ -531,7 +553,7 @@ impl PointCloudDecoder {
                                 let method_byte = buffer.decode_u8().map_err(|_| {
                                     DracoError::general("read pred method".to_string())
                                 })?;
-                                if method_byte != 0xFF {
+                                if carries_transform_byte(method_byte) {
                                     let _transform_byte = buffer.decode_u8().map_err(|_| {
                                         DracoError::general("read transform".to_string())
                                     })?;
@@ -547,7 +569,11 @@ impl PointCloudDecoder {
                                     ));
                                 }
                                 let bytes_consumed = buffer.position() - saved_pos;
-                                let pred_header_bytes = if method_byte != 0xFF { 2 } else { 1 };
+                                let pred_header_bytes = if carries_transform_byte(method_byte) {
+                                    2
+                                } else {
+                                    1
+                                };
                                 let skip = bytes_consumed - pred_header_bytes;
                                 buffer
                                     .set_position(saved_pos)
