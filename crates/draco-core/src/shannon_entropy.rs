@@ -164,8 +164,13 @@ impl ShannonEntropyTracker {
     }
 
     pub fn get_number_of_r_ans_table_bits_static(entropy_data: &EntropyData) -> i64 {
+        // `max_symbol` is a symbol value stored as `i32`, so a residual near
+        // `u32::MAX` lands on `i32::MAX` and the increment overflows. Upstream
+        // computes the same expression in `int` and wraps; the result feeds a
+        // table-size estimate that the encoder compares against another
+        // estimate, so this is a cost heuristic rather than a bitstream value.
         approximate_rans_frequency_table_bits(
-            (entropy_data.max_symbol + 1) as u32,
+            entropy_data.max_symbol.wrapping_add(1) as u32,
             entropy_data.num_unique_symbols as u32,
         ) as i64
     }

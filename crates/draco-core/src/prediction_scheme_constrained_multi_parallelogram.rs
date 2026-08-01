@@ -73,11 +73,21 @@ where
         self.bitstream_version = version;
     }
 
+    /// Zig-zags a residual for the entropy estimate, as C++
+    /// `ConvertSignedIntToSymbol` does.
+    ///
+    /// Stated the way upstream states it - map -1 to 0, -2 to 1, then shift and
+    /// set the low bit - rather than as `(-val << 1) - 1`. The two agree on
+    /// every value either can represent, but negating first overflows on
+    /// `i64::MIN`, which a residual reaches when the attribute spans the full
+    /// range: the encoder panicked in a debug build on a mesh C++ encodes
+    /// without complaint.
     fn convert_signed_int_to_symbol(val: i64) -> u32 {
         if val >= 0 {
             (val as u32) << 1
         } else {
-            ((-val as u32) << 1) - 1
+            let magnitude = -(val.wrapping_add(1));
+            ((magnitude as u32) << 1) | 1
         }
     }
 }

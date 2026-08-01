@@ -813,7 +813,14 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
                 let cx_norm2_squared = vec3_squared_norm(&vec3_sub(&tip_pos, &x_pos));
 
                 let mut cx_uv = [pn_uv[1], -pn_uv[0]]; // Rotated
-                let norm_squared = int_sqrt(cx_norm2_squared * pn_norm2_squared);
+                                                       // Upstream computes this in `uint64_t`
+                                                       // (`IntSqrt(cx_norm2_squared * pn_norm2_squared)`), where the
+                                                       // product wrapping is defined and silent; here the same two
+                                                       // values are `i64`, so plain multiplication only differed by
+                                                       // panicking in a debug build. The predictor is a heuristic
+                                                       // whose output the encoder checks against the real value, so a
+                                                       // wrapped magnitude costs compression, never correctness.
+                let norm_squared = int_sqrt(cx_norm2_squared.wrapping_mul(pn_norm2_squared));
                 cx_uv = vec2_mul(&cx_uv, norm_squared as i64);
 
                 // Encoder logic: compute both and pick best
