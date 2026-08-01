@@ -173,6 +173,18 @@ impl AttributeQuantizationTransform {
         };
         let num_components = attribute.num_components() as usize;
 
+        // `min_values` was sized by `compute_parameters` from whichever
+        // attribute it was given, and nothing ties that to the attribute being
+        // transformed here. The loops below index it per component -- the fast
+        // path as `min_values[0..3]` literally -- so a transform computed for
+        // two components and applied to three panicked, reachable through the
+        // public `AttributeTransform::transform_attribute`. The inverse
+        // direction has checked exactly this since it was written; this is the
+        // forward half of the same check.
+        if self.min_values.len() < num_components {
+            return false;
+        }
+
         target_attribute.init(
             attribute.attribute_type(),
             num_components as u8,
@@ -584,6 +596,16 @@ impl AttributeTransform for AttributeQuantizationTransform {
 
     #[cfg(feature = "encoder")]
     fn encode_parameters(&self, encoder_buffer: &mut EncoderBuffer) -> bool {
+        // The sibling octahedron transform gates this on `is_initialized`;
+        // this one wrote whatever it held. On a transform whose parameters were
+        // never computed that is `-1`, which `as u8` truncates to `0xFF` -- a
+        // quantization-bits byte no decoder accepts, written into the stream
+        // and reported as success. Every in-tree caller computes parameters
+        // first and checks that call, so this is the trait method's own
+        // contract rather than a live defect.
+        if !(1..=31).contains(&self.quantization_bits) {
+            return false;
+        }
         for &val in &self.min_values {
             encoder_buffer.encode(val);
         }
@@ -641,6 +663,55 @@ impl AttributeTransform for AttributeQuantizationTransform {
 mod tests {
     use super::*;
     use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+
+    /// A three-component attribute quantized with parameters computed from a
+    /// two-component one is refused, not indexed past the end of `min_values`.
+    ///
+    /// `compute_parameters` sizes `min_values` from whatever attribute it was
+    /// given, and nothing ties that to the attribute later transformed. The
+    /// fast path indexes `min_values[0]`, `[1]`, `[2]` literally, so this
+    /// panicked with "the len is 2 but the index is 2" -- through
+    /// `AttributeTransform::transform_attribute`, which is public. The inverse
+    /// direction has always checked the same length.
+    #[test]
+    fn quantizing_with_parameters_from_a_narrower_attribute_is_refused() {
+        let mut narrow = PointAttribute::new();
+        narrow.init(GeometryAttributeType::Generic, 2, DataType::Float32, false, 4);
+        for i in 0..8 {
+            narrow.buffer_mut().write(i * 4, &(i as f32).to_le_bytes());
+        }
+        let mut transform = AttributeQuantizationTransform::new();
+        assert!(transform.compute_parameters(&narrow, 12));
+        assert_eq!(transform.min_values.len(), 2);
+
+        let mut wide = PointAttribute::new();
+        wide.init(GeometryAttributeType::Generic, 3, DataType::Float32, false, 4);
+        for i in 0..12 {
+            wide.buffer_mut().write(i * 4, &(i as f32).to_le_bytes());
+        }
+
+        let mut target = PointAttribute::default();
+        assert!(
+            !transform.transform_attribute(&wide, &[], &mut target),
+            "three components against two min_values must be refused"
+        );
+    }
+
+    /// A transform whose parameters were never computed refuses to write them.
+    ///
+    /// It used to write `-1 as u8`, that is `0xFF`, as the quantization-bits
+    /// byte and report success -- a value no decoder accepts. The sibling
+    /// octahedron transform has always gated this on `is_initialized`.
+    #[test]
+    fn encoding_parameters_from_an_uninitialized_transform_is_refused() {
+        let transform = AttributeQuantizationTransform::new();
+        let mut buffer = crate::encoder_buffer::EncoderBuffer::new();
+        assert!(!transform.encode_parameters(&mut buffer));
+        assert!(
+            buffer.data().is_empty(),
+            "nothing should reach the stream on refusal"
+        );
+    }
 
     #[test]
     fn inverse_quantization_rejects_truncated_source_buffer() {
