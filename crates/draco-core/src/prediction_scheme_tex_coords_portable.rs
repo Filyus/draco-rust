@@ -293,14 +293,29 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
         if num_orientations < 0 {
             return false;
         }
-        // Each orientation is decoded as a single rANS bit read from the
-        // remaining buffer, so a count far beyond the remaining bit budget cannot
-        // be backed by real data. C++ Draco omits this bound, which lets a
-        // malformed count (raw i32, up to ~2.1 billion) drive a multi-second loop
-        // and a multi-gigabyte reservation; this relative input-consistency guard
-        // rejects that without affecting valid streams (no real Draco encoder
-        // emits orientations below ~1 bit each). Cold path, runs once per decoder.
-        if num_orientations as usize > buffer.remaining_size().saturating_mul(8) {
+        // C++ Draco omits any bound here, which lets a malformed count (raw
+        // i32, up to ~2.1 billion) drive a multi-second loop and a
+        // multi-gigabyte reservation - the loop below cannot end early, because
+        // `decode_next_bit` returns `false` both for a zero bit and for an
+        // exhausted buffer.
+        //
+        // The bound is structural, not size-based: `compute_original_values`
+        // pops exactly one orientation per predicted entry, so a count above the
+        // entry count can never be consumed whatever the stream contains. An
+        // earlier version compared against the remaining buffer in bits, which
+        // is the same false premise the decoder's header guards had - these
+        // orientations are rANS-coded, and a run of identical ones compresses to
+        // far less than a bit each. Upstream bounds its own decoded counts this
+        // way, e.g. `num_topology_splits > num_faces`.
+        let Some(max_orientations) = self
+            .mesh_data
+            .as_ref()
+            .and_then(|mesh_data| mesh_data.data_to_corner_map())
+            .map(|map| map.len())
+        else {
+            return false;
+        };
+        if num_orientations as usize > max_orientations {
             return false;
         }
 
