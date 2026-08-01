@@ -10,6 +10,7 @@ use crate::encoder_buffer::EncoderBuffer;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::geometry_indices::PointIndex;
 use crate::point_cloud::PointCloud;
+use crate::status::{DracoError, Status};
 
 /// Which sequential encoder handles an attribute. The value is what the
 /// bitstream carries: one identifier byte per attribute, which the decoder
@@ -97,7 +98,7 @@ impl SequentialAttributeEncoder {
         point_cloud: &PointCloud,
         point_ids: &[PointIndex],
         out_buffer: &mut EncoderBuffer,
-    ) -> bool {
+    ) -> Status {
         let att = point_cloud.attribute(self.attribute_id);
         let entry_size = att.byte_stride() as usize;
         let buffer_data = att.buffer().data();
@@ -106,11 +107,15 @@ impl SequentialAttributeEncoder {
             let mapped_index = att.mapped_index(p_id).0 as usize;
             let offset = mapped_index * entry_size;
             if offset + entry_size > buffer_data.len() {
-                return false;
+                return Err(DracoError::DracoError(format!(
+                    "Point {} maps to value {mapped_index}, past the {} bytes the attribute holds",
+                    p_id.0,
+                    buffer_data.len()
+                )));
             }
             let bytes = &buffer_data[offset..offset + entry_size];
             out_buffer.encode_data(bytes);
         }
-        true
+        Ok(())
     }
 }

@@ -1096,17 +1096,13 @@ impl MeshEncoder {
                         .map_err(|e| {
                             DracoError::DracoError(format!("Failed to init normal encoder: {e}"))
                         })?;
-                    if !encoder.encode_values(
+                    encoder.encode_values(
                         self.point_cloud().expect("point_cloud set"),
                         &self.point_ids,
                         out_buffer,
                         &self.options,
                         self,
-                    ) {
-                        return Err(DracoError::DracoError(
-                            "Failed to encode normal values".to_string(),
-                        ));
-                    }
+                    )?;
                     if let Some((method, transform)) = encoder.selected_prediction() {
                         predictions.push((i, method, transform));
                     }
@@ -1133,7 +1129,7 @@ impl MeshEncoder {
 
                     let mut att_encoder = SequentialIntegerAttributeEncoder::new();
                     att_encoder.init(i);
-                    if !att_encoder.encode_values(
+                    att_encoder.encode_values(
                         mesh as &PointCloud,
                         &self.point_ids,
                         out_buffer,
@@ -1141,12 +1137,7 @@ impl MeshEncoder {
                         self,
                         Some(&portable),
                         true,
-                    ) {
-                        return Err(DracoError::DracoError(format!(
-                            "Failed to encode attribute {}",
-                            i
-                        )));
-                    }
+                    )?;
                     if let Some((method, transform)) = att_encoder.selected_prediction() {
                         predictions.push((i, method, transform));
                     }
@@ -1159,7 +1150,7 @@ impl MeshEncoder {
                     // Integer attribute
                     let mut att_encoder = SequentialIntegerAttributeEncoder::new();
                     att_encoder.init(i);
-                    if !att_encoder.encode_values(
+                    att_encoder.encode_values(
                         mesh as &PointCloud,
                         &self.point_ids,
                         out_buffer,
@@ -1167,12 +1158,7 @@ impl MeshEncoder {
                         self,
                         None,
                         true,
-                    ) {
-                        return Err(DracoError::DracoError(format!(
-                            "Failed to encode attribute {}",
-                            i
-                        )));
-                    }
+                    )?;
                     if let Some((method, transform)) = att_encoder.selected_prediction() {
                         predictions.push((i, method, transform));
                     }
@@ -1184,13 +1170,7 @@ impl MeshEncoder {
                     // Generic/float attribute
                     let mut att_encoder = SequentialAttributeEncoder::new();
                     att_encoder.init(i);
-                    if !att_encoder.encode_values(mesh as &PointCloud, &self.point_ids, out_buffer)
-                    {
-                        return Err(DracoError::DracoError(format!(
-                            "Failed to encode attribute {}",
-                            i
-                        )));
-                    }
+                    att_encoder.encode_values(mesh as &PointCloud, &self.point_ids, out_buffer)?;
                     quantization_transforms.push(None);
                     portable_attributes.push(None);
                     normal_encoders.push(None);
@@ -1594,17 +1574,13 @@ impl MeshEncoder {
                         .map_err(|e| {
                             DracoError::DracoError(format!("Failed to init normal encoder: {e}"))
                         })?;
-                    if !encoder.encode_values(
+                    encoder.encode_values(
                         self.point_cloud().expect("point_cloud set"),
                         point_ids,
                         out_buffer,
                         &self.options,
                         self,
-                    ) {
-                        return Err(DracoError::DracoError(
-                            "Failed to encode normal values".to_string(),
-                        ));
-                    }
+                    )?;
                     if let Some((method, transform)) = encoder.selected_prediction() {
                         predictions.push((att_id, method, transform));
                     }
@@ -1624,7 +1600,7 @@ impl MeshEncoder {
 
                     let mut att_encoder = SequentialIntegerAttributeEncoder::new();
                     att_encoder.init(att_id);
-                    if !att_encoder.encode_values(
+                    att_encoder.encode_values(
                         mesh as &PointCloud,
                         point_ids,
                         out_buffer,
@@ -1632,12 +1608,7 @@ impl MeshEncoder {
                         self,
                         Some(portable),
                         true,
-                    ) {
-                        return Err(DracoError::DracoError(format!(
-                            "Failed to encode attribute {}",
-                            att_id
-                        )));
-                    }
+                    )?;
                     if let Some((method, transform)) = att_encoder.selected_prediction() {
                         predictions.push((att_id, method, transform));
                     }
@@ -1646,7 +1617,7 @@ impl MeshEncoder {
                 1 => {
                     let mut att_encoder = SequentialIntegerAttributeEncoder::new();
                     att_encoder.init(att_id);
-                    if !att_encoder.encode_values(
+                    att_encoder.encode_values(
                         mesh as &PointCloud,
                         point_ids,
                         out_buffer,
@@ -1654,12 +1625,7 @@ impl MeshEncoder {
                         self,
                         None,
                         true,
-                    ) {
-                        return Err(DracoError::DracoError(format!(
-                            "Failed to encode attribute {}",
-                            att_id
-                        )));
-                    }
+                    )?;
                     if let Some((method, transform)) = att_encoder.selected_prediction() {
                         predictions.push((att_id, method, transform));
                     }
@@ -1668,12 +1634,7 @@ impl MeshEncoder {
                 0 => {
                     let mut att_encoder = SequentialAttributeEncoder::new();
                     att_encoder.init(att_id);
-                    if !att_encoder.encode_values(mesh as &PointCloud, point_ids, out_buffer) {
-                        return Err(DracoError::DracoError(format!(
-                            "Failed to encode attribute {}",
-                            att_id
-                        )));
-                    }
+                    att_encoder.encode_values(mesh as &PointCloud, point_ids, out_buffer)?;
                     normal_encoders.push(None);
                 }
                 _ => {

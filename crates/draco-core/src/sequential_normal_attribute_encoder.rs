@@ -93,7 +93,7 @@ impl SequentialNormalAttributeEncoder {
         out_buffer: &mut EncoderBuffer,
         options: &EncoderOptions,
         encoder: &dyn GeometryEncoder,
-    ) -> bool {
+    ) -> Status {
         let attribute_id = self.base.base.attribute_id();
         let attribute = point_cloud.attribute(attribute_id);
 
@@ -107,18 +107,13 @@ impl SequentialNormalAttributeEncoder {
             point_ids.len(),
         );
 
-        if self
-            .attribute_octahedron_transform
+        self.attribute_octahedron_transform
             .generate_portable_attribute(
                 attribute,
                 point_ids,
                 point_ids.len(),
                 &mut self.portable_attribute,
-            )
-            .is_err()
-        {
-            return false;
-        }
+            )?;
 
         let quantization_bits = self.attribute_octahedron_transform.quantization_bits();
         // quantization_bits can be 31; avoid signed shift overflow.

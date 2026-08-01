@@ -580,18 +580,13 @@ impl PointCloudEncoder {
                             ))
                         })?;
 
-                        if !att_encoder.encode_values(
+                        att_encoder.encode_values(
                             pc,
                             &point_ids,
                             out_buffer,
                             &self.options,
                             self,
-                        ) {
-                            return Err(DracoError::DracoError(format!(
-                                "Failed to encode attribute {}",
-                                i
-                            )));
-                        }
+                        )?;
 
                         integer_encoders.push(None);
                         normal_encoders.push(Some(att_encoder));
@@ -602,7 +597,7 @@ impl PointCloudEncoder {
                         let mut att_encoder = SequentialIntegerAttributeEncoder::new();
                         att_encoder.init(i);
 
-                        if !att_encoder.encode_values(
+                        att_encoder.encode_values(
                             pc,
                             &point_ids,
                             out_buffer,
@@ -610,12 +605,7 @@ impl PointCloudEncoder {
                             self,
                             None,
                             false,
-                        ) {
-                            return Err(DracoError::DracoError(format!(
-                                "Failed to encode attribute {}",
-                                i
-                            )));
-                        }
+                        )?;
 
                         integer_encoders.push(Some(att_encoder));
                     }
