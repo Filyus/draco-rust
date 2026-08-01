@@ -16,6 +16,8 @@ categories = ["compression", "encoding", "graphics", "parser-implementations"]
 exclude = [
     "tests/cpp_decode_test.rs",
     "tests/fbx_real_test.rs",
+    # Reads fuzz/seeds/, which is outside the crate and so outside the package.
+    "tests/fbx_seeds.rs",
     "tests/ply_bunny_test.rs",
     "tools/blender_roundtrip.py",
 ]
