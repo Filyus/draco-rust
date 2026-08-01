@@ -29,10 +29,17 @@ $ioSourcePath = (Join-Path $repoRoot 'crates/draco-io').Replace('\', '/')
 
 # Build both archives without Cargo's per-crate verification, then test their
 # exact unpacked contents together through a temporary crates.io patch.
+#
+# draco-io needs the draco-core patch as much as draco-gltf does, even with
+# --no-verify: packaging still resolves the manifest, and on the commit that
+# bumps draco-core the pin names a version crates.io does not have yet. That is
+# every draco-core release commit, since the dependent's pin has to move in the
+# same commit or the workspace stops resolving.
 $ioPackageArgs = @(
     'package',
     '--manifest-path', (Join-Path $repoRoot 'crates/draco-io/Cargo.toml'),
-    '--no-verify'
+    '--no-verify',
+    '--config', "patch.crates-io.draco-core.path='$corePath'"
 )
 if ($AllowDirty) { $ioPackageArgs += '--allow-dirty' }
 Invoke-Cargo $ioPackageArgs
