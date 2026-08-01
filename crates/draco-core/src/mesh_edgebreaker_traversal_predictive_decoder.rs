@@ -14,6 +14,7 @@ use crate::edgebreaker_connectivity_decoder::EdgebreakerTraversalDecoder;
 use crate::geometry_indices::{CornerIndex, VertexIndex};
 use crate::mesh_edgebreaker_shared::{EdgeFaceName, TopologySplitEventData};
 use crate::rans_bit_decoder::RAnsBitDecoder;
+use crate::status::DracoError;
 
 // Internal EdgeBreaker symbol ids (match the rest of the decoder): C=0, S=1,
 // L=2, R=3, E=4.
@@ -130,16 +131,16 @@ impl<'a> MeshEdgebreakerTraversalPredictiveDecoder<'a> {
 }
 
 impl<'a> EdgebreakerTraversalDecoder for MeshEdgebreakerTraversalPredictiveDecoder<'a> {
-    fn decode_symbol(&mut self) -> Result<u32, String> {
+    fn decode_symbol(&mut self) -> Result<u32, DracoError> {
         // Use the prediction if we have one and the prediction bit confirms it.
         if self.predicted_symbol != -1 && self.prediction_decoder.decode_next_bit() {
             self.last_symbol = self.predicted_symbol;
             return Ok(self.last_symbol as u32);
         }
         // No prediction, or the symbol was mispredicted: decode it directly.
-        self.last_symbol = self
-            .decode_direct_symbol()
-            .ok_or_else(|| "Edgebreaker predictive symbol stream exhausted".to_string())?;
+        self.last_symbol = self.decode_direct_symbol().ok_or_else(|| {
+            DracoError::DracoError("Edgebreaker predictive symbol stream exhausted".to_string())
+        })?;
         Ok(self.last_symbol as u32)
     }
 

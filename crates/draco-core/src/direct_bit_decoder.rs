@@ -51,9 +51,21 @@ impl DirectBitDecoder {
         true
     }
 
-    pub fn decode_next_bit(&mut self) -> bool {
+    /// Reads the next bit, or `None` once the buffer is spent.
+    ///
+    /// Returned an unqualified `bool` through 1.x, so a caller reading past the
+    /// end got a zero bit and no way to tell it apart from an encoded zero --
+    /// and the loops that drive these reads take their counts from the same
+    /// stream. Here exhaustion is exact: the bits live in a `Vec<u32>` filled
+    /// by `start_decoding`, and `pos` past its end is the whole condition.
+    ///
+    /// Its rANS sibling cannot answer the same question; see
+    /// [`RAnsBitDecoder::decode_next_bit`].
+    ///
+    /// [`RAnsBitDecoder::decode_next_bit`]: crate::rans_bit_decoder::RAnsBitDecoder::decode_next_bit
+    pub fn decode_next_bit(&mut self) -> Option<bool> {
         if self.pos >= self.bits.len() {
-            return false;
+            return None;
         }
         let selector = 1u32 << (31 - self.num_used_bits);
         let bit = (self.bits[self.pos] & selector) != 0;
@@ -62,7 +74,7 @@ impl DirectBitDecoder {
             self.pos += 1;
             self.num_used_bits = 0;
         }
-        bit
+        Some(bit)
     }
 
     pub fn decode_least_significant_bits32(&mut self, nbits: u32, value: &mut u32) -> bool {
@@ -123,5 +135,26 @@ mod tests {
         let mut value = 0;
 
         assert!(!decoder.decode_least_significant_bits32(2, &mut value));
+    }
+
+    /// A read past the last bit is `None`, not a zero bit.
+    ///
+    /// This returned `false` through 1.x, which a caller could not tell from an
+    /// encoded zero -- and the loops driving these reads take their counts from
+    /// the same stream, so a count that overshoots read zeros forever.
+    #[test]
+    fn a_read_past_the_last_bit_is_not_a_zero_bit() {
+        let mut decoder = DirectBitDecoder::new();
+        decoder.bits.push(0x8000_0000); // one set bit, then 31 zeros
+
+        assert_eq!(decoder.decode_next_bit(), Some(true));
+        for _ in 1..32 {
+            assert_eq!(decoder.decode_next_bit(), Some(false));
+        }
+        assert_eq!(
+            decoder.decode_next_bit(),
+            None,
+            "the 33rd bit is past the only word"
+        );
     }
 }

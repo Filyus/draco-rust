@@ -670,8 +670,17 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             first_half -= number;
             let mut second_half = num_remaining_points - first_half;
 
-            if first_half != second_half && !self.half_decoder.decode_next_bit() {
-                std::mem::swap(&mut first_half, &mut second_half);
+            if first_half != second_half {
+                // The loop count comes from the stream, so a tree that claims
+                // more splits than the half bits cover used to read zeros past
+                // the end and keep building. `DirectBitDecoder` reports the
+                // exhaustion exactly; refuse rather than invent the swap.
+                let Some(keep_order) = self.half_decoder.decode_next_bit() else {
+                    return false;
+                };
+                if !keep_order {
+                    std::mem::swap(&mut first_half, &mut second_half);
+                }
             }
 
             levels[axis as usize] += 1;

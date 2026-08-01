@@ -766,13 +766,11 @@ impl MeshEdgebreakerDecoder {
                     max_num_vertices,
                 );
 
-                let nv = connectivity_decoder
-                    .decode_connectivity(
-                        actual_num_symbols as i32,
-                        &mut predictive_decoder,
-                        remove_invalid_vertices,
-                    )
-                    .map_err(DracoError::DracoError)? as usize;
+                let nv = connectivity_decoder.decode_connectivity(
+                    actual_num_symbols as i32,
+                    &mut predictive_decoder,
+                    remove_invalid_vertices,
+                )? as usize;
 
                 has_start_face_bits_flag = predictive_decoder.has_start_face_bits;
                 start_face_decoder_opt = Some(predictive_decoder.start_face_decoder);
@@ -824,13 +822,11 @@ impl MeshEdgebreakerDecoder {
                     ));
                 }
 
-                let nv = connectivity_decoder
-                    .decode_connectivity(
-                        actual_num_symbols as i32,
-                        &mut valence_decoder,
-                        remove_invalid_vertices,
-                    )
-                    .map_err(DracoError::DracoError)? as usize;
+                let nv = connectivity_decoder.decode_connectivity(
+                    actual_num_symbols as i32,
+                    &mut valence_decoder,
+                    remove_invalid_vertices,
+                )? as usize;
 
                 // Don't end seam decoders yet - we need to decode from them after corner table is built
 
@@ -850,13 +846,11 @@ impl MeshEdgebreakerDecoder {
                 max_num_vertices,
             );
 
-            let nv = connectivity_decoder
-                .decode_connectivity(
-                    actual_num_symbols as i32,
-                    &mut traversal_decoder,
-                    remove_invalid_vertices,
-                )
-                .map_err(DracoError::DracoError)? as usize;
+            let nv = connectivity_decoder.decode_connectivity(
+                actual_num_symbols as i32,
+                &mut traversal_decoder,
+                remove_invalid_vertices,
+            )? as usize;
 
             has_start_face_bits_flag = traversal_decoder.has_start_face_bits;
             start_face_decoder_opt = Some(traversal_decoder.start_face_decoder);
@@ -1292,11 +1286,10 @@ impl<'a> InternalTraversalDecoder<'a> {
 }
 
 impl<'a> EdgebreakerTraversalDecoder for InternalTraversalDecoder<'a> {
-    fn decode_symbol(&mut self) -> Result<u32, String> {
-        let val = *self
-            .symbols
-            .get(self.symbol_index)
-            .ok_or_else(|| "Traversal symbol stream exhausted".to_string())?;
+    fn decode_symbol(&mut self) -> Result<u32, DracoError> {
+        let val = *self.symbols.get(self.symbol_index).ok_or_else(|| {
+            DracoError::DracoError("Traversal symbol stream exhausted".to_string())
+        })?;
         self.symbol_index += 1;
         Ok(val)
     }

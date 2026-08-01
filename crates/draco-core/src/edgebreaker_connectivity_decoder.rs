@@ -10,10 +10,11 @@ use crate::geometry_indices::{
     CornerIndex, FaceIndex, VertexIndex, INVALID_CORNER_INDEX, INVALID_VERTEX_INDEX,
 };
 use crate::mesh_edgebreaker_shared::EdgeFaceName;
+use crate::status::DracoError;
 use std::collections::HashMap;
 
 pub trait EdgebreakerTraversalDecoder {
-    fn decode_symbol(&mut self) -> Result<u32, String>;
+    fn decode_symbol(&mut self) -> Result<u32, DracoError>;
     fn decode_start_face_configuration(&mut self) -> bool;
     fn merge_vertices(&mut self, p: VertexIndex, n: VertexIndex);
     fn is_topology_split(&mut self, encoder_symbol_id: i32) -> Option<(EdgeFaceName, i32)>;
@@ -71,7 +72,7 @@ impl EdgebreakerConnectivityDecoder {
     ///
     /// Entries are `true` until written, which is what sizing the table up
     /// front from the declared vertex count used to give for free.
-    fn mark_vert_not_hole(&mut self, vertex: VertexIndex, context: &str) -> Result<(), String> {
+    fn mark_vert_not_hole(&mut self, vertex: VertexIndex, context: &str) -> Result<(), DracoError> {
         let index = self.vertex_index(vertex, context)?;
         if index >= self.is_vert_hole.len() {
             self.is_vert_hole.resize(index + 1, true);
@@ -85,7 +86,7 @@ impl EdgebreakerConnectivityDecoder {
         num_symbols: i32,
         traversal_decoder: &mut T,
         remove_invalid_vertices: bool,
-    ) -> Result<i32, String> {
+    ) -> Result<i32, DracoError> {
         let max_num_vertices = self.max_num_vertices as i32;
         let mut num_faces = 0;
 
@@ -95,9 +96,7 @@ impl EdgebreakerConnectivityDecoder {
             // Faces are created strictly in order, and every corner written
             // below belongs either to this face or to one already built, so
             // growing a face at a time always suffices.
-            self.corner_table
-                .try_grow_to_face(face.0 as usize)
-                .map_err(|e| e.to_string())?;
+            self.corner_table.try_grow_to_face(face.0 as usize)?;
 
             let mut check_topology_split = false;
             let symbol = traversal_decoder.decode_symbol()?;
@@ -107,7 +106,9 @@ impl EdgebreakerConnectivityDecoder {
             if symbol == 0 {
                 // TOPOLOGY_C
                 if self.active_corner_stack.is_empty() {
-                    return Err("active_corner_stack empty in TOPOLOGY_C".to_string());
+                    return Err(DracoError::DracoError(
+                        "active_corner_stack empty in TOPOLOGY_C".to_string(),
+                    ));
                 }
 
                 let corner_a = self.active_corner("TOPOLOGY_C")?;
@@ -117,12 +118,16 @@ impl EdgebreakerConnectivityDecoder {
                     .next(self.corner_table.left_most_corner(vertex_x));
 
                 if corner_a == corner_b {
-                    return Err("corner_a == corner_b in TOPOLOGY_C".to_string());
+                    return Err(DracoError::DracoError(
+                        "corner_a == corner_b in TOPOLOGY_C".to_string(),
+                    ));
                 }
                 if self.corner_table.opposite(corner_a) != INVALID_CORNER_INDEX
                     || self.corner_table.opposite(corner_b) != INVALID_CORNER_INDEX
                 {
-                    return Err("Edge already opposite in TOPOLOGY_C".to_string());
+                    return Err(DracoError::DracoError(
+                        "Edge already opposite in TOPOLOGY_C".to_string(),
+                    ));
                 }
 
                 let corner = CornerIndex(3 * face.0);
@@ -134,7 +139,9 @@ impl EdgebreakerConnectivityDecoder {
                     .vertex(self.corner_table.previous(corner_a));
                 let vert_b_next = self.corner_table.vertex(self.corner_table.next(corner_b));
                 if vertex_x == vert_a_prev || vertex_x == vert_b_next {
-                    return Err("Degenerate face in TOPOLOGY_C".to_string());
+                    return Err(DracoError::DracoError(
+                        "Degenerate face in TOPOLOGY_C".to_string(),
+                    ));
                 }
 
                 self.corner_table.map_corner_to_vertex(corner, vertex_x);
@@ -151,11 +158,15 @@ impl EdgebreakerConnectivityDecoder {
                 // Right or Left
                 // Symbol 3 = Right, Symbol 2 = Left.
                 if self.active_corner_stack.is_empty() {
-                    return Err("active_corner_stack empty in TOPOLOGY_R/L".to_string());
+                    return Err(DracoError::DracoError(
+                        "active_corner_stack empty in TOPOLOGY_R/L".to_string(),
+                    ));
                 }
                 let corner_a = self.active_corner("TOPOLOGY_R/L")?;
                 if self.corner_table.opposite(corner_a) != INVALID_CORNER_INDEX {
-                    return Err("Edge already opposite in TOPOLOGY_R/L".to_string());
+                    return Err(DracoError::DracoError(
+                        "Edge already opposite in TOPOLOGY_R/L".to_string(),
+                    ));
                 }
 
                 // This matches C++ `MeshEdgebreakerDecoderImpl::DecodeConnectivity()`:
@@ -175,7 +186,9 @@ impl EdgebreakerConnectivityDecoder {
                 traversal_decoder.on_vertex_created(new_vert_index, symbol_id, opp_corner.0 as i32);
 
                 if self.corner_table.num_vertices() as i32 > max_num_vertices {
-                    return Err("Unexpected number of vertices in TOPOLOGY_R/L".to_string());
+                    return Err(DracoError::DracoError(
+                        "Unexpected number of vertices in TOPOLOGY_R/L".to_string(),
+                    ));
                 }
 
                 self.corner_table
@@ -198,7 +211,9 @@ impl EdgebreakerConnectivityDecoder {
             } else if symbol == 1 {
                 // TOPOLOGY_S
                 if self.active_corner_stack.is_empty() {
-                    return Err("active_corner_stack empty in TOPOLOGY_S".to_string());
+                    return Err(DracoError::DracoError(
+                        "active_corner_stack empty in TOPOLOGY_S".to_string(),
+                    ));
                 }
                 let corner_b = self.pop_active_corner("TOPOLOGY_S")?;
 
@@ -212,19 +227,23 @@ impl EdgebreakerConnectivityDecoder {
                 }
 
                 if self.active_corner_stack.is_empty() {
-                    return Err(
+                    return Err(DracoError::DracoError(
                         "active_corner_stack empty in TOPOLOGY_S after split retrieval".to_string(),
-                    );
+                    ));
                 }
                 let corner_a = self.active_corner("TOPOLOGY_S")?;
 
                 if corner_a == corner_b {
-                    return Err("corner_a == corner_b in TOPOLOGY_S".to_string());
+                    return Err(DracoError::DracoError(
+                        "corner_a == corner_b in TOPOLOGY_S".to_string(),
+                    ));
                 }
                 if self.corner_table.opposite(corner_a) != INVALID_CORNER_INDEX
                     || self.corner_table.opposite(corner_b) != INVALID_CORNER_INDEX
                 {
-                    return Err("Edge already opposite in TOPOLOGY_S".to_string());
+                    return Err(DracoError::DracoError(
+                        "Edge already opposite in TOPOLOGY_S".to_string(),
+                    ));
                 }
 
                 let corner = CornerIndex(3 * face.0);
@@ -263,7 +282,9 @@ impl EdgebreakerConnectivityDecoder {
                         self.corner_table.map_corner_to_vertex(corner_n, vertex_p);
                         corner_n = self.corner_table.swing_left(corner_n);
                         if corner_n == first_corner {
-                            return Err("Cycle detected in vertex merge".to_string());
+                            return Err(DracoError::DracoError(
+                                "Cycle detected in vertex merge".to_string(),
+                            ));
                         }
                     }
 
@@ -286,7 +307,9 @@ impl EdgebreakerConnectivityDecoder {
                 traversal_decoder.on_vertex_created(v2, symbol_id, (corner.0 + 2) as i32);
 
                 if self.corner_table.num_vertices() as i32 > max_num_vertices {
-                    return Err("Unexpected number of vertices in TOPOLOGY_E".to_string());
+                    return Err(DracoError::DracoError(
+                        "Unexpected number of vertices in TOPOLOGY_E".to_string(),
+                    ));
                 }
 
                 self.corner_table.map_corner_to_vertex(corner, v0);
@@ -300,7 +323,7 @@ impl EdgebreakerConnectivityDecoder {
                 self.active_corner_stack.push(corner);
                 check_topology_split = true;
             } else {
-                return Err(format!("Unknown symbol {}", symbol));
+                return Err(DracoError::DracoError(format!("Unknown symbol {}", symbol)));
             }
 
             if check_topology_split {
@@ -312,7 +335,9 @@ impl EdgebreakerConnectivityDecoder {
                     traversal_decoder.is_topology_split(encoder_symbol_id)
                 {
                     if encoder_split_symbol_id < 0 {
-                        return Err("Invalid split symbol id".to_string());
+                        return Err(DracoError::DracoError(
+                            "Invalid split symbol id".to_string(),
+                        ));
                     }
                     let act_top_corner = self.active_corner("topology split")?;
                     let new_active_corner = match split_edge {
@@ -331,12 +356,16 @@ impl EdgebreakerConnectivityDecoder {
             if let Some(&active_corner) = self.active_corner_stack.last() {
                 traversal_decoder.new_active_corner_reached(active_corner, &self.corner_table);
             } else {
-                return Err("active_corner_stack empty after decoding symbol".to_string());
+                return Err(DracoError::DracoError(
+                    "active_corner_stack empty after decoding symbol".to_string(),
+                ));
             }
         }
 
         if self.corner_table.num_vertices() as i32 > max_num_vertices {
-            return Err("Unexpected number of vertices after first pass".to_string());
+            return Err(DracoError::DracoError(
+                "Unexpected number of vertices after first pass".to_string(),
+            ));
         }
 
         // Process component roots in LIFO order (matching C++ pop_back())
@@ -344,12 +373,17 @@ impl EdgebreakerConnectivityDecoder {
             let interior_face = traversal_decoder.decode_start_face_configuration();
             if interior_face {
                 if num_faces >= self.declared_num_faces {
-                    return Err("More faces than expected in start face config".to_string());
+                    return Err(DracoError::DracoError(
+                        "More faces than expected in start face config".to_string(),
+                    ));
                 }
                 let corner_a = corner;
                 let vert_n = self.corner_table.vertex(self.corner_table.next(corner_a));
                 if self.corner_table.left_most_corner(vert_n) == INVALID_CORNER_INDEX {
-                    return Err(format!("Invalid left_most_corner for vert_n={}", vert_n.0));
+                    return Err(DracoError::DracoError(format!(
+                        "Invalid left_most_corner for vert_n={}",
+                        vert_n.0
+                    )));
                 }
 
                 let corner_b = self
@@ -357,7 +391,9 @@ impl EdgebreakerConnectivityDecoder {
                     .next(self.corner_table.left_most_corner(vert_n));
                 let vert_x = self.corner_table.vertex(self.corner_table.next(corner_b));
                 if self.corner_table.left_most_corner(vert_x) == INVALID_CORNER_INDEX {
-                    return Err("Invalid left_most_corner for vert_x".to_string());
+                    return Err(DracoError::DracoError(
+                        "Invalid left_most_corner for vert_x".to_string(),
+                    ));
                 }
 
                 let corner_c = self
@@ -367,9 +403,7 @@ impl EdgebreakerConnectivityDecoder {
 
                 let face = FaceIndex(num_faces as u32);
                 num_faces += 1;
-                self.corner_table
-                    .try_grow_to_face(face.0 as usize)
-                    .map_err(|e| e.to_string())?;
+                self.corner_table.try_grow_to_face(face.0 as usize)?;
                 let new_corner = CornerIndex(3 * face.0);
                 self.set_opposite_corners(new_corner, corner_a)?;
                 self.set_opposite_corners(new_corner + 1, corner_b)?;
@@ -394,7 +428,9 @@ impl EdgebreakerConnectivityDecoder {
         }
 
         if num_faces != self.declared_num_faces {
-            return Err("Unexpected number of faces at end".to_string());
+            return Err(DracoError::DracoError(
+                "Unexpected number of faces at end".to_string(),
+            ));
         }
 
         // Give the table its full extent now that the real vertex count is
@@ -437,12 +473,12 @@ impl EdgebreakerConnectivityDecoder {
                 loop {
                     // Check logic: C++ "if (corner_table_->Vertex(cid) != src_vert) { Error }"
                     if self.corner_table.vertex(c) != src_vert {
-                        return Err(format!(
+                        return Err(DracoError::DracoError(format!(
                             "Vertex mismatch during compaction: corner {} maps to {} expected {}",
                             c.0,
                             self.corner_table.vertex(c).0,
                             src_vert.0
-                        ));
+                        )));
                     }
                     self.corner_table.map_corner_to_vertex(c, invalid_vert);
                     c = self.corner_table.swing_right(c);
@@ -488,49 +524,57 @@ impl EdgebreakerConnectivityDecoder {
         Ok(num_vertices)
     }
 
-    fn active_corner(&self, context: &str) -> Result<CornerIndex, String> {
-        self.active_corner_stack
-            .last()
-            .copied()
-            .ok_or_else(|| format!("active_corner_stack empty in {context}"))
+    fn active_corner(&self, context: &str) -> Result<CornerIndex, DracoError> {
+        self.active_corner_stack.last().copied().ok_or_else(|| {
+            DracoError::DracoError(format!("active_corner_stack empty in {context}"))
+        })
     }
 
-    fn replace_active_corner(&mut self, corner: CornerIndex, context: &str) -> Result<(), String> {
-        let active = self
-            .active_corner_stack
-            .last_mut()
-            .ok_or_else(|| format!("active_corner_stack empty in {context}"))?;
+    fn replace_active_corner(
+        &mut self,
+        corner: CornerIndex,
+        context: &str,
+    ) -> Result<(), DracoError> {
+        let active = self.active_corner_stack.last_mut().ok_or_else(|| {
+            DracoError::DracoError(format!("active_corner_stack empty in {context}"))
+        })?;
         *active = corner;
         Ok(())
     }
 
-    fn pop_active_corner(&mut self, context: &str) -> Result<CornerIndex, String> {
-        self.active_corner_stack
-            .pop()
-            .ok_or_else(|| format!("active_corner_stack empty in {context}"))
+    fn pop_active_corner(&mut self, context: &str) -> Result<CornerIndex, DracoError> {
+        self.active_corner_stack.pop().ok_or_else(|| {
+            DracoError::DracoError(format!("active_corner_stack empty in {context}"))
+        })
     }
 
-    fn vertex_index(&self, vertex: VertexIndex, context: &str) -> Result<usize, String> {
+    fn vertex_index(&self, vertex: VertexIndex, context: &str) -> Result<usize, DracoError> {
         if vertex == INVALID_VERTEX_INDEX || vertex.0 as usize >= self.max_num_vertices {
-            return Err(format!(
+            return Err(DracoError::DracoError(format!(
                 "Invalid vertex {} while decoding {context}",
                 vertex.0
-            ));
+            )));
         }
         Ok(vertex.0 as usize)
     }
 
-    fn set_opposite_corners(&mut self, c1: CornerIndex, c2: CornerIndex) -> Result<(), String> {
+    fn set_opposite_corners(&mut self, c1: CornerIndex, c2: CornerIndex) -> Result<(), DracoError> {
         let num_corners = self.corner_table.num_corners();
         if c1 != INVALID_CORNER_INDEX {
             if c1.0 as usize >= num_corners {
-                return Err(format!("Invalid opposite corner {}", c1.0));
+                return Err(DracoError::DracoError(format!(
+                    "Invalid opposite corner {}",
+                    c1.0
+                )));
             }
             self.corner_table.set_opposite(c1, c2);
         }
         if c2 != INVALID_CORNER_INDEX {
             if c2.0 as usize >= num_corners {
-                return Err(format!("Invalid opposite corner {}", c2.0));
+                return Err(DracoError::DracoError(format!(
+                    "Invalid opposite corner {}",
+                    c2.0
+                )));
             }
             self.corner_table.set_opposite(c2, c1);
         }
@@ -557,11 +601,10 @@ mod tests {
     }
 
     impl EdgebreakerTraversalDecoder for StaticTraversalDecoder {
-        fn decode_symbol(&mut self) -> Result<u32, String> {
-            let symbol = *self
-                .symbols
-                .get(self.next_symbol)
-                .ok_or_else(|| "Traversal symbol stream exhausted".to_string())?;
+        fn decode_symbol(&mut self) -> Result<u32, DracoError> {
+            let symbol = *self.symbols.get(self.next_symbol).ok_or_else(|| {
+                DracoError::DracoError("Traversal symbol stream exhausted".to_string())
+            })?;
             self.next_symbol += 1;
             Ok(symbol)
         }

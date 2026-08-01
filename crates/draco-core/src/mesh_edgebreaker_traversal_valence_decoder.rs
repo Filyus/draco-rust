@@ -11,6 +11,7 @@ use crate::edgebreaker_connectivity_decoder::EdgebreakerTraversalDecoder;
 use crate::geometry_indices::{CornerIndex, VertexIndex};
 use crate::mesh_edgebreaker_shared::{EdgeFaceName, TopologySplitEventData};
 use crate::rans_bit_decoder::RAnsBitDecoder;
+use crate::status::DracoError;
 use crate::symbol_encoding::decode_symbols;
 use crate::symbol_encoding::SymbolEncodingOptions;
 
@@ -218,25 +219,32 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
 }
 
 impl<'a> EdgebreakerTraversalDecoder for MeshEdgebreakerTraversalValenceDecoder<'a> {
-    fn decode_symbol(&mut self) -> Result<u32, String> {
+    fn decode_symbol(&mut self) -> Result<u32, DracoError> {
         if self.active_context != -1 {
             let ctx = self.active_context as usize;
-            let counter = self
-                .context_counters
-                .get_mut(ctx)
-                .ok_or_else(|| "Invalid Edgebreaker valence context".to_string())?;
+            let counter = self.context_counters.get_mut(ctx).ok_or_else(|| {
+                DracoError::DracoError("Invalid Edgebreaker valence context".to_string())
+            })?;
             *counter -= 1;
             if *counter < 0 {
-                return Err("Edgebreaker valence context symbol stream exhausted".to_string());
+                return Err(DracoError::DracoError(
+                    "Edgebreaker valence context symbol stream exhausted".to_string(),
+                ));
             }
             let symbol_id = *self
                 .context_symbols
                 .get(ctx)
                 .and_then(|symbols| symbols.get(*counter as usize))
-                .ok_or_else(|| "Edgebreaker valence context symbol stream exhausted".to_string())?;
+                .ok_or_else(|| {
+                    DracoError::DracoError(
+                        "Edgebreaker valence context symbol stream exhausted".to_string(),
+                    )
+                })?;
             // symbol_id is EdgebreakerSymbol id (0..4). Validate and assign directly.
             if symbol_id > 4 {
-                return Err(format!("Invalid Edgebreaker valence symbol {symbol_id}"));
+                return Err(DracoError::DracoError(format!(
+                    "Invalid Edgebreaker valence symbol {symbol_id}"
+                )));
             }
             self.last_symbol = symbol_id as i32;
         } else {

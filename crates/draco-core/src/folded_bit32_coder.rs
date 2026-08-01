@@ -96,6 +96,15 @@ impl<'a> FoldedBit32Decoder<'a> {
         self.bit_decoder.start_decoding(source_buffer)
     }
 
+    /// Reads the next bit, answering `false` both for an encoded zero and for a
+    /// spent stream.
+    ///
+    /// This is 32 rANS decoders plus one, so it inherits their limitation
+    /// rather than [`DirectBitDecoder`]'s exact answer; see
+    /// [`RAnsBitDecoder::decode_next_bit`].
+    ///
+    /// [`DirectBitDecoder`]: crate::direct_bit_decoder::DirectBitDecoder
+    /// [`RAnsBitDecoder::decode_next_bit`]: crate::rans_bit_decoder::RAnsBitDecoder::decode_next_bit
     pub fn decode_next_bit(&mut self) -> bool {
         self.bit_decoder.decode_next_bit()
     }
