@@ -70,6 +70,7 @@ impl Writer for StlWriter {
     /// read. Several meshes may be added; they become one solid, which is all
     /// the format can represent.
     fn add_mesh(&mut self, mesh: &Mesh, name: Option<&str>) -> io::Result<()> {
+        crate::traits::ensure_attributes_cover_points(mesh, "STL")?;
         if self.name.is_empty() {
             if let Some(name) = name {
                 self.name = name.to_string();

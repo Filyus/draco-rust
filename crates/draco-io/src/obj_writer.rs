@@ -263,6 +263,7 @@ impl Writer for ObjWriter {
     }
 
     fn add_mesh(&mut self, mesh: &Mesh, name: Option<&str>) -> io::Result<()> {
+        crate::traits::ensure_attributes_cover_points(mesh, "OBJ")?;
         let vertex_offset = self.positions.len() as u32;
         let normal_offset = self.normals.len() as u32;
         let texcoord_offset = self.texcoords.len() as u32;

@@ -371,6 +371,7 @@ impl FbxWriter {
         layers: crate::fbx_render_mesh::FbxGeometryLayers<'_>,
         edges: &[i32],
     ) -> io::Result<()> {
+        crate::traits::ensure_attributes_cover_points(mesh, "FBX")?;
         let crate::fbx_render_mesh::FbxGeometryLayers {
             control_points,
             polygon_vertex_indices,

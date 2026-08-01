@@ -166,3 +166,41 @@ fn the_ply_writer_handles_a_mesh_with_no_position_attribute() {
     let mut ply = <PlyWriter as Writer>::new();
     let _ = ply.add_mesh(&quad(None), None);
 }
+
+/// A mesh whose attribute holds fewer values than it has points is refused,
+/// not read past the end of.
+///
+/// Every writer here reads attribute data as `point * byte_stride` through the
+/// panicking `DataBuffer::read`, which is sound only while the attribute is at
+/// least as long as the point count. Nothing between a decoder and a writer
+/// re-checks that: the counts come from a `.drc` header.
+#[test]
+fn writers_refuse_an_attribute_shorter_than_the_point_count() {
+    // Four points, a position attribute holding two of them.
+    let mut mesh = Mesh::new();
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        2,
+    );
+    mesh.add_attribute(position);
+    mesh.set_num_points(4);
+    mesh.set_num_faces(2);
+    mesh.set_face_from_indices(0, [0, 1, 2]);
+    mesh.set_face_from_indices(1, [1, 3, 2]);
+
+    let obj = ObjWriter::new().add_mesh(&mesh, None).err();
+    let ply = PlyWriter::new().add_mesh(&mesh, None).err();
+    let stl = StlWriter::new().add_mesh(&mesh, None).err();
+    for (format, error) in [("OBJ", obj), ("PLY", ply), ("STL", stl)] {
+        let error = error.unwrap_or_else(|| panic!("{format} should refuse the short attribute"));
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{format}");
+        assert!(
+            error.to_string().contains("2 values for 4 points"),
+            "{format}: {error}"
+        );
+    }
+}

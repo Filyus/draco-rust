@@ -271,11 +271,22 @@ impl CornerTable {
         }
     }
 
+    /// The corner across the edge from `corner`, or the invalid sentinel.
+    ///
+    /// Total, like [`vertex`](Self::vertex): the sentinel already meant "no
+    /// such corner", and a corner past the table now returns it too rather
+    /// than panicking. Roughly twenty-five index expressions across this file
+    /// funnel through these two, and the corners reaching them come from
+    /// decoded connectivity -- `is_index_consistent` exists to check a whole
+    /// table up front, but only three sites call it.
     pub fn opposite(&self, corner: CornerIndex) -> CornerIndex {
         if corner == INVALID_CORNER_INDEX {
             return corner;
         }
-        self.opposite_corners[corner.0 as usize]
+        self.opposite_corners
+            .get(corner.0 as usize)
+            .copied()
+            .unwrap_or(INVALID_CORNER_INDEX)
     }
 
     pub fn next(&self, corner: CornerIndex) -> CornerIndex {
@@ -300,11 +311,20 @@ impl CornerTable {
         }
     }
 
+    /// The vertex at `corner`, or the invalid sentinel.
+    ///
+    /// Total for the same reason [`opposite`](Self::opposite) is: callers
+    /// already handle the sentinel, so widening "invalid corner" to include
+    /// "corner past the table" costs them nothing and removes a panic that a
+    /// header count can reach.
     pub fn vertex(&self, corner: CornerIndex) -> VertexIndex {
         if corner == INVALID_CORNER_INDEX {
             return INVALID_VERTEX_INDEX;
         }
-        self.corner_to_vertex_map[corner.0 as usize]
+        self.corner_to_vertex_map
+            .get(corner.0 as usize)
+            .copied()
+            .unwrap_or(INVALID_VERTEX_INDEX)
     }
 
     pub fn face(&self, corner: CornerIndex) -> FaceIndex {
@@ -778,6 +798,34 @@ impl CornerTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A corner past the end of the table answers with the invalid sentinel
+    /// instead of panicking.
+    ///
+    /// Every other accessor here funnels through these two, and the corners
+    /// reaching them come from decoded connectivity: the traversal walks
+    /// wherever the stream tells it to, and `is_index_consistent` -- the
+    /// whole-table check that would rule this out -- is called at three sites,
+    /// not at every entry point.
+    #[test]
+    fn a_corner_past_the_table_is_invalid_rather_than_a_panic() {
+        let table = CornerTable {
+            corner_to_vertex_map: vec![VertexIndex(0), VertexIndex(1), VertexIndex(2)],
+            opposite_corners: vec![INVALID_CORNER_INDEX; 3],
+            vertex_corners: vec![CornerIndex(0), CornerIndex(1), CornerIndex(2)],
+            ..Default::default()
+        };
+
+        // In range, for contrast: these are real answers.
+        assert_eq!(table.vertex(CornerIndex(2)), VertexIndex(2));
+        assert_eq!(table.opposite(CornerIndex(2)), INVALID_CORNER_INDEX);
+
+        // One past the end, and far past it.
+        for corner in [CornerIndex(3), CornerIndex(u32::MAX - 1)] {
+            assert_eq!(table.vertex(corner), INVALID_VERTEX_INDEX, "{corner:?}");
+            assert_eq!(table.opposite(corner), INVALID_CORNER_INDEX, "{corner:?}");
+        }
+    }
 
     #[test]
     fn is_index_consistent_accepts_valid_and_rejects_malformed() {

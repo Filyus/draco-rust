@@ -560,6 +560,7 @@ impl Writer for PlyWriter {
     }
 
     fn add_mesh(&mut self, mesh: &Mesh, _name: Option<&str>) -> io::Result<()> {
+        crate::traits::ensure_attributes_cover_points(mesh, "PLY")?;
         // PLY format doesn't support mesh names
         let vertex_offset = self.positions.len() as u32;
 

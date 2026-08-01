@@ -171,3 +171,45 @@ pub trait PointCloudReader: Reader {
     /// Read point positions only (no faces or topology).
     fn read_points(&mut self) -> io::Result<Vec<[f32; 3]>>;
 }
+
+/// Refuses a mesh whose attribute values a writer would read past the end of.
+///
+/// Every mesh writer here reads attribute data as `point_index * byte_stride`,
+/// for `point_index` in `0..num_points`, through the panicking
+/// `DataBuffer::read` -- nine call sites across the four formats. That is
+/// sound exactly when each attribute holds at least `num_points` values, and
+/// nothing between a decoder and a writer re-checks it: the geometry arrives
+/// from `MeshDecoder`, whose counts come from a header, or from a caller that
+/// built it by hand.
+///
+/// One precondition, stated once, is what makes those nine reads provably in
+/// range. Checking at each read instead would mean deciding, nine times, what
+/// a writer should emit for a value that is not there -- and the honest answer
+/// is nothing, which is what this returns.
+///
+/// Attributes with an explicit point map are covered by the same bound: the
+/// writers index by point regardless, so a shorter value array is a mesh they
+/// cannot represent either way.
+#[cfg(any(
+    feature = "obj-writer",
+    feature = "ply-writer",
+    feature = "stl-writer",
+    feature = "fbx-writer"
+))]
+pub(crate) fn ensure_attributes_cover_points(mesh: &Mesh, format: &str) -> io::Result<()> {
+    let num_points = mesh.num_points();
+    for att_id in 0..mesh.num_attributes() {
+        let attribute = mesh.attribute(att_id);
+        if attribute.size() < num_points {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{format} writer: attribute {att_id} ({:?}) holds {} values for {num_points} points",
+                    attribute.attribute_type(),
+                    attribute.size(),
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
