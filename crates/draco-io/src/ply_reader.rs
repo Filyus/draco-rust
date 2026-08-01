@@ -526,9 +526,18 @@ fn parse_ply_header(bytes: &[u8]) -> io::Result<(PlyHeader, usize)> {
     ))
 }
 
-fn skip_ascii_element_lines<'a>(lines: &mut std::str::Lines<'a>, count: usize) {
+/// Consumes `count` lines, stopping at the end of the text.
+///
+/// The count comes from an `element` header line, so it is file-controlled and
+/// unrelated to how many lines actually follow: a 130-byte file declaring four
+/// billion elements spun this loop for seven seconds before the reader had read
+/// a single vertex. Stopping when the iterator is exhausted makes the work
+/// proportional to the file rather than to a number printed in it.
+fn skip_ascii_element_lines(lines: &mut std::str::Lines<'_>, count: usize) {
     for _ in 0..count {
-        let _ = lines.next();
+        if lines.next().is_none() {
+            return;
+        }
     }
 }
 
@@ -550,18 +559,20 @@ fn split_ascii_vertex_lines<'a>(
 
     for element in &header.elements {
         match element.name.as_str() {
+            // Each `count` comes from the header and is unrelated to how many
+            // lines follow, so the loop has to end with the text rather than
+            // with the number: a file declaring four billion elements spun here
+            // for seconds without a body to match.
             "vertex" => {
                 for _ in 0..element.count {
-                    if let Some(line) = lines.next() {
-                        vertex_lines.push(line);
-                    }
+                    let Some(line) = lines.next() else { break };
+                    vertex_lines.push(line);
                 }
             }
             "face" => {
                 for _ in 0..element.count {
-                    if let Some(line) = lines.next() {
-                        face_lines.push(line);
-                    }
+                    let Some(line) = lines.next() else { break };
+                    face_lines.push(line);
                 }
             }
             _ => skip_ascii_element_lines(&mut lines, element.count),
@@ -817,27 +828,48 @@ fn parse_ascii_u8(token: &str) -> io::Result<u8> {
         .map_err(|_| invalid_ply("Bad color component value"))
 }
 
+/// A capacity to reserve for `declared` items, given that the body left to read
+/// is `available_bytes` long and each item costs at least `min_bytes_per_item`.
+///
+/// The counts in a PLY header are file-controlled and unrelated to what
+/// follows: a 130-byte file may declare four billion vertices, and reserving
+/// from that number alone asks for tens of gigabytes before a single body byte
+/// has been read. Reserving from what the body could actually hold keeps the
+/// fast path - a well-formed file reserves exactly its own count - while a
+/// header that outruns its body reserves what the body can support and then
+/// fails on the missing data, which is where it should fail.
+fn body_bounded_capacity(
+    declared: usize,
+    available_bytes: usize,
+    min_bytes_per_item: usize,
+) -> usize {
+    declared.min(available_bytes / min_bytes_per_item.max(1))
+}
+
 fn read_ply_ascii_body(header: &PlyHeader, body: &[u8]) -> io::Result<ParsedPlyData> {
     let schema = build_read_schema(header)?;
     let body_text = std::str::from_utf8(body)
         .map_err(|_| invalid_ply("ASCII PLY payload must be valid UTF-8/ASCII"))?;
     let (vertex_lines, face_lines) = split_ascii_vertex_lines(header, body_text)?;
+    // The lines have already been split, so the exact count is known here and
+    // the declared one is only an upper bound on it.
+    let vertex_capacity = header.vertex_count.min(vertex_lines.len());
 
     let mut float_positions = matches!(schema.position_data_type, DataType::Float32)
-        .then(|| Vec::with_capacity(header.vertex_count));
+        .then(|| Vec::with_capacity(vertex_capacity));
     let mut int_positions = matches!(schema.position_data_type, DataType::Int32)
-        .then(|| Vec::with_capacity(header.vertex_count));
+        .then(|| Vec::with_capacity(vertex_capacity));
     let mut normals = schema
         .has_normals
-        .then(|| Vec::with_capacity(header.vertex_count));
+        .then(|| Vec::with_capacity(vertex_capacity));
     let mut colors = (schema.color_components > 0).then(|| ParsedPlyColorData {
         num_components: schema.color_components,
-        values: Vec::with_capacity(header.vertex_count),
+        values: Vec::with_capacity(vertex_capacity),
     });
     let mut texcoords = schema
         .texcoord_pair
         .is_some()
-        .then(|| Vec::with_capacity(header.vertex_count));
+        .then(|| Vec::with_capacity(vertex_capacity));
 
     for line in vertex_lines {
         let trimmed = line.trim();
@@ -889,8 +921,15 @@ fn read_ply_ascii_body(header: &PlyHeader, body: &[u8]) -> io::Result<ParsedPlyD
                 "nx" if schema.has_normals => normal[0] = parse_ascii_f32(token, "nx")?,
                 "ny" if schema.has_normals => normal[1] = parse_ascii_f32(token, "ny")?,
                 "nz" if schema.has_normals => normal[2] = parse_ascii_f32(token, "nz")?,
+                // A header may name more colour properties than a colour has
+                // channels - the same one twice, say - and the count comes from
+                // the file. Extra channels are read and dropped rather than
+                // written past the end of the array.
                 "red" | "green" | "blue" | "alpha" if schema.color_components > 0 => {
-                    color[color_component] = parse_ascii_u8(token)?;
+                    let value = parse_ascii_u8(token)?;
+                    if let Some(slot) = color.get_mut(color_component) {
+                        *slot = value;
+                    }
                     color_component += 1;
                 }
                 name if schema.texcoord_pair.is_some_and(|pair| name == pair.u) => {
@@ -921,7 +960,7 @@ fn read_ply_ascii_body(header: &PlyHeader, body: &[u8]) -> io::Result<ParsedPlyD
         }
     }
 
-    let mut faces = Vec::with_capacity(header.face_count);
+    let mut faces = Vec::with_capacity(header.face_count.min(face_lines.len()));
     for line in face_lines {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -1144,21 +1183,29 @@ fn read_ply_binary_body(
         skip_binary_element(&mut cursor, element, endian)?;
     }
 
+    // A binary vertex occupies at least one byte, so the bytes left after the
+    // preceding elements bound how many of the declared vertices can be there.
+    let vertex_capacity = body_bounded_capacity(
+        header.vertex_count,
+        body.len().saturating_sub(cursor.position() as usize),
+        1,
+    );
+
     let mut float_positions = matches!(schema.position_data_type, DataType::Float32)
-        .then(|| Vec::with_capacity(header.vertex_count));
+        .then(|| Vec::with_capacity(vertex_capacity));
     let mut int_positions = matches!(schema.position_data_type, DataType::Int32)
-        .then(|| Vec::with_capacity(header.vertex_count));
+        .then(|| Vec::with_capacity(vertex_capacity));
     let mut normals = schema
         .has_normals
-        .then(|| Vec::with_capacity(header.vertex_count));
+        .then(|| Vec::with_capacity(vertex_capacity));
     let mut colors = (schema.color_components > 0).then(|| ParsedPlyColorData {
         num_components: schema.color_components,
-        values: Vec::with_capacity(header.vertex_count),
+        values: Vec::with_capacity(vertex_capacity),
     });
     let mut texcoords = schema
         .texcoord_pair
         .is_some()
-        .then(|| Vec::with_capacity(header.vertex_count));
+        .then(|| Vec::with_capacity(vertex_capacity));
 
     for _ in 0..header.vertex_count {
         let mut float_position = [0.0f32; 3];
@@ -1210,8 +1257,14 @@ fn read_ply_binary_body(
                     "nz" if schema.has_normals => {
                         normal[2] = read_binary_scalar_as_f32(&mut cursor, data_type, endian)?
                     }
+                    // As in the ASCII path: a header naming more colour
+                    // properties than a colour has channels must not write past
+                    // the array.
                     "red" | "green" | "blue" | "alpha" if schema.color_components > 0 => {
-                        color[color_component] = read_binary_scalar_as_u8(&mut cursor, data_type)?;
+                        let value = read_binary_scalar_as_u8(&mut cursor, data_type)?;
+                        if let Some(slot) = color.get_mut(color_component) {
+                            *slot = value;
+                        }
                         color_component += 1;
                     }
                     name if schema.texcoord_pair.is_some_and(|pair| name == pair.u) => {
@@ -1274,7 +1327,11 @@ fn read_ply_binary_body(
     }
 
     let index_property = face_index_property(&header.face_properties);
-    let mut faces = Vec::with_capacity(header.face_count);
+    let mut faces = Vec::with_capacity(body_bounded_capacity(
+        header.face_count,
+        body.len().saturating_sub(cursor.position() as usize),
+        1,
+    ));
     for _ in 0..header.face_count {
         let mut polygon_indices: Option<Vec<u32>> = None;
 

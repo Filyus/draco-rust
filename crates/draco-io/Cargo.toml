@@ -108,6 +108,11 @@ path = "tests/cpp_decode_test.rs"
 required-features = ["test", "point_cloud_decode"]
 
 [[test]]
+name = "reader_hardening_test"
+path = "tests/reader_hardening_test.rs"
+required-features = ["ply-reader"]
+
+[[test]]
 name = "writer_hardening_test"
 path = "tests/writer_hardening_test.rs"
 required-features = ["obj-writer", "ply-writer", "stl-writer"]

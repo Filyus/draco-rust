@@ -21,6 +21,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   coordinates but no position attribute. The padding it inserts measured how far
   behind the position list the other lists were, which underflowed when nothing
   had been appended to it.
+- The PLY reader no longer indexes past the four-channel colour array when a
+  header names more colour properties than a colour has channels - the same one
+  twice, for instance.
+- The PLY reader's work is bounded by the file rather than by the counts printed
+  in it. An `element` count is unrelated to how many lines or bytes follow, so a
+  169-byte file declaring four billion faces spun for seconds and reserved
+  48 GB before reading a single vertex; the line loops now end with the text and
+  the reservations are bounded by what the body can hold.
 
 ## [Unreleased]
 

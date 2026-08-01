@@ -503,13 +503,27 @@ completed:
       - path: "crates/draco-io/tests/writer_hardening_test.rs"
     note: "A .drc declares its own attribute data types and component counts, so MeshDecoder hands back Uint8x3 positions or Int16x3 normals as readily as Float32x3 ones. The PLY and STL writers sliced a fixed twelve bytes at point * byte_stride through the panicking DataBuffer::read, so the decode-then-write pipeline this crate exists for panicked on such a mesh; the OBJ writer already refused it, which is what showed the guard had been written once and not carried across. The STL writer now refuses what it cannot read, as OBJ does, and the PLY writer converts each component at its own width through a bounds-checked reader. The PLY padding also measured how far behind the position list the other lists were, which underflowed for a mesh carrying normals but no positions."
 
-  - id: caller-resource-policy-documented
+  - id: ply-reader-header-counts
+    status: covered
+    evidence:
+      - path: "crates/draco-io/src/ply_reader.rs"
+      - path: "crates/draco-io/tests/reader_hardening_test.rs"
+    note: "PLY is a header of declared element counts followed by a body, and the counts are unrelated to what follows. The ASCII line loops ran the declared count rather than the text, and the vertex and face vectors were reserved from the declared count before the body was read: a 169-byte file declaring four billion faces spun for seven seconds and requested 48 GB. The loops now end with the text and every reservation is bounded by what the remaining body could hold, which leaves a well-formed file reserving exactly its own count. Separately, a header naming more colour properties than a colour has channels indexed past the four-slot array; the extra channels are now read and dropped. Pinned by three regressions, one of which counts allocated bytes rather than timing the read, because reserving address space is invisible to a clock. The OBJ and STL readers are still unfuzzed - see the open risk of the same name."
     status: covered
     evidence:
       - path: "SECURITY.md"
     note: "SECURITY.md documents the decode threat model and recommended caller limits for untrusted input (input byte-size cap, memory budget, timeout/cancellation, process/WASM isolation, minimal decoder feature surface), making explicit that the crate avoids artificial geometry caps by design and that bounding cost is a caller responsibility."
 
 open_risks:
+  - id: obj-stl-readers-unfuzzed
+    priority: medium
+    summary: "The OBJ and STL readers parse untrusted files and no libFuzzer target covers them; an audit found correctness defects in the OBJ reader that remain open."
+    why_it_matters: "Only the FBX reader among draco-io's parsers is fuzzed, and the PLY reader now has regressions for the hazards an audit found in it. The OBJ reader has a defect the audit reproduced and this work did not fix: a v/vt/vn line whose components do not parse is dropped rather than counted, so every later 1-based index names the wrong vertex and the reader returns Ok with silently wrong geometry - upstream C++ Draco refuses the same file. A tab immediately after the keyword makes a line invisible for the same reason. Neither is a memory-safety or resource hazard, which is why they are recorded rather than fixed alongside the panic-class work, but they are a parity divergence on untrusted input."
+    next_steps:
+      - "Count a malformed v/vt/vn line rather than dropping it, as ObjDecoder::ParseVertexPosition does, and report the parse failure instead of returning Ok."
+      - "Split OBJ keyword tokens on any ASCII whitespace, not on a single space."
+      - "Add obj_read_scene and stl_read_scene libFuzzer targets seeded from the committed fixtures, so these parsers get the coverage the FBX and PLY ones have."
+
   - id: fbx-ascii-parser-unfuzzed
     priority: medium
     summary: "The ASCII FBX parser added in fbx_ascii.rs is a hand-written recursive-descent parser over untrusted text, and the fuzz corpus contains no ASCII seeds."
