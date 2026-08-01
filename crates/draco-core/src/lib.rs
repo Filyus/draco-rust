@@ -105,6 +105,10 @@ pub mod metadata;
 pub mod attribute_quantization_transform;
 #[doc(hidden)]
 pub mod data_buffer;
+/// What a decode may allocate relative to the stream it is reading. Internal:
+/// the ratio is an implementation detail, not a knob.
+#[cfg(feature = "decoder")]
+mod decode_budget;
 #[doc(hidden)]
 #[cfg(any(feature = "encoder", feature = "decoder"))]
 pub mod dynamic_integer_points_kd_tree;

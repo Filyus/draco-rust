@@ -91,7 +91,12 @@ impl Default for PointCloudDecoder {
 }
 
 #[cfg(feature = "point_cloud_decode")]
-fn make_point_ids(num_points: usize) -> Result<Vec<PointIndex>, DracoError> {
+fn make_point_ids(num_points: usize, stream_bytes: usize) -> Result<Vec<PointIndex>, DracoError> {
+    crate::decode_budget::ensure_elements_are_backed(
+        num_points,
+        std::mem::size_of::<PointIndex>(),
+        stream_bytes,
+    )?;
     let mut point_ids = Vec::new();
     point_ids
         .try_reserve_exact(num_points)
@@ -267,20 +272,10 @@ impl PointCloudDecoder {
         // (method=1) encodings (see C++ PointCloudSequentialDecoder and
         // PointCloudKdTreeDecoder). It is NOT varint encoded, even for v2.x.
         let num_points: usize = buffer.decode_u32()? as usize;
-        // Consistency guard: a Draco point cloud encodes at least one bit per
-        // point (no real encoder, including C++ Draco, produces sub-bit-per-point
-        // streams), so a point count beyond the remaining bit budget is
-        // malformed. This bounds the per-attribute buffers that are sized by
-        // num_points and prevents memory amplification from a tiny malformed
-        // header, for both the sequential and KD-tree paths. It is a relative
-        // input-consistency check, not an artificial geometry cap, and runs once
-        // per decode off the hot path.
-        if num_points > buffer.remaining_size().saturating_mul(8) {
-            return Err(DracoError::count_exceeds_bitstream(
-                num_points,
-                buffer.remaining_size(),
-            ));
-        }
+        // No count guard here, matching upstream: `PointCloudSequentialDecoder`
+        // and `PointCloudKdTreeDecoder` read the count and use it, checking only
+        // that it is not negative. What bounds the work is the allocation budget
+        // applied where the buffers are actually sized - see `decode_budget`.
         pc.set_num_points(num_points);
 
         let num_attributes_decoders = buffer.decode_u8()? as usize;
@@ -391,6 +386,15 @@ impl PointCloudDecoder {
                     }
 
                     let mut att = PointAttribute::new();
+                    // First buffer sized from the header's point count, so this
+                    // is where a count the stream cannot describe is refused -
+                    // the header guard that used to do it was unsound and is
+                    // gone.
+                    crate::decode_budget::ensure_elements_are_backed(
+                        num_points,
+                        spec.num_components as usize * spec.data_type.byte_length(),
+                        buffer.size(),
+                    )?;
                     att.try_init(
                         spec.att_type,
                         spec.num_components,
@@ -404,7 +408,7 @@ impl PointCloudDecoder {
                 }
 
                 let point_ids = if decoder_types.iter().any(|&decoder_type| decoder_type != 0) {
-                    Some(make_point_ids(num_points)?)
+                    Some(make_point_ids(num_points, buffer.size())?)
                 } else {
                     None
                 };

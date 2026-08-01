@@ -103,6 +103,17 @@ impl<'a> DecoderBuffer<'a> {
         self.data.len().saturating_sub(self.pos)
     }
 
+    /// Returns the total size of the buffer, read or not.
+    ///
+    /// The decode allocation budget measures against this rather than against
+    /// [`remaining_size`](Self::remaining_size): an attribute decoded last has
+    /// a legitimately tiny payload left in front of it while its value count is
+    /// no smaller than the first attribute's, so charging it only for what
+    /// follows would refuse valid streams.
+    pub fn size(&self) -> usize {
+        self.data.len()
+    }
+
     /// Peeks at the next `len` bytes without advancing the position.
     pub fn peek_bytes(&self, len: usize) -> Vec<u8> {
         let end = std::cmp::min(self.pos + len, self.data.len());

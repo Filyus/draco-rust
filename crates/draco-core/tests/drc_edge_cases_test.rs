@@ -251,6 +251,55 @@ fn malformed_drc_inputs_fail_without_panic() {
     }
 }
 
+/// The file the count guard used to refuse: geometry whose values are all
+/// equal entropy-codes to a size independent of how many there are.
+///
+/// The decoder asserted at least one bit per point, so it rejected a 171-byte
+/// stream that says 100,000 points - a stream this crate writes, and C++ Draco
+/// writes too. What bounds the work now is an allocation budget measured
+/// against the input size, which this file passes with orders of magnitude to
+/// spare while the malformed headers below still fail.
+#[test]
+fn a_point_cloud_that_compresses_below_a_bit_per_point_decodes() {
+    use draco_core::draco_types::DataType;
+    use draco_core::encoder_buffer::EncoderBuffer;
+    use draco_core::encoder_options::EncoderOptions;
+    use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
+    use draco_core::point_cloud_encoder::PointCloudEncoder;
+
+    const NUM_POINTS: usize = 100_000;
+
+    let mut point_cloud = PointCloud::new();
+    point_cloud.set_num_points(NUM_POINTS);
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        NUM_POINTS,
+    );
+    point_cloud.add_attribute(position);
+
+    let mut options = EncoderOptions::new();
+    options.set_attribute_int(0, "quantization_bits", 8);
+    let mut encoder = PointCloudEncoder::new();
+    encoder.set_point_cloud(point_cloud);
+    let mut buffer = EncoderBuffer::new();
+    encoder.encode(&options, &mut buffer).expect("encode");
+
+    assert!(
+        buffer.data().len() < 8 * NUM_POINTS / 8,
+        "the point of this test is that the stream is far under a bit per point"
+    );
+
+    let mut decoded = PointCloud::new();
+    PointCloudDecoder::new()
+        .decode(&mut DecoderBuffer::new(buffer.data()), &mut decoded)
+        .expect("a stream this crate wrote must decode");
+    assert_eq!(decoded.num_points(), NUM_POINTS);
+}
+
 #[test]
 fn oversized_drc_counts_fail_before_large_allocation() {
     let mut oversized_mesh_faces = draco_header(2, 0, 1, 0);

@@ -42,7 +42,6 @@ use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::point_cloud::PointCloud;
 use draco_core::point_cloud_decoder::PointCloudDecoder;
 use draco_core::point_cloud_encoder::PointCloudEncoder;
-use draco_core::status::DracoError;
 use libfuzzer_sys::fuzz_target;
 
 const MAX_POINTS: usize = 2048;
@@ -357,7 +356,7 @@ fn fuzz_mesh(spec: &GeometrySpec, payload: &[u8], input: &[u8]) {
     let mut decoded = Mesh::new();
     let mut decoder_buffer = DecoderBuffer::new(buffer.data());
     if let Err(error) = MeshDecoder::new().decode(&mut decoder_buffer, &mut decoded) {
-        if !round_trip_is_claimed(spec, &error) {
+        if !round_trip_is_claimed(spec) {
             return;
         }
         panic!(
@@ -384,7 +383,7 @@ fn fuzz_point_cloud(spec: &GeometrySpec, payload: &[u8], input: &[u8]) {
     let mut decoded = PointCloud::new();
     let mut decoder_buffer = DecoderBuffer::new(buffer.data());
     if let Err(error) = PointCloudDecoder::new().decode(&mut decoder_buffer, &mut decoded) {
-        if !round_trip_is_claimed(spec, &error) {
+        if !round_trip_is_claimed(spec) {
             return;
         }
         panic!(
@@ -412,14 +411,10 @@ fn fuzz_point_cloud(spec: &GeometrySpec, payload: &[u8], input: &[u8]) {
 ///    because oracle 1 - no panics - applies to them; only the round-trip claim
 ///    is held to the default version, which is what the crate documents.
 ///
-/// 2. **The count-vs-size preflight refusal.** The decoder's header preflight assumes a
-///    stream carries at least one bit per point or face, which is false for
-///    geometry whose values are all equal: it entropy-codes to a size
-///    independent of the count. `DracoError::is_count_exceeds_bitstream` answers
-///    for exactly those runs - an earlier version of this predicted the guard
-///    from the stream length instead, which was far coarser and quietly
-///    excluded most of the corpus from the oracle.
-fn round_trip_is_claimed(spec: &GeometrySpec, error: &DracoError) -> bool {
+/// One exclusion left, and it is recorded in `hardening_status.yaml`. The
+/// decoder's count-vs-size preflight used to be a second one; it is gone, along
+/// with the guards behind it.
+fn round_trip_is_claimed(spec: &GeometrySpec) -> bool {
     if std::env::var_os("ENCODE_DRC_NO_DECODE_ORACLE").is_some() {
         // Triage knob: with oracle 2 off, a campaign runs past every
         // encoder/decoder disagreement and reports only panics. Used when one
@@ -429,7 +424,7 @@ fn round_trip_is_claimed(spec: &GeometrySpec, error: &DracoError) -> bool {
     if spec.version.is_some() {
         return false;
     }
-    !error.is_count_exceeds_bitstream()
+    true
 }
 
 /// Hex of the whole fuzz input, printed with an oracle failure.

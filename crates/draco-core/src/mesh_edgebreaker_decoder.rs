@@ -358,14 +358,16 @@ impl MeshEdgebreakerDecoder {
             ));
         }
 
-        // Every topology split event consumes payload bytes. Reject impossible
-        // counts before entering the decode loop so a tiny malformed input cannot
-        // drive a large CPU-only scan through missing events.
+        // Every topology split event consumes payload bytes - a varint pair, or
+        // a fixed u32/u32/u8 below 1.2 - so one byte per event is a floor, not
+        // an average. That makes this guard sound where the one-bit-per-point
+        // guards were not, and it is what stops a tiny malformed input driving a
+        // large CPU-only scan through events that are not there. It stays.
         if num_topology_splits as usize > in_buffer.remaining_size() {
-            return Err(DracoError::count_exceeds_bitstream(
-                num_topology_splits as usize,
-                in_buffer.remaining_size(),
-            ));
+            return Err(DracoError::DracoError(format!(
+                "Topology split count {num_topology_splits} exceeds the {} bytes left to hold it",
+                in_buffer.remaining_size()
+            )));
         }
 
         // Cap the pre-reservation by the remaining byte budget as a second line

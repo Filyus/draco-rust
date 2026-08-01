@@ -1,7 +1,11 @@
 use thiserror::Error;
 
 /// Error returned by Draco decoding, encoding, and data model operations.
+///
+/// Non-exhaustive: a decoder that learns to tell one refusal from another
+/// should be able to say so without a major release. Match with a `_` arm.
 #[derive(Error, Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum DracoError {
     /// Generic Draco error with a human-readable message.
     #[error("General error: {0}")]
@@ -27,44 +31,19 @@ pub enum DracoError {
     /// Buffer read or write failed.
     #[error("Buffer decode error: {0}")]
     BufferError(String),
-}
-
-/// Prefix of the message [`DracoError::count_exceeds_bitstream`] builds.
-///
-/// The refusal has no variant of its own: `DracoError` is exhaustive, so adding
-/// one is a breaking change, and this refusal is tied to a guard that
-/// `hardening_status.yaml` records as unsound and due to be replaced. Marking
-/// the message instead keeps the constructor and the predicate that recognises
-/// it in one place, where a message is an implementation detail rather than an
-/// interface.
-const COUNT_EXCEEDS_BITSTREAM_PREFIX: &str = "Declared count";
-
-impl DracoError {
-    /// The decoder's refusal of a declared count larger than the remaining
-    /// bitstream could describe.
+    /// A decode would allocate more than the stream it is reading could
+    /// plausibly describe.
     ///
-    /// Gated with the decode paths that raise it; the predicate below is not,
-    /// because a caller holding a `DracoError` may ask about it whatever this
-    /// build compiled.
-    #[cfg(feature = "decoder")]
-    pub(crate) fn count_exceeds_bitstream(count: usize, remaining_bytes: usize) -> Self {
-        DracoError::DracoError(format!(
-            "{COUNT_EXCEEDS_BITSTREAM_PREFIX} {count} exceeds what the remaining \
-             {remaining_bytes} bytes can describe"
-        ))
-    }
-
-    /// Whether this is the decoder's count-vs-size preflight refusal.
-    ///
-    /// It is the one decode refusal a caller may legitimately want to tell
-    /// apart: the bound it applies assumes at least one bit per point or face,
-    /// which highly repetitive geometry can beat, so this is also the refusal
-    /// that can be a false positive. See the `decoder-count-guard-is-unsound`
-    /// entry in `hardening_status.yaml`.
-    pub fn is_count_exceeds_bitstream(&self) -> bool {
-        matches!(self, DracoError::DracoError(message)
-            if message.starts_with(COUNT_EXCEEDS_BITSTREAM_PREFIX))
-    }
+    /// The bound is a ratio against the input size, not a cap on geometry — see
+    /// `decode_budget`. A stream that trips it is malformed or adversarial; a
+    /// large but genuine mesh scales its own budget with it.
+    #[error("Decode would allocate {requested_bytes} bytes from a {stream_bytes} byte stream")]
+    AllocationExceedsInput {
+        /// Bytes the decode was about to reserve.
+        requested_bytes: usize,
+        /// Size of the stream being decoded.
+        stream_bytes: usize,
+    },
 }
 
 /// Convenience result type for operations that only report success or failure.

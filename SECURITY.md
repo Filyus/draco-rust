@@ -23,7 +23,10 @@ What the crate guarantees today:
   return a `DracoError` instead of panicking (covered by
   `crates/draco-core/tests/drc_edge_cases_test.rs`).
 - Bitstream-controlled counts (face counts, point counts, attribute counts) are
-  range-checked before large allocations.
+  checked against what the stream could plausibly describe before large
+  allocations, and the allocations themselves are fallible. The check is a
+  ratio against the input size, not a cap on geometry: a large mesh scales its
+  own budget with it.
 - Entropy, prediction, transform, and KD-tree decode paths use checked indexing
   and fallible buffer access on the audited paths.
 

@@ -326,19 +326,13 @@ impl MeshDecoder {
                 let np = buffer.decode_varint()? as usize;
                 (nf, np)
             };
-            // Consistency guard: a sequential mesh encodes connectivity indices
-            // for each face and attribute data for each point in the bytes that
-            // follow, so a count beyond the remaining bit budget is malformed.
-            // This bounds the connectivity and per-attribute buffers that are
-            // sized by these counts and prevents memory amplification from a tiny
-            // header. Relative input-consistency check, runs once, off hot path.
-            let max_count = buffer.remaining_size().saturating_mul(8);
-            if num_faces > max_count || num_points > max_count {
-                return Err(DracoError::count_exceeds_bitstream(
-                    num_faces.max(num_points),
-                    buffer.remaining_size(),
-                ));
-            }
+            // No bit-budget guard on these counts. Upstream bounds the face
+            // count by `remaining_size() / 3`, but that premise fails for the
+            // compressed-connectivity branch for the same reason the one-bit
+            // premise failed here: the indices are entropy-coded. Adopting it
+            // would import an upstream bug rather than parity. The allocation
+            // budget below bounds the work instead, and it errs on the side of
+            // reading files upstream refuses rather than the reverse.
             let num_indices = validate_mesh_index_count(num_faces)?;
             mesh.set_num_points(num_points);
 
@@ -346,7 +340,7 @@ impl MeshDecoder {
                 let connectivity_method = buffer.decode_u8()?;
                 if connectivity_method == 0 {
                     // Compressed
-                    let mut encoded_indices = make_zeroed_indices(num_indices)?;
+                    let mut encoded_indices = make_zeroed_indices(num_indices, buffer.size())?;
                     let options = crate::symbol_encoding::SymbolEncodingOptions::default();
                     if !crate::symbol_encoding::decode_symbols(
                         num_indices,
@@ -359,7 +353,7 @@ impl MeshDecoder {
                             "Failed to decode compressed sequential connectivity".to_string(),
                         ));
                     }
-                    let mut indices = make_zeroed_indices(num_indices)?;
+                    let mut indices = make_zeroed_indices(num_indices, buffer.size())?;
                     let mut last_index_value = 0i32;
                     for (dst, encoded_val) in indices.iter_mut().zip(encoded_indices) {
                         let mut index_diff = (encoded_val >> 1) as i32;
@@ -713,7 +707,7 @@ impl MeshDecoder {
         // We'll derive the correct (point_ids, data_to_corner_map) later for each decoder payload
         // based on its traversal_method.
         let point_ids = if self.method == 0 {
-            make_point_ids(num_points)?
+            make_point_ids(num_points, buffer.size())?
         } else {
             Vec::new()
         };
@@ -2012,7 +2006,12 @@ fn validate_mesh_index_count(num_faces: usize) -> Result<usize, DracoError> {
         .ok_or_else(|| DracoError::DracoError("Mesh face index count overflow".to_string()))
 }
 
-fn make_zeroed_indices(num_indices: usize) -> Result<Vec<u32>, DracoError> {
+fn make_zeroed_indices(num_indices: usize, stream_bytes: usize) -> Result<Vec<u32>, DracoError> {
+    crate::decode_budget::ensure_elements_are_backed(
+        num_indices,
+        std::mem::size_of::<u32>(),
+        stream_bytes,
+    )?;
     let mut indices = Vec::new();
     indices
         .try_reserve_exact(num_indices)
@@ -2021,7 +2020,12 @@ fn make_zeroed_indices(num_indices: usize) -> Result<Vec<u32>, DracoError> {
     Ok(indices)
 }
 
-fn make_point_ids(num_points: usize) -> Result<Vec<PointIndex>, DracoError> {
+fn make_point_ids(num_points: usize, stream_bytes: usize) -> Result<Vec<PointIndex>, DracoError> {
+    crate::decode_budget::ensure_elements_are_backed(
+        num_points,
+        std::mem::size_of::<PointIndex>(),
+        stream_bytes,
+    )?;
     let mut point_ids = Vec::new();
     point_ids
         .try_reserve_exact(num_points)

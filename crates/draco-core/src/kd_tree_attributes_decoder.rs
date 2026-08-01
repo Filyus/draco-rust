@@ -112,6 +112,19 @@ impl KdTreeAttributesDecoder {
                 Err(_) => return false,
             };
 
+            // The point count came out of the header and this is the first
+            // buffer sized from it, so it is where a count the stream cannot be
+            // describing has to be refused - the header guard that used to do
+            // it was unsound and is gone.
+            if crate::decode_budget::ensure_elements_are_backed(
+                point_cloud.num_points(),
+                num_components as usize * data_type.byte_length(),
+                in_buffer.size(),
+            )
+            .is_err()
+            {
+                return false;
+            }
             let mut att = PointAttribute::new();
             if att
                 .try_init(
