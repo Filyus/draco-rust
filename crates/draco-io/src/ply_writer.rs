@@ -250,6 +250,20 @@ impl PlyWriter {
         Ok(out)
     }
 
+    /// Brings every non-empty per-vertex list up to the current vertex count.
+    fn pad_optional_lists(&mut self) {
+        let vertex_count = self.positions.len();
+        if !self.normals.is_empty() {
+            self.normals.resize(vertex_count, [0.0, 0.0, 0.0]);
+        }
+        if !self.colors.is_empty() {
+            self.colors.resize(vertex_count, [255, 255, 255, 255]);
+        }
+        if !self.texcoords.is_empty() {
+            self.texcoords.resize(vertex_count, [0.0, 0.0]);
+        }
+    }
+
     /// Write the PLY data to a writer.
     pub fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         let has_normals = self.normals.len() == self.positions.len();
@@ -605,6 +619,17 @@ impl Writer for PlyWriter {
                 face[2].0 + vertex_offset,
             ]);
         }
+
+        // Each optional list is padded up to the vertex count before this
+        // mesh's values are appended - and has to be padded up to the new one
+        // afterwards too, for the mesh that does not carry the attribute at
+        // all. Without this the list stays short, `write_to` finds its length
+        // unequal to the position count and drops the property entirely: a
+        // mesh with normals followed by one without wrote a file with no
+        // normals in it, while the same two meshes in the other order kept
+        // them. Only lists something has already contributed to are padded, so
+        // a file gains no property that no mesh ever had.
+        self.pad_optional_lists();
         Ok(())
     }
 

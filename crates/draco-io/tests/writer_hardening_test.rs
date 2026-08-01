@@ -80,6 +80,85 @@ fn the_stl_writer_refuses_a_position_type_it_cannot_read() {
     );
 }
 
+/// A quad with float32 positions, optionally carrying normals.
+fn quad_with_normals(base: f32, normals: bool) -> Mesh {
+    let mut mesh = Mesh::new();
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        4,
+    );
+    for i in 0..4 {
+        for c in 0..3 {
+            let value = base + i as f32 + c as f32 * 0.25;
+            position
+                .buffer_mut()
+                .write(i * 12 + c * 4, &value.to_le_bytes());
+        }
+    }
+    mesh.set_num_points(4);
+    mesh.add_attribute(position);
+    if normals {
+        let mut normal = PointAttribute::new();
+        normal.init(
+            GeometryAttributeType::Normal,
+            3,
+            DataType::Float32,
+            false,
+            4,
+        );
+        for i in 0..4 {
+            normal.buffer_mut().write(i * 12 + 8, &1.0f32.to_le_bytes());
+        }
+        mesh.add_attribute(normal);
+    }
+    mesh.set_num_faces(2);
+    mesh.set_face_from_indices(0, [0, 1, 2]);
+    mesh.set_face_from_indices(1, [1, 3, 2]);
+    mesh
+}
+
+fn ply_of(meshes: &[Mesh]) -> String {
+    let mut writer = <PlyWriter as Writer>::new();
+    for mesh in meshes {
+        writer.add_mesh(mesh, None).expect("add_mesh");
+    }
+    String::from_utf8_lossy(&PlyWriter::write_to_vec(&writer).expect("write")).into_owned()
+}
+
+#[test]
+fn adding_a_mesh_without_normals_keeps_the_normals_of_the_one_before_it() {
+    // The writer flattens every mesh into shared per-vertex lists and emits a
+    // property only when its list is as long as the position list. The lists
+    // were padded before a mesh's values were appended but not after, so a mesh
+    // that did not carry the attribute left the list short and the property was
+    // dropped for every mesh - silently, and only in this order.
+    let with_then_without = ply_of(&[quad_with_normals(0.0, true), quad_with_normals(50.0, false)]);
+    let without_then_with = ply_of(&[quad_with_normals(0.0, false), quad_with_normals(50.0, true)]);
+
+    for (order, ply) in [
+        ("normals first", &with_then_without),
+        ("normals second", &without_then_with),
+    ] {
+        assert!(
+            ply.contains("property float nx"),
+            "{order}: the normals of one of the two meshes were dropped"
+        );
+        assert!(
+            ply.contains("element vertex 8"),
+            "{order}: expected both meshes' vertices"
+        );
+    }
+    assert_eq!(
+        with_then_without.len(),
+        without_then_with.len(),
+        "the same two meshes wrote different files depending on the order"
+    );
+}
+
 #[test]
 fn the_ply_writer_handles_a_mesh_with_no_position_attribute() {
     // The normal/color/texcoord padding measured how far behind the position

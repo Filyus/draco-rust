@@ -21,6 +21,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   coordinates but no position attribute. The padding it inserts measured how far
   behind the position list the other lists were, which underflowed when nothing
   had been appended to it.
+- Adding a mesh without normals, colors or texture coordinates to a `PlyWriter`
+  no longer drops those attributes from the meshes added before it. The writer
+  flattens every mesh into shared per-vertex lists and emits a property only
+  while its list matches the vertex count; the lists were padded before a mesh's
+  values were appended but not after, so the same two meshes wrote different
+  files depending on the order they were added in.
 - The PLY reader no longer indexes past the four-channel colour array when a
   header names more colour properties than a colour has channels - the same one
   twice, for instance.
