@@ -150,7 +150,13 @@ fn run() -> Result<(), String> {
         }
     }
 
-    if failed.is_empty() && !config.debug && !config.no_optimize && modules.contains(&"gltf-wasm") {
+    // Each budget reports on its own. Gating the checks on `failed` as it grew
+    // let a module over its ceiling suppress the next module's measurement, so
+    // the run that fixed one was the first to measure the other. A failed build
+    // still skips both, because then there is nothing to measure.
+    let measure_sizes = failed.is_empty() && !config.debug && !config.no_optimize;
+
+    if measure_sizes && modules.contains(&"gltf-wasm") {
         let gltf_wasm = config.output_dir.join("gltf_bg.wasm");
         let gltf_features = effective_features(&config, "gltf-wasm");
         if gltf_features.is_empty() {
@@ -180,7 +186,7 @@ fn run() -> Result<(), String> {
         }
     }
 
-    if failed.is_empty() && !config.debug && !config.no_optimize && modules.contains(&"ktx2-wasm") {
+    if measure_sizes && modules.contains(&"ktx2-wasm") {
         let ktx2_wasm = config.output_dir.join("ktx2_bg.wasm");
         match check_wasm_size(&ktx2_wasm, KTX2_GZIP_BUDGET, "KTX2") {
             Ok((raw_size, gzip_size)) => println!(
