@@ -6,7 +6,7 @@ independently; its release tags are `draco-core-vX.Y.Z`.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [2.0.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.2.0...draco-core-v2.0.0) - 2026-08-02
 
 A breaking release. Its through-line is that a refusal should say what it
 refused. Ninety-odd functions across the decode and encode paths returned a
@@ -107,6 +107,37 @@ premise holds, and the encoder reports the choices it makes for itself.
   orientation per predicted entry, so a count above that can never be consumed
   whatever the stream holds; the previous bound assumed one rANS bit per
   orientation, which a run of identical ones beats.
+- A prediction scheme is no longer named in a bitstream that predates it. The
+  encoder now carries the version each scheme was introduced at and substitutes
+  the one its era used: `MeshPredictionConstrainedMultiParallelogram` arrived in
+  Draco 0.10.0, which writes bitstream 1.2, and
+  `MeshPredictionTexCoordsPortable` and `MeshPredictionGeometricNormal` in Draco
+  1.0.0, which writes 2.0 — neither of the latter two identifiers occurs
+  anywhere in the 0.9.1 or 0.10.0 sources. Naming one anyway is not a graceful
+  degradation: Draco 0.9.1 hands any id it does not recognise to
+  `PredictionSchemeDifference`, so the correction values are read as plain
+  deltas and the file opens, reports the right vertex count and reconstructs
+  different geometry with no error anywhere. The two schemes that predict from
+  position are worse still, because a modern decoder accepts them and answers
+  wrongly: below 2.0 upstream's `InitPredictionScheme` gives the predictor the
+  final position attribute rather than the portable one, and at that version the
+  final attribute already holds dequantized floats, which
+  `GetPositionForDataId` then truncates into `VectorD<int64_t, 3>` — on a
+  unit-scale mesh every coordinate collapses to 0 or ±1 and every cross product
+  is degenerate, whatever the encoder predicted against. That branch is not an
+  oversight; it exists for `MESH_PREDICTION_TEX_COORDS_DEPRECATED`, the one
+  pre-2.0 scheme with a parent attribute, whose predictor really is
+  float-domain. So there is no encoder-side domain that makes a pre-2.0
+  geometric normal readable — the combination is outside the format, and the
+  encoder declines to write it rather than trying to agree with it. Before the
+  rule existed, roughly 40% of a 289-point mesh's normals landed on the wrong
+  point at 1.1 and 1.2, with the point and face counts still right; it was found
+  only by checking a real decoder, since this crate's own encoder and decoder
+  read the same wrong location and agreed with each other. The decoder still
+  reads a genuine old file that used either scheme below 2.0, which needed the
+  mirror of upstream's two branches: below 2.0 the parent is the attribute
+  itself, dequantized in place as soon as its own turn ends, and from 2.0 it is
+  the portable copy.
 
 ### Fixed
 

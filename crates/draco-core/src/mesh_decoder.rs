@@ -1121,6 +1121,27 @@ impl MeshDecoder {
                             portable_parent_attribute,
                             pre_hook_opt,
                         )?;
+                        // Below 2.0, upstream has no separate "portable" concept
+                        // at all: an attribute's own decode dequantizes it in
+                        // place immediately, so a later attribute in this same
+                        // loop that reads `mesh.attribute()` as a prediction
+                        // parent (`MeshPredictionGeometricNormal`,
+                        // `MeshPredictionTexCoordsPortable`) sees real values.
+                        // 2.0+ defers this to a later shared pass instead, which
+                        // is exactly the branch above that reads
+                        // `portable_attributes_by_id` -- so applying it early
+                        // here only where the bitstream cannot describe that
+                        // deferral keeps both paths matching what a version's
+                        // own decoder actually does. Applying it again in the
+                        // later "inverse transforms" pass is redundant but
+                        // harmless: the same input produces the same output.
+                        if bitstream_version < 0x0200 {
+                            let dst = mesh.try_attribute_mut(att_id)?;
+                            if dst.size() != portable.size() {
+                                dst.resize_unique_entries(portable.size())?;
+                            }
+                            transform.inverse_transform_attribute(&portable, dst)?;
+                        }
                         pending_quant.push(PendingQuant {
                             att_id,
                             portable,

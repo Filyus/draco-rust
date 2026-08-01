@@ -9,7 +9,7 @@ use draco_core::draco_types::DataType;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::encoder_options::EncoderOptions;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
-use draco_core::geometry_indices::PointIndex;
+use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
@@ -903,6 +903,311 @@ fn cpp_decodes_the_legacy_streams_this_crate_writes() {
             );
             assert_position_sets_match(&expected_positions, &decoded.positions, &name);
         }
+    }
+}
+
+/// A grid with holes, carrying position, normal and tex coord attributes.
+///
+/// The values are not physically meaningful -- the normal is a deterministic
+/// function of grid position rather than a real surface normal -- because what
+/// is under test is whether the bytes round-trip through a real decoder, not
+/// whether the geometry looks like anything. Each is unique per point, which is
+/// what lets the set-matching helpers below catch a value landing on the wrong
+/// point rather than only checking the value exists somewhere in the mesh.
+#[cfg(feature = "legacy_bitstream_encode")]
+fn multi_attribute_annulus_mesh(n: usize) -> (Mesh, Vec<VertexRecord>) {
+    let (mesh_positions_only, positions) = annulus_mesh(n);
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(n * n);
+
+    let mut position_attribute = PointAttribute::new();
+    position_attribute.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        n * n,
+    );
+    write_f32s(
+        &mut position_attribute,
+        &positions.iter().flatten().copied().collect::<Vec<f32>>(),
+    );
+    mesh.add_attribute(position_attribute);
+
+    let mut normal_attribute = PointAttribute::new();
+    normal_attribute.init(
+        GeometryAttributeType::Normal,
+        3,
+        DataType::Float32,
+        false,
+        n * n,
+    );
+    let mut tex_coord_attribute = PointAttribute::new();
+    tex_coord_attribute.init(
+        GeometryAttributeType::TexCoord,
+        2,
+        DataType::Float32,
+        false,
+        n * n,
+    );
+    // A near-uniform spread of unit vectors, one per point, indexed by grid
+    // position -- a spherical Fibonacci lattice rather than a smooth function of
+    // (x, y). A smooth field puts adjacent grid points' normals within
+    // `NORMAL_TOLERANCE` of each other by construction, and the set-matching
+    // assertions below then have no way to tell "this point's own normal
+    // rounded to its neighbor's value" from "this point's own normal decoded
+    // correctly" -- a false failure in the test, not a decode defect, found by
+    // confirming the mismatch was always paired with an exact match sitting
+    // one entry earlier in the greedy match order. The lattice keeps every pair
+    // of *distinct* points at least 0.08 apart on every axis, well clear of
+    // `NORMAL_TOLERANCE` (0.02) plus quantization error.
+    let golden_angle = std::f32::consts::PI * (3.0 - 5.0f32.sqrt());
+    let mut expected = Vec::with_capacity(n * n);
+    for y in 0..n {
+        for x in 0..n {
+            let index = y * n + x;
+            let position = positions[index];
+            let fy = 1.0 - (index as f32 / (n * n - 1) as f32) * 2.0;
+            let radius = (1.0 - fy * fy).max(0.0).sqrt();
+            let theta = golden_angle * index as f32;
+            let normal = [theta.cos() * radius, fy, theta.sin() * radius];
+            for (component, value) in normal.iter().enumerate() {
+                normal_attribute
+                    .buffer_mut()
+                    .write(index * 12 + component * 4, &value.to_le_bytes());
+            }
+
+            let tex_coord = [x as f32 / (n - 1) as f32, y as f32 / (n - 1) as f32];
+            for (component, value) in tex_coord.iter().enumerate() {
+                tex_coord_attribute
+                    .buffer_mut()
+                    .write(index * 8 + component * 4, &value.to_le_bytes());
+            }
+
+            expected.push(VertexRecord {
+                position,
+                normal,
+                tex_coord,
+            });
+        }
+    }
+    mesh.add_attribute(normal_attribute);
+    mesh.add_attribute(tex_coord_attribute);
+
+    mesh.set_num_faces(mesh_positions_only.num_faces());
+    for face_id in 0..mesh_positions_only.num_faces() {
+        let face = mesh_positions_only.face(FaceIndex(face_id as u32));
+        mesh.set_face_from_indices(face_id, [face[0].0, face[1].0, face[2].0]);
+    }
+
+    (mesh, expected)
+}
+
+/// C++ Draco reads back the normal and tex-coord encodings this crate writes,
+/// at every claimed EdgeBreaker version, including the two -- 2.0 and 2.1 --
+/// that no other test here reaches.
+///
+/// Three schemes only exist above bitstream 1.1 and are what `speed 0` selects:
+/// geometric-normal prediction (6), portable tex coords (5), and constrained
+/// multi-parallelogram (4, exercised for position in the sibling split test).
+/// A version-gate mistake in any of the octahedron transform, the portable
+/// tex-coord scheme, or their downgrade at 1.1 would show up here as a normal
+/// or tex coord landing on the wrong point, or the stream failing to decode at
+/// all -- the failure mode `annulus_mesh`-only coverage cannot reach, since it
+/// carries no attribute that uses either scheme.
+///
+/// A decoder that can read the *newest* claimed version can read every older
+/// one too -- Draco has never dropped read support for a bitstream version --
+/// so one modern `DRACO_CPP_DECODER` validates the whole table in a single
+/// pass. That is different from `cpp_decodes_the_legacy_streams_this_crate_writes`,
+/// whose whole point is a decoder contemporary with 1.1, because only that one
+/// can see the rANS run-token difference; running *this* test against 0.9.1 or
+/// 0.10.0 would fail on 2.x for the unrelated, expected reason that an old
+/// decoder cannot read a newer stream.
+#[test]
+#[cfg(feature = "legacy_bitstream_encode")]
+fn cpp_decodes_legacy_normal_and_tex_coord_encodings() {
+    let decoder_exe = find_cpp_tool("DRACO_CPP_DECODER", "draco_decoder.exe");
+    let tmp = std::env::temp_dir().join("draco_cpp_decodes_legacy_attributes");
+    fs::create_dir_all(&tmp).expect("create temp dir");
+
+    for (major, minor) in [(2u8, 2u8), (2, 1), (2, 0), (1, 2), (1, 1)] {
+        for speed in [0, 5, 10] {
+            let (mesh, expected) = multi_attribute_annulus_mesh(17);
+            let expected_face_count = mesh.num_faces();
+            let position_id = mesh.named_attribute_id(GeometryAttributeType::Position);
+            let normal_id = mesh.named_attribute_id(GeometryAttributeType::Normal);
+            let tex_coord_id = mesh.named_attribute_id(GeometryAttributeType::TexCoord);
+
+            let mut options = EncoderOptions::default();
+            options.set_version(major, minor);
+            options.set_global_int("encoding_method", 1); // EdgeBreaker
+            options.set_global_int("encoding_speed", speed);
+            options.set_global_int("decoding_speed", speed);
+            options.set_attribute_int(position_id, "quantization_bits", 14);
+            // Deliberately generous, not a realistic setting: at 8 bits, octahedral
+            // quantization collapses enough nearby normals in this deterministic
+            // field that the set-matching assertions below hit a real ambiguity --
+            // two points whose quantized normals sit closer to each other than to
+            // their own expected value -- which is a limitation of matching by
+            // nearest-available-value, not a decode defect. Confirmed by rerunning
+            // the same case at 12 bits, where the ambiguity vanishes.
+            options.set_attribute_int(normal_id, "quantization_bits", 12);
+            options.set_attribute_int(tex_coord_id, "quantization_bits", 12);
+
+            let mut encoder = MeshEncoder::new();
+            encoder.set_mesh(mesh);
+            let mut encoded = EncoderBuffer::new();
+            encoder
+                .encode(&options, &mut encoded)
+                .unwrap_or_else(|err| {
+                    panic!("v{major}.{minor} at speed {speed}: Rust encode failed: {err:?}")
+                });
+
+            let name = format!("legacy_attrs_v{major}_{minor}_s{speed}");
+            let drc_path = tmp.join(format!("{name}.drc"));
+            let obj_path = tmp.join(format!("{name}.obj"));
+            fs::write(&drc_path, encoded.data()).expect("write Rust DRC");
+
+            let output = Command::new(&decoder_exe)
+                .arg("-i")
+                .arg(&drc_path)
+                .arg("-o")
+                .arg(&obj_path)
+                .output()
+                .expect("run C++ Draco decoder");
+            assert!(
+                output.status.success(),
+                "{name}: C++ decoder failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let obj = parse_obj(&fs::read_to_string(&obj_path).expect("read C++ decoded OBJ"));
+
+            // Rust decoding its own stream first localizes a failure to one
+            // side. This is how the bitstream-1.2 case here was found to be a
+            // decoder bug rather than a test artifact: below 2.0 this crate's
+            // decoder used to read `MeshPredictionGeometricNormal`'s position
+            // parent before position had been written at all, since -- unlike
+            // >= 2.0's separate portable-attribute list -- there was nothing
+            // else to read it from at that point. The fix was to stop
+            // selecting that scheme (and `MeshPredictionTexCoordsPortable`,
+            // same defect) below 2.0 rather than to chase the read ordering;
+            // `every_attribute_coding_round_trips_at_every_claimed_version` in
+            // `version_roundtrip_test.rs` pins the same round trip without a
+            // C++ dependency.
+            let mut rust_decoded = Mesh::new();
+            MeshDecoder::new()
+                .decode(&mut DecoderBuffer::new(encoded.data()), &mut rust_decoded)
+                .unwrap_or_else(|err| panic!("{name}: Rust self-decode failed: {err:?}"));
+            // By unique attribute *value*, not by point: EdgeBreaker duplicates
+            // points across a topology split, which `decoded_vertex_records`
+            // (built for seam-free meshes elsewhere in this file) would read as
+            // one entry per point and so over-count against `expected`, whose
+            // 289 normals are one per grid cell by construction.
+            let rust_normal_attribute = rust_decoded
+                .attribute(rust_decoded.named_attribute_id(GeometryAttributeType::Normal));
+            let rust_normals: Vec<[f32; 3]> = (0..rust_normal_attribute.size())
+                .map(|value_index| {
+                    let mut value = [0f32; 3];
+                    let stride = rust_normal_attribute.byte_stride() as usize;
+                    for (component, slot) in value.iter_mut().enumerate() {
+                        let mut bytes = [0u8; 4];
+                        rust_normal_attribute
+                            .buffer()
+                            .read(value_index * stride + component * 4, &mut bytes);
+                        *slot = f32::from_le_bytes(bytes);
+                    }
+                    value
+                })
+                .collect();
+            let expected_normals_for_self_check: Vec<[f32; 3]> =
+                expected.iter().map(|vertex| vertex.normal).collect();
+            assert_vec3_sets_match(
+                &expected_normals_for_self_check,
+                &rust_normals,
+                NORMAL_TOLERANCE,
+                &format!("{name} Rust self-decode normals"),
+            );
+
+            assert_eq!(
+                obj.faces.len(),
+                expected_face_count,
+                "{name}: C++ decoded OBJ face count mismatch"
+            );
+            let expected_positions: Vec<[f32; 3]> =
+                expected.iter().map(|vertex| vertex.position).collect();
+            let expected_normals: Vec<[f32; 3]> =
+                expected.iter().map(|vertex| vertex.normal).collect();
+            let expected_tex_coords: Vec<[f32; 2]> =
+                expected.iter().map(|vertex| vertex.tex_coord).collect();
+            assert_position_sets_match(&expected_positions, &obj.positions, &name);
+            assert_vec3_sets_match(
+                &expected_normals,
+                &obj.normals,
+                NORMAL_TOLERANCE,
+                &format!("{name} normals"),
+            );
+            assert_vec2_sets_match(
+                &expected_tex_coords,
+                &obj.tex_coords,
+                TEX_COORD_TOLERANCE,
+                &format!("{name} tex coords"),
+            );
+        }
+    }
+}
+
+/// C++ Draco reads back the predictive traversal this crate writes.
+///
+/// `force_predictive_traversal` is only legal below bitstream 2.0 --
+/// `validate_predictive_traversal` refuses it above that, since 2.x
+/// connectivity has no predictive traversal to read back -- so 1.1 and 1.2 are
+/// the whole claimed range for it. Predictive shares the split-event and
+/// attribute-scheme machinery with standard and valence, all now checked
+/// against real decoders elsewhere; what only a predictive-specific stream
+/// exercises is the traversal's own symbol coding.
+#[test]
+#[cfg(feature = "legacy_bitstream_encode")]
+fn cpp_decodes_the_predictive_traversal_this_crate_writes() {
+    let decoder_exe = find_cpp_tool("DRACO_CPP_DECODER", "draco_decoder.exe");
+    let tmp = std::env::temp_dir().join("draco_cpp_decodes_predictive_traversal");
+    fs::create_dir_all(&tmp).expect("create temp dir");
+
+    for (major, minor) in [(1u8, 1u8), (1, 2)] {
+        let (mesh, expected_positions) = annulus_mesh(17);
+        let expected_face_count = mesh.num_faces();
+        let position_id = mesh.named_attribute_id(GeometryAttributeType::Position);
+
+        let mut options = EncoderOptions::default();
+        options.set_version(major, minor);
+        options.set_global_int("encoding_method", 1); // EdgeBreaker
+        options.set_global_int("encoding_speed", 0);
+        options.set_global_int("decoding_speed", 0);
+        options.set_global_int("force_predictive_traversal", 1);
+        options.set_attribute_int(position_id, "quantization_bits", 14);
+
+        let mut encoder = MeshEncoder::new();
+        encoder.set_mesh(mesh);
+        let mut encoded = EncoderBuffer::new();
+        encoder
+            .encode(&options, &mut encoded)
+            .unwrap_or_else(|err| {
+                panic!("v{major}.{minor} predictive: Rust encode failed: {err:?}")
+            });
+
+        let name = format!("predictive_v{major}_{minor}");
+        let drc_path = tmp.join(format!("{name}.drc"));
+        let ply_path = tmp.join(format!("{name}.ply"));
+        fs::write(&drc_path, encoded.data()).expect("write Rust DRC");
+
+        let decoded = run_cpp_decoder(&decoder_exe, &drc_path, &ply_path, &name);
+        assert_eq!(
+            decoded.num_faces, expected_face_count,
+            "{name}: C++ decoded a different number of faces"
+        );
+        assert_position_sets_match(&expected_positions, &decoded.positions, &name);
     }
 }
 
