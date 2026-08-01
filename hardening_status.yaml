@@ -9,26 +9,28 @@
 #   behavior still belongs in implementation_state.yaml.
 
 version: 1
-last_reviewed: "2026-07-25"
+last_reviewed: "2026-08-01"
 
 scope:
   crate: "draco-core"
   surface: "Rust DRC decode of mesh and point-cloud streams"
   secondary_surface: "draco-gltf lossless document parsing and document-preserving Draco transforms for untrusted glTF/GLB bytes."
   tertiary_surface: "draco-io FBX reading: two hand-written parsers for untrusted input -- a length-prefixed binary container with a zlib path, and an ASCII container parsed as text."
+  quinary_surface: "draco-core encoding of caller-supplied geometry: a point count, an index buffer, attribute layouts, per-point attribute mappings and encoder options, all of which typically originate in a file some other library parsed and none of which the data model validates where it is set."
   quaternary_surface: "draco-texture KTX2 reading and Basis transcoding: a header of file-controlled offsets and lengths, a Zstd payload whose uncompressed size the header declares before it is decompressed, and block data indexed arithmetically from the dimensions the file states."
   compatibility_floor: "Draco 1.0.0+ for supported compatibility claims"
   threat_model:
     controlled_assets: "Known-good generated/fixture streams from trusted pipelines."
     untrusted_assets: "Externally supplied .drc bytes that may be truncated, corrupted, inconsistent, oversized, or adversarial."
     untrusted_gltf: "Externally supplied glTF/GLB bytes passed to draco-gltf; may reference out-of-range/oversized accessors, malformed GLB chunks, or hostile external resource URIs."
+    untrusted_encode_input: "Geometry assembled from an externally supplied file and handed to MeshEncoder/PointCloudEncoder: face indices past the point count, attributes shorter than the point count or mapped past their own value array, zero-component or untyped attributes, and quantization or version options outside any supported range."
     untrusted_fbx: "Externally supplied FBX bytes passed to draco-io; node records carry file-controlled lengths that feed allocations, arrays may be zlib-compressed, and the ASCII container is unbounded text."
 
 readiness:
   controlled_assets: "good"
   opportunistic_untrusted_decode: "good"
   arbitrary_hostile_input: "not_claimed"
-  summary: "Positive-path decode coverage is strong for the supported fixture set. Malformed-input behavior has deterministic regression coverage and several panic/resource hazards have been converted into controlled failures. Coverage-guided fuzzing is now operationalized (seed corpus + documented routine in FUZZING.md) and has already found and fixed multiple malformed-input hazards: count-driven memory-amplification OOMs (EdgeBreaker geometry counts, point-cloud point count, rANS probability table), an integer-overflow panic in portable-texcoord prediction (now wrapping like C++), and a multi-second CPU/memory DoS from an unbounded texcoord orientation count. All are pinned as deterministic regression tests. Caller resource policy is now documented in SECURITY.md. After these fixes a 300-second local campaign (24,715 executions, peak RSS under 1 GB) over the seeded corpus completed with no panic, OOM, or timeout. Fuzzing now runs in CI on Linux/ASan with release semantics (cargo-fuzz -O): a bounded smoke gate on every PR/push (no scheduled runs) with a cache-persisted corpus, a longer soak and ClusterFuzzLite PR/batch/prune available on manual dispatch. Remaining confidence is a function of accumulated soak time before arbitrary-hostile-input claims; note that development (non -O) fuzzing additionally surfaces DRACO_DCHECK-equivalent debug_assert! invariant violations, which are debug-only and do not reproduce in the shipped release build."
+  summary: "Positive-path decode coverage is strong for the supported fixture set. Malformed-input behavior has deterministic regression coverage and several panic/resource hazards have been converted into controlled failures. Coverage-guided fuzzing is now operationalized (seed corpus + documented routine in FUZZING.md) and has already found and fixed multiple malformed-input hazards: count-driven memory-amplification OOMs (EdgeBreaker geometry counts, point-cloud point count, rANS probability table), an integer-overflow panic in portable-texcoord prediction (now wrapping like C++), and a multi-second CPU/memory DoS from an unbounded texcoord orientation count. All are pinned as deterministic regression tests. Caller resource policy is now documented in SECURITY.md. After these fixes a 300-second local campaign (24,715 executions, peak RSS under 1 GB) over the seeded corpus completed with no panic, OOM, or timeout. Fuzzing now runs in CI on Linux/ASan with release semantics (cargo-fuzz -O): a bounded smoke gate on every PR/push (no scheduled runs) with a cache-persisted corpus, a longer soak and ClusterFuzzLite PR/batch/prune available on manual dispatch. Remaining confidence is a function of accumulated soak time before arbitrary-hostile-input claims; Encoding is now fuzzed as well: encode_drc builds geometry from the fuzz input and requires that the encoder never panics and that anything it accepts decodes, which found six encoder hazards - a zero-component attribute indexing an empty axis array, an attribute mapping reading past its own buffer, a face index past the point count, an unsupported target bitstream version, a point-cloud header missing its flags field below 1.3, and the legacy predictive traversal written into a 2.x stream - all fixed and pinned in encoder_hardening_test.rs. Note that development (non -O) fuzzing additionally surfaces DRACO_DCHECK-equivalent debug_assert! invariant violations, which are debug-only and do not reproduce in the shipped release build."
 
 completed:
   - id: gltf-compress-untrusted-input
@@ -474,6 +476,17 @@ completed:
       - path: "fuzz/fuzz_targets/ktx2_transcode.rs"
     note: "Offsets and lengths are checked as fits-in-what-is-left rather than as offset plus length, which wraps and passes. Dimensions are bounded at 16384 either way, without which every buffer sized as width by height wraps at 32 bits on the wasm32 target this ships to. A Zstd level's declared uncompressed length is bounded by what a level of those dimensions could hold, because it is what the output buffer is reserved from before anything is decompressed. Level and layer counts are bounded, and the ETC1S global data offsets are accumulated with checked addition and validated before the descriptor array is built. Six regression tests pin the individual cases, four sweeps cover every header field at eight extreme values, every truncation of every fixture and wholesale payload corruption, and a libFuzzer target parses arbitrary bytes and transcodes every level into every target. The two dimension and level-length bounds were added after auditing six 2026 hardening commits to the reference reader; the other four cases they cover were already handled."
 
+  - id: encode-input-validation
+    status: covered
+    evidence:
+      - path: "fuzz/fuzz_targets/encode_drc.rs"
+      - path: "crates/draco-core/tests/encoder_hardening_test.rs"
+      - path: "crates/draco-core/src/point_cloud_encoder.rs"
+      - path: "crates/draco-core/src/mesh_encoder.rs"
+      - path: "crates/draco-core/src/version.rs"
+      - path: "crates/draco-core/src/attribute_quantization_transform.rs"
+    note: "The encoders validate caller-supplied geometry once, before any encoder path derives a stride, a dimension or an offset from it: attributes must have components, a valid data type, and a point map that lands inside their own value array; mesh faces must reference points the mesh has; the target bitstream version must be one the crate writes; and the legacy predictive traversal is refused above 2.0. The quantization transform returns a failure instead of indexing when a source offset falls outside the buffer, matching its octahedron counterpart. Found by the encode_drc libFuzzer target, which also caught a point-cloud header that omitted its flags field below version 1.3 and so produced a stream its own decoder could not read; all cases are pinned in encoder_hardening_test.rs."
+
   - id: caller-resource-policy-documented
     status: covered
     evidence:
@@ -506,6 +519,23 @@ open_risks:
     next_steps:
       - "Keep decoder internals focused on overflow checks, relative input-consistency bounds, and fallible allocation rather than artificial mesh-size caps."
       - "Point production integrators at SECURITY.md for input-size, worker-isolation, timeout/cancellation, and memory-budget guidance."
+
+  - id: encode-legacy-version-round-trip
+    priority: medium
+    summary: "An explicitly requested non-default bitstream version can still produce a stream this crate's own decoder rejects, so encode_drc's round-trip oracle is held to the default version."
+    why_it_matters: "Legacy encode is version-gated field by field, and the gates are not all consistent with the decoder's: a point-cloud header written at 1.0 was two bytes short until this was fixed, and a sequential mesh at 2.1 still ends short. Nothing here is a memory-safety hazard - the encoder refuses or the decoder errors - but a caller that sets set_version for interoperability can get an unreadable file back."
+    next_steps:
+      - "Enumerate which versions the encoders actually claim, per geometry type and method, and reject the rest at validate_encodable_version rather than per field."
+      - "For each claimed version, add an encode/decode round-trip test, then narrow round_trip_is_claimed in fuzz/fuzz_targets/encode_drc.rs to what remains."
+
+  - id: decoder-count-guard-is-unsound
+    priority: medium
+    summary: "The decoder's header preflight rejects a point/face count above the remaining bitstream size in bits. The premise - at least one bit per point - is false, and the guard rejects streams this crate and C++ Draco both produce."
+    why_it_matters: "A geometry whose attribute values are all equal entropy-codes to a size independent of the point count: this encoder writes 100,000 points into 171 bytes, and its own decoder then refuses that file. So the guard is an interoperability bug as well as a false negative for hardening. It is also what currently bounds count-driven allocation from a tiny header, which is why it cannot simply be deleted."
+    next_steps:
+      - "Establish what actually bounds allocation once the guard is gone: every count-driven allocation is already fallible, so the question is whether fallible allocation alone is enough under overcommit, or whether an explicit decode limit is needed as the FBX and KTX2 readers have."
+      - "Replace the relative guard with whichever of those the answer is, keeping oversized_drc_counts_fail_before_large_allocation passing."
+      - "Remove the matching exclusion from round_trip_is_claimed in fuzz/fuzz_targets/encode_drc.rs."
 
   - id: decode-error-api-cleanup
     priority: medium

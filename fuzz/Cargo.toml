@@ -8,7 +8,21 @@ edition = "2021"
 cargo-fuzz = true
 
 [dependencies]
-draco-core = { path = "../crates/draco-core", default-features = false, features = ["decoder", "point_cloud_decode", "edgebreaker_valence_decode", "legacy_bitstream_decode"] }
+# The encoder is fuzzed alongside the decoder (see `encode_drc`), so the encode
+# features are on as well, legacy ones included. Writing obsolete bitstreams is
+# closer to a testing facility than to something a caller is handed hostile data
+# for, but a feature left off is a code path the campaign cannot reach at all:
+# the legacy encode paths are compiled into the default build, so a fuzz build
+# that drops them tests less than what ships.
+draco-core = { path = "../crates/draco-core", default-features = false, features = [
+    "encoder",
+    "decoder",
+    "point_cloud_decode",
+    "edgebreaker_valence_encode",
+    "edgebreaker_valence_decode",
+    "legacy_bitstream_encode",
+    "legacy_bitstream_decode",
+] }
 draco-gltf = { path = "../crates/draco-gltf" }
 # The FBX reader parses untrusted binary with length-prefixed arrays and a
 # decompression path, so it needs coverage-guided fuzzing as much as the Draco
@@ -29,6 +43,13 @@ libfuzzer-sys = "0.4"
 [[bin]]
 name = "decode_drc"
 path = "fuzz_targets/decode_drc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "encode_drc"
+path = "fuzz_targets/encode_drc.rs"
 test = false
 doc = false
 bench = false

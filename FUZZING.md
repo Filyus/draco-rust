@@ -2,7 +2,11 @@
 
 Draco decodes attacker-controllable byte streams, so the decode path is fuzzed
 to confirm that malformed, truncated, or adversarial `.drc` input fails as a
-controlled `DracoError` instead of panicking, hanging, or over-allocating.
+controlled `DracoError` instead of panicking, hanging, or over-allocating. The
+encode path is fuzzed for the same reason: the geometry handed to an encoder
+usually came out of a file some other library parsed, so its point count, index
+buffer, attribute mappings and quantization settings are attacker-controllable
+too.
 
 This document is the operational routine for that fuzzing. The decode hardening
 status, threat model, and known residual risk live in
@@ -17,6 +21,7 @@ status, threat model, and known residual risk live in
 | `draco_gltf_import` | [`fuzz/fuzz_targets/draco_gltf_import.rs`](fuzz/fuzz_targets/draco_gltf_import.rs) | Imports a full scene through `draco-gltf`, decodes every Draco primitive, then exercises atomic in-place decompression. |
 | `fbx_read_scene` | [`fuzz/fuzz_targets/fbx_read_scene.rs`](fuzz/fuzz_targets/fbx_read_scene.rs) | Reads arbitrary bytes as an FBX scene under tight decode limits, in both lenient and strict modes, and checks that reading the same input twice agrees. |
 | `fbx_roundtrip` | [`fuzz/fuzz_targets/fbx_roundtrip.rs`](fuzz/fuzz_targets/fbx_roundtrip.rs) | Writes back whatever the FBX reader accepted and requires the result to satisfy the reader's strict mode, so the writer is fuzzed with scenes nobody would hand-build. |
+| `encode_drc` | [`fuzz/fuzz_targets/encode_drc.rs`](fuzz/fuzz_targets/encode_drc.rs) | Builds a mesh or point cloud from the input - point count, triangle indices, attribute layouts and payloads, encoder options - encodes it, and requires that anything the encoder accepted decodes. |
 | `ktx2_transcode` | [`fuzz/fuzz_targets/ktx2_transcode.rs`](fuzz/fuzz_targets/ktx2_transcode.rs) | Parses arbitrary bytes as KTX2 and transcodes every level small enough into every target, so that an allocation failure is a finding rather than the header's own arithmetic. |
 
 `decode_drc` builds `draco-core` with `default-features = false` and enables the
@@ -81,6 +86,48 @@ The two divide the work the way they should - the sweep covers the fields
 someone would actually reach for, in under three seconds; the campaign looks
 for what nobody thought to sweep.
 
+### The encoder target
+
+`encode_drc` is the one target whose input is not a file. It is a geometry
+*description*, decoded by hand from the fuzz bytes with every bound stated in
+the target: at most 2048 points, 2048 faces and 4 attributes, so an execution
+stays in the millisecond range and the campaign explores encoder configurations
+rather than one large mesh.
+
+It deliberately generates geometry no correct caller would build - a face index
+past the point count, an attribute shorter than the point count, an explicit
+point map pointing past the value array, zero-component attributes, quantization
+bit counts outside 1..=30 - because that is exactly the shape of geometry
+assembled from an untrusted file. Nothing between such a file and the encoder
+re-validates it, and the encoder used to index straight off those numbers.
+
+Two oracles:
+
+1. **Encoding must not panic.** Whatever the geometry says, the answer is a
+   bitstream or a `DracoError`.
+2. **Anything the encoder accepted must decode.** A stream the encoder produced
+   and the decoder refuses is a bitstream bug that decode-side fuzzing cannot
+   find, because it never produces such a stream.
+
+Oracle 2 is held to the default bitstream version. An explicitly requested
+legacy version is still encoded - oracle 1 covers it - but not round-tripped,
+because legacy encode is version-gated field by field and several of those gates
+still disagree with the decoder; see `round_trip_is_claimed` in the target
+for the current exclusions and what removing each one requires - each is decided
+from the geometry and the stream, never from the decoder's error text. Set
+`ENCODE_DRC_NO_DECODE_ORACLE=1` to drop oracle 2 entirely, which is how you
+run past a known disagreement to the panics behind it.
+
+The first campaigns over this target found, and the fixes are pinned in
+[`crates/draco-core/tests/encoder_hardening_test.rs`](crates/draco-core/tests/encoder_hardening_test.rs):
+a zero-component attribute indexing an empty axis array in the KD-tree coder; an
+attribute mapping reading past its own value buffer; a face index past the point
+count indexing the point-to-vertex map; a target bitstream version nobody
+supports selecting a header layout piecemeal; a point-cloud header that omitted
+its flags field below 1.3 and so was two bytes short of what its own decoder
+reads; and the legacy predictive traversal being written into a 2.x stream that
+has no place to read it from.
+
 ### `-O`: fuzz with production (release) semantics
 
 Pass `-O` to `cargo fuzz` to build in release mode **without** debug assertions
@@ -142,6 +189,7 @@ pwsh fuzz/seed_corpus.ps1 -Target compress_gltf
 pwsh fuzz/seed_corpus.ps1 -Target draco_gltf_import
 pwsh fuzz/seed_corpus.ps1 -Target fbx_read_scene
 pwsh fuzz/seed_corpus.ps1 -Target fbx_roundtrip
+pwsh fuzz/seed_corpus.ps1 -Target encode_drc
 ```
 
 ```bash
@@ -150,7 +198,12 @@ pwsh fuzz/seed_corpus.ps1 -Target fbx_roundtrip
 ./fuzz/seed_corpus.sh draco_gltf_import
 ./fuzz/seed_corpus.sh fbx_read_scene
 ./fuzz/seed_corpus.sh fbx_roundtrip
+./fuzz/seed_corpus.sh encode_drc
 ```
+
+`encode_drc` takes no repository fixture either - its input is a geometry
+description, not a file - so it is seeded from `fuzz/seeds/encode_drc/`,
+which holds the reproducers from earlier campaigns.
 
 No `.fbx` fixtures are committed under `testdata/`, so the FBX targets are
 seeded entirely from `fuzz/seeds/<target>/`. Those files are generated rather
@@ -190,6 +243,9 @@ cargo +nightly fuzz run -O fbx_read_scene --fuzz-dir fuzz -- -max_total_time=120
 # FBX read/write/read round-trip
 cargo +nightly fuzz run -O fbx_roundtrip --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
 
+# Encoder: geometry built from the input, encoded, and decoded back
+cargo +nightly fuzz run -O encode_drc --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
+
 # Longer decode soak run
 cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz -- -max_total_time=3600 -rss_limit_mb=4096
 ```
@@ -216,6 +272,7 @@ cargo +nightly fuzz cmin -O compress_gltf --fuzz-dir fuzz
 cargo +nightly fuzz cmin -O draco_gltf_import --fuzz-dir fuzz
 cargo +nightly fuzz cmin -O fbx_read_scene --fuzz-dir fuzz
 cargo +nightly fuzz cmin -O fbx_roundtrip --fuzz-dir fuzz
+cargo +nightly fuzz cmin -O encode_drc --fuzz-dir fuzz
 ```
 
 ## Reproducing and triaging a crash
@@ -224,7 +281,7 @@ A failing input is written to `fuzz/artifacts/<target>/`. Re-run it
 deterministically and minimize it by substituting the affected target below:
 
 ```powershell
-$Target = "draco_gltf_import" # or decode_drc, compress_gltf, fbx_read_scene, fbx_roundtrip
+$Target = "draco_gltf_import" # or decode_drc, compress_gltf, fbx_read_scene, fbx_roundtrip, encode_drc
 $Crash = "fuzz/artifacts/$Target/crash-<hash>"
 
 # Replay a specific crashing input (use -O to match the CI gate's build)
@@ -239,7 +296,9 @@ When a crash is confirmed, keep the minimized input under
 the affected surface. Decoder regressions belong in
 [`crates/draco-core/tests/drc_edge_cases_test.rs`](crates/draco-core/tests/drc_edge_cases_test.rs)
 (see the `*_do_not_panic` tests); glTF compressor/import regressions belong in
-the corresponding `draco-io` or `draco-gltf` test suite. FBX regressions belong
+the corresponding `draco-io` or `draco-gltf` test suite. Encoder regressions belong in
+[`crates/draco-core/tests/encoder_hardening_test.rs`](crates/draco-core/tests/encoder_hardening_test.rs).
+FBX regressions belong
 in the `fbx_reader` / `fbx_writer` unit tests — see
 `a_short_footer_is_refused_instead_of_panicking`, which came straight from
 `fbx_read_scene`. This keeps every case covered on stable CI without requiring
@@ -258,8 +317,8 @@ changes, plus deeper runs on demand. Trigger a manual run with
 **Level 1 — lightweight in-repo gate ([`.github/workflows/fuzz.yml`](.github/workflows/fuzz.yml)):**
 
 - Bounded smoke runs (`-max_total_time=120`) for `decode_drc`,
-  `compress_gltf`, `draco_gltf_import`, `fbx_read_scene` and `fbx_roundtrip`
-  on every pull request and push to `main`. A manual dispatch runs longer soaks (`-max_total_time=1800`).
+  `compress_gltf`, `draco_gltf_import`, `fbx_read_scene`, `fbx_roundtrip` and
+  `encode_drc` on every pull request and push to `main`. A manual dispatch runs longer soaks (`-max_total_time=1800`).
 - The corpus is persisted across runs via the GitHub Actions cache and
   re-seeded from the committed fixtures each run, so coverage never starts from
   zero even if the cache entry is evicted.

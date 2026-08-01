@@ -81,6 +81,7 @@ jobs:
           ./fuzz/seed_corpus.sh draco_gltf_import
           ./fuzz/seed_corpus.sh fbx_read_scene
           ./fuzz/seed_corpus.sh fbx_roundtrip
+          ./fuzz/seed_corpus.sh encode_drc
 
       # The decode target includes legacy decode features so old bitstream paths
       # get coverage-guided fuzzing, not just deterministic fixture tests.
@@ -136,10 +137,21 @@ jobs:
             -max_total_time=${{ steps.dur.outputs.seconds }} \
             -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
 
+      # The only target that fuzzes the encoder rather than a parser: its input
+      # is a geometry description, so the encoder sees index buffers, attribute
+      # mappings and options no caller would write by hand. It also checks that
+      # a stream the encoder accepted decodes.
+      - name: Fuzz encode_drc
+        run: |
+          cargo +nightly fuzz run -O encode_drc --fuzz-dir fuzz \
+            --target x86_64-unknown-linux-gnu -- \
+            -max_total_time=${{ steps.dur.outputs.seconds }} \
+            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
+
       - name: Minimize corpora
         if: always()
         run: |
-          for target in decode_drc compress_gltf draco_gltf_import fbx_read_scene fbx_roundtrip; do
+          for target in decode_drc compress_gltf draco_gltf_import fbx_read_scene fbx_roundtrip encode_drc; do
             cargo +nightly fuzz cmin -O "$target" --fuzz-dir fuzz \
               --target x86_64-unknown-linux-gnu
           done
