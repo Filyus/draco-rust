@@ -56,7 +56,7 @@ pub trait GeometryDecoder {
 /// the origin, with the point and face counts still right and the decode still
 /// reporting success. Draco writes `PREDICTION_NONE` at compression level 0.
 #[cfg(feature = "point_cloud_decode")]
-fn carries_transform_byte(method_byte: u8) -> bool {
+pub(crate) fn carries_transform_byte(method_byte: u8) -> bool {
     method_byte != 0xFF && method_byte != 0xFE
 }
 
@@ -463,7 +463,7 @@ impl PointCloudDecoder {
                             // Legacy compatibility shim: C++ bitstreams with version <= 1.1
                             // store quantization params before integer values in the stream.
                             // v1.2+ (including Rust-generated v1.3) stores them after.
-                            let quant_skip_bytes = if bitstream_version < 0x0102 {
+                            let quant_skip_bytes = if bitstream_version < 0x0200 {
                                 let saved_pos = buffer.position();
                                 let method_byte = buffer.decode_u8().map_err(|_| {
                                     DracoError::general("read pred method".to_string())
@@ -548,7 +548,7 @@ impl PointCloudDecoder {
                             // store octahedron quantization bits after the prediction header
                             // but before integer values. v1.2+ stores them after.
                             let mut quant_bits: u8 = 0;
-                            let normal_skip_bytes = if bitstream_version < 0x0102 {
+                            let normal_skip_bytes = if bitstream_version < 0x0200 {
                                 let saved_pos = buffer.position();
                                 let method_byte = buffer.decode_u8().map_err(|_| {
                                     DracoError::general("read pred method".to_string())
@@ -644,7 +644,7 @@ impl PointCloudDecoder {
 
                 for (local_i, &att_id) in att_ids.iter().enumerate() {
                     match decoder_types[local_i] {
-                        2 if bitstream_version >= 0x0102 => {
+                        2 if bitstream_version >= 0x0200 => {
                             let idx = pending_quant
                                 .iter()
                                 .position(|p| p.att_id == att_id)
@@ -663,7 +663,7 @@ impl PointCloudDecoder {
                                     ))
                                 })?;
                         }
-                        3 if bitstream_version >= 0x0102 => {
+                        3 if bitstream_version >= 0x0200 => {
                             let idx = pending_normals
                                 .iter()
                                 .position(|p| p.att_id == att_id)
@@ -701,7 +701,7 @@ impl PointCloudDecoder {
                     oct.inverse_transform_attribute_with_legacy_octahedron(
                         &n.portable,
                         dst,
-                        bitstream_version < 0x0102,
+                        bitstream_version < 0x0200,
                     )
                     .map_err(|e| DracoError::general(format!("Failed to decode normals: {e}")))?;
                 }

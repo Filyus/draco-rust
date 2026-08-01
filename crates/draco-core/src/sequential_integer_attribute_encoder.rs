@@ -8,8 +8,6 @@
 
 use crate::attribute_quantization_transform::AttributeQuantizationTransform;
 use crate::attribute_transform::AttributeTransform;
-#[cfg(feature = "legacy_bitstream_encode")]
-use crate::compression_config::EncodedGeometryType;
 use crate::data_buffer::DataBuffer;
 use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;
@@ -92,7 +90,6 @@ pub(crate) fn uses_inline_quantization_parameters(
     attribute: &crate::geometry_attribute::PointAttribute,
     options: &EncoderOptions,
     att_id: i32,
-    encoder: &dyn GeometryEncoder,
 ) -> bool {
     use crate::sequential_attribute_encoder::{
         select_sequential_encoder, SequentialAttributeEncoderType,
@@ -106,13 +103,14 @@ pub(crate) fn uses_inline_quantization_parameters(
     }
     let (major, minor) = options.get_version();
     let bitstream_version = crate::version::bitstream_version(major, minor);
-    bitstream_version != 0
-        && match encoder.get_geometry_type() {
-            EncodedGeometryType::TriangularMesh => bitstream_version < 0x0200,
-            // The point-cloud decoder reads them inline below 1.2, which is
-            // older than any version this crate writes for a point cloud.
-            _ => false,
-        }
+    // Upstream decides on the version alone: `DecodeQuantizedDataInfo` is called
+    // from `DecodeIntegerValues` for every stream below 2.0 and from
+    // `DecodeDataNeededByPortableTransform` at 2.0 and up, and the attribute
+    // decoder it lives in is shared by meshes and point clouds. Splitting the
+    // rule by geometry type put a point cloud's parameters where no C++ decoder
+    // looks for them, and this crate's own decoder had the matching split, so
+    // the round trip agreed with itself.
+    bitstream_version != 0 && bitstream_version < 0x0200
 }
 
 pub struct SequentialIntegerAttributeEncoder {
@@ -1106,12 +1104,9 @@ impl SequentialIntegerAttributeEncoder {
         ) {
             let (major, minor) = options.get_version();
             let bitstream_version = crate::version::bitstream_version(major, minor);
-            let uses_inline_normal_transform_data = bitstream_version != 0
-                && match encoder.get_geometry_type() {
-                    EncodedGeometryType::TriangularMesh => bitstream_version < 0x0200,
-                    EncodedGeometryType::PointCloud => bitstream_version < 0x0102,
-                    _ => false,
-                };
+            // Version alone, for the same reason as `writes_inline_quantization`.
+            let uses_inline_normal_transform_data =
+                bitstream_version != 0 && bitstream_version < 0x0200;
             if uses_inline_normal_transform_data {
                 let quantization_bits = options.get_attribute_int(att_id, "quantization_bits", -1);
                 if !(2..=30).contains(&quantization_bits) {
@@ -1131,7 +1126,7 @@ impl SequentialIntegerAttributeEncoder {
         // produced a stream whose decode failed on the parameters it expected to
         // find in front.
         #[cfg(feature = "legacy_bitstream_encode")]
-        if uses_inline_quantization_parameters(attribute, options, att_id, encoder) {
+        if uses_inline_quantization_parameters(attribute, options, att_id) {
             let quantization_bits = options.get_attribute_int(att_id, "quantization_bits", -1);
             let mut transform = AttributeQuantizationTransform::new();
             transform.compute_parameters(attribute, quantization_bits)?;

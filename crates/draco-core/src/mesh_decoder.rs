@@ -1053,7 +1053,7 @@ impl MeshDecoder {
                                         "Failed to read prediction method".to_string(),
                                     )
                                 })?;
-                                if method_byte != 0xFF {
+                                if crate::point_cloud_decoder::carries_transform_byte(method_byte) {
                                     let _transform_byte = buffer.decode_u8().map_err(|_| {
                                         DracoError::general(
                                             "Failed to read transform type".to_string(),
@@ -1067,7 +1067,14 @@ impl MeshDecoder {
                                     ))
                                 })?;
                                 let bytes_consumed = buffer.position() - saved_pos;
-                                let pred_header_bytes = if method_byte != 0xFF { 2 } else { 1 };
+                                let pred_header_bytes =
+                                    if crate::point_cloud_decoder::carries_transform_byte(
+                                        method_byte,
+                                    ) {
+                                        2
+                                    } else {
+                                        1
+                                    };
                                 let skip = bytes_consumed - pred_header_bytes;
                                 buffer.set_position(saved_pos).map_err(|_| {
                                     DracoError::general(
@@ -1148,7 +1155,7 @@ impl MeshDecoder {
                                         "Failed to read prediction method".to_string(),
                                     )
                                 })?;
-                                if method_byte != 0xFF {
+                                if crate::point_cloud_decoder::carries_transform_byte(method_byte) {
                                     let _transform_byte = buffer.decode_u8().map_err(|_| {
                                         DracoError::general(
                                             "Failed to read transform type".to_string(),
@@ -1169,7 +1176,14 @@ impl MeshDecoder {
                                     ));
                                 }
                                 let bytes_consumed = buffer.position() - saved_pos;
-                                let pred_header_bytes = if method_byte != 0xFF { 2 } else { 1 };
+                                let pred_header_bytes =
+                                    if crate::point_cloud_decoder::carries_transform_byte(
+                                        method_byte,
+                                    ) {
+                                        2
+                                    } else {
+                                        1
+                                    };
                                 let skip = bytes_consumed - pred_header_bytes;
                                 buffer.set_position(saved_pos).map_err(|_| {
                                     DracoError::general(

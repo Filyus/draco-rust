@@ -135,6 +135,24 @@ premise holds, and the encoder reports the choices it makes for itself.
   block, the deprecated tex-coords, geometric-normal and portable tex-coords
   schemes, and the pre-2.0 quantization parameters are written in the layout the
   target version specifies.
+- A stream written at compression level 0 by Draco 0.9.1 or 0.10.0 decodes to
+  its geometry rather than to the origin. Those streams carry no prediction
+  scheme, and upstream's sentinel for that is `PREDICTION_NONE` = -2 = `0xFE`;
+  the pre-2.0 shims that walk the prediction header to reach the quantization
+  parameters behind it tested `0xFF` alone, stepped one byte in, and read the
+  parameters shifted. The range came out zero, so every position dequantized to
+  the origin — with the point and face counts right and the decode reporting
+  success, which is why the fixture suite never saw it.
+- **Breaking, on the bitstream.** A point cloud below 2.0 carries its
+  quantization parameters inline, before the integer values, as a mesh already
+  did. Upstream decides the placement on the version alone —
+  `DecodeQuantizedDataInfo` is called from `DecodeIntegerValues` below 2.0 and
+  from `DecodeDataNeededByPortableTransform` above it, in an attribute decoder
+  shared by both geometry types — and this crate split the rule by geometry
+  type on both sides at once, so its own round trip agreed with itself while no
+  C++ decoder could read a 1.3 point cloud. A 1.3 point cloud written by 1.x is
+  not readable by 2.0 and the reverse, which is the point: only one of them was
+  ever Draco.
 - A pre-1.2 stream no longer carries the rANS zero-run token. Token 3 in a
   probability byte means "a run of zero-probability symbols follows" only from
   Draco 0.10.0, whose bitstream is 1.2; before that it meant "three extra

@@ -433,7 +433,6 @@ impl MeshEncoder {
                 mesh.attribute(att_id),
                 &self.options,
                 att_id,
-                self,
             )
         }
         #[cfg(not(feature = "legacy_bitstream_encode"))]
