@@ -29,6 +29,7 @@ use crate::prediction_scheme_parallelogram::MeshPredictionSchemeParallelogramDec
 use crate::prediction_scheme_tex_coords_deprecated::MeshPredictionSchemeTexCoordsDeprecatedDecoder;
 use crate::prediction_scheme_tex_coords_portable::MeshPredictionSchemeTexCoordsPortableDecoder;
 use crate::prediction_scheme_wrap::PredictionSchemeWrapDecodingTransform;
+use crate::status::{DracoError, Status};
 use crate::symbol_encoding::{decode_symbols, SymbolEncodingOptions};
 
 pub struct SequentialIntegerAttributeDecoder {
@@ -40,7 +41,7 @@ fn build_vertex_to_data_map_from_data_to_corner_map(
     corner_table: &CornerTable,
     data_to_corner_map: &[u32],
     vertex_to_data_map: &mut Vec<i32>,
-) -> bool {
+) -> Status {
     vertex_to_data_map.resize(corner_table.num_vertices(), -1);
     for (data_id, &corner_u32) in data_to_corner_map.iter().enumerate() {
         let corner_id = CornerIndex(corner_u32);
@@ -48,15 +49,21 @@ fn build_vertex_to_data_map_from_data_to_corner_map(
             continue;
         }
         if corner_id.0 as usize >= corner_table.num_corners() {
-            return false;
+            return Err(DracoError::DracoError(format!(
+                "Entry {data_id} maps to corner {corner_u32}, past the {} in the table",
+                corner_table.num_corners()
+            )));
         }
         let v = corner_table.vertex(corner_id).0 as usize;
         let Some(slot) = vertex_to_data_map.get_mut(v) else {
-            return false;
+            return Err(DracoError::DracoError(format!(
+                "Corner {corner_u32} maps to vertex {v}, past the {} in the table",
+                corner_table.num_vertices()
+            )));
         };
         *slot = data_id as i32;
     }
-    true
+    Ok(())
 }
 
 /// Runs `decode_prediction_data` on the selected predictor, logging and failing
@@ -67,16 +74,13 @@ fn build_vertex_to_data_map_from_data_to_corner_map(
 fn run_decode_prediction_data<'a, P: PredictionSchemeDecoder<'a, i32, i32> + ?Sized>(
     predictor: Option<&mut P>,
     buffer: &mut DecoderBuffer,
-) -> bool {
+) -> Status {
     let Some(predictor) = predictor else {
-        debug_log!("Predictor was selected but not initialized");
-        return false;
+        return Err(DracoError::DracoError(
+            "Predictor was selected but not initialized".to_string(),
+        ));
     };
-    if predictor.decode_prediction_data(buffer).is_err() {
-        debug_log!("Failed to decode prediction data");
-        return false;
-    }
-    true
+    predictor.decode_prediction_data(buffer)
 }
 
 /// Runs `compute_original_values` on the selected predictor, with the same
@@ -88,25 +92,19 @@ fn run_compute_original_values<'a, P: PredictionSchemeDecoder<'a, i32, i32> + ?S
     num_values: usize,
     num_components: usize,
     entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
-) -> bool {
+) -> Status {
     let Some(predictor) = predictor else {
-        debug_log!("Predictor was selected but not initialized");
-        return false;
+        return Err(DracoError::DracoError(
+            "Predictor was selected but not initialized".to_string(),
+        ));
     };
-    if predictor
-        .compute_original_values(
-            corrections,
-            values,
-            num_values,
-            num_components,
-            entry_to_point_id_map,
-        )
-        .is_err()
-    {
-        debug_log!("Failed to compute original values");
-        return false;
-    }
-    true
+    predictor.compute_original_values(
+        corrections,
+        values,
+        num_values,
+        num_components,
+        entry_to_point_id_map,
+    )
 }
 
 impl Default for SequentialIntegerAttributeDecoder {
@@ -154,24 +152,23 @@ impl SequentialIntegerAttributeDecoder {
         portable_attribute: Option<&mut PointAttribute>,
         portable_parent_attribute: Option<&PointAttribute>,
         pre_integer_decode: Option<&mut dyn FnMut(&mut DecoderBuffer<'_>) -> bool>,
-    ) -> bool {
+    ) -> Status {
         let att_id = self.attribute;
         if att_id < 0 {
-            return false;
+            return Err(DracoError::InvalidParameter(
+                "Integer attribute decoder was never given an attribute".to_string(),
+            ));
         }
 
         let num_points = point_ids.len();
         if num_points == 0 {
-            return true;
+            return Ok(());
         }
 
         let attribute = if let Some(ref pa) = portable_attribute {
             &**pa
         } else {
-            let Ok(attribute) = point_cloud.try_attribute(att_id) else {
-                return false;
-            };
-            attribute
+            point_cloud.try_attribute(att_id)?
         };
 
         let num_components = attribute.num_components() as usize;
@@ -179,15 +176,18 @@ impl SequentialIntegerAttributeDecoder {
         // wasm32 target this ships to, where the product of a large point count
         // and 255 components wraps rather than saturating.
         let Some(num_values) = num_points.checked_mul(num_components) else {
-            return false;
+            return Err(DracoError::DracoError(format!(
+                "{num_points} points times {num_components} components overflows"
+            )));
         };
 
         // 3. Decode Prediction Method and (optional) prepare predictor
         let method_byte = match in_buffer.decode_u8() {
             Ok(v) => v,
             Err(_) => {
-                debug_log!("Failed to decode prediction method");
-                return false;
+                return Err(DracoError::DracoError(
+                    "Failed to decode prediction method".to_string(),
+                ));
             }
         };
 
@@ -200,7 +200,9 @@ impl SequentialIntegerAttributeDecoder {
             match PredictionSchemeMethod::try_from(method_byte) {
                 Ok(m) => m,
                 Err(_) => {
-                    return false;
+                    return Err(DracoError::UnsupportedFeature(format!(
+                        "Prediction method {method_byte}"
+                    )));
                 }
             }
         };
@@ -208,29 +210,29 @@ impl SequentialIntegerAttributeDecoder {
         let mut selected_transform: Option<PredictionSchemeTransformType> = None;
         if selected_method != PredictionSchemeMethod::None {
             // Draco stores prediction transform type as int8 (0xFF == -1 == None).
-            let transform_byte = match in_buffer.decode_u8() {
-                Ok(v) => v,
-                Err(_) => return false,
-            };
+            let transform_byte = in_buffer.decode_u8().map_err(|_| {
+                DracoError::BufferError(
+                    "Stream ends before the prediction transform type".to_string(),
+                )
+            })?;
             if transform_byte != 0xFF {
                 match PredictionSchemeTransformType::try_from(transform_byte) {
                     Ok(t) => selected_transform = Some(t),
                     Err(_) => {
-                        return false;
+                        return Err(DracoError::UnsupportedFeature(format!(
+                            "Prediction transform type {transform_byte}"
+                        )));
                     }
                 }
             }
         }
 
         if let Some(ref scheme) = self.prediction_scheme {
-            // debug_log!("DEBUG: Decoder scheme method: {:?}", scheme.get_prediction_method());
             if scheme.get_prediction_method() != selected_method {
-                debug_log!(
-                    "Prediction method mismatch. Stream: {:?}, Scheme: {:?}",
-                    selected_method,
+                return Err(DracoError::DracoError(format!(
+                    "Prediction method mismatch. Stream: {selected_method:?}, Scheme: {:?}",
                     scheme.get_prediction_method()
-                );
-                return false;
+                )));
             }
         }
 
@@ -320,8 +322,9 @@ impl SequentialIntegerAttributeDecoder {
                     if let Some(map) = vertex_to_data_map_override {
                         // Use the pre-built vertex_to_data_map from mesh decoder
                         if map.len() != corner_table.num_vertices() {
-                            debug_log!("Invalid vertex_to_data_map_override length");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Invalid vertex_to_data_map_override length".to_string(),
+                            ));
                         }
                         vertex_to_data_map.resize(map.len(), 0);
                         vertex_to_data_map.copy_from_slice(map);
@@ -329,40 +332,36 @@ impl SequentialIntegerAttributeDecoder {
                         // Also set data_to_corner_map if override is available
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                debug_log!("Invalid data_to_corner_map_override length");
-                                return false;
+                                return Err(DracoError::DracoError(
+                                    "Invalid data_to_corner_map_override length".to_string(),
+                                ));
                             }
                             data_to_corner_map.copy_from_slice(dcm);
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            debug_log!("Invalid data_to_corner_map_override length");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Invalid data_to_corner_map_override length".to_string(),
+                            ));
                         }
                         data_to_corner_map.copy_from_slice(map);
 
                         // When using an override, the corner table may contain seam-split
                         // vertices with ids outside the original point range. Build the
                         // vertex->data map from the data->corner map.
-                        if !build_vertex_to_data_map_from_data_to_corner_map(
+                        build_vertex_to_data_map_from_data_to_corner_map(
                             corner_table,
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
-                        ) {
-                            debug_log!("Invalid data_to_corner_map corner id");
-                            return false;
-                        }
+                        )?;
                     } else {
                         // Build vertex_to_data_map from data_to_corner_map using corner table vertex IDs
                         // This is the same logic as the 'if' branch above
-                        if !build_vertex_to_data_map_from_data_to_corner_map(
+                        build_vertex_to_data_map_from_data_to_corner_map(
                             corner_table,
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
-                        ) {
-                            debug_log!("Invalid data_to_corner_map corner id");
-                            return false;
-                        }
+                        )?;
                     }
 
                     let mut mesh_data = MeshPredictionSchemeData::new();
@@ -374,8 +373,9 @@ impl SequentialIntegerAttributeDecoder {
                     );
                     predictor_parallelogram_opt = Some(predictor);
                 } else {
-                    debug_log!("Parallelogram prediction requires corner table");
-                    return false;
+                    return Err(DracoError::DracoError(
+                        "Parallelogram prediction requires corner table".to_string(),
+                    ));
                 }
             }
             #[cfg(feature = "legacy_bitstream_decode")]
@@ -385,43 +385,40 @@ impl SequentialIntegerAttributeDecoder {
 
                     if let Some(map) = vertex_to_data_map_override {
                         if map.len() != corner_table.num_vertices() {
-                            debug_log!("Invalid vertex_to_data_map_override length");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Invalid vertex_to_data_map_override length".to_string(),
+                            ));
                         }
                         vertex_to_data_map.resize(map.len(), 0);
                         vertex_to_data_map.copy_from_slice(map);
 
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                debug_log!("Invalid data_to_corner_map_override length");
-                                return false;
+                                return Err(DracoError::DracoError(
+                                    "Invalid data_to_corner_map_override length".to_string(),
+                                ));
                             }
                             data_to_corner_map.copy_from_slice(dcm);
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            debug_log!("Invalid data_to_corner_map_override length");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Invalid data_to_corner_map_override length".to_string(),
+                            ));
                         }
                         data_to_corner_map.copy_from_slice(map);
 
-                        if !build_vertex_to_data_map_from_data_to_corner_map(
+                        build_vertex_to_data_map_from_data_to_corner_map(
                             corner_table,
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
-                        ) {
-                            debug_log!("Invalid data_to_corner_map corner id");
-                            return false;
-                        }
+                        )?;
                     } else {
-                        if !build_vertex_to_data_map_from_data_to_corner_map(
+                        build_vertex_to_data_map_from_data_to_corner_map(
                             corner_table,
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
-                        ) {
-                            debug_log!("Invalid data_to_corner_map corner id");
-                            return false;
-                        }
+                        )?;
                     }
 
                     let mut mesh_data = MeshPredictionSchemeData::new();
@@ -432,14 +429,16 @@ impl SequentialIntegerAttributeDecoder {
                         MeshPredictionSchemeMultiParallelogramDecoder::new(transform, mesh_data);
                     predictor_multi_parallelogram_opt = Some(predictor);
                 } else {
-                    debug_log!("MultiParallelogram prediction requires corner table");
-                    return false;
+                    return Err(DracoError::DracoError(
+                        "MultiParallelogram prediction requires corner table".to_string(),
+                    ));
                 }
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                debug_log!("MultiParallelogram prediction is disabled");
-                return false;
+                return Err(DracoError::DracoError(
+                    "MultiParallelogram prediction is disabled".to_string(),
+                ));
             }
             PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
                 if let Some(corner_table) = corner_table {
@@ -451,8 +450,9 @@ impl SequentialIntegerAttributeDecoder {
                     if let Some(map) = vertex_to_data_map_override {
                         // Use the pre-built vertex_to_data_map from mesh decoder
                         if map.len() != corner_table.num_vertices() {
-                            debug_log!("Invalid vertex_to_data_map_override length");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Invalid vertex_to_data_map_override length".to_string(),
+                            ));
                         }
                         vertex_to_data_map.resize(map.len(), 0);
                         vertex_to_data_map.copy_from_slice(map);
@@ -460,37 +460,33 @@ impl SequentialIntegerAttributeDecoder {
                         // Also set data_to_corner_map if override is available
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                debug_log!("Invalid data_to_corner_map_override length");
-                                return false;
+                                return Err(DracoError::DracoError(
+                                    "Invalid data_to_corner_map_override length".to_string(),
+                                ));
                             }
                             data_to_corner_map.copy_from_slice(dcm);
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            debug_log!("Invalid data_to_corner_map_override length");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Invalid data_to_corner_map_override length".to_string(),
+                            ));
                         }
                         data_to_corner_map.copy_from_slice(map);
 
-                        if !build_vertex_to_data_map_from_data_to_corner_map(
+                        build_vertex_to_data_map_from_data_to_corner_map(
                             corner_table,
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
-                        ) {
-                            debug_log!("Invalid data_to_corner_map corner id");
-                            return false;
-                        }
+                        )?;
                     } else {
                         // Build vertex_to_data_map from data_to_corner_map using corner table vertex IDs
                         // This is the same logic as the 'if' branch above
-                        if !build_vertex_to_data_map_from_data_to_corner_map(
+                        build_vertex_to_data_map_from_data_to_corner_map(
                             corner_table,
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
-                        ) {
-                            debug_log!("Invalid data_to_corner_map corner id");
-                            return false;
-                        }
+                        )?;
                     }
 
                     let mut mesh_data = MeshPredictionSchemeData::new();
@@ -502,8 +498,10 @@ impl SequentialIntegerAttributeDecoder {
                     );
                     predictor_constrained_multi_parallelogram_opt = Some(predictor);
                 } else {
-                    debug_log!("ConstrainedMultiParallelogram prediction requires corner table");
-                    return false;
+                    return Err(DracoError::DracoError(
+                        "ConstrainedMultiParallelogram prediction requires corner table"
+                            .to_string(),
+                    ));
                 }
             }
             #[cfg(feature = "legacy_bitstream_decode")]
@@ -513,43 +511,40 @@ impl SequentialIntegerAttributeDecoder {
 
                     if let Some(map) = vertex_to_data_map_override {
                         if map.len() != corner_table.num_vertices() {
-                            debug_log!("Invalid vertex_to_data_map_override length");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Invalid vertex_to_data_map_override length".to_string(),
+                            ));
                         }
                         vertex_to_data_map.resize(map.len(), 0);
                         vertex_to_data_map.copy_from_slice(map);
 
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                debug_log!("Invalid data_to_corner_map_override length");
-                                return false;
+                                return Err(DracoError::DracoError(
+                                    "Invalid data_to_corner_map_override length".to_string(),
+                                ));
                             }
                             data_to_corner_map.copy_from_slice(dcm);
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            debug_log!("Invalid data_to_corner_map_override length");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Invalid data_to_corner_map_override length".to_string(),
+                            ));
                         }
                         data_to_corner_map.copy_from_slice(map);
 
-                        if !build_vertex_to_data_map_from_data_to_corner_map(
+                        build_vertex_to_data_map_from_data_to_corner_map(
                             corner_table,
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
-                        ) {
-                            debug_log!("Invalid data_to_corner_map corner id");
-                            return false;
-                        }
+                        )?;
                     } else {
-                        if !build_vertex_to_data_map_from_data_to_corner_map(
+                        build_vertex_to_data_map_from_data_to_corner_map(
                             corner_table,
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
-                        ) {
-                            debug_log!("Invalid data_to_corner_map corner id");
-                            return false;
-                        }
+                        )?;
                     }
 
                     let mut mesh_data = MeshPredictionSchemeData::new();
@@ -567,30 +562,33 @@ impl SequentialIntegerAttributeDecoder {
                         let pos_att = if let Some(attribute) = portable_parent_attribute {
                             attribute
                         } else {
-                            let Ok(attribute) = point_cloud.try_attribute(pos_att_id) else {
-                                return false;
-                            };
+                            let attribute = point_cloud.try_attribute(pos_att_id)?;
                             attribute
                         };
                         if predictor.set_parent_attribute(pos_att).is_err() {
-                            debug_log!("Failed to set parent attribute for TexCoordsDeprecated");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Failed to set parent attribute for TexCoordsDeprecated"
+                                    .to_string(),
+                            ));
                         }
                     } else {
-                        debug_log!("Position attribute not found for TexCoordsDeprecated");
-                        return false;
+                        return Err(DracoError::DracoError(
+                            "Position attribute not found for TexCoordsDeprecated".to_string(),
+                        ));
                     }
 
                     predictor_tex_coords_deprecated_opt = Some(predictor);
                 } else {
-                    debug_log!("TexCoordsDeprecated prediction requires corner table");
-                    return false;
+                    return Err(DracoError::DracoError(
+                        "TexCoordsDeprecated prediction requires corner table".to_string(),
+                    ));
                 }
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                debug_log!("TexCoordsDeprecated prediction is disabled");
-                return false;
+                return Err(DracoError::DracoError(
+                    "TexCoordsDeprecated prediction is disabled".to_string(),
+                ));
             }
             PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
                 if let Some(corner_table) = corner_table {
@@ -601,8 +599,9 @@ impl SequentialIntegerAttributeDecoder {
                     if let Some(map) = vertex_to_data_map_override {
                         // Use the pre-built vertex_to_data_map from mesh decoder
                         if map.len() != corner_table.num_vertices() {
-                            debug_log!("Invalid vertex_to_data_map_override length");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Invalid vertex_to_data_map_override length".to_string(),
+                            ));
                         }
                         vertex_to_data_map.resize(map.len(), 0);
                         vertex_to_data_map.copy_from_slice(map);
@@ -610,37 +609,33 @@ impl SequentialIntegerAttributeDecoder {
                         // Also set data_to_corner_map if override is available
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                debug_log!("Invalid data_to_corner_map_override length");
-                                return false;
+                                return Err(DracoError::DracoError(
+                                    "Invalid data_to_corner_map_override length".to_string(),
+                                ));
                             }
                             data_to_corner_map.copy_from_slice(dcm);
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            debug_log!("Invalid data_to_corner_map_override length");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Invalid data_to_corner_map_override length".to_string(),
+                            ));
                         }
                         data_to_corner_map.copy_from_slice(map);
 
-                        if !build_vertex_to_data_map_from_data_to_corner_map(
+                        build_vertex_to_data_map_from_data_to_corner_map(
                             corner_table,
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
-                        ) {
-                            debug_log!("Invalid data_to_corner_map corner id");
-                            return false;
-                        }
+                        )?;
                     } else {
                         // Build vertex_to_data_map from data_to_corner_map using corner table vertex IDs
                         // This is the same logic as the 'if' branch above
-                        if !build_vertex_to_data_map_from_data_to_corner_map(
+                        build_vertex_to_data_map_from_data_to_corner_map(
                             corner_table,
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
-                        ) {
-                            debug_log!("Invalid data_to_corner_map corner id");
-                            return false;
-                        }
+                        )?;
                     }
 
                     let mut mesh_data = MeshPredictionSchemeData::new();
@@ -659,24 +654,25 @@ impl SequentialIntegerAttributeDecoder {
                         let pos_att = if let Some(attribute) = portable_parent_attribute {
                             attribute
                         } else {
-                            let Ok(attribute) = point_cloud.try_attribute(pos_att_id) else {
-                                return false;
-                            };
+                            let attribute = point_cloud.try_attribute(pos_att_id)?;
                             attribute
                         };
                         if predictor.set_parent_attribute(pos_att).is_err() {
-                            debug_log!("Failed to set parent attribute for TexCoordsPortable");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Failed to set parent attribute for TexCoordsPortable".to_string(),
+                            ));
                         }
                     } else {
-                        debug_log!("Position attribute not found for TexCoordsPortable");
-                        return false;
+                        return Err(DracoError::DracoError(
+                            "Position attribute not found for TexCoordsPortable".to_string(),
+                        ));
                     }
 
                     predictor_tex_coords_opt = Some(predictor);
                 } else {
-                    debug_log!("TexCoordsPortable prediction requires corner table");
-                    return false;
+                    return Err(DracoError::DracoError(
+                        "TexCoordsPortable prediction requires corner table".to_string(),
+                    ));
                 }
             }
             PredictionSchemeMethod::MeshPredictionGeometricNormal => {
@@ -688,8 +684,9 @@ impl SequentialIntegerAttributeDecoder {
                     if let Some(map) = vertex_to_data_map_override {
                         // Use the pre-built vertex_to_data_map from mesh decoder
                         if map.len() != corner_table.num_vertices() {
-                            debug_log!("Invalid vertex_to_data_map_override length");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Invalid vertex_to_data_map_override length".to_string(),
+                            ));
                         }
                         vertex_to_data_map.resize(map.len(), 0);
                         vertex_to_data_map.copy_from_slice(map);
@@ -697,37 +694,33 @@ impl SequentialIntegerAttributeDecoder {
                         // Also set data_to_corner_map if override is available
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                debug_log!("Invalid data_to_corner_map_override length");
-                                return false;
+                                return Err(DracoError::DracoError(
+                                    "Invalid data_to_corner_map_override length".to_string(),
+                                ));
                             }
                             data_to_corner_map.copy_from_slice(dcm);
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            debug_log!("Invalid data_to_corner_map_override length");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Invalid data_to_corner_map_override length".to_string(),
+                            ));
                         }
                         data_to_corner_map.copy_from_slice(map);
 
-                        if !build_vertex_to_data_map_from_data_to_corner_map(
+                        build_vertex_to_data_map_from_data_to_corner_map(
                             corner_table,
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
-                        ) {
-                            debug_log!("Invalid data_to_corner_map corner id");
-                            return false;
-                        }
+                        )?;
                     } else {
                         // Build vertex_to_data_map from data_to_corner_map using corner table vertex IDs
                         // This is the same logic as the 'if' branch above
-                        if !build_vertex_to_data_map_from_data_to_corner_map(
+                        build_vertex_to_data_map_from_data_to_corner_map(
                             corner_table,
                             &data_to_corner_map,
                             &mut vertex_to_data_map,
-                        ) {
-                            debug_log!("Invalid data_to_corner_map corner id");
-                            return false;
-                        }
+                        )?;
                     }
 
                     let mut mesh_data = MeshPredictionSchemeData::new();
@@ -766,31 +759,33 @@ impl SequentialIntegerAttributeDecoder {
                         let pos_att = match portable_parent_attribute {
                             Some(attribute) => attribute,
                             None => {
-                                let Ok(attribute) = point_cloud.try_attribute(pos_att_id) else {
-                                    return false;
-                                };
+                                let attribute = point_cloud.try_attribute(pos_att_id)?;
                                 attribute
                             }
                         };
                         if predictor.set_parent_attribute(pos_att).is_err() {
-                            debug_log!("Failed to set parent attribute for GeometricNormal");
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Failed to set parent attribute for GeometricNormal".to_string(),
+                            ));
                         }
                     } else {
-                        debug_log!("Position attribute not found for GeometricNormal");
-                        return false;
+                        return Err(DracoError::DracoError(
+                            "Position attribute not found for GeometricNormal".to_string(),
+                        ));
                     }
 
                     predictor_geometric_normal_opt = Some(predictor);
                 } else {
-                    debug_log!("GeometricNormal prediction requires corner table");
-                    return false;
+                    return Err(DracoError::DracoError(
+                        "GeometricNormal prediction requires corner table".to_string(),
+                    ));
                 }
             }
             PredictionSchemeMethod::None => {}
             _ => {
-                debug_log!("Unsupported prediction method: {:?}", selected_method);
-                return false;
+                return Err(DracoError::UnsupportedFeature(format!(
+                    "Prediction method {selected_method:?}"
+                )));
             }
         }
 
@@ -799,14 +794,15 @@ impl SequentialIntegerAttributeDecoder {
         // are stored BEFORE the integer values. The caller provides a hook.
         if let Some(hook) = pre_integer_decode {
             if !hook(in_buffer) {
-                return false;
+                return Err(DracoError::DracoError(
+                    "Failed to decode the pre-2.0 inline transform parameters".to_string(),
+                ));
             }
         }
         // Draco supports both entropy-coded symbols (compressed=1) and raw symbols (compressed=0).
-        let compressed = match in_buffer.decode_u8() {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
+        let compressed = in_buffer.decode_u8().map_err(|_| {
+            DracoError::BufferError("Stream ends before the compression flag".to_string())
+        })?;
 
         // Check if the prediction scheme produces positive corrections (no ZigZag needed)
         // Octahedron transforms (for normals) produce positive corrections
@@ -828,7 +824,9 @@ impl SequentialIntegerAttributeDecoder {
             // Entropy-coded symbols are zigzag encoded UNLESS the prediction scheme
             // guarantees positive corrections (e.g., normal octahedron transform)
             let Some(mut symbols) = try_zeroed::<u32>(num_values) else {
-                return false;
+                return Err(DracoError::DracoError(format!(
+                    "Failed to allocate {num_values} decoded symbols"
+                )));
             };
             let options = SymbolEncodingOptions::default();
             if !decode_symbols(
@@ -838,7 +836,9 @@ impl SequentialIntegerAttributeDecoder {
                 in_buffer,
                 &mut symbols,
             ) {
-                return false;
+                return Err(DracoError::DracoError(
+                    "Failed to decode the entropy-coded symbols".to_string(),
+                ));
             }
             symbols_to_corrections(symbols, needs_zigzag_conversion)
         } else {
@@ -846,26 +846,37 @@ impl SequentialIntegerAttributeDecoder {
             // ZigZag conversion is needed unless the scheme guarantees positive corrections.
             let num_bytes = match in_buffer.decode_u8() {
                 Ok(v) => v as usize,
-                Err(_) => return false,
+                Err(_) => {
+                    return Err(DracoError::BufferError(
+                        "Stream ends before the raw correction byte width".to_string(),
+                    ))
+                }
             };
             if num_bytes > 4 {
-                return false;
+                return Err(DracoError::DracoError(format!(
+                    "Raw corrections declare {num_bytes} bytes per value, at most 4 fit an i32"
+                )));
             }
 
             let Some(mut raw_corrections) = try_reserved::<i32>(num_values) else {
-                return false;
+                return Err(DracoError::DracoError(format!(
+                    "Failed to allocate {num_values} raw corrections"
+                )));
             };
             if num_bytes == 0 {
                 // All values are zero — nothing to read from the buffer.
                 raw_corrections.resize(num_values, 0);
             } else if num_bytes == 4 {
                 let Some(byte_len) = num_values.checked_mul(4) else {
-                    return false;
+                    return Err(DracoError::DracoError(format!(
+                        "{num_values} four-byte corrections overflow a byte count"
+                    )));
                 };
-                let bytes = match in_buffer.decode_slice(byte_len) {
-                    Ok(bytes) => bytes,
-                    Err(_) => return false,
-                };
+                let bytes = in_buffer.decode_slice(byte_len).map_err(|_| {
+                    DracoError::BufferError(format!(
+                        "Stream holds fewer than the {byte_len} bytes of raw corrections it declares"
+                    ))
+                })?;
                 for chunk in bytes.chunks_exact(4) {
                     let symbol = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                     raw_corrections.push(symbol_to_correction(symbol, needs_zigzag_conversion));
@@ -874,7 +885,9 @@ impl SequentialIntegerAttributeDecoder {
                 for _ in 0..num_values {
                     let mut tmp = [0u8; 4];
                     if in_buffer.decode_bytes(&mut tmp[..num_bytes]).is_err() {
-                        return false;
+                        return Err(DracoError::BufferError(
+                            "Stream ends inside the raw corrections".to_string(),
+                        ));
                     }
                     let symbol = u32::from_le_bytes(tmp);
                     raw_corrections.push(symbol_to_correction(symbol, needs_zigzag_conversion));
@@ -890,7 +903,9 @@ impl SequentialIntegerAttributeDecoder {
             Vec::new()
         } else {
             let Some(values) = try_zeroed::<i32>(num_values) else {
-                return false;
+                return Err(DracoError::DracoError(format!(
+                    "Failed to allocate {num_values} decoded values"
+                )));
             };
             values
         };
@@ -898,9 +913,7 @@ impl SequentialIntegerAttributeDecoder {
         // 3. Decode prediction scheme data (if any).
         match selected_method {
             _ if self.prediction_scheme.is_some() => {
-                if !run_decode_prediction_data(self.prediction_scheme.as_deref_mut(), in_buffer) {
-                    return false;
-                }
+                run_decode_prediction_data(self.prediction_scheme.as_deref_mut(), in_buffer)?;
             }
             PredictionSchemeMethod::Difference => {
                 let ok = if predictor_normal_octa_diff_opt.is_some() {
@@ -908,64 +921,51 @@ impl SequentialIntegerAttributeDecoder {
                 } else {
                     run_decode_prediction_data(predictor_opt.as_mut(), in_buffer)
                 };
-                if !ok {
-                    return false;
-                }
+                ok?;
             }
             PredictionSchemeMethod::MeshPredictionParallelogram => {
-                if !run_decode_prediction_data(predictor_parallelogram_opt.as_mut(), in_buffer) {
-                    return false;
-                }
+                run_decode_prediction_data(predictor_parallelogram_opt.as_mut(), in_buffer)?;
             }
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                if !run_decode_prediction_data(
-                    predictor_multi_parallelogram_opt.as_mut(),
-                    in_buffer,
-                ) {
-                    return false;
-                }
+                run_decode_prediction_data(predictor_multi_parallelogram_opt.as_mut(), in_buffer)?;
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                debug_log!("MultiParallelogram prediction is disabled");
-                return false;
+                return Err(DracoError::DracoError(
+                    "MultiParallelogram prediction is disabled".to_string(),
+                ));
             }
             PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
-                if !run_decode_prediction_data(
+                run_decode_prediction_data(
                     predictor_constrained_multi_parallelogram_opt.as_mut(),
                     in_buffer,
-                ) {
-                    return false;
-                }
+                )?;
             }
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                if !run_decode_prediction_data(
+                run_decode_prediction_data(
                     predictor_tex_coords_deprecated_opt.as_mut(),
                     in_buffer,
-                ) {
-                    return false;
-                }
+                )?;
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                debug_log!("TexCoordsDeprecated prediction is disabled");
-                return false;
+                return Err(DracoError::DracoError(
+                    "TexCoordsDeprecated prediction is disabled".to_string(),
+                ));
             }
             PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
-                if !run_decode_prediction_data(predictor_tex_coords_opt.as_mut(), in_buffer) {
-                    return false;
-                }
+                run_decode_prediction_data(predictor_tex_coords_opt.as_mut(), in_buffer)?;
             }
             PredictionSchemeMethod::MeshPredictionGeometricNormal => {
-                if !run_decode_prediction_data(predictor_geometric_normal_opt.as_mut(), in_buffer) {
-                    return false;
-                }
+                run_decode_prediction_data(predictor_geometric_normal_opt.as_mut(), in_buffer)?;
             }
             PredictionSchemeMethod::None => {}
             _ => {
-                return false;
+                return Err(DracoError::UnsupportedFeature(format!(
+                    "Prediction method {selected_method:?}"
+                )));
             }
         }
 
@@ -983,16 +983,14 @@ impl SequentialIntegerAttributeDecoder {
                     ),
                     _ => None,
                 };
-                if !run_compute_original_values(
+                run_compute_original_values(
                     self.prediction_scheme.as_deref_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
                     map_opt,
-                ) {
-                    return false;
-                }
+                )?;
             }
             PredictionSchemeMethod::Difference => {
                 let ok = if predictor_normal_octa_diff_opt.is_some() {
@@ -1014,109 +1012,98 @@ impl SequentialIntegerAttributeDecoder {
                         None,
                     )
                 };
-                if !ok {
-                    return false;
-                }
+                ok?;
             }
             PredictionSchemeMethod::MeshPredictionParallelogram => {
-                if !run_compute_original_values(
+                run_compute_original_values(
                     predictor_parallelogram_opt.as_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
                     None,
-                ) {
-                    return false;
-                }
+                )?;
             }
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                if !run_compute_original_values(
+                run_compute_original_values(
                     predictor_multi_parallelogram_opt.as_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
                     None,
-                ) {
-                    return false;
-                }
+                )?;
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                debug_log!("MultiParallelogram prediction is disabled");
-                return false;
+                return Err(DracoError::DracoError(
+                    "MultiParallelogram prediction is disabled".to_string(),
+                ));
             }
             PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
-                if !run_compute_original_values(
+                run_compute_original_values(
                     predictor_constrained_multi_parallelogram_opt.as_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
                     None,
-                ) {
-                    return false;
-                }
+                )?;
             }
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
                 let map = Some(
                     crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
                 );
-                if !run_compute_original_values(
+                run_compute_original_values(
                     predictor_tex_coords_deprecated_opt.as_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
                     map,
-                ) {
-                    return false;
-                }
+                )?;
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                debug_log!("TexCoordsDeprecated prediction is disabled");
-                return false;
+                return Err(DracoError::DracoError(
+                    "TexCoordsDeprecated prediction is disabled".to_string(),
+                ));
             }
             PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
                 let map = Some(
                     crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
                 );
-                if !run_compute_original_values(
+                run_compute_original_values(
                     predictor_tex_coords_opt.as_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
                     map,
-                ) {
-                    return false;
-                }
+                )?;
             }
             PredictionSchemeMethod::MeshPredictionGeometricNormal => {
                 let map = Some(
                     crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
                 );
-                if !run_compute_original_values(
+                run_compute_original_values(
                     predictor_geometric_normal_opt.as_mut(),
                     &corrections,
                     &mut values,
                     num_values,
                     num_components,
                     map,
-                ) {
-                    return false;
-                }
+                )?;
             }
             PredictionSchemeMethod::None => {
                 values = corrections;
             }
             _ => {
-                debug_log!("Unsupported prediction method: {:?}", selected_method);
-                return false;
+                return Err(DracoError::UnsupportedFeature(format!(
+                    "Prediction method {selected_method:?}"
+                )));
             }
         }
 
@@ -1152,18 +1139,20 @@ impl SequentialIntegerAttributeDecoder {
         // 5. Store values (+ optional inverse transform)
         if let Some(portable_att) = portable_attribute {
             if !store_i32_values_to_attribute(portable_att, &values, num_points, num_components) {
-                return false;
+                return Err(DracoError::DracoError(
+                    "Decoded values do not fit the portable attribute".to_string(),
+                ));
             }
         } else {
-            let Ok(dst_attribute) = point_cloud.try_attribute_mut(att_id) else {
-                return false;
-            };
+            let dst_attribute = point_cloud.try_attribute_mut(att_id)?;
             if !store_i32_values_to_attribute(dst_attribute, &values, num_points, num_components) {
-                return false;
+                return Err(DracoError::DracoError(
+                    "Decoded values do not fit the destination attribute".to_string(),
+                ));
             }
         }
 
-        true
+        Ok(())
     }
 }
 
@@ -1331,7 +1320,8 @@ mod tests {
             &corner_table,
             &[0, 1, 2],
             &mut vertex_to_data_map,
-        ));
+        )
+        .is_ok());
         assert_eq!(vertex_to_data_map, vec![0, 1, 2]);
     }
 
@@ -1341,11 +1331,16 @@ mod tests {
         assert!(corner_table.init(&[[VertexIndex(0), VertexIndex(1), VertexIndex(2),]]));
         let mut vertex_to_data_map = Vec::new();
 
-        assert!(!build_vertex_to_data_map_from_data_to_corner_map(
+        let error = build_vertex_to_data_map_from_data_to_corner_map(
             &corner_table,
             &[3],
             &mut vertex_to_data_map,
-        ));
+        )
+        .expect_err("a corner past the table must be refused");
+        assert!(
+            error.to_string().contains("corner 3"),
+            "the error should name the corner, got: {error}"
+        );
     }
 
     #[test]
@@ -1356,17 +1351,19 @@ mod tests {
         let mut buffer = DecoderBuffer::new(&[]);
         let point_ids = [PointIndex(0)];
 
-        assert!(!decoder.decode_values(
-            &mut point_cloud,
-            &point_ids,
-            &mut buffer,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ));
+        assert!(decoder
+            .decode_values(
+                &mut point_cloud,
+                &point_ids,
+                &mut buffer,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .is_err());
     }
 
     #[test]
@@ -1380,16 +1377,18 @@ mod tests {
         let mut buffer = DecoderBuffer::new(&bytes);
         let point_ids = [PointIndex(0)];
 
-        assert!(decoder.decode_values(
-            &mut point_cloud,
-            &point_ids,
-            &mut buffer,
-            None,
-            None,
-            None,
-            Some(&mut portable),
-            None,
-            None,
-        ));
+        assert!(decoder
+            .decode_values(
+                &mut point_cloud,
+                &point_ids,
+                &mut buffer,
+                None,
+                None,
+                None,
+                Some(&mut portable),
+                None,
+                None,
+            )
+            .is_ok());
     }
 }

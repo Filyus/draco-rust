@@ -1043,3 +1043,60 @@ fn legacy_predictive_edgebreaker_decodes_to_reference_geometry() {
         "0.9.1 predictive geometry differs from the valence-encoded bunny"
     );
 }
+
+/// A stream truncated inside the prediction data reports what ran out, not a
+/// bare "failed to decode".
+///
+/// The prediction schemes and the attribute decoder returned `bool` through
+/// 1.x, so every fault below `MeshDecoder::decode` arrived as one fixed
+/// sentence. This walks a real encode, cuts it at successive lengths, and
+/// requires that at least one truncation names the structure that was short.
+#[test]
+fn a_truncated_stream_names_what_ran_out() {
+    let mut mesh = Mesh::new();
+    let mut pos = draco_core::geometry_attribute::PointAttribute::new();
+    pos.init(
+        draco_core::geometry_attribute::GeometryAttributeType::Position,
+        3,
+        draco_core::draco_types::DataType::Float32,
+        false,
+        4,
+    );
+    let coords: [f32; 12] = [0., 0., 0., 1., 0., 0., 0., 1., 0., 1., 1., 0.];
+    for (i, value) in coords.iter().enumerate() {
+        pos.buffer_mut().write(i * 4, &value.to_le_bytes());
+    }
+    mesh.set_num_points(4);
+    mesh.add_attribute(pos);
+    mesh.set_num_faces(2);
+    mesh.set_face_from_indices(0, [0, 1, 2]);
+    mesh.set_face_from_indices(1, [1, 3, 2]);
+
+    let mut encoder = MeshEncoder::new();
+    encoder.set_mesh(mesh);
+    let mut options = EncoderOptions::new();
+    options.set_attribute_int(0, "quantization_bits", 12);
+    let mut buffer = EncoderBuffer::new();
+    encoder.encode(&options, &mut buffer).expect("encode");
+    let bytes = buffer.data().to_vec();
+
+    let mut messages = Vec::new();
+    for cut in (8..bytes.len()).rev() {
+        let mut decoded = Mesh::new();
+        if let Err(error) =
+            MeshDecoder::new().decode(&mut DecoderBuffer::new(&bytes[..cut]), &mut decoded)
+        {
+            messages.push(error.to_string());
+        }
+    }
+    // Specifically the wrap transform's own words: it sits under the prediction
+    // scheme, under the integer attribute decoder, under `MeshDecoder::decode`.
+    // Before those layers returned `Status` the message stopped at the attribute
+    // decoder and arrived as "Failed to decode integer attribute values".
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("Stream ends before the wrap transform")),
+        "no truncation carried the prediction transform's own message; saw: {messages:?}"
+    );
+}

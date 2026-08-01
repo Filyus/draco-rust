@@ -424,13 +424,9 @@ impl PointCloudDecoder {
                             })?;
                             let mut att_decoder = SequentialIntegerAttributeDecoder::new();
                             att_decoder.init(self, att_id);
-                            if !att_decoder.decode_values(
+                            att_decoder.decode_values(
                                 pc, point_ids, buffer, None, None, None, None, None, None,
-                            ) {
-                                return Err(DracoError::DracoError(
-                                    "Failed to decode integer attribute".to_string(),
-                                ));
-                            }
+                            )?;
                         }
                         2 => {
                             let original = pc.try_attribute(att_id)?;
@@ -495,7 +491,7 @@ impl PointCloudDecoder {
                             } else {
                                 None
                             };
-                            if !att_decoder.decode_values(
+                            att_decoder.decode_values(
                                 pc,
                                 point_ids.as_ref().ok_or_else(|| {
                                     DracoError::DracoError(
@@ -510,11 +506,7 @@ impl PointCloudDecoder {
                                 Some(&mut portable),
                                 None,
                                 hook,
-                            ) {
-                                return Err(DracoError::DracoError(
-                                    "Failed to decode quantized portable values".to_string(),
-                                ));
-                            }
+                            )?;
                             pending_quant.push(PendingQuant {
                                 att_id,
                                 portable,
@@ -584,7 +576,7 @@ impl PointCloudDecoder {
                             } else {
                                 None
                             };
-                            if !att_decoder.decode_values(
+                            att_decoder.decode_values(
                                 pc,
                                 point_ids.as_ref().ok_or_else(|| {
                                     DracoError::DracoError(
@@ -599,11 +591,7 @@ impl PointCloudDecoder {
                                 Some(&mut portable),
                                 None,
                                 hook,
-                            ) {
-                                return Err(DracoError::DracoError(
-                                    "Failed to decode normal portable values".to_string(),
-                                ));
-                            }
+                            )?;
                             pending_normals.push(PendingNormal {
                                 att_id,
                                 portable,

@@ -1009,7 +1009,7 @@ impl MeshDecoder {
                         } else {
                             None
                         };
-                        if !att_decoder.decode_values(
+                        att_decoder.decode_values(
                             mesh,
                             point_ids_for_values,
                             buffer,
@@ -1019,11 +1019,7 @@ impl MeshDecoder {
                             None,
                             portable_parent_attribute,
                             None,
-                        ) {
-                            return Err(DracoError::DracoError(
-                                "Failed to decode integer attribute values".to_string(),
-                            ));
-                        }
+                        )?;
                     }
                     2 => {
                         let mut portable = PointAttribute::default();
@@ -1107,7 +1103,7 @@ impl MeshDecoder {
                         } else {
                             None
                         };
-                        if !att_decoder.decode_values(
+                        att_decoder.decode_values(
                             mesh,
                             point_ids_for_values,
                             buffer,
@@ -1117,11 +1113,7 @@ impl MeshDecoder {
                             Some(&mut portable),
                             portable_parent_attribute,
                             pre_hook_opt,
-                        ) {
-                            return Err(DracoError::DracoError(
-                                "Failed to decode quantized portable values".to_string(),
-                            ));
-                        }
+                        )?;
                         pending_quant.push(PendingQuant {
                             att_id,
                             portable,
@@ -1213,7 +1205,7 @@ impl MeshDecoder {
                         } else {
                             None
                         };
-                        if !att_decoder.decode_values(
+                        att_decoder.decode_values(
                             mesh,
                             point_ids_for_values,
                             buffer,
@@ -1223,11 +1215,7 @@ impl MeshDecoder {
                             Some(&mut portable),
                             portable_parent_attribute,
                             normal_hook,
-                        ) {
-                            return Err(DracoError::DracoError(
-                                "Failed to decode normal portable values".to_string(),
-                            ));
-                        }
+                        )?;
                         pending_normals.push(PendingNormal {
                             att_id,
                             portable,

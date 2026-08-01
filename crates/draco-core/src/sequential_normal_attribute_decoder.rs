@@ -114,7 +114,7 @@ impl SequentialNormalAttributeDecoder {
 
         self.base.set_prediction_scheme(prediction_scheme);
 
-        if !self.base.decode_values(
+        self.base.decode_values(
             point_cloud,
             point_ids,
             buffer,
@@ -124,11 +124,7 @@ impl SequentialNormalAttributeDecoder {
             Some(&mut portable_attribute),
             None,
             None,
-        ) {
-            return Err(DracoError::DracoError(
-                "Failed to decode values".to_string(),
-            ));
-        }
+        )?;
 
         // 2. Convert portable attribute to original attribute
 
