@@ -542,6 +542,9 @@ pub struct MeshPredictionSchemeGeometricNormalEncoder<'a> {
     pos_attribute: Option<&'a PointAttribute>,
     prediction_mode: NormalPredictionMode,
     flip_normal_bit_encoder: RAnsBitEncoder,
+    /// Target bitstream, packed as `0xMMmm`; 0 means the newest. Only whether
+    /// the prediction mode is written out depends on it.
+    bitstream_version: u16,
 }
 
 #[cfg(feature = "encoder")]
@@ -554,7 +557,14 @@ impl<'a> MeshPredictionSchemeGeometricNormalEncoder<'a> {
             pos_attribute: None,
             prediction_mode: NormalPredictionMode::TriangleArea,
             flip_normal_bit_encoder: RAnsBitEncoder::new(),
+            bitstream_version: 0,
         }
+    }
+
+    /// Targets a specific bitstream version, which the caller reads off the
+    /// encoder options. Without this the newest layout is written.
+    pub fn set_bitstream_version(&mut self, major: u8, minor: u8) {
+        self.bitstream_version = crate::version::bitstream_version(major, minor);
     }
 
     pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) -> bool {
@@ -811,7 +821,21 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
             return false;
         }
 
+        // Pre-2.2 carries the prediction mode between the transform data and
+        // the flip bits; 2.2 dropped it and assumes triangle area. Mirror of
+        // the decoder's read at the same position.
+        if self.bitstream_version != 0 && self.bitstream_version < 0x0202 {
+            buffer.push(self.prediction_mode as u8);
+        }
+
         let mut temp_buffer = EncoderBuffer::new();
+        // The flip-normal rANS stream's size prefix is a u32 pre-2.2 and a
+        // varint after, and `RAnsBitEncoder::end_encoding` reads that off the
+        // buffer it is handed -- a fresh one reports version 0, meaning newest.
+        temp_buffer.set_version(
+            (self.bitstream_version >> 8) as u8,
+            (self.bitstream_version & 0xff) as u8,
+        );
         self.flip_normal_bit_encoder.end_encoding(&mut temp_buffer);
         buffer.extend_from_slice(temp_buffer.data());
         true

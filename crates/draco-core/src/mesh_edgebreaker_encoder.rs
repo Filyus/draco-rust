@@ -1552,7 +1552,12 @@ impl MeshEdgebreakerEncoder {
 
         // Standard encoding order: Symbols -> StartFaces -> Seams.
         let mut traversal_buffer = EncoderBuffer::new();
-        traversal_buffer.set_version(2, 2);
+        // The block is assembled in its own buffer and copied in whole, so that
+        // buffer has to carry the target version rather than the newest one.
+        // Pinning it at 2.2 wrote a 2.2 start-face region inside a 2.1 stream,
+        // and the decoder failed at "start start-face bit decoding".
+        traversal_buffer.set_version(out_buffer.version_major(), out_buffer.version_minor());
+        let bitstream_version = traversal_buffer.bitstream_version();
 
         traversal_buffer.start_bit_encoding(mesh.num_faces() * 3, true);
         for &sym_id in self.symbols.iter().rev() {
@@ -1568,18 +1573,31 @@ impl MeshEdgebreakerEncoder {
         }
         traversal_buffer.end_bit_encoding();
 
-        let mut start_face_encoder = RAnsBitEncoder::new();
-        start_face_encoder.start_encoding();
         if verbose {
             debug_log!(
                 "DEBUG: Encoder InitFace Configs: {:?}",
                 self.init_face_configurations
             );
         }
-        for &is_interior in &self.init_face_configurations {
-            start_face_encoder.encode_bit(is_interior);
+        // Pre-2.2 stores the start-face configurations as a raw bit buffer, the
+        // same framing the valence branch above writes; 2.2 moved them to rANS.
+        if cfg!(feature = "legacy_bitstream_encode")
+            && bitstream_version != 0
+            && bitstream_version < 0x0202
+        {
+            traversal_buffer.start_bit_encoding(self.init_face_configurations.len().max(1), true);
+            for &is_interior in &self.init_face_configurations {
+                traversal_buffer.encode_least_significant_bits32(1, is_interior as u32);
+            }
+            traversal_buffer.end_bit_encoding();
+        } else {
+            let mut start_face_encoder = RAnsBitEncoder::new();
+            start_face_encoder.start_encoding();
+            for &is_interior in &self.init_face_configurations {
+                start_face_encoder.encode_bit(is_interior);
+            }
+            start_face_encoder.end_encoding(&mut traversal_buffer);
         }
-        start_face_encoder.end_encoding(&mut traversal_buffer);
 
         self.encode_attribute_seams(corner_table, attribute_connectivity, &mut traversal_buffer);
 

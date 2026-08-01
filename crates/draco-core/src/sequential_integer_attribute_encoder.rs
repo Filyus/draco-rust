@@ -76,6 +76,44 @@ impl IntPredictionTransformFamily {
     }
 }
 
+/// Whether this attribute's quantization parameters belong inline, before the
+/// integer values, rather than after them.
+///
+/// Shared by the encoder and by `MeshEncoder`'s trailing-parameter pass, so the
+/// two cannot both write them or both skip them. Keyed on
+/// [`select_sequential_encoder`] rather than on the data type directly: a
+/// quantized normal takes the octahedron transform, which has its own inline
+/// block at a different version boundary just above this one.
+///
+/// [`select_sequential_encoder`]: crate::sequential_attribute_encoder::select_sequential_encoder
+#[cfg(all(feature = "encoder", feature = "legacy_bitstream_encode"))]
+pub(crate) fn uses_inline_quantization_parameters(
+    attribute: &crate::geometry_attribute::PointAttribute,
+    options: &EncoderOptions,
+    att_id: i32,
+    encoder: &dyn GeometryEncoder,
+) -> bool {
+    use crate::sequential_attribute_encoder::{
+        select_sequential_encoder, SequentialAttributeEncoderType,
+    };
+
+    let quantization_bits = options.get_attribute_int(att_id, "quantization_bits", -1);
+    if select_sequential_encoder(attribute, quantization_bits)
+        != SequentialAttributeEncoderType::Quantization
+    {
+        return false;
+    }
+    let (major, minor) = options.get_version();
+    let bitstream_version = crate::version::bitstream_version(major, minor);
+    bitstream_version != 0
+        && match encoder.get_geometry_type() {
+            EncodedGeometryType::TriangularMesh => bitstream_version < 0x0200,
+            // The point-cloud decoder reads them inline below 1.2, which is
+            // older than any version this crate writes for a point cloud.
+            _ => false,
+        }
+}
+
 pub struct SequentialIntegerAttributeEncoder {
     pub base: SequentialAttributeEncoder,
     /// Stores the quantization transform if one was applied, for later encoding
@@ -681,6 +719,8 @@ impl SequentialIntegerAttributeEncoder {
                         let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                         let mut predictor =
                             MeshPredictionSchemeTexCoordsDeprecatedEncoder::new(transform);
+                        let (version_major, version_minor) = options.get_version();
+                        predictor.set_bitstream_version(version_major, version_minor);
                         selected_transform_type = predictor.get_transform_type();
 
                         let pos_att = encoder
@@ -785,6 +825,8 @@ impl SequentialIntegerAttributeEncoder {
                         let transform = PredictionSchemeTexCoordsPortableEncodingTransform::new();
                         let mut predictor =
                             MeshPredictionSchemeTexCoordsPortableEncoder::new(transform);
+                        let (version_major, version_minor) = options.get_version();
+                        predictor.set_bitstream_version(version_major, version_minor);
                         selected_transform_type = predictor.get_transform_type();
 
                         // The portable position, not the original floats: the
@@ -914,6 +956,8 @@ impl SequentialIntegerAttributeEncoder {
                             );
                             let mut predictor =
                                 MeshPredictionSchemeGeometricNormalEncoder::new(transform);
+                            let (version_major, version_minor) = options.get_version();
+                            predictor.set_bitstream_version(version_major, version_minor);
                             selected_transform_type = predictor.get_transform_type();
 
                             predictor.init(&mesh_data);
@@ -1113,6 +1157,25 @@ impl SequentialIntegerAttributeEncoder {
                     return false;
                 }
                 out_buffer.encode_u8(quantization_bits as u8);
+            }
+        }
+
+        // The same split, one version boundary later, for the plain quantization
+        // transform: a pre-2.0 mesh carries its parameters here, between the
+        // prediction header and the integer values, while 2.0+ writes them after
+        // the values in `encode_data_needed_by_portable_transform`. The encoder
+        // wrote them trailing at every version, so a pre-2.0 quantized attribute
+        // produced a stream whose decode failed on the parameters it expected to
+        // find in front.
+        #[cfg(feature = "legacy_bitstream_encode")]
+        if uses_inline_quantization_parameters(attribute, options, att_id, encoder) {
+            let quantization_bits = options.get_attribute_int(att_id, "quantization_bits", -1);
+            let mut transform = AttributeQuantizationTransform::new();
+            if !transform.compute_parameters(attribute, quantization_bits) {
+                return false;
+            }
+            if !transform.encode_parameters(out_buffer) {
+                return false;
             }
         }
 

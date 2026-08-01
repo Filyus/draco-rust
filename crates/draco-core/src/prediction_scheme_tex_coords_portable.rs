@@ -696,6 +696,10 @@ pub struct MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
     mesh_data: Option<MeshPredictionSchemeData<'a>>,
     orientations: Vec<bool>,
     pos_attribute: Option<&'a PointAttribute>,
+    /// Target bitstream, packed as `0xMMmm`; 0 means the newest. The count is
+    /// a fixed `i32` at every version, so only the orientation rANS stream's
+    /// size prefix depends on this.
+    bitstream_version: u16,
 }
 
 #[cfg(feature = "encoder")]
@@ -706,7 +710,14 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
             mesh_data: None,
             orientations: Vec::new(),
             pos_attribute: None,
+            bitstream_version: 0,
         }
+    }
+
+    /// Targets a specific bitstream version, which the caller reads off the
+    /// encoder options. Without this the newest layout is written.
+    pub fn set_bitstream_version(&mut self, major: u8, minor: u8) {
+        self.bitstream_version = crate::version::bitstream_version(major, minor);
     }
 
     pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) -> bool {
@@ -929,6 +940,13 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32>
 {
     fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> bool {
         let mut temp_buffer = EncoderBuffer::new();
+        // The orientation rANS stream's size prefix is a u32 pre-2.2 and a
+        // varint after; `RAnsBitEncoder::end_encoding` reads that off the
+        // buffer it is handed, and a fresh one reports version 0 (newest).
+        temp_buffer.set_version(
+            (self.bitstream_version >> 8) as u8,
+            (self.bitstream_version & 0xff) as u8,
+        );
         let num_orientations = self.orientations.len() as i32;
         temp_buffer.encode(num_orientations);
 

@@ -32,6 +32,9 @@ pub struct MeshPredictionSchemeTexCoordsDeprecatedEncoder<'a, Transform> {
     mesh_data: Option<MeshPredictionSchemeData<'a>>,
     orientations: Vec<bool>,
     pos_attribute: Option<&'a PointAttribute>,
+    /// Target bitstream, packed as `0xMMmm`; 0 means the newest. Only the
+    /// orientation count's width depends on it.
+    bitstream_version: u16,
 }
 
 #[cfg(feature = "encoder")]
@@ -42,7 +45,14 @@ impl<'a, Transform> MeshPredictionSchemeTexCoordsDeprecatedEncoder<'a, Transform
             mesh_data: None,
             orientations: Vec::new(),
             pos_attribute: None,
+            bitstream_version: 0,
         }
+    }
+
+    /// Targets a specific bitstream version, which the caller reads off the
+    /// encoder options. Without this the newest layout is written.
+    pub fn set_bitstream_version(&mut self, major: u8, minor: u8) {
+        self.bitstream_version = crate::version::bitstream_version(major, minor);
     }
 
     pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) -> bool {
@@ -265,10 +275,29 @@ where
 {
     fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> bool {
         let mut temp_buffer = EncoderBuffer::new();
+        // Propagate the target version, as the constrained-multi-parallelogram
+        // encoder does: the orientation rANS stream's size prefix is a u32
+        // pre-2.2 and a varint after, and `RAnsBitEncoder::end_encoding` reads
+        // that off the buffer it is handed. A fresh buffer reports version 0,
+        // so it always wrote the varint and the pre-2.2 decoder read four bytes
+        // where two had been written.
+        temp_buffer.set_version(
+            (self.bitstream_version >> 8) as u8,
+            (self.bitstream_version & 0xff) as u8,
+        );
         let Ok(num_orientations) = u64::try_from(self.orientations.len()) else {
             return false;
         };
-        temp_buffer.encode_varint(num_orientations);
+        // Pre-2.2 writes the count as a fixed u32; 2.2 moved it to a varint.
+        // Mirror of the decoder's branch on the same version.
+        if self.bitstream_version != 0 && self.bitstream_version < 0x0202 {
+            let Ok(num_orientations) = u32::try_from(num_orientations) else {
+                return false;
+            };
+            temp_buffer.encode_u32(num_orientations);
+        } else {
+            temp_buffer.encode_varint(num_orientations);
+        }
 
         let mut last_orientation = true;
         let mut bit_encoder = RAnsBitEncoder::new();

@@ -248,18 +248,21 @@ fn a_sequential_mesh_at_1_3_survives_the_varint_index_boundary() {
     }
 }
 
-/// A pre-2.2 EdgeBreaker target that would take the standard traversal is
-/// refused, and one that takes the valence traversal still encodes.
+/// Every EdgeBreaker traversal round-trips at every claimed pre-2.2 version.
 ///
-/// The traversal is not a caller-visible option — it follows from the speed and
-/// the face count — so the same version request succeeds or fails depending on
-/// the mesh. Every refused case here decoded with "Failed to start start-face
-/// bit decoding" before the guard: `encode_traversal_buffer` writes the block
-/// in a buffer pinned to 2.2, and only the valence and predictive traversals
-/// have a pre-2.2 path.
+/// The traversal is not a caller-visible option -- it follows from the speed and
+/// the face count -- so a version request that works on a 2048-face mesh has to
+/// work on a 162-face one, which takes a different path. The standard traversal
+/// wrote its connectivity block in a buffer pinned to 2.2, so every case here
+/// failed to decode at "start start-face bit decoding" until that buffer took
+/// the target version like the valence branch beside it.
 #[test]
 #[cfg(feature = "legacy_bitstream_encode")]
-fn a_pre_2_2_edgebreaker_target_refuses_the_standard_traversal() {
+fn every_edgebreaker_traversal_round_trips_at_every_claimed_version() {
+    use draco_core::mesh_edgebreaker_encoder::{
+        select_edgebreaker_traversal, EdgebreakerTraversal,
+    };
+
     // 2048 faces, over the 1000-face floor below which no speed selects valence.
     let large = grid_mesh(33);
     // 162 faces, under it: the traversal is standard at every speed.
@@ -277,57 +280,58 @@ fn a_pre_2_2_edgebreaker_target_refuses_the_standard_traversal() {
         encoder.encode(&options, &mut buffer).map(|()| buffer)
     };
 
-    for (major, minor) in [(2u8, 1u8), (2, 0), (1, 2)] {
-        for (mesh, speed, label) in [
-            (&large, 5, "2048 faces at speed 5"),
-            (&tiny, 5, "162 faces at speed 5"),
-            (&tiny, 0, "162 faces at speed 0"),
+    for (major, minor) in [(2u8, 2u8), (2, 1), (2, 0), (1, 2)] {
+        for (mesh, speed, expected) in [
+            (&large, 5, EdgebreakerTraversal::Standard),
+            (&large, 0, EdgebreakerTraversal::Valence),
+            (&tiny, 5, EdgebreakerTraversal::Standard),
+            (&tiny, 0, EdgebreakerTraversal::Standard),
         ] {
-            let error = encode(mesh, speed, major, minor)
-                .err()
-                .unwrap_or_else(|| panic!("v{major}.{minor}, {label}: encode should be refused"));
-            assert!(
-                matches!(error, draco_core::DracoError::UnsupportedVersion(_)),
-                "v{major}.{minor}, {label}: got {error:?}"
+            // Named so a failure says which traversal broke, not just which
+            // speed: the mapping from speed to traversal is the thing that
+            // makes this matrix worth running.
+            assert_eq!(
+                select_edgebreaker_traversal(speed as usize, mesh.num_faces(), false),
+                expected,
+                "{} faces at speed {speed}",
+                mesh.num_faces()
+            );
+            let label = format!("v{major}.{minor}, {expected:?}, {} faces", mesh.num_faces());
+            let buffer = encode(mesh, speed, major, minor)
+                .unwrap_or_else(|e| panic!("{label}: encode: {e:?}"));
+            let mut decoded = Mesh::new();
+            MeshDecoder::new()
+                .decode(&mut DecoderBuffer::new(buffer.data()), &mut decoded)
+                .unwrap_or_else(|e| panic!("{label}: decode: {e:?}"));
+            assert_eq!(decoded.num_faces(), mesh.num_faces(), "{label}: face count");
+            // Not face by face: EdgeBreaker reorders vertices, so the geometry
+            // is what survives, not the index buffer.
+            assert_eq!(
+                sorted_mesh_positions(&decoded),
+                sorted_mesh_positions(mesh),
+                "{label}: positions"
             );
         }
-
-        // Speed 0 on a mesh over the floor selects valence, which does have a
-        // pre-2.2 layout, so the guard must not reach it.
-        let buffer = encode(&large, 0, major, minor)
-            .unwrap_or_else(|e| panic!("v{major}.{minor} valence encode: {e:?}"));
-        let mut decoded = Mesh::new();
-        MeshDecoder::new()
-            .decode(&mut DecoderBuffer::new(buffer.data()), &mut decoded)
-            .unwrap_or_else(|e| panic!("v{major}.{minor} valence decode: {e:?}"));
-        assert_eq!(
-            decoded.num_faces(),
-            large.num_faces(),
-            "v{major}.{minor}: face count"
-        );
     }
-
-    // 2.2 itself is the standard traversal's own version and stays encodable.
-    let buffer = encode(&tiny, 5, DEFAULT_MESH_VERSION.0, DEFAULT_MESH_VERSION.1)
-        .expect("2.2 standard encode");
-    let mut decoded = Mesh::new();
-    MeshDecoder::new()
-        .decode(&mut DecoderBuffer::new(buffer.data()), &mut decoded)
-        .expect("2.2 standard decode");
-    assert_eq!(decoded.num_faces(), tiny.num_faces());
 }
 
-/// Attribute coding a claimed version cannot carry is refused, and the cases
-/// next to it that do work are not.
+/// Every attribute coding round-trips at every claimed version, values and all.
 ///
-/// The version table alone cannot express these: they depend on the attribute's
-/// encoder, so the same version request succeeds or fails per attribute. Each
-/// refused row here decoded to an error before the guard, and each accepted row
-/// still round-trips — which is what keeps the guard from being drawn wider
-/// than the defect.
+/// The version table alone cannot reach these: they depend on the attribute's
+/// encoder, so one version request takes a different layout per attribute. Each
+/// row below produced a stream this crate's own decoder rejected, and each has
+/// its own cause -- inline quantization parameters below 2.0, and three
+/// prediction schemes whose rANS size prefix is a u32 below 2.2 because
+/// `RAnsBitEncoder` reads the width off the buffer it is handed and each of them
+/// handed it a fresh, version-less one.
+///
+/// Compared against the 2.2 round-trip rather than the input mesh: quantization
+/// is lossy, so the input is not what any version returns.
 #[test]
 #[cfg(feature = "legacy_bitstream_encode")]
-fn attribute_coding_without_a_legacy_layout_is_refused() {
+fn every_attribute_coding_round_trips_at_every_claimed_version() {
+    // A quantized non-normal attribute, whose parameters go inline below 2.0
+    // and trailing at 2.0 and above.
     let quantized_position = |major, minor, method, speed| {
         let mut options = EncoderOptions::new();
         options.set_version(major, minor);
@@ -337,23 +341,22 @@ fn attribute_coding_without_a_legacy_layout_is_refused() {
         options.set_attribute_int(0, "quantization_bits", 12);
         options
     };
-
-    // A quantized non-normal attribute: the encoder writes the quantization
-    // parameters trailing at every version, the decoder reads them inline below
-    // 2.0. Both claimed sub-2.0 mesh versions are affected.
-    for (major, minor, method, speed) in [(1u8, 2u8, 1i32, 0i32), (1, 3, 0, 5)] {
-        let error = round_trip(&grid_mesh(33), &quantized_position(major, minor, method, speed))
-            .expect_err(&format!("v{major}.{minor}: quantization should be refused"));
-        assert!(
-            matches!(error, RoundTripError::Encode(DracoError::UnsupportedVersion(_))),
-            "v{major}.{minor}: got {error:?}"
+    let mesh = grid_mesh(33);
+    let reference = sorted_mesh_positions(
+        &round_trip(&mesh, &quantized_position(2, 2, 1, 0)).expect("2.2 quantized"),
+    );
+    for (major, minor, method, speed) in [(2u8, 0u8, 1i32, 0i32), (1, 2, 1, 0), (1, 3, 0, 5)] {
+        let decoded = round_trip(&mesh, &quantized_position(major, minor, method, speed))
+            .unwrap_or_else(|e| panic!("v{major}.{minor} quantized: {e:?}"));
+        assert_eq!(
+            sorted_mesh_positions(&decoded),
+            reference,
+            "v{major}.{minor}: quantized positions"
         );
     }
-    // 2.0 is where the trailing layout starts, and it still round-trips.
-    round_trip(&grid_mesh(33), &quantized_position(2, 0, 1, 0)).expect("v2.0 quantized");
 
-    // A quantized *normal* takes the octahedron transform, which has its own
-    // pre-2.0 path, so the same version must keep accepting it.
+    // A quantized normal takes the octahedron transform, which has its own
+    // inline block one version boundary earlier.
     let mut normal_options = EncoderOptions::new();
     normal_options.set_version(1, 2);
     normal_options.set_encoding_method(1);
@@ -362,58 +365,72 @@ fn attribute_coding_without_a_legacy_layout_is_refused() {
     normal_options.set_attribute_int(1, "quantization_bits", 10);
     round_trip(&grid_mesh_with_normals(33), &normal_options).expect("v1.2 quantized normal");
 
-    // Prediction schemes 3 and 6 have no pre-2.2 layout on the encode side: the
-    // deprecated tex-coords scheme writes a varint orientation count where the
-    // decoder reads a u32, and the geometric-normal scheme's pre-2.2 prediction
-    // data carries a mode byte the encoder never writes.
-    for scheme in [3i32, 6] {
+    // The three prediction schemes that carry a rANS stream of their own.
+    // Scheme 5 is here because it was not in the original list: it broke the
+    // same way and nothing tested it, which is what a refusal would have
+    // shipped.
+    for scheme in [3i32, 5, 6] {
         // Each scheme predicts one attribute kind, and forcing it onto another
-        // is already refused by `validate_prediction_schemes`.
+        // is refused by `validate_prediction_schemes`.
         let mesh = if scheme == 6 {
             grid_mesh_with_normals(33)
         } else {
             grid_mesh_with_texcoords(33)
         };
-        let scheme_options = |major, minor, quantize| {
+        let scheme_options = |major, minor| {
             let mut options = EncoderOptions::new();
             options.set_version(major, minor);
             options.set_encoding_method(1);
             options.set_global_int("encoding_speed", 0);
             options.set_global_int("decoding_speed", 0);
             options.set_attribute_int(1, "prediction_scheme", scheme);
-            if quantize {
-                options.set_attribute_int(1, "quantization_bits", 10);
-            }
+            options.set_attribute_int(1, "quantization_bits", 10);
             options
         };
 
-        // At 2.2 the scheme is what it is meant to be.
-        round_trip(&mesh, &scheme_options(2, 2, true))
-            .unwrap_or_else(|e| panic!("scheme {scheme} at 2.2: {e:?}"));
-
+        let reference = sorted_mesh_positions(
+            &round_trip(&mesh, &scheme_options(2, 2))
+                .unwrap_or_else(|e| panic!("scheme {scheme} at 2.2: {e:?}")),
+        );
         for (major, minor) in [(2u8, 1u8), (2, 0), (1, 2)] {
-            let error = round_trip(&mesh, &scheme_options(major, minor, true))
-                .expect_err(&format!("scheme {scheme} at {major}.{minor} should be refused"));
-            assert!(
-                matches!(error, RoundTripError::Encode(DracoError::UnsupportedVersion(_))),
-                "scheme {scheme} at {major}.{minor}: got {error:?}"
+            let decoded = round_trip(&mesh, &scheme_options(major, minor))
+                .unwrap_or_else(|e| panic!("scheme {scheme} at {major}.{minor}: {e:?}"));
+            assert_eq!(
+                sorted_mesh_positions(&decoded),
+                reference,
+                "scheme {scheme} at {major}.{minor}: positions"
             );
-
-            // Unquantized, the attribute goes to the generic encoder and never
-            // meets a prediction scheme at all, so the refusal must not fire.
-            round_trip(&mesh, &scheme_options(major, minor, false)).unwrap_or_else(|e| {
-                panic!("scheme {scheme} at {major}.{minor}, unquantized: {e:?}")
-            });
         }
     }
 }
 
+/// Decoded positions sorted by bit pattern, so a comparison does not depend on
+/// the vertex order the traversal produced.
+#[cfg(feature = "legacy_bitstream_encode")]
+fn sorted_mesh_positions(mesh: &Mesh) -> Vec<[u32; 3]> {
+    let attribute = mesh.attribute(mesh.named_attribute_id(GeometryAttributeType::Position));
+    let stride = attribute.byte_stride() as usize;
+    let mut out = Vec::with_capacity(attribute.size());
+    for i in 0..attribute.size() {
+        let mut position = [0u32; 3];
+        for (k, component) in position.iter_mut().enumerate() {
+            let mut bytes = [0u8; 4];
+            attribute.buffer().read(i * stride + k * 4, &mut bytes);
+            *component = u32::from_le_bytes(bytes);
+        }
+        out.push(position);
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Which half of a round trip failed. Both payloads exist for the panic
+/// message; nothing matches on them, now that every claimed combination is
+/// expected to succeed.
 #[cfg(feature = "legacy_bitstream_encode")]
 #[derive(Debug)]
 enum RoundTripError {
-    Encode(DracoError),
-    /// Carried for the panic message; no assertion matches on it, because a
-    /// decode failure here is always a plain failure of the case under test.
+    Encode(#[allow(dead_code)] DracoError),
     Decode(#[allow(dead_code)] DracoError),
 }
 
