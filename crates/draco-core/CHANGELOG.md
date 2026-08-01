@@ -12,10 +12,11 @@ A breaking release. Its through-line is that a refusal should say what it
 refused. Ninety-odd functions across the decode and encode paths returned a
 `bool` whose `false` covered a truncated buffer, an uninitialised transform and
 an unsupported feature alike, and the reason — where one existed at all — went
-to a `debug_log!` the release build drops. Alongside that, the version
-`set_version` accepts is now an enumeration of combinations that have a
-round-trip test, the header count guard is replaced by one whose premise holds,
-and the encoder reports the choices it makes for itself.
+to a `debug_log!` the release build drops. `DracoError` itself became an opaque
+struct with an `ErrorKind`, which is the change every caller sees. Alongside
+that, the version `set_version` accepts is now an enumeration of combinations
+that have a round-trip test, the header count guard is replaced by one whose
+premise holds, and the encoder reports the choices it makes for itself.
 
 ### Added
 
@@ -75,7 +76,10 @@ and the encoder reports the choices it makes for itself.
   combinations that have an encode/decode round-trip test, rather than the
   interval from 1.0 to the newest — 259 values for a mesh, including minors that
   never existed, most of which produced a stream this crate's own decoder
-  rejects. Narrowing cannot diverge from upstream: C++ Draco has no version
+  rejects. The list is shorter than what the setter accepted and longer than
+  what it wrote correctly: the pre-2.2 layout fixes below are what a legacy
+  version can now carry, and an EdgeBreaker mesh is claimed at 2.2, 2.1, 2.0,
+  1.2 and 1.1. Narrowing cannot diverge from upstream: C++ Draco has no version
   setter at all.
 - **Breaking.** `DracoError::is_count_exceeds_bitstream` and the message-prefix
   constructor behind it are gone with the guard they described.
@@ -127,6 +131,12 @@ and the encoder reports the choices it makes for itself.
   block, the deprecated tex-coords, geometric-normal and portable tex-coords
   schemes, and the pre-2.0 quantization parameters are written in the layout the
   target version specifies.
+- Topology split events below 1.2 are written in that version's layout — two
+  absolute `u32` ids and a byte for the edge, with no bit-coded section after
+  them — rather than the delta/varint pair and packed edge bits that arrived in
+  1.2. The decoder had always read both. This is why 1.1 is back on the claimed
+  list: it worked for a mesh with no split events, which is every grid, and
+  silently produced wrong faces for anything that splits.
 - Sequential meshes switch counts *and* face indices to varints at 2.2, not at
   the major. The face-index branch had no version gate at all, so a 1.3 mesh with
   65,536 or more points decoded without error, with the right face count, and

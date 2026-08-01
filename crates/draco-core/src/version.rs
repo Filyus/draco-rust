@@ -147,10 +147,12 @@ impl EncodeTarget {
     /// is this crate's own extension and this moves it toward upstream.
     pub fn claimed_versions(self) -> &'static [(u8, u8)] {
         match self {
-            // Valence and predictive traversals round-trip on the pre-2.2
-            // layouts; the standard traversal does not, and is refused
-            // separately by the encoder rather than by splitting this table.
-            EncodeTarget::MeshEdgebreaker => &[(2, 2), (2, 1), (2, 0), (1, 2)],
+            // All three traversals round-trip on the pre-2.2 layouts. What the
+            // table cannot express is that the predictive traversal needs a
+            // target below 2.0 -- 2.x connectivity has no predictive traversal
+            // to read back -- so `validate_predictive_traversal` refuses that
+            // pairing separately rather than by splitting this table.
+            EncodeTarget::MeshEdgebreaker => &[(2, 2), (2, 1), (2, 0), (1, 2), (1, 1)],
             EncodeTarget::MeshSequential => &[(2, 2), (1, 3)],
             EncodeTarget::PointCloudSequential => &[(2, 3), (1, 3)],
             // No version branch exists on either side of the KD-tree coder,

@@ -284,7 +284,7 @@ fn every_edgebreaker_traversal_round_trips_at_every_claimed_version() {
         encoder.encode(&options, &mut buffer).map(|()| buffer)
     };
 
-    for (major, minor) in [(2u8, 2u8), (2, 1), (2, 0), (1, 2)] {
+    for (major, minor) in [(2u8, 2u8), (2, 1), (2, 0), (1, 2), (1, 1)] {
         for (mesh, speed, expected) in [
             (&large, 5, EdgebreakerTraversal::Standard),
             (&large, 0, EdgebreakerTraversal::Valence),
@@ -313,6 +313,65 @@ fn every_edgebreaker_traversal_round_trips_at_every_claimed_version() {
             assert_eq!(
                 sorted_mesh_positions(&decoded),
                 sorted_mesh_positions(mesh),
+                "{label}: positions"
+            );
+        }
+    }
+}
+
+/// A mesh with topology splits round-trips at every claimed version.
+///
+/// The split section changes shape three times across the table, and the
+/// neighbouring traversal matrix reaches none of them, because a grid is a disc
+/// and a disc produces no split events at all:
+///
+/// - below 1.2 an event is two absolute `u32` ids and a byte for the edge, with
+///   no bit-coded section after them at all;
+/// - from 1.2 it is a delta/varint pair per event and then the edge selectors
+///   packed two bits each;
+/// - from 2.2 the selector is one bit, and from 2.0 the event count is a varint
+///   rather than a fixed `u32`.
+///
+/// The encoder only ever wrote the second and third forms, so a 1.1 stream
+/// carried events the decoder read as absolute `u32`s -- silently, because the
+/// count parses the same either way. Falsified by removing the `< 0x0102` arm
+/// from `encode_split_data`: the 1.1 cases then fail, and every one of them
+/// passes on a grid, which is what 1.1's previous round-trip test stood on.
+#[test]
+#[cfg(feature = "legacy_bitstream_encode")]
+fn a_mesh_with_topology_splits_round_trips_at_every_claimed_version() {
+    for (major, minor) in [(2u8, 2u8), (2, 1), (2, 0), (1, 2), (1, 1)] {
+        // Both sides of the 1000-face floor, so the standard and valence
+        // traversals each write their own connectivity block ahead of the same
+        // event section.
+        // The predictive traversal writes the same event section and is only
+        // legal below 2.0, so it joins the matrix where it is allowed.
+        for (n, speed, predictive) in [
+            (10usize, 5i32, false),
+            (33, 5, false),
+            (33, 0, false),
+            (33, 0, true),
+        ] {
+            if predictive && major >= 2 {
+                continue;
+            }
+            let mesh = annulus_mesh(n);
+            let mut options = EncoderOptions::new();
+            options.set_version(major, minor);
+            options.set_encoding_method(1); // EdgeBreaker
+            options.set_global_int("encoding_speed", speed);
+            options.set_global_int("decoding_speed", speed);
+            if predictive {
+                options.set_global_int("force_predictive_traversal", 1);
+            }
+            let traversal = if predictive { ", predictive" } else { "" };
+            let label = format!("v{major}.{minor}, {n}x{n} at speed {speed}{traversal}");
+            let decoded =
+                round_trip(&mesh, &options).unwrap_or_else(|error| panic!("{label}: {error:?}"));
+            assert_eq!(decoded.num_faces(), mesh.num_faces(), "{label}: face count");
+            assert_eq!(
+                sorted_mesh_positions(&decoded),
+                sorted_mesh_positions(&mesh),
                 "{label}: positions"
             );
         }
@@ -501,6 +560,46 @@ fn grid_mesh_with_normals(n: usize) -> Mesh {
         }
     }
     mesh.add_attribute(normal);
+    mesh
+}
+
+/// [`grid_mesh`] with the middle cell removed, so the surface is a ring.
+///
+/// A grid is a disc, and EdgeBreaker walks a disc without ever meeting itself:
+/// it emits no topology-split events at all, whatever its size. Put a hole in
+/// the middle and the traversal has to come back around to a boundary it has
+/// already seen, which is what a split event records. That is the whole reason
+/// this mesh exists -- a test of the split layout on a grid tests nothing.
+#[cfg(feature = "legacy_bitstream_encode")]
+fn annulus_mesh(n: usize) -> Mesh {
+    // Three holes rather than one, so the events are written back to back:
+    // below 1.2 nothing separates them, while 1.2 puts a bit-coded section
+    // after the last one. A single event cannot tell those apart.
+    let holes = [(n / 4, n / 4), (n / 2, n / 2), (3 * n / 4 - 1, n / 4)];
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(n * n);
+    mesh.add_attribute(grid_mesh(n).attribute(0).clone());
+
+    let mut faces = Vec::new();
+    for y in 0..n - 1 {
+        for x in 0..n - 1 {
+            if holes.contains(&(x, y)) {
+                continue;
+            }
+            let p0 = (y * n + x) as u32;
+            let p1 = (y * n + x + 1) as u32;
+            let p2 = ((y + 1) * n + x) as u32;
+            let p3 = ((y + 1) * n + x + 1) as u32;
+            faces.push([p0, p1, p2]);
+            faces.push([p1, p3, p2]);
+        }
+    }
+
+    mesh.set_num_faces(faces.len());
+    for (id, face) in faces.into_iter().enumerate() {
+        mesh.set_face_from_indices(id, face);
+    }
     mesh
 }
 

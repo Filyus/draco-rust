@@ -1734,6 +1734,8 @@ impl MeshEdgebreakerEncoder {
         } else {
             1
         };
+        // Pre-1.2 writes the events raw rather than coded -- see below.
+        let pre_1_2_events = legacy && bitstream_version < 0x0102;
 
         let num_events = self.topology_split_event_data.len();
         if split_count_u32 {
@@ -1743,21 +1745,37 @@ impl MeshEdgebreakerEncoder {
         }
 
         if num_events > 0 {
-            // Encode source/split symbol IDs using delta coding.
-            let mut last_source_symbol_id: i32 = 0;
-            for event in &self.topology_split_event_data {
-                let delta = (event.source_symbol_id as i32) - last_source_symbol_id;
-                out_buffer.encode_varint(delta as u64);
-                let split_delta = (event.source_symbol_id as i32) - (event.split_symbol_id as i32);
-                out_buffer.encode_varint(split_delta as u64);
-                last_source_symbol_id = event.source_symbol_id as i32;
+            if pre_1_2_events {
+                // Below 1.2 an event is written whole and uncompressed -- two
+                // absolute u32 ids and a byte for the edge -- and there is no
+                // bit-coded section after them at all. Delta coding, varints and
+                // the packed edge bits all arrive together in 1.2. See
+                // `MeshEdgebreakerDecoderImpl::DecodeHoleAndTopologySplitEvents`,
+                // whose `< DRACO_BITSTREAM_VERSION(1, 2)` arm reads exactly this
+                // and whose `StartBitDecoding` lives in the other arm.
+                for event in &self.topology_split_event_data {
+                    out_buffer.encode_u32(event.split_symbol_id);
+                    out_buffer.encode_u32(event.source_symbol_id);
+                    out_buffer.encode_u8(event.source_edge as u8);
+                }
+            } else {
+                // Encode source/split symbol IDs using delta coding.
+                let mut last_source_symbol_id: i32 = 0;
+                for event in &self.topology_split_event_data {
+                    let delta = (event.source_symbol_id as i32) - last_source_symbol_id;
+                    out_buffer.encode_varint(delta as u64);
+                    let split_delta =
+                        (event.source_symbol_id as i32) - (event.split_symbol_id as i32);
+                    out_buffer.encode_varint(split_delta as u64);
+                    last_source_symbol_id = event.source_symbol_id as i32;
+                }
+                // Encode source_edge bits using direct bit encoding (no size prefix).
+                out_buffer.start_bit_encoding(num_events, false);
+                for event in &self.topology_split_event_data {
+                    out_buffer.encode_least_significant_bits32(edge_bits, event.source_edge as u32);
+                }
+                out_buffer.end_bit_encoding();
             }
-            // Encode source_edge bits using direct bit encoding (no size prefix).
-            out_buffer.start_bit_encoding(num_events, false);
-            for event in &self.topology_split_event_data {
-                out_buffer.encode_least_significant_bits32(edge_bits, event.source_edge as u32);
-            }
-            out_buffer.end_bit_encoding();
         }
 
         // Pre-2.1 stores hole events *after* the topology splits (a count plus the
