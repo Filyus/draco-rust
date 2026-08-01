@@ -110,14 +110,15 @@ Two oracles:
    and the decoder refuses is a bitstream bug that decode-side fuzzing cannot
    find, because it never produces such a stream.
 
-Oracle 2 is held to the default bitstream version. An explicitly requested
-legacy version is still encoded - oracle 1 covers it - but not round-tripped,
-because legacy encode is version-gated field by field and several of those gates
-still disagree with the decoder; see `round_trip_is_claimed` in the target
-for the current exclusions and what removing each one requires - each is decided
-from the geometry and the stream, never from the decoder's error text. Set
-`ENCODE_DRC_NO_DECODE_ORACLE=1` to drop oracle 2 entirely, which is how you
-run past a known disagreement to the panics behind it.
+Oracle 2 now applies at every version the encoder accepts. It was held to the
+default one while legacy encode was version-gated field by field and several of
+those gates disagreed with the decoder - which meant the exclusion was covering
+the target's largest blind spot with the very thing the target exists to find.
+`set_version` takes an enumerated allow-list now, and membership requires a
+round-trip test, so "the encoder accepted it" and "the decoder can read it" are
+the same statement again. `round_trip_is_claimed` in the target is reduced to
+the `ENCODE_DRC_NO_DECODE_ORACLE=1` knob, which drops oracle 2 entirely and is
+how you run past a known disagreement to the panics behind it.
 
 The first campaigns over this target found, and the fixes are pinned in
 [`crates/draco-core/tests/encoder_hardening_test.rs`](crates/draco-core/tests/encoder_hardening_test.rs):
@@ -235,6 +236,24 @@ minimises to an obvious cause:
 ```bash
 cargo run --manifest-path crates/Cargo.toml --example fbx_make_seeds -- fuzz/seeds
 ```
+
+Five of them are ASCII. FBX has two containers and the reader auto-detects
+between them, so the ASCII parser was reachable in principle and unexercised in
+practice: every seed began with the binary magic, and mutation will essentially
+never synthesize a `; FBX` or `FBXHeaderExtension:` prefix from those. The five
+cover a valid document, a deep block nest, a huge declared array length, an
+unterminated string and an unterminated block. Campaign over the widened corpus:
+452,946 executions, 2,323 new units, clean.
+
+[`crates/draco-io/tests/fbx_seeds.rs`](crates/draco-io/tests/fbx_seeds.rs)
+asserts what each seed does — which container it routes to, and whether it
+parses under lenient and under strict options — because a seed that does nothing
+is worse than no seed. It earns its keep: the first "valid" ASCII seed reached
+the parser but not the scene builder, carrying no `Connections` section and so
+producing zero meshes, and the committed `valid_triangle.fbx` had drifted from
+what the generator emits. Write that table from what the seeds *do*, not from
+what they were meant to do — two binary seeds parse leniently and fail strictly,
+which the first version got wrong.
 
 Seeding from the real fixture inventory (point clouds, sequential/EdgeBreaker
 meshes, legacy 0.9.1/1.0.0/1.1.0 streams, KD-tree streams) gives the fuzzer good

@@ -29,6 +29,10 @@ What the crate guarantees today:
   own budget with it.
 - Entropy, prediction, transform, and KD-tree decode paths use checked indexing
   and fallible buffer access on the audited paths.
+- A decode refusal names what it refused. The attribute transforms, the
+  prediction schemes and the sequential attribute coders return `DracoError`
+  rather than a bare `bool`, and the reason reaches `MeshDecoder::decode` from
+  the layer that found it.
 
 What the crate intentionally does **not** do:
 
@@ -59,9 +63,14 @@ ceiling + isolation) and is a supported target for this crate.
 - Sustained fuzzing is operationalized (see [`FUZZING.md`](FUZZING.md)) but
   hostile-input confidence depends on running it regularly with a persisted
   corpus; arbitrary-hostile-input safety is improving, not yet claimed absolute.
-- Some low-level decode helpers still return `bool` rather than a structured
-  `DracoError`; this loses failure context but does not bypass the bounds
-  checks. Tracked in `hardening_status.yaml`.
+- An rANS bit decoder cannot tell an encoded zero from a read past the encoded
+  bits, so a read count that overshoots yields deterministic garbage rather than
+  an error. The bound has to be structural at each call site — the crease-edge
+  flags against the corner count, the texture-coordinate orientations against
+  the entry count — and those bounds have not all been audited. This is a
+  wrong-geometry rather than a memory-safety concern: the loops are driven by
+  counts that have their own guards. Tracked in `hardening_status.yaml` as
+  `rans-over-read-call-site-bounds`.
 
 ## Reporting a vulnerability
 

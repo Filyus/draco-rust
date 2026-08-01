@@ -263,7 +263,8 @@ completed:
         tests:
           - "decode_least_significant_bits32_rejects_invalid_bit_counts"
           - "decode_least_significant_bits32_rejects_missing_second_word"
-    note: "Direct bit decode now rejects invalid requested bit counts and missing continuation words through false returns instead of assert/index panics."
+          - "a_read_past_the_last_bit_is_not_a_zero_bit"
+    note: "Direct bit decode rejects invalid requested bit counts and missing continuation words instead of assert/index panics. decode_next_bit returns Option<bool> rather than bool: its bits are a Vec<u32> filled by start_decoding, so a read past the end is exactly knowable, where before it was a zero bit indistinguishable from an encoded one - and the KD-tree loops that drive these reads take their counts from the same stream. Its rANS siblings cannot answer the same question; see rans-over-read-call-site-bounds."
 
   - id: folded-bit-decoder-bounds
     status: covered
@@ -379,7 +380,7 @@ completed:
     status: covered
     evidence:
       - path: "crates/draco-core/src/point_cloud_decoder.rs"
-    note: "Point-cloud decode rejects a declared point count beyond the remaining bit budget (>= 1 bit/point holds for every real Draco stream including KD-tree) before per-attribute buffers sized by num_points are allocated. Prevents memory amplification from a tiny malformed header in both the sequential and KD-tree attribute paths. Found by the decode_drc fuzz target (~4 GB allocation in KdTreeAttributesDecoder from a 115-byte input)."
+    note: "Found by the decode_drc fuzz target (~4 GB allocation in KdTreeAttributesDecoder from a 115-byte input). The original fix rejected a declared point count beyond the remaining bit budget, on the premise that at least one bit per point holds for every real Draco stream including KD-tree. That premise is false and the guard has been replaced - see decode-allocation-bounded-by-input-ratio; the amplification itself stays bounded, now where the buffers are sized rather than at the header."
 
   - id: sequential-mesh-count-amplification-bound
     status: covered
@@ -388,7 +389,7 @@ completed:
       - path: "crates/draco-core/tests/drc_edge_cases_test.rs"
         tests:
           - "oversized_sequential_mesh_point_count_fails_before_large_allocation"
-    note: "Sequential mesh connectivity decode rejects num_faces / num_points beyond the remaining bit budget before connectivity-index and per-attribute buffers sized by those counts are allocated. Found by the decode_drc fuzz target: an 18-byte v2.2 sequential mesh with num_faces=0 and a ~billion-point num_points accumulated multiple gigabytes in attribute decode."
+    note: "Found by the decode_drc fuzz target: an 18-byte v2.2 sequential mesh with num_faces=0 and a ~billion-point num_points accumulated multiple gigabytes in attribute decode. The original fix rejected num_faces / num_points beyond the remaining bit budget; that premise is false for entropy-coded data and the guard has been replaced - see decode-allocation-bounded-by-input-ratio. The amplification stays bounded."
 
   - id: rans-symbol-table-allocation-bound
     status: covered
@@ -414,7 +415,7 @@ completed:
       - path: "crates/draco-core/tests/drc_edge_cases_test.rs"
         tests:
           - "oversized_texcoord_orientations_decode_quickly_without_hang"
-    note: "PredictionSchemeTexCoordsPortableDecoder::decode_prediction_data now rejects a declared orientation count beyond remaining_size*8 before reserving and rANS-bit-decoding each orientation in a loop. C++ Draco checks only num_orientations < 0; the raw i32 count (up to ~2.1 billion) otherwise drove a ~2 second decode and multi-GB reservation. Found by the decode_drc fuzz target as a slow-unit/timeout from a 224-byte EdgeBreaker mesh input that reconstructs only 12 faces."
+    note: "PredictionSchemeTexCoordsPortableDecoder::decode_prediction_data rejects a declared orientation count above the entry count before reserving and rANS-bit-decoding each orientation in a loop. C++ Draco checks only num_orientations < 0; the raw i32 count (up to ~2.1 billion) otherwise drove a ~2 second decode and multi-GB reservation. Found by the decode_drc fuzz target as a slow-unit/timeout from a 224-byte EdgeBreaker mesh input that reconstructs only 12 faces. The bound is structural: compute_original_values pops exactly one orientation per predicted entry, so a count above that can never be consumed whatever the stream holds. The first version bounded by remaining_size*8 instead, which carries the same false one-bit-per-item premise as the header count guards - a run of identical orientations compresses to far less than a bit each."
 
   - id: edgebreaker-traversal-corner-table-consistency
     status: covered
@@ -524,15 +525,80 @@ completed:
       - path: "SECURITY.md"
     note: "SECURITY.md documents the decode threat model and recommended caller limits for untrusted input (input byte-size cap, memory budget, timeout/cancellation, process/WASM isolation, minimal decoder feature surface), making explicit that the crate avoids artificial geometry caps by design and that bounding cost is a caller responsibility."
 
+  - id: fbx-ascii-parser-fuzzed
+    status: covered
+    evidence:
+      - path: "crates/draco-io/examples/fbx_make_seeds.rs"
+      - path: "crates/draco-io/tests/fbx_seeds.rs"
+        tests:
+          - "every_seed_is_what_the_generator_says_it_is"
+    note: "The ASCII FBX parser was reachable in principle and unexercised in practice: every seed began with the binary magic, so mutation would essentially never synthesize a `; FBX` or `FBXHeaderExtension:` prefix. Five ASCII seeds now cover a valid document, a deep block nest, a huge declared array length, an unterminated string and an unterminated block. Two things the seeding surfaced: the 'valid' seed reached the parser but not the scene builder, because it carried no Connections section and so produced zero meshes, and the committed valid_triangle.fbx predated a writer change and no longer matched what the generator emits. A seed-validity test now asserts what each seed does under both lenient and strict options - two binary seeds parse leniently and fail strictly, which the first version of the table got wrong - and asserts the committed fixture still matches a freshly written triangle. Campaign over the widened corpus: 452,946 executions, 2,323 new units, clean."
+
+  - id: encode-legacy-version-round-trip
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/version.rs"
+      - path: "crates/draco-core/src/mesh_edgebreaker_encoder.rs"
+      - path: "crates/draco-core/tests/version_roundtrip_test.rs"
+        tests:
+          - "every_edgebreaker_traversal_round_trips_at_every_claimed_version"
+          - "every_attribute_coding_round_trips_at_every_claimed_version"
+          - "a_sequential_mesh_at_1_3_survives_the_varint_index_boundary"
+    note: "set_version accepted an interval - 1.0 to the newest, 259 values for a mesh including minors that never existed - and most produced a stream this crate's own decoder rejects. It now takes an enumeration keyed on the coder that writes the stream, and membership requires a round-trip test that compares values rather than counts, which is precisely what let the earlier point-cloud tests pass over a stream whose quantization parameters were in the wrong place. The first attempt refused three legacy combinations rather than writing them; that was wrong - legacy_bitstream_encode exists to write legacy streams - and all three, plus a fourth nobody had listed, turned out to be one root cause in five places: a sub-buffer built with EncoderBuffer::new() reports version 0, which every version branch reads as newest, so each wrote a 2.2 layout inside an older stream. Two more encoder/decoder disagreements came out with it: sequential counts switch to varints at 2.2 rather than at the major, and sequential face indices had no version gate at all, so a 1.3 mesh with 65,536 or more points decoded without error, with the right face count, and with different faces. The fuzz oracle's version exclusion is gone, which was covering the target's largest blind spot with the very thing it was meant to find."
+
+  - id: decode-allocation-bounded-by-input-ratio
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/decode_budget.rs"
+      - path: "crates/draco-core/src/sequential_integer_attribute_decoder.rs"
+      - path: "crates/draco-core/tests/drc_edge_cases_test.rs"
+        tests:
+          - "oversized_drc_counts_fail_before_large_allocation"
+          - "a_hundred_thousand_identical_points_round_trip"
+    note: "Replaces the header count-versus-size guard, whose premise - at least one bit per point or face - is false for entropy-coded data: geometry whose values are all equal codes to a size independent of the count, so this crate wrote 100,000 points into 171 bytes and then refused to read the file back, which made the guard an interoperability bug as well as a false negative. A decode may now allocate up to 2^20 bytes per input byte, applied where the buffers are sized rather than at the header, so it scales with the input instead of capping geometry. Measured rather than assumed: try_reserve_exact for 51 GB succeeds on Windows in 0.165s and the KD-tree decoder then spends 14.5s writing into it, so fallible allocation alone bounds nothing when the allocator says yes; with the budget the same input is refused in 0.000s. Upstream's own `faces > remaining/3` is deliberately not adopted - its premise fails for the compressed connectivity branch for the same reason. The EdgeBreaker topology-split guard is kept: one byte per event is a floor, not an average, which is what makes that one sound. The four decode-path allocations sized from num_points * num_components became fallible first, and the product is computed with checked_mul because usize is 32 bits on wasm32."
+
+  - id: decode-error-api-converted
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/attribute_transform.rs"
+      - path: "crates/draco-core/src/prediction_scheme.rs"
+      - path: "crates/draco-core/src/sequential_integer_attribute_decoder.rs"
+      - path: "crates/draco-core/src/direct_bit_decoder.rs"
+        tests:
+          - "a_read_past_the_last_bit_is_not_a_zero_bit"
+      - path: "crates/draco-core/tests/drc_edge_cases_test.rs"
+        tests:
+          - "a_truncated_stream_names_what_ran_out"
+    note: "Ninety-odd bool-returning functions across the attribute transforms, the prediction-scheme family and the sequential attribute coders now return Status, and their failures propagate to MeshDecoder/PointCloudDecoder/MeshEncoder/PointCloudEncoder instead of being replaced by a fixed sentence one hop below the API. Where a reason already existed it was going to a debug_log! the release build drops - 55 of them in the integer attribute decoder alone. Pinned by a regression that cuts a real encode at every length and requires the wrap transform's own words to reach MeshDecoder::decode, three layers up; falsified by making run_decode_prediction_data discard the cause. Predicates stay bool. Two panics came out with the conversion (see quantization-transform-direction-agreement) and one latent gap: the normal encoder accepted a quantization bit count of 1 or above 30 while the octahedron transform carries 2..=30, leaving it uninitialised and failing later at the folding step with nothing naming the cause. The EdgeBreaker traversal's Result<_, String> became Result<_, DracoError>, removing the last error type in the crate that was not DracoError. What this does not cover is the rANS read-past-the-end signal - see rans-over-read-call-site-bounds."
+
+  - id: quantization-transform-direction-agreement
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/attribute_quantization_transform.rs"
+        tests:
+          - "quantizing_with_parameters_from_a_narrower_attribute_is_refused"
+          - "encoding_parameters_from_an_uninitialized_transform_is_refused"
+    note: "Two defects on one type, both from its two directions disagreeing about what they check. generate_portable_attribute indexes min_values per component - the fast path writes [0], [1], [2] literally - while min_values was sized by compute_parameters from whichever attribute it was given; parameters computed for two components and applied to three panicked with 'the len is 2 but the index is 2', reachable through the public AttributeTransform::transform_attribute, and the inverse direction had checked that length since it was written. encode_parameters wrote -1 truncated to 0xFF as the quantization-bits byte and reported success - a value no decoder accepts - where the sibling octahedron transform had always gated the same method. Both regressions were written from a reproduction first."
+
+  - id: decode-path-indexing-audit
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/corner_table.rs"
+        tests:
+          - "a_corner_past_the_table_is_invalid_rather_than_a_panic"
+      - path: "crates/draco-io/src/traits.rs"
+      - path: "crates/draco-core/src/prediction_scheme_tex_coords_portable.rs"
+    note: "CornerTable::opposite and vertex guarded the invalid sentinel but not the upper bound, and roughly twenty-five index expressions in that file funnel through the two; they return the sentinel for a corner past the table now, which callers already handle. is_index_consistent is the whole-table check that would rule this out up front and is called at three sites rather than at every entry point, which is why the primitives had to be total. Separately the four draco-io mesh writers read attribute data as point * byte_stride through the panicking DataBuffer::read at nine call sites; that is sound exactly when each attribute holds at least num_points values, and nothing between a decoder and a writer re-checked it, so one precondition at each writer's entry point now makes the nine provably in range. Two unwrap() calls on the portable tex-coord encode path went with the prediction-scheme conversion: mesh_data and data_to_corner_map were unwrapped after a check covering only the first."
+
 open_risks:
-  - id: fbx-ascii-parser-unfuzzed
+  - id: rans-over-read-call-site-bounds
     priority: medium
-    summary: "The ASCII FBX parser added in fbx_ascii.rs is a hand-written recursive-descent parser over untrusted text, and the fuzz corpus contains no ASCII seeds."
-    why_it_matters: "The libFuzzer targets call FbxScene::from_bytes_with_options, which auto-detects the container, so the ASCII path is reachable -- but every seed produced by crates/draco-io/examples/fbx_make_seeds.rs begins with the binary magic, and a mutation engine will essentially never synthesize a `; FBX` or `FBXHeaderExtension:` prefix from them. The parser is therefore reachable in principle and unexercised in practice. It does honour FbxDecodeLimits for file size, depth, node count and array bytes, and its depth limit has a regression test, so this is missing coverage rather than a known hazard."
+    summary: "An rANS bit decoder cannot report reading past the encoded bits, so every caller has to bound its own read count structurally, and those bounds have not all been audited."
+    why_it_matters: "RAnsBitDecoder::decode_next_bit answers false for an encoded zero and for a spent stream alike, and unlike DirectBitDecoder it cannot be made to tell them apart: the obvious test - the rABS state below l_base after renormalization with no bytes left - holds on 21049 of 79359 reads (26%) over this crate's own round-trip suite, every one in a stream encoded and decoded back byte-exactly, because the rABS tail legitimately draws from state alone. Upstream has no check either. So a read count that overshoots yields deterministic garbage rather than an error, and the only real guard is a structural bound at the call site. The prediction schemes have theirs - crease-edge flags against the corner count, orientations against the entry count - and the KD-tree's DirectBitDecoder reads now refuse outright. The EdgeBreaker start-face and seam readers have not been checked against this question."
     next_steps:
-      - "Add ASCII seeds to fbx_make_seeds.rs: a minimal valid document, one with a deep block nest, one with a huge declared array length, and one with an unterminated string or block."
-      - "Re-run seed_corpus.{sh,ps1} and confirm the ASCII branch is reached, for example by checking coverage or by asserting a seed decodes."
-      - "Run a bounded campaign over the widened corpus before claiming the ASCII path is hardened."
+      - "Enumerate the rANS decode_next_bit call sites and state, per site, what bounds the read count and where that bound is itself checked."
+      - "Add a structural bound where a site has none, following the crease-edge and orientation pattern rather than a size-in-bits premise."
+      - "This is a wrong-geometry rather than a memory-safety concern: the loops are bounded by counts that already have their own guards, so what an over-read produces is garbage output, not an out-of-bounds access."
 
   - id: fuzzing-ci-soak-time
     priority: low
@@ -550,41 +616,6 @@ open_risks:
     next_steps:
       - "Keep decoder internals focused on overflow checks, relative input-consistency bounds, and fallible allocation rather than artificial mesh-size caps."
       - "Point production integrators at SECURITY.md for input-size, worker-isolation, timeout/cancellation, and memory-budget guidance."
-
-  - id: encode-legacy-version-round-trip
-    priority: medium
-    summary: "An explicitly requested non-default bitstream version can still produce a stream this crate's own decoder rejects, so encode_drc's round-trip oracle is held to the default version."
-    why_it_matters: "Legacy encode is version-gated field by field, and the gates are not all consistent with the decoder's: a point-cloud header written at 1.0 was two bytes short until this was fixed, and a sequential mesh at 2.1 still ends short. Nothing here is a memory-safety hazard - the encoder refuses or the decoder errors - but a caller that sets set_version for interoperability can get an unreadable file back."
-    next_steps:
-      - "Enumerate which versions the encoders actually claim, per geometry type and method, and reject the rest at validate_encodable_version rather than per field."
-      - "For each claimed version, add an encode/decode round-trip test, then narrow round_trip_is_claimed in fuzz/fuzz_targets/encode_drc.rs to what remains."
-
-  - id: decoder-count-guard-is-unsound
-    priority: medium
-    summary: "The decoder's header preflight rejects a point/face count above the remaining bitstream size in bits. The premise - at least one bit per point - is false, and the guard rejects streams this crate and C++ Draco both produce."
-    why_it_matters: "A geometry whose attribute values are all equal entropy-codes to a size independent of the point count: this encoder writes 100,000 points into 171 bytes, and its own decoder then refuses that file. So the guard is an interoperability bug as well as a false negative for hardening. It is also what currently bounds count-driven allocation from a tiny header, which is why it cannot simply be deleted."
-    next_steps:
-      - "Establish what actually bounds allocation once the guard is gone: every count-driven allocation is already fallible, so the question is whether fallible allocation alone is enough under overcommit, or whether an explicit decode limit is needed as the FBX and KTX2 readers have."
-      - "Replace the relative guard with whichever of those the answer is, keeping oversized_drc_counts_fail_before_large_allocation passing."
-      - "Remove the matching exclusion from round_trip_is_claimed in fuzz/fuzz_targets/encode_drc.rs."
-
-  - id: decode-error-api-cleanup
-    priority: medium
-    summary: "Several low-level entropy, prediction, and transform decode helpers still use bool returns, which loses failure context."
-    why_it_matters: "The recent panic-guard cleanup prevents selected unwrap panics, but callers still often see a generic false instead of a structured DracoError."
-    next_steps:
-      - "Audit remaining decode-only bool APIs in rANS/direct-bit/folded-bit/prediction helpers."
-      - "Convert the most externally reachable helpers to Result-based wrappers in small, mechanical commits."
-      - "Keep encoder-only invariant expects out of the malformed-input hardening scope unless they become public API concerns."
-
-  - id: decode-path-indexing-audit
-    priority: medium
-    summary: "A final audit is still needed for unchecked indexing and DataBuffer reads reachable from lower-level decode helpers."
-    why_it_matters: "Many obvious prediction unwraps, geometric-normal position reads, octahedron transform slices, and KD-tree attribute writes are now guarded, but slice/indexing panics can still hide in lower-level attribute or buffer helpers."
-    next_steps:
-      - "Audit decoder-facing DataBuffer::read/write callers and attribute transform offsets."
-      - "Prefer local bounds checks or fallible helper variants where malformed input can control offsets."
-      - "Add targeted malformed-input regressions when a reachable panic candidate is found."
 
 exit_criteria:
   controlled_assets:
