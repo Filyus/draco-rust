@@ -29,13 +29,16 @@ jobs:
         run: cargo fmt --manifest-path web/Cargo.toml --all -- --check
 
       - name: Test draco-core (full suite)
-        # These two Rust/C++ parity tests invoke locally built Windows
-        # `draco_decoder.exe` / `draco_encoder.exe`. Keep them in the local
-        # Windows suite, but run every self-contained core test on Linux CI.
+        # These Rust/C++ parity tests invoke locally built Windows
+        # `draco_decoder.exe` / `draco_encoder.exe`, and panic rather than skip
+        # when the binary is absent. Keep them in the local Windows suite, but
+        # run every self-contained core test on Linux CI. A new one belongs on
+        # this list the moment it calls `find_cpp_tool`.
         run: >-
           cargo test --manifest-path crates/Cargo.toml -p draco-core --
           --skip compare_rust_vs_cpp_decode
           --skip rust_encode_cpp_decode_small_matrix
+          --skip cpp_decodes_a_legacy_stream_with_topology_splits
 
       # Feature-combination compile guard. Default tests enable every feature,
       # which hides feature-gating mistakes (e.g. a decoder module that secretly
