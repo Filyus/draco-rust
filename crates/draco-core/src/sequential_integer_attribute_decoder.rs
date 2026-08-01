@@ -172,7 +172,12 @@ impl SequentialIntegerAttributeDecoder {
         };
 
         let num_components = attribute.num_components() as usize;
-        let num_values = num_points * num_components;
+        // Both factors come from the bitstream, and `usize` is 32 bits on the
+        // wasm32 target this ships to, where the product of a large point count
+        // and 255 components wraps rather than saturating.
+        let Some(num_values) = num_points.checked_mul(num_components) else {
+            return false;
+        };
 
         // 3. Decode Prediction Method and (optional) prepare predictor
         let method_byte = match in_buffer.decode_u8() {
@@ -819,7 +824,9 @@ impl SequentialIntegerAttributeDecoder {
         let corrections: Vec<i32> = if compressed > 0 {
             // Entropy-coded symbols are zigzag encoded UNLESS the prediction scheme
             // guarantees positive corrections (e.g., normal octahedron transform)
-            let mut symbols = vec![0u32; num_values];
+            let Some(mut symbols) = try_zeroed::<u32>(num_values) else {
+                return false;
+            };
             let options = SymbolEncodingOptions::default();
             if !decode_symbols(
                 num_values,
@@ -842,7 +849,9 @@ impl SequentialIntegerAttributeDecoder {
                 return false;
             }
 
-            let mut raw_corrections = Vec::with_capacity(num_values);
+            let Some(mut raw_corrections) = try_reserved::<i32>(num_values) else {
+                return false;
+            };
             if num_bytes == 0 {
                 // All values are zero — nothing to read from the buffer.
                 raw_corrections.resize(num_values, 0);
@@ -877,7 +886,10 @@ impl SequentialIntegerAttributeDecoder {
         let mut values = if selected_method == PredictionSchemeMethod::None {
             Vec::new()
         } else {
-            vec![0i32; num_values]
+            let Some(values) = try_zeroed::<i32>(num_values) else {
+                return false;
+            };
+            values
         };
 
         // 3. Decode prediction scheme data (if any).
@@ -1150,6 +1162,27 @@ impl SequentialIntegerAttributeDecoder {
 
         true
     }
+}
+
+/// Reserves room for `len` values, or reports failure instead of aborting.
+///
+/// `len` here is `num_points * num_components`, and both come out of the
+/// bitstream, so it is as large as the file says. Every other allocation this
+/// decoder makes from a declared count is already fallible; these were the last
+/// infallible ones, and they are the largest — the corrections buffer is three
+/// times the point-id vector that precedes it, so on a system that overcommits
+/// it is the one that faults rather than the one that returns null.
+fn try_reserved<T>(len: usize) -> Option<Vec<T>> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(len).ok()?;
+    Some(values)
+}
+
+/// The same, filled with `T::default()`.
+fn try_zeroed<T: Clone + Default>(len: usize) -> Option<Vec<T>> {
+    let mut values = try_reserved::<T>(len)?;
+    values.resize(len, T::default());
+    Some(values)
 }
 
 #[inline]
