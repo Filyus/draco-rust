@@ -59,7 +59,7 @@ impl PredictionSchemeDecodingTransform<i32, i32>
 
     fn decode_transform_data(&mut self, buffer: &mut DecoderBuffer) -> Status {
         let truncated = |what: &str| {
-            DracoError::BufferError(format!(
+            DracoError::buffer(format!(
                 "Stream ends before the octahedral transform's {what}"
             ))
         };
@@ -75,7 +75,7 @@ impl PredictionSchemeDecodingTransform<i32, i32>
             .base_mut()
             .set_max_quantized_value(max_quantized_value)
         {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Octahedral maximum quantized value {max_quantized_value} is not representable"
             )));
         }
@@ -83,7 +83,7 @@ impl PredictionSchemeDecodingTransform<i32, i32>
         // C++ requires quantization bits in [2, 30].
         let q = self.base.base().quantization_bits();
         if !(2..=30).contains(&q) {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Octahedral quantization bits {q} outside the supported range 2..=30"
             )));
         }

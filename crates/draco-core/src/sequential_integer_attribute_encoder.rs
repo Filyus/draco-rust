@@ -192,7 +192,7 @@ impl SequentialIntegerAttributeEncoder {
     ) -> Status {
         let att_id = self.base.attribute_id();
         if att_id < 0 || att_id >= point_cloud.num_attributes() {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Attribute {att_id} is outside the {} the geometry has",
                 point_cloud.num_attributes()
             )));
@@ -658,7 +658,7 @@ impl SequentialIntegerAttributeEncoder {
             }
             #[cfg(not(feature = "legacy_bitstream_encode"))]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                return Err(DracoError::UnsupportedFeature(
+                return Err(DracoError::unsupported_feature(
                     "MultiParallelogram prediction needs the legacy_bitstream_encode feature"
                         .to_string(),
                 ))
@@ -711,7 +711,7 @@ impl SequentialIntegerAttributeEncoder {
                             .unwrap()
                             .named_attribute(GeometryAttributeType::Position);
                         let Some(pos_att) = pos_att else {
-                            return Err(DracoError::InvalidParameter(
+                            return Err(DracoError::invalid_parameter(
                                 "Texture-coordinate prediction needs a position attribute"
                                     .to_string(),
                             ));
@@ -763,7 +763,7 @@ impl SequentialIntegerAttributeEncoder {
             }
             #[cfg(not(feature = "legacy_bitstream_encode"))]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                return Err(DracoError::UnsupportedFeature(
+                return Err(DracoError::unsupported_feature(
                     "TexCoordsDeprecated prediction needs the legacy_bitstream_encode feature"
                         .to_string(),
                 ))
@@ -823,13 +823,13 @@ impl SequentialIntegerAttributeEncoder {
                             .unwrap()
                             .named_attribute_id(GeometryAttributeType::Position);
                         if pos_att_id < 0 {
-                            return Err(DracoError::InvalidParameter(
+                            return Err(DracoError::invalid_parameter(
                                 "Texture-coordinate prediction needs a position attribute"
                                     .to_string(),
                             ));
                         }
                         let Some(pos_att) = encoder.get_portable_attribute(pos_att_id) else {
-                            return Err(DracoError::General(
+                            return Err(DracoError::general(
                                 "No portable position attribute for TexCoordsPortable".to_string(),
                             ));
                         };
@@ -949,13 +949,13 @@ impl SequentialIntegerAttributeEncoder {
                             let pos_att_id =
                                 point_cloud.named_attribute_id(GeometryAttributeType::Position);
                             if pos_att_id < 0 {
-                                return Err(DracoError::InvalidParameter(
+                                return Err(DracoError::invalid_parameter(
                                     "Geometric normal prediction needs a position attribute"
                                         .to_string(),
                                 ));
                             }
                             let Some(pos_att) = encoder.get_portable_attribute(pos_att_id) else {
-                                return Err(DracoError::General(
+                                return Err(DracoError::general(
                                     "No portable position attribute for GeometricNormal"
                                         .to_string(),
                                 ));
@@ -1043,7 +1043,7 @@ impl SequentialIntegerAttributeEncoder {
                 corrections.copy_from_slice(&values);
             }
             _ => {
-                return Err(DracoError::UnsupportedFeature(format!(
+                return Err(DracoError::unsupported_feature(format!(
                     "Prediction method {selected_method:?}"
                 )))
             }
@@ -1115,7 +1115,7 @@ impl SequentialIntegerAttributeEncoder {
             if uses_inline_normal_transform_data {
                 let quantization_bits = options.get_attribute_int(att_id, "quantization_bits", -1);
                 if !(2..=30).contains(&quantization_bits) {
-                    return Err(DracoError::InvalidParameter(format!(
+                    return Err(DracoError::invalid_parameter(format!(
                         "Octahedral quantization bits {quantization_bits} outside the supported range 2..=30"
                     )));
                 }
@@ -1182,7 +1182,7 @@ impl SequentialIntegerAttributeEncoder {
 
         let _start_len = out_buffer.size();
         if !encode_symbols(&symbols, num_components, &symbol_options, out_buffer) {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Failed to entropy-code the prediction residuals".to_string(),
             ));
         }

@@ -14,7 +14,7 @@ use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::point_cloud::PointCloud;
 use draco_core::point_cloud_decoder::PointCloudDecoder;
-use draco_core::status::DracoError;
+use draco_core::status::ErrorKind;
 
 fn repo_testdata_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR = <repo>/crates/draco-core
@@ -170,8 +170,12 @@ fn skipped_fixture_for_current_decoder(path: &Path, bytes: &[u8]) -> Option<Skip
             let mut buffer = DecoderBuffer::new(bytes);
             let mut mesh = Mesh::new();
             let mut decoder = MeshDecoder::new();
-            if let Err(DracoError::General(msg)) = decoder.decode(&mut buffer, &mut mesh) {
-                if msg.starts_with("Unsupported Edgebreaker traversal decoder type") {
+            if let Err(error) = decoder.decode(&mut buffer, &mut mesh) {
+                if error.kind() == ErrorKind::General
+                    && error
+                        .message()
+                        .starts_with("Unsupported Edgebreaker traversal decoder type")
+                {
                     return Some(skipped(
                         &path,
                         major,
@@ -1371,12 +1375,16 @@ fn decode_all_testdata_top_level_drc_files() {
                 let mut decoder = MeshDecoder::new();
                 let status = decoder.decode(&mut buffer, &mut mesh);
 
-                if let Err(DracoError::General(ref msg)) = status {
-                    if msg.starts_with("Unsupported Edgebreaker traversal decoder type") {
+                if let Err(ref error) = status {
+                    if error.kind() == ErrorKind::General
+                        && error
+                            .message()
+                            .starts_with("Unsupported Edgebreaker traversal decoder type")
+                    {
                         println!(
                             "Skipping {} due to unsupported traversal: {}",
                             path.display(),
-                            msg
+                            error.message()
                         );
                         continue;
                     }

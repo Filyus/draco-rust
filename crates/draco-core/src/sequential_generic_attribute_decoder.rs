@@ -48,15 +48,15 @@ impl SequentialGenericAttributeDecoder {
         let total_size = num_points
             .checked_mul(num_components)
             .and_then(|size| size.checked_mul(data_type_size))
-            .ok_or_else(|| DracoError::General("Generic attribute size overflow".to_string()))?;
+            .ok_or_else(|| DracoError::general("Generic attribute size overflow".to_string()))?;
         attribute
             .buffer_mut()
             .try_resize(total_size)
-            .map_err(|_| DracoError::General("Failed to allocate generic attribute".to_string()))?;
+            .map_err(|_| DracoError::general("Failed to allocate generic attribute".to_string()))?;
 
         let bytes = buffer
             .decode_slice(total_size)
-            .map_err(|_| DracoError::General("Failed to decode generic attribute".to_string()))?;
+            .map_err(|_| DracoError::general("Failed to decode generic attribute".to_string()))?;
         attribute.buffer_mut().data_mut().copy_from_slice(bytes);
         Ok(())
     }

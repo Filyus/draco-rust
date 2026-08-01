@@ -300,7 +300,7 @@ where
     }
 
     fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
-        Err(DracoError::InvalidParameter(
+        Err(DracoError::invalid_parameter(
             "The parallelogram prediction scheme takes no parent attribute".to_string(),
         ))
     }
@@ -329,7 +329,7 @@ where
         // that special-cases the first entry needs this guard; the sibling
         // schemes carry the same one.
         if num_components == 0 || !size.is_multiple_of(num_components) {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "{size} values do not divide into {num_components} components"
             )));
         }
@@ -446,7 +446,7 @@ where
     }
 
     fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
-        Err(DracoError::InvalidParameter(
+        Err(DracoError::invalid_parameter(
             "The parallelogram prediction scheme takes no parent attribute".to_string(),
         ))
     }
@@ -471,13 +471,13 @@ where
         self.transform.init(num_components);
 
         if num_components == 0 {
-            return Err(DracoError::InvalidParameter(
+            return Err(DracoError::invalid_parameter(
                 "Parallelogram prediction needs at least one component".to_string(),
             ));
         }
 
         let missing =
-            |what: &str| DracoError::General(format!("Parallelogram prediction has no {what}"));
+            |what: &str| DracoError::general(format!("Parallelogram prediction has no {what}"));
         let Some(table) = self.mesh_data.corner_table() else {
             return Err(missing("corner table"));
         };
@@ -488,7 +488,7 @@ where
             return Err(missing("data-to-corner map"));
         };
         let Some(required_values) = data_to_corner_map.len().checked_mul(num_components) else {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Parallelogram prediction value count overflow".to_string(),
             ));
         };
@@ -496,7 +496,7 @@ where
             || in_corr.len() < required_values
             || out_data.len() < required_values
         {
-            return Err(DracoError::General(format!(
+            return Err(DracoError::general(format!(
                 "Parallelogram prediction needs {required_values} values, has {} corrections and {} outputs",
                 in_corr.len(),
                 out_data.len()

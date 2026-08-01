@@ -208,7 +208,7 @@ impl PredictionSchemeDecodingTransform<i32, i32> for PredictionSchemeWrapDecodin
 
     fn decode_transform_data(&mut self, buffer: &mut DecoderBuffer) -> Status {
         let truncated = |bound: &str| {
-            DracoError::BufferError(format!(
+            DracoError::buffer(format!(
                 "Stream ends before the wrap transform's {bound} value"
             ))
         };

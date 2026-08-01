@@ -25,7 +25,7 @@ use crate::status::{DracoError, Status};
 const VALID_QUANTIZATION_BITS: std::ops::RangeInclusive<i32> = 1..=31;
 
 fn invalid_quantization_bits(bits: i32) -> DracoError {
-    DracoError::InvalidParameter(format!(
+    DracoError::invalid_parameter(format!(
         "Quantization bits {bits} outside the supported range 1..=31"
     ))
 }
@@ -79,13 +79,13 @@ impl AttributeQuantizationTransform {
 
         let num_entries = attribute.size();
         if num_entries == 0 {
-            return Err(DracoError::InvalidParameter(
+            return Err(DracoError::invalid_parameter(
                 "Cannot compute quantization parameters from an empty attribute".to_string(),
             ));
         }
 
         if attribute.data_type() != DataType::Float32 {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Quantization needs a float32 attribute, got {:?}",
                 attribute.data_type()
             )));
@@ -110,7 +110,7 @@ impl AttributeQuantizationTransform {
         };
 
         let truncated = || {
-            DracoError::General(
+            DracoError::general(
                 "Attribute source data is truncated relative to its value count".to_string(),
             )
         };
@@ -127,7 +127,7 @@ impl AttributeQuantizationTransform {
         // Process remaining entries starting from index 1 (matching C++ loop)
         for i in 1..num_entries {
             let Some(offset) = i.checked_mul(byte_stride) else {
-                return Err(DracoError::General(
+                return Err(DracoError::general(
                     "Attribute byte offset overflow".to_string(),
                 ));
             };
@@ -138,7 +138,7 @@ impl AttributeQuantizationTransform {
                 };
 
                 if val.is_nan() {
-                    return Err(DracoError::InvalidParameter(
+                    return Err(DracoError::invalid_parameter(
                         "Attribute value is NaN and cannot be quantized".to_string(),
                     ));
                 }
@@ -159,7 +159,7 @@ impl AttributeQuantizationTransform {
                 || max_values[c].is_nan()
                 || max_values[c].is_infinite()
             {
-                return Err(DracoError::InvalidParameter(format!(
+                return Err(DracoError::invalid_parameter(format!(
                     "Attribute component {c} spans a non-finite range and cannot be quantized"
                 )));
             }
@@ -212,7 +212,7 @@ impl AttributeQuantizationTransform {
         // direction has checked exactly this since it was written; this is the
         // forward half of the same check.
         if self.min_values.len() < num_components {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Quantization parameters cover {} components, attribute has {num_components}",
                 self.min_values.len()
             )));
@@ -259,7 +259,7 @@ impl AttributeQuantizationTransform {
                 let src_offset = i * src_stride;
                 let dst_offset = i * dst_stride;
                 if src_offset + 12 > src_data.len() || dst_offset + 12 > dst_data.len() {
-                    return Err(DracoError::General(
+                    return Err(DracoError::general(
                         "Quantization source or target data is truncated".to_string(),
                     ));
                 }
@@ -305,7 +305,7 @@ impl AttributeQuantizationTransform {
                 };
                 let att_val_idx = attribute.mapped_index(point_idx);
                 let Some(src_offset) = (att_val_idx.0 as usize).checked_mul(src_stride) else {
-                    return Err(DracoError::General(
+                    return Err(DracoError::general(
                         "Attribute byte offset overflow".to_string(),
                     ));
                 };
@@ -313,7 +313,7 @@ impl AttributeQuantizationTransform {
                 if src_offset + num_components * 4 > src_data.len()
                     || dst_offset + num_components * 4 > dst_data.len()
                 {
-                    return Err(DracoError::General(
+                    return Err(DracoError::general(
                         "Quantization source or target data is truncated".to_string(),
                     ));
                 }
@@ -369,18 +369,18 @@ impl AttributeTransform for AttributeQuantizationTransform {
 
     fn init_from_attribute(&mut self, attribute: &PointAttribute) -> Status {
         let Some(data) = attribute.attribute_transform_data() else {
-            return Err(DracoError::InvalidParameter(
+            return Err(DracoError::invalid_parameter(
                 "Attribute carries no transform data".to_string(),
             ));
         };
         if data.transform_type() != AttributeTransformType::QuantizationTransform {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Attribute carries {:?}, not a quantization transform",
                 data.transform_type()
             )));
         }
         let truncated = || {
-            DracoError::InvalidParameter(
+            DracoError::invalid_parameter(
                 "Attribute transform data is shorter than the quantization parameters".to_string(),
             )
         };
@@ -434,7 +434,7 @@ impl AttributeTransform for AttributeQuantizationTransform {
         target_attribute: &mut PointAttribute,
     ) -> Status {
         if target_attribute.data_type() != DataType::Float32 {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Dequantization needs a float32 target, got {:?}",
                 target_attribute.data_type()
             )));
@@ -449,7 +449,7 @@ impl AttributeTransform for AttributeQuantizationTransform {
         let max_quantized_value: i32 = ((1u64 << (self.quantization_bits as u32)) - 1) as i32;
         let mut dequantizer = Dequantizer::new();
         if !dequantizer.init(self.range, max_quantized_value) {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Dequantizer rejects range {} over {max_quantized_value} steps",
                 self.range
             )));
@@ -457,7 +457,7 @@ impl AttributeTransform for AttributeQuantizationTransform {
 
         let num_components = target_attribute.num_components() as usize;
         if self.min_values.len() < num_components {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Quantization parameters cover {} components, attribute has {num_components}",
                 self.min_values.len()
             )));
@@ -465,12 +465,12 @@ impl AttributeTransform for AttributeQuantizationTransform {
         let num_values = target_attribute.size();
 
         let Ok(dst_stride) = usize::try_from(target_attribute.byte_stride()) else {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Negative target byte stride".to_string(),
             ));
         };
         let Ok(src_stride) = usize::try_from(attribute.byte_stride()) else {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Negative source byte stride".to_string(),
             ));
         };
@@ -479,9 +479,9 @@ impl AttributeTransform for AttributeQuantizationTransform {
         let src_data = src_buffer.data();
         let dst_data = dst_buffer.data_mut();
 
-        let overflow = || DracoError::General("Attribute byte range overflow".to_string());
+        let overflow = || DracoError::general("Attribute byte range overflow".to_string());
         let truncated =
-            || DracoError::General("Dequantization source or target data is truncated".to_string());
+            || DracoError::general("Dequantization source or target data is truncated".to_string());
 
         const COMPONENT_SIZE: usize = std::mem::size_of::<u32>();
         let Some(tight_stride) = num_components.checked_mul(COMPONENT_SIZE) else {
@@ -611,7 +611,7 @@ impl AttributeTransform for AttributeQuantizationTransform {
                     }
                 }
                 _ => {
-                    return Err(DracoError::InvalidParameter(format!(
+                    return Err(DracoError::invalid_parameter(format!(
                         "Dequantization does not support {num_components} components"
                     )))
                 }
@@ -689,7 +689,7 @@ impl AttributeTransform for AttributeQuantizationTransform {
     ) -> Status {
         let num_components = attribute.num_components() as usize;
         let truncated = |what: &str| {
-            DracoError::BufferError(format!(
+            DracoError::buffer(format!(
                 "Stream ends before the quantization {what} it declares"
             ))
         };

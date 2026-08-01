@@ -363,7 +363,7 @@ pub use keyframe_animation::KeyframeAnimation;
 pub use mesh::Mesh;
 pub use metadata::{AttributeMetadata, GeometryMetadata, Metadata};
 pub use point_cloud::PointCloud;
-pub use status::{DracoError, Status};
+pub use status::{DracoError, ErrorKind, Status};
 
 // =============================================================================
 // Decoder re-exports

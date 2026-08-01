@@ -37,7 +37,7 @@ fn validate_num_attributes_in_decoder(
     if num_attributes_in_decoder == 0
         || num_attributes_in_decoder > remaining_bytes / MIN_ATTRIBUTE_BYTES
     {
-        return Err(DracoError::General(
+        return Err(DracoError::general(
             "Invalid number of attributes".to_string(),
         ));
     }
@@ -46,7 +46,7 @@ fn validate_num_attributes_in_decoder(
 
 fn validate_num_components(num_components: u8) -> Result<(), DracoError> {
     if num_components == 0 {
-        return Err(DracoError::General(
+        return Err(DracoError::general(
             "Invalid attribute component count".to_string(),
         ));
     }
@@ -77,7 +77,7 @@ fn build_vertex_to_data_map_from_corner_map(
             continue;
         }
         if corner.0 as usize >= corner_table.num_corners() {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Data-to-corner map references an invalid corner".to_string(),
             ));
         }
@@ -86,7 +86,7 @@ fn build_vertex_to_data_map_from_corner_map(
             continue;
         }
         let Some(slot) = vertex_to_data_map.get_mut(vertex.0 as usize) else {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Data-to-corner map references an invalid vertex".to_string(),
             ));
         };
@@ -220,7 +220,7 @@ impl MeshDecoder {
             }
             #[cfg(not(feature = "point_cloud_decode"))]
             {
-                return Err(DracoError::General(
+                return Err(DracoError::general(
                     "Point cloud decode support is disabled".to_string(),
                 ));
             }
@@ -246,7 +246,7 @@ impl MeshDecoder {
         out_mesh: &mut Mesh,
     ) -> Result<(), DracoError> {
         let metadata = GeometryMetadata::decode(in_buffer)
-            .map_err(|_| DracoError::General("Failed to decode metadata".to_string()))?;
+            .map_err(|_| DracoError::general("Failed to decode metadata".to_string()))?;
         out_mesh.set_metadata(Some(metadata));
         Ok(())
     }
@@ -255,7 +255,7 @@ impl MeshDecoder {
         let mut magic = [0u8; 5];
         buffer.decode_bytes(&mut magic)?;
         if &magic != b"DRACO" {
-            return Err(DracoError::General("Invalid magic".to_string()));
+            return Err(DracoError::general("Invalid magic".to_string()));
         }
 
         self.version_major = buffer.decode_u8()?;
@@ -266,7 +266,7 @@ impl MeshDecoder {
         self.geometry_type = match g_type {
             0 => EncodedGeometryType::PointCloud,
             1 => EncodedGeometryType::TriangularMesh,
-            _ => return Err(DracoError::General("Invalid geometry type".to_string())),
+            _ => return Err(DracoError::general("Invalid geometry type".to_string())),
         };
 
         self.method = buffer.decode_u8()?;
@@ -276,7 +276,7 @@ impl MeshDecoder {
         // not when the bytes were added to the format.
         self.flags = buffer
             .decode_u16()
-            .map_err(|_| DracoError::General("Failed to decode flags".to_string()))?;
+            .map_err(|_| DracoError::general("Failed to decode flags".to_string()))?;
 
         Ok(())
     }
@@ -300,7 +300,7 @@ impl MeshDecoder {
             if let Some(ct) = eb_decoder.take_corner_table() {
                 self.corner_table = Some(Box::new(ct));
             } else {
-                return Err(DracoError::General(
+                return Err(DracoError::general(
                     "Edgebreaker decoder did not provide corner table".to_string(),
                 ));
             }
@@ -313,7 +313,7 @@ impl MeshDecoder {
             let (num_faces, num_points) = if !seq_uses_varint {
                 #[cfg(not(feature = "legacy_bitstream_decode"))]
                 {
-                    return Err(DracoError::BitstreamVersionUnsupported);
+                    return Err(DracoError::bitstream_version_unsupported());
                 }
                 #[cfg(feature = "legacy_bitstream_decode")]
                 {
@@ -349,7 +349,7 @@ impl MeshDecoder {
                         buffer,
                         &mut encoded_indices,
                     ) {
-                        return Err(DracoError::General(
+                        return Err(DracoError::general(
                             "Failed to decode compressed sequential connectivity".to_string(),
                         ));
                     }
@@ -359,13 +359,13 @@ impl MeshDecoder {
                         let mut index_diff = (encoded_val >> 1) as i32;
                         if (encoded_val & 1) != 0 {
                             if index_diff > last_index_value {
-                                return Err(DracoError::General(
+                                return Err(DracoError::general(
                                     "Sequential connectivity index underflow".to_string(),
                                 ));
                             }
                             index_diff = -index_diff;
                         } else if index_diff > i32::MAX - last_index_value {
-                            return Err(DracoError::General(
+                            return Err(DracoError::general(
                                 "Sequential connectivity index overflow".to_string(),
                             ));
                         }
@@ -380,16 +380,16 @@ impl MeshDecoder {
                     if num_points < 256 {
                         let bytes_needed = num_indices;
                         let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
-                            DracoError::General("Not enough data for u8 indices".to_string())
+                            DracoError::general("Not enough data for u8 indices".to_string())
                         })?;
                         mesh.try_set_num_faces(num_faces)?;
                         mesh.set_faces_from_u8_indices(bytes);
                     } else if num_points < 65536 {
                         let bytes_needed = num_indices.checked_mul(2).ok_or_else(|| {
-                            DracoError::General("Mesh u16 index byte count overflow".to_string())
+                            DracoError::general("Mesh u16 index byte count overflow".to_string())
                         })?;
                         let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
-                            DracoError::General("Not enough data for u16 indices".to_string())
+                            DracoError::general("Not enough data for u16 indices".to_string())
                         })?;
                         mesh.try_set_num_faces(num_faces)?;
                         mesh.set_faces_from_le_u16_indices(bytes);
@@ -407,16 +407,16 @@ impl MeshDecoder {
                         }
                     } else {
                         let bytes_needed = num_indices.checked_mul(4).ok_or_else(|| {
-                            DracoError::General("Mesh u32 index byte count overflow".to_string())
+                            DracoError::general("Mesh u32 index byte count overflow".to_string())
                         })?;
                         let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
-                            DracoError::General("Not enough data for u32 indices".to_string())
+                            DracoError::general("Not enough data for u32 indices".to_string())
                         })?;
                         mesh.try_set_num_faces(num_faces)?;
                         mesh.set_faces_from_le_u32_indices(bytes);
                     }
                 } else {
-                    return Err(DracoError::General(format!(
+                    return Err(DracoError::general(format!(
                         "Unsupported sequential connectivity method: {}",
                         connectivity_method
                     )));
@@ -450,7 +450,7 @@ impl MeshDecoder {
                 continue;
             }
             if c.0 as usize >= base_ct.num_corners() {
-                return Err(DracoError::General(
+                return Err(DracoError::general(
                     "Invalid Edgebreaker attribute seam corner".to_string(),
                 ));
             }
@@ -469,7 +469,7 @@ impl MeshDecoder {
             let opp = base_ct.opposite(c);
             if opp != INVALID_CORNER_INDEX {
                 if opp.0 as usize >= base_ct.num_corners() {
-                    return Err(DracoError::General(
+                    return Err(DracoError::general(
                         "Invalid Edgebreaker attribute seam opposite corner".to_string(),
                     ));
                 }
@@ -523,7 +523,7 @@ impl MeshDecoder {
                 while act_c != INVALID_CORNER_INDEX {
                     swing_steps += 1;
                     if swing_steps > max_swing_steps {
-                        return Err(DracoError::General(
+                        return Err(DracoError::general(
                             "Attribute seam left-swing traversal did not terminate".to_string(),
                         ));
                     }
@@ -541,7 +541,7 @@ impl MeshDecoder {
             while act_c != INVALID_CORNER_INDEX && act_c != first_c {
                 swing_steps += 1;
                 if swing_steps > max_swing_steps {
-                    return Err(DracoError::General(
+                    return Err(DracoError::general(
                         "Attribute seam right-swing traversal did not terminate".to_string(),
                     ));
                 }
@@ -630,7 +630,7 @@ impl MeshDecoder {
                     while act_c != INVALID_CORNER_INDEX && act_c != c {
                         swing_steps += 1;
                         if swing_steps > max_swing_steps {
-                            return Err(DracoError::General(
+                            return Err(DracoError::general(
                                 "Edgebreaker seam search traversal did not terminate".to_string(),
                             ));
                         }
@@ -658,7 +658,7 @@ impl MeshDecoder {
             while c != INVALID_CORNER_INDEX && c != first_corner {
                 swing_steps += 1;
                 if swing_steps > max_swing_steps {
-                    return Err(DracoError::General(
+                    return Err(DracoError::general(
                         "Edgebreaker point assignment traversal did not terminate".to_string(),
                     ));
                 }
@@ -683,7 +683,7 @@ impl MeshDecoder {
             let p1 = corner_to_point_map[base + 1];
             let p2 = corner_to_point_map[base + 2];
             if p0 == u32::MAX || p1 == u32::MAX || p2 == u32::MAX {
-                return Err(DracoError::General(
+                return Err(DracoError::general(
                     "Failed to assign Edgebreaker corner point".to_string(),
                 ));
             }
@@ -743,7 +743,7 @@ impl MeshDecoder {
                 if bitstream_version >= 0x0102 {
                     traversal_method_by_decoder[i] = buffer.decode_u8()?;
                 } else if !cfg!(feature = "legacy_bitstream_decode") {
-                    return Err(DracoError::BitstreamVersionUnsupported);
+                    return Err(DracoError::bitstream_version_unsupported());
                 }
             }
         }
@@ -756,14 +756,14 @@ impl MeshDecoder {
         for _ in 0..num_attributes_decoders {
             let num_attributes_in_decoder: usize = if bitstream_version < 0x0200 {
                 if !cfg!(feature = "legacy_bitstream_decode") {
-                    return Err(DracoError::BitstreamVersionUnsupported);
+                    return Err(DracoError::bitstream_version_unsupported());
                 }
                 buffer.decode_u32()? as usize
             } else {
                 buffer.decode_varint()? as usize
             };
             if num_attributes_in_decoder == 0 {
-                return Err(DracoError::General(
+                return Err(DracoError::general(
                     "Invalid number of attributes".to_string(),
                 ));
             }
@@ -784,7 +784,7 @@ impl MeshDecoder {
                 let normalized = buffer.decode_u8()? != 0;
                 let unique_id: u32 = if bitstream_version < 0x0103 {
                     if !cfg!(feature = "legacy_bitstream_decode") {
-                        return Err(DracoError::BitstreamVersionUnsupported);
+                        return Err(DracoError::bitstream_version_unsupported());
                     }
                     buffer.decode_u16()? as u32
                 } else {
@@ -945,7 +945,7 @@ impl MeshDecoder {
             if self.method == 1 && sequenced_vertex_to_data_map.is_none() {
                 if let Some(ref map) = sequenced_data_to_corner_map {
                     let ct = self.corner_table.as_ref().ok_or_else(|| {
-                        DracoError::General(
+                        DracoError::general(
                             "Edgebreaker attribute traversal missing corner table".to_string(),
                         )
                     })?;
@@ -1043,26 +1043,26 @@ impl MeshDecoder {
                         let quant_skip_bytes = if bitstream_version < 0x0200 {
                             #[cfg(not(feature = "legacy_bitstream_decode"))]
                             {
-                                return Err(DracoError::BitstreamVersionUnsupported);
+                                return Err(DracoError::bitstream_version_unsupported());
                             }
                             #[cfg(feature = "legacy_bitstream_decode")]
                             {
                                 let saved_pos = buffer.position();
                                 let method_byte = buffer.decode_u8().map_err(|_| {
-                                    DracoError::General(
+                                    DracoError::general(
                                         "Failed to read prediction method".to_string(),
                                     )
                                 })?;
                                 if method_byte != 0xFF {
                                     let _transform_byte = buffer.decode_u8().map_err(|_| {
-                                        DracoError::General(
+                                        DracoError::general(
                                             "Failed to read transform type".to_string(),
                                         )
                                     })?;
                                 }
                                 let original = mesh.try_attribute(att_id)?;
                                 transform.decode_parameters(original, buffer).map_err(|e| {
-                                    DracoError::General(format!(
+                                    DracoError::general(format!(
                                         "Failed to decode quantization parameters (v<2.0): {e}"
                                     ))
                                 })?;
@@ -1070,7 +1070,7 @@ impl MeshDecoder {
                                 let pred_header_bytes = if method_byte != 0xFF { 2 } else { 1 };
                                 let skip = bytes_consumed - pred_header_bytes;
                                 buffer.set_position(saved_pos).map_err(|_| {
-                                    DracoError::General(
+                                    DracoError::general(
                                         "Failed to reset buffer position".to_string(),
                                     )
                                 })?;
@@ -1137,34 +1137,34 @@ impl MeshDecoder {
                         let normal_skip_bytes = if bitstream_version < 0x0200 {
                             #[cfg(not(feature = "legacy_bitstream_decode"))]
                             {
-                                return Err(DracoError::BitstreamVersionUnsupported);
+                                return Err(DracoError::bitstream_version_unsupported());
                             }
                             #[cfg(feature = "legacy_bitstream_decode")]
                             {
                                 let saved_pos = buffer.position();
                                 // Skip prediction_method + transform_type
                                 let method_byte = buffer.decode_u8().map_err(|_| {
-                                    DracoError::General(
+                                    DracoError::general(
                                         "Failed to read prediction method".to_string(),
                                     )
                                 })?;
                                 if method_byte != 0xFF {
                                     let _transform_byte = buffer.decode_u8().map_err(|_| {
-                                        DracoError::General(
+                                        DracoError::general(
                                             "Failed to read transform type".to_string(),
                                         )
                                     })?;
                                 }
                                 // Read quant_bits at the correct position
                                 quant_bits = buffer.decode_u8().map_err(|_| {
-                                    DracoError::General(
+                                    DracoError::general(
                                         "Failed to read normal quant_bits".to_string(),
                                     )
                                 })?;
                                 if !AttributeOctahedronTransform::is_valid_quantization_bits(
                                     quant_bits as i32,
                                 ) {
-                                    return Err(DracoError::General(
+                                    return Err(DracoError::general(
                                         "Invalid normal quantization bits".to_string(),
                                     ));
                                 }
@@ -1172,7 +1172,7 @@ impl MeshDecoder {
                                 let pred_header_bytes = if method_byte != 0xFF { 2 } else { 1 };
                                 let skip = bytes_consumed - pred_header_bytes;
                                 buffer.set_position(saved_pos).map_err(|_| {
-                                    DracoError::General(
+                                    DracoError::general(
                                         "Failed to reset buffer position".to_string(),
                                     )
                                 })?;
@@ -1223,7 +1223,7 @@ impl MeshDecoder {
                         });
                     }
                     _ => {
-                        return Err(DracoError::General(format!(
+                        return Err(DracoError::general(format!(
                             "Unsupported sequential decoder type: {}",
                             decoder_type
                         )));
@@ -1242,14 +1242,14 @@ impl MeshDecoder {
                             .iter()
                             .position(|p| p.att_id == att_id)
                             .ok_or_else(|| {
-                                DracoError::General("Missing pending quant entry".to_string())
+                                DracoError::general("Missing pending quant entry".to_string())
                             })?;
                         let original = mesh.try_attribute(att_id)?;
                         pending_quant[idx]
                             .transform
                             .decode_parameters(original, buffer)
                             .map_err(|e| {
-                                DracoError::General(format!(
+                                DracoError::general(format!(
                                     "Failed to decode quantization parameters: {e}"
                                 ))
                             })?;
@@ -1259,11 +1259,11 @@ impl MeshDecoder {
                             .iter()
                             .position(|p| p.att_id == att_id)
                             .ok_or_else(|| {
-                                DracoError::General("Missing pending normal entry".to_string())
+                                DracoError::general("Missing pending normal entry".to_string())
                             })?;
                         let bits = buffer.decode_u8()?;
                         if !AttributeOctahedronTransform::is_valid_quantization_bits(bits as i32) {
-                            return Err(DracoError::General(
+                            return Err(DracoError::general(
                                 "Invalid normal quantization bits".to_string(),
                             ));
                         }
@@ -1282,7 +1282,7 @@ impl MeshDecoder {
                 q.transform
                     .inverse_transform_attribute(&q.portable, dst)
                     .map_err(|e| {
-                        DracoError::General(format!("Failed to dequantize attribute: {e}"))
+                        DracoError::general(format!("Failed to dequantize attribute: {e}"))
                     })?;
             }
             for n in &pending_normals {
@@ -1297,7 +1297,7 @@ impl MeshDecoder {
                     dst,
                     bitstream_version < 0x0200,
                 )
-                .map_err(|e| DracoError::General(format!("Failed to decode normals: {e}")))?;
+                .map_err(|e| DracoError::general(format!("Failed to decode normals: {e}")))?;
             }
 
             // Apply UpdatePointToAttributeIndexMapping for Edgebreaker (method 1)
@@ -1404,7 +1404,7 @@ impl MeshDecoder {
         processed_connectivity_corners: &[u32],
     ) -> Result<AttributeTraversalArrays, DracoError> {
         let corner_table = self.corner_table.as_ref().ok_or_else(|| {
-            DracoError::General(
+            DracoError::general(
                 "Edgebreaker DFS attribute traversal missing corner table".to_string(),
             )
         })?;
@@ -1423,7 +1423,7 @@ impl MeshDecoder {
         // Reject an inconsistent (e.g. seam-modified) corner table before the DFS
         // indexes per-vertex / per-face arrays by table-derived ids.
         if !corner_table.is_index_consistent() {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Inconsistent corner table for attribute traversal".to_string(),
             ));
         }
@@ -1659,14 +1659,14 @@ impl MeshDecoder {
     ) -> Result<AttributeTraversalArrays, DracoError> {
         // Matches C++ MaxPredictionDegreeTraverser (MESH_TRAVERSAL_PREDICTION_DEGREE).
         let corner_table = self.corner_table.as_ref().ok_or_else(|| {
-            DracoError::General(
+            DracoError::general(
                 "Edgebreaker prediction-degree traversal missing corner table".to_string(),
             )
         })?;
         // Reject an inconsistent corner table before the traversal indexes
         // per-vertex / per-face arrays by table-derived ids.
         if !corner_table.is_index_consistent() {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Inconsistent corner table for attribute traversal".to_string(),
             ));
         }
@@ -1983,7 +1983,7 @@ impl MeshDecoder {
 fn validate_mesh_index_count(num_faces: usize) -> Result<usize, DracoError> {
     num_faces
         .checked_mul(3)
-        .ok_or_else(|| DracoError::General("Mesh face index count overflow".to_string()))
+        .ok_or_else(|| DracoError::general("Mesh face index count overflow".to_string()))
 }
 
 fn make_zeroed_indices(num_indices: usize, stream_bytes: usize) -> Result<Vec<u32>, DracoError> {
@@ -1995,7 +1995,7 @@ fn make_zeroed_indices(num_indices: usize, stream_bytes: usize) -> Result<Vec<u3
     let mut indices = Vec::new();
     indices
         .try_reserve_exact(num_indices)
-        .map_err(|_| DracoError::General("Failed to allocate mesh indices".to_string()))?;
+        .map_err(|_| DracoError::general("Failed to allocate mesh indices".to_string()))?;
     indices.resize(num_indices, 0);
     Ok(indices)
 }
@@ -2009,7 +2009,7 @@ fn make_point_ids(num_points: usize, stream_bytes: usize) -> Result<Vec<PointInd
     let mut point_ids = Vec::new();
     point_ids
         .try_reserve_exact(num_points)
-        .map_err(|_| DracoError::General("Failed to allocate point ids".to_string()))?;
+        .map_err(|_| DracoError::general("Failed to allocate point ids".to_string()))?;
     for i in 0..num_points {
         point_ids.push(PointIndex(i as u32));
     }

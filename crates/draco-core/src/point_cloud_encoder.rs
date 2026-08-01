@@ -39,12 +39,12 @@ pub(crate) fn validate_encodable_attributes(point_cloud: &PointCloud) -> Status 
     for att_id in 0..point_cloud.num_attributes() {
         let attribute = point_cloud.attribute(att_id);
         if attribute.num_components() == 0 {
-            return Err(DracoError::General(format!(
+            return Err(DracoError::general(format!(
                 "Attribute {att_id} has zero components and cannot be encoded"
             )));
         }
         if attribute.data_type() == DataType::Invalid {
-            return Err(DracoError::General(format!(
+            return Err(DracoError::general(format!(
                 "Attribute {att_id} has an invalid data type and cannot be encoded"
             )));
         }
@@ -64,7 +64,7 @@ pub(crate) fn validate_encodable_attributes(point_cloud: &PointCloud) -> Status 
         let num_points = point_cloud.num_points();
         if attribute.is_mapping_identity() {
             if num_points > num_values {
-                return Err(DracoError::General(format!(
+                return Err(DracoError::general(format!(
                     "Attribute {att_id} holds {num_values} values for {num_points} points"
                 )));
             }
@@ -72,7 +72,7 @@ pub(crate) fn validate_encodable_attributes(point_cloud: &PointCloud) -> Status 
             for point in 0..num_points {
                 let value = attribute.mapped_index(PointIndex(point as u32));
                 if (value.0 as usize) >= num_values {
-                    return Err(DracoError::General(format!(
+                    return Err(DracoError::general(format!(
                         "Attribute {att_id} maps point {point} to value {} but holds \
                          {num_values} values",
                         value.0
@@ -115,7 +115,7 @@ fn validate_attribute_storage(att_id: i32, attribute: &PointAttribute) -> Status
     let element_size = (attribute.num_components() as usize).saturating_mul(component_size);
     let byte_stride = attribute.byte_stride().max(0) as usize;
     if byte_stride < element_size {
-        return Err(DracoError::General(format!(
+        return Err(DracoError::general(format!(
             "Attribute {att_id} declares a {byte_stride}-byte stride for {element_size}-byte \
              values"
         )));
@@ -127,10 +127,10 @@ fn validate_attribute_storage(att_id: i32, attribute: &PointAttribute) -> Status
     let required = (num_values - 1)
         .checked_mul(byte_stride)
         .and_then(|last_offset| last_offset.checked_add(element_size))
-        .ok_or_else(|| DracoError::General(format!("Attribute {att_id} value extent overflows")))?;
+        .ok_or_else(|| DracoError::general(format!("Attribute {att_id} value extent overflows")))?;
     let available = attribute.buffer().data_size();
     if available < required {
-        return Err(DracoError::General(format!(
+        return Err(DracoError::general(format!(
             "Attribute {att_id} needs {required} bytes for {num_values} values but its buffer \
              holds {available}"
         )));
@@ -198,7 +198,7 @@ fn select_encoding_method(
         return Ok(KD_TREE);
     }
     if requested == Some(KD_TREE) {
-        return Err(DracoError::General("Invalid encoding method.".to_string()));
+        return Err(DracoError::general("Invalid encoding method.".to_string()));
     }
     Ok(SEQUENTIAL)
 }
@@ -376,7 +376,7 @@ impl PointCloudEncoder {
         self.encoded_point_cloud_info = None;
 
         if self.point_cloud.is_none() {
-            return Err(DracoError::General("Point cloud not set".to_string()));
+            return Err(DracoError::general("Point cloud not set".to_string()));
         }
         let pc = self.point_cloud.as_ref().unwrap();
         validate_encodable_attributes(pc)?;
@@ -453,7 +453,7 @@ impl PointCloudEncoder {
 
             // Init (Transform attributes to portable format)
             if !att_encoder.transform_attributes_to_portable_format(pc, &self.options) {
-                return Err(DracoError::General(
+                return Err(DracoError::general(
                     "Failed to transform attributes".to_string(),
                 ));
             }
@@ -465,21 +465,21 @@ impl PointCloudEncoder {
 
             // Encode Attributes Encoder Data (Metadata)
             if !att_encoder.encode_attributes_encoder_data(pc, out_buffer) {
-                return Err(DracoError::General(
+                return Err(DracoError::general(
                     "Failed to encode attribute metadata".to_string(),
                 ));
             }
 
             // Encode Attributes (Portable Data)
             if !att_encoder.encode_attributes(pc, &self.options, out_buffer) {
-                return Err(DracoError::General(
+                return Err(DracoError::general(
                     "Failed to encode attributes".to_string(),
                 ));
             }
 
             // Encode Attributes Transform Data
             if !att_encoder.encode_data_needed_by_portable_transforms(out_buffer) {
-                return Err(DracoError::General(
+                return Err(DracoError::general(
                     "Failed to encode attribute transform data".to_string(),
                 ));
             }
@@ -571,7 +571,7 @@ impl PointCloudEncoder {
                     SequentialAttributeEncoderType::Normals => {
                         let mut att_encoder = SequentialNormalAttributeEncoder::new();
                         att_encoder.init(pc, i, &self.options).map_err(|e| {
-                            DracoError::General(format!(
+                            DracoError::general(format!(
                                 "Failed to init normal attribute encoder {i}: {e}"
                             ))
                         })?;
@@ -611,17 +611,17 @@ impl PointCloudEncoder {
                         for &point_id in &point_ids {
                             let value_index = att.mapped_index(point_id).0 as usize;
                             let offset = value_index.checked_mul(entry_size).ok_or_else(|| {
-                                DracoError::General(
+                                DracoError::general(
                                     "Point cloud raw attribute offset overflow".to_string(),
                                 )
                             })?;
                             let end = offset.checked_add(entry_size).ok_or_else(|| {
-                                DracoError::General(
+                                DracoError::general(
                                     "Point cloud raw attribute byte range overflow".to_string(),
                                 )
                             })?;
                             if end > data.len() {
-                                return Err(DracoError::General(
+                                return Err(DracoError::general(
                                     "Point cloud raw attribute data out of bounds".to_string(),
                                 ));
                             }
@@ -645,7 +645,7 @@ impl PointCloudEncoder {
                             continue;
                         }
                         if !att_encoder.encode_data_needed_by_portable_transform(out_buffer) {
-                            return Err(DracoError::General(format!(
+                            return Err(DracoError::general(format!(
                                 "Failed to encode normal attribute transform data {}",
                                 i
                             )));
@@ -653,7 +653,7 @@ impl PointCloudEncoder {
                     }
                 } else if let Some(ref att_encoder) = integer_encoders[i] {
                     if !att_encoder.encode_data_needed_by_portable_transform(out_buffer) {
-                        return Err(DracoError::General(format!(
+                        return Err(DracoError::general(format!(
                             "Failed to encode quantization transform data {}",
                             i
                         )));
@@ -729,7 +729,7 @@ impl PointCloudEncoder {
             .is_some_and(|metadata| !metadata.is_empty());
 
         if has_metadata && !has_header_flags(major, minor) {
-            return Err(DracoError::UnsupportedVersion(
+            return Err(DracoError::unsupported_version(
                 "Metadata requires Draco bitstream version 1.3 or newer".to_string(),
             ));
         }
@@ -737,7 +737,7 @@ impl PointCloudEncoder {
         #[cfg(not(feature = "legacy_bitstream_encode"))]
         match self.options.get_prediction_scheme() {
             2 | 3 => {
-                return Err(DracoError::UnsupportedFeature(
+                return Err(DracoError::unsupported_feature(
                     "legacy prediction schemes require the legacy_bitstream_encode feature"
                         .to_string(),
                 ));

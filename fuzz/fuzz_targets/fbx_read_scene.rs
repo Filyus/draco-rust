@@ -27,9 +27,10 @@ fuzz_target!(|data: &[u8]| {
 
     // Strict mode may reject more, but it must never accept what lenient mode
     // rejects, and it must not crash on anything.
-    let strict = FbxScene::from_bytes_with_options(data, FbxReadOptions::strict().with_limits(
-        FbxDecodeLimits::fuzzing(),
-    ));
+    let strict = FbxScene::from_bytes_with_options(
+        data,
+        FbxReadOptions::strict().with_limits(FbxDecodeLimits::fuzzing()),
+    );
     if strict.is_ok() {
         assert!(
             first.is_ok(),

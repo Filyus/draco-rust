@@ -107,7 +107,7 @@ impl SequentialAttributeEncoder {
             let mapped_index = att.mapped_index(p_id).0 as usize;
             let offset = mapped_index * entry_size;
             if offset + entry_size > buffer_data.len() {
-                return Err(DracoError::General(format!(
+                return Err(DracoError::general(format!(
                     "Point {} maps to value {mapped_index}, past the {} bytes the attribute holds",
                     p_id.0,
                     buffer_data.len()

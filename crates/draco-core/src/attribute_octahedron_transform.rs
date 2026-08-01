@@ -39,7 +39,7 @@ impl AttributeOctahedronTransform {
     }
 
     fn invalid_quantization_bits(bits: i32) -> DracoError {
-        DracoError::InvalidParameter(format!(
+        DracoError::invalid_parameter(format!(
             "Octahedral quantization bits {bits} outside the supported range 2..=30"
         ))
     }
@@ -60,7 +60,7 @@ impl AttributeOctahedronTransform {
         target_attribute: &mut PointAttribute,
     ) -> Status {
         if !self.is_initialized() {
-            return Err(DracoError::InvalidParameter("Not initialized".to_string()));
+            return Err(DracoError::invalid_parameter("Not initialized".to_string()));
         }
 
         let mut converter = OctahedronToolBox::new();
@@ -72,26 +72,26 @@ impl AttributeOctahedronTransform {
             .checked_mul(2)
             .and_then(|v| v.checked_mul(4))
             .ok_or_else(|| {
-                DracoError::General("Portable octahedron buffer size overflow".to_string())
+                DracoError::general("Portable octahedron buffer size overflow".to_string())
             })?;
         let mut portable_data = Vec::new();
         portable_data
             .try_reserve_exact(portable_data_size)
             .map_err(|_| {
-                DracoError::General("Failed to allocate portable octahedron buffer".to_string())
+                DracoError::general("Failed to allocate portable octahedron buffer".to_string())
             })?;
         let byte_stride = usize::try_from(attribute.byte_stride())
-            .map_err(|_| DracoError::General("Negative attribute byte stride".to_string()))?;
+            .map_err(|_| DracoError::general("Negative attribute byte stride".to_string()))?;
         let source_data = attribute.buffer().data();
         let read_normal = |att_val_id: usize| -> Result<[f32; 3], DracoError> {
             let offset = att_val_id
                 .checked_mul(byte_stride)
-                .ok_or_else(|| DracoError::General("Attribute byte offset overflow".to_string()))?;
+                .ok_or_else(|| DracoError::general("Attribute byte offset overflow".to_string()))?;
             let end = offset
                 .checked_add(12)
-                .ok_or_else(|| DracoError::General("Attribute byte range overflow".to_string()))?;
+                .ok_or_else(|| DracoError::general("Attribute byte range overflow".to_string()))?;
             let bytes = source_data.get(offset..end).ok_or_else(|| {
-                DracoError::General("Attribute normal source data is truncated".to_string())
+                DracoError::general("Attribute normal source data is truncated".to_string())
             })?;
             Ok([
                 bytemuck::pod_read_unaligned::<f32>(&bytes[0..4]),
@@ -124,7 +124,7 @@ impl AttributeOctahedronTransform {
             .buffer_mut()
             .try_resize(portable_data.len())
             .map_err(|_| {
-                DracoError::General("Failed to allocate portable octahedron output".to_string())
+                DracoError::general("Failed to allocate portable octahedron output".to_string())
             })?;
         target_attribute.buffer_mut().write(0, &portable_data);
 
@@ -151,13 +151,13 @@ impl AttributeOctahedronTransform {
         legacy_octahedron_to_vector: bool,
     ) -> Status {
         if target_attribute.data_type() != DataType::Float32 {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Octahedral decode needs a float32 target, got {:?}",
                 target_attribute.data_type()
             )));
         }
         if target_attribute.num_components() != 3 {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Octahedral decode needs 3 target components, got {}",
                 target_attribute.num_components()
             )));
@@ -175,12 +175,12 @@ impl AttributeOctahedronTransform {
         // Ensure target buffer has enough space
         let Some(target_byte_size) = num_points.checked_mul(3).and_then(|v| v.checked_mul(4))
         else {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Octahedral target buffer size overflow".to_string(),
             ));
         };
         if target_buffer.try_resize(target_byte_size).is_err() {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Failed to allocate the octahedral target buffer".to_string(),
             ));
         }
@@ -189,12 +189,12 @@ impl AttributeOctahedronTransform {
         // Source data is int32 (s, t) pairs.
         let Some(source_byte_size) = num_points.checked_mul(2).and_then(|v| v.checked_mul(4))
         else {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Octahedral source buffer size overflow".to_string(),
             ));
         };
         if source_data.len() < source_byte_size {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Octahedral portable data is truncated".to_string(),
             ));
         }
@@ -235,18 +235,18 @@ impl AttributeTransform for AttributeOctahedronTransform {
 
     fn init_from_attribute(&mut self, attribute: &PointAttribute) -> Status {
         let Some(transform_data) = attribute.attribute_transform_data() else {
-            return Err(DracoError::InvalidParameter(
+            return Err(DracoError::invalid_parameter(
                 "Attribute carries no transform data".to_string(),
             ));
         };
         if transform_data.transform_type() != AttributeTransformType::OctahedronTransform {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Attribute carries {:?}, not an octahedron transform",
                 transform_data.transform_type()
             )));
         }
         let Some(bits) = transform_data.get_parameter_value(0) else {
-            return Err(DracoError::InvalidParameter(
+            return Err(DracoError::invalid_parameter(
                 "Attribute transform data is shorter than the octahedral bit count".to_string(),
             ));
         };
@@ -283,7 +283,7 @@ impl AttributeTransform for AttributeOctahedronTransform {
     #[cfg(feature = "encoder")]
     fn encode_parameters(&self, encoder_buffer: &mut EncoderBuffer) -> Status {
         if !self.is_initialized() {
-            return Err(DracoError::InvalidParameter(
+            return Err(DracoError::invalid_parameter(
                 "Octahedron transform parameters were never set".to_string(),
             ));
         }
@@ -298,7 +298,7 @@ impl AttributeTransform for AttributeOctahedronTransform {
         decoder_buffer: &mut DecoderBuffer,
     ) -> Status {
         let Ok(quantization_bits) = decoder_buffer.decode::<u8>() else {
-            return Err(DracoError::BufferError(
+            return Err(DracoError::buffer(
                 "Stream ends before the octahedral bit count it declares".to_string(),
             ));
         };

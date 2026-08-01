@@ -261,7 +261,7 @@ fn legacy_multi_parallelogram_requires_legacy_encode_feature() {
         .expect_err("legacy prediction scheme should require legacy feature");
 
     match err {
-        DracoError::UnsupportedFeature(message) => {
+        DracoError::unsupported_feature(message) => {
             assert!(message.contains("legacy_bitstream_encode"));
         }
         other => panic!("expected UnsupportedFeature, got {other:?}"),

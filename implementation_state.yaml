@@ -428,7 +428,7 @@ files:
       - name: "DecoderBuffer"
         type: "struct"
         progress: "fully implemented"
-        note: "Complete implementation with proper error types. All decode methods return Result<T, DracoError> instead of Result<T, ()>. Added DracoError::BufferError variant for descriptive errors. Bit-sequence size is stored in bytes; sized bit decoding skips by the stored byte size, unsized advances by decoded bits."
+        note: "Complete implementation with proper error types. All decode methods return Result<T, DracoError> instead of Result<T, ()>. Refusals carry ErrorKind::Buffer and a descriptive message. Bit-sequence size is stored in bytes; sized bit decoding skips by the stored byte size, unsized advances by decoded bits."
     functions:
       - name: "new"
         progress: "fully implemented"

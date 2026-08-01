@@ -267,13 +267,13 @@ impl<'a> PredictionScheme<'a> for MeshPredictionSchemeTexCoordsPortableDecoder<'
 
     fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> Status {
         if att.attribute_type() != GeometryAttributeType::Position {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Portable texture-coordinate prediction needs a position parent, got {:?}",
                 att.attribute_type()
             )));
         }
         if att.num_components() != 3 {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Portable texture-coordinate prediction needs a 3-component parent, got {}",
                 att.num_components()
             )));
@@ -294,12 +294,12 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
 {
     fn decode_prediction_data(&mut self, buffer: &mut DecoderBuffer) -> Status {
         let num_orientations: i32 = buffer.decode::<i32>().map_err(|_| {
-            DracoError::BufferError(
+            DracoError::buffer(
                 "Stream ends before the texture-coordinate orientation count".to_string(),
             )
         })?;
         if num_orientations < 0 {
-            return Err(DracoError::General(format!(
+            return Err(DracoError::general(format!(
                 "Stream declares {num_orientations} orientations"
             )));
         }
@@ -323,12 +323,12 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
             .and_then(|mesh_data| mesh_data.data_to_corner_map())
             .map(|map| map.len())
         else {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Portable texture-coordinate prediction has no data-to-corner map".to_string(),
             ));
         };
         if num_orientations as usize > max_orientations {
-            return Err(DracoError::General(format!(
+            return Err(DracoError::general(format!(
                 "Stream declares {num_orientations} orientations, more than the {max_orientations} entries that can consume them"
             )));
         }
@@ -339,7 +339,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
         let mut last_orientation = true;
         let mut decoder = RAnsBitDecoder::new();
         if !decoder.start_decoding(buffer) {
-            return Err(DracoError::BufferError(
+            return Err(DracoError::buffer(
                 "Texture-coordinate orientation rANS stream is truncated".to_string(),
             ));
         }
@@ -369,12 +369,12 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
         entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
     ) -> Status {
         if num_components != 2 {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Portable texture-coordinate prediction needs 2 components, got {num_components}"
             )));
         }
         let missing = |what: &str| {
-            DracoError::General(format!(
+            DracoError::general(format!(
                 "Portable texture-coordinate prediction has no {what}"
             ))
         };
@@ -395,7 +395,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
             return Err(missing("data-to-corner map"));
         };
         if entry_map.len() < data_to_corner_map.len() {
-            return Err(DracoError::General(format!(
+            return Err(DracoError::general(format!(
                 "Portable texture-coordinate prediction needs {} entries, the map has {}",
                 data_to_corner_map.len(),
                 entry_map.len()
@@ -403,12 +403,12 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
         }
         let corner_map_size = data_to_corner_map.len();
         let Some(required_values) = corner_map_size.checked_mul(num_components) else {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Portable texture-coordinate prediction value count overflow".to_string(),
             ));
         };
         if in_corr.len() < required_values || out_data.len() < required_values {
-            return Err(DracoError::General(format!(
+            return Err(DracoError::general(format!(
                 "Portable texture-coordinate prediction needs {required_values} values, has {} corrections and {} outputs",
                 in_corr.len(),
                 out_data.len()
@@ -427,7 +427,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
                 entry_map,
                 &mut predicted_value,
             ) {
-                return Err(DracoError::General(format!(
+                return Err(DracoError::general(format!(
                     "Portable texture-coordinate prediction failed at entry {p}"
                 )));
             }
@@ -951,13 +951,13 @@ impl<'a> PredictionScheme<'a> for MeshPredictionSchemeTexCoordsPortableEncoder<'
 
     fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> Status {
         if att.attribute_type() != GeometryAttributeType::Position {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Portable texture-coordinate prediction needs a position parent, got {:?}",
                 att.attribute_type()
             )));
         }
         if att.num_components() != 3 {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Portable texture-coordinate prediction needs a 3-component parent, got {}",
                 att.num_components()
             )));
@@ -1013,12 +1013,12 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32>
         entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
     ) -> Status {
         if num_components != 2 {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Portable texture-coordinate prediction needs 2 components, got {num_components}"
             )));
         }
         let missing = |what: &str| {
-            DracoError::General(format!(
+            DracoError::general(format!(
                 "Portable texture-coordinate prediction has no {what}"
             ))
         };
@@ -1054,7 +1054,7 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32>
                 entry_map,
                 &mut predicted_value,
             ) {
-                return Err(DracoError::General(format!(
+                return Err(DracoError::general(format!(
                     "Portable texture-coordinate prediction failed at entry {p}"
                 )));
             }

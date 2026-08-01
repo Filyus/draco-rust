@@ -45,12 +45,12 @@ impl SequentialNormalAttributeDecoder {
         attribute_id: i32,
     ) -> Status {
         if !self.base.init(decoder, attribute_id) {
-            return Err(DracoError::General("Failed to init base".to_string()));
+            return Err(DracoError::general("Failed to init base".to_string()));
         }
 
         let attribute = point_cloud.try_attribute(attribute_id)?;
         if attribute.num_components() != 3 {
-            return Err(DracoError::InvalidParameter(
+            return Err(DracoError::invalid_parameter(
                 "Attribute must have 3 components".to_string(),
             ));
         }
@@ -67,7 +67,7 @@ impl SequentialNormalAttributeDecoder {
         if let Ok(val) = buffer.decode::<u8>() {
             quantization_bits = val;
         } else {
-            return Err(DracoError::BitstreamVersionUnsupported);
+            return Err(DracoError::bitstream_version_unsupported());
         }
         // The bit count is validated by `set_parameters` itself, which names the
         // value and the range it fell outside. This used to pre-check with a
@@ -89,7 +89,7 @@ impl SequentialNormalAttributeDecoder {
             let quantization_bits: u8 = match buffer.decode_u8() {
                 Ok(v) => v,
                 Err(_) => {
-                    return Err(DracoError::General(
+                    return Err(DracoError::general(
                         "Failed to decode quantization bits".to_string(),
                     ))
                 }
@@ -135,7 +135,7 @@ impl SequentialNormalAttributeDecoder {
         self.attribute_octahedron_transform
             .inverse_transform_attribute(&portable_attribute, attribute)
             .map_err(|e| {
-                DracoError::General(format!("Failed to inverse transform attribute: {e}"))
+                DracoError::general(format!("Failed to inverse transform attribute: {e}"))
             })?;
 
         Ok(())

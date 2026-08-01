@@ -501,36 +501,49 @@ pub type Status = Result<(), DracoError>;
 
 ### DracoError
 
-Error type for all Draco operations.
+Error type for all Draco operations. An opaque struct one pointer wide, in the
+shape of `std::io::Error`: ask it for its `kind()` rather than matching it.
 
 ```rust
-use draco_core::DracoError;
+use draco_core::{DracoError, ErrorKind};
 
 match result {
     Ok(()) => println!("Success"),
-    Err(DracoError::General(msg)) => println!("Error: {}", msg),
-    Err(DracoError::IoError(msg)) => println!("IO Error: {}", msg),
-    Err(DracoError::BufferError(msg)) => println!("Buffer Error: {}", msg),
-    Err(e) => println!("Other error: {}", e),
+    Err(error) => match error.kind() {
+        ErrorKind::General => println!("Error: {}", error.message()),
+        ErrorKind::Io => println!("IO Error: {}", error.message()),
+        ErrorKind::Buffer => println!("Buffer Error: {}", error.message()),
+        _ => println!("Other error: {}", error),
+    },
 }
 ```
 
-**Variants:**
+`Display` prints the kind followed by the message; `message()` returns the
+message alone.
 
-| Variant | Description |
-|---------|-------------|
-| `General(String)` | General error |
-| `IoError(String)` | I/O error |
-| `InvalidParameter(String)` | Invalid parameter |
-| `UnsupportedVersion(String)` | Version not supported |
-| `UnknownVersion(String)` | Unknown version |
-| `UnsupportedFeature(String)` | Feature not supported |
-| `BitstreamVersionUnsupported` | Bitstream version issue |
-| `BufferError(String)` | Buffer read/decode error |
-| `AllocationExceedsInput { requested_bytes, stream_bytes }` | Decode would allocate more than the stream could describe |
+**Constructors and kinds:**
 
-The enum is `#[non_exhaustive]`: match with a `_` arm so a later release can
+| Constructor | `ErrorKind` | Description |
+|-------------|-------------|-------------|
+| `DracoError::general(msg)` | `General` | General error |
+| `DracoError::io(msg)` | `Io` | I/O error |
+| `DracoError::invalid_parameter(msg)` | `InvalidParameter` | Invalid parameter |
+| `DracoError::unsupported_version(msg)` | `UnsupportedVersion` | Version not supported |
+| `DracoError::unknown_version(msg)` | `UnknownVersion` | Unknown version |
+| `DracoError::unsupported_feature(msg)` | `UnsupportedFeature` | Feature not supported |
+| `DracoError::bitstream_version_unsupported()` | `BitstreamVersionUnsupported` | Bitstream version issue |
+| `DracoError::buffer(msg)` | `Buffer` | Buffer read/decode error |
+| `DracoError::allocation_exceeds_input(requested, stream)` | `AllocationExceedsInput` | Decode would allocate more than the stream could describe |
+
+`DracoError::new(kind, msg)` builds any of them directly.
+
+`ErrorKind` is `#[non_exhaustive]`: match with a `_` arm so a later release can
 tell one refusal from another without a major bump.
+
+Why a struct and not an enum: every fallible function in this crate returns
+`Status`, so the size of the failure case is paid by the success case at every
+call site. With the message stored inline, `Result<(), DracoError>` was 32 bytes
+and needed dropping. Boxed, it is a pointer returned in a register.
 
 ---
 

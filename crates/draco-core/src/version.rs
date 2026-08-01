@@ -200,7 +200,7 @@ pub fn validate_encodable_version(
         .map(|(major, minor)| format!("{major}.{minor}"))
         .collect::<Vec<_>>()
         .join(", ");
-    Err(crate::status::DracoError::UnsupportedVersion(format!(
+    Err(crate::status::DracoError::unsupported_version(format!(
         "Cannot encode bitstream version {major}.{minor} for {target:?}: supported are {claimed}"
     )))
 }

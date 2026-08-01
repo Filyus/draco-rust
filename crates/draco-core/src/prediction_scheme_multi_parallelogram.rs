@@ -67,7 +67,7 @@ where
     }
 
     fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
-        Err(DracoError::InvalidParameter(
+        Err(DracoError::invalid_parameter(
             "The multi-parallelogram prediction scheme takes no parent attribute".to_string(),
         ))
     }
@@ -98,7 +98,7 @@ where
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
     ) -> Status {
         if num_components == 0 || !size.is_multiple_of(num_components) {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "{size} values do not divide into {num_components} components"
             )));
         }
@@ -108,7 +108,7 @@ where
         }
 
         let missing = |what: &str| {
-            DracoError::General(format!("Multi-parallelogram prediction has no {what}"))
+            DracoError::general(format!("Multi-parallelogram prediction has no {what}"))
         };
         let Some(table) = self.mesh_data.corner_table() else {
             return Err(missing("corner table"));
@@ -122,7 +122,7 @@ where
 
         let num_entries = size / num_components;
         if data_to_corner_map.len() < num_entries || in_data.len() < size || out_corr.len() < size {
-            return Err(DracoError::General(format!(
+            return Err(DracoError::general(format!(
                 "Multi-parallelogram prediction needs {num_entries} corners and {size} values, has {} corners, {} inputs and {} outputs",
                 data_to_corner_map.len(),
                 in_data.len(),
@@ -242,7 +242,7 @@ where
     }
 
     fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
-        Err(DracoError::InvalidParameter(
+        Err(DracoError::invalid_parameter(
             "The multi-parallelogram prediction scheme takes no parent attribute".to_string(),
         ))
     }
@@ -273,13 +273,13 @@ where
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
     ) -> Status {
         if num_components == 0 {
-            return Err(DracoError::InvalidParameter(
+            return Err(DracoError::invalid_parameter(
                 "Multi-parallelogram prediction needs at least one component".to_string(),
             ));
         }
 
         let missing = |what: &str| {
-            DracoError::General(format!("Multi-parallelogram prediction has no {what}"))
+            DracoError::general(format!("Multi-parallelogram prediction has no {what}"))
         };
         let Some(table) = self.mesh_data.corner_table() else {
             return Err(missing("corner table"));
@@ -291,12 +291,12 @@ where
             return Err(missing("data-to-corner map"));
         };
         let Some(required_values) = data_to_corner_map.len().checked_mul(num_components) else {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Multi-parallelogram prediction value count overflow".to_string(),
             ));
         };
         if in_corr.len() < required_values || out_data.len() < required_values {
-            return Err(DracoError::General(format!(
+            return Err(DracoError::general(format!(
                 "Multi-parallelogram prediction needs {required_values} values, has {} corrections and {} outputs",
                 in_corr.len(),
                 out_data.len()

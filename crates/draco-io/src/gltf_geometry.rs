@@ -385,8 +385,8 @@ fn add_decoded_attribute(
         )
         .map_err(GltfError::DracoEncode)?;
     if !attribute.buffer_mut().try_write(0, &decoded.bytes) {
-        return Err(GltfError::DracoEncode(draco_core::DracoError::BufferError(
-            "Decoded glTF attribute does not fit its Draco buffer".into(),
+        return Err(GltfError::DracoEncode(draco_core::DracoError::buffer(
+            "Decoded glTF attribute does not fit its Draco buffer",
         )));
     }
     Ok(mesh.add_attribute(attribute))

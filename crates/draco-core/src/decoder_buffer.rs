@@ -78,17 +78,17 @@ impl<'a> DecoderBuffer<'a> {
     ///
     /// # Errors
     ///
-    /// Returns `DracoError::BufferError` if:
+    /// Returns an [`ErrorKind::Buffer`](crate::ErrorKind::Buffer) error if:
     /// - Bit decoding is currently active
     /// - Position is beyond the buffer length
     pub fn set_position(&mut self, pos: usize) -> Result<(), DracoError> {
         if self.bit_decoder_active {
-            return Err(DracoError::BufferError(
-                "Cannot set position while bit decoding is active".into(),
+            return Err(DracoError::buffer(
+                "Cannot set position while bit decoding is active",
             ));
         }
         if pos > self.data.len() {
-            return Err(DracoError::BufferError(format!(
+            return Err(DracoError::buffer(format!(
                 "Position {} exceeds buffer length {}",
                 pos,
                 self.data.len()
@@ -127,12 +127,10 @@ impl<'a> DecoderBuffer<'a> {
     ///
     /// # Errors
     ///
-    /// Returns `DracoError::BufferError` if bit decoding is already active.
+    /// Returns an [`ErrorKind::Buffer`](crate::ErrorKind::Buffer) error if bit decoding is already active.
     pub fn start_bit_decoding(&mut self, decode_size: bool) -> Result<u64, DracoError> {
         if self.bit_decoder_active {
-            return Err(DracoError::BufferError(
-                "Bit decoding already active".into(),
-            ));
+            return Err(DracoError::buffer("Bit decoding already active"));
         }
         let bitstream_version = self.bitstream_version();
         // Draco stores the bit-sequence size in BYTES (not bits) when |decode_size| is true.
@@ -140,7 +138,7 @@ impl<'a> DecoderBuffer<'a> {
         if decode_size {
             if bitstream_version < 0x0202 {
                 if !cfg!(feature = "legacy_bitstream_decode") {
-                    return Err(DracoError::BitstreamVersionUnsupported);
+                    return Err(DracoError::bitstream_version_unsupported());
                 }
                 size_bytes = self.decode_u64()?;
             } else {
@@ -155,11 +153,11 @@ impl<'a> DecoderBuffer<'a> {
 
         if decode_size {
             let size_bytes = usize::try_from(size_bytes)
-                .map_err(|_| DracoError::BufferError("Bit stream size too large".into()))?;
-            self.bit_stream_end_pos =
-                self.bit_start_pos.checked_add(size_bytes).ok_or_else(|| {
-                    DracoError::BufferError("Bit stream end position overflow".into())
-                })?;
+                .map_err(|_| DracoError::buffer("Bit stream size too large"))?;
+            self.bit_stream_end_pos = self
+                .bit_start_pos
+                .checked_add(size_bytes)
+                .ok_or_else(|| DracoError::buffer("Bit stream end position overflow"))?;
         } else {
             // If size is not encoded, assume the rest of the buffer.
             self.bit_stream_end_pos = self.data.len();
@@ -186,11 +184,11 @@ impl<'a> DecoderBuffer<'a> {
     ///
     /// # Errors
     ///
-    /// Returns `DracoError::BufferError` if bit decoding is not active or end of stream.
+    /// Returns an [`ErrorKind::Buffer`](crate::ErrorKind::Buffer) error if bit decoding is not active or end of stream.
     #[inline(always)]
     pub fn decode_least_significant_bits32(&mut self, nbits: u32) -> Result<u32, DracoError> {
         if !self.bit_decoder_active {
-            return Err(DracoError::BufferError("Bit decoding not active".into()));
+            return Err(DracoError::buffer("Bit decoding not active"));
         }
         self.decode_least_significant_bits32_fast(nbits)
     }
@@ -207,9 +205,7 @@ impl<'a> DecoderBuffer<'a> {
         let bit_shift = (total_bit_offset % 8) as u32;
 
         if byte_offset >= self.bit_stream_end_pos || byte_offset >= self.data.len() {
-            return Err(DracoError::BufferError(
-                "Unexpected end of bit stream".into(),
-            ));
+            return Err(DracoError::buffer("Unexpected end of bit stream"));
         }
         let available_end = self.bit_stream_end_pos.min(self.data.len());
         let remaining = available_end - byte_offset;
@@ -222,9 +218,7 @@ impl<'a> DecoderBuffer<'a> {
         } else {
             let needed_bytes = (bit_shift + nbits).div_ceil(8) as usize;
             if remaining < needed_bytes {
-                return Err(DracoError::BufferError(
-                    "Unexpected end of bit stream".into(),
-                ));
+                return Err(DracoError::buffer("Unexpected end of bit stream"));
             }
             let mut v = 0u64;
             for i in 0..needed_bytes {
@@ -250,9 +244,7 @@ impl<'a> DecoderBuffer<'a> {
             self.current_bit_offset += 1;
             Ok(bit as u32)
         } else {
-            Err(DracoError::BufferError(
-                "Unexpected end of bit stream".into(),
-            ))
+            Err(DracoError::buffer("Unexpected end of bit stream"))
         }
     }
 
@@ -260,18 +252,18 @@ impl<'a> DecoderBuffer<'a> {
     ///
     /// # Errors
     ///
-    /// Returns `DracoError::BufferError` if:
+    /// Returns an [`ErrorKind::Buffer`](crate::ErrorKind::Buffer) error if:
     /// - Bit decoding is active
     /// - Not enough bytes remaining
     pub fn decode<T: Copy + bytemuck::Pod>(&mut self) -> Result<T, DracoError> {
         if self.bit_decoder_active {
-            return Err(DracoError::BufferError(
-                "Cannot decode bytes while bit decoding is active".into(),
+            return Err(DracoError::buffer(
+                "Cannot decode bytes while bit decoding is active",
             ));
         }
         let size = mem::size_of::<T>();
         if self.pos + size > self.data.len() {
-            return Err(DracoError::BufferError(format!(
+            return Err(DracoError::buffer(format!(
                 "Unexpected end of buffer: need {} bytes, have {}",
                 size,
                 self.remaining_size()
@@ -335,18 +327,18 @@ impl<'a> DecoderBuffer<'a> {
             bytes.push(b);
         }
         String::from_utf8(bytes)
-            .map_err(|e| DracoError::BufferError(format!("Invalid UTF-8 string: {}", e)))
+            .map_err(|e| DracoError::buffer(format!("Invalid UTF-8 string: {}", e)))
     }
 
     /// Decodes bytes into the provided buffer.
     ///
     /// # Errors
     ///
-    /// Returns `DracoError::BufferError` if not enough bytes remaining.
+    /// Returns an [`ErrorKind::Buffer`](crate::ErrorKind::Buffer) error if not enough bytes remaining.
     pub fn decode_bytes(&mut self, out: &mut [u8]) -> Result<(), DracoError> {
         let size = out.len();
         if self.pos + size > self.data.len() {
-            return Err(DracoError::BufferError(format!(
+            return Err(DracoError::buffer(format!(
                 "Unexpected end of buffer: need {} bytes, have {}",
                 size,
                 self.remaining_size()
@@ -369,7 +361,7 @@ impl<'a> DecoderBuffer<'a> {
             }
             shift += 7;
             if shift >= 64 {
-                return Err(DracoError::BufferError("Varint exceeds 64 bits".into()));
+                return Err(DracoError::buffer("Varint exceeds 64 bits"));
             }
         }
         Ok(val)
@@ -403,15 +395,15 @@ impl<'a> DecoderBuffer<'a> {
     ///
     /// # Errors
     ///
-    /// Returns `DracoError::BufferError` if the requested advance would move
+    /// Returns an [`ErrorKind::Buffer`](crate::ErrorKind::Buffer) error if the requested advance would move
     /// beyond the end of the input buffer.
     pub fn try_advance(&mut self, n: usize) -> Result<(), DracoError> {
         let new_pos = self
             .pos
             .checked_add(n)
-            .ok_or_else(|| DracoError::BufferError("Buffer advance overflow".into()))?;
+            .ok_or_else(|| DracoError::buffer("Buffer advance overflow"))?;
         if new_pos > self.data.len() {
-            return Err(DracoError::BufferError(format!(
+            return Err(DracoError::buffer(format!(
                 "Cannot advance buffer by {} bytes: need position {}, buffer length {}",
                 n,
                 new_pos,
@@ -426,10 +418,10 @@ impl<'a> DecoderBuffer<'a> {
     ///
     /// # Errors
     ///
-    /// Returns `DracoError::BufferError` if not enough bytes remaining.
+    /// Returns an [`ErrorKind::Buffer`](crate::ErrorKind::Buffer) error if not enough bytes remaining.
     pub fn decode_slice(&mut self, size: usize) -> Result<&'a [u8], DracoError> {
         if self.pos + size > self.data.len() {
-            return Err(DracoError::BufferError(format!(
+            return Err(DracoError::buffer(format!(
                 "Unexpected end of buffer: need {} bytes, have {}",
                 size,
                 self.remaining_size()

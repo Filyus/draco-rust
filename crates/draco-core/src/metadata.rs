@@ -74,7 +74,7 @@ impl Metadata {
         validate_metadata_name(&name)?;
         let value = value.into();
         if value.is_empty() {
-            return Err(DracoError::InvalidParameter(
+            return Err(DracoError::invalid_parameter(
                 "Metadata entry value must not be empty".to_string(),
             ));
         }
@@ -104,10 +104,10 @@ impl Metadata {
         let byte_len = values
             .len()
             .checked_mul(size_of::<i32>())
-            .ok_or_else(|| DracoError::InvalidParameter("Metadata array too large".to_string()))?;
+            .ok_or_else(|| DracoError::invalid_parameter("Metadata array too large".to_string()))?;
         bytes
             .try_reserve_exact(byte_len)
-            .map_err(|_| DracoError::InvalidParameter("Metadata array too large".to_string()))?;
+            .map_err(|_| DracoError::invalid_parameter("Metadata array too large".to_string()))?;
         for value in values {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
@@ -142,10 +142,10 @@ impl Metadata {
         let byte_len = values
             .len()
             .checked_mul(size_of::<f64>())
-            .ok_or_else(|| DracoError::InvalidParameter("Metadata array too large".to_string()))?;
+            .ok_or_else(|| DracoError::invalid_parameter("Metadata array too large".to_string()))?;
         bytes
             .try_reserve_exact(byte_len)
-            .map_err(|_| DracoError::InvalidParameter("Metadata array too large".to_string()))?;
+            .map_err(|_| DracoError::invalid_parameter("Metadata array too large".to_string()))?;
         for value in values {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
@@ -196,7 +196,7 @@ impl Metadata {
         let name = name.into();
         validate_metadata_name(&name)?;
         if self.sub_metadata.contains_key(&name) {
-            return Err(DracoError::General(format!(
+            return Err(DracoError::general(format!(
                 "Duplicate sub-metadata name: {name}"
             )));
         }
@@ -213,7 +213,7 @@ impl Metadata {
     #[cfg(feature = "decoder")]
     fn decode_with_depth(buffer: &mut DecoderBuffer<'_>, depth: usize) -> Result<Self, DracoError> {
         if depth > MAX_METADATA_NESTING_DEPTH {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Metadata nesting depth exceeded".to_string(),
             ));
         }
@@ -223,15 +223,15 @@ impl Metadata {
         for _ in 0..num_entries {
             let name = decode_name(buffer)?;
             let data_size = usize::try_from(buffer.decode_varint()?).map_err(|_| {
-                DracoError::General("Metadata entry data size too large".to_string())
+                DracoError::general("Metadata entry data size too large".to_string())
             })?;
             if data_size == 0 {
-                return Err(DracoError::General(
+                return Err(DracoError::general(
                     "Invalid metadata entry data size".to_string(),
                 ));
             }
             if data_size > buffer.remaining_size() {
-                return Err(DracoError::General(
+                return Err(DracoError::general(
                     "Failed to read metadata entry value".to_string(),
                 ));
             }
@@ -241,14 +241,14 @@ impl Metadata {
 
         let num_sub_metadata = decode_bounded_count(buffer, "sub-metadata count")?;
         if num_sub_metadata > buffer.remaining_size() {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Invalid sub-metadata count".to_string(),
             ));
         }
         for _ in 0..num_sub_metadata {
             let name = decode_name(buffer)?;
             if metadata.sub_metadata.contains_key(&name) {
-                return Err(DracoError::General(format!(
+                return Err(DracoError::general(format!(
                     "Duplicate sub-metadata name: {name}"
                 )));
             }
@@ -266,7 +266,7 @@ impl Metadata {
         for (name, value) in &self.entries {
             encode_name(buffer, name)?;
             if value.is_empty() {
-                return Err(DracoError::InvalidParameter(
+                return Err(DracoError::invalid_parameter(
                     "Metadata entry value must not be empty".to_string(),
                 ));
             }
@@ -384,11 +384,11 @@ impl GeometryMetadata {
         geometry_metadata
             .attribute_metadata
             .try_reserve_exact(num_attribute_metadata)
-            .map_err(|_| DracoError::General("Failed to allocate metadata".to_string()))?;
+            .map_err(|_| DracoError::general("Failed to allocate metadata".to_string()))?;
 
         for _ in 0..num_attribute_metadata {
             let attribute_unique_id = u32::try_from(buffer.decode_varint()?).map_err(|_| {
-                DracoError::General("Attribute metadata unique id too large".to_string())
+                DracoError::general("Attribute metadata unique id too large".to_string())
             })?;
             let metadata = Metadata::decode(buffer)?;
             geometry_metadata
@@ -430,7 +430,7 @@ fn decode_le_array<const N: usize, T>(
 
 fn validate_metadata_name(name: &str) -> Result<(), DracoError> {
     if name.len() > MAX_METADATA_NAME_LEN {
-        return Err(DracoError::InvalidParameter(format!(
+        return Err(DracoError::invalid_parameter(format!(
             "Metadata name too long: {} bytes",
             name.len()
         )));
@@ -452,13 +452,13 @@ fn encode_name(buffer: &mut EncoderBuffer, name: &str) -> Result<(), DracoError>
 fn decode_name(buffer: &mut DecoderBuffer<'_>) -> Result<String, DracoError> {
     let name_len = buffer.decode_u8()? as usize;
     if name_len > buffer.remaining_size() {
-        return Err(DracoError::General(
+        return Err(DracoError::general(
             "Failed to read metadata name".to_string(),
         ));
     }
     let name = buffer.decode_slice(name_len)?.to_vec();
     String::from_utf8(name)
-        .map_err(|_| DracoError::General("Invalid UTF-8 metadata name".to_string()))
+        .map_err(|_| DracoError::general("Invalid UTF-8 metadata name".to_string()))
 }
 
 #[cfg(feature = "decoder")]
@@ -467,9 +467,9 @@ fn decode_bounded_count(
     label: &'static str,
 ) -> Result<usize, DracoError> {
     let count = usize::try_from(buffer.decode_varint()?)
-        .map_err(|_| DracoError::General(format!("{label} too large")))?;
+        .map_err(|_| DracoError::general(format!("{label} too large")))?;
     if count > buffer.remaining_size() {
-        return Err(DracoError::General(format!("Invalid {label}")));
+        return Err(DracoError::general(format!("Invalid {label}")));
     }
     Ok(count)
 }

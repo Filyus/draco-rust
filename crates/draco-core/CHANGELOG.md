@@ -30,19 +30,31 @@ and the encoder reports the choices it makes for itself.
   mesh cannot support what was asked for, and a `quantization_bits` set on an
   integer attribute is not repeated back as though it had been used. Both structs
   are `#[non_exhaustive]`.
-- `DracoError::AllocationExceedsInput` tells apart a decode refused for asking to
+- `ErrorKind::AllocationExceedsInput` tells apart a decode refused for asking to
   allocate more than its input could describe.
 
 ### Changed
 
-- **Breaking.** `DracoError::DracoError` is now `DracoError::General`. The
-  variant mirrors upstream's `Status::DRACO_ERROR`, whose own comment reads "used
-  for general errors"; upstream qualifies it as `Status::`, so the stutter was an
-  artifact of this port naming the enum `DracoError`. The `Display` text has
-  always read "General error".
-- **Breaking.** `DracoError` is `#[non_exhaustive]`: a decoder that learns to
-  tell one refusal from another can say so without a major release. Match with a
-  `_` arm.
+- **Breaking.** `DracoError` is an opaque struct one pointer wide, in the shape
+  of `std::io::Error`, and the variants are now the `#[non_exhaustive]`
+  `ErrorKind` enum reached through `kind()`. Construct with
+  `DracoError::general(msg)`, `DracoError::buffer(msg)` and their siblings, or
+  `DracoError::new(kind, msg)`; read the text back with `message()`, or `Display`
+  for the kind and the message together. `DracoError::DracoError` disappears in
+  the process — the variant mirrored upstream's `Status::DRACO_ERROR`, which
+  upstream qualifies as `Status::`, so the stutter was an artifact of this port
+  naming the enum `DracoError`; it is `ErrorKind::General`, and the `Display`
+  text has always read "General error".
+
+  The shape is not a style preference. Almost every decode and encode function
+  in this crate returns `Status`, so the size of the failure case is paid by the
+  success case at every call site: with the message stored inline,
+  `Result<(), DracoError>` was 32 bytes and needed dropping, so those functions
+  returned through a hidden out-pointer and every `?` expanded to `String` drop
+  glue. Boxed, `Ok(())` is a null pointer in a register and the drop glue is one
+  shared function.
+- The `thiserror` dependency is gone; `Display` and `Error` for `DracoError` are
+  written out, and it was the only thing the crate used the derive for.
 - **Breaking.** The fallible methods of `AttributeTransform`, of the
   `PredictionScheme` family, and of the sequential attribute coders return
   `Status` instead of `bool`, and their failures propagate to `MeshDecoder`,

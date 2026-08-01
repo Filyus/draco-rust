@@ -181,7 +181,7 @@ where
     }
 
     fn set_parent_attribute(&mut self, _att: &'static PointAttribute) -> Status {
-        Err(DracoError::InvalidParameter(
+        Err(DracoError::invalid_parameter(
             "The delta prediction scheme takes no parent attribute".to_string(),
         ))
     }
@@ -216,7 +216,7 @@ where
         // No values means no entry 0, which the tail encodes unconditionally,
         // and `size - num_components` below would wrap.
         if num_components == 0 || !size.is_multiple_of(num_components) {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "{size} values do not divide into {num_components} components"
             )));
         }
@@ -298,7 +298,7 @@ where
     }
 
     fn set_parent_attribute(&mut self, _att: &'static PointAttribute) -> Status {
-        Err(DracoError::InvalidParameter(
+        Err(DracoError::invalid_parameter(
             "The delta prediction scheme takes no parent attribute".to_string(),
         ))
     }

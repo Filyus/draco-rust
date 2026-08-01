@@ -310,7 +310,7 @@ fn legacy_edgebreaker_version_requires_legacy_encode_feature() {
         .expect_err("pre-2.2 EdgeBreaker encode should require legacy feature");
 
     match err {
-        DracoError::UnsupportedVersion(message) => {
+        DracoError::unsupported_version(message) => {
             assert!(message.contains("legacy_bitstream_encode"));
         }
         other => panic!("expected UnsupportedVersion, got {other:?}"),
@@ -338,7 +338,7 @@ fn force_predictive_traversal_requires_legacy_encode_feature() {
         .expect_err("predictive traversal encode should require legacy feature");
 
     match err {
-        DracoError::UnsupportedFeature(message) => {
+        DracoError::unsupported_feature(message) => {
             assert!(message.contains("legacy_bitstream_encode"));
         }
         other => panic!("expected UnsupportedFeature, got {other:?}"),

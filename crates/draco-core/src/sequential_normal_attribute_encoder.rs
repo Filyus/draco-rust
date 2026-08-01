@@ -57,14 +57,14 @@ impl SequentialNormalAttributeEncoder {
         options: &EncoderOptions,
     ) -> Status {
         if !self.base.init(attribute_id) {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Attribute {attribute_id} is not a valid encoder attribute"
             )));
         }
 
         let attribute = point_cloud.attribute(attribute_id);
         if attribute.num_components() != 3 {
-            return Err(DracoError::InvalidParameter(format!(
+            return Err(DracoError::invalid_parameter(format!(
                 "Normal encoding needs 3 components, attribute {attribute_id} has {}",
                 attribute.num_components()
             )));

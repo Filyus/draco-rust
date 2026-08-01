@@ -32,7 +32,7 @@ impl TryFrom<u8> for GeometryAttributeType {
             2 => Ok(Self::Color),
             3 => Ok(Self::TexCoord),
             4 => Ok(Self::Generic),
-            _ => Err(DracoError::General(format!(
+            _ => Err(DracoError::general(format!(
                 "Invalid geometry attribute type: {value}"
             ))),
         }
@@ -218,7 +218,7 @@ impl PointAttribute {
         let buffer_size = num_attribute_values
             .checked_mul(byte_stride)
             .ok_or_else(|| {
-                DracoError::General("Point attribute buffer size overflow".to_string())
+                DracoError::general("Point attribute buffer size overflow".to_string())
             })?;
         self.base.init(
             attribute_type,
@@ -230,7 +230,7 @@ impl PointAttribute {
             0,
         );
         self.buffer.try_resize(buffer_size).map_err(|_| {
-            DracoError::General("Failed to allocate point attribute buffer".to_string())
+            DracoError::general("Failed to allocate point attribute buffer".to_string())
         })?;
         self.num_unique_entries = num_attribute_values;
         self.identity_mapping = true;
@@ -259,10 +259,10 @@ impl PointAttribute {
         let buffer_size = num_attribute_values
             .checked_mul(byte_stride)
             .ok_or_else(|| {
-                DracoError::General("Point attribute buffer size overflow".to_string())
+                DracoError::general("Point attribute buffer size overflow".to_string())
             })?;
         self.buffer.try_resize(buffer_size).map_err(|_| {
-            DracoError::General("Failed to allocate point attribute buffer".to_string())
+            DracoError::general("Failed to allocate point attribute buffer".to_string())
         })?;
         self.num_unique_entries = num_attribute_values;
         if self.identity_mapping {
@@ -355,7 +355,7 @@ impl PointAttribute {
             return Ok(());
         }
         let Some(slot) = self.indices_map.get_mut(point_index.0 as usize) else {
-            return Err(DracoError::General(
+            return Err(DracoError::general(
                 "Point map entry index out of range".to_string(),
             ));
         };

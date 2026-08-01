@@ -50,10 +50,10 @@ pub(crate) const MAX_ALLOCATED_BYTES_PER_INPUT_BYTE: usize = 1 << 20;
 /// saturates for any stream over 4 KiB and the bound silently stops existing.
 pub(crate) fn ensure_allocation_is_backed(requested_bytes: usize, stream_bytes: usize) -> Status {
     if requested_bytes / MAX_ALLOCATED_BYTES_PER_INPUT_BYTE > stream_bytes {
-        return Err(DracoError::AllocationExceedsInput {
+        return Err(DracoError::allocation_exceeds_input(
             requested_bytes,
             stream_bytes,
-        });
+        ));
     }
     Ok(())
 }
