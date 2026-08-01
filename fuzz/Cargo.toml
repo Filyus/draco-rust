@@ -32,6 +32,12 @@ draco-io = { path = "../crates/draco-io", default-features = false, features = [
     "fbx-reader",
     "fbx-writer",
     "compression",
+    # The OBJ, PLY and STL readers parse untrusted files too, and until
+    # `mesh_text_readers` nothing fuzzed them - see that target for what an
+    # audit found in the PLY one.
+    "obj-reader",
+    "ply-reader",
+    "stl-reader",
 ] }
 # KTX2 is the other untrusted binary container the workspace reads: a header
 # of file-controlled offsets and lengths, a Zstd payload that expands, and
@@ -64,6 +70,13 @@ bench = false
 [[bin]]
 name = "draco_gltf_import"
 path = "fuzz_targets/draco_gltf_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mesh_text_readers"
+path = "fuzz_targets/mesh_text_readers.rs"
 test = false
 doc = false
 bench = false

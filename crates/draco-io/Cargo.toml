@@ -110,7 +110,7 @@ required-features = ["test", "point_cloud_decode"]
 [[test]]
 name = "reader_hardening_test"
 path = "tests/reader_hardening_test.rs"
-required-features = ["ply-reader"]
+required-features = ["ply-reader", "obj-reader"]
 
 [[test]]
 name = "writer_hardening_test"

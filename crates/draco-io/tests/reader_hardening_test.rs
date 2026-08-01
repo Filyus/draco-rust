@@ -8,6 +8,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use draco_io::obj_reader::ObjReader;
 use draco_io::ply_reader::PlyReader;
 
 /// Counts bytes requested, so a test can assert on what a reader *reserves*
@@ -113,5 +114,82 @@ property float z
         requested < 1 << 20,
         "reading a {}-byte file declaring four billion faces requested {requested} bytes",
         file.len()
+    );
+}
+
+/// The x/y/z of every position an OBJ reader returned.
+fn obj_positions(source: &str) -> Result<Vec<[f32; 3]>, String> {
+    use draco_core::geometry_attribute::GeometryAttributeType;
+
+    let mesh = ObjReader::read_from_bytes(source.as_bytes()).map_err(|error| error.to_string())?;
+    let attribute = mesh
+        .named_attribute(GeometryAttributeType::Position)
+        .ok_or("no position attribute")?;
+    let data = attribute.buffer().data();
+    Ok((0..attribute.size())
+        .map(|i| {
+            let offset = i * 12;
+            [
+                f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()),
+                f32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap()),
+                f32::from_le_bytes(data[offset + 8..offset + 12].try_into().unwrap()),
+            ]
+        })
+        .collect())
+}
+
+#[test]
+fn an_unparsable_obj_vertex_line_is_refused_rather_than_dropped() {
+    // OBJ indices are 1-based and count the file's own `v` lines, so dropping
+    // one shifts every later index: `f 1 2 4` silently named vertex 5. The
+    // reader returned Ok with geometry the file does not describe, where
+    // upstream refuses the file.
+    let well_formed = "v 0 0 0
+v 1 0 0
+v 5 5 5
+v 0 1 0
+v 9 9 9
+f 1 2 4
+";
+    assert_eq!(
+        obj_positions(well_formed).expect("a well-formed file must read"),
+        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    );
+
+    for malformed in [
+        // Two components where three are required.
+        "v 0 0 0
+v 1 0 0
+v 1 2
+v 0 1 0
+v 9 9 9
+f 1 2 4
+",
+        // Locale comma decimals - a common real-world malformation.
+        "v 0 0 0
+v 1 0 0
+v 1,5 2,5 3,5
+v 0 1 0
+v 9 9 9
+f 1 2 4
+",
+    ] {
+        let error = obj_positions(malformed).expect_err("a bad vertex line must be refused");
+        assert!(error.contains("three numbers"), "unexpected error: {error}");
+    }
+}
+
+#[test]
+fn obj_keywords_are_separated_by_any_whitespace() {
+    // The dispatch matched on `"v "`, so a tab-delimited file - which is valid
+    // OBJ - was invisible to it and decoded to an empty mesh with Ok.
+    let tabbed = "v	0 0 0
+v	1 0 0
+v	0 1 0
+f	1 2 3
+";
+    assert_eq!(
+        obj_positions(tabbed).expect("a tab-delimited file must read"),
+        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
     );
 }

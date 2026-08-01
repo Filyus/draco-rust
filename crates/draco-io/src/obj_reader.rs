@@ -178,10 +178,6 @@ fn read_obj_positions_from_reader<R: BufRead>(reader: R) -> io::Result<Vec<[f32;
             continue;
         }
 
-        if !trimmed.starts_with('v') {
-            continue;
-        }
-
         let mut parts = trimmed.split_whitespace();
         if parts.next() != Some("v") {
             continue;
@@ -191,8 +187,11 @@ fn read_obj_positions_from_reader<R: BufRead>(reader: R) -> io::Result<Vec<[f32;
         let y = parts.next().and_then(|s| s.parse().ok());
         let z = parts.next().and_then(|s| s.parse().ok());
 
-        if let (Some(x), Some(y), Some(z)) = (x, y, z) {
-            positions.push([x, y, z]);
+        // As above: a vertex line that does not parse is refused, because the
+        // caller counts on the position order matching the file's numbering.
+        match (x, y, z) {
+            (Some(x), Some(y), Some(z)) => positions.push([x, y, z]),
+            _ => return Err(invalid_obj("OBJ vertex line must have three numbers")),
         }
     }
 
@@ -336,42 +335,49 @@ fn read_obj_mesh_from_reader<R: BufRead>(reader: R) -> io::Result<ParsedObjMesh>
         let line = line?;
         let trimmed = strip_obj_comment(&line);
 
-        if trimmed.starts_with("v ") {
-            let mut parts = trimmed.split_whitespace();
-            parts.next(); // skip 'v'
+        // The keyword is split off rather than matched with a trailing space:
+        // OBJ separates fields with any whitespace, and requiring `"v "` made a
+        // tab-delimited file - which is valid - decode to an empty mesh with
+        // `Ok`.
+        let mut parts = trimmed.split_whitespace();
+        let keyword = parts.next();
 
+        if keyword == Some("v") {
+            // A vertex line that does not parse is refused rather than skipped.
+            // Dropping it shifts every later 1-based index by one, so the faces
+            // silently name different vertices and the reader returns `Ok` with
+            // the wrong geometry; upstream `ObjDecoder::ParseVertexPosition`
+            // fails the file on the same input.
             let x = parts.next().and_then(|s| s.parse().ok());
             let y = parts.next().and_then(|s| s.parse().ok());
             let z = parts.next().and_then(|s| s.parse().ok());
 
-            if let (Some(x), Some(y), Some(z)) = (x, y, z) {
-                source_positions.push([x, y, z]);
+            match (x, y, z) {
+                (Some(x), Some(y), Some(z)) => source_positions.push([x, y, z]),
+                _ => return Err(invalid_obj("OBJ vertex line must have three numbers")),
             }
-        } else if trimmed.starts_with("vt ") {
-            let mut parts = trimmed.split_whitespace();
-            parts.next(); // skip 'vt'
-
+        } else if keyword == Some("vt") {
             let u = parts.next().and_then(|s| s.parse().ok());
             let v = parts.next().and_then(|s| s.parse().ok());
 
-            if let (Some(u), Some(v)) = (u, v) {
-                source_texcoords.push([u, v]);
+            match (u, v) {
+                (Some(u), Some(v)) => source_texcoords.push([u, v]),
+                _ => {
+                    return Err(invalid_obj(
+                        "OBJ texture coordinate line must have two numbers",
+                    ))
+                }
             }
-        } else if trimmed.starts_with("vn ") {
-            let mut parts = trimmed.split_whitespace();
-            parts.next(); // skip 'vn'
-
+        } else if keyword == Some("vn") {
             let x = parts.next().and_then(|s| s.parse().ok());
             let y = parts.next().and_then(|s| s.parse().ok());
             let z = parts.next().and_then(|s| s.parse().ok());
 
-            if let (Some(x), Some(y), Some(z)) = (x, y, z) {
-                source_normals.push([x, y, z]);
+            match (x, y, z) {
+                (Some(x), Some(y), Some(z)) => source_normals.push([x, y, z]),
+                _ => return Err(invalid_obj("OBJ normal line must have three numbers")),
             }
-        } else if trimmed.starts_with("f ") {
-            let mut parts = trimmed.split_whitespace();
-            parts.next(); // skip 'f'
-
+        } else if keyword == Some("f") {
             let face_vertices = parts
                 .map(|part| {
                     parse_face_vertex(

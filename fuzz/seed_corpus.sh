@@ -30,6 +30,10 @@ case "$target" in
   ktx2_transcode)
     find_args=( -name '*.ktx2' )
     ;;
+  mesh_text_readers)
+    # Every committed mesh fixture the three readers understand.
+    find_args=( \( -name '*.obj' -o -name '*.ply' -o -name '*.stl' \) )
+    ;;
   encode_drc)
     # Encoder-side target: its input describes geometry to encode, not a file
     # to parse, so no repository fixture is a seed. Seeded entirely from

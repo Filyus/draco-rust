@@ -22,6 +22,7 @@ status, threat model, and known residual risk live in
 | `fbx_read_scene` | [`fuzz/fuzz_targets/fbx_read_scene.rs`](fuzz/fuzz_targets/fbx_read_scene.rs) | Reads arbitrary bytes as an FBX scene under tight decode limits, in both lenient and strict modes, and checks that reading the same input twice agrees. |
 | `fbx_roundtrip` | [`fuzz/fuzz_targets/fbx_roundtrip.rs`](fuzz/fuzz_targets/fbx_roundtrip.rs) | Writes back whatever the FBX reader accepted and requires the result to satisfy the reader's strict mode, so the writer is fuzzed with scenes nobody would hand-build. |
 | `encode_drc` | [`fuzz/fuzz_targets/encode_drc.rs`](fuzz/fuzz_targets/encode_drc.rs) | Builds a mesh or point cloud from the input - point count, triangle indices, attribute layouts and payloads, encoder options - encodes it, and requires that anything the encoder accepted decodes. |
+| `mesh_text_readers` | [`fuzz/fuzz_targets/mesh_text_readers.rs`](fuzz/fuzz_targets/mesh_text_readers.rs) | Feeds each input to the OBJ, PLY and STL readers, which parse untrusted files with no limits API of their own. |
 | `ktx2_transcode` | [`fuzz/fuzz_targets/ktx2_transcode.rs`](fuzz/fuzz_targets/ktx2_transcode.rs) | Parses arbitrary bytes as KTX2 and transcodes every level small enough into every target, so that an allocation failure is a finding rather than the header's own arithmetic. |
 
 `decode_drc` builds `draco-core` with `default-features = false` and enables the
@@ -203,6 +204,7 @@ pwsh fuzz/seed_corpus.ps1 -Target draco_gltf_import
 pwsh fuzz/seed_corpus.ps1 -Target fbx_read_scene
 pwsh fuzz/seed_corpus.ps1 -Target fbx_roundtrip
 pwsh fuzz/seed_corpus.ps1 -Target encode_drc
+pwsh fuzz/seed_corpus.ps1 -Target mesh_text_readers
 ```
 
 ```bash
@@ -212,7 +214,14 @@ pwsh fuzz/seed_corpus.ps1 -Target encode_drc
 ./fuzz/seed_corpus.sh fbx_read_scene
 ./fuzz/seed_corpus.sh fbx_roundtrip
 ./fuzz/seed_corpus.sh encode_drc
+./fuzz/seed_corpus.sh mesh_text_readers
 ```
+
+`mesh_text_readers` is seeded from every committed `*.obj`, `*.ply` and `*.stl`
+fixture - 74 of them - so the campaign starts from files the readers accept
+rather than rediscovering three container formats from scratch. Its first
+300-second campaign completed with no panic, OOM or timeout: 239,722 executions,
+1945 edges, peak RSS 602 MB.
 
 `encode_drc` takes no repository fixture either - its input is a geometry
 description, not a file - so it is seeded from `fuzz/seeds/encode_drc/`,
@@ -259,6 +268,9 @@ cargo +nightly fuzz run -O fbx_roundtrip --fuzz-dir fuzz -- -max_total_time=120 
 # Encoder: geometry built from the input, encoded, and decoded back
 cargo +nightly fuzz run -O encode_drc --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
 
+# The three text/binary mesh readers, seeded from every committed fixture
+cargo +nightly fuzz run -O mesh_text_readers --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
+
 # Longer decode soak run
 cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz -- -max_total_time=3600 -rss_limit_mb=4096
 ```
@@ -286,6 +298,7 @@ cargo +nightly fuzz cmin -O draco_gltf_import --fuzz-dir fuzz
 cargo +nightly fuzz cmin -O fbx_read_scene --fuzz-dir fuzz
 cargo +nightly fuzz cmin -O fbx_roundtrip --fuzz-dir fuzz
 cargo +nightly fuzz cmin -O encode_drc --fuzz-dir fuzz
+cargo +nightly fuzz cmin -O mesh_text_readers --fuzz-dir fuzz
 ```
 
 ## Reproducing and triaging a crash
@@ -330,8 +343,9 @@ changes, plus deeper runs on demand. Trigger a manual run with
 **Level 1 — lightweight in-repo gate ([`.github/workflows/fuzz.yml`](.github/workflows/fuzz.yml)):**
 
 - Bounded smoke runs (`-max_total_time=120`) for `decode_drc`,
-  `compress_gltf`, `draco_gltf_import`, `fbx_read_scene`, `fbx_roundtrip` and
-  `encode_drc` on every pull request and push to `main`. A manual dispatch runs longer soaks (`-max_total_time=1800`).
+  `compress_gltf`, `draco_gltf_import`, `fbx_read_scene`, `fbx_roundtrip`,
+  `encode_drc` and `mesh_text_readers` on every pull request and push to
+  `main`. A manual dispatch runs longer soaks (`-max_total_time=1800`).
 - The corpus is persisted across runs via the GitHub Actions cache and
   re-seeded from the committed fixtures each run, so coverage never starts from
   zero even if the cache entry is evicted.

@@ -82,6 +82,7 @@ jobs:
           ./fuzz/seed_corpus.sh fbx_read_scene
           ./fuzz/seed_corpus.sh fbx_roundtrip
           ./fuzz/seed_corpus.sh encode_drc
+          ./fuzz/seed_corpus.sh mesh_text_readers
 
       # The decode target includes legacy decode features so old bitstream paths
       # get coverage-guided fuzzing, not just deterministic fixture tests.
@@ -148,10 +149,20 @@ jobs:
             -max_total_time=${{ steps.dur.outputs.seconds }} \
             -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
 
+      # The OBJ, PLY and STL readers parse untrusted files with no limits API of
+      # their own; an audit of the PLY one found a panic, a seven-second spin
+      # and a 48 GB reservation, all driven by counts printed in a header.
+      - name: Fuzz mesh_text_readers
+        run: |
+          cargo +nightly fuzz run -O mesh_text_readers --fuzz-dir fuzz \
+            --target x86_64-unknown-linux-gnu -- \
+            -max_total_time=${{ steps.dur.outputs.seconds }} \
+            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
+
       - name: Minimize corpora
         if: always()
         run: |
-          for target in decode_drc compress_gltf draco_gltf_import fbx_read_scene fbx_roundtrip encode_drc; do
+          for target in decode_drc compress_gltf draco_gltf_import fbx_read_scene fbx_roundtrip encode_drc mesh_text_readers; do
             cargo +nightly fuzz cmin -O "$target" --fuzz-dir fuzz \
               --target x86_64-unknown-linux-gnu
           done

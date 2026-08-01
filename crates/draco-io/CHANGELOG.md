@@ -27,6 +27,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   while its list matches the vertex count; the lists were padded before a mesh's
   values were appended but not after, so the same two meshes wrote different
   files depending on the order they were added in.
+- The OBJ reader refuses a `v`/`vt`/`vn` line whose components do not parse,
+  instead of dropping it. OBJ indices are 1-based and count the file's own
+  vertex lines, so a dropped one shifted every later index: `f 1 2 4` silently
+  named a different vertex and the reader returned a mesh the file does not
+  describe. Upstream C++ Draco fails the same file.
+- The OBJ reader separates a keyword from its values on any ASCII whitespace. It
+  matched on a trailing space, so a tab-delimited file - which is valid OBJ -
+  was invisible to the parser and decoded to an empty mesh.
 - The PLY reader no longer indexes past the four-channel colour array when a
   header names more colour properties than a colour has channels - the same one
   twice, for instance.
