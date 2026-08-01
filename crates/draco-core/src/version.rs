@@ -112,7 +112,66 @@ pub fn uses_varint_unique_id(major: u8, minor: u8) -> bool {
 /// compatibility floor of Draco 1.0.0.
 pub const OLDEST_ENCODABLE_VERSION: (u8, u8) = (1, 0);
 
-/// Rejects a target bitstream version the encoder cannot actually write.
+/// The coder a stream is written with, which is what decides whether a given
+/// bitstream version can be written at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncodeTarget {
+    /// Triangle mesh, EdgeBreaker connectivity.
+    MeshEdgebreaker,
+    /// Triangle mesh, sequential connectivity.
+    MeshSequential,
+    /// Point cloud, sequential attribute coding.
+    PointCloudSequential,
+    /// Point cloud, KD-tree attribute coding.
+    PointCloudKdTree,
+}
+
+impl EncodeTarget {
+    /// The bitstream versions this crate writes for the target *and reads back*.
+    ///
+    /// An enumeration, not an interval. `set_version` used to accept anything
+    /// from 1.0 to the newest — 259 values for a mesh, including minors that
+    /// never existed, such as 1.42 — and most of them produced a stream this
+    /// crate's own decoder rejects, because legacy encoding is gated field by
+    /// field and the gates do not all agree with the decoder's.
+    ///
+    /// Every entry here has an encode/decode round-trip test that compares
+    /// values, not just counts. That is the definition of "claimed": if a
+    /// combination is not tested, it is not offered. Widening the list later is
+    /// a non-breaking change; shipping an untested claim is not.
+    ///
+    /// Narrowing this cannot diverge from upstream, because upstream has no
+    /// version setter at all: `PointCloudEncoder::EncodeHeader` takes the
+    /// version from the geometry type, and `ExpertEncoder` exposes nothing.
+    /// C++ Draco encodes the newest and decodes back to 1.0, so `set_version`
+    /// is this crate's own extension and this moves it toward upstream.
+    pub fn claimed_versions(self) -> &'static [(u8, u8)] {
+        match self {
+            // Valence and predictive traversals round-trip on the pre-2.2
+            // layouts; the standard traversal does not, and is refused
+            // separately by the encoder rather than by splitting this table.
+            EncodeTarget::MeshEdgebreaker => &[(2, 2), (2, 1), (2, 0), (1, 2)],
+            EncodeTarget::MeshSequential => &[(2, 2), (1, 3)],
+            EncodeTarget::PointCloudSequential => &[(2, 3), (1, 3)],
+            // No version branch exists on either side of the KD-tree coder,
+            // while C++ splits its layout at 2.3 — so anything older would
+            // write a header that does not describe the payload.
+            EncodeTarget::PointCloudKdTree => &[(2, 3)],
+        }
+    }
+
+    /// The version written when the caller does not ask for one.
+    pub fn default_version(self) -> (u8, u8) {
+        match self {
+            EncodeTarget::MeshEdgebreaker | EncodeTarget::MeshSequential => DEFAULT_MESH_VERSION,
+            EncodeTarget::PointCloudSequential | EncodeTarget::PointCloudKdTree => {
+                DEFAULT_POINT_CLOUD_VERSION
+            }
+        }
+    }
+}
+
+/// Rejects a target bitstream version this crate does not write for `target`.
 ///
 /// `set_version` takes two free bytes, and every version-dependent branch in
 /// the encoders asks a predicate such as [`has_header_flags`] about them. Those
@@ -127,24 +186,23 @@ pub const OLDEST_ENCODABLE_VERSION: (u8, u8) = (1, 0);
 pub fn validate_encodable_version(
     major: u8,
     minor: u8,
-    latest: (u8, u8),
+    target: EncodeTarget,
 ) -> Result<(), crate::status::DracoError> {
     if major == 0 && minor == 0 {
         return Ok(());
     }
-    if version_less_than(major, minor, OLDEST_ENCODABLE_VERSION) {
-        return Err(crate::status::DracoError::UnsupportedVersion(format!(
-            "Cannot encode bitstream version {major}.{minor}: oldest supported is {}.{}",
-            OLDEST_ENCODABLE_VERSION.0, OLDEST_ENCODABLE_VERSION.1
-        )));
+    if target.claimed_versions().contains(&(major, minor)) {
+        return Ok(());
     }
-    if bitstream_version(major, minor) > bitstream_version(latest.0, latest.1) {
-        return Err(crate::status::DracoError::UnsupportedVersion(format!(
-            "Cannot encode bitstream version {major}.{minor}: newest supported is {}.{}",
-            latest.0, latest.1
-        )));
-    }
-    Ok(())
+    let claimed = target
+        .claimed_versions()
+        .iter()
+        .map(|(major, minor)| format!("{major}.{minor}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(crate::status::DracoError::UnsupportedVersion(format!(
+        "Cannot encode bitstream version {major}.{minor} for {target:?}: supported are {claimed}"
+    )))
 }
 
 /// Packs a `(major, minor)` bitstream version into the single `0xMMmm` value

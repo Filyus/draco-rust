@@ -17,7 +17,6 @@ use draco_core::mesh::Mesh;
 use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::point_cloud::PointCloud;
-use draco_core::point_cloud_decoder::PointCloudDecoder;
 use draco_core::point_cloud_encoder::PointCloudEncoder;
 
 /// A float32 position attribute with `num_values` zeroed values.
@@ -320,25 +319,31 @@ fn unsupported_versions_fail_instead_of_producing_an_unreadable_stream() {
     }
 }
 
+/// Versions below the claimed floor are refused rather than written.
+///
+/// This replaces a test that encoded a point cloud at 1.0 and asserted it
+/// decoded. It passed for the wrong reason: it checked only the point count,
+/// which survives a stream whose quantization parameters were written in the
+/// wrong place. 1.0 through 1.2 are no longer claimed for point clouds, so the
+/// honest assertion is that they are refused.
 #[test]
-fn a_point_cloud_encoded_at_version_1_0_decodes() {
-    // The flags field is part of the header for every version this crate
-    // encodes. Writing it only from 1.3 left a 1.0 stream two bytes short and
-    // its own decoder read the point count from the wrong offset.
-    let mut pc = PointCloud::new();
-    pc.set_num_points(4);
-    pc.add_attribute(positions(4));
+fn point_cloud_versions_below_the_claimed_floor_are_refused() {
+    for (major, minor) in [(1u8, 0u8), (1, 1), (1, 2)] {
+        let mut pc = PointCloud::new();
+        pc.set_num_points(4);
+        pc.add_attribute(positions(4));
 
-    let mut options = EncoderOptions::new();
-    options.set_version(1, 0);
-    options.set_attribute_int(0, "quantization_bits", 8);
-    let bytes = encode_point_cloud(pc, &options).expect("version 1.0 must encode");
+        let mut options = EncoderOptions::new();
+        options.set_version(major, minor);
+        options.set_attribute_int(0, "quantization_bits", 8);
 
-    let mut decoded = PointCloud::new();
-    PointCloudDecoder::new()
-        .decode(&mut DecoderBuffer::new(&bytes), &mut decoded)
-        .expect("a stream this encoder produced must decode");
-    assert_eq!(decoded.num_points(), 4);
+        let error = encode_point_cloud(pc, &options)
+            .expect_err(&format!("version {major}.{minor} must be refused"));
+        assert!(
+            error.contains("Cannot encode bitstream version"),
+            "unexpected error for {major}.{minor}: {error}"
+        );
+    }
 }
 
 #[test]

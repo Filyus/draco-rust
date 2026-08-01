@@ -264,7 +264,14 @@ fn legacy_normal_octahedron_transform_roundtrip() {
     let mesh = build_grid_with_normals(33);
 
     let mut opts = EncoderOptions::new();
-    opts.set_version(1, 1);
+    // 1.2, not 1.1. This round-trips at 1.1 too, but only for a mesh without
+    // topology splits: below 1.2 the encoder writes split events as delta
+    // varints while the decoder reads absolute u32 ids with an explicit edge
+    // byte. A claim that holds for some meshes and not others is not one the
+    // version table can make, so 1.2 is the floor and this test sits on it.
+    // The two versions differ only in that split coding, and this grid has no
+    // splits, so the transform under test is unaffected.
+    opts.set_version(1, 2);
     opts.set_encoding_method(1); // Edgebreaker
     opts.set_global_int("encoding_speed", 0);
     opts.set_global_int("decoding_speed", 0);

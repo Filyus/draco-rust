@@ -349,10 +349,14 @@ impl PointCloudEncoder {
         }
         let pc = self.point_cloud.as_ref().unwrap();
         validate_encodable_attributes(pc)?;
-        let (major, minor) = self.options.get_version();
-        crate::version::validate_encodable_version(major, minor, DEFAULT_POINT_CLOUD_VERSION)?;
-
         let method = select_encoding_method(pc, &self.options)?;
+        let (major, minor) = self.options.get_version();
+        let target = if method == 1 {
+            crate::version::EncodeTarget::PointCloudKdTree
+        } else {
+            crate::version::EncodeTarget::PointCloudSequential
+        };
+        crate::version::validate_encodable_version(major, minor, target)?;
 
         // 1. Encode Header
         self.encode_header(out_buffer, method)?;

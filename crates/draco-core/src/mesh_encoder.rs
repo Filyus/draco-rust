@@ -21,6 +21,22 @@ use crate::version::{
     has_header_flags, uses_varint_encoding, uses_varint_unique_id, DEFAULT_MESH_VERSION,
 };
 
+/// Picks EdgeBreaker or sequential connectivity, as C++ `ExpertEncoder` does.
+///
+/// Shared by `encode_header` and by the version validation that runs before it,
+/// so the version a stream is checked against is the one it is written with.
+/// The two used to derive it separately, which is how a check can pass for a
+/// coder the encoder then does not use.
+fn select_mesh_encoding_method(options: &EncoderOptions) -> i32 {
+    // C++ default: EdgeBreaker unless speed is 10, which asks for sequential.
+    match options.get_global_int("encoding_method", -1) {
+        -1 if options.get_speed() == 10 => 0,
+        -1 => 1,
+        1 => 1,
+        _ => 0,
+    }
+}
+
 /// `(min, max)` per-component position bounds, each present when computable.
 type PositionBounds = (Option<Vec<f64>>, Option<Vec<f64>>);
 
@@ -295,7 +311,12 @@ impl MeshEncoder {
         }
         crate::point_cloud_encoder::validate_encodable_attributes(self.mesh.as_ref().unwrap())?;
         let (major, minor) = self.options.get_version();
-        crate::version::validate_encodable_version(major, minor, DEFAULT_MESH_VERSION)?;
+        let target = if select_mesh_encoding_method(&self.options) == 1 {
+            crate::version::EncodeTarget::MeshEdgebreaker
+        } else {
+            crate::version::EncodeTarget::MeshSequential
+        };
+        crate::version::validate_encodable_version(major, minor, target)?;
         Self::validate_face_indices(self.mesh.as_ref().unwrap())?;
         self.validate_predictive_traversal()?;
         self.validate_prediction_schemes(self.mesh.as_ref().unwrap())?;
@@ -420,19 +441,7 @@ impl MeshEncoder {
             ));
         }
 
-        // C++ default behavior: Edgebreaker if speed != 10, Sequential if speed == 10
-        let method_int = self.options.get_global_int("encoding_method", -1);
-        let method = if method_int == -1 {
-            if self.options.get_speed() == 10 {
-                0
-            } else {
-                1
-            }
-        } else if method_int == 1 {
-            1
-        } else {
-            0
-        };
+        let method = select_mesh_encoding_method(&self.options);
 
         #[cfg(not(feature = "legacy_bitstream_encode"))]
         if method == 1 {
@@ -468,7 +477,7 @@ impl MeshEncoder {
         buffer.encode_u8(minor);
         buffer.set_version(major, minor);
         buffer.encode_u8(self.get_geometry_type() as u8);
-        buffer.encode_u8(method);
+        buffer.encode_u8(method as u8);
 
         // The flags field is always present in the binary header (the decoder reads
         // it unconditionally); only the metadata bit gains meaning at v1.3+, which
@@ -759,7 +768,15 @@ impl MeshEncoder {
         // Use the buffer's version (set in encode_header) for version checks
         let major = out_buffer.version_major();
         let minor = out_buffer.version_minor();
-        if !uses_varint_encoding(major, minor) {
+        // 2.2, not 2.0. `uses_varint_encoding` ignores its `minor` argument and
+        // flips at the major, while the decoder (and upstream
+        // `MeshSequentialDecoder`) reads these as varints only from 2.2. A
+        // sequential mesh written at 2.0 or 2.1 was therefore unreadable. Those
+        // versions are no longer claimed for sequential meshes, so this is
+        // upstream parity rather than a live fix - but a predicate that ignores
+        // half its input is a trap, and this is the second bug it caused.
+        let counts_are_varint = crate::version::version_at_least(major, minor, (2, 2));
+        if !counts_are_varint {
             out_buffer.encode_u32(mesh.num_faces() as u32);
             out_buffer.encode_u32(mesh.num_points() as u32);
         } else {
@@ -783,9 +800,13 @@ impl MeshEncoder {
                         out_buffer.encode_u16(face[i].0 as u16);
                     }
                 }
-            } else if mesh.num_points() < (1 << 21) {
-                // Use varint encoding for indices when points fit in 21 bits
-                // This matches C++ behavior for better compression
+            } else if counts_are_varint && mesh.num_points() < (1 << 21) {
+                // Varint indices when the points fit in 21 bits, as upstream
+                // does - but only from 2.2, which is where the decoder starts
+                // reading them that way. This branch had no version gate at
+                // all, so every sequential mesh below 2.2 with 65536 or more
+                // points was written unreadable; 1.3 is a claimed version, so
+                // this one is a live fix, not just parity.
                 for face_id in 0..mesh.num_faces() {
                     let face = mesh.face(FaceIndex(face_id as u32));
                     for i in 0..3 {
