@@ -72,7 +72,7 @@ premise holds, and the encoder reports the choices it makes for itself.
   crate encodes and decodes back byte-exactly, so there is no local signal, and
   the guard belongs at the call sites where the read count is bounded
   structurally.
-- **Breaking.** `set_version` takes an enumeration of geometry/coder/traversal
+- **Breaking.** `set_version` takes an enumeration of geometry/coder
   combinations that have an encode/decode round-trip test, rather than the
   interval from 1.0 to the newest — 259 values for a mesh, including minors that
   never existed, most of which produced a stream this crate's own decoder
@@ -83,6 +83,10 @@ premise holds, and the encoder reports the choices it makes for itself.
   setter at all.
 - **Breaking.** `DracoError::is_count_exceeds_bitstream` and the message-prefix
   constructor behind it are gone with the guard they described.
+- **Breaking.** `version::OLDEST_ENCODABLE_VERSION` is gone. It named 1.0 as the
+  floor of an interval that no longer exists, nothing had read it since
+  `claimed_versions` replaced that interval, and no released Draco ever wrote
+  bitstream 1.0 — the oldest that turns up is 1.1, from Draco 0.9.1.
 - The decoder bounds allocations by a ratio against the input — 2^20 bytes per
   input byte, applied where buffers are sized — instead of refusing a declared
   count above the remaining bitstream in bits. That premise was false: geometry

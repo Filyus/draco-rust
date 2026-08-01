@@ -108,10 +108,6 @@ pub fn uses_varint_unique_id(major: u8, minor: u8) -> bool {
     version_at_least(major, minor, VERSION_VARINT_UNIQUE_ID)
 }
 
-/// Oldest bitstream version this crate encodes, matching the documented
-/// compatibility floor of Draco 1.0.0.
-pub const OLDEST_ENCODABLE_VERSION: (u8, u8) = (1, 0);
-
 /// The coder a stream is written with, which is what decides whether a given
 /// bitstream version can be written at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

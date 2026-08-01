@@ -116,8 +116,17 @@ level (see [Crate boundary](#crate-boundary)).
 ## Legacy & compatibility
 
 `draco-core` matches observable C++ behavior for existing streams, including
-awkward but compatibility-sensitive details. Every bitstream version from
-`0.9.1` to current decodes.
+awkward but compatibility-sensitive details.
+
+Two numbering schemes meet here and are easy to confuse. `0.9.1`, `0.10.0` and
+`1.0.0` below are releases of the C++ *library*; `1.1`, `2.2` and the rest are
+*bitstream* versions, which the library writes into the header. The fixtures in
+`testdata/` pair them: what Draco `0.9.1` wrote is bitstream 1.1, `0.10.0` wrote
+1.2, `1.0.0` wrote 2.0. Bitstream 1.0 does not turn up in any of them, and C++
+1.5.7 has no branch below 1.2 other than the shared pre-1.2 one.
+
+Every bitstream version from 1.1 to current decodes — so every stream a released
+Draco has produced.
 
 Encoding is an enumeration rather than a range.
 `version::EncodeTarget::claimed_versions` is the list, and the rule for
