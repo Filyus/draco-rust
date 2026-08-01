@@ -69,8 +69,10 @@ fn every_seed_is_what_the_generator_says_it_is() {
         assert_eq!(is_ascii_fbx(&bytes), is_ascii, "{name}: container routing");
 
         let limits = FbxDecodeLimits::fuzzing();
-        let lenient =
-            FbxScene::from_bytes_with_options(&bytes, FbxReadOptions::default().with_limits(limits));
+        let lenient = FbxScene::from_bytes_with_options(
+            &bytes,
+            FbxReadOptions::default().with_limits(limits),
+        );
         let strict =
             FbxScene::from_bytes_with_options(&bytes, FbxReadOptions::strict().with_limits(limits));
 

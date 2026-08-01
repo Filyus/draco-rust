@@ -204,10 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `FBXHeaderExtension:` prefix, and none of the seeds above start with one,
     // so mutation had to synthesize that prefix by chance to reach the parser
     // at all -- which is why it never did.
-    seeds.push((
-        "ascii_valid.fbx",
-        ASCII_VALID.as_bytes().to_vec(),
-    ));
+    seeds.push(("ascii_valid.fbx", ASCII_VALID.as_bytes().to_vec()));
 
     // Nesting to the fuzzing depth limit and one past it, so both sides of the
     // check sit in the corpus.

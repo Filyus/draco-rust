@@ -180,7 +180,11 @@ fn assert_point_cloud_round_trips(major: u8, minor: u8, method: i32) {
 
 #[test]
 fn test_point_cloud_roundtrip_v1_3() {
-    assert_point_cloud_round_trips(LEGACY_POINT_CLOUD_VERSION.0, LEGACY_POINT_CLOUD_VERSION.1, 0);
+    assert_point_cloud_round_trips(
+        LEGACY_POINT_CLOUD_VERSION.0,
+        LEGACY_POINT_CLOUD_VERSION.1,
+        0,
+    );
 }
 
 #[test]

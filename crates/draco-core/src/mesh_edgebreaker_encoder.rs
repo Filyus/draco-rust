@@ -340,7 +340,8 @@ impl MeshEdgebreakerEncoder {
         self.encoding_speed = speed;
         self.single_connectivity_multi_attribute = single_connectivity && mesh.num_attributes() > 1;
 
-        self.traversal = select_edgebreaker_traversal(speed, mesh.num_faces(), self.force_predictive);
+        self.traversal =
+            select_edgebreaker_traversal(speed, mesh.num_faces(), self.force_predictive);
 
         #[cfg(feature = "edgebreaker_valence_encode")]
         if self.traversal == EdgebreakerTraversal::Valence {

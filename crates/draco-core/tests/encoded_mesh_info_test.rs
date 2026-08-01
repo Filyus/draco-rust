@@ -460,8 +460,8 @@ fn encoded_attribute_info_reports_the_per_attribute_choices() {
     let mut options = EncoderOptions::new();
     options.set_attribute_int(0, "quantization_bits", 12); // position, float
     options.set_attribute_int(1, "quantization_bits", 8); // normal, float
-    // Attribute 2 is a u8 colour: an integer type, so quantization_bits would
-    // be ignored. Set one anyway -- the report must not repeat it back.
+                                                          // Attribute 2 is a u8 colour: an integer type, so quantization_bits would
+                                                          // be ignored. Set one anyway -- the report must not repeat it back.
     options.set_attribute_int(2, "quantization_bits", 9);
     // Attribute 3 is a float tex coord with no quantization: generic encoder.
 
@@ -557,7 +557,10 @@ fn encoded_point_cloud_info_reports_the_method_chosen() {
             false,
             3,
         );
-        write_f32s(&mut position, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+        write_f32s(
+            &mut position,
+            &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        );
         pc.set_num_points(3);
         pc.add_attribute(position);
         pc
