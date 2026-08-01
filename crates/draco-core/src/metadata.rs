@@ -196,7 +196,7 @@ impl Metadata {
         let name = name.into();
         validate_metadata_name(&name)?;
         if self.sub_metadata.contains_key(&name) {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Duplicate sub-metadata name: {name}"
             )));
         }
@@ -213,7 +213,7 @@ impl Metadata {
     #[cfg(feature = "decoder")]
     fn decode_with_depth(buffer: &mut DecoderBuffer<'_>, depth: usize) -> Result<Self, DracoError> {
         if depth > MAX_METADATA_NESTING_DEPTH {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Metadata nesting depth exceeded".to_string(),
             ));
         }
@@ -223,15 +223,15 @@ impl Metadata {
         for _ in 0..num_entries {
             let name = decode_name(buffer)?;
             let data_size = usize::try_from(buffer.decode_varint()?).map_err(|_| {
-                DracoError::DracoError("Metadata entry data size too large".to_string())
+                DracoError::General("Metadata entry data size too large".to_string())
             })?;
             if data_size == 0 {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "Invalid metadata entry data size".to_string(),
                 ));
             }
             if data_size > buffer.remaining_size() {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "Failed to read metadata entry value".to_string(),
                 ));
             }
@@ -241,14 +241,14 @@ impl Metadata {
 
         let num_sub_metadata = decode_bounded_count(buffer, "sub-metadata count")?;
         if num_sub_metadata > buffer.remaining_size() {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Invalid sub-metadata count".to_string(),
             ));
         }
         for _ in 0..num_sub_metadata {
             let name = decode_name(buffer)?;
             if metadata.sub_metadata.contains_key(&name) {
-                return Err(DracoError::DracoError(format!(
+                return Err(DracoError::General(format!(
                     "Duplicate sub-metadata name: {name}"
                 )));
             }
@@ -384,11 +384,11 @@ impl GeometryMetadata {
         geometry_metadata
             .attribute_metadata
             .try_reserve_exact(num_attribute_metadata)
-            .map_err(|_| DracoError::DracoError("Failed to allocate metadata".to_string()))?;
+            .map_err(|_| DracoError::General("Failed to allocate metadata".to_string()))?;
 
         for _ in 0..num_attribute_metadata {
             let attribute_unique_id = u32::try_from(buffer.decode_varint()?).map_err(|_| {
-                DracoError::DracoError("Attribute metadata unique id too large".to_string())
+                DracoError::General("Attribute metadata unique id too large".to_string())
             })?;
             let metadata = Metadata::decode(buffer)?;
             geometry_metadata
@@ -452,13 +452,13 @@ fn encode_name(buffer: &mut EncoderBuffer, name: &str) -> Result<(), DracoError>
 fn decode_name(buffer: &mut DecoderBuffer<'_>) -> Result<String, DracoError> {
     let name_len = buffer.decode_u8()? as usize;
     if name_len > buffer.remaining_size() {
-        return Err(DracoError::DracoError(
+        return Err(DracoError::General(
             "Failed to read metadata name".to_string(),
         ));
     }
     let name = buffer.decode_slice(name_len)?.to_vec();
     String::from_utf8(name)
-        .map_err(|_| DracoError::DracoError("Invalid UTF-8 metadata name".to_string()))
+        .map_err(|_| DracoError::General("Invalid UTF-8 metadata name".to_string()))
 }
 
 #[cfg(feature = "decoder")]
@@ -467,9 +467,9 @@ fn decode_bounded_count(
     label: &'static str,
 ) -> Result<usize, DracoError> {
     let count = usize::try_from(buffer.decode_varint()?)
-        .map_err(|_| DracoError::DracoError(format!("{label} too large")))?;
+        .map_err(|_| DracoError::General(format!("{label} too large")))?;
     if count > buffer.remaining_size() {
-        return Err(DracoError::DracoError(format!("Invalid {label}")));
+        return Err(DracoError::General(format!("Invalid {label}")));
     }
     Ok(count)
 }

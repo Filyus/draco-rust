@@ -477,7 +477,7 @@ where
         }
 
         let missing =
-            |what: &str| DracoError::DracoError(format!("Parallelogram prediction has no {what}"));
+            |what: &str| DracoError::General(format!("Parallelogram prediction has no {what}"));
         let Some(table) = self.mesh_data.corner_table() else {
             return Err(missing("corner table"));
         };
@@ -488,7 +488,7 @@ where
             return Err(missing("data-to-corner map"));
         };
         let Some(required_values) = data_to_corner_map.len().checked_mul(num_components) else {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Parallelogram prediction value count overflow".to_string(),
             ));
         };
@@ -496,7 +496,7 @@ where
             || in_corr.len() < required_values
             || out_data.len() < required_values
         {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Parallelogram prediction needs {required_values} values, has {} corrections and {} outputs",
                 in_corr.len(),
                 out_data.len()

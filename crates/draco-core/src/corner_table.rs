@@ -39,14 +39,14 @@ impl CornerTable {
     /// instead. Behaviorally identical to [`CornerTable::new`] on success.
     pub fn try_new(num_faces: usize) -> Result<Self, crate::status::DracoError> {
         let num_corners = num_faces.checked_mul(3).ok_or_else(|| {
-            crate::status::DracoError::DracoError("Corner table size overflow".to_string())
+            crate::status::DracoError::General("Corner table size overflow".to_string())
         })?;
 
         let mut corner_to_vertex_map = Vec::new();
         corner_to_vertex_map
             .try_reserve_exact(num_corners)
             .map_err(|_| {
-                crate::status::DracoError::DracoError("Failed to allocate corner table".to_string())
+                crate::status::DracoError::General("Failed to allocate corner table".to_string())
             })?;
         corner_to_vertex_map.resize(num_corners, INVALID_VERTEX_INDEX);
 
@@ -54,7 +54,7 @@ impl CornerTable {
         opposite_corners
             .try_reserve_exact(num_corners)
             .map_err(|_| {
-                crate::status::DracoError::DracoError("Failed to allocate corner table".to_string())
+                crate::status::DracoError::General("Failed to allocate corner table".to_string())
             })?;
         opposite_corners.resize(num_corners, INVALID_CORNER_INDEX);
 
@@ -83,7 +83,7 @@ impl CornerTable {
             .checked_add(1)
             .and_then(|faces| faces.checked_mul(3))
             .ok_or_else(|| {
-                crate::status::DracoError::DracoError("Corner table size overflow".to_string())
+                crate::status::DracoError::General("Corner table size overflow".to_string())
             })?;
         if num_corners <= self.corner_to_vertex_map.len() {
             return Ok(());
@@ -91,14 +91,14 @@ impl CornerTable {
 
         let extra = num_corners - self.corner_to_vertex_map.len();
         self.corner_to_vertex_map.try_reserve(extra).map_err(|_| {
-            crate::status::DracoError::DracoError("Failed to allocate corner table".to_string())
+            crate::status::DracoError::General("Failed to allocate corner table".to_string())
         })?;
         self.corner_to_vertex_map
             .resize(num_corners, INVALID_VERTEX_INDEX);
 
         let extra = num_corners - self.opposite_corners.len();
         self.opposite_corners.try_reserve(extra).map_err(|_| {
-            crate::status::DracoError::DracoError("Failed to allocate corner table".to_string())
+            crate::status::DracoError::General("Failed to allocate corner table".to_string())
         })?;
         self.opposite_corners
             .resize(num_corners, INVALID_CORNER_INDEX);

@@ -93,7 +93,7 @@ impl PointCloud {
             .then_some(att_id as usize)
             .and_then(|index| self.attributes.get(index))
         else {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Point cloud attribute id out of range".to_string(),
             ));
         };
@@ -111,7 +111,7 @@ impl PointCloud {
             .then_some(att_id as usize)
             .and_then(|index| self.attributes.get_mut(index))
         else {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Point cloud attribute id out of range".to_string(),
             ));
         };

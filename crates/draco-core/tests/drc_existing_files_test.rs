@@ -170,7 +170,7 @@ fn skipped_fixture_for_current_decoder(path: &Path, bytes: &[u8]) -> Option<Skip
             let mut buffer = DecoderBuffer::new(bytes);
             let mut mesh = Mesh::new();
             let mut decoder = MeshDecoder::new();
-            if let Err(DracoError::DracoError(msg)) = decoder.decode(&mut buffer, &mut mesh) {
+            if let Err(DracoError::General(msg)) = decoder.decode(&mut buffer, &mut mesh) {
                 if msg.starts_with("Unsupported Edgebreaker traversal decoder type") {
                     return Some(skipped(
                         &path,
@@ -1371,7 +1371,7 @@ fn decode_all_testdata_top_level_drc_files() {
                 let mut decoder = MeshDecoder::new();
                 let status = decoder.decode(&mut buffer, &mut mesh);
 
-                if let Err(DracoError::DracoError(ref msg)) = status {
+                if let Err(DracoError::General(ref msg)) = status {
                     if msg.starts_with("Unsupported Edgebreaker traversal decoder type") {
                         println!(
                             "Skipping {} due to unsupported traversal: {}",

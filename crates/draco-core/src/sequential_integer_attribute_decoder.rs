@@ -49,14 +49,14 @@ fn build_vertex_to_data_map_from_data_to_corner_map(
             continue;
         }
         if corner_id.0 as usize >= corner_table.num_corners() {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Entry {data_id} maps to corner {corner_u32}, past the {} in the table",
                 corner_table.num_corners()
             )));
         }
         let v = corner_table.vertex(corner_id).0 as usize;
         let Some(slot) = vertex_to_data_map.get_mut(v) else {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Corner {corner_u32} maps to vertex {v}, past the {} in the table",
                 corner_table.num_vertices()
             )));
@@ -76,7 +76,7 @@ fn run_decode_prediction_data<'a, P: PredictionSchemeDecoder<'a, i32, i32> + ?Si
     buffer: &mut DecoderBuffer,
 ) -> Status {
     let Some(predictor) = predictor else {
-        return Err(DracoError::DracoError(
+        return Err(DracoError::General(
             "Predictor was selected but not initialized".to_string(),
         ));
     };
@@ -94,7 +94,7 @@ fn run_compute_original_values<'a, P: PredictionSchemeDecoder<'a, i32, i32> + ?S
     entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
 ) -> Status {
     let Some(predictor) = predictor else {
-        return Err(DracoError::DracoError(
+        return Err(DracoError::General(
             "Predictor was selected but not initialized".to_string(),
         ));
     };
@@ -176,7 +176,7 @@ impl SequentialIntegerAttributeDecoder {
         // wasm32 target this ships to, where the product of a large point count
         // and 255 components wraps rather than saturating.
         let Some(num_values) = num_points.checked_mul(num_components) else {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "{num_points} points times {num_components} components overflows"
             )));
         };
@@ -185,7 +185,7 @@ impl SequentialIntegerAttributeDecoder {
         let method_byte = match in_buffer.decode_u8() {
             Ok(v) => v,
             Err(_) => {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "Failed to decode prediction method".to_string(),
                 ));
             }
@@ -229,7 +229,7 @@ impl SequentialIntegerAttributeDecoder {
 
         if let Some(ref scheme) = self.prediction_scheme {
             if scheme.get_prediction_method() != selected_method {
-                return Err(DracoError::DracoError(format!(
+                return Err(DracoError::General(format!(
                     "Prediction method mismatch. Stream: {selected_method:?}, Scheme: {:?}",
                     scheme.get_prediction_method()
                 )));
@@ -322,7 +322,7 @@ impl SequentialIntegerAttributeDecoder {
                     if let Some(map) = vertex_to_data_map_override {
                         // Use the pre-built vertex_to_data_map from mesh decoder
                         if map.len() != corner_table.num_vertices() {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Invalid vertex_to_data_map_override length".to_string(),
                             ));
                         }
@@ -332,7 +332,7 @@ impl SequentialIntegerAttributeDecoder {
                         // Also set data_to_corner_map if override is available
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                return Err(DracoError::DracoError(
+                                return Err(DracoError::General(
                                     "Invalid data_to_corner_map_override length".to_string(),
                                 ));
                             }
@@ -340,7 +340,7 @@ impl SequentialIntegerAttributeDecoder {
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Invalid data_to_corner_map_override length".to_string(),
                             ));
                         }
@@ -373,7 +373,7 @@ impl SequentialIntegerAttributeDecoder {
                     );
                     predictor_parallelogram_opt = Some(predictor);
                 } else {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "Parallelogram prediction requires corner table".to_string(),
                     ));
                 }
@@ -385,7 +385,7 @@ impl SequentialIntegerAttributeDecoder {
 
                     if let Some(map) = vertex_to_data_map_override {
                         if map.len() != corner_table.num_vertices() {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Invalid vertex_to_data_map_override length".to_string(),
                             ));
                         }
@@ -394,7 +394,7 @@ impl SequentialIntegerAttributeDecoder {
 
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                return Err(DracoError::DracoError(
+                                return Err(DracoError::General(
                                     "Invalid data_to_corner_map_override length".to_string(),
                                 ));
                             }
@@ -402,7 +402,7 @@ impl SequentialIntegerAttributeDecoder {
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Invalid data_to_corner_map_override length".to_string(),
                             ));
                         }
@@ -429,14 +429,14 @@ impl SequentialIntegerAttributeDecoder {
                         MeshPredictionSchemeMultiParallelogramDecoder::new(transform, mesh_data);
                     predictor_multi_parallelogram_opt = Some(predictor);
                 } else {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "MultiParallelogram prediction requires corner table".to_string(),
                     ));
                 }
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "MultiParallelogram prediction is disabled".to_string(),
                 ));
             }
@@ -450,7 +450,7 @@ impl SequentialIntegerAttributeDecoder {
                     if let Some(map) = vertex_to_data_map_override {
                         // Use the pre-built vertex_to_data_map from mesh decoder
                         if map.len() != corner_table.num_vertices() {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Invalid vertex_to_data_map_override length".to_string(),
                             ));
                         }
@@ -460,7 +460,7 @@ impl SequentialIntegerAttributeDecoder {
                         // Also set data_to_corner_map if override is available
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                return Err(DracoError::DracoError(
+                                return Err(DracoError::General(
                                     "Invalid data_to_corner_map_override length".to_string(),
                                 ));
                             }
@@ -468,7 +468,7 @@ impl SequentialIntegerAttributeDecoder {
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Invalid data_to_corner_map_override length".to_string(),
                             ));
                         }
@@ -498,7 +498,7 @@ impl SequentialIntegerAttributeDecoder {
                     );
                     predictor_constrained_multi_parallelogram_opt = Some(predictor);
                 } else {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "ConstrainedMultiParallelogram prediction requires corner table"
                             .to_string(),
                     ));
@@ -511,7 +511,7 @@ impl SequentialIntegerAttributeDecoder {
 
                     if let Some(map) = vertex_to_data_map_override {
                         if map.len() != corner_table.num_vertices() {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Invalid vertex_to_data_map_override length".to_string(),
                             ));
                         }
@@ -520,7 +520,7 @@ impl SequentialIntegerAttributeDecoder {
 
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                return Err(DracoError::DracoError(
+                                return Err(DracoError::General(
                                     "Invalid data_to_corner_map_override length".to_string(),
                                 ));
                             }
@@ -528,7 +528,7 @@ impl SequentialIntegerAttributeDecoder {
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Invalid data_to_corner_map_override length".to_string(),
                             ));
                         }
@@ -566,27 +566,27 @@ impl SequentialIntegerAttributeDecoder {
                             attribute
                         };
                         if predictor.set_parent_attribute(pos_att).is_err() {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Failed to set parent attribute for TexCoordsDeprecated"
                                     .to_string(),
                             ));
                         }
                     } else {
-                        return Err(DracoError::DracoError(
+                        return Err(DracoError::General(
                             "Position attribute not found for TexCoordsDeprecated".to_string(),
                         ));
                     }
 
                     predictor_tex_coords_deprecated_opt = Some(predictor);
                 } else {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "TexCoordsDeprecated prediction requires corner table".to_string(),
                     ));
                 }
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "TexCoordsDeprecated prediction is disabled".to_string(),
                 ));
             }
@@ -599,7 +599,7 @@ impl SequentialIntegerAttributeDecoder {
                     if let Some(map) = vertex_to_data_map_override {
                         // Use the pre-built vertex_to_data_map from mesh decoder
                         if map.len() != corner_table.num_vertices() {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Invalid vertex_to_data_map_override length".to_string(),
                             ));
                         }
@@ -609,7 +609,7 @@ impl SequentialIntegerAttributeDecoder {
                         // Also set data_to_corner_map if override is available
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                return Err(DracoError::DracoError(
+                                return Err(DracoError::General(
                                     "Invalid data_to_corner_map_override length".to_string(),
                                 ));
                             }
@@ -617,7 +617,7 @@ impl SequentialIntegerAttributeDecoder {
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Invalid data_to_corner_map_override length".to_string(),
                             ));
                         }
@@ -658,19 +658,19 @@ impl SequentialIntegerAttributeDecoder {
                             attribute
                         };
                         if predictor.set_parent_attribute(pos_att).is_err() {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Failed to set parent attribute for TexCoordsPortable".to_string(),
                             ));
                         }
                     } else {
-                        return Err(DracoError::DracoError(
+                        return Err(DracoError::General(
                             "Position attribute not found for TexCoordsPortable".to_string(),
                         ));
                     }
 
                     predictor_tex_coords_opt = Some(predictor);
                 } else {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "TexCoordsPortable prediction requires corner table".to_string(),
                     ));
                 }
@@ -684,7 +684,7 @@ impl SequentialIntegerAttributeDecoder {
                     if let Some(map) = vertex_to_data_map_override {
                         // Use the pre-built vertex_to_data_map from mesh decoder
                         if map.len() != corner_table.num_vertices() {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Invalid vertex_to_data_map_override length".to_string(),
                             ));
                         }
@@ -694,7 +694,7 @@ impl SequentialIntegerAttributeDecoder {
                         // Also set data_to_corner_map if override is available
                         if let Some(dcm) = data_to_corner_map_override {
                             if dcm.len() != num_points {
-                                return Err(DracoError::DracoError(
+                                return Err(DracoError::General(
                                     "Invalid data_to_corner_map_override length".to_string(),
                                 ));
                             }
@@ -702,7 +702,7 @@ impl SequentialIntegerAttributeDecoder {
                         }
                     } else if let Some(map) = data_to_corner_map_override {
                         if map.len() != num_points {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Invalid data_to_corner_map_override length".to_string(),
                             ));
                         }
@@ -764,19 +764,19 @@ impl SequentialIntegerAttributeDecoder {
                             }
                         };
                         if predictor.set_parent_attribute(pos_att).is_err() {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Failed to set parent attribute for GeometricNormal".to_string(),
                             ));
                         }
                     } else {
-                        return Err(DracoError::DracoError(
+                        return Err(DracoError::General(
                             "Position attribute not found for GeometricNormal".to_string(),
                         ));
                     }
 
                     predictor_geometric_normal_opt = Some(predictor);
                 } else {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "GeometricNormal prediction requires corner table".to_string(),
                     ));
                 }
@@ -794,7 +794,7 @@ impl SequentialIntegerAttributeDecoder {
         // are stored BEFORE the integer values. The caller provides a hook.
         if let Some(hook) = pre_integer_decode {
             if !hook(in_buffer) {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "Failed to decode the pre-2.0 inline transform parameters".to_string(),
                 ));
             }
@@ -824,7 +824,7 @@ impl SequentialIntegerAttributeDecoder {
             // Entropy-coded symbols are zigzag encoded UNLESS the prediction scheme
             // guarantees positive corrections (e.g., normal octahedron transform)
             let Some(mut symbols) = try_zeroed::<u32>(num_values) else {
-                return Err(DracoError::DracoError(format!(
+                return Err(DracoError::General(format!(
                     "Failed to allocate {num_values} decoded symbols"
                 )));
             };
@@ -836,7 +836,7 @@ impl SequentialIntegerAttributeDecoder {
                 in_buffer,
                 &mut symbols,
             ) {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "Failed to decode the entropy-coded symbols".to_string(),
                 ));
             }
@@ -853,13 +853,13 @@ impl SequentialIntegerAttributeDecoder {
                 }
             };
             if num_bytes > 4 {
-                return Err(DracoError::DracoError(format!(
+                return Err(DracoError::General(format!(
                     "Raw corrections declare {num_bytes} bytes per value, at most 4 fit an i32"
                 )));
             }
 
             let Some(mut raw_corrections) = try_reserved::<i32>(num_values) else {
-                return Err(DracoError::DracoError(format!(
+                return Err(DracoError::General(format!(
                     "Failed to allocate {num_values} raw corrections"
                 )));
             };
@@ -868,7 +868,7 @@ impl SequentialIntegerAttributeDecoder {
                 raw_corrections.resize(num_values, 0);
             } else if num_bytes == 4 {
                 let Some(byte_len) = num_values.checked_mul(4) else {
-                    return Err(DracoError::DracoError(format!(
+                    return Err(DracoError::General(format!(
                         "{num_values} four-byte corrections overflow a byte count"
                     )));
                 };
@@ -903,7 +903,7 @@ impl SequentialIntegerAttributeDecoder {
             Vec::new()
         } else {
             let Some(values) = try_zeroed::<i32>(num_values) else {
-                return Err(DracoError::DracoError(format!(
+                return Err(DracoError::General(format!(
                     "Failed to allocate {num_values} decoded values"
                 )));
             };
@@ -932,7 +932,7 @@ impl SequentialIntegerAttributeDecoder {
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "MultiParallelogram prediction is disabled".to_string(),
                 ));
             }
@@ -951,7 +951,7 @@ impl SequentialIntegerAttributeDecoder {
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "TexCoordsDeprecated prediction is disabled".to_string(),
                 ));
             }
@@ -1037,7 +1037,7 @@ impl SequentialIntegerAttributeDecoder {
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "MultiParallelogram prediction is disabled".to_string(),
                 ));
             }
@@ -1067,7 +1067,7 @@ impl SequentialIntegerAttributeDecoder {
             }
             #[cfg(not(feature = "legacy_bitstream_decode"))]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "TexCoordsDeprecated prediction is disabled".to_string(),
                 ));
             }
@@ -1139,14 +1139,14 @@ impl SequentialIntegerAttributeDecoder {
         // 5. Store values (+ optional inverse transform)
         if let Some(portable_att) = portable_attribute {
             if !store_i32_values_to_attribute(portable_att, &values, num_points, num_components) {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "Decoded values do not fit the portable attribute".to_string(),
                 ));
             }
         } else {
             let dst_attribute = point_cloud.try_attribute_mut(att_id)?;
             if !store_i32_values_to_attribute(dst_attribute, &values, num_points, num_components) {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "Decoded values do not fit the destination attribute".to_string(),
                 ));
             }

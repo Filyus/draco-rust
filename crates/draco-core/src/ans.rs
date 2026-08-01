@@ -69,7 +69,7 @@ impl AnsCoder {
             self.buf.push(((state >> 16) & 0xFF) as u8);
             self.buf.push(((0x03 << 6) + ((state >> 24) & 0x3F)) as u8);
         } else {
-            return Err(crate::status::DracoError::DracoError(format!(
+            return Err(crate::status::DracoError::General(format!(
                 "State is too large to be serialized: {state}"
             )));
         }

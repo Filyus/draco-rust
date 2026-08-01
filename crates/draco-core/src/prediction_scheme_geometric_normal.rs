@@ -296,15 +296,14 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
     ) -> Status {
         if !self.is_initialized() {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Geometric normal prediction was never initialized".to_string(),
             ));
         }
         self.transform.init(num_components);
 
-        let missing = |what: &str| {
-            DracoError::DracoError(format!("Geometric normal prediction has no {what}"))
-        };
+        let missing =
+            |what: &str| DracoError::General(format!("Geometric normal prediction has no {what}"));
         let Some(mesh_data) = self.mesh_data.as_ref() else {
             return Err(missing("mesh data"));
         };
@@ -315,7 +314,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
         if corner_map_size * num_components > in_corr.len()
             || corner_map_size * num_components > out_data.len()
         {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Geometric normal prediction needs {} values, has {} corrections and {} outputs",
                 corner_map_size * num_components,
                 in_corr.len(),
@@ -401,7 +400,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
                 .and_then(|m| m.data_to_corner_map())
                 .map(|map| map.len())
             else {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "Geometric normal prediction has no data-to-corner map".to_string(),
                 ));
             };
@@ -761,7 +760,7 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
         entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
     ) -> Status {
         if !self.is_initialized() {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Geometric normal prediction was never initialized".to_string(),
             ));
         }

@@ -100,7 +100,7 @@ fn make_point_ids(num_points: usize, stream_bytes: usize) -> Result<Vec<PointInd
     let mut point_ids = Vec::new();
     point_ids
         .try_reserve_exact(num_points)
-        .map_err(|_| DracoError::DracoError("Failed to allocate point ids".to_string()))?;
+        .map_err(|_| DracoError::General("Failed to allocate point ids".to_string()))?;
     for i in 0..num_points {
         point_ids.push(PointIndex(i as u32));
     }
@@ -119,7 +119,7 @@ fn validate_num_attributes_in_decoder(
     if num_attributes_in_decoder == 0
         || num_attributes_in_decoder > remaining_bytes / MIN_ATTRIBUTE_BYTES
     {
-        return Err(DracoError::DracoError(
+        return Err(DracoError::General(
             "Invalid number of attributes".to_string(),
         ));
     }
@@ -129,7 +129,7 @@ fn validate_num_attributes_in_decoder(
 #[cfg(feature = "point_cloud_decode")]
 fn validate_num_components(num_components: u8) -> Result<(), DracoError> {
     if num_components == 0 {
-        return Err(DracoError::DracoError(
+        return Err(DracoError::General(
             "Invalid attribute component count".to_string(),
         ));
     }
@@ -144,24 +144,24 @@ fn decode_raw_attribute_values(
 ) -> Result<(), DracoError> {
     let entry_size = attribute.byte_stride() as usize;
     if entry_size == 0 {
-        return Err(DracoError::DracoError(
+        return Err(DracoError::General(
             "Invalid point cloud attribute entry size".to_string(),
         ));
     }
     let required_size = entry_size.checked_mul(num_points).ok_or_else(|| {
-        DracoError::DracoError("Point cloud raw attribute byte count overflow".to_string())
+        DracoError::General("Point cloud raw attribute byte count overflow".to_string())
     })?;
 
     let dst = attribute.buffer_mut().data_mut();
     if dst.len() < required_size {
-        return Err(DracoError::DracoError(
+        return Err(DracoError::General(
             "Point cloud attribute buffer too small".to_string(),
         ));
     }
 
     for chunk in dst[..required_size].chunks_exact_mut(entry_size) {
         buffer.decode_bytes(chunk).map_err(|_| {
-            DracoError::DracoError("Failed to decode raw point cloud attribute values".to_string())
+            DracoError::General("Failed to decode raw point cloud attribute values".to_string())
         })?;
     }
 
@@ -202,7 +202,7 @@ impl PointCloudDecoder {
         ) && (self.flags & crate::metadata::METADATA_FLAG_MASK) != 0
         {
             let metadata = crate::metadata::GeometryMetadata::decode(in_buffer)
-                .map_err(|_| DracoError::DracoError("Failed to decode metadata".to_string()))?;
+                .map_err(|_| DracoError::General("Failed to decode metadata".to_string()))?;
             out_pc.set_metadata(Some(metadata));
         }
 
@@ -234,7 +234,7 @@ impl PointCloudDecoder {
         let mut magic = [0u8; 5];
         buffer.decode_bytes(&mut magic)?;
         if &magic != b"DRACO" {
-            return Err(DracoError::DracoError("Invalid magic".to_string()));
+            return Err(DracoError::General("Invalid magic".to_string()));
         }
 
         self.version_major = buffer.decode_u8()?;
@@ -245,10 +245,10 @@ impl PointCloudDecoder {
         self.geometry_type = match g_type {
             0 => EncodedGeometryType::PointCloud,
             1 => EncodedGeometryType::TriangularMesh,
-            _ => return Err(DracoError::DracoError("Invalid geometry type".to_string())),
+            _ => return Err(DracoError::General("Invalid geometry type".to_string())),
         };
         if self.geometry_type != EncodedGeometryType::PointCloud {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "PointCloudDecoder cannot decode mesh bitstreams".to_string(),
             ));
         }
@@ -258,7 +258,7 @@ impl PointCloudDecoder {
         // Flags field is always present in the binary header (C++ reads unconditionally).
         self.flags = buffer
             .decode_u16()
-            .map_err(|_| DracoError::DracoError("Failed to decode flags".to_string()))?;
+            .map_err(|_| DracoError::General("Failed to decode flags".to_string()))?;
 
         Ok(())
     }
@@ -285,12 +285,12 @@ impl PointCloudDecoder {
             for _ in 0..num_attributes_decoders {
                 let mut att_decoder = KdTreeAttributesDecoder::new(0);
                 if !att_decoder.decode_attributes_decoder_data(pc, buffer) {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "Failed to decode attribute metadata".to_string(),
                     ));
                 }
                 if !att_decoder.decode_attributes(pc, buffer) {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "Failed to decode attributes".to_string(),
                     ));
                 }
@@ -324,7 +324,7 @@ impl PointCloudDecoder {
                     buffer.decode_varint()? as usize
                 };
                 if num_attributes_in_decoder == 0 {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "Invalid number of attributes".to_string(),
                     ));
                 }
@@ -374,12 +374,12 @@ impl PointCloudDecoder {
                         let entry_size =
                             spec.num_components as usize * spec.data_type.byte_length();
                         let bytes_needed = entry_size.checked_mul(num_points).ok_or_else(|| {
-                            DracoError::DracoError(
+                            DracoError::General(
                                 "Raw point cloud attribute byte count overflow".to_string(),
                             )
                         })?;
                         if buffer.remaining_size() < bytes_needed {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Not enough data for raw point cloud attribute values".to_string(),
                             ));
                         }
@@ -418,7 +418,7 @@ impl PointCloudDecoder {
                     match decoder_type {
                         1 => {
                             let point_ids = point_ids.as_ref().ok_or_else(|| {
-                                DracoError::DracoError(
+                                DracoError::General(
                                     "Point ids missing for integer attribute decoder".to_string(),
                                 )
                             })?;
@@ -448,16 +448,16 @@ impl PointCloudDecoder {
                             let quant_skip_bytes = if bitstream_version < 0x0102 {
                                 let saved_pos = buffer.position();
                                 let method_byte = buffer.decode_u8().map_err(|_| {
-                                    DracoError::DracoError("read pred method".to_string())
+                                    DracoError::General("read pred method".to_string())
                                 })?;
                                 if method_byte != 0xFF {
                                     let _transform_byte = buffer.decode_u8().map_err(|_| {
-                                        DracoError::DracoError("read transform".to_string())
+                                        DracoError::General("read transform".to_string())
                                     })?;
                                 }
                                 let original = pc.try_attribute(att_id)?;
                                 transform.decode_parameters(original, buffer).map_err(|e| {
-                                    DracoError::DracoError(format!(
+                                    DracoError::General(format!(
                                         "Failed to decode quantization parameters (v<2.0): {e}"
                                     ))
                                 })?;
@@ -466,7 +466,7 @@ impl PointCloudDecoder {
                                 let skip = bytes_consumed - pred_header_bytes;
                                 buffer
                                     .set_position(saved_pos)
-                                    .map_err(|_| DracoError::DracoError("buf reset".to_string()))?;
+                                    .map_err(|_| DracoError::General("buf reset".to_string()))?;
                                 skip
                             } else {
                                 0
@@ -494,7 +494,7 @@ impl PointCloudDecoder {
                             att_decoder.decode_values(
                                 pc,
                                 point_ids.as_ref().ok_or_else(|| {
-                                    DracoError::DracoError(
+                                    DracoError::General(
                                         "Point ids missing for quantized attribute decoder"
                                             .to_string(),
                                     )
@@ -529,20 +529,20 @@ impl PointCloudDecoder {
                             let normal_skip_bytes = if bitstream_version < 0x0102 {
                                 let saved_pos = buffer.position();
                                 let method_byte = buffer.decode_u8().map_err(|_| {
-                                    DracoError::DracoError("read pred method".to_string())
+                                    DracoError::General("read pred method".to_string())
                                 })?;
                                 if method_byte != 0xFF {
                                     let _transform_byte = buffer.decode_u8().map_err(|_| {
-                                        DracoError::DracoError("read transform".to_string())
+                                        DracoError::General("read transform".to_string())
                                     })?;
                                 }
                                 quant_bits = buffer.decode_u8().map_err(|_| {
-                                    DracoError::DracoError("read normal quant_bits".to_string())
+                                    DracoError::General("read normal quant_bits".to_string())
                                 })?;
                                 if !AttributeOctahedronTransform::is_valid_quantization_bits(
                                     quant_bits as i32,
                                 ) {
-                                    return Err(DracoError::DracoError(
+                                    return Err(DracoError::General(
                                         "Invalid normal quantization bits".to_string(),
                                     ));
                                 }
@@ -551,7 +551,7 @@ impl PointCloudDecoder {
                                 let skip = bytes_consumed - pred_header_bytes;
                                 buffer
                                     .set_position(saved_pos)
-                                    .map_err(|_| DracoError::DracoError("buf reset".to_string()))?;
+                                    .map_err(|_| DracoError::General("buf reset".to_string()))?;
                                 skip
                             } else {
                                 0
@@ -579,7 +579,7 @@ impl PointCloudDecoder {
                             att_decoder.decode_values(
                                 pc,
                                 point_ids.as_ref().ok_or_else(|| {
-                                    DracoError::DracoError(
+                                    DracoError::General(
                                         "Point ids missing for normal attribute decoder"
                                             .to_string(),
                                     )
@@ -608,7 +608,7 @@ impl PointCloudDecoder {
                             )?;
                         }
                         _ => {
-                            return Err(DracoError::DracoError(format!(
+                            return Err(DracoError::General(format!(
                                 "Unsupported sequential decoder type: {}",
                                 decoder_type
                             )));
@@ -623,7 +623,7 @@ impl PointCloudDecoder {
                                 .iter()
                                 .position(|p| p.att_id == att_id)
                                 .ok_or_else(|| {
-                                    DracoError::DracoError(
+                                    DracoError::General(
                                         "Missing pending quantized attribute transform".to_string(),
                                     )
                                 })?;
@@ -632,7 +632,7 @@ impl PointCloudDecoder {
                                 .transform
                                 .decode_parameters(original, buffer)
                                 .map_err(|e| {
-                                    DracoError::DracoError(format!(
+                                    DracoError::General(format!(
                                         "Failed to decode quantization parameters: {e}"
                                     ))
                                 })?;
@@ -642,7 +642,7 @@ impl PointCloudDecoder {
                                 .iter()
                                 .position(|p| p.att_id == att_id)
                                 .ok_or_else(|| {
-                                    DracoError::DracoError(
+                                    DracoError::General(
                                         "Missing pending normal attribute transform".to_string(),
                                     )
                                 })?;
@@ -650,7 +650,7 @@ impl PointCloudDecoder {
                             if !AttributeOctahedronTransform::is_valid_quantization_bits(
                                 quantization_bits as i32,
                             ) {
-                                return Err(DracoError::DracoError(
+                                return Err(DracoError::General(
                                     "Invalid normal quantization bits".to_string(),
                                 ));
                             }
@@ -665,7 +665,7 @@ impl PointCloudDecoder {
                     q.transform
                         .inverse_transform_attribute(&q.portable, dst)
                         .map_err(|e| {
-                            DracoError::DracoError(format!("Failed to dequantize attribute: {e}"))
+                            DracoError::General(format!("Failed to dequantize attribute: {e}"))
                         })?;
                 }
                 for n in pending_normals {
@@ -677,9 +677,7 @@ impl PointCloudDecoder {
                         dst,
                         bitstream_version < 0x0102,
                     )
-                    .map_err(|e| {
-                        DracoError::DracoError(format!("Failed to decode normals: {e}"))
-                    })?;
+                    .map_err(|e| DracoError::General(format!("Failed to decode normals: {e}")))?;
                 }
             }
         }

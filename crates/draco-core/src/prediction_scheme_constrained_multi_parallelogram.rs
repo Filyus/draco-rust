@@ -237,7 +237,7 @@ where
         let num_entries = size / num_components;
 
         let missing = |what: &str| {
-            DracoError::DracoError(format!(
+            DracoError::General(format!(
                 "Constrained multi-parallelogram prediction has no {what}"
             ))
         };
@@ -348,7 +348,7 @@ where
             while c != INVALID_CORNER_INDEX {
                 swing_steps += 1;
                 if swing_steps > max_swing_steps {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "Corner fan does not close after every corner was visited".to_string(),
                     ));
                 }
@@ -918,7 +918,7 @@ where
 
         // Decode crease edges.
         let Some(corner_table) = self.mesh_data.corner_table() else {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Constrained multi-parallelogram prediction has no corner table".to_string(),
             ));
         };
@@ -931,7 +931,7 @@ where
             })? as u32;
 
             if num_flags > corner_table.num_corners() as u32 {
-                return Err(DracoError::DracoError(format!(
+                return Err(DracoError::General(format!(
                     "Context {i} declares {num_flags} crease-edge flags, more than the {} corners",
                     corner_table.num_corners()
                 )));
@@ -977,7 +977,7 @@ where
         let num_entries = size / num_components;
 
         let missing = |what: &str| {
-            DracoError::DracoError(format!(
+            DracoError::General(format!(
                 "Constrained multi-parallelogram prediction has no {what}"
             ))
         };
@@ -988,7 +988,7 @@ where
             return Err(missing("vertex-to-data map"));
         };
         if in_corr.len() < size || out_data.len() < size {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Constrained multi-parallelogram prediction needs {size} values, has {} corrections and {} outputs",
                 in_corr.len(),
                 out_data.len()
@@ -1051,7 +1051,7 @@ where
             while c != INVALID_CORNER_INDEX {
                 swing_steps += 1;
                 if swing_steps > max_swing_steps {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "Corner fan does not close after every corner was visited".to_string(),
                     ));
                 }
@@ -1114,7 +1114,7 @@ where
                         // This should never happen if encoder/decoder are in sync
                         debug_log!("ERROR: is_crease_edge bounds exceeded: pos={} >= len={}, context={}, data_id={}",
                             pos, self.is_crease_edge[context].len(), context, data_id);
-                        return Err(DracoError::DracoError(format!(
+                        return Err(DracoError::General(format!(
                             "Entry {data_id} reads crease-edge flag {pos} of {} in context {context}",
                             self.is_crease_edge[context].len()
                         )));
@@ -1126,7 +1126,7 @@ where
                         let ci = corners[i];
                         let oci = corner_table.opposite(ci);
                         let unmapped = || {
-                            DracoError::DracoError(
+                            DracoError::General(
                                 "Parallelogram corner is outside the vertex-to-data map"
                                     .to_string(),
                             )
@@ -1147,7 +1147,7 @@ where
                             return Err(unmapped());
                         };
                         if vert_opp < 0 || vert_next < 0 || vert_prev < 0 {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Parallelogram corner maps to no decoded entry".to_string(),
                             ));
                         }
@@ -1159,7 +1159,7 @@ where
                             || v_next_off + num_components > out_data.len()
                             || v_prev_off + num_components > out_data.len()
                         {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "Parallelogram corner reads past the decoded values".to_string(),
                             ));
                         }

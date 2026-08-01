@@ -299,7 +299,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
             )
         })?;
         if num_orientations < 0 {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Stream declares {num_orientations} orientations"
             )));
         }
@@ -323,12 +323,12 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
             .and_then(|mesh_data| mesh_data.data_to_corner_map())
             .map(|map| map.len())
         else {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Portable texture-coordinate prediction has no data-to-corner map".to_string(),
             ));
         };
         if num_orientations as usize > max_orientations {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Stream declares {num_orientations} orientations, more than the {max_orientations} entries that can consume them"
             )));
         }
@@ -374,7 +374,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
             )));
         }
         let missing = |what: &str| {
-            DracoError::DracoError(format!(
+            DracoError::General(format!(
                 "Portable texture-coordinate prediction has no {what}"
             ))
         };
@@ -395,7 +395,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
             return Err(missing("data-to-corner map"));
         };
         if entry_map.len() < data_to_corner_map.len() {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Portable texture-coordinate prediction needs {} entries, the map has {}",
                 data_to_corner_map.len(),
                 entry_map.len()
@@ -403,12 +403,12 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
         }
         let corner_map_size = data_to_corner_map.len();
         let Some(required_values) = corner_map_size.checked_mul(num_components) else {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Portable texture-coordinate prediction value count overflow".to_string(),
             ));
         };
         if in_corr.len() < required_values || out_data.len() < required_values {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Portable texture-coordinate prediction needs {required_values} values, has {} corrections and {} outputs",
                 in_corr.len(),
                 out_data.len()
@@ -427,7 +427,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
                 entry_map,
                 &mut predicted_value,
             ) {
-                return Err(DracoError::DracoError(format!(
+                return Err(DracoError::General(format!(
                     "Portable texture-coordinate prediction failed at entry {p}"
                 )));
             }
@@ -1018,7 +1018,7 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32>
             )));
         }
         let missing = |what: &str| {
-            DracoError::DracoError(format!(
+            DracoError::General(format!(
                 "Portable texture-coordinate prediction has no {what}"
             ))
         };
@@ -1054,7 +1054,7 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32>
                 entry_map,
                 &mut predicted_value,
             ) {
-                return Err(DracoError::DracoError(format!(
+                return Err(DracoError::General(format!(
                     "Portable texture-coordinate prediction failed at entry {p}"
                 )));
             }

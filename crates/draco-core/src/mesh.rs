@@ -126,7 +126,7 @@ impl Mesh {
         if num_faces > self.faces.len() {
             self.faces
                 .try_reserve_exact(num_faces - self.faces.len())
-                .map_err(|_| DracoError::DracoError("Failed to allocate mesh faces".to_string()))?;
+                .map_err(|_| DracoError::General("Failed to allocate mesh faces".to_string()))?;
         }
         self.faces.resize(num_faces, [PointIndex(0); 3]);
         Ok(())

@@ -1633,7 +1633,7 @@ impl MeshEdgebreakerEncoder {
                     c
                 }
                 _ => {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "Invalid corner for predictive traversal".to_string(),
                     ))
                 }
@@ -2020,7 +2020,7 @@ impl MeshEdgebreakerEncoder {
 
                 let vert_id = corner_table.vertex(corner_id);
                 if vert_id == crate::geometry_indices::INVALID_VERTEX_INDEX {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "Invalid vertex during Edgebreaker traversal".to_string(),
                     ));
                 }

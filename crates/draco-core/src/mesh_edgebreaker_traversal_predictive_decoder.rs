@@ -139,7 +139,7 @@ impl<'a> EdgebreakerTraversalDecoder for MeshEdgebreakerTraversalPredictiveDecod
         }
         // No prediction, or the symbol was mispredicted: decode it directly.
         self.last_symbol = self.decode_direct_symbol().ok_or_else(|| {
-            DracoError::DracoError("Edgebreaker predictive symbol stream exhausted".to_string())
+            DracoError::General("Edgebreaker predictive symbol stream exhausted".to_string())
         })?;
         Ok(self.last_symbol as u32)
     }

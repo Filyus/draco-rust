@@ -110,7 +110,7 @@ impl AttributeQuantizationTransform {
         };
 
         let truncated = || {
-            DracoError::DracoError(
+            DracoError::General(
                 "Attribute source data is truncated relative to its value count".to_string(),
             )
         };
@@ -127,7 +127,7 @@ impl AttributeQuantizationTransform {
         // Process remaining entries starting from index 1 (matching C++ loop)
         for i in 1..num_entries {
             let Some(offset) = i.checked_mul(byte_stride) else {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "Attribute byte offset overflow".to_string(),
                 ));
             };
@@ -259,7 +259,7 @@ impl AttributeQuantizationTransform {
                 let src_offset = i * src_stride;
                 let dst_offset = i * dst_stride;
                 if src_offset + 12 > src_data.len() || dst_offset + 12 > dst_data.len() {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "Quantization source or target data is truncated".to_string(),
                     ));
                 }
@@ -305,7 +305,7 @@ impl AttributeQuantizationTransform {
                 };
                 let att_val_idx = attribute.mapped_index(point_idx);
                 let Some(src_offset) = (att_val_idx.0 as usize).checked_mul(src_stride) else {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "Attribute byte offset overflow".to_string(),
                     ));
                 };
@@ -313,7 +313,7 @@ impl AttributeQuantizationTransform {
                 if src_offset + num_components * 4 > src_data.len()
                     || dst_offset + num_components * 4 > dst_data.len()
                 {
-                    return Err(DracoError::DracoError(
+                    return Err(DracoError::General(
                         "Quantization source or target data is truncated".to_string(),
                     ));
                 }
@@ -465,12 +465,12 @@ impl AttributeTransform for AttributeQuantizationTransform {
         let num_values = target_attribute.size();
 
         let Ok(dst_stride) = usize::try_from(target_attribute.byte_stride()) else {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Negative target byte stride".to_string(),
             ));
         };
         let Ok(src_stride) = usize::try_from(attribute.byte_stride()) else {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Negative source byte stride".to_string(),
             ));
         };
@@ -479,10 +479,9 @@ impl AttributeTransform for AttributeQuantizationTransform {
         let src_data = src_buffer.data();
         let dst_data = dst_buffer.data_mut();
 
-        let overflow = || DracoError::DracoError("Attribute byte range overflow".to_string());
-        let truncated = || {
-            DracoError::DracoError("Dequantization source or target data is truncated".to_string())
-        };
+        let overflow = || DracoError::General("Attribute byte range overflow".to_string());
+        let truncated =
+            || DracoError::General("Dequantization source or target data is truncated".to_string());
 
         const COMPONENT_SIZE: usize = std::mem::size_of::<u32>();
         let Some(tight_stride) = num_components.checked_mul(COMPONENT_SIZE) else {

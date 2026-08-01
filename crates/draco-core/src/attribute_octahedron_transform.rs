@@ -72,26 +72,26 @@ impl AttributeOctahedronTransform {
             .checked_mul(2)
             .and_then(|v| v.checked_mul(4))
             .ok_or_else(|| {
-                DracoError::DracoError("Portable octahedron buffer size overflow".to_string())
+                DracoError::General("Portable octahedron buffer size overflow".to_string())
             })?;
         let mut portable_data = Vec::new();
         portable_data
             .try_reserve_exact(portable_data_size)
             .map_err(|_| {
-                DracoError::DracoError("Failed to allocate portable octahedron buffer".to_string())
+                DracoError::General("Failed to allocate portable octahedron buffer".to_string())
             })?;
         let byte_stride = usize::try_from(attribute.byte_stride())
-            .map_err(|_| DracoError::DracoError("Negative attribute byte stride".to_string()))?;
+            .map_err(|_| DracoError::General("Negative attribute byte stride".to_string()))?;
         let source_data = attribute.buffer().data();
         let read_normal = |att_val_id: usize| -> Result<[f32; 3], DracoError> {
-            let offset = att_val_id.checked_mul(byte_stride).ok_or_else(|| {
-                DracoError::DracoError("Attribute byte offset overflow".to_string())
-            })?;
-            let end = offset.checked_add(12).ok_or_else(|| {
-                DracoError::DracoError("Attribute byte range overflow".to_string())
-            })?;
+            let offset = att_val_id
+                .checked_mul(byte_stride)
+                .ok_or_else(|| DracoError::General("Attribute byte offset overflow".to_string()))?;
+            let end = offset
+                .checked_add(12)
+                .ok_or_else(|| DracoError::General("Attribute byte range overflow".to_string()))?;
             let bytes = source_data.get(offset..end).ok_or_else(|| {
-                DracoError::DracoError("Attribute normal source data is truncated".to_string())
+                DracoError::General("Attribute normal source data is truncated".to_string())
             })?;
             Ok([
                 bytemuck::pod_read_unaligned::<f32>(&bytes[0..4]),
@@ -124,7 +124,7 @@ impl AttributeOctahedronTransform {
             .buffer_mut()
             .try_resize(portable_data.len())
             .map_err(|_| {
-                DracoError::DracoError("Failed to allocate portable octahedron output".to_string())
+                DracoError::General("Failed to allocate portable octahedron output".to_string())
             })?;
         target_attribute.buffer_mut().write(0, &portable_data);
 
@@ -175,12 +175,12 @@ impl AttributeOctahedronTransform {
         // Ensure target buffer has enough space
         let Some(target_byte_size) = num_points.checked_mul(3).and_then(|v| v.checked_mul(4))
         else {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Octahedral target buffer size overflow".to_string(),
             ));
         };
         if target_buffer.try_resize(target_byte_size).is_err() {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Failed to allocate the octahedral target buffer".to_string(),
             ));
         }
@@ -189,12 +189,12 @@ impl AttributeOctahedronTransform {
         // Source data is int32 (s, t) pairs.
         let Some(source_byte_size) = num_points.checked_mul(2).and_then(|v| v.checked_mul(4))
         else {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Octahedral source buffer size overflow".to_string(),
             ));
         };
         if source_data.len() < source_byte_size {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Octahedral portable data is truncated".to_string(),
             ));
         }

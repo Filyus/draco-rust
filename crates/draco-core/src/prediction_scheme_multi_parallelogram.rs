@@ -108,7 +108,7 @@ where
         }
 
         let missing = |what: &str| {
-            DracoError::DracoError(format!("Multi-parallelogram prediction has no {what}"))
+            DracoError::General(format!("Multi-parallelogram prediction has no {what}"))
         };
         let Some(table) = self.mesh_data.corner_table() else {
             return Err(missing("corner table"));
@@ -122,7 +122,7 @@ where
 
         let num_entries = size / num_components;
         if data_to_corner_map.len() < num_entries || in_data.len() < size || out_corr.len() < size {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Multi-parallelogram prediction needs {num_entries} corners and {size} values, has {} corners, {} inputs and {} outputs",
                 data_to_corner_map.len(),
                 in_data.len(),
@@ -279,7 +279,7 @@ where
         }
 
         let missing = |what: &str| {
-            DracoError::DracoError(format!("Multi-parallelogram prediction has no {what}"))
+            DracoError::General(format!("Multi-parallelogram prediction has no {what}"))
         };
         let Some(table) = self.mesh_data.corner_table() else {
             return Err(missing("corner table"));
@@ -291,12 +291,12 @@ where
             return Err(missing("data-to-corner map"));
         };
         let Some(required_values) = data_to_corner_map.len().checked_mul(num_components) else {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Multi-parallelogram prediction value count overflow".to_string(),
             ));
         };
         if in_corr.len() < required_values || out_data.len() < required_values {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Multi-parallelogram prediction needs {required_values} values, has {} corrections and {} outputs",
                 in_corr.len(),
                 out_data.len()

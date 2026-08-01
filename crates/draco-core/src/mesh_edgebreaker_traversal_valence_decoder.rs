@@ -223,11 +223,11 @@ impl<'a> EdgebreakerTraversalDecoder for MeshEdgebreakerTraversalValenceDecoder<
         if self.active_context != -1 {
             let ctx = self.active_context as usize;
             let counter = self.context_counters.get_mut(ctx).ok_or_else(|| {
-                DracoError::DracoError("Invalid Edgebreaker valence context".to_string())
+                DracoError::General("Invalid Edgebreaker valence context".to_string())
             })?;
             *counter -= 1;
             if *counter < 0 {
-                return Err(DracoError::DracoError(
+                return Err(DracoError::General(
                     "Edgebreaker valence context symbol stream exhausted".to_string(),
                 ));
             }
@@ -236,13 +236,13 @@ impl<'a> EdgebreakerTraversalDecoder for MeshEdgebreakerTraversalValenceDecoder<
                 .get(ctx)
                 .and_then(|symbols| symbols.get(*counter as usize))
                 .ok_or_else(|| {
-                    DracoError::DracoError(
+                    DracoError::General(
                         "Edgebreaker valence context symbol stream exhausted".to_string(),
                     )
                 })?;
             // symbol_id is EdgebreakerSymbol id (0..4). Validate and assign directly.
             if symbol_id > 4 {
-                return Err(DracoError::DracoError(format!(
+                return Err(DracoError::General(format!(
                     "Invalid Edgebreaker valence symbol {symbol_id}"
                 )));
             }

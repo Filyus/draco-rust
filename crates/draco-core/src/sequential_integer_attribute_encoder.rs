@@ -829,7 +829,7 @@ impl SequentialIntegerAttributeEncoder {
                             ));
                         }
                         let Some(pos_att) = encoder.get_portable_attribute(pos_att_id) else {
-                            return Err(DracoError::DracoError(
+                            return Err(DracoError::General(
                                 "No portable position attribute for TexCoordsPortable".to_string(),
                             ));
                         };
@@ -955,7 +955,7 @@ impl SequentialIntegerAttributeEncoder {
                                 ));
                             }
                             let Some(pos_att) = encoder.get_portable_attribute(pos_att_id) else {
-                                return Err(DracoError::DracoError(
+                                return Err(DracoError::General(
                                     "No portable position attribute for GeometricNormal"
                                         .to_string(),
                                 ));
@@ -1182,7 +1182,7 @@ impl SequentialIntegerAttributeEncoder {
 
         let _start_len = out_buffer.size();
         if !encode_symbols(&symbols, num_components, &symbol_options, out_buffer) {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Failed to entropy-code the prediction residuals".to_string(),
             ));
         }

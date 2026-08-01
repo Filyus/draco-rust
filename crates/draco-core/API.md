@@ -508,7 +508,7 @@ use draco_core::DracoError;
 
 match result {
     Ok(()) => println!("Success"),
-    Err(DracoError::DracoError(msg)) => println!("Error: {}", msg),
+    Err(DracoError::General(msg)) => println!("Error: {}", msg),
     Err(DracoError::IoError(msg)) => println!("IO Error: {}", msg),
     Err(DracoError::BufferError(msg)) => println!("Buffer Error: {}", msg),
     Err(e) => println!("Other error: {}", e),
@@ -519,7 +519,7 @@ match result {
 
 | Variant | Description |
 |---------|-------------|
-| `DracoError(String)` | General error |
+| `General(String)` | General error |
 | `IoError(String)` | I/O error |
 | `InvalidParameter(String)` | Invalid parameter |
 | `UnsupportedVersion(String)` | Version not supported |
@@ -527,6 +527,10 @@ match result {
 | `UnsupportedFeature(String)` | Feature not supported |
 | `BitstreamVersionUnsupported` | Bitstream version issue |
 | `BufferError(String)` | Buffer read/decode error |
+| `AllocationExceedsInput { requested_bytes, stream_bytes }` | Decode would allocate more than the stream could describe |
+
+The enum is `#[non_exhaustive]`: match with a `_` arm so a later release can
+tell one refusal from another without a major bump.
 
 ---
 

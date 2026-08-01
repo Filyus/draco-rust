@@ -7,9 +7,16 @@ use thiserror::Error;
 #[derive(Error, Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum DracoError {
-    /// Generic Draco error with a human-readable message.
+    /// Generic error with a human-readable message.
+    ///
+    /// Mirrors upstream's `Status::DRACO_ERROR`, whose own comment reads "used
+    /// for general errors". Named for the meaning rather than the spelling:
+    /// upstream qualifies it as `Status::DRACO_ERROR`, while here the enum is
+    /// already `DracoError`, so the literal port stuttered as
+    /// `DracoError::DracoError`. The `Display` text has always said "General
+    /// error", and this is now what the variant is called.
     #[error("General error: {0}")]
-    DracoError(String),
+    General(String),
     /// File or stream I/O error.
     #[error("IO error: {0}")]
     IoError(String),
@@ -51,7 +58,7 @@ pub type Status = Result<(), DracoError>;
 
 impl From<()> for DracoError {
     fn from(_: ()) -> Self {
-        DracoError::DracoError("Unknown error".to_string())
+        DracoError::General("Unknown error".to_string())
     }
 }
 
@@ -62,5 +69,5 @@ pub fn ok_status() -> Status {
 
 /// Creates a generic [`DracoError`] from a message.
 pub fn error_status(msg: impl Into<String>) -> DracoError {
-    DracoError::DracoError(msg.into())
+    DracoError::General(msg.into())
 }

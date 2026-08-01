@@ -291,7 +291,7 @@ where
             (self.bitstream_version & 0xff) as u8,
         );
         let Ok(num_orientations) = u64::try_from(self.orientations.len()) else {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "{} orientations do not fit a 64-bit count",
                 self.orientations.len()
             )));
@@ -300,7 +300,7 @@ where
         // Mirror of the decoder's branch on the same version.
         if self.bitstream_version != 0 && self.bitstream_version < 0x0202 {
             let Ok(num_orientations) = u32::try_from(num_orientations) else {
-                return Err(DracoError::DracoError(format!(
+                return Err(DracoError::General(format!(
                     "{num_orientations} orientations do not fit the pre-2.2 u32 count"
                 )));
             };
@@ -336,7 +336,7 @@ where
             )));
         }
         let missing = |what: &str| {
-            DracoError::DracoError(format!("Texture-coordinate prediction has no {what}"))
+            DracoError::General(format!("Texture-coordinate prediction has no {what}"))
         };
         if self.pos_attribute.is_none() {
             return Err(missing("position parent"));
@@ -354,7 +354,7 @@ where
             || in_data.len() < size
             || out_corr.len() < size
         {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Texture-coordinate prediction needs {} entries and {size} values, has {} entries, {} inputs and {} outputs",
                 data_to_corner_map.len(),
                 entry_map.len(),
@@ -375,7 +375,7 @@ where
                 entry_map,
                 &mut predicted_value,
             ) {
-                return Err(DracoError::DracoError(format!(
+                return Err(DracoError::General(format!(
                     "Texture-coordinate prediction failed at entry {p}"
                 )));
             }
@@ -631,12 +631,12 @@ where
         };
 
         if num_orientations == 0 {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Texture-coordinate prediction declares no orientations".to_string(),
             ));
         }
         let missing = |what: &str| {
-            DracoError::DracoError(format!("Texture-coordinate prediction has no {what}"))
+            DracoError::General(format!("Texture-coordinate prediction has no {what}"))
         };
         let Some(mesh_data) = self.mesh_data.as_ref() else {
             return Err(missing("mesh data"));
@@ -645,7 +645,7 @@ where
             return Err(missing("corner table"));
         };
         if num_orientations > corner_table.num_corners() as u32 {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Stream declares {num_orientations} orientations, more than the {} corners",
                 corner_table.num_corners()
             )));
@@ -686,7 +686,7 @@ where
             )));
         }
         let missing = |what: &str| {
-            DracoError::DracoError(format!("Texture-coordinate prediction has no {what}"))
+            DracoError::General(format!("Texture-coordinate prediction has no {what}"))
         };
         if self.pos_attribute.is_none() {
             return Err(missing("position parent"));
@@ -701,19 +701,19 @@ where
             return Err(missing("data-to-corner map"));
         };
         if entry_map.len() < data_to_corner_map.len() {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Texture-coordinate prediction needs {} entries, the map has {}",
                 data_to_corner_map.len(),
                 entry_map.len()
             )));
         }
         let Some(required_values) = data_to_corner_map.len().checked_mul(num_components) else {
-            return Err(DracoError::DracoError(
+            return Err(DracoError::General(
                 "Texture-coordinate prediction value count overflow".to_string(),
             ));
         };
         if in_corr.len() < required_values || out_data.len() < required_values {
-            return Err(DracoError::DracoError(format!(
+            return Err(DracoError::General(format!(
                 "Texture-coordinate prediction needs {required_values} values, has {} corrections and {} outputs",
                 in_corr.len(),
                 out_data.len()
@@ -730,7 +730,7 @@ where
                 entry_map,
                 &mut predicted_value,
             ) {
-                return Err(DracoError::DracoError(format!(
+                return Err(DracoError::General(format!(
                     "Texture-coordinate prediction failed at entry {p}"
                 )));
             }

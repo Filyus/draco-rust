@@ -46,7 +46,7 @@ impl TryFrom<u8> for DataType {
             9 => Ok(Self::Float32),
             10 => Ok(Self::Float64),
             11 => Ok(Self::Bool),
-            _ => Err(DracoError::DracoError(format!(
+            _ => Err(DracoError::General(format!(
                 "Invalid attribute data type: {value}"
             ))),
         }
