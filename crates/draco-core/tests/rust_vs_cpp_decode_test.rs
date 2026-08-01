@@ -783,6 +783,114 @@ fn rust_encode_cpp_decode_small_matrix() {
     }
 }
 
+/// A grid with holes punched in it, so EdgeBreaker emits topology splits.
+///
+/// Returns the mesh and the positions it was built from. A plain grid is a disc
+/// and produces no split events at all, which is why the split layouts need a
+/// mesh of their own to be tested against anything.
+#[cfg(feature = "legacy_bitstream_encode")]
+fn annulus_mesh(n: usize) -> (Mesh, Vec<[f32; 3]>) {
+    let holes = [(n / 4, n / 4), (n / 2, n / 2), (3 * n / 4 - 1, n / 4)];
+
+    let mut positions = Vec::with_capacity(n * n);
+    let mut attribute = PointAttribute::new();
+    attribute.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        n * n,
+    );
+    for y in 0..n {
+        for x in 0..n {
+            let value = [x as f32, y as f32, ((x + y) % 5) as f32];
+            let offset = (y * n + x) * 12;
+            for (component, part) in value.iter().enumerate() {
+                attribute
+                    .buffer_mut()
+                    .write(offset + component * 4, &part.to_le_bytes());
+            }
+            positions.push(value);
+        }
+    }
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(n * n);
+    mesh.add_attribute(attribute);
+
+    let mut faces = Vec::new();
+    for y in 0..n - 1 {
+        for x in 0..n - 1 {
+            if holes.contains(&(x, y)) {
+                continue;
+            }
+            let p0 = (y * n + x) as u32;
+            let p1 = (y * n + x + 1) as u32;
+            let p2 = ((y + 1) * n + x) as u32;
+            let p3 = ((y + 1) * n + x + 1) as u32;
+            faces.push([p0, p1, p2]);
+            faces.push([p1, p3, p2]);
+        }
+    }
+    mesh.set_num_faces(faces.len());
+    for (id, face) in faces.iter().enumerate() {
+        mesh.set_face_from_indices(id, *face);
+    }
+
+    (mesh, positions)
+}
+
+/// C++ Draco reads back a pre-2.2 stream this crate wrote, splits and all.
+///
+/// The round-trip matrix in `version_roundtrip_test` proves the encoder and
+/// this crate's decoder agree. It cannot prove either agrees with Draco, and
+/// agreeing with Draco is the entire purpose of writing an old version: the
+/// only reason to emit 1.1 is that something else will read it.
+///
+/// The split-event section is where that gap mattered. Below 1.2 an event is
+/// two absolute `u32` ids and an edge byte; the encoder wrote the delta/varint
+/// form at every version, and this crate's decoder was reading the same wrong
+/// thing back without complaint.
+#[test]
+#[cfg(feature = "legacy_bitstream_encode")]
+fn cpp_decodes_a_legacy_stream_with_topology_splits() {
+    let decoder_exe = find_cpp_tool("DRACO_CPP_DECODER", "draco_decoder.exe");
+    let tmp = std::env::temp_dir().join("draco_cpp_decodes_legacy_splits");
+    fs::create_dir_all(&tmp).expect("create temp dir");
+
+    // 1.1 is the layout under test; 1.2 is the first version that codes the
+    // events, so a failure on one and not the other names the boundary.
+    for (major, minor) in [(1u8, 1u8), (1, 2)] {
+        let (mesh, expected_positions) = annulus_mesh(17);
+        let expected_face_count = mesh.num_faces();
+        let position_id = mesh.named_attribute_id(GeometryAttributeType::Position);
+
+        let mut options = EncoderOptions::default();
+        options.set_version(major, minor);
+        options.set_global_int("encoding_method", 1); // EdgeBreaker
+        options.set_attribute_int(position_id, "quantization_bits", 14);
+
+        let mut encoder = MeshEncoder::new();
+        encoder.set_mesh(mesh);
+        let mut encoded = EncoderBuffer::new();
+        encoder
+            .encode(&options, &mut encoded)
+            .unwrap_or_else(|err| panic!("v{major}.{minor}: Rust encode failed: {err:?}"));
+
+        let name = format!("legacy_splits_v{major}_{minor}");
+        let drc_path = tmp.join(format!("{name}.drc"));
+        let ply_path = tmp.join(format!("{name}.ply"));
+        fs::write(&drc_path, encoded.data()).expect("write Rust DRC");
+
+        let decoded = run_cpp_decoder(&decoder_exe, &drc_path, &ply_path, &name);
+        assert_eq!(
+            decoded.num_faces, expected_face_count,
+            "{name}: C++ decoded a different number of faces"
+        );
+        assert_position_sets_match(&expected_positions, &decoded.positions, &name);
+    }
+}
+
 #[test]
 fn compare_rust_vs_cpp_decode() {
     let decoder_exe = find_cpp_tool("DRACO_CPP_DECODER", "draco_decoder.exe");
