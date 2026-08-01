@@ -276,10 +276,10 @@ impl PointCloudDecoder {
         // input-consistency check, not an artificial geometry cap, and runs once
         // per decode off the hot path.
         if num_points > buffer.remaining_size().saturating_mul(8) {
-            return Err(DracoError::CountExceedsBitstream {
-                count: num_points,
-                remaining_bytes: buffer.remaining_size(),
-            });
+            return Err(DracoError::count_exceeds_bitstream(
+                num_points,
+                buffer.remaining_size(),
+            ));
         }
         pc.set_num_points(num_points);
 

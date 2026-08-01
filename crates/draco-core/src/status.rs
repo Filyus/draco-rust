@@ -27,23 +27,39 @@ pub enum DracoError {
     /// Buffer read or write failed.
     #[error("Buffer decode error: {0}")]
     BufferError(String),
-    /// A declared geometry count is larger than the remaining bitstream could
-    /// describe, so the stream is refused before it sizes anything from it.
+}
+
+/// Prefix of the message [`DracoError::count_exceeds_bitstream`] builds.
+///
+/// The refusal has no variant of its own: `DracoError` is exhaustive, so adding
+/// one is a breaking change, and this refusal is tied to a guard that
+/// `hardening_status.yaml` records as unsound and due to be replaced. Marking
+/// the message instead keeps the constructor and the predicate that recognises
+/// it in one place, where a message is an implementation detail rather than an
+/// interface.
+const COUNT_EXCEEDS_BITSTREAM_PREFIX: &str = "Declared count";
+
+impl DracoError {
+    /// The decoder's refusal of a declared count larger than the remaining
+    /// bitstream could describe.
+    pub(crate) fn count_exceeds_bitstream(count: usize, remaining_bytes: usize) -> Self {
+        DracoError::DracoError(format!(
+            "{COUNT_EXCEEDS_BITSTREAM_PREFIX} {count} exceeds what the remaining \
+             {remaining_bytes} bytes can describe"
+        ))
+    }
+
+    /// Whether this is the decoder's count-vs-size preflight refusal.
     ///
-    /// Distinct from the generic error because it is the one decode refusal a
-    /// caller may legitimately want to tell apart: the bound it applies assumes
-    /// at least one bit per point or face, which highly repetitive geometry can
-    /// beat, so this is also the refusal that can be a false positive. See the
-    /// `decoder-count-guard-is-unsound` entry in `hardening_status.yaml`.
-    #[error(
-        "Declared count {count} exceeds what the remaining {remaining_bytes} bytes can describe"
-    )]
-    CountExceedsBitstream {
-        /// The count the bitstream declared.
-        count: usize,
-        /// Bytes left in the buffer when the count was read.
-        remaining_bytes: usize,
-    },
+    /// It is the one decode refusal a caller may legitimately want to tell
+    /// apart: the bound it applies assumes at least one bit per point or face,
+    /// which highly repetitive geometry can beat, so this is also the refusal
+    /// that can be a false positive. See the `decoder-count-guard-is-unsound`
+    /// entry in `hardening_status.yaml`.
+    pub fn is_count_exceeds_bitstream(&self) -> bool {
+        matches!(self, DracoError::DracoError(message)
+            if message.starts_with(COUNT_EXCEEDS_BITSTREAM_PREFIX))
+    }
 }
 
 /// Convenience result type for operations that only report success or failure.

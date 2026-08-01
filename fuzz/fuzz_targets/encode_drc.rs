@@ -412,13 +412,13 @@ fn fuzz_point_cloud(spec: &GeometrySpec, payload: &[u8], input: &[u8]) {
 ///    because oracle 1 - no panics - applies to them; only the round-trip claim
 ///    is held to the default version, which is what the crate documents.
 ///
-/// 2. **`CountExceedsBitstream`.** The decoder's header preflight assumes a
+/// 2. **The count-vs-size preflight refusal.** The decoder's header preflight assumes a
 ///    stream carries at least one bit per point or face, which is false for
 ///    geometry whose values are all equal: it entropy-codes to a size
-///    independent of the count. Matching the variant costs nothing and excludes
-///    exactly those runs - an earlier version of this predicted the guard from
-///    the stream length instead, which was far coarser and quietly excluded
-///    most of the corpus from the oracle.
+///    independent of the count. `DracoError::is_count_exceeds_bitstream` answers
+///    for exactly those runs - an earlier version of this predicted the guard
+///    from the stream length instead, which was far coarser and quietly
+///    excluded most of the corpus from the oracle.
 fn round_trip_is_claimed(spec: &GeometrySpec, error: &DracoError) -> bool {
     if std::env::var_os("ENCODE_DRC_NO_DECODE_ORACLE").is_some() {
         // Triage knob: with oracle 2 off, a campaign runs past every
@@ -429,7 +429,7 @@ fn round_trip_is_claimed(spec: &GeometrySpec, error: &DracoError) -> bool {
     if spec.version.is_some() {
         return false;
     }
-    !matches!(error, DracoError::CountExceedsBitstream { .. })
+    !error.is_count_exceeds_bitstream()
 }
 
 /// Hex of the whole fuzz input, printed with an oracle failure.
