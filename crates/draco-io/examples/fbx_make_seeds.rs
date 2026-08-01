@@ -21,6 +21,40 @@ use std::path::Path;
 
 const MAGIC: &[u8; 21] = b"Kaydara FBX Binary  \0";
 
+/// A minimal ASCII document that parses *and reaches the scene builder*.
+///
+/// Kept as one literal because it is the only seed whose exact text a reader
+/// has to be able to follow, and every part of it is load-bearing: the version
+/// gate rejects anything below 7000, `Vertices`/`PolygonVertexIndex` under a
+/// `Geometry` node is the shape the mesh reader looks for, and the `Connections`
+/// block is what attaches that geometry to a `Model` and the model to the root.
+/// Without the connections the document still parses -- and produces a scene
+/// with no meshes in it, which is a seed that stops at the node tree.
+const ASCII_VALID: &str = concat!(
+    "; FBX 7.4.0 project file\n",
+    "FBXHeaderExtension:  {\n",
+    "    FBXHeaderVersion: 1003\n",
+    "    FBXVersion: 7400\n",
+    "}\n",
+    "Objects:  {\n",
+    "    Geometry: 1, \"Geometry::seed\", \"Mesh\" {\n",
+    "        Vertices: *9 {\n",
+    "            a: 0,0,0,1,0,0,0,1,0\n",
+    "        }\n",
+    "        PolygonVertexIndex: *3 {\n",
+    "            a: 0,1,-3\n",
+    "        }\n",
+    "    }\n",
+    "    Model: 2, \"Model::seed\", \"Mesh\" {\n",
+    "        Version: 232\n",
+    "    }\n",
+    "}\n",
+    "Connections:  {\n",
+    "    C: \"OO\",1,2\n",
+    "    C: \"OO\",2,0\n",
+    "}\n",
+);
+
 fn header(version: u32) -> Vec<u8> {
     let mut data = Vec::new();
     data.extend_from_slice(MAGIC);
@@ -166,6 +200,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     mismatch.extend_from_slice(&[0u8; 13]);
     seeds.push(("bad_property_list_len.fbx", mismatch));
 
+    // ASCII documents. `is_ascii_fbx` routes on a `; FBX` / `;FBX` /
+    // `FBXHeaderExtension:` prefix, and none of the seeds above start with one,
+    // so mutation had to synthesize that prefix by chance to reach the parser
+    // at all -- which is why it never did.
+    seeds.push((
+        "ascii_valid.fbx",
+        ASCII_VALID.as_bytes().to_vec(),
+    ));
+
+    // Nesting to the fuzzing depth limit and one past it, so both sides of the
+    // check sit in the corpus.
+    let mut deep = String::from("; FBX 7.4.0 project file\nRoot: {\n");
+    for level in 0..24 {
+        deep.push_str(&format!("{:indent$}N{level}: {{\n", "", indent = level + 1));
+    }
+    for level in (0..24).rev() {
+        deep.push_str(&format!("{:indent$}}}\n", "", indent = level + 1));
+    }
+    deep.push_str("}\n");
+    seeds.push(("ascii_deep_nesting.fbx", deep.into_bytes()));
+
+    // A `*N` array marker declaring far more elements than the block holds.
+    // The declared length is what sizes the fold, so this is the ASCII form of
+    // bad_array_element_count.fbx.
+    seeds.push((
+        "ascii_huge_array_len.fbx",
+        concat!(
+            "; FBX 7.4.0 project file\n",
+            "Geometry: \"G\", \"Mesh\" {\n",
+            "    Vertices: *4294967295 {\n",
+            "        a: 0,0,0,1,0,0,0,1,0\n",
+            "    }\n",
+            "}\n",
+        )
+        .as_bytes()
+        .to_vec(),
+    ));
+
+    // A quoted string with no closing quote, at the end of input.
+    seeds.push((
+        "ascii_unterminated_string.fbx",
+        "; FBX 7.4.0 project file\nObjects: {\n    Model: \"unclosed\n"
+            .as_bytes()
+            .to_vec(),
+    ));
+
+    // A block with no closing brace, at the end of input.
+    seeds.push((
+        "ascii_unterminated_block.fbx",
+        "; FBX 7.4.0 project file\nObjects: {\n    Model: \"m\", \"Mesh\" {\n"
+            .as_bytes()
+            .to_vec(),
+    ));
+
     for (target, names) in [
         (
             "fbx_read_scene",
@@ -179,6 +267,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "bad_array_element_count.fbx",
                 "bad_zlib_bomb.fbx",
                 "bad_property_list_len.fbx",
+                "ascii_valid.fbx",
+                "ascii_deep_nesting.fbx",
+                "ascii_huge_array_len.fbx",
+                "ascii_unterminated_string.fbx",
+                "ascii_unterminated_block.fbx",
             ],
         ),
         (
@@ -188,6 +281,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "empty_7400.fbx",
                 "empty_7500.fbx",
                 "empty_big_endian_7500.fbx",
+                // The writer emits binary, so this is the only seed that
+                // reaches it through the ASCII reader. Only the valid one:
+                // the round-trip target returns early on anything the reader
+                // rejects, so a malformed seed exercises nothing it does not
+                // already get from fbx_read_scene.
+                "ascii_valid.fbx",
             ],
         ),
     ] {

@@ -122,6 +122,11 @@ name = "ply_bunny_test"
 path = "tests/ply_bunny_test.rs"
 required-features = ["test", "ply-reader"]
 
+[[test]]
+name = "fbx_seeds"
+path = "tests/fbx_seeds.rs"
+required-features = ["fbx-reader", "fbx-writer", "compression"]
+
 
 [[example]]
 name = "fbx_endian_diff"

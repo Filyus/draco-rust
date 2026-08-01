@@ -1,0 +1,6 @@
+; FBX 7.4.0 project file
+Geometry: "G", "Mesh" {
+    Vertices: *4294967295 {
+        a: 0,0,0,1,0,0,0,1,0
+    }
+}
