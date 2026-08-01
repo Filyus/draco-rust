@@ -16,6 +16,7 @@ use crate::point_cloud_encoder::GeometryEncoder;
 use crate::sequential_integer_attribute_encoder::{
     IntPredictionTransformFamily, SequentialIntegerAttributeEncoder,
 };
+use crate::status::{DracoError, Status};
 
 pub struct SequentialNormalAttributeEncoder {
     base: SequentialIntegerAttributeEncoder,
@@ -54,23 +55,29 @@ impl SequentialNormalAttributeEncoder {
         point_cloud: &PointCloud,
         attribute_id: i32,
         options: &EncoderOptions,
-    ) -> bool {
+    ) -> Status {
         if !self.base.init(attribute_id) {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Attribute {attribute_id} is not a valid encoder attribute"
+            )));
         }
 
         let attribute = point_cloud.attribute(attribute_id);
         if attribute.num_components() != 3 {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Normal encoding needs 3 components, attribute {attribute_id} has {}",
+                attribute.num_components()
+            )));
         }
 
         let quantization_bits = options.get_attribute_int(attribute_id, "quantization_bits", -1);
-        if quantization_bits < 1 {
-            return false;
-        }
+        // The octahedron transform accepts 2..=30, narrower than the `>= 1`
+        // this checked. Its own answer used to be discarded, so a bit count of
+        // 1 or above 30 left the transform uninitialized while `init` reported
+        // success -- the encode then failed later, at the folding step, with
+        // nothing naming the bit count as the cause.
         self.attribute_octahedron_transform
-            .set_parameters(quantization_bits);
-        true
+            .set_parameters(quantization_bits)
     }
 
     pub fn encode_data_needed_by_portable_transform(&self, out_buffer: &mut EncoderBuffer) -> bool {

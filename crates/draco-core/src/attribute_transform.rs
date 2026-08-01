@@ -14,6 +14,7 @@ use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::PointIndex;
+use crate::status::Status;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttributeTransformType {
@@ -35,10 +36,17 @@ impl TryFrom<u8> for AttributeTransformType {
     }
 }
 
+/// A transform between an attribute's stored values and its portable integer
+/// form.
+///
+/// Every fallible method returns [`Status`] and names what went wrong. They
+/// returned a bare `bool` through 1.x, which collapsed "the source buffer is
+/// truncated", "the parameters were never computed" and "this component count
+/// is not supported" into one indistinguishable `false`.
 pub trait AttributeTransform {
     fn transform_type(&self) -> AttributeTransformType;
 
-    fn init_from_attribute(&mut self, attribute: &PointAttribute) -> bool;
+    fn init_from_attribute(&mut self, attribute: &PointAttribute) -> Status;
 
     fn copy_to_attribute_transform_data(&self, out_data: &mut AttributeTransformData);
 
@@ -47,23 +55,23 @@ pub trait AttributeTransform {
         attribute: &PointAttribute,
         point_ids: &[PointIndex],
         target_attribute: &mut PointAttribute,
-    ) -> bool;
+    ) -> Status;
 
     fn inverse_transform_attribute(
         &self,
         attribute: &PointAttribute,
         target_attribute: &mut PointAttribute,
-    ) -> bool;
+    ) -> Status;
 
     #[cfg(feature = "encoder")]
-    fn encode_parameters(&self, encoder_buffer: &mut EncoderBuffer) -> bool;
+    fn encode_parameters(&self, encoder_buffer: &mut EncoderBuffer) -> Status;
 
     #[cfg(feature = "decoder")]
     fn decode_parameters(
         &mut self,
         attribute: &PointAttribute,
         decoder_buffer: &mut DecoderBuffer,
-    ) -> bool;
+    ) -> Status;
 
     fn get_transformed_data_type(&self, attribute: &PointAttribute) -> DataType;
     fn get_transformed_num_components(&self, attribute: &PointAttribute) -> i32;

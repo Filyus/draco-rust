@@ -16,6 +16,19 @@ use crate::encoder_buffer::EncoderBuffer;
 use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::PointIndex;
 use crate::quantization_utils::{Dequantizer, Quantizer};
+use crate::status::{DracoError, Status};
+
+/// The quantization bit counts this transform can represent.
+///
+/// Deliberately wider than the octahedron transform's `2..=30`: the two carry
+/// different payloads and upstream validates them separately.
+const VALID_QUANTIZATION_BITS: std::ops::RangeInclusive<i32> = 1..=31;
+
+fn invalid_quantization_bits(bits: i32) -> DracoError {
+    DracoError::InvalidParameter(format!(
+        "Quantization bits {bits} outside the supported range 1..=31"
+    ))
+}
 
 pub struct AttributeQuantizationTransform {
     quantization_bits: i32,
@@ -43,34 +56,39 @@ impl AttributeQuantizationTransform {
         quantization_bits: i32,
         min_values: &[f32],
         range: f32,
-    ) -> bool {
-        if !(1..=31).contains(&quantization_bits) {
-            return false;
+    ) -> Status {
+        if !VALID_QUANTIZATION_BITS.contains(&quantization_bits) {
+            return Err(invalid_quantization_bits(quantization_bits));
         }
         self.quantization_bits = quantization_bits;
         self.min_values = min_values.to_vec();
         self.range = range;
-        true
+        Ok(())
     }
 
     pub fn compute_parameters(
         &mut self,
         attribute: &PointAttribute,
         quantization_bits: i32,
-    ) -> bool {
-        if !(1..=31).contains(&quantization_bits) {
-            return false;
+    ) -> Status {
+        if !VALID_QUANTIZATION_BITS.contains(&quantization_bits) {
+            return Err(invalid_quantization_bits(quantization_bits));
         }
         self.quantization_bits = quantization_bits;
         let num_components = attribute.num_components() as usize;
 
         let num_entries = attribute.size();
         if num_entries == 0 {
-            return false;
+            return Err(DracoError::InvalidParameter(
+                "Cannot compute quantization parameters from an empty attribute".to_string(),
+            ));
         }
 
         if attribute.data_type() != DataType::Float32 {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Quantization needs a float32 attribute, got {:?}",
+                attribute.data_type()
+            )));
         }
 
         let buffer = attribute.buffer();
@@ -91,10 +109,16 @@ impl AttributeQuantizationTransform {
             Some(bytemuck::pod_read_unaligned::<f32>(data.get(start..end)?))
         };
 
+        let truncated = || {
+            DracoError::DracoError(
+                "Attribute source data is truncated relative to its value count".to_string(),
+            )
+        };
+
         // Read the first entry to initialize min/max (matching C++ behavior)
         for c in 0..num_components {
             let Some(val) = read_component(c * 4) else {
-                return false;
+                return Err(truncated());
             };
             self.min_values[c] = val;
             max_values[c] = val;
@@ -103,16 +127,20 @@ impl AttributeQuantizationTransform {
         // Process remaining entries starting from index 1 (matching C++ loop)
         for i in 1..num_entries {
             let Some(offset) = i.checked_mul(byte_stride) else {
-                return false;
+                return Err(DracoError::DracoError(
+                    "Attribute byte offset overflow".to_string(),
+                ));
             };
             // Read num_components floats
             for c in 0..num_components {
                 let Some(val) = offset.checked_add(c * 4).and_then(read_component) else {
-                    return false;
+                    return Err(truncated());
                 };
 
                 if val.is_nan() {
-                    return false;
+                    return Err(DracoError::InvalidParameter(
+                        "Attribute value is NaN and cannot be quantized".to_string(),
+                    ));
                 }
                 if self.min_values[c] > val {
                     self.min_values[c] = val;
@@ -131,7 +159,9 @@ impl AttributeQuantizationTransform {
                 || max_values[c].is_nan()
                 || max_values[c].is_infinite()
             {
-                return false;
+                return Err(DracoError::InvalidParameter(format!(
+                    "Attribute component {c} spans a non-finite range and cannot be quantized"
+                )));
             }
             let diff = max_values[c] - self.min_values[c];
             if diff > self.range {
@@ -144,11 +174,11 @@ impl AttributeQuantizationTransform {
             self.range = 1.0;
         }
 
-        true
+        Ok(())
     }
 
-    /// Quantizes `attribute` into `target_attribute`, returning false when the
-    /// source cannot supply the values asked of it.
+    /// Quantizes `attribute` into `target_attribute`, reporting what went wrong
+    /// when the source cannot supply the values asked of it.
     ///
     /// The source offset is `mapped_index(point) * byte_stride`, and the mapped
     /// index is caller data: an attribute whose point map does not cover the
@@ -161,10 +191,10 @@ impl AttributeQuantizationTransform {
         attribute: &PointAttribute,
         point_ids: &[PointIndex],
         target_attribute: &mut PointAttribute,
-    ) -> bool {
-        if self.quantization_bits < 1 || self.quantization_bits > 31 {
+    ) -> Status {
+        if !VALID_QUANTIZATION_BITS.contains(&self.quantization_bits) {
             // Invalid state; caller should have initialized parameters.
-            return false;
+            return Err(invalid_quantization_bits(self.quantization_bits));
         }
         let num_points = if point_ids.is_empty() {
             attribute.size()
@@ -182,7 +212,10 @@ impl AttributeQuantizationTransform {
         // direction has checked exactly this since it was written; this is the
         // forward half of the same check.
         if self.min_values.len() < num_components {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Quantization parameters cover {} components, attribute has {num_components}",
+                self.min_values.len()
+            )));
         }
 
         target_attribute.init(
@@ -226,7 +259,9 @@ impl AttributeQuantizationTransform {
                 let src_offset = i * src_stride;
                 let dst_offset = i * dst_stride;
                 if src_offset + 12 > src_data.len() || dst_offset + 12 > dst_data.len() {
-                    return false;
+                    return Err(DracoError::DracoError(
+                        "Quantization source or target data is truncated".to_string(),
+                    ));
                 }
 
                 // Read 3 floats
@@ -270,13 +305,17 @@ impl AttributeQuantizationTransform {
                 };
                 let att_val_idx = attribute.mapped_index(point_idx);
                 let Some(src_offset) = (att_val_idx.0 as usize).checked_mul(src_stride) else {
-                    return false;
+                    return Err(DracoError::DracoError(
+                        "Attribute byte offset overflow".to_string(),
+                    ));
                 };
                 let dst_offset = i * dst_stride;
                 if src_offset + num_components * 4 > src_data.len()
                     || dst_offset + num_components * 4 > dst_data.len()
                 {
-                    return false;
+                    return Err(DracoError::DracoError(
+                        "Quantization source or target data is truncated".to_string(),
+                    ));
                 }
 
                 for c in 0..num_components {
@@ -319,7 +358,7 @@ impl AttributeQuantizationTransform {
             }
         }
 
-        true
+        Ok(())
     }
 }
 
@@ -328,40 +367,47 @@ impl AttributeTransform for AttributeQuantizationTransform {
         AttributeTransformType::QuantizationTransform
     }
 
-    fn init_from_attribute(&mut self, attribute: &PointAttribute) -> bool {
-        if let Some(data) = attribute.attribute_transform_data() {
-            if data.transform_type() != AttributeTransformType::QuantizationTransform {
-                return false;
-            }
-            let mut byte_offset = 0;
-            if let Some(bits) = data.get_parameter_value::<i32>(byte_offset) {
-                self.quantization_bits = bits;
-                byte_offset += 4;
-            } else {
-                return false;
-            }
-
-            let num_components = attribute.num_components() as usize;
-            self.min_values.resize(num_components, 0.0);
-            for i in 0..num_components {
-                if let Some(val) = data.get_parameter_value::<f32>(byte_offset) {
-                    self.min_values[i] = val;
-                    byte_offset += 4;
-                } else {
-                    return false;
-                }
-            }
-
-            if let Some(range) = data.get_parameter_value::<f32>(byte_offset) {
-                self.range = range;
-            } else {
-                return false;
-            }
-
-            true
-        } else {
-            false
+    fn init_from_attribute(&mut self, attribute: &PointAttribute) -> Status {
+        let Some(data) = attribute.attribute_transform_data() else {
+            return Err(DracoError::InvalidParameter(
+                "Attribute carries no transform data".to_string(),
+            ));
+        };
+        if data.transform_type() != AttributeTransformType::QuantizationTransform {
+            return Err(DracoError::InvalidParameter(format!(
+                "Attribute carries {:?}, not a quantization transform",
+                data.transform_type()
+            )));
         }
+        let truncated = || {
+            DracoError::InvalidParameter(
+                "Attribute transform data is shorter than the quantization parameters".to_string(),
+            )
+        };
+
+        let mut byte_offset = 0;
+        let Some(bits) = data.get_parameter_value::<i32>(byte_offset) else {
+            return Err(truncated());
+        };
+        self.quantization_bits = bits;
+        byte_offset += 4;
+
+        let num_components = attribute.num_components() as usize;
+        self.min_values.resize(num_components, 0.0);
+        for i in 0..num_components {
+            let Some(val) = data.get_parameter_value::<f32>(byte_offset) else {
+                return Err(truncated());
+            };
+            self.min_values[i] = val;
+            byte_offset += 4;
+        }
+
+        let Some(range) = data.get_parameter_value::<f32>(byte_offset) else {
+            return Err(truncated());
+        };
+        self.range = range;
+
+        Ok(())
     }
 
     fn copy_to_attribute_transform_data(&self, out_data: &mut AttributeTransformData) {
@@ -378,7 +424,7 @@ impl AttributeTransform for AttributeQuantizationTransform {
         attribute: &PointAttribute,
         point_ids: &[PointIndex],
         target_attribute: &mut PointAttribute,
-    ) -> bool {
+    ) -> Status {
         self.generate_portable_attribute(attribute, point_ids, target_attribute)
     }
 
@@ -386,13 +432,16 @@ impl AttributeTransform for AttributeQuantizationTransform {
         &self,
         attribute: &PointAttribute,
         target_attribute: &mut PointAttribute,
-    ) -> bool {
+    ) -> Status {
         if target_attribute.data_type() != DataType::Float32 {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Dequantization needs a float32 target, got {:?}",
+                target_attribute.data_type()
+            )));
         }
 
-        if self.quantization_bits < 1 || self.quantization_bits > 31 {
-            return false;
+        if !VALID_QUANTIZATION_BITS.contains(&self.quantization_bits) {
+            return Err(invalid_quantization_bits(self.quantization_bits));
         }
 
         // quantization_bits is allowed up to 31. Use a wider type to avoid
@@ -400,29 +449,44 @@ impl AttributeTransform for AttributeQuantizationTransform {
         let max_quantized_value: i32 = ((1u64 << (self.quantization_bits as u32)) - 1) as i32;
         let mut dequantizer = Dequantizer::new();
         if !dequantizer.init(self.range, max_quantized_value) {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Dequantizer rejects range {} over {max_quantized_value} steps",
+                self.range
+            )));
         }
 
         let num_components = target_attribute.num_components() as usize;
         if self.min_values.len() < num_components {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Quantization parameters cover {} components, attribute has {num_components}",
+                self.min_values.len()
+            )));
         }
         let num_values = target_attribute.size();
 
         let Ok(dst_stride) = usize::try_from(target_attribute.byte_stride()) else {
-            return false;
+            return Err(DracoError::DracoError(
+                "Negative target byte stride".to_string(),
+            ));
         };
         let Ok(src_stride) = usize::try_from(attribute.byte_stride()) else {
-            return false;
+            return Err(DracoError::DracoError(
+                "Negative source byte stride".to_string(),
+            ));
         };
         let src_buffer = attribute.buffer();
         let dst_buffer = target_attribute.buffer_mut();
         let src_data = src_buffer.data();
         let dst_data = dst_buffer.data_mut();
 
+        let overflow = || DracoError::DracoError("Attribute byte range overflow".to_string());
+        let truncated = || {
+            DracoError::DracoError("Dequantization source or target data is truncated".to_string())
+        };
+
         const COMPONENT_SIZE: usize = std::mem::size_of::<u32>();
         let Some(tight_stride) = num_components.checked_mul(COMPONENT_SIZE) else {
-            return false;
+            return Err(overflow());
         };
         if attribute.data_type() == DataType::Uint32
             && (1..=4).contains(&num_components)
@@ -430,13 +494,13 @@ impl AttributeTransform for AttributeQuantizationTransform {
             && dst_stride == tight_stride
         {
             let Some(required_src) = num_values.checked_mul(src_stride) else {
-                return false;
+                return Err(overflow());
             };
             let Some(required_dst) = num_values.checked_mul(dst_stride) else {
-                return false;
+                return Err(overflow());
             };
             if src_data.len() < required_src || dst_data.len() < required_dst {
-                return false;
+                return Err(truncated());
             }
 
             match num_components {
@@ -547,55 +611,59 @@ impl AttributeTransform for AttributeQuantizationTransform {
                         dst_data[offset + 12..offset + 16].copy_from_slice(&w.to_le_bytes());
                     }
                 }
-                _ => return false,
+                _ => {
+                    return Err(DracoError::InvalidParameter(format!(
+                        "Dequantization does not support {num_components} components"
+                    )))
+                }
             }
 
-            return true;
+            return Ok(());
         }
 
         for i in 0..num_values {
             let Some(src_offset) = i.checked_mul(src_stride) else {
-                return false;
+                return Err(overflow());
             };
             let Some(dst_offset) = i.checked_mul(dst_stride) else {
-                return false;
+                return Err(overflow());
             };
 
             for c in 0..num_components {
                 let Some(component_offset) = c.checked_mul(4) else {
-                    return false;
+                    return Err(overflow());
                 };
                 let Some(src_pos) = src_offset.checked_add(component_offset) else {
-                    return false;
+                    return Err(overflow());
                 };
                 let Some(src_end) = src_pos.checked_add(4) else {
-                    return false;
+                    return Err(overflow());
                 };
                 let Some(src_bytes) = src_data.get(src_pos..src_end) else {
-                    return false;
+                    return Err(truncated());
                 };
                 let q_val =
                     i32::from_le_bytes([src_bytes[0], src_bytes[1], src_bytes[2], src_bytes[3]]);
 
                 let val = dequantizer.dequantize_float(q_val) + self.min_values[c];
                 let Some(dst_pos) = dst_offset.checked_add(component_offset) else {
-                    return false;
+                    return Err(overflow());
                 };
                 let Some(dst_end) = dst_pos.checked_add(4) else {
-                    return false;
+                    return Err(overflow());
                 };
                 let Some(dst_bytes) = dst_data.get_mut(dst_pos..dst_end) else {
-                    return false;
+                    return Err(truncated());
                 };
                 dst_bytes.copy_from_slice(&val.to_le_bytes());
             }
         }
 
-        true
+        Ok(())
     }
 
     #[cfg(feature = "encoder")]
-    fn encode_parameters(&self, encoder_buffer: &mut EncoderBuffer) -> bool {
+    fn encode_parameters(&self, encoder_buffer: &mut EncoderBuffer) -> Status {
         // The sibling octahedron transform gates this on `is_initialized`;
         // this one wrote whatever it held. On a transform whose parameters were
         // never computed that is `-1`, which `as u8` truncates to `0xFF` -- a
@@ -603,15 +671,15 @@ impl AttributeTransform for AttributeQuantizationTransform {
         // and reported as success. Every in-tree caller computes parameters
         // first and checks that call, so this is the trait method's own
         // contract rather than a live defect.
-        if !(1..=31).contains(&self.quantization_bits) {
-            return false;
+        if !VALID_QUANTIZATION_BITS.contains(&self.quantization_bits) {
+            return Err(invalid_quantization_bits(self.quantization_bits));
         }
         for &val in &self.min_values {
             encoder_buffer.encode(val);
         }
         encoder_buffer.encode(self.range);
         encoder_buffer.encode_u8(self.quantization_bits as u8);
-        true
+        Ok(())
     }
 
     #[cfg(feature = "decoder")]
@@ -619,35 +687,37 @@ impl AttributeTransform for AttributeQuantizationTransform {
         &mut self,
         attribute: &PointAttribute,
         decoder_buffer: &mut DecoderBuffer,
-    ) -> bool {
+    ) -> Status {
         let num_components = attribute.num_components() as usize;
+        let truncated = |what: &str| {
+            DracoError::BufferError(format!(
+                "Stream ends before the quantization {what} it declares"
+            ))
+        };
 
         self.min_values.resize(num_components, 0.0);
         for i in 0..num_components {
-            if let Ok(val) = decoder_buffer.decode::<f32>() {
-                self.min_values[i] = val;
-            } else {
-                return false;
-            }
+            let Ok(val) = decoder_buffer.decode::<f32>() else {
+                return Err(truncated("minimum values"));
+            };
+            self.min_values[i] = val;
         }
 
-        if let Ok(range) = decoder_buffer.decode::<f32>() {
-            self.range = range;
-        } else {
-            return false;
+        let Ok(range) = decoder_buffer.decode::<f32>() else {
+            return Err(truncated("range"));
+        };
+        self.range = range;
+
+        let Ok(bits) = decoder_buffer.decode_u8() else {
+            return Err(truncated("bit count"));
+        };
+        self.quantization_bits = bits as i32;
+
+        if !VALID_QUANTIZATION_BITS.contains(&self.quantization_bits) {
+            return Err(invalid_quantization_bits(self.quantization_bits));
         }
 
-        if let Ok(bits) = decoder_buffer.decode_u8() {
-            self.quantization_bits = bits as i32;
-        } else {
-            return false;
-        }
-
-        if self.quantization_bits < 1 || self.quantization_bits > 31 {
-            return false;
-        }
-
-        true
+        Ok(())
     }
 
     fn get_transformed_data_type(&self, _attribute: &PointAttribute) -> DataType {
@@ -676,24 +746,39 @@ mod tests {
     #[test]
     fn quantizing_with_parameters_from_a_narrower_attribute_is_refused() {
         let mut narrow = PointAttribute::new();
-        narrow.init(GeometryAttributeType::Generic, 2, DataType::Float32, false, 4);
+        narrow.init(
+            GeometryAttributeType::Generic,
+            2,
+            DataType::Float32,
+            false,
+            4,
+        );
         for i in 0..8 {
             narrow.buffer_mut().write(i * 4, &(i as f32).to_le_bytes());
         }
         let mut transform = AttributeQuantizationTransform::new();
-        assert!(transform.compute_parameters(&narrow, 12));
+        assert!(transform.compute_parameters(&narrow, 12).is_ok());
         assert_eq!(transform.min_values.len(), 2);
 
         let mut wide = PointAttribute::new();
-        wide.init(GeometryAttributeType::Generic, 3, DataType::Float32, false, 4);
+        wide.init(
+            GeometryAttributeType::Generic,
+            3,
+            DataType::Float32,
+            false,
+            4,
+        );
         for i in 0..12 {
             wide.buffer_mut().write(i * 4, &(i as f32).to_le_bytes());
         }
 
         let mut target = PointAttribute::default();
+        let err = transform
+            .transform_attribute(&wide, &[], &mut target)
+            .expect_err("three components against two min_values must be refused");
         assert!(
-            !transform.transform_attribute(&wide, &[], &mut target),
-            "three components against two min_values must be refused"
+            err.to_string().contains("cover 2 components"),
+            "the error should name the mismatch, got: {err}"
         );
     }
 
@@ -706,7 +791,13 @@ mod tests {
     fn encoding_parameters_from_an_uninitialized_transform_is_refused() {
         let transform = AttributeQuantizationTransform::new();
         let mut buffer = crate::encoder_buffer::EncoderBuffer::new();
-        assert!(!transform.encode_parameters(&mut buffer));
+        let err = transform
+            .encode_parameters(&mut buffer)
+            .expect_err("uninitialized parameters must not be written");
+        assert!(
+            err.to_string().contains("-1"),
+            "the error should name the bit count it refused, got: {err}"
+        );
         assert!(
             buffer.data().is_empty(),
             "nothing should reach the stream on refusal"
@@ -737,8 +828,14 @@ mod tests {
         );
 
         let mut transform = AttributeQuantizationTransform::new();
-        assert!(transform.set_parameters(10, &[0.0, 0.0, 0.0], 1.0));
-        assert!(!transform.inverse_transform_attribute(&source, &mut target));
+        assert!(transform.set_parameters(10, &[0.0, 0.0, 0.0], 1.0).is_ok());
+        let err = transform
+            .inverse_transform_attribute(&source, &mut target)
+            .expect_err("a source one component short must be refused");
+        assert!(
+            err.to_string().contains("truncated"),
+            "the error should say the data is short, got: {err}"
+        );
     }
 
     #[test]
@@ -758,7 +855,13 @@ mod tests {
         attribute.buffer_mut().resize(8); // one value short of two complete entries
 
         let mut transform = AttributeQuantizationTransform::new();
-        assert!(!transform.compute_parameters(&attribute, 8));
+        let err = transform
+            .compute_parameters(&attribute, 8)
+            .expect_err("a buffer shorter than the value count must be refused");
+        assert!(
+            err.to_string().contains("truncated"),
+            "the error should say the source is short, got: {err}"
+        );
     }
 
     #[test]
@@ -782,7 +885,64 @@ mod tests {
         );
 
         let mut transform = AttributeQuantizationTransform::new();
-        assert!(transform.set_parameters(10, &[0.0, 0.0], 1.0));
-        assert!(!transform.inverse_transform_attribute(&source, &mut target));
+        assert!(transform.set_parameters(10, &[0.0, 0.0], 1.0).is_ok());
+        let err = transform
+            .inverse_transform_attribute(&source, &mut target)
+            .expect_err("two min_values against three components must be refused");
+        assert!(
+            err.to_string().contains("cover 2 components"),
+            "the error should name the mismatch, got: {err}"
+        );
+    }
+
+    /// The three refusals the trait used to report as one indistinguishable
+    /// `false` now name themselves.
+    ///
+    /// This is the whole point of the conversion: "the source is truncated",
+    /// "the parameters were never computed" and "the parameters are for a
+    /// different component count" are separate faults with separate fixes, and
+    /// a caller could not previously tell them apart.
+    #[test]
+    fn the_three_quantization_refusals_are_distinguishable() {
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            4,
+        );
+        attribute.buffer_mut().resize(8);
+        let mut truncated = AttributeQuantizationTransform::new();
+        let truncated = truncated.compute_parameters(&attribute, 8).unwrap_err();
+
+        let uninitialized = AttributeQuantizationTransform::new()
+            .encode_parameters(&mut crate::encoder_buffer::EncoderBuffer::new())
+            .unwrap_err();
+
+        let mut narrow = AttributeQuantizationTransform::new();
+        narrow.set_parameters(10, &[0.0, 0.0], 1.0).unwrap();
+        let mut wide = PointAttribute::new();
+        wide.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            1,
+        );
+        let mismatched = narrow
+            .transform_attribute(&wide, &[], &mut PointAttribute::default())
+            .unwrap_err();
+
+        let messages = [
+            truncated.to_string(),
+            uninitialized.to_string(),
+            mismatched.to_string(),
+        ];
+        for (i, a) in messages.iter().enumerate() {
+            for b in &messages[i + 1..] {
+                assert_ne!(a, b, "distinct faults must report distinct messages");
+            }
+        }
     }
 }

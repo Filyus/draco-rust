@@ -998,26 +998,34 @@ fn profile_encoding_stages() {
     let start = Instant::now();
     for _ in 0..iterations {
         let mut q_transform = AttributeQuantizationTransform::new();
-        q_transform.compute_parameters(pos_att, 10);
+        q_transform
+            .compute_parameters(pos_att, 10)
+            .expect("compute_parameters");
         std::hint::black_box(&q_transform);
     }
     let quant_compute_us = avg_duration_us(start.elapsed(), iterations);
 
     // Stage 2: Quantization transform application
     let mut q_transform = AttributeQuantizationTransform::new();
-    q_transform.compute_parameters(pos_att, 10);
+    q_transform
+        .compute_parameters(pos_att, 10)
+        .expect("compute_parameters");
 
     let start = Instant::now();
     for _ in 0..iterations {
         let mut portable = PointAttribute::default();
-        q_transform.transform_attribute(pos_att, &point_ids, &mut portable);
+        q_transform
+            .transform_attribute(pos_att, &point_ids, &mut portable)
+            .expect("transform_attribute");
         std::hint::black_box(&portable);
     }
     let quant_apply_us = avg_duration_us(start.elapsed(), iterations);
 
     // Get quantized values for symbol encoding test
     let mut portable = PointAttribute::default();
-    q_transform.transform_attribute(pos_att, &point_ids, &mut portable);
+    q_transform
+        .transform_attribute(pos_att, &point_ids, &mut portable)
+        .expect("transform_attribute");
 
     // Stage 3: Value gathering from portable attribute
     let start = Instant::now();

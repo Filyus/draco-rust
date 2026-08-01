@@ -574,12 +574,11 @@ impl PointCloudEncoder {
                 match encoder_types[i as usize] {
                     SequentialAttributeEncoderType::Normals => {
                         let mut att_encoder = SequentialNormalAttributeEncoder::new();
-                        if !att_encoder.init(pc, i, &self.options) {
-                            return Err(DracoError::DracoError(format!(
-                                "Failed to init normal attribute encoder {}",
-                                i
-                            )));
-                        }
+                        att_encoder.init(pc, i, &self.options).map_err(|e| {
+                            DracoError::DracoError(format!(
+                                "Failed to init normal attribute encoder {i}: {e}"
+                            ))
+                        })?;
 
                         if !att_encoder.encode_values(
                             pc,

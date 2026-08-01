@@ -30,12 +30,18 @@ impl AttributeOctahedronTransform {
         (2..=30).contains(&quantization_bits)
     }
 
-    pub fn set_parameters(&mut self, quantization_bits: i32) -> bool {
+    pub fn set_parameters(&mut self, quantization_bits: i32) -> Status {
         if !Self::is_valid_quantization_bits(quantization_bits) {
-            return false;
+            return Err(Self::invalid_quantization_bits(quantization_bits));
         }
         self.quantization_bits = quantization_bits;
-        true
+        Ok(())
+    }
+
+    fn invalid_quantization_bits(bits: i32) -> DracoError {
+        DracoError::InvalidParameter(format!(
+            "Octahedral quantization bits {bits} outside the supported range 2..=30"
+        ))
     }
 
     pub fn is_initialized(&self) -> bool {
@@ -59,9 +65,7 @@ impl AttributeOctahedronTransform {
 
         let mut converter = OctahedronToolBox::new();
         if !converter.set_quantization_bits(self.quantization_bits) {
-            return Err(DracoError::InvalidParameter(
-                "Invalid quantization bits".to_string(),
-            ));
+            return Err(Self::invalid_quantization_bits(self.quantization_bits));
         }
 
         let portable_data_size = num_points
@@ -132,7 +136,7 @@ impl AttributeOctahedronTransform {
         attribute: &PointAttribute,
         target_attribute: &mut PointAttribute,
         legacy_octahedron_to_vector: bool,
-    ) -> bool {
+    ) -> Status {
         self.inverse_transform_attribute_impl(
             attribute,
             target_attribute,
@@ -145,18 +149,24 @@ impl AttributeOctahedronTransform {
         attribute: &PointAttribute,
         target_attribute: &mut PointAttribute,
         legacy_octahedron_to_vector: bool,
-    ) -> bool {
+    ) -> Status {
         if target_attribute.data_type() != DataType::Float32 {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Octahedral decode needs a float32 target, got {:?}",
+                target_attribute.data_type()
+            )));
         }
         if target_attribute.num_components() != 3 {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Octahedral decode needs 3 target components, got {}",
+                target_attribute.num_components()
+            )));
         }
 
         let num_points = target_attribute.size();
         let mut converter = OctahedronToolBox::new();
         if !converter.set_quantization_bits(self.quantization_bits) {
-            return false;
+            return Err(Self::invalid_quantization_bits(self.quantization_bits));
         }
 
         let source_buffer = attribute.buffer();
@@ -165,20 +175,28 @@ impl AttributeOctahedronTransform {
         // Ensure target buffer has enough space
         let Some(target_byte_size) = num_points.checked_mul(3).and_then(|v| v.checked_mul(4))
         else {
-            return false;
+            return Err(DracoError::DracoError(
+                "Octahedral target buffer size overflow".to_string(),
+            ));
         };
         if target_buffer.try_resize(target_byte_size).is_err() {
-            return false;
+            return Err(DracoError::DracoError(
+                "Failed to allocate the octahedral target buffer".to_string(),
+            ));
         }
 
         let source_data = source_buffer.data();
         // Source data is int32 (s, t) pairs.
         let Some(source_byte_size) = num_points.checked_mul(2).and_then(|v| v.checked_mul(4))
         else {
-            return false;
+            return Err(DracoError::DracoError(
+                "Octahedral source buffer size overflow".to_string(),
+            ));
         };
         if source_data.len() < source_byte_size {
-            return false;
+            return Err(DracoError::DracoError(
+                "Octahedral portable data is truncated".to_string(),
+            ));
         }
 
         for i in 0..num_points {
@@ -206,7 +224,7 @@ impl AttributeOctahedronTransform {
             bytes[8..12].copy_from_slice(bytemuck::bytes_of(&att_val[2]));
         }
 
-        true
+        Ok(())
     }
 }
 
@@ -215,16 +233,24 @@ impl AttributeTransform for AttributeOctahedronTransform {
         AttributeTransformType::OctahedronTransform
     }
 
-    fn init_from_attribute(&mut self, attribute: &PointAttribute) -> bool {
-        if let Some(transform_data) = attribute.attribute_transform_data() {
-            if transform_data.transform_type() != AttributeTransformType::OctahedronTransform {
-                return false;
-            }
-            if let Some(bits) = transform_data.get_parameter_value(0) {
-                return self.set_parameters(bits);
-            }
+    fn init_from_attribute(&mut self, attribute: &PointAttribute) -> Status {
+        let Some(transform_data) = attribute.attribute_transform_data() else {
+            return Err(DracoError::InvalidParameter(
+                "Attribute carries no transform data".to_string(),
+            ));
+        };
+        if transform_data.transform_type() != AttributeTransformType::OctahedronTransform {
+            return Err(DracoError::InvalidParameter(format!(
+                "Attribute carries {:?}, not an octahedron transform",
+                transform_data.transform_type()
+            )));
         }
-        false
+        let Some(bits) = transform_data.get_parameter_value(0) else {
+            return Err(DracoError::InvalidParameter(
+                "Attribute transform data is shorter than the octahedral bit count".to_string(),
+            ));
+        };
+        self.set_parameters(bits)
     }
 
     fn copy_to_attribute_transform_data(&self, out_data: &mut AttributeTransformData) {
@@ -237,32 +263,32 @@ impl AttributeTransform for AttributeOctahedronTransform {
         attribute: &PointAttribute,
         point_ids: &[PointIndex],
         target_attribute: &mut PointAttribute,
-    ) -> bool {
+    ) -> Status {
         self.generate_portable_attribute(
             attribute,
             point_ids,
             target_attribute.size(),
             target_attribute,
         )
-        .is_ok()
     }
 
     fn inverse_transform_attribute(
         &self,
         attribute: &PointAttribute,
         target_attribute: &mut PointAttribute,
-    ) -> bool {
+    ) -> Status {
         self.inverse_transform_attribute_impl(attribute, target_attribute, false)
     }
 
     #[cfg(feature = "encoder")]
-    fn encode_parameters(&self, encoder_buffer: &mut EncoderBuffer) -> bool {
-        if self.is_initialized() {
-            encoder_buffer.encode(self.quantization_bits as u8);
-            true
-        } else {
-            false
+    fn encode_parameters(&self, encoder_buffer: &mut EncoderBuffer) -> Status {
+        if !self.is_initialized() {
+            return Err(DracoError::InvalidParameter(
+                "Octahedron transform parameters were never set".to_string(),
+            ));
         }
+        encoder_buffer.encode(self.quantization_bits as u8);
+        Ok(())
     }
 
     #[cfg(feature = "decoder")]
@@ -270,12 +296,13 @@ impl AttributeTransform for AttributeOctahedronTransform {
         &mut self,
         _attribute: &PointAttribute,
         decoder_buffer: &mut DecoderBuffer,
-    ) -> bool {
-        if let Ok(quantization_bits) = decoder_buffer.decode::<u8>() {
-            self.set_parameters(quantization_bits as i32)
-        } else {
-            false
-        }
+    ) -> Status {
+        let Ok(quantization_bits) = decoder_buffer.decode::<u8>() else {
+            return Err(DracoError::BufferError(
+                "Stream ends before the octahedral bit count it declares".to_string(),
+            ));
+        };
+        self.set_parameters(quantization_bits as i32)
     }
 
     fn get_transformed_data_type(&self, _attribute: &PointAttribute) -> DataType {
@@ -313,7 +340,9 @@ mod tests {
             1,
         );
 
-        assert!(!transform.inverse_transform_attribute(&portable, &mut target));
+        assert!(transform
+            .inverse_transform_attribute(&portable, &mut target)
+            .is_err());
     }
 
     #[test]
@@ -343,10 +372,14 @@ mod tests {
         let mut transform = AttributeOctahedronTransform::new(-1);
 
         let mut zero_bits = DecoderBuffer::new(&[0]);
-        assert!(!transform.decode_parameters(&attribute, &mut zero_bits));
+        assert!(transform
+            .decode_parameters(&attribute, &mut zero_bits)
+            .is_err());
 
         let mut too_many_bits = DecoderBuffer::new(&[31]);
-        assert!(!transform.decode_parameters(&attribute, &mut too_many_bits));
+        assert!(transform
+            .decode_parameters(&attribute, &mut too_many_bits)
+            .is_err());
     }
 
     #[test]
@@ -355,7 +388,7 @@ mod tests {
         let mut transform = AttributeOctahedronTransform::new(-1);
         let mut buffer = DecoderBuffer::new(&[10]);
 
-        assert!(transform.decode_parameters(&attribute, &mut buffer));
+        assert!(transform.decode_parameters(&attribute, &mut buffer).is_ok());
         assert_eq!(transform.quantization_bits(), 10);
     }
 
@@ -369,6 +402,6 @@ mod tests {
         attribute.set_attribute_transform_data(transform_data);
 
         let mut transform = AttributeOctahedronTransform::new(-1);
-        assert!(!transform.init_from_attribute(&attribute));
+        assert!(transform.init_from_attribute(&attribute).is_err());
     }
 }

@@ -460,12 +460,11 @@ impl PointCloudDecoder {
                                     })?;
                                 }
                                 let original = pc.try_attribute(att_id)?;
-                                if !transform.decode_parameters(original, buffer) {
-                                    return Err(DracoError::DracoError(
-                                        "Failed to decode quantization parameters (v<2.0)"
-                                            .to_string(),
-                                    ));
-                                }
+                                transform.decode_parameters(original, buffer).map_err(|e| {
+                                    DracoError::DracoError(format!(
+                                        "Failed to decode quantization parameters (v<2.0): {e}"
+                                    ))
+                                })?;
                                 let bytes_consumed = buffer.position() - saved_pos;
                                 let pred_header_bytes = if method_byte != 0xFF { 2 } else { 1 };
                                 let skip = bytes_consumed - pred_header_bytes;
@@ -641,14 +640,14 @@ impl PointCloudDecoder {
                                     )
                                 })?;
                             let original = pc.try_attribute(att_id)?;
-                            if !pending_quant[idx]
+                            pending_quant[idx]
                                 .transform
                                 .decode_parameters(original, buffer)
-                            {
-                                return Err(DracoError::DracoError(
-                                    "Failed to decode quantization parameters".to_string(),
-                                ));
-                            }
+                                .map_err(|e| {
+                                    DracoError::DracoError(format!(
+                                        "Failed to decode quantization parameters: {e}"
+                                    ))
+                                })?;
                         }
                         3 if bitstream_version >= 0x0102 => {
                             let idx = pending_normals
@@ -675,29 +674,24 @@ impl PointCloudDecoder {
 
                 for q in pending_quant {
                     let dst = pc.try_attribute_mut(q.att_id)?;
-                    if !q.transform.inverse_transform_attribute(&q.portable, dst) {
-                        return Err(DracoError::DracoError(
-                            "Failed to dequantize attribute".to_string(),
-                        ));
-                    }
+                    q.transform
+                        .inverse_transform_attribute(&q.portable, dst)
+                        .map_err(|e| {
+                            DracoError::DracoError(format!("Failed to dequantize attribute: {e}"))
+                        })?;
                 }
                 for n in pending_normals {
                     let mut oct = AttributeOctahedronTransform::new(-1);
-                    if !oct.set_parameters(n.quantization_bits as i32) {
-                        return Err(DracoError::DracoError(
-                            "Invalid normal quantization bits".to_string(),
-                        ));
-                    }
+                    oct.set_parameters(n.quantization_bits as i32)?;
                     let dst = pc.try_attribute_mut(n.att_id)?;
-                    if !oct.inverse_transform_attribute_with_legacy_octahedron(
+                    oct.inverse_transform_attribute_with_legacy_octahedron(
                         &n.portable,
                         dst,
                         bitstream_version < 0x0102,
-                    ) {
-                        return Err(DracoError::DracoError(
-                            "Failed to decode normals".to_string(),
-                        ));
-                    }
+                    )
+                    .map_err(|e| {
+                        DracoError::DracoError(format!("Failed to decode normals: {e}"))
+                    })?;
                 }
             }
         }

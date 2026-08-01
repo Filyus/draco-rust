@@ -169,7 +169,7 @@ impl SequentialIntegerAttributeEncoder {
     /// 2. EncodeDataNeededByPortableTransforms (this method) - quantization parameters
     pub fn encode_data_needed_by_portable_transform(&self, out_buffer: &mut EncoderBuffer) -> bool {
         if let Some(ref q_transform) = self.quantization_transform {
-            q_transform.encode_parameters(out_buffer)
+            q_transform.encode_parameters(out_buffer).is_ok()
         } else {
             true // No transform to encode
         }
@@ -227,14 +227,16 @@ impl SequentialIntegerAttributeEncoder {
                 // Apply quantization transform (but don't write params yet - that happens
                 // in encode_data_needed_by_portable_transform)
                 let mut q_transform = AttributeQuantizationTransform::new();
-                if !q_transform.compute_parameters(attribute, quantization_bits) {
+                if q_transform
+                    .compute_parameters(attribute, quantization_bits)
+                    .is_err()
+                {
                     return false;
                 }
-                if !q_transform.transform_attribute(
-                    attribute,
-                    point_ids,
-                    &mut local_portable_attribute,
-                ) {
+                if q_transform
+                    .transform_attribute(attribute, point_ids, &mut local_portable_attribute)
+                    .is_err()
+                {
                     return false;
                 }
                 // Store transform for later encoding
@@ -1171,10 +1173,13 @@ impl SequentialIntegerAttributeEncoder {
         if uses_inline_quantization_parameters(attribute, options, att_id, encoder) {
             let quantization_bits = options.get_attribute_int(att_id, "quantization_bits", -1);
             let mut transform = AttributeQuantizationTransform::new();
-            if !transform.compute_parameters(attribute, quantization_bits) {
+            if transform
+                .compute_parameters(attribute, quantization_bits)
+                .is_err()
+            {
                 return false;
             }
-            if !transform.encode_parameters(out_buffer) {
+            if transform.encode_parameters(out_buffer).is_err() {
                 return false;
             }
         }

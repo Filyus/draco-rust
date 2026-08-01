@@ -343,7 +343,7 @@ impl KdTreeAttributesDecoder {
                     return false;
                 }
                 let mut t = AttributeQuantizationTransform::new();
-                if !t.set_parameters(bits as i32, &min_values, range) {
+                if t.set_parameters(bits as i32, &min_values, range).is_err() {
                     return false;
                 }
                 self.attribute_quantization_transforms.push(t);
@@ -390,7 +390,10 @@ impl KdTreeAttributesDecoder {
                 let Ok(target) = point_cloud.try_attribute_mut(att_id) else {
                     return false;
                 };
-                if !transform.inverse_transform_attribute(portable, target) {
+                if transform
+                    .inverse_transform_attribute(portable, target)
+                    .is_err()
+                {
                     return false;
                 }
 

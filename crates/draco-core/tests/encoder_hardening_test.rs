@@ -562,3 +562,46 @@ fn empty_geometry_encodes_without_panicking() {
         }
     }
 }
+
+/// A normal quantization bit count the octahedron transform cannot carry is
+/// refused, and the refusal names the value and the range.
+///
+/// The normal encoder checked `>= 1` and then discarded the transform's own
+/// answer, which accepts only 2..=30. A count of 1 or above 30 therefore left
+/// the transform uninitialized while `init` reported success; the encode still
+/// failed, but later and with nothing pointing at the bit count.
+#[test]
+fn a_normal_quantization_bit_count_the_octahedron_cannot_carry_is_refused() {
+    for bits in [1i32, 31] {
+        let mut mesh = quad();
+        let mut normals = PointAttribute::new();
+        normals.init(
+            GeometryAttributeType::Normal,
+            3,
+            DataType::Float32,
+            false,
+            4,
+        );
+        for i in 0..4 {
+            normals.buffer_mut().write(i * 12, &0.0f32.to_le_bytes());
+            normals
+                .buffer_mut()
+                .write(i * 12 + 4, &0.0f32.to_le_bytes());
+            normals
+                .buffer_mut()
+                .write(i * 12 + 8, &1.0f32.to_le_bytes());
+        }
+        mesh.add_attribute(normals);
+
+        let mut options = EncoderOptions::new();
+        options.set_attribute_int(0, "quantization_bits", 14);
+        options.set_attribute_int(1, "quantization_bits", bits);
+
+        let error =
+            encode_mesh(mesh, &options).expect_err("a bit count outside 2..=30 must be refused");
+        assert!(
+            error.contains("2..=30"),
+            "the refusal should name the range the bit count fell outside, got: {error}"
+        );
+    }
+}

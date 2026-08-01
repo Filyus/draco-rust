@@ -44,8 +44,9 @@ fn dump_rust_qt() {
 
     let pos_attr = create_complex_mesh_pos_attr();
     let mut transform = AttributeQuantizationTransform::new();
-    let ok = transform.compute_parameters(&pos_attr, 10);
-    assert!(ok, "compute_parameters failed");
+    transform
+        .compute_parameters(&pos_attr, 10)
+        .expect("compute_parameters failed");
 
     // Optionally dump for an explicit list of original point ids via env var
     let mut point_ids: Vec<PointIndex> = Vec::new();
@@ -58,11 +59,12 @@ fn dump_rust_qt() {
     }
 
     let mut target_attr = PointAttribute::new();
-    if point_ids.is_empty() {
-        transform.transform_attribute(&pos_attr, &[], &mut target_attr);
+    let transformed = if point_ids.is_empty() {
+        transform.transform_attribute(&pos_attr, &[], &mut target_attr)
     } else {
-        transform.transform_attribute(&pos_attr, &point_ids, &mut target_attr);
-    }
+        transform.transform_attribute(&pos_attr, &point_ids, &mut target_attr)
+    };
+    transformed.expect("transform_attribute failed");
 
     // Check that the file was written (best-effort). The test passes if no panic occurs.
     // This file will be inspected manually by the debug workflow.

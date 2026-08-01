@@ -484,8 +484,7 @@ impl MeshEncoder {
         for att_id in 0..mesh.num_attributes() {
             // A generic attribute is copied out raw and meets neither a
             // transform nor a prediction scheme, so no legacy layout applies.
-            if self.attribute_encoder_type(mesh, att_id)
-                == SequentialAttributeEncoderType::Generic
+            if self.attribute_encoder_type(mesh, att_id) == SequentialAttributeEncoderType::Generic
             {
                 continue;
             }
@@ -1088,15 +1087,15 @@ impl MeshEncoder {
                 3 => {
                     // Normal attribute with octahedral encoding
                     let mut encoder = SequentialNormalAttributeEncoder::new();
-                    if !encoder.init(
-                        self.point_cloud().expect("point_cloud set"),
-                        i,
-                        &self.options,
-                    ) {
-                        return Err(DracoError::DracoError(
-                            "Failed to init normal encoder".to_string(),
-                        ));
-                    }
+                    encoder
+                        .init(
+                            self.point_cloud().expect("point_cloud set"),
+                            i,
+                            &self.options,
+                        )
+                        .map_err(|e| {
+                            DracoError::DracoError(format!("Failed to init normal encoder: {e}"))
+                        })?;
                     if !encoder.encode_values(
                         self.point_cloud().expect("point_cloud set"),
                         &self.point_ids,
@@ -1118,17 +1117,19 @@ impl MeshEncoder {
                 2 => {
                     // Quantized attribute (mapping already applied at start of encode_attributes)
                     let mut q_transform = AttributeQuantizationTransform::new();
-                    if !q_transform.compute_parameters(att, quantization_bits) {
-                        return Err(DracoError::DracoError(
-                            "Failed to compute quantization parameters".to_string(),
-                        ));
-                    }
+                    q_transform
+                        .compute_parameters(att, quantization_bits)
+                        .map_err(|e| {
+                            DracoError::DracoError(format!(
+                                "Failed to compute quantization parameters: {e}"
+                            ))
+                        })?;
                     let mut portable = PointAttribute::default();
-                    if !q_transform.transform_attribute(att, &self.point_ids, &mut portable) {
-                        return Err(DracoError::DracoError(
-                            "Failed to quantize attribute".to_string(),
-                        ));
-                    }
+                    q_transform
+                        .transform_attribute(att, &self.point_ids, &mut portable)
+                        .map_err(|e| {
+                            DracoError::DracoError(format!("Failed to quantize attribute: {e}"))
+                        })?;
 
                     let mut att_encoder = SequentialIntegerAttributeEncoder::new();
                     att_encoder.init(i);
@@ -1230,11 +1231,11 @@ impl MeshEncoder {
                         continue;
                     }
                     if let Some(ref q_transform) = quantization_transforms[i as usize] {
-                        if !q_transform.encode_parameters(out_buffer) {
-                            return Err(DracoError::DracoError(
-                                "Failed to encode quantization parameters".to_string(),
-                            ));
-                        }
+                        q_transform.encode_parameters(out_buffer).map_err(|e| {
+                            DracoError::DracoError(format!(
+                                "Failed to encode quantization parameters: {e}"
+                            ))
+                        })?;
                     }
                 }
                 1 | 0 => {
@@ -1495,17 +1496,19 @@ impl MeshEncoder {
                     self.options
                         .get_attribute_int(att_id, "quantization_bits", -1);
                 let mut q_transform = AttributeQuantizationTransform::new();
-                if !q_transform.compute_parameters(att, quantization_bits) {
-                    return Err(DracoError::DracoError(
-                        "Failed to compute quantization parameters".to_string(),
-                    ));
-                }
+                q_transform
+                    .compute_parameters(att, quantization_bits)
+                    .map_err(|e| {
+                        DracoError::DracoError(format!(
+                            "Failed to compute quantization parameters: {e}"
+                        ))
+                    })?;
                 let mut portable = PointAttribute::default();
-                if !q_transform.transform_attribute(att, point_ids, &mut portable) {
-                    return Err(DracoError::DracoError(
-                        "Failed to quantize attribute".to_string(),
-                    ));
-                }
+                q_transform
+                    .transform_attribute(att, point_ids, &mut portable)
+                    .map_err(|e| {
+                        DracoError::DracoError(format!("Failed to quantize attribute: {e}"))
+                    })?;
 
                 // Rebuild the portable attribute's point map, as upstream does
                 // in SequentialIntegerAttributeEncoder::TransformAttributeToPortableFormat.
@@ -1582,15 +1585,15 @@ impl MeshEncoder {
             match decoder_type {
                 3 => {
                     let mut encoder = SequentialNormalAttributeEncoder::new();
-                    if !encoder.init(
-                        self.point_cloud().expect("point_cloud set"),
-                        att_id,
-                        &self.options,
-                    ) {
-                        return Err(DracoError::DracoError(
-                            "Failed to init normal encoder".to_string(),
-                        ));
-                    }
+                    encoder
+                        .init(
+                            self.point_cloud().expect("point_cloud set"),
+                            att_id,
+                            &self.options,
+                        )
+                        .map_err(|e| {
+                            DracoError::DracoError(format!("Failed to init normal encoder: {e}"))
+                        })?;
                     if !encoder.encode_values(
                         self.point_cloud().expect("point_cloud set"),
                         point_ids,
@@ -1709,11 +1712,11 @@ impl MeshEncoder {
                         continue;
                     }
                     if let Some(ref q_transform) = quantization_transforms[local_i] {
-                        if !q_transform.encode_parameters(out_buffer) {
-                            return Err(DracoError::DracoError(
-                                "Failed to encode quantization parameters".to_string(),
-                            ));
-                        }
+                        q_transform.encode_parameters(out_buffer).map_err(|e| {
+                            DracoError::DracoError(format!(
+                                "Failed to encode quantization parameters: {e}"
+                            ))
+                        })?;
                     }
                 }
                 1 | 0 => {}
@@ -1754,10 +1757,11 @@ impl MeshEncoder {
             let encoder_type = self.attribute_encoder_type(mesh, att_id);
             let quantization_bits = match encoder_type {
                 SequentialAttributeEncoderType::Quantization
-                | SequentialAttributeEncoderType::Normals => Some(
-                    self.options
-                        .get_attribute_int(att_id, "quantization_bits", -1),
-                ),
+                | SequentialAttributeEncoderType::Normals => Some(self.options.get_attribute_int(
+                    att_id,
+                    "quantization_bits",
+                    -1,
+                )),
                 // A `quantization_bits` option on an integer or generic
                 // attribute never reaches a transform, so reporting it would
                 // describe the request rather than the encode.
@@ -1885,18 +1889,22 @@ impl MeshEncoder {
                 .options
                 .get_attribute_int(att_id, "quantization_bits", -1);
             let mut q_transform = AttributeQuantizationTransform::new();
-            if !q_transform.compute_parameters(att, quantization_bits) {
-                return Err(DracoError::DracoError(
-                    "Failed to compute position quantization parameters".to_string(),
-                ));
-            }
+            q_transform
+                .compute_parameters(att, quantization_bits)
+                .map_err(|e| {
+                    DracoError::DracoError(format!(
+                        "Failed to compute position quantization parameters: {e}"
+                    ))
+                })?;
 
             let mut portable = PointAttribute::default();
-            if !q_transform.transform_attribute(att, point_ids, &mut portable) {
-                return Err(DracoError::DracoError(
-                    "Failed to quantize position attribute for encoded mesh info".to_string(),
-                ));
-            }
+            q_transform
+                .transform_attribute(att, point_ids, &mut portable)
+                .map_err(|e| {
+                    DracoError::DracoError(format!(
+                        "Failed to quantize position attribute for encoded mesh info: {e}"
+                    ))
+                })?;
 
             let mut dequantized = PointAttribute::new();
             dequantized.try_init(
@@ -1906,11 +1914,13 @@ impl MeshEncoder {
                 false,
                 portable.size(),
             )?;
-            if !q_transform.inverse_transform_attribute(&portable, &mut dequantized) {
-                return Err(DracoError::DracoError(
-                    "Failed to dequantize position attribute for encoded mesh info".to_string(),
-                ));
-            }
+            q_transform
+                .inverse_transform_attribute(&portable, &mut dequantized)
+                .map_err(|e| {
+                    DracoError::DracoError(format!(
+                        "Failed to dequantize position attribute for encoded mesh info: {e}"
+                    ))
+                })?;
 
             return Self::position_bounds_from_attribute(&dequantized, &[]);
         }

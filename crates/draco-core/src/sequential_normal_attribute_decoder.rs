@@ -19,15 +19,6 @@ use crate::status::{DracoError, Status};
 
 use crate::prediction_scheme_delta::PredictionSchemeDeltaDecoder;
 
-fn validate_normal_quantization_bits(quantization_bits: u8) -> Status {
-    if !AttributeOctahedronTransform::is_valid_quantization_bits(quantization_bits as i32) {
-        return Err(DracoError::DracoError(
-            "Invalid normal quantization bits".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 pub struct SequentialNormalAttributeDecoder {
     base: SequentialIntegerAttributeDecoder,
     attribute_octahedron_transform: AttributeOctahedronTransform,
@@ -78,10 +69,11 @@ impl SequentialNormalAttributeDecoder {
         } else {
             return Err(DracoError::BitstreamVersionUnsupported);
         }
-        validate_normal_quantization_bits(quantization_bits)?;
+        // The bit count is validated by `set_parameters` itself, which names the
+        // value and the range it fell outside. This used to pre-check with a
+        // local helper and then discard the setter's own answer.
         self.attribute_octahedron_transform
-            .set_parameters(quantization_bits as i32);
-        Ok(())
+            .set_parameters(quantization_bits as i32)
     }
 
     pub fn decode_values(
@@ -102,9 +94,8 @@ impl SequentialNormalAttributeDecoder {
                     ))
                 }
             };
-            validate_normal_quantization_bits(quantization_bits)?;
             self.attribute_octahedron_transform
-                .set_parameters(quantization_bits as i32);
+                .set_parameters(quantization_bits as i32)?;
         }
 
         // Create portable attribute
@@ -145,14 +136,11 @@ impl SequentialNormalAttributeDecoder {
         let attribute_id = self.base.attribute_id();
         let attribute = point_cloud.try_attribute_mut(attribute_id)?;
 
-        if !self
-            .attribute_octahedron_transform
+        self.attribute_octahedron_transform
             .inverse_transform_attribute(&portable_attribute, attribute)
-        {
-            return Err(DracoError::DracoError(
-                "Failed to inverse transform attribute".to_string(),
-            ));
-        }
+            .map_err(|e| {
+                DracoError::DracoError(format!("Failed to inverse transform attribute: {e}"))
+            })?;
 
         Ok(())
     }

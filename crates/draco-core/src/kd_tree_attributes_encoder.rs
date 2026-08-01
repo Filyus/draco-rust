@@ -90,7 +90,10 @@ impl KdTreeAttributesEncoder {
                         return false;
                     }
                     let mut transform = AttributeQuantizationTransform::new();
-                    if !transform.compute_parameters(att, quantization_bits) {
+                    if transform
+                        .compute_parameters(att, quantization_bits)
+                        .is_err()
+                    {
                         return false;
                     }
 
@@ -104,7 +107,10 @@ impl KdTreeAttributesEncoder {
                     );
                     portable_att.set_identity_mapping();
 
-                    if !transform.transform_attribute(att, &point_ids, &mut portable_att) {
+                    if transform
+                        .transform_attribute(att, &point_ids, &mut portable_att)
+                        .is_err()
+                    {
                         return false;
                     }
 
@@ -284,7 +290,7 @@ impl KdTreeAttributesEncoder {
         out_buffer: &mut EncoderBuffer,
     ) -> bool {
         for t in &self.attribute_quantization_transforms {
-            if !t.encode_parameters(out_buffer) {
+            if t.encode_parameters(out_buffer).is_err() {
                 return false;
             }
         }
