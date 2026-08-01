@@ -42,6 +42,11 @@ const COUNT_EXCEEDS_BITSTREAM_PREFIX: &str = "Declared count";
 impl DracoError {
     /// The decoder's refusal of a declared count larger than the remaining
     /// bitstream could describe.
+    ///
+    /// Gated with the decode paths that raise it; the predicate below is not,
+    /// because a caller holding a `DracoError` may ask about it whatever this
+    /// build compiled.
+    #[cfg(feature = "decoder")]
     pub(crate) fn count_exceeds_bitstream(count: usize, remaining_bytes: usize) -> Self {
         DracoError::DracoError(format!(
             "{COUNT_EXCEEDS_BITSTREAM_PREFIX} {count} exceeds what the remaining \
