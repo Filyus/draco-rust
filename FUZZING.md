@@ -128,6 +128,19 @@ its flags field below 1.3 and so was two bytes short of what its own decoder
 reads; and the legacy predictive traversal being written into a 2.x stream that
 has no place to read it from.
 
+An audit of those fixes found what they had not covered, and those are pinned in
+the same file: the buffer-length and stride checks the mapping check cannot
+stand in for, which reached the unchecked `DataBuffer::read` in the integer and
+KD-tree readers; a reused encoder inheriting the previous mesh's corner table;
+a mesh needing more attribute groups than the one-byte count field holds; and
+the prediction scorer's frequency table, whose size was the residual's magnitude
+rather than any declared count - a 100-point mesh at `-qp 30 -cl 10` asked for
+17 GB and took 13 seconds. That last one is the encode-side counterpart of the
+decode-side symbol-table bound, and it is worth stating why the target did not
+find it on its own: an allocator abort is neither a panic nor a decode failure,
+so it falls outside both oracles, and only libFuzzer's own `-rss_limit_mb` would
+have caught it - on an input the corpus had not reached.
+
 ### `-O`: fuzz with production (release) semantics
 
 Pass `-O` to `cargo fuzz` to build in release mode **without** debug assertions

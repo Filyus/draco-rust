@@ -224,6 +224,38 @@ impl MeshEncoder {
         self.mesh = Some(mesh);
     }
 
+    /// Drops everything the previous encode derived from its mesh.
+    ///
+    /// An encoder is reusable - `set_mesh` then `encode`, twice - and each
+    /// encode caches connectivity for the attribute stage to read back:
+    /// a corner table, a point order, corner and vertex maps, per-attribute
+    /// seam connectivity. Only some of that is rewritten by every path. The
+    /// sequential connectivity branch does not build a corner table, so after
+    /// an EdgeBreaker encode it inherited the previous mesh's one and wrote
+    /// attributes against topology the stream does not describe: encoding an
+    /// attributed mesh with EdgeBreaker and then a plain mesh sequentially
+    /// with the same encoder produced a stream this crate's own decoder
+    /// rejects. Resetting in one place is the fix that does not depend on
+    /// every future path remembering to.
+    fn reset_derived_state(&mut self) {
+        self.encoded_mesh_info = None;
+        self.portable_attributes.clear();
+        self.edgebreaker_encoder = None;
+        self.num_encoded_faces = 0;
+        self.corner_table = None;
+        self.point_ids.clear();
+        self.data_to_corner_map = None;
+        self.vertex_to_data_map = None;
+        self.edgebreaker_attribute_connectivity.clear();
+        self.active_corner_table = None;
+        self.active_data_to_corner_map = None;
+        self.active_vertex_to_data_map = None;
+        self.attribute_traversal = None;
+        self.method = 0;
+        self.point_to_vertex_map = None;
+        self.use_single_connectivity = false;
+    }
+
     /// Returns the assigned mesh, if any.
     pub fn mesh(&self) -> Option<&Mesh> {
         self.mesh.as_ref()
@@ -256,9 +288,7 @@ impl MeshEncoder {
     /// options are unsupported, or if attribute encoding fails.
     pub fn encode(&mut self, options: &EncoderOptions, out_buffer: &mut EncoderBuffer) -> Status {
         self.options = options.clone();
-        self.encoded_mesh_info = None;
-        self.portable_attributes.clear();
-        self.edgebreaker_encoder = None;
+        self.reset_derived_state();
 
         if self.mesh.is_none() {
             return Err(DracoError::DracoError("Mesh not set".to_string()));
@@ -1035,6 +1065,20 @@ impl MeshEncoder {
             groups.push((data_id as i8, vec![attr_conn.attribute_id]));
         }
 
+        // The group count is one byte in the bitstream, so a mesh needing more
+        // groups than that cannot be described. Truncating wrote a stream that
+        // decodes as a different mesh: 261 groups became 5, and the decoder
+        // read the sixth group's bytes as attribute data. Measured at the
+        // boundary rather than assumed - 256 groups is the first count that
+        // breaks, and everything below it round-trips, including the counts
+        // where the per-group `i8` data id goes negative.
+        if groups.len() > u8::MAX as usize {
+            return Err(DracoError::DracoError(format!(
+                "Mesh needs {} attribute groups but the bitstream field holds {}",
+                groups.len(),
+                u8::MAX
+            )));
+        }
         out_buffer.encode_u8(groups.len() as u8);
 
         let major = out_buffer.version_major();

@@ -334,9 +334,10 @@ impl MeshDecoder {
             // header. Relative input-consistency check, runs once, off hot path.
             let max_count = buffer.remaining_size().saturating_mul(8);
             if num_faces > max_count || num_points > max_count {
-                return Err(DracoError::DracoError(
-                    "Sequential mesh face/point count exceeds remaining bitstream size".to_string(),
-                ));
+                return Err(DracoError::CountExceedsBitstream {
+                    count: num_faces.max(num_points),
+                    remaining_bytes: buffer.remaining_size(),
+                });
             }
             let num_indices = validate_mesh_index_count(num_faces)?;
             mesh.set_num_points(num_points);

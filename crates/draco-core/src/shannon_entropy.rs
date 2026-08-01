@@ -7,6 +7,26 @@
 
 use crate::rans_symbol_coding::approximate_rans_frequency_table_bits;
 
+/// Largest symbol held in the dense frequency table; anything above it goes to
+/// the sparse side table instead.
+///
+/// The dense table is indexed by symbol value, so on its own its cost is the
+/// residual's *magnitude* - nothing the caller declares, and nothing any
+/// validation can bound. The input that reaches the extreme is ordinary: a mesh
+/// encoded at `-qp 30 -cl 10`, both legitimate settings, produces residuals near
+/// `u32::MAX`, and scoring one candidate predictor for a 100-point mesh asked
+/// for a 17 GB table - it completed in 13 seconds where the same mesh at
+/// `-qp 24` took 40 ms.
+///
+/// Splitting at 2^18 keeps the dense table at a megabyte and moves the tail into
+/// a map, whose cost is the number of *distinct* symbols - bounded by the number
+/// of values being encoded. The frequencies themselves are unchanged, so the
+/// entropy estimate, and with it every prediction the encoder chooses from it,
+/// is bit-for-bit what an unbounded table would have produced. 2^18 is the
+/// symbol coder's own threshold: `symbol_encoding` refuses the raw scheme above
+/// 18-bit symbols, so beyond it the dense layout has no other user either.
+const MAX_DENSE_SYMBOL: usize = 1 << 18;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EntropyData {
     pub entropy_norm: f64,
@@ -18,6 +38,9 @@ pub struct EntropyData {
 pub struct ShannonEntropyTracker {
     entropy_data: EntropyData,
     frequencies: Vec<i32>,
+    /// Frequencies of symbols at or above [`MAX_DENSE_SYMBOL`], which the dense
+    /// table would have to be gigabytes to hold.
+    sparse_frequencies: std::collections::HashMap<u32, i32>,
 }
 
 impl Default for ShannonEntropyTracker {
@@ -31,6 +54,7 @@ impl ShannonEntropyTracker {
         Self {
             entropy_data: EntropyData::default(),
             frequencies: Vec::new(),
+            sparse_frequencies: std::collections::HashMap::new(),
         }
     }
 
@@ -57,8 +81,13 @@ impl ShannonEntropyTracker {
             // otherwise hold gigabytes for the rest of the encode. A symbol the
             // table does not cover has frequency zero, so while peeking its
             // count is just how often it already appeared in this same call.
+            //
+            // Past MAX_DENSE_SYMBOL the frequency lives in the map instead, so
+            // the same count is available without a slot per value in between.
             let mut frequency = 0;
-            if index < self.frequencies.len() {
+            if index >= MAX_DENSE_SYMBOL {
+                frequency = self.sparse_frequencies.get(&symbol).copied().unwrap_or(0);
+            } else if index < self.frequencies.len() {
                 frequency = self.frequencies[index];
             } else if push_changes {
                 self.frequencies.resize(index + 1, 0);
@@ -83,7 +112,9 @@ impl ShannonEntropyTracker {
             // C++ modifies frequency during loop, then reverts if peeking.
             // We do the same for efficiency (avoids cloning the entire table).
             frequency += 1;
-            if index < self.frequencies.len() {
+            if index >= MAX_DENSE_SYMBOL {
+                self.sparse_frequencies.insert(symbol, frequency);
+            } else if index < self.frequencies.len() {
                 self.frequencies[index] = frequency;
             }
             let new_symbol_entropy_norm = (frequency as f64) * (frequency as f64).log2();
@@ -98,7 +129,14 @@ impl ShannonEntropyTracker {
             // not cover were never written above, so they need no reverting.
             for &symbol in symbols {
                 let index = symbol as usize;
-                if index < self.frequencies.len() {
+                if index >= MAX_DENSE_SYMBOL {
+                    if let Some(frequency) = self.sparse_frequencies.get_mut(&symbol) {
+                        *frequency -= 1;
+                        if *frequency == 0 {
+                            self.sparse_frequencies.remove(&symbol);
+                        }
+                    }
+                } else if index < self.frequencies.len() {
                     self.frequencies[index] -= 1;
                 }
             }

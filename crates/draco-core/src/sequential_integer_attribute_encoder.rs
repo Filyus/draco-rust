@@ -1133,7 +1133,13 @@ impl SequentialIntegerAttributeEncoder {
             // The larger of the two speeds, as SetSymbolEncodingCompressionLevel
             // is handed `10 - GetSpeed()`. Reading the encoding speed alone
             // agrees only while the two are set to the same value.
-            compression_level: 10 - options.get_speed(),
+            //
+            // Saturating because the speed is a caller-set option with no
+            // declared range: `10 - i32::MIN` overflows. The result is
+            // identical for every speed a caller would pass, and
+            // `encode_symbols` classifies the level by range rather than by
+            // exact value, so the saturated end behaves as the extreme it is.
+            compression_level: 10i32.saturating_sub(options.get_speed()),
         };
 
         let _start_len = out_buffer.size();

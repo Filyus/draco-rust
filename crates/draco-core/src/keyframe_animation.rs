@@ -102,6 +102,19 @@ impl KeyframeAnimation {
         if num_components == 0 {
             return -1;
         }
+        // The attribute stores the component count in a `u8`, and the buffer it
+        // allocates is sized from that. A larger count truncated on the way in
+        // while the length check below still used the full value, so the write
+        // that follows ran past the buffer.
+        if num_components > u8::MAX as u32 {
+            return -1;
+        }
+        // `T` and `data_type` are independent parameters, and only `data_type`
+        // sizes the buffer. Handing `DataType::Int8` alongside `&[f64]` sized
+        // the buffer for one byte per value and then wrote eight.
+        if std::mem::size_of::<T>() != data_type.byte_length() {
+            return -1;
+        }
         // Reserve attribute id 0 for timestamps if nothing has been added yet.
         if self.point_cloud.num_attributes() == 0 {
             let mut temp_att = PointAttribute::new();

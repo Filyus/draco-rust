@@ -485,16 +485,7 @@ impl PlyWriter {
 
 /// Read a float3 from an attribute at a given point index.
 fn read_float3(mesh: &Mesh, att_id: i32, point_idx: usize) -> [f32; 3] {
-    let att = mesh.attribute(att_id);
-    let byte_stride = att.byte_stride() as usize;
-    let buffer = att.buffer();
-    let mut bytes = [0u8; 12];
-    buffer.read(point_idx * byte_stride, &mut bytes);
-    [
-        f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-        f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
-        f32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
-    ]
+    read_components_as_f32::<3>(mesh.attribute(att_id), point_idx)
 }
 
 /// Read a color from an attribute at a given point index.
@@ -503,21 +494,31 @@ fn read_color(mesh: &Mesh, att_id: i32, point_idx: usize) -> [u8; 4] {
     let byte_stride = att.byte_stride() as usize;
     let buffer = att.buffer();
 
-    // Colors can be stored in different formats
+    // Colors can be stored in different formats. A zero component count would
+    // divide by zero here, and both reads below take their length from the
+    // component count while the buffer's length is independent of it - the
+    // attribute descriptor comes from the bitstream, so neither is a given.
     let num_components = att.num_components() as usize;
+    if num_components == 0 {
+        return [255, 255, 255, 255];
+    }
     let component_size = byte_stride / num_components;
 
     if component_size == 1 {
         // u8 colors
         let mut bytes = [255u8; 4];
         let read_len = num_components.min(4);
-        buffer.read(point_idx * byte_stride, &mut bytes[..read_len]);
+        if !buffer.try_read(point_idx * byte_stride, &mut bytes[..read_len]) {
+            return [255, 255, 255, 255];
+        }
         bytes
     } else if component_size == 4 {
         // f32 colors (0.0-1.0) - convert to u8
         let mut float_bytes = [0u8; 16];
         let read_len = (num_components * 4).min(16);
-        buffer.read(point_idx * byte_stride, &mut float_bytes[..read_len]);
+        if !buffer.try_read(point_idx * byte_stride, &mut float_bytes[..read_len]) {
+            return [255, 255, 255, 255];
+        }
 
         let mut result = [255u8; 4];
         for i in 0..num_components.min(4) {
@@ -559,7 +560,7 @@ impl Writer for PlyWriter {
         let normal_att_id = mesh.named_attribute_id(GeometryAttributeType::Normal);
         if normal_att_id >= 0 {
             // Pad normals if we've added vertices without normals before
-            while self.normals.len() < self.positions.len() - mesh.num_points() {
+            while self.normals.len() < vertex_offset as usize {
                 self.normals.push([0.0, 0.0, 0.0]);
             }
             for i in 0..mesh.num_points() {
@@ -574,7 +575,7 @@ impl Writer for PlyWriter {
             let components = color_att.num_components().clamp(1, 4);
             self.color_components = self.color_components.max(components);
             // Pad colors if we've added vertices without colors before
-            while self.colors.len() < self.positions.len() - mesh.num_points() {
+            while self.colors.len() < vertex_offset as usize {
                 self.colors.push([255, 255, 255, 255]);
             }
             for i in 0..mesh.num_points() {
@@ -586,7 +587,7 @@ impl Writer for PlyWriter {
         if texcoord_att_id >= 0 {
             let texcoord_att = mesh.attribute(texcoord_att_id);
             if texcoord_att.num_components() == 2 && texcoord_att.data_type() == DataType::Float32 {
-                while self.texcoords.len() < self.positions.len() - mesh.num_points() {
+                while self.texcoords.len() < vertex_offset as usize {
                     self.texcoords.push([0.0, 0.0]);
                 }
                 for i in 0..mesh.num_points() {
@@ -929,15 +930,57 @@ mod tests {
 }
 
 fn read_float2(mesh: &Mesh, att_id: i32, point_idx: usize) -> [f32; 2] {
-    let att = mesh.attribute(att_id);
-    let byte_stride = att.byte_stride() as usize;
+    read_components_as_f32::<2>(mesh.attribute(att_id), point_idx)
+}
+
+/// Reads up to `N` components of any scalar type as `f32`, without assuming the
+/// element is as wide as the caller wants to read.
+///
+/// The typed readers around this one each slice a fixed number of bytes at
+/// `point * byte_stride` through the panicking `DataBuffer::read`, which holds
+/// only while the attribute really is the type they assume. It need not be: a
+/// decoded `.drc` declares its own data type and component count, so a mesh
+/// arriving from `MeshDecoder` may present Uint8x3 positions or Int16x3
+/// normals, and reading twelve bytes from a three-byte element runs off the
+/// buffer. This reads each component at its own width and stops at the end of
+/// the buffer, so a truncated or narrower attribute yields zeros instead of a
+/// panic.
+fn read_components_as_f32<const N: usize>(att: &PointAttribute, point_idx: usize) -> [f32; N] {
+    let mut out = [0.0f32; N];
+    let component_size = att.data_type().byte_length();
+    if component_size == 0 {
+        return out;
+    }
+    let stride = att.byte_stride().max(0) as usize;
+    let base = point_idx.saturating_mul(stride);
+    let available = att.num_components() as usize;
     let buffer = att.buffer();
-    let mut bytes = [0u8; 8];
-    buffer.read(point_idx * byte_stride, &mut bytes);
-    [
-        f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-        f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
-    ]
+    let mut raw = [0u8; 8];
+    for (c, slot) in out.iter_mut().enumerate().take(available.min(N)) {
+        let start = match base.checked_add(c * component_size) {
+            Some(start) => start,
+            None => return out,
+        };
+        let raw = &mut raw[..component_size];
+        if !buffer.try_read(start, raw) {
+            return out;
+        }
+        *slot = match att.data_type() {
+            DataType::Int8 => raw[0] as i8 as f32,
+            DataType::Uint8 => raw[0] as f32,
+            DataType::Int16 => i16::from_le_bytes([raw[0], raw[1]]) as f32,
+            DataType::Uint16 => u16::from_le_bytes([raw[0], raw[1]]) as f32,
+            DataType::Int32 => i32::from_le_bytes(raw.try_into().unwrap()) as f32,
+            DataType::Uint32 => u32::from_le_bytes(raw.try_into().unwrap()) as f32,
+            DataType::Int64 => i64::from_le_bytes(raw.try_into().unwrap()) as f32,
+            DataType::Uint64 => u64::from_le_bytes(raw.try_into().unwrap()) as f32,
+            DataType::Float32 => f32::from_le_bytes(raw.try_into().unwrap()),
+            DataType::Float64 => f64::from_le_bytes(raw.try_into().unwrap()) as f32,
+            DataType::Bool => f32::from(raw[0] != 0),
+            DataType::Invalid => 0.0,
+        };
+    }
+    out
 }
 
 fn read_f64x3(att: &PointAttribute, point_idx: usize) -> [f64; 3] {
@@ -1068,15 +1111,6 @@ fn read_numeric3_as_f32(att: &PointAttribute, point_idx: usize) -> [f32; 3] {
             let v = read_u32x3(att, point_idx);
             [v[0] as f32, v[1] as f32, v[2] as f32]
         }
-        _ => {
-            let mut bytes = [0u8; 12];
-            att.buffer()
-                .read(point_idx * att.byte_stride() as usize, &mut bytes);
-            [
-                f32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-                f32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-                f32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-            ]
-        }
+        _ => read_components_as_f32::<3>(att, point_idx),
     }
 }

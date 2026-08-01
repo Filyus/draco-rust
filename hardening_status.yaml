@@ -487,6 +487,22 @@ completed:
       - path: "crates/draco-core/src/attribute_quantization_transform.rs"
     note: "The encoders validate caller-supplied geometry once, before any encoder path derives a stride, a dimension or an offset from it: attributes must have components, a valid data type, and a point map that lands inside their own value array; mesh faces must reference points the mesh has; the target bitstream version must be one the crate writes; and the legacy predictive traversal is refused above 2.0. The quantization transform returns a failure instead of indexing when a source offset falls outside the buffer, matching its octahedron counterpart. Found by the encode_drc libFuzzer target, which also caught a point-cloud header that omitted its flags field below version 1.3 and so produced a stream its own decoder could not read; all cases are pinned in encoder_hardening_test.rs."
 
+  - id: encode-side-resource-bounds
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/shannon_entropy.rs"
+      - path: "crates/draco-core/src/sequential_integer_attribute_encoder.rs"
+      - path: "crates/draco-core/src/kd_tree_attributes_encoder.rs"
+    note: "The prediction scorer's frequency table is indexed by symbol value, so its cost was the residual's magnitude rather than any count a caller declares - nothing validation can bound. A 100-point mesh at -qp 30 -cl 10, both legitimate settings, asked for a 17 GB table and took 13 seconds where the same mesh at -qp 24 took 40 ms. Symbols above 2^18 now live in a map whose cost is the number of distinct symbols, so the frequencies and therefore every prediction chosen from them are unchanged - byte-exact output, 13 seconds down to zero. Separately, the two `10 - speed` compression-level computations saturate and the KD-tree signed-to-unsigned conversion wraps explicitly: the speed is a caller-set option with no declared range, and the conversion is exact under two's complement, so both only differed by panicking in a debug build."
+
+  - id: mesh-writer-attribute-types
+    status: covered
+    evidence:
+      - path: "crates/draco-io/src/ply_writer.rs"
+      - path: "crates/draco-io/src/stl_writer.rs"
+      - path: "crates/draco-io/tests/writer_hardening_test.rs"
+    note: "A .drc declares its own attribute data types and component counts, so MeshDecoder hands back Uint8x3 positions or Int16x3 normals as readily as Float32x3 ones. The PLY and STL writers sliced a fixed twelve bytes at point * byte_stride through the panicking DataBuffer::read, so the decode-then-write pipeline this crate exists for panicked on such a mesh; the OBJ writer already refused it, which is what showed the guard had been written once and not carried across. The STL writer now refuses what it cannot read, as OBJ does, and the PLY writer converts each component at its own width through a bounds-checked reader. The PLY padding also measured how far behind the position list the other lists were, which underflowed for a mesh carrying normals but no positions."
+
   - id: caller-resource-policy-documented
     status: covered
     evidence:

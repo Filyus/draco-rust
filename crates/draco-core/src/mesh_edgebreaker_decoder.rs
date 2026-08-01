@@ -362,9 +362,10 @@ impl MeshEdgebreakerDecoder {
         // counts before entering the decode loop so a tiny malformed input cannot
         // drive a large CPU-only scan through missing events.
         if num_topology_splits as usize > in_buffer.remaining_size() {
-            return Err(DracoError::DracoError(
-                "Topology split count exceeds remaining bitstream size".to_string(),
-            ));
+            return Err(DracoError::CountExceedsBitstream {
+                count: num_topology_splits as usize,
+                remaining_bytes: in_buffer.remaining_size(),
+            });
         }
 
         // Cap the pre-reservation by the remaining byte budget as a second line

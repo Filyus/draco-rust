@@ -27,6 +27,23 @@ pub enum DracoError {
     /// Buffer read or write failed.
     #[error("Buffer decode error: {0}")]
     BufferError(String),
+    /// A declared geometry count is larger than the remaining bitstream could
+    /// describe, so the stream is refused before it sizes anything from it.
+    ///
+    /// Distinct from the generic error because it is the one decode refusal a
+    /// caller may legitimately want to tell apart: the bound it applies assumes
+    /// at least one bit per point or face, which highly repetitive geometry can
+    /// beat, so this is also the refusal that can be a false positive. See the
+    /// `decoder-count-guard-is-unsound` entry in `hardening_status.yaml`.
+    #[error(
+        "Declared count {count} exceeds what the remaining {remaining_bytes} bytes can describe"
+    )]
+    CountExceedsBitstream {
+        /// The count the bitstream declared.
+        count: usize,
+        /// Bytes left in the buffer when the count was read.
+        remaining_bytes: usize,
+    },
 }
 
 /// Convenience result type for operations that only report success or failure.

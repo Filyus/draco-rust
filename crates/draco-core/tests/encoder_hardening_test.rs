@@ -12,6 +12,7 @@ use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::encoder_options::EncoderOptions;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::{AttributeValueIndex, PointIndex};
+use draco_core::keyframe_animation::KeyframeAnimation;
 use draco_core::mesh::Mesh;
 use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
@@ -30,6 +31,78 @@ fn positions(num_values: usize) -> PointAttribute {
         num_values,
     );
     attribute
+}
+
+/// Two triangles with float32 positions.
+fn quad() -> Mesh {
+    let mut mesh = Mesh::new();
+    let mut pos = PointAttribute::new();
+    pos.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        4,
+    );
+    let coords: [f32; 12] = [0., 0., 0., 1., 0., 0., 0., 1., 0., 1., 1., 0.];
+    for (i, value) in coords.iter().enumerate() {
+        pos.buffer_mut().write(i * 4, &value.to_le_bytes());
+    }
+    mesh.set_num_points(4);
+    mesh.add_attribute(pos);
+    mesh.set_num_faces(2);
+    mesh.set_face_from_indices(0, [0, 1, 2]);
+    mesh.set_face_from_indices(1, [1, 3, 2]);
+    mesh
+}
+
+/// The same quad with a texture coordinate, so the EdgeBreaker path builds
+/// attribute connectivity the next encode must not inherit.
+fn attributed_quad() -> Mesh {
+    let mut mesh = quad();
+    let mut uv = PointAttribute::new();
+    uv.init(
+        GeometryAttributeType::TexCoord,
+        2,
+        DataType::Float32,
+        false,
+        4,
+    );
+    for i in 0..4 {
+        uv.buffer_mut()
+            .write(i * 8, &((i % 3) as f32).to_le_bytes());
+        uv.buffer_mut()
+            .write(i * 8 + 4, &((i % 2) as f32).to_le_bytes());
+    }
+    mesh.add_attribute(uv);
+    mesh
+}
+
+/// The quad plus `num_generic` seamed generic attributes, each of which becomes
+/// its own attribute-connectivity group.
+fn seamed_quad(num_generic: usize) -> Mesh {
+    let mut mesh = quad();
+    for _ in 0..num_generic {
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Generic,
+            1,
+            DataType::Float32,
+            false,
+            2,
+        );
+        attribute.buffer_mut().write(0, &0.0f32.to_le_bytes());
+        attribute.buffer_mut().write(4, &1.0f32.to_le_bytes());
+        attribute.set_explicit_mapping(4);
+        for point in 0..4u32 {
+            let _ = attribute.try_set_point_map_entry(
+                PointIndex(point),
+                AttributeValueIndex(u32::from(point >= 2)),
+            );
+        }
+        mesh.add_attribute(attribute);
+    }
+    mesh
 }
 
 fn encode_mesh(mesh: Mesh, options: &EncoderOptions) -> Result<Vec<u8>, String> {
@@ -112,6 +185,51 @@ fn attribute_shorter_than_the_point_count_is_refused() {
     let error = encode_point_cloud(pc, &options).expect_err("short attribute must be refused");
     assert!(
         error.contains("holds 3 values for 8 points"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn a_value_buffer_too_short_for_the_value_count_is_refused() {
+    // The mapping check answers "is this value one of ours"; this one answers
+    // "is that value in the buffer". `buffer_mut()` is public and its `resize`
+    // with it, so a loader can truncate storage without touching `size()`.
+    // Integer attributes never enter the quantization transform, whose own
+    // bounds check would otherwise catch it, and go straight to the sequential
+    // and KD-tree readers, which slice unchecked.
+    for data_type in [DataType::Int32, DataType::Uint16, DataType::Int8] {
+        let mut pc = PointCloud::new();
+        pc.set_num_points(8);
+        let mut attribute = PointAttribute::new();
+        attribute.init(GeometryAttributeType::Position, 3, data_type, false, 8);
+        attribute.buffer_mut().resize(12);
+        pc.add_attribute(attribute);
+
+        let error = encode_point_cloud(pc, &EncoderOptions::new())
+            .expect_err(&format!("{data_type:?} truncated buffer must be refused"));
+        assert!(
+            error.contains("but its buffer holds 12"),
+            "unexpected error for {data_type:?}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_component_count_wider_than_the_stride_is_refused() {
+    // `set_num_components` does not recompute the separately stored
+    // `byte_stride`, so widening it after `init` makes every value read run
+    // past the element the buffer was sized for.
+    let mut pc = PointCloud::new();
+    pc.set_num_points(4);
+    let mut attribute = PointAttribute::new();
+    attribute.init(GeometryAttributeType::Generic, 3, DataType::Int32, false, 4);
+    attribute.set_num_components(6);
+    pc.add_attribute(attribute);
+
+    let error = encode_point_cloud(pc, &EncoderOptions::new())
+        .expect_err("a stride narrower than the element must be refused");
+    assert!(
+        error.contains("12-byte stride for 24-byte values"),
         "unexpected error: {error}"
     );
 }
@@ -210,6 +328,98 @@ fn forced_predictive_traversal_is_refused_on_a_current_version() {
         error.contains("force_predictive_traversal"),
         "unexpected error: {error}"
     );
+}
+
+#[test]
+fn a_reused_encoder_encodes_what_a_fresh_one_does() {
+    // Each encode caches connectivity for the attribute stage to read back, and
+    // the sequential branch does not build a corner table - so after an
+    // EdgeBreaker encode it inherited the previous mesh's one and wrote
+    // attributes against topology the new stream does not describe. The result
+    // decoded as a different mesh, or not at all.
+    let mut edgebreaker = EncoderOptions::new();
+    edgebreaker.set_global_int("encoding_method", 1);
+    edgebreaker.set_attribute_int(0, "quantization_bits", 11);
+    edgebreaker.set_attribute_int(1, "quantization_bits", 10);
+    let mut sequential = EncoderOptions::new();
+    sequential.set_global_int("encoding_method", 0);
+    sequential.set_attribute_int(0, "quantization_bits", 11);
+
+    let from_fresh = encode_mesh(quad(), &sequential).expect("fresh encode");
+
+    let mut reused = MeshEncoder::new();
+    reused.set_mesh(attributed_quad());
+    let mut first = EncoderBuffer::new();
+    reused
+        .encode(&edgebreaker, &mut first)
+        .expect("first encode");
+    reused.set_mesh(quad());
+    let mut second = EncoderBuffer::new();
+    reused
+        .encode(&sequential, &mut second)
+        .expect("second encode");
+
+    assert_eq!(
+        from_fresh,
+        second.data(),
+        "a reused encoder produced a different stream than a fresh one"
+    );
+    let mut decoded = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut DecoderBuffer::new(second.data()), &mut decoded)
+        .expect("the reused encoder's stream must decode");
+}
+
+#[test]
+fn more_attribute_groups_than_the_count_field_holds_is_refused() {
+    // The group count is one byte, so 256 groups truncated to 0 and the decoder
+    // read the following bytes as attribute data. The boundary is measured:
+    // 255 groups still encode and decode, 256 are refused.
+    for (num_generic, expect_ok) in [(254usize, true), (255, false)] {
+        let mut options = EncoderOptions::new();
+        options.set_global_int("encoding_method", 1);
+        options.set_global_int("encoding_speed", 0);
+        options.set_global_int("decoding_speed", 0);
+        for id in 0..=num_generic {
+            options.set_attribute_int(id as i32, "quantization_bits", 8);
+        }
+
+        let result = encode_mesh(seamed_quad(num_generic), &options);
+        match (result, expect_ok) {
+            (Ok(bytes), true) => {
+                let mut decoded = Mesh::new();
+                MeshDecoder::new()
+                    .decode(&mut DecoderBuffer::new(&bytes), &mut decoded)
+                    .expect("a stream with 255 groups must decode");
+                assert_eq!(decoded.num_attributes(), num_generic as i32 + 1);
+            }
+            (Err(error), false) => assert!(
+                error.contains("attribute groups but the bitstream field holds 255"),
+                "unexpected error: {error}"
+            ),
+            (Ok(_), false) => panic!("{num_generic} generic attributes should have been refused"),
+            (Err(error), true) => panic!("{num_generic} generic attributes must encode: {error}"),
+        }
+    }
+}
+
+#[test]
+fn keyframe_tracks_that_do_not_fit_their_descriptor_are_refused() {
+    // `add_keyframes` takes the component count and the scalar type as separate
+    // parameters from the slice itself, and only those two size the buffer it
+    // writes the slice into. Both disagreements used to write past it.
+    let mut animation = KeyframeAnimation::new();
+    assert!(animation.set_timestamps(&[0.0f32, 1.0]));
+
+    // A count wider than the u8 the attribute stores it in.
+    assert_eq!(
+        animation.add_keyframes(DataType::Float32, 256, &[0.0f32; 512]),
+        -1
+    );
+    // A scalar type that is not the element type of the slice.
+    assert_eq!(animation.add_keyframes(DataType::Int8, 3, &[0.0f64; 6]), -1);
+    // The agreeing case still works.
+    assert!(animation.add_keyframes(DataType::Float32, 3, &[0.0f32; 6]) >= 0);
 }
 
 /// Empty geometry, under each prediction scheme. Prediction schemes

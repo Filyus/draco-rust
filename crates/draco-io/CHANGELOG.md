@@ -7,6 +7,21 @@ independently; its release tags are `draco-io-vX.Y.Z`. It depends on a published
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- The PLY and STL writers no longer panic on a mesh whose position or normal
+  attribute is not `Float32x3`. A `.drc` declares its own attribute data types,
+  so `MeshDecoder` returns Uint8x3 positions or Int16x3 normals as readily as
+  float ones, and both writers sliced a fixed twelve bytes per point regardless.
+  The STL writer now refuses what it cannot read, as the OBJ writer already did;
+  the PLY writer converts each component at its own width.
+- The PLY writer handles a mesh that carries normals, colors or texture
+  coordinates but no position attribute. The padding it inserts measured how far
+  behind the position list the other lists were, which underflowed when nothing
+  had been appended to it.
+
 ## [Unreleased]
 
 ## [0.3.2](https://github.com/Filyus/draco-rust/compare/draco-io-v0.3.1...draco-io-v0.3.2) - 2026-07-30

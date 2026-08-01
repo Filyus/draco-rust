@@ -32,9 +32,33 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   offset falls outside the attribute buffer, matching the octahedron transform's
   counterpart.
 
+- An attribute whose value buffer is shorter than the value count it reports, or
+  whose component count was widened past its stride after `init`, is refused
+  instead of reading past the buffer. The mapping check cannot see this - every
+  index is in range while the bytes behind it are not - and integer attributes
+  never enter the quantization transform whose own bounds check would have
+  caught it.
+- Reusing a `MeshEncoder` for a second mesh no longer inherits the first one's
+  connectivity. Each encode caches a corner table and its maps for the attribute
+  stage, and the sequential path does not rebuild all of it, so encoding an
+  attributed mesh with EdgeBreaker and then a plain mesh sequentially produced a
+  stream this crate's own decoder rejects.
+- A mesh needing more attribute groups than the bitstream's one-byte count field
+  holds is refused rather than truncated. At 256 groups the count wrapped to
+  zero and the decoder read the following bytes as attribute data.
+- Encoding a mesh at a high quantization setting no longer allocates a frequency
+  table the size of the largest prediction residual. A 100-point mesh at
+  `-qp 30 -cl 10` asked for roughly 17 GB and took 13 seconds; symbols above
+  2^18 now live in a map, so the same frequencies - and therefore byte-identical
+  output - cost the number of distinct symbols instead of their magnitude.
+- `KeyframeAnimation::add_keyframes` returns `-1` instead of writing past the
+  attribute buffer when the component count does not fit the `u8` that stores
+  it, or when the declared scalar type is not the element type of the slice.
+
 These came from a new encoder-side libFuzzer target, `encode_drc`, which
 builds geometry from the fuzz input, encodes it, and requires that anything the
-encoder accepts decodes. See [`FUZZING.md`](../../FUZZING.md).
+encoder accepts decodes, and from an audit of that target's own first fixes. See
+[`FUZZING.md`](../../FUZZING.md).
 
 ## [1.1.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.0.5...draco-core-v1.1.0) - 2026-07-31
 

@@ -149,7 +149,10 @@ impl KdTreeAttributesEncoder {
         // Draco C++: compression_level = min(10 - GetSpeed(), 6), and GetSpeed
         // is the larger of the encoding and decoding speeds.
         let speed = options.get_speed();
-        let mut compression_level: u8 = (10 - speed).clamp(0, 6) as u8;
+        // Saturating because the speed is a caller-set option with no declared
+        // range and `10 - i32::MIN` overflows; the clamp that follows makes the
+        // saturated end indistinguishable from any other extreme speed.
+        let mut compression_level: u8 = 10i32.saturating_sub(speed).clamp(0, 6) as u8;
         if compression_level == 6 && self.num_components > 15 {
             compression_level = 5;
         }
@@ -221,7 +224,14 @@ impl KdTreeAttributesEncoder {
                                 src.data_type(),
                             );
                             let minv = self.min_signed_values[num_processed_signed_components + c];
-                            dst[num_processed_components + c] = (signed - minv) as u32;
+                            // Wrapping, as C++ `signed_point[c] - min_signed_values_[..]`
+                            // assigned to a uint32_t is: the difference of two
+                            // i32 does not fit i32 when the attribute spans the
+                            // full range, but two's complement makes the
+                            // wrapped bits the exact u32 difference, which is
+                            // what the decoder adds `minv` back to. Plain
+                            // subtraction only differed by panicking in debug.
+                            dst[num_processed_components + c] = signed.wrapping_sub(minv) as u32;
                         }
                     }
                     num_processed_signed_components += num_att_components;

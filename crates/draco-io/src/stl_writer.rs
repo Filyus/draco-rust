@@ -19,6 +19,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
+use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::GeometryAttributeType;
 use draco_core::geometry_indices::FaceIndex;
 use draco_core::mesh::Mesh;
@@ -79,6 +80,19 @@ impl Writer for StlWriter {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Mesh has no position attribute",
+            ));
+        }
+        // `read_position` reads a fixed twelve bytes per point, so anything but
+        // Float32x3 either reads a neighbouring value as a float or runs off
+        // the end of the buffer. A decoded `.drc` may legitimately declare its
+        // positions as Uint8x3 or Int16x3 - the decoder takes both from the
+        // bitstream - so this is reachable from any decode-then-write pipeline.
+        // The OBJ writer already refuses the same mesh this way.
+        let position = mesh.attribute(position_id);
+        if position.data_type() != DataType::Float32 || position.num_components() != 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "STL writer requires position attributes to be Float32x3",
             ));
         }
         let point_count = mesh.num_points();

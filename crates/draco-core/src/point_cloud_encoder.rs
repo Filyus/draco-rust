@@ -2,6 +2,7 @@ use crate::compression_config::EncodedGeometryType;
 use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::encoder_options::EncoderOptions;
+use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::PointIndex;
 use crate::kd_tree_attributes_encoder::KdTreeAttributesEncoder;
 use crate::mesh::Mesh;
@@ -78,6 +79,62 @@ pub(crate) fn validate_encodable_attributes(point_cloud: &PointCloud) -> Status 
                 }
             }
         }
+
+        validate_attribute_storage(att_id, attribute)?;
+    }
+    Ok(())
+}
+
+/// Rejects an attribute whose value buffer cannot hold the values it reports.
+///
+/// The mapping check above answers "is this value index one of ours"; this one
+/// answers "is that value actually in the buffer". They are different
+/// questions, because both the element size and the buffer length are settable
+/// after the fact: `PointAttribute::buffer_mut` hands out a `DataBuffer` whose
+/// `resize` is public, and `set_num_components` / `set_data_type` change the
+/// element size without recomputing the separately stored `byte_stride`. A
+/// loader that truncates the buffer, or that widens the component count after
+/// `init`, produces an attribute that satisfies every other rule here and still
+/// overruns its storage.
+///
+/// The overrun lands in `DataBuffer::read`, which slices unchecked; each
+/// encoder path reaches it through its own reader, so guarding it at each
+/// reader would mean finding them all and finding each new one. The
+/// quantization transform does bounds-check its own reads, but only float
+/// attributes enter it - integer attributes go straight to the sequential and
+/// KD-tree readers. One statement of the requirement here covers every reader,
+/// present and future.
+fn validate_attribute_storage(att_id: i32, attribute: &PointAttribute) -> Status {
+    let num_values = attribute.size();
+    if num_values == 0 {
+        return Ok(());
+    }
+
+    let component_size = attribute.data_type().byte_length();
+    let element_size = (attribute.num_components() as usize).saturating_mul(component_size);
+    let byte_stride = attribute.byte_stride().max(0) as usize;
+    if byte_stride < element_size {
+        return Err(DracoError::DracoError(format!(
+            "Attribute {att_id} declares a {byte_stride}-byte stride for {element_size}-byte \
+             values"
+        )));
+    }
+
+    // The last value starts at `(num_values - 1) * byte_stride` and is
+    // `element_size` long, so the buffer needs that much and no more: a
+    // trailing gap the stride would imply is never read.
+    let required = (num_values - 1)
+        .checked_mul(byte_stride)
+        .and_then(|last_offset| last_offset.checked_add(element_size))
+        .ok_or_else(|| {
+            DracoError::DracoError(format!("Attribute {att_id} value extent overflows"))
+        })?;
+    let available = attribute.buffer().data_size();
+    if available < required {
+        return Err(DracoError::DracoError(format!(
+            "Attribute {att_id} needs {required} bytes for {num_values} values but its buffer \
+             holds {available}"
+        )));
     }
     Ok(())
 }
