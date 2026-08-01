@@ -8,14 +8,121 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+A breaking release. Its through-line is that a refusal should say what it
+refused. Ninety-odd functions across the decode and encode paths returned a
+`bool` whose `false` covered a truncated buffer, an uninitialised transform and
+an unsupported feature alike, and the reason — where one existed at all — went
+to a `debug_log!` the release build drops. Alongside that, the version
+`set_version` accepts is now an enumeration of combinations that have a
+round-trip test, the header count guard is replaced by one whose premise holds,
+and the encoder reports the choices it makes for itself.
+
+### Added
+
+- `PointCloudEncoder::encoded_point_cloud_info` and `EncodedPointCloudInfo`
+  report what a point-cloud encode decided, so the KD-tree-versus-sequential
+  choice — which the encoder makes on its own whenever every attribute is
+  eligible — is visible. `EncodedMeshInfo` gains the resolved bitstream version,
+  EdgeBreaker traversal, speed and split-connectivity flag; `EncodedAttributeInfo`
+  gains the prediction scheme, prediction transform and the quantization bits a
+  transform actually applied. The values are the resolved ones, not the requested
+  ones: several encoder arms fall back to `Difference` when the attribute or the
+  mesh cannot support what was asked for, and a `quantization_bits` set on an
+  integer attribute is not repeated back as though it had been used. Both structs
+  are `#[non_exhaustive]`.
+- `DracoError::AllocationExceedsInput` tells apart a decode refused for asking to
+  allocate more than its input could describe.
+
 ### Changed
 
+- **Breaking.** `DracoError::DracoError` is now `DracoError::General`. The
+  variant mirrors upstream's `Status::DRACO_ERROR`, whose own comment reads "used
+  for general errors"; upstream qualifies it as `Status::`, so the stutter was an
+  artifact of this port naming the enum `DracoError`. The `Display` text has
+  always read "General error".
+- **Breaking.** `DracoError` is `#[non_exhaustive]`: a decoder that learns to
+  tell one refusal from another can say so without a major release. Match with a
+  `_` arm.
+- **Breaking.** The fallible methods of `AttributeTransform`, of the
+  `PredictionScheme` family, and of the sequential attribute coders return
+  `Status` instead of `bool`, and their failures propagate to `MeshDecoder`,
+  `PointCloudDecoder`, `MeshEncoder` and `PointCloudEncoder` rather than being
+  replaced by a fixed sentence one hop below the API. A truncated stream now
+  reports which structure ran out, three layers up. `is_initialized`,
+  `is_valid_quantization_bits` and `are_corrections_positive` stay `bool` — they
+  are predicates, not outcomes.
+- **Breaking.** `DirectBitDecoder::decode_next_bit` returns `Option<bool>`: its
+  bits are a `Vec<u32>` filled by `start_decoding`, so a read past the end is
+  exactly knowable and no longer indistinguishable from an encoded zero. Its rANS
+  siblings keep `bool` and document why they cannot answer the same question —
+  the state legitimately falls below `l_base` on 26% of reads in streams this
+  crate encodes and decodes back byte-exactly, so there is no local signal, and
+  the guard belongs at the call sites where the read count is bounded
+  structurally.
+- **Breaking.** `set_version` takes an enumeration of geometry/coder/traversal
+  combinations that have an encode/decode round-trip test, rather than the
+  interval from 1.0 to the newest — 259 values for a mesh, including minors that
+  never existed, most of which produced a stream this crate's own decoder
+  rejects. Narrowing cannot diverge from upstream: C++ Draco has no version
+  setter at all.
+- **Breaking.** `DracoError::is_count_exceeds_bitstream` and the message-prefix
+  constructor behind it are gone with the guard they described.
+- The decoder bounds allocations by a ratio against the input — 2^20 bytes per
+  input byte, applied where buffers are sized — instead of refusing a declared
+  count above the remaining bitstream in bits. That premise was false: geometry
+  whose values are all equal entropy-codes to a size independent of the count, so
+  this crate wrote 100,000 points into 171 bytes and then refused to read the
+  file back. Upstream's own `faces > remaining/3` is deliberately not adopted; it
+  fails for the compressed connectivity branch for the same reason.
 - A tex-coord prediction scheme forced onto an attribute that is not a texture
   coordinate is refused. Both tex-coord predictors work on two components, and a
   normal presents two once the octahedron transform has folded it from three, so
   the scheme was accepted for normals and wrote values the normal decoder cannot
   read back. Three-component attributes were already refused, which is why only
   normals slipped through.
+- The EdgeBreaker traversal reports `DracoError` rather than `String`, removing
+  the last error type in the crate that was not `DracoError`. Behaviour-neutral.
+- The texture-coordinate orientation count is bounded by the entry count rather
+  than by the remaining stream in bits. `compute_original_values` pops exactly one
+  orientation per predicted entry, so a count above that can never be consumed
+  whatever the stream holds; the previous bound assumed one rANS bit per
+  orientation, which a run of identical ones beats.
+
+### Fixed
+
+- Quantizing an attribute with parameters computed for a narrower one panicked
+  with "the len is 2 but the index is 2", reachable through the public
+  `AttributeTransform::transform_attribute`. The inverse direction had checked
+  that length since it was written.
+- `AttributeQuantizationTransform::encode_parameters` wrote `-1` truncated to
+  `0xFF` as the quantization-bits byte and reported success, emitting a value no
+  decoder accepts. The sibling octahedron transform had always gated the same
+  method.
+- The normal encoder accepted a quantization bit count of 1 or above 30 — the
+  octahedron transform carries 2..=30 — leaving the transform uninitialised while
+  reporting success; the encode failed later, at the folding step, naming nothing.
+- Two `unwrap()` calls on the portable texture-coordinate encode path panicked on
+  a scheme that had mesh data but no corner map, after a check covering only the
+  first.
+- `CornerTable::opposite` and `vertex` return the invalid sentinel for a corner
+  past the table instead of indexing out of bounds. Roughly twenty-five index
+  expressions in that file funnel through the two.
+- A KD-tree stream claiming more splits than its half bits cover read zeros past
+  the end and kept building; it is refused.
+- Encoding below 2.2 wrote 2.2 layouts inside older streams in five places, all
+  one root cause: a sub-buffer built with `EncoderBuffer::new()` reports version
+  0, which every version branch reads as "newest". The EdgeBreaker traversal
+  block, the deprecated tex-coords, geometric-normal and portable tex-coords
+  schemes, and the pre-2.0 quantization parameters are written in the layout the
+  target version specifies.
+- Sequential meshes switch counts *and* face indices to varints at 2.2, not at
+  the major. The face-index branch had no version gate at all, so a 1.3 mesh with
+  65,536 or more points decoded without error, with the right face count, and
+  with different faces.
+- The four decode-path allocations sized from `num_points * num_components` are
+  fallible, and the product is computed with `checked_mul` — `usize` is 32 bits
+  on the wasm32 target this ships to, where a large point count times 255
+  components wraps rather than saturating.
 
 ## [1.2.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.1.0...draco-core-v1.2.0) - 2026-08-01
 

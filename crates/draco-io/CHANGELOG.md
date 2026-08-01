@@ -9,6 +9,17 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Changed
+
+- The four mesh writers refuse a mesh whose attributes do not cover its points,
+  at their entry points, instead of reading `point * byte_stride` through the
+  panicking `DataBuffer::read` at nine call sites. Those reads are sound exactly
+  when each attribute holds at least `num_points` values, and nothing between a
+  decoder and a writer re-checked it — the counts come from a `.drc` header. One
+  precondition per writer is what makes the nine provably in range; guarding at
+  the reads instead would mean deciding, nine times, what to emit for a value
+  that is not there.
+
 ### Fixed
 
 - The PLY and STL writers no longer panic on a mesh whose position or normal
@@ -43,8 +54,6 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   169-byte file declaring four billion faces spun for seconds and reserved
   48 GB before reading a single vertex; the line loops now end with the text and
   the reservations are bounded by what the body can hold.
-
-## [Unreleased]
 
 ## [0.3.2](https://github.com/Filyus/draco-rust/compare/draco-io-v0.3.1...draco-io-v0.3.2) - 2026-07-30
 
