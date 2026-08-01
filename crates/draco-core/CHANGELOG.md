@@ -6,59 +6,75 @@ independently; its release tags are `draco-core-vX.Y.Z`.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [1.2.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.1.0...draco-core-v1.2.0) - 2026-08-01
+
+A hardening release for the encoding side. Geometry handed to an encoder
+normally came out of a file some other library parsed, so its point count, index
+buffer, attribute mappings and quantization settings are as untrusted as the
+file was, and nothing between the two re-checked them. Found by a new
+encoder-side libFuzzer target and by an audit of that target's own first fixes;
+every case below is pinned as a regression test.
+
+### Added
+
+- `DracoError::is_count_exceeds_bitstream` tells apart the decoder's
+  count-versus-size header refusal. It is the one decode refusal that can be a
+  false positive: the bound assumes at least one bit per point or face, which
+  highly repetitive geometry beats.
+- `PointAttribute::is_mapping_identity` reports whether point ids are used
+  directly as attribute value ids, so a caller validating a mapping answers in
+  one comparison instead of a `mapped_index` call per point.
+- `version::validate_encodable_version` and `version::OLDEST_ENCODABLE_VERSION`
+  state which bitstream versions this crate writes: 1.0 up to the newest for the
+  geometry type.
 
 ### Changed
 
 - The encoders validate the geometry they are given before encoding it, and
   refuse what they cannot encode instead of panicking. An attribute must have
-  components, a data type, and a point map that lands inside its own value
-  array; a mesh face must reference points the mesh has; the target bitstream
-  version must be one this crate writes (1.0 up to the newest for the geometry
-  type); and `force_predictive_traversal` requires a target below 2.0, which its
-  own comment already said and nothing checked. Callers passing geometry
-  assembled from a file - where the point count, index buffer and attribute
-  mappings come from the file and nothing re-checks them - now get a
-  `DracoError` where the encoder previously indexed off those numbers.
+  components, a valid data type, a point map that lands inside its own value
+  array, a stride at least as wide as its element, and a buffer long enough for
+  the values it reports; a mesh face must reference points the mesh has; the
+  target bitstream version must be one this crate writes; and
+  `force_predictive_traversal` requires a target below 2.0, which its own
+  comment already said and nothing checked. Callers passing geometry assembled
+  from a file now get a `DracoError` where the encoder previously indexed off
+  those numbers.
+- A mesh needing more attribute groups than the bitstream's one-byte count field
+  holds is refused rather than truncated. At 256 groups the count wrapped to
+  zero and the decoder read the following bytes as attribute data; 255 groups
+  still round-trip.
+- `KeyframeAnimation::add_keyframes` returns `-1` instead of writing past the
+  attribute buffer when the component count does not fit the `u8` that stores
+  it, or when the declared scalar type is not the element type of the slice.
 
 ### Fixed
 
+- Encoding a mesh at a high quantization setting no longer allocates a frequency
+  table the size of the largest prediction residual. A 100-point mesh at
+  `-qp 30 -cl 10`, both legitimate settings, asked for roughly 17 GB and took 13
+  seconds; symbols above 2^18 now live in a map, so the same frequencies - and
+  therefore byte-identical output - cost the number of distinct symbols instead
+  of their magnitude.
+- Reusing a `MeshEncoder` for a second mesh no longer inherits the first one's
+  connectivity. Each encode caches a corner table and its maps for the attribute
+  stage and the sequential path does not rebuild all of it, so encoding an
+  attributed mesh with EdgeBreaker and then a plain mesh sequentially produced a
+  stream this crate's own decoder rejects.
 - A point cloud encoded at a bitstream version below 1.3 omitted the header
   flags field, leaving the stream two bytes short of what its own decoder reads,
   so an explicit `set_version(1, 0)` produced a `.drc` nothing could decode.
   Upstream writes that field for every version, and the mesh encoder already
   did.
-- The quantization transform reports a failure instead of indexing when a source
-  offset falls outside the attribute buffer, matching the octahedron transform's
-  counterpart.
-
-- An attribute whose value buffer is shorter than the value count it reports, or
-  whose component count was widened past its stride after `init`, is refused
-  instead of reading past the buffer. The mapping check cannot see this - every
-  index is in range while the bytes behind it are not - and integer attributes
-  never enter the quantization transform whose own bounds check would have
-  caught it.
-- Reusing a `MeshEncoder` for a second mesh no longer inherits the first one's
-  connectivity. Each encode caches a corner table and its maps for the attribute
-  stage, and the sequential path does not rebuild all of it, so encoding an
-  attributed mesh with EdgeBreaker and then a plain mesh sequentially produced a
-  stream this crate's own decoder rejects.
-- A mesh needing more attribute groups than the bitstream's one-byte count field
-  holds is refused rather than truncated. At 256 groups the count wrapped to
-  zero and the decoder read the following bytes as attribute data.
-- Encoding a mesh at a high quantization setting no longer allocates a frequency
-  table the size of the largest prediction residual. A 100-point mesh at
-  `-qp 30 -cl 10` asked for roughly 17 GB and took 13 seconds; symbols above
-  2^18 now live in a map, so the same frequencies - and therefore byte-identical
-  output - cost the number of distinct symbols instead of their magnitude.
-- `KeyframeAnimation::add_keyframes` returns `-1` instead of writing past the
-  attribute buffer when the component count does not fit the `u8` that stores
-  it, or when the declared scalar type is not the element type of the slice.
-
-These came from a new encoder-side libFuzzer target, `encode_drc`, which
-builds geometry from the fuzz input, encodes it, and requires that anything the
-encoder accepts decodes, and from an audit of that target's own first fixes. See
-[`FUZZING.md`](../../FUZZING.md).
+- The quantization transform and its parameter scan report a failure instead of
+  indexing when a source offset falls outside the attribute buffer, matching the
+  octahedron transform's counterpart.
+- Three arithmetic operations this port performed in a signed type where
+  upstream uses an unsigned one no longer panic in a debug build: the portable
+  tex-coord predictor's squared-norm product, the rANS table-size estimate, and
+  the constrained multi-parallelogram scorer's zig-zag of a full-range residual.
+  Release output is unchanged; the random-mesh parity sweep against the
+  reference encoder now passes on all 388 meshes.
 
 ## [1.1.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.0.5...draco-core-v1.1.0) - 2026-07-31
 
