@@ -74,27 +74,42 @@ impl AttributeQuantizationTransform {
         }
 
         let buffer = attribute.buffer();
+        let data = buffer.data();
         let byte_stride = attribute.byte_stride() as usize;
 
-        // Initialize min/max from first entry (matching C++ behavior exactly)
+        // The buffer is allocated alongside `size()` on the common path, but
+        // `buffer_mut()` is public and geometry handed to the encoder may have
+        // been assembled from a file whose loader truncated the buffer
+        // independently of the value count it reports. Every read is therefore
+        // bounds-checked, as the octahedron transform's counterpart already is,
+        // rather than sliced unchecked.
         self.min_values = vec![0.0f32; num_components];
         let mut max_values = vec![0.0f32; num_components];
 
-        // Read the first entry to initialize min/max
+        let read_component = |start: usize| -> Option<f32> {
+            let end = start.checked_add(4)?;
+            Some(bytemuck::pod_read_unaligned::<f32>(data.get(start..end)?))
+        };
+
+        // Read the first entry to initialize min/max (matching C++ behavior)
         for c in 0..num_components {
-            let val = bytemuck::pod_read_unaligned::<f32>(&buffer.data()[c * 4..c * 4 + 4]);
+            let Some(val) = read_component(c * 4) else {
+                return false;
+            };
             self.min_values[c] = val;
             max_values[c] = val;
         }
 
         // Process remaining entries starting from index 1 (matching C++ loop)
         for i in 1..num_entries {
-            let offset = i * byte_stride;
+            let Some(offset) = i.checked_mul(byte_stride) else {
+                return false;
+            };
             // Read num_components floats
             for c in 0..num_components {
-                let val = bytemuck::pod_read_unaligned::<f32>(
-                    &buffer.data()[offset + c * 4..offset + c * 4 + 4],
-                );
+                let Some(val) = offset.checked_add(c * 4).and_then(read_component) else {
+                    return false;
+                };
 
                 if val.is_nan() {
                     return false;
@@ -653,6 +668,26 @@ mod tests {
         let mut transform = AttributeQuantizationTransform::new();
         assert!(transform.set_parameters(10, &[0.0, 0.0, 0.0], 1.0));
         assert!(!transform.inverse_transform_attribute(&source, &mut target));
+    }
+
+    #[test]
+    fn compute_parameters_rejects_truncated_value_buffer() {
+        // `buffer_mut()` is public, so a loader can truncate the value buffer
+        // without updating `size()`. `compute_parameters` used to slice the
+        // buffer at `i * byte_stride` unchecked; it now reports a failure, as
+        // the octahedron transform's counterpart already does.
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            4, // reports four values, so the loop below would index past 12 bytes
+        );
+        attribute.buffer_mut().resize(8); // one value short of two complete entries
+
+        let mut transform = AttributeQuantizationTransform::new();
+        assert!(!transform.compute_parameters(&attribute, 8));
     }
 
     #[test]
