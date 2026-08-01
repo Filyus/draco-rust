@@ -22,13 +22,25 @@ use crate::status::{DracoError, Status};
 
 /// How many bytes a decode may allocate per byte of input.
 ///
-/// The bound is a heuristic, and the two numbers that place it are worth
-/// recording. The largest legitimate ratio this crate is known to produce is
-/// about 8,000× — the 100,000-point cloud in 171 bytes, at 12 bytes per
-/// position — so 2^20 leaves better than two orders of magnitude of headroom.
-/// The malformed headers pinned in `drc_edge_cases_test.rs` declare `u32::MAX`
-/// counts in bodies of 11 to 19 bytes, which is a ratio above 2^31, so they
-/// stay refused by a factor of about 2^11.
+/// It is a heuristic, so the numbers that place it are measured rather than
+/// guessed:
+///
+/// - The largest legitimate ratio this crate is known to produce is about
+///   7,000× — 100,000 positions, 1.2 MB of values, from a 171-byte stream — so
+///   2^20 leaves better than two orders of magnitude of headroom.
+/// - The malformed KD-tree header pinned in `drc_edge_cases_test.rs` asks for
+///   51 GB from 19 bytes, a ratio near 2^31, so it is refused by about 2,500×.
+///
+/// Fallible allocation is **not** a substitute, which is the reason this exists
+/// at all. Measured on Windows: `Vec::<u32>::try_reserve_exact` for 51 GB
+/// *succeeds*, in 0.165 s, and the decoder then spends 14.5 s writing into what
+/// it was given. Asking the allocator politely does not bound anything when the
+/// allocator says yes.
+///
+/// It is also a stopgap for something deeper. The KD-tree loop cannot stop when
+/// the data runs out, because `decode_next_bit` reports an exhausted buffer and
+/// a zero bit the same way — see the `decode-error-api-cleanup` risk. Once that
+/// is fixed the loop bounds itself, and this ratio can be revisited.
 pub(crate) const MAX_ALLOCATED_BYTES_PER_INPUT_BYTE: usize = 1 << 20;
 
 /// Refuses an allocation the stream is too small to be describing.
