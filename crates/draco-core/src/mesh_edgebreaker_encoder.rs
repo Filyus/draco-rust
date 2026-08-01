@@ -200,6 +200,9 @@ pub struct MeshEdgebreakerEncoder {
     // Tracks which holes have been visited during encoding
     visited_holes: Vec<bool>,
     encoding_speed: usize,
+    /// Whether the target bitstream can say "prediction degree" at all. See
+    /// where it is set.
+    prediction_degree_is_expressible: bool,
     /// Resolved by `select_edgebreaker_traversal` at the start of an encode.
     traversal: EdgebreakerTraversal,
     /// One connectivity shared by more than one attribute; suppresses the
@@ -231,6 +234,7 @@ impl MeshEdgebreakerEncoder {
 
     pub fn new(num_faces: usize, num_vertices: usize) -> Self {
         Self {
+            prediction_degree_is_expressible: true,
             visited_faces: vec![false; num_faces],
             visited_vertices: vec![false; num_vertices],
             face_to_symbol_id: vec![u32::MAX; num_faces],
@@ -339,6 +343,14 @@ impl MeshEdgebreakerEncoder {
         self.encoded_faces.clear();
         self.encoding_speed = speed;
         self.single_connectivity_multi_attribute = single_connectivity && mesh.num_attributes() > 1;
+        // The attribute traversal method is a byte that arrived in 1.2; before
+        // it, a decoder has no way to be told anything but depth first. Ordering
+        // the position values by prediction degree anyway writes values in an
+        // order the decoder does not reconstruct, and the result is a mesh whose
+        // vertices are all present and all in the wrong places.
+        let bitstream_version = out_buffer.bitstream_version();
+        self.prediction_degree_is_expressible =
+            bitstream_version == 0 || bitstream_version >= 0x0102;
 
         self.traversal =
             select_edgebreaker_traversal(speed, mesh.num_faces(), self.force_predictive);
@@ -613,7 +625,9 @@ impl MeshEdgebreakerEncoder {
     /// prediction degree has not been shown to pay off for the non-position
     /// attributes that would have to share the order.
     pub(crate) fn position_uses_prediction_degree(&self) -> bool {
-        self.encoding_speed == 0 && !self.single_connectivity_multi_attribute
+        self.encoding_speed == 0
+            && !self.single_connectivity_multi_attribute
+            && self.prediction_degree_is_expressible
     }
 
     /// The depth-first order, which is what every attribute other than the

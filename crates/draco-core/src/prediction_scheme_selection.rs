@@ -17,8 +17,53 @@ use crate::point_cloud_encoder::GeometryEncoder;
 #[cfg(feature = "encoder")]
 use crate::prediction_scheme::PredictionSchemeMethod;
 
+/// Replaces a scheme the target bitstream predates with the one its era used.
+///
+/// Schemes 4, 5 and 6 arrived after bitstream 1.1: Draco 0.9.1's decoder knows
+/// `PREDICTION_DIFFERENCE`, `MESH_PREDICTION_PARALLELOGRAM`,
+/// `MESH_PREDICTION_MULTI_PARALLELOGRAM` and `MESH_PREDICTION_TEX_COORDS` and
+/// nothing else, and its factory returns null for anything else rather than
+/// failing -- so the stream decodes to the right vertex count with the
+/// prediction silently skipped. Modern Draco is stricter and refuses outright,
+/// which is how this was found: speed 0 selects scheme 4, and a 1.1 stream
+/// written at speed 0 was readable by no released decoder.
+///
+/// The selection is what moves rather than the writer, because the older scheme
+/// is a complete substitute -- it is what upstream picked at the time.
+#[cfg(feature = "encoder")]
+fn downgrade_to_bitstream_era(
+    method: PredictionSchemeMethod,
+    options: &EncoderOptions,
+) -> PredictionSchemeMethod {
+    let (major, minor) = options.get_version();
+    // (0, 0) means "encoder default", which is always the newest.
+    if major == 0 || !crate::version::version_less_than(major, minor, (1, 2)) {
+        return method;
+    }
+    match method {
+        PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram
+        | PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
+            PredictionSchemeMethod::MeshPredictionParallelogram
+        }
+        PredictionSchemeMethod::MeshPredictionGeometricNormal => PredictionSchemeMethod::Difference,
+        other => other,
+    }
+}
+
 #[cfg(feature = "encoder")]
 pub fn select_prediction_method(
+    att_id: i32,
+    options: &EncoderOptions,
+    encoder: &dyn GeometryEncoder,
+) -> PredictionSchemeMethod {
+    downgrade_to_bitstream_era(
+        select_prediction_method_for_newest(att_id, options, encoder),
+        options,
+    )
+}
+
+#[cfg(feature = "encoder")]
+fn select_prediction_method_for_newest(
     att_id: i32,
     options: &EncoderOptions,
     encoder: &dyn GeometryEncoder,

@@ -216,6 +216,19 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
             buffer.encode_varint(self.num_symbols as u64);
         }
 
+        // A run of zero-probability symbols is written as one byte carrying the
+        // run length, tagged with token 3. That token used to mean "three extra
+        // probability bytes" -- a width no probability reaches, which is why it
+        // could be repurposed -- and the repurposing landed in Draco 0.10.0,
+        // whose bitstream is 1.2. So a 1.2 stream may carry the run, and a 1.1
+        // stream may not: 0.9.1 reads token 3 as a byte count and desynchronises
+        // on the whole table.
+        //
+        // The asymmetry is why nothing noticed. An old stream never contains
+        // token 3, so every later decoder reads one; only the reverse direction
+        // breaks, and the reverse direction is exactly what writing 1.1 is.
+        let pre_zero_run_table = bitstream_version != 0 && bitstream_version < 0x0102;
+
         let mut i = 0;
         while i < self.num_symbols {
             let prob = self.probability_table[i].prob;
@@ -230,7 +243,7 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
                 }
             }
 
-            if prob == 0 {
+            if prob == 0 && !pre_zero_run_table {
                 let mut offset = 0;
                 while offset < (1 << 6) - 1 {
                     if i + offset + 1 >= self.num_symbols {
@@ -309,5 +322,56 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
         let rem = state - quot * p;
         state = quot * Self::RANS_PRECISION + rem + sym.cum_prob;
         self.ans.state = state;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A run of zero-probability symbols is written one byte each below 1.2.
+    ///
+    /// Token 3 in the low two bits means "this byte carries a run length of
+    /// zero-probability symbols", and it means that only from Draco 0.10.0,
+    /// whose bitstream is 1.2. Before that it meant "three extra probability
+    /// bytes" -- a width no probability reaches, which is why it could be taken
+    /// over. So 0.9.1 reads a run byte as a length prefix and desynchronises on
+    /// the rest of the table, and a 1.1 stream must not contain one.
+    ///
+    /// The asymmetry hid this: an old stream never contains token 3, so every
+    /// later decoder reads one. Only writing the old version breaks, and that
+    /// direction had no reader in the test suite until draco_decoder 0.9.1 was
+    /// pointed at it.
+    fn table_bytes(major: u8, minor: u8) -> Vec<u8> {
+        // Gaps between the used symbols are what produce zero-probability runs.
+        let mut frequencies = vec![0u64; 64];
+        for symbol in [0usize, 17, 40, 63] {
+            frequencies[symbol] = 64;
+        }
+        let mut buffer = EncoderBuffer::new();
+        buffer.set_version(major, minor);
+        let mut encoder = RAnsSymbolEncoder::<12>::new();
+        assert!(
+            encoder.create(&frequencies, frequencies.len(), &mut buffer),
+            "v{major}.{minor}: create"
+        );
+        buffer.data().to_vec()
+    }
+
+    fn carries_zero_run_token(bytes: &[u8]) -> bool {
+        // Past the u32 symbol count that pre-2.0 writes.
+        bytes[4..].iter().any(|byte| byte & 3 == 3)
+    }
+
+    #[test]
+    fn the_zero_run_token_is_written_only_from_1_2() {
+        assert!(
+            !carries_zero_run_token(&table_bytes(1, 1)),
+            "1.1 must not carry the run token"
+        );
+        assert!(
+            carries_zero_run_token(&table_bytes(1, 2)),
+            "1.2 is expected to use the run token, or this test proves nothing"
+        );
     }
 }

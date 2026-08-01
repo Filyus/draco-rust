@@ -135,6 +135,24 @@ premise holds, and the encoder reports the choices it makes for itself.
   block, the deprecated tex-coords, geometric-normal and portable tex-coords
   schemes, and the pre-2.0 quantization parameters are written in the layout the
   target version specifies.
+- A pre-1.2 stream no longer carries the rANS zero-run token. Token 3 in a
+  probability byte means "a run of zero-probability symbols follows" only from
+  Draco 0.10.0, whose bitstream is 1.2; before that it meant "three extra
+  probability bytes". An old decoder reads the run byte as a length prefix and
+  loses the rest of the table. The asymmetry is why this survived: an old stream
+  never contains token 3, so every later decoder reads one, and only writing the
+  old version breaks.
+- The prediction scheme is chosen from what the target bitstream can name.
+  Constrained multi-parallelogram, portable tex-coords and geometric normal all
+  postdate 1.1, and speed 0 selects the first of them, so a 1.1 stream written at
+  speed 0 was readable by no released decoder — Draco 0.9.1's factory returns
+  null for an unknown scheme and drops the prediction silently, and modern Draco
+  refuses the stream outright.
+- The position values are ordered by prediction degree only when the target can
+  say so. That order is declared by an attribute traversal byte that arrived in
+  1.2; below it a decoder assumes depth first, so a speed-0 encode wrote values
+  in an order nothing reconstructs and produced a mesh with every vertex in the
+  wrong place.
 - Topology split events below 1.2 are written in that version's layout — two
   absolute `u32` ids and a byte for the edge, with no bit-coded section after
   them — rather than the delta/varint pair and packed edge bits that arrived in

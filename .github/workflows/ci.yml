@@ -38,7 +38,7 @@ jobs:
           cargo test --manifest-path crates/Cargo.toml -p draco-core --
           --skip compare_rust_vs_cpp_decode
           --skip rust_encode_cpp_decode_small_matrix
-          --skip cpp_decodes_a_legacy_stream_with_topology_splits
+          --skip cpp_decodes_the_legacy_streams_this_crate_writes
 
       # Feature-combination compile guard. Default tests enable every feature,
       # which hides feature-gating mistakes (e.g. a decoder module that secretly

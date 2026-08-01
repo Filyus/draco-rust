@@ -840,54 +840,69 @@ fn annulus_mesh(n: usize) -> (Mesh, Vec<[f32; 3]>) {
     (mesh, positions)
 }
 
-/// C++ Draco reads back a pre-2.2 stream this crate wrote, splits and all.
+/// C++ Draco reads back the legacy streams this crate writes.
 ///
 /// The round-trip matrix in `version_roundtrip_test` proves the encoder and
 /// this crate's decoder agree. It cannot prove either agrees with Draco, and
 /// agreeing with Draco is the entire purpose of writing an old version: the
-/// only reason to emit 1.1 is that something else will read it.
+/// only reason to emit 1.1 is that something else will read it. Two defects
+/// survived until this test existed, and neither was visible from Rust:
 ///
-/// The split-event section is where that gap mattered. Below 1.2 an event is
-/// two absolute `u32` ids and an edge byte; the encoder wrote the delta/varint
-/// form at every version, and this crate's decoder was reading the same wrong
-/// thing back without complaint.
+/// - split events below 1.2 are two absolute `u32` ids and an edge byte, and
+///   the encoder wrote the 1.2 delta/varint form at every version;
+/// - speed 0 selects the constrained multi-parallelogram prediction scheme,
+///   which postdates 1.1, so a 1.1 stream written at speed 0 was readable by no
+///   released decoder at all.
+///
+/// The speeds are here for the second one, and the holes for the first. 1.2 is
+/// beside 1.1 so a failure names the boundary rather than the feature.
+///
+/// Setting `DRACO_CPP_DECODER` to a Draco 0.9.1 build adds the one reader
+/// contemporary with bitstream 1.1, which is the only thing that can see the
+/// rANS probability-table difference; a modern decoder accepts both forms. The
+/// format rule itself is pinned in CI by
+/// `rans_symbol_encoder::tests::the_zero_run_token_is_written_only_from_1_2`.
 #[test]
 #[cfg(feature = "legacy_bitstream_encode")]
-fn cpp_decodes_a_legacy_stream_with_topology_splits() {
+fn cpp_decodes_the_legacy_streams_this_crate_writes() {
     let decoder_exe = find_cpp_tool("DRACO_CPP_DECODER", "draco_decoder.exe");
-    let tmp = std::env::temp_dir().join("draco_cpp_decodes_legacy_splits");
+    let tmp = std::env::temp_dir().join("draco_cpp_decodes_legacy_streams");
     fs::create_dir_all(&tmp).expect("create temp dir");
 
-    // 1.1 is the layout under test; 1.2 is the first version that codes the
-    // events, so a failure on one and not the other names the boundary.
     for (major, minor) in [(1u8, 1u8), (1, 2)] {
-        let (mesh, expected_positions) = annulus_mesh(17);
-        let expected_face_count = mesh.num_faces();
-        let position_id = mesh.named_attribute_id(GeometryAttributeType::Position);
+        for speed in [0, 5, 10] {
+            let (mesh, expected_positions) = annulus_mesh(17);
+            let expected_face_count = mesh.num_faces();
+            let position_id = mesh.named_attribute_id(GeometryAttributeType::Position);
 
-        let mut options = EncoderOptions::default();
-        options.set_version(major, minor);
-        options.set_global_int("encoding_method", 1); // EdgeBreaker
-        options.set_attribute_int(position_id, "quantization_bits", 14);
+            let mut options = EncoderOptions::default();
+            options.set_version(major, minor);
+            options.set_global_int("encoding_method", 1); // EdgeBreaker
+            options.set_global_int("encoding_speed", speed);
+            options.set_global_int("decoding_speed", speed);
+            options.set_attribute_int(position_id, "quantization_bits", 14);
 
-        let mut encoder = MeshEncoder::new();
-        encoder.set_mesh(mesh);
-        let mut encoded = EncoderBuffer::new();
-        encoder
-            .encode(&options, &mut encoded)
-            .unwrap_or_else(|err| panic!("v{major}.{minor}: Rust encode failed: {err:?}"));
+            let mut encoder = MeshEncoder::new();
+            encoder.set_mesh(mesh);
+            let mut encoded = EncoderBuffer::new();
+            encoder
+                .encode(&options, &mut encoded)
+                .unwrap_or_else(|err| {
+                    panic!("v{major}.{minor} at speed {speed}: Rust encode failed: {err:?}")
+                });
 
-        let name = format!("legacy_splits_v{major}_{minor}");
-        let drc_path = tmp.join(format!("{name}.drc"));
-        let ply_path = tmp.join(format!("{name}.ply"));
-        fs::write(&drc_path, encoded.data()).expect("write Rust DRC");
+            let name = format!("legacy_v{major}_{minor}_s{speed}");
+            let drc_path = tmp.join(format!("{name}.drc"));
+            let ply_path = tmp.join(format!("{name}.ply"));
+            fs::write(&drc_path, encoded.data()).expect("write Rust DRC");
 
-        let decoded = run_cpp_decoder(&decoder_exe, &drc_path, &ply_path, &name);
-        assert_eq!(
-            decoded.num_faces, expected_face_count,
-            "{name}: C++ decoded a different number of faces"
-        );
-        assert_position_sets_match(&expected_positions, &decoded.positions, &name);
+            let decoded = run_cpp_decoder(&decoder_exe, &drc_path, &ply_path, &name);
+            assert_eq!(
+                decoded.num_faces, expected_face_count,
+                "{name}: C++ decoded a different number of faces"
+            );
+            assert_position_sets_match(&expected_positions, &decoded.positions, &name);
+        }
     }
 }
 
