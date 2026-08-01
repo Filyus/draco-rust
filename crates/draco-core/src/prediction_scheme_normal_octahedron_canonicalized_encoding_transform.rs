@@ -7,6 +7,7 @@
 
 use crate::prediction_scheme::{PredictionSchemeEncodingTransform, PredictionSchemeTransformType};
 use crate::prediction_scheme_normal_octahedron_canonicalized_transform_base::PredictionSchemeNormalOctahedronCanonicalizedTransformBase;
+use crate::status::Status;
 
 pub struct PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform {
     base: PredictionSchemeNormalOctahedronCanonicalizedTransformBase,
@@ -48,10 +49,10 @@ impl PredictionSchemeEncodingTransform<i32, i32>
         self.num_components = num_components;
     }
 
-    fn encode_transform_data(&mut self, buffer: &mut Vec<u8>) -> bool {
+    fn encode_transform_data(&mut self, buffer: &mut Vec<u8>) -> Status {
         buffer.extend_from_slice(&self.base.base().max_quantized_value().to_le_bytes());
         buffer.extend_from_slice(&self.base.base().center_value().to_le_bytes());
-        true
+        Ok(())
     }
 
     fn compute_correction(&self, orig_vals: &[i32], pred_vals: &[i32], out_corr_vals: &mut [i32]) {

@@ -89,26 +89,28 @@ fn test_tex_coords_portable_roundtrip() {
     let mut encoder = MeshPredictionSchemeTexCoordsPortableEncoder::new(transform);
 
     let pos_att_ref = mesh.attribute(pos_att_id);
-    assert!(encoder.set_parent_attribute(pos_att_ref));
+    assert!(encoder.set_parent_attribute(pos_att_ref).is_ok());
     assert!(encoder.init(&mesh_data));
 
     let mut out_corr = vec![0i32; 8];
     let entry_to_point_id_map = vec![0, 1, 2, 3];
 
-    assert!(encoder.compute_correction_values(
-        &in_data,
-        &mut out_corr,
-        4,
-        2,
-        Some(
-            draco_core::prediction_scheme::EntryToPointIdMap::from_u32_slice(
-                &entry_to_point_id_map
+    assert!(encoder
+        .compute_correction_values(
+            &in_data,
+            &mut out_corr,
+            4,
+            2,
+            Some(
+                draco_core::prediction_scheme::EntryToPointIdMap::from_u32_slice(
+                    &entry_to_point_id_map
+                )
             )
         )
-    ));
+        .is_ok());
 
     let mut buffer = Vec::new();
-    assert!(encoder.encode_prediction_data(&mut buffer));
+    assert!(encoder.encode_prediction_data(&mut buffer).is_ok());
 
     // 6. Decode
     let mut decoder_buffer = DecoderBuffer::new(&buffer);
@@ -119,24 +121,26 @@ fn test_tex_coords_portable_roundtrip() {
     let transform_dec = PredictionSchemeWrapDecodingTransform::<i32>::new();
     let mut decoder = MeshPredictionSchemeTexCoordsPortableDecoder::new(transform_dec);
 
-    assert!(decoder.set_parent_attribute(pos_att_ref));
+    assert!(decoder.set_parent_attribute(pos_att_ref).is_ok());
     assert!(decoder.init(&mesh_data));
 
-    assert!(decoder.decode_prediction_data(&mut decoder_buffer));
+    assert!(decoder.decode_prediction_data(&mut decoder_buffer).is_ok());
 
     let mut out_values = vec![0i32; 8];
 
-    assert!(decoder.compute_original_values(
-        &out_corr,
-        &mut out_values,
-        4,
-        2,
-        Some(
-            draco_core::prediction_scheme::EntryToPointIdMap::from_u32_slice(
-                &entry_to_point_id_map
+    assert!(decoder
+        .compute_original_values(
+            &out_corr,
+            &mut out_values,
+            4,
+            2,
+            Some(
+                draco_core::prediction_scheme::EntryToPointIdMap::from_u32_slice(
+                    &entry_to_point_id_map
+                )
             )
         )
-    ));
+        .is_ok());
 
     // 7. Verify
     assert_eq!(in_data, out_values);

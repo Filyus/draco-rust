@@ -22,6 +22,7 @@ use crate::prediction_scheme::{PredictionSchemeDecoder, PredictionSchemeDecoding
 
 #[cfg(feature = "encoder")]
 use crate::prediction_scheme::{PredictionSchemeEncoder, PredictionSchemeEncodingTransform};
+use crate::status::{DracoError, Status};
 
 #[cfg(feature = "encoder")]
 pub struct MeshPredictionSchemeMultiParallelogramEncoder<'a, DataType, CorrType, Transform> {
@@ -65,8 +66,10 @@ where
         GeometryAttributeType::Invalid
     }
 
-    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> bool {
-        false
+    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
+        Err(DracoError::InvalidParameter(
+            "The multi-parallelogram prediction scheme takes no parent attribute".to_string(),
+        ))
     }
 
     fn get_transform_type(&self) -> PredictionSchemeTransformType {
@@ -82,7 +85,7 @@ where
     CorrType: Copy + Default,
     Transform: PredictionSchemeEncodingTransform<DataType, CorrType>,
 {
-    fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> bool {
+    fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> Status {
         self.transform.encode_transform_data(buffer)
     }
 
@@ -93,31 +96,38 @@ where
         size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
-    ) -> bool {
+    ) -> Status {
         if num_components == 0 || !size.is_multiple_of(num_components) {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "{size} values do not divide into {num_components} components"
+            )));
         }
         if size == 0 {
             // No values, so no entry 0 for the tail of this function to encode.
-            return true;
+            return Ok(());
         }
 
-        let table = match self.mesh_data.corner_table() {
-            Some(table) => table,
-            None => return false,
+        let missing = |what: &str| {
+            DracoError::DracoError(format!("Multi-parallelogram prediction has no {what}"))
         };
-        let vertex_to_data_map = match self.mesh_data.vertex_to_data_map() {
-            Some(map) => map,
-            None => return false,
+        let Some(table) = self.mesh_data.corner_table() else {
+            return Err(missing("corner table"));
         };
-        let data_to_corner_map = match self.mesh_data.data_to_corner_map() {
-            Some(map) => map,
-            None => return false,
+        let Some(vertex_to_data_map) = self.mesh_data.vertex_to_data_map() else {
+            return Err(missing("vertex-to-data map"));
+        };
+        let Some(data_to_corner_map) = self.mesh_data.data_to_corner_map() else {
+            return Err(missing("data-to-corner map"));
         };
 
         let num_entries = size / num_components;
         if data_to_corner_map.len() < num_entries || in_data.len() < size || out_corr.len() < size {
-            return false;
+            return Err(DracoError::DracoError(format!(
+                "Multi-parallelogram prediction needs {num_entries} corners and {size} values, has {} corners, {} inputs and {} outputs",
+                data_to_corner_map.len(),
+                in_data.len(),
+                out_corr.len()
+            )));
         }
 
         self.transform.init(in_data, size, num_components);
@@ -185,7 +195,7 @@ where
             &mut out_corr[0..num_components],
         );
 
-        true
+        Ok(())
     }
 }
 
@@ -231,8 +241,10 @@ where
         GeometryAttributeType::Invalid
     }
 
-    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> bool {
-        false
+    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
+        Err(DracoError::InvalidParameter(
+            "The multi-parallelogram prediction scheme takes no parent attribute".to_string(),
+        ))
     }
 
     fn get_transform_type(&self) -> PredictionSchemeTransformType {
@@ -248,7 +260,7 @@ where
     CorrType: Copy + Default + std::fmt::Debug,
     Transform: PredictionSchemeDecodingTransform<DataType, CorrType>,
 {
-    fn decode_prediction_data(&mut self, buffer: &mut DecoderBuffer) -> bool {
+    fn decode_prediction_data(&mut self, buffer: &mut DecoderBuffer) -> Status {
         self.transform.decode_transform_data(buffer)
     }
 
@@ -259,29 +271,36 @@ where
         _size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
-    ) -> bool {
+    ) -> Status {
         if num_components == 0 {
-            return false;
+            return Err(DracoError::InvalidParameter(
+                "Multi-parallelogram prediction needs at least one component".to_string(),
+            ));
         }
 
-        let table = match self.mesh_data.corner_table() {
-            Some(table) => table,
-            None => return false,
+        let missing = |what: &str| {
+            DracoError::DracoError(format!("Multi-parallelogram prediction has no {what}"))
         };
-        let vertex_to_data_map = match self.mesh_data.vertex_to_data_map() {
-            Some(map) => map,
-            None => return false,
+        let Some(table) = self.mesh_data.corner_table() else {
+            return Err(missing("corner table"));
         };
-        let data_to_corner_map = match self.mesh_data.data_to_corner_map() {
-            Some(map) => map,
-            None => return false,
+        let Some(vertex_to_data_map) = self.mesh_data.vertex_to_data_map() else {
+            return Err(missing("vertex-to-data map"));
         };
-        let required_values = match data_to_corner_map.len().checked_mul(num_components) {
-            Some(v) => v,
-            None => return false,
+        let Some(data_to_corner_map) = self.mesh_data.data_to_corner_map() else {
+            return Err(missing("data-to-corner map"));
+        };
+        let Some(required_values) = data_to_corner_map.len().checked_mul(num_components) else {
+            return Err(DracoError::DracoError(
+                "Multi-parallelogram prediction value count overflow".to_string(),
+            ));
         };
         if in_corr.len() < required_values || out_data.len() < required_values {
-            return false;
+            return Err(DracoError::DracoError(format!(
+                "Multi-parallelogram prediction needs {required_values} values, has {} corrections and {} outputs",
+                in_corr.len(),
+                out_data.len()
+            )));
         }
 
         self.transform.init(num_components);
@@ -353,7 +372,7 @@ where
             );
         }
 
-        true
+        Ok(())
     }
 }
 
@@ -384,8 +403,8 @@ mod tests {
             }
         }
 
-        fn encode_transform_data(&mut self, _buffer: &mut Vec<u8>) -> bool {
-            true
+        fn encode_transform_data(&mut self, _buffer: &mut Vec<u8>) -> Status {
+            Ok(())
         }
 
         fn get_type(&self) -> PredictionSchemeTransformType {
@@ -407,8 +426,8 @@ mod tests {
             }
         }
 
-        fn decode_transform_data(&mut self, _buffer: &mut DecoderBuffer) -> bool {
-            true
+        fn decode_transform_data(&mut self, _buffer: &mut DecoderBuffer) -> Status {
+            Ok(())
         }
 
         fn get_type(&self) -> PredictionSchemeTransformType {
@@ -434,7 +453,9 @@ mod tests {
 
         let in_corr = [10, 2, 3];
         let mut out = [0; 3];
-        assert!(decoder.compute_original_values(&in_corr, &mut out, 3, 1, None));
+        assert!(decoder
+            .compute_original_values(&in_corr, &mut out, 3, 1, None)
+            .is_ok());
         assert_eq!(out, [10, 12, 15]);
     }
 
@@ -479,7 +500,9 @@ mod tests {
 
         let in_corr = [10, 20, 20, 5];
         let mut out = [0; 4];
-        assert!(decoder.compute_original_values(&in_corr, &mut out, 4, 1, None));
+        assert!(decoder
+            .compute_original_values(&in_corr, &mut out, 4, 1, None)
+            .is_ok());
         assert_eq!(out, [10, 30, 50, 55]);
     }
 
@@ -523,7 +546,9 @@ mod tests {
             i32,
             IdentityTransform,
         >::new(IdentityTransform, mesh_data.clone());
-        assert!(encoder.compute_correction_values(&values, &mut corrections, 4, 1, None));
+        assert!(encoder
+            .compute_correction_values(&values, &mut corrections, 4, 1, None)
+            .is_ok());
 
         let mut decoder = MeshPredictionSchemeMultiParallelogramDecoder::<
             i32,
@@ -531,7 +556,9 @@ mod tests {
             IdentityTransform,
         >::new(IdentityTransform, mesh_data);
         let mut decoded = [0; 4];
-        assert!(decoder.compute_original_values(&corrections, &mut decoded, 4, 1, None));
+        assert!(decoder
+            .compute_original_values(&corrections, &mut decoded, 4, 1, None)
+            .is_ok());
         assert_eq!(decoded, values);
     }
 }

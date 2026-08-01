@@ -8,6 +8,7 @@
 use crate::decoder_buffer::DecoderBuffer;
 use crate::prediction_scheme::{PredictionSchemeDecodingTransform, PredictionSchemeTransformType};
 use crate::prediction_scheme_normal_octahedron_canonicalized_transform_base::PredictionSchemeNormalOctahedronCanonicalizedTransformBase;
+use crate::status::{DracoError, Status};
 
 pub struct PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform {
     base: PredictionSchemeNormalOctahedronCanonicalizedTransformBase,
@@ -56,36 +57,37 @@ impl PredictionSchemeDecodingTransform<i32, i32>
         self.num_components = num_components;
     }
 
-    fn decode_transform_data(&mut self, buffer: &mut DecoderBuffer) -> bool {
-        let max_quantized_value: i32;
-        let _center_value: i32;
-
-        if let Ok(val) = buffer.decode::<i32>() {
-            max_quantized_value = val;
-        } else {
-            return false;
-        }
-
-        if let Ok(val) = buffer.decode::<i32>() {
-            _center_value = val;
-        } else {
-            return false;
-        }
+    fn decode_transform_data(&mut self, buffer: &mut DecoderBuffer) -> Status {
+        let truncated = |what: &str| {
+            DracoError::BufferError(format!(
+                "Stream ends before the octahedral transform's {what}"
+            ))
+        };
+        let max_quantized_value = buffer
+            .decode::<i32>()
+            .map_err(|_| truncated("maximum quantized value"))?;
+        let _center_value = buffer
+            .decode::<i32>()
+            .map_err(|_| truncated("center value"))?;
 
         if !self
             .base
             .base_mut()
             .set_max_quantized_value(max_quantized_value)
         {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Octahedral maximum quantized value {max_quantized_value} is not representable"
+            )));
         }
         // Account for wrong values (e.g., due to stream mismatch/fuzzing).
         // C++ requires quantization bits in [2, 30].
         let q = self.base.base().quantization_bits();
         if !(2..=30).contains(&q) {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Octahedral quantization bits {q} outside the supported range 2..=30"
+            )));
         }
-        true
+        Ok(())
     }
 
     fn compute_original_value(

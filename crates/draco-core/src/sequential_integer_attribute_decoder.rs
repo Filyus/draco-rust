@@ -72,7 +72,7 @@ fn run_decode_prediction_data<'a, P: PredictionSchemeDecoder<'a, i32, i32> + ?Si
         debug_log!("Predictor was selected but not initialized");
         return false;
     };
-    if !predictor.decode_prediction_data(buffer) {
+    if predictor.decode_prediction_data(buffer).is_err() {
         debug_log!("Failed to decode prediction data");
         return false;
     }
@@ -93,13 +93,16 @@ fn run_compute_original_values<'a, P: PredictionSchemeDecoder<'a, i32, i32> + ?S
         debug_log!("Predictor was selected but not initialized");
         return false;
     };
-    if !predictor.compute_original_values(
-        corrections,
-        values,
-        num_values,
-        num_components,
-        entry_to_point_id_map,
-    ) {
+    if predictor
+        .compute_original_values(
+            corrections,
+            values,
+            num_values,
+            num_components,
+            entry_to_point_id_map,
+        )
+        .is_err()
+    {
         debug_log!("Failed to compute original values");
         return false;
     }
@@ -569,7 +572,7 @@ impl SequentialIntegerAttributeDecoder {
                             };
                             attribute
                         };
-                        if !predictor.set_parent_attribute(pos_att) {
+                        if predictor.set_parent_attribute(pos_att).is_err() {
                             debug_log!("Failed to set parent attribute for TexCoordsDeprecated");
                             return false;
                         }
@@ -661,7 +664,7 @@ impl SequentialIntegerAttributeDecoder {
                             };
                             attribute
                         };
-                        if !predictor.set_parent_attribute(pos_att) {
+                        if predictor.set_parent_attribute(pos_att).is_err() {
                             debug_log!("Failed to set parent attribute for TexCoordsPortable");
                             return false;
                         }
@@ -769,7 +772,7 @@ impl SequentialIntegerAttributeDecoder {
                                 attribute
                             }
                         };
-                        if !predictor.set_parent_attribute(pos_att) {
+                        if predictor.set_parent_attribute(pos_att).is_err() {
                             debug_log!("Failed to set parent attribute for GeometricNormal");
                             return false;
                         }

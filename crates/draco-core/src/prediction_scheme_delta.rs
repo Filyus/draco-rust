@@ -22,6 +22,7 @@ use crate::prediction_scheme::{PredictionSchemeDecoder, PredictionSchemeDecoding
 
 #[cfg(feature = "encoder")]
 use crate::prediction_scheme::{PredictionSchemeEncoder, PredictionSchemeEncodingTransform};
+use crate::status::{DracoError, Status};
 
 #[cfg(feature = "encoder")]
 pub struct PredictionSchemeDeltaEncodingTransform<DataType, CorrType> {
@@ -68,8 +69,8 @@ where
         }
     }
 
-    fn encode_transform_data(&mut self, _buffer: &mut Vec<u8>) -> bool {
-        true
+    fn encode_transform_data(&mut self, _buffer: &mut Vec<u8>) -> Status {
+        Ok(())
     }
 
     fn get_type(&self) -> PredictionSchemeTransformType {
@@ -127,8 +128,8 @@ where
     fn decode_transform_data(
         &mut self,
         _buffer: &mut crate::decoder_buffer::DecoderBuffer,
-    ) -> bool {
-        true
+    ) -> Status {
+        Ok(())
     }
 
     fn get_type(&self) -> PredictionSchemeTransformType {
@@ -179,8 +180,10 @@ where
         GeometryAttributeType::Invalid
     }
 
-    fn set_parent_attribute(&mut self, _att: &'static PointAttribute) -> bool {
-        false
+    fn set_parent_attribute(&mut self, _att: &'static PointAttribute) -> Status {
+        Err(DracoError::InvalidParameter(
+            "The delta prediction scheme takes no parent attribute".to_string(),
+        ))
     }
 
     fn get_transform_type(&self) -> PredictionSchemeTransformType {
@@ -207,16 +210,18 @@ where
         size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
-    ) -> bool {
+    ) -> Status {
         self.transform.init(in_data, size, num_components);
 
         // No values means no entry 0, which the tail encodes unconditionally,
         // and `size - num_components` below would wrap.
         if num_components == 0 || !size.is_multiple_of(num_components) {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "{size} values do not divide into {num_components} components"
+            )));
         }
         if size == 0 {
-            return true;
+            return Ok(());
         }
 
         // Encode data from the back using D(i) = D(i) - D(i - 1).
@@ -241,10 +246,10 @@ where
         self.transform
             .compute_correction(original, &zero_vals, corr);
 
-        true
+        Ok(())
     }
 
-    fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> bool {
+    fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> Status {
         self.transform.encode_transform_data(buffer)
     }
 }
@@ -292,8 +297,10 @@ where
         GeometryAttributeType::Invalid
     }
 
-    fn set_parent_attribute(&mut self, _att: &'static PointAttribute) -> bool {
-        false
+    fn set_parent_attribute(&mut self, _att: &'static PointAttribute) -> Status {
+        Err(DracoError::InvalidParameter(
+            "The delta prediction scheme takes no parent attribute".to_string(),
+        ))
     }
 
     fn get_transform_type(&self) -> PredictionSchemeTransformType {
@@ -320,7 +327,7 @@ where
         size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
-    ) -> bool {
+    ) -> Status {
         self.transform.init(num_components);
 
         // Decode the original value for the first element.
@@ -341,13 +348,13 @@ where
             self.transform.compute_original_value(&predicted, corr, out);
         }
 
-        true
+        Ok(())
     }
 
     fn decode_prediction_data(
         &mut self,
         buffer: &mut crate::decoder_buffer::DecoderBuffer,
-    ) -> bool {
+    ) -> Status {
         self.transform.decode_transform_data(buffer)
     }
 }

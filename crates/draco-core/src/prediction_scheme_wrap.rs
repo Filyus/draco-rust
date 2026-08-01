@@ -15,6 +15,9 @@ use crate::prediction_scheme::PredictionSchemeDecodingTransform;
 
 #[cfg(feature = "encoder")]
 use crate::prediction_scheme::PredictionSchemeEncodingTransform;
+#[cfg(feature = "decoder")]
+use crate::status::DracoError;
+use crate::status::Status;
 
 #[cfg(feature = "encoder")]
 pub struct PredictionSchemeWrapEncodingTransform<DataType> {
@@ -123,10 +126,10 @@ impl PredictionSchemeEncodingTransform<i32, i32> for PredictionSchemeWrapEncodin
         }
     }
 
-    fn encode_transform_data(&mut self, buffer: &mut Vec<u8>) -> bool {
+    fn encode_transform_data(&mut self, buffer: &mut Vec<u8>) -> Status {
         buffer.extend_from_slice(&self.min_value.to_le_bytes());
         buffer.extend_from_slice(&self.max_value.to_le_bytes());
-        true
+        Ok(())
     }
 }
 
@@ -203,21 +206,18 @@ impl PredictionSchemeDecodingTransform<i32, i32> for PredictionSchemeWrapDecodin
         }
     }
 
-    fn decode_transform_data(&mut self, buffer: &mut DecoderBuffer) -> bool {
-        if let Ok(min_val) = buffer.decode::<i32>() {
-            self.min_value = min_val;
-        } else {
-            return false;
-        }
-        if let Ok(max_val) = buffer.decode::<i32>() {
-            self.max_value = max_val;
-        } else {
-            return false;
-        }
+    fn decode_transform_data(&mut self, buffer: &mut DecoderBuffer) -> Status {
+        let truncated = |bound: &str| {
+            DracoError::BufferError(format!(
+                "Stream ends before the wrap transform's {bound} value"
+            ))
+        };
+        self.min_value = buffer.decode::<i32>().map_err(|_| truncated("minimum"))?;
+        self.max_value = buffer.decode::<i32>().map_err(|_| truncated("maximum"))?;
 
         let dif = (self.max_value as i64) - (self.min_value as i64);
         self.max_dif = (1 + dif) as i32;
 
-        true
+        Ok(())
     }
 }

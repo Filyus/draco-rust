@@ -10,6 +10,7 @@
 
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::geometry_indices::PointIndex;
+use crate::status::Status;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PredictionSchemeMethod {
@@ -114,12 +115,20 @@ impl TryFrom<u8> for PredictionSchemeTransformType {
     }
 }
 
+/// A predictor of attribute values from previously coded ones.
+///
+/// Fallible methods across this family return [`Status`] and name what went
+/// wrong. Through 1.x they returned a bare `bool`, so a scheme that refused the
+/// parent attribute it was given, one that ran out of buffer, and one whose
+/// corrections did not fit the output all reported the same `false`.
+/// `is_initialized` and `are_corrections_positive` stay `bool`: they are
+/// predicates, not outcomes.
 pub trait PredictionScheme<'a> {
     fn get_prediction_method(&self) -> PredictionSchemeMethod;
     fn is_initialized(&self) -> bool;
     fn get_num_parent_attributes(&self) -> i32;
     fn get_parent_attribute_type(&self, i: i32) -> GeometryAttributeType;
-    fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> bool;
+    fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> Status;
     fn get_transform_type(&self) -> PredictionSchemeTransformType;
 
     /// Returns true if the correction values are always positive (non-negative).
@@ -139,7 +148,7 @@ pub trait PredictionSchemeEncodingTransform<DataType, CorrType> {
         predicted_vals: &[DataType],
         out_corr_vals: &mut [CorrType],
     );
-    fn encode_transform_data(&mut self, buffer: &mut Vec<u8>) -> bool;
+    fn encode_transform_data(&mut self, buffer: &mut Vec<u8>) -> Status;
     fn get_type(&self) -> PredictionSchemeTransformType;
 
     /// Returns true if the corrections produced by this transform are always positive.
@@ -157,7 +166,10 @@ pub trait PredictionSchemeDecodingTransform<DataType, CorrType> {
         corr_vals: &[CorrType],
         out_original_vals: &mut [DataType],
     );
-    fn decode_transform_data(&mut self, buffer: &mut crate::decoder_buffer::DecoderBuffer) -> bool;
+    fn decode_transform_data(
+        &mut self,
+        buffer: &mut crate::decoder_buffer::DecoderBuffer,
+    ) -> Status;
     fn get_type(&self) -> PredictionSchemeTransformType;
 
     /// Returns true if the corrections are always positive (no ZigZag encoding needed).
@@ -174,9 +186,9 @@ pub trait PredictionSchemeEncoder<'a, DataType, CorrType>: PredictionScheme<'a> 
         size: usize,
         num_components: usize,
         entry_to_point_id_map: Option<EntryToPointIdMap<'_>>,
-    ) -> bool;
+    ) -> Status;
 
-    fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> bool;
+    fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> Status;
 }
 
 #[cfg(feature = "decoder")]
@@ -188,8 +200,10 @@ pub trait PredictionSchemeDecoder<'a, DataType, CorrType>: PredictionScheme<'a> 
         size: usize,
         num_components: usize,
         entry_to_point_id_map: Option<EntryToPointIdMap<'_>>,
-    ) -> bool;
+    ) -> Status;
 
-    fn decode_prediction_data(&mut self, buffer: &mut crate::decoder_buffer::DecoderBuffer)
-        -> bool;
+    fn decode_prediction_data(
+        &mut self,
+        buffer: &mut crate::decoder_buffer::DecoderBuffer,
+    ) -> Status;
 }

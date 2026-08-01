@@ -76,7 +76,7 @@ fn test_normal_octahedron_transform_decoding() {
         0xFF, 0x03, 0x00, 0x00, // 1023 as i32
         0xFF, 0x01, 0x00, 0x00, // 511 as i32
     ]);
-    assert!(transform.decode_transform_data(&mut buffer));
+    assert!(transform.decode_transform_data(&mut buffer).is_ok());
 
     // Decode point 0: pred=(0,0), corr=(511, 511)
     let pred0 = [0, 0];

@@ -35,6 +35,7 @@ use crate::prediction_scheme::{PredictionSchemeEncoder, PredictionSchemeEncoding
 use crate::prediction_scheme_normal_octahedron_canonicalized_encoding_transform::PredictionSchemeNormalOctahedronCanonicalizedEncodingTransform;
 #[cfg(feature = "encoder")]
 use crate::rans_bit_encoder::RAnsBitEncoder;
+use crate::status::{DracoError, Status};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NormalPredictionMode {
@@ -261,16 +262,22 @@ impl<'a> PredictionScheme<'a> for MeshPredictionSchemeGeometricNormalDecoder<'a>
         GeometryAttributeType::Position
     }
 
-    fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> bool {
+    fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> Status {
         if att.attribute_type() != GeometryAttributeType::Position {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Geometric normal prediction needs a position parent, got {:?}",
+                att.attribute_type()
+            )));
         }
         if att.num_components() != 3 {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Geometric normal prediction needs a 3-component parent, got {}",
+                att.num_components()
+            )));
         }
         // Safe: lifetime 'a is now tracked by the compiler
         self.pos_attribute = Some(att);
-        true
+        Ok(())
     }
 
     fn get_transform_type(&self) -> PredictionSchemeTransformType {
@@ -287,23 +294,33 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
         _size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
-    ) -> bool {
+    ) -> Status {
         if !self.is_initialized() {
-            return false;
+            return Err(DracoError::DracoError(
+                "Geometric normal prediction was never initialized".to_string(),
+            ));
         }
         self.transform.init(num_components);
 
+        let missing = |what: &str| {
+            DracoError::DracoError(format!("Geometric normal prediction has no {what}"))
+        };
         let Some(mesh_data) = self.mesh_data.as_ref() else {
-            return false;
+            return Err(missing("mesh data"));
         };
         let Some(data_to_corner_map) = mesh_data.data_to_corner_map() else {
-            return false;
+            return Err(missing("data-to-corner map"));
         };
         let corner_map_size = data_to_corner_map.len();
         if corner_map_size * num_components > in_corr.len()
             || corner_map_size * num_components > out_data.len()
         {
-            return false;
+            return Err(DracoError::DracoError(format!(
+                "Geometric normal prediction needs {} values, has {} corrections and {} outputs",
+                corner_map_size * num_components,
+                in_corr.len(),
+                out_data.len()
+            )));
         }
 
         let mut pred_normal_3d = [0i32; 3];
@@ -338,20 +355,22 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
                 &mut out_data[offset..offset + num_components],
             );
         }
-        true
+        Ok(())
     }
 
-    fn decode_prediction_data(&mut self, buffer: &mut DecoderBuffer) -> bool {
+    fn decode_prediction_data(&mut self, buffer: &mut DecoderBuffer) -> Status {
         let start_pos = buffer.position();
         let bitstream_version: u16 = buffer.bitstream_version();
         if bitstream_version < 0x0202 && !cfg!(feature = "legacy_bitstream_decode") {
-            return false;
+            return Err(DracoError::UnsupportedFeature(format!(
+                "Geometric normal prediction below 2.2 needs the legacy_bitstream_decode feature (stream is {}.{})",
+                bitstream_version >> 8,
+                bitstream_version & 0xff
+            )));
         }
 
-        let try_decode_at_pos = |this: &mut Self, buf: &mut DecoderBuffer| -> bool {
-            if !this.transform.decode_transform_data(buf) {
-                return false;
-            }
+        let try_decode_at_pos = |this: &mut Self, buf: &mut DecoderBuffer| -> Status {
+            this.transform.decode_transform_data(buf)?;
 
             // Set up octahedral toolbox from decoded transform.
             this.octahedron_tool_box
@@ -359,12 +378,15 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
 
             // Backward compatibility: bitstreams < 2.2 store prediction mode.
             if bitstream_version < 0x0202 {
-                let mode = match buf.decode_u8() {
-                    Ok(v) => v,
-                    Err(_) => return false,
-                };
+                let mode = buf.decode_u8().map_err(|_| {
+                    DracoError::BufferError(
+                        "Stream ends before the pre-2.2 normal prediction mode".to_string(),
+                    )
+                })?;
                 if mode > NormalPredictionMode::TriangleArea as u8 {
-                    return false;
+                    return Err(DracoError::UnsupportedFeature(format!(
+                        "Normal prediction mode {mode}"
+                    )));
                 }
                 this.prediction_mode = if mode == 0 {
                     NormalPredictionMode::OneTriangle
@@ -373,9 +395,15 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
                 };
             }
 
-            let num_values = match this.mesh_data.as_ref().and_then(|m| m.data_to_corner_map()) {
-                Some(map) => map.len(),
-                None => return false,
+            let Some(num_values) = this
+                .mesh_data
+                .as_ref()
+                .and_then(|m| m.data_to_corner_map())
+                .map(|map| map.len())
+            else {
+                return Err(DracoError::DracoError(
+                    "Geometric normal prediction has no data-to-corner map".to_string(),
+                ));
             };
 
             this.flip_normal_bits.clear();
@@ -383,7 +411,9 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
 
             let mut decoder = RAnsBitDecoder::new();
             if !decoder.start_decoding(buf) {
-                return false;
+                return Err(DracoError::BufferError(
+                    "Normal flip-bit rANS stream is truncated".to_string(),
+                ));
             }
 
             for _ in 0..num_values {
@@ -391,15 +421,16 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
             }
             decoder.end_decoding();
             this.flip_normal_bit_index = 0;
-            true
+            Ok(())
         };
 
-        if try_decode_at_pos(self, buffer) {
-            return true;
+        match try_decode_at_pos(self, buffer) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = buffer.set_position(start_pos);
+                Err(error)
+            }
         }
-
-        let _ = buffer.set_position(start_pos);
-        false
     }
 }
 
@@ -521,9 +552,9 @@ impl PredictionSchemeEncodingTransform<i32, i32>
         out_corr_vals[1] = original_vals[1] - predicted_vals[1];
     }
 
-    fn encode_transform_data(&mut self, buffer: &mut Vec<u8>) -> bool {
+    fn encode_transform_data(&mut self, buffer: &mut Vec<u8>) -> Status {
         buffer.push(self.octahedron_tool_box.quantization_bits() as u8);
-        true
+        Ok(())
     }
 
     fn get_type(&self) -> PredictionSchemeTransformType {
@@ -700,13 +731,16 @@ impl<'a> PredictionScheme<'a> for MeshPredictionSchemeGeometricNormalEncoder<'a>
         }
     }
 
-    fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> bool {
+    fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> Status {
         if att.attribute_type() != GeometryAttributeType::Position {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Geometric normal prediction needs a position parent, got {:?}",
+                att.attribute_type()
+            )));
         }
         // Safe: lifetime 'a is now tracked by the compiler
         self.pos_attribute = Some(att);
-        true
+        Ok(())
     }
 
     fn get_transform_type(&self) -> PredictionSchemeTransformType {
@@ -725,19 +759,24 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
         _size: usize,
         num_components: usize,
         entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
-    ) -> bool {
+    ) -> Status {
         if !self.is_initialized() {
-            return false;
+            return Err(DracoError::DracoError(
+                "Geometric normal prediction was never initialized".to_string(),
+            ));
         }
 
-        let map = match entry_to_point_id_map {
-            Some(m) => m,
-            None => return false,
+        let Some(map) = entry_to_point_id_map else {
+            return Err(DracoError::InvalidParameter(
+                "Geometric normal prediction needs an entry-to-point map".to_string(),
+            ));
         };
 
         // Expecting in_data in octahedral coordinates (portable attribute)
         if num_components != 2 {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Geometric normal prediction needs 2 octahedral components, got {num_components}"
+            )));
         }
 
         // SetQuantizationBits(transform().quantization_bits()) -- without this
@@ -747,7 +786,10 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
             .octahedron_tool_box
             .set_quantization_bits(self.transform.quantization_bits())
         {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "Octahedral quantization bits {} outside the supported range 2..=30",
+                self.transform.quantization_bits()
+            )));
         }
 
         self.flip_normal_bit_encoder.start_encoding();
@@ -813,13 +855,11 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
                 out_corr[offset + 1] = self.octahedron_tool_box.make_positive(neg_correction[1]);
             }
         }
-        true
+        Ok(())
     }
 
-    fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> bool {
-        if !self.transform.encode_transform_data(buffer) {
-            return false;
-        }
+    fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> Status {
+        self.transform.encode_transform_data(buffer)?;
 
         // Pre-2.2 carries the prediction mode between the transform data and
         // the flip bits; 2.2 dropped it and assumes triangle area. Mirror of
@@ -838,7 +878,7 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
         );
         self.flip_normal_bit_encoder.end_encoding(&mut temp_buffer);
         buffer.extend_from_slice(temp_buffer.data());
-        true
+        Ok(())
     }
 }
 
@@ -976,7 +1016,7 @@ mod tests {
             PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new(),
         );
         assert!(decoder.init(&mesh_data));
-        assert!(decoder.set_parent_attribute(&position_attribute));
+        assert!(decoder.set_parent_attribute(&position_attribute).is_ok());
 
         let entry_to_point_id_map = [0u32];
         decoder
@@ -1009,7 +1049,7 @@ mod tests {
             PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new(),
         );
         assert!(decoder.init(&mesh_data));
-        assert!(decoder.set_parent_attribute(&position_attribute));
+        assert!(decoder.set_parent_attribute(&position_attribute).is_ok());
 
         let entry_to_point_id_map = [0u32];
         decoder

@@ -361,13 +361,16 @@ impl SequentialIntegerAttributeEncoder {
                     );
                     let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
                     selected_transform_type = predictor.get_transform_type();
-                    if !predictor.compute_correction_values(
-                        &values,
-                        &mut corrections,
-                        num_values,
-                        num_components,
-                        None,
-                    ) {
+                    if predictor
+                        .compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        )
+                        .is_err()
+                    {
                         return false;
                     }
                     predictor_delta_octahedron = Some(predictor);
@@ -376,13 +379,16 @@ impl SequentialIntegerAttributeEncoder {
                     let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                     let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
                     selected_transform_type = predictor.get_transform_type();
-                    if !predictor.compute_correction_values(
-                        &values,
-                        &mut corrections,
-                        num_values,
-                        num_components,
-                        None,
-                    ) {
+                    if predictor
+                        .compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        )
+                        .is_err()
+                    {
                         return false;
                     }
                     predictor_delta = Some(predictor);
@@ -456,13 +462,16 @@ impl SequentialIntegerAttributeEncoder {
                         );
                         selected_transform_type = predictor.get_transform_type();
 
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
+                        if predictor
+                            .compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                None,
+                            )
+                            .is_err()
+                        {
                             return false;
                         }
                         predictor_parallelogram = Some(predictor);
@@ -473,13 +482,16 @@ impl SequentialIntegerAttributeEncoder {
                         let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                         let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
                         selected_transform_type = predictor.get_transform_type();
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
+                        if predictor
+                            .compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                None,
+                            )
+                            .is_err()
+                        {
                             return false;
                         }
                         predictor_delta = Some(predictor);
@@ -491,13 +503,16 @@ impl SequentialIntegerAttributeEncoder {
                     let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                     let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
                     selected_transform_type = predictor.get_transform_type();
-                    if !predictor.compute_correction_values(
-                        &values,
-                        &mut corrections,
-                        num_values,
-                        num_components,
-                        None,
-                    ) {
+                    if predictor
+                        .compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        )
+                        .is_err()
+                    {
                         return false;
                     }
                     predictor_delta = Some(predictor);
@@ -550,13 +565,16 @@ impl SequentialIntegerAttributeEncoder {
                             .set_bitstream_version(crate::version::bitstream_version(vmaj, vmin));
                         selected_transform_type = predictor.get_transform_type();
 
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
+                        if predictor
+                            .compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                None,
+                            )
+                            .is_err()
+                        {
                             return false;
                         }
                         predictor_constrained_multi_parallelogram = Some(predictor);
@@ -566,13 +584,16 @@ impl SequentialIntegerAttributeEncoder {
                         selected_method = PredictionSchemeMethod::Difference;
                         let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                         let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
+                        if predictor
+                            .compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                None,
+                            )
+                            .is_err()
+                        {
                             return false;
                         }
                         predictor_delta = Some(predictor);
@@ -583,13 +604,16 @@ impl SequentialIntegerAttributeEncoder {
                     selected_method = PredictionSchemeMethod::Difference;
                     let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                     let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
-                    if !predictor.compute_correction_values(
-                        &values,
-                        &mut corrections,
-                        num_values,
-                        num_components,
-                        None,
-                    ) {
+                    if predictor
+                        .compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        )
+                        .is_err()
+                    {
                         return false;
                     }
                     predictor_delta = Some(predictor);
@@ -637,13 +661,16 @@ impl SequentialIntegerAttributeEncoder {
                         );
                         selected_transform_type = predictor.get_transform_type();
 
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
+                        if predictor
+                            .compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                None,
+                            )
+                            .is_err()
+                        {
                             return false;
                         }
                         predictor_multi_parallelogram = Some(predictor);
@@ -652,13 +679,16 @@ impl SequentialIntegerAttributeEncoder {
                         let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                         let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
                         selected_transform_type = predictor.get_transform_type();
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
+                        if predictor
+                            .compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                None,
+                            )
+                            .is_err()
+                        {
                             return false;
                         }
                         predictor_delta = Some(predictor);
@@ -668,13 +698,16 @@ impl SequentialIntegerAttributeEncoder {
                     let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                     let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
                     selected_transform_type = predictor.get_transform_type();
-                    if !predictor.compute_correction_values(
-                        &values,
-                        &mut corrections,
-                        num_values,
-                        num_components,
-                        None,
-                    ) {
+                    if predictor
+                        .compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        )
+                        .is_err()
+                    {
                         return false;
                     }
                     predictor_delta = Some(predictor);
@@ -732,7 +765,7 @@ impl SequentialIntegerAttributeEncoder {
                         let Some(pos_att) = pos_att else {
                             return false;
                         };
-                        if !predictor.set_parent_attribute(pos_att) {
+                        if predictor.set_parent_attribute(pos_att).is_err() {
                             return false;
                         }
                         predictor.init(&mesh_data);
@@ -740,15 +773,18 @@ impl SequentialIntegerAttributeEncoder {
                         let entry_to_point_id_map: Vec<u32> =
                             point_ids.iter().map(|p| p.0).collect();
 
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            Some(crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(
-                                &entry_to_point_id_map,
-                            )),
-                        ) {
+                        if predictor
+                            .compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                Some(crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(
+                                    &entry_to_point_id_map,
+                                )),
+                            )
+                            .is_err()
+                        {
                             return false;
                         }
                         predictor_tex_coords_deprecated = Some(predictor);
@@ -757,13 +793,16 @@ impl SequentialIntegerAttributeEncoder {
                         let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                         let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
                         selected_transform_type = predictor.get_transform_type();
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
+                        if predictor
+                            .compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                None,
+                            )
+                            .is_err()
+                        {
                             return false;
                         }
                         predictor_delta = Some(predictor);
@@ -773,13 +812,16 @@ impl SequentialIntegerAttributeEncoder {
                     let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                     let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
                     selected_transform_type = predictor.get_transform_type();
-                    if !predictor.compute_correction_values(
-                        &values,
-                        &mut corrections,
-                        num_values,
-                        num_components,
-                        None,
-                    ) {
+                    if predictor
+                        .compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        )
+                        .is_err()
+                    {
                         return false;
                     }
                     predictor_delta = Some(predictor);
@@ -848,7 +890,7 @@ impl SequentialIntegerAttributeEncoder {
                             debug_log!("No portable position attribute for TexCoordsPortable");
                             return false;
                         };
-                        if !predictor.set_parent_attribute(pos_att) {
+                        if predictor.set_parent_attribute(pos_att).is_err() {
                             return false;
                         }
 
@@ -857,15 +899,18 @@ impl SequentialIntegerAttributeEncoder {
                         let entry_to_point_id_map: Vec<u32> =
                             point_ids.iter().map(|p| p.0).collect();
 
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            Some(crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(
-                                &entry_to_point_id_map,
-                            )),
-                        ) {
+                        if predictor
+                            .compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                Some(crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(
+                                    &entry_to_point_id_map,
+                                )),
+                            )
+                            .is_err()
+                        {
                             return false;
                         }
                         predictor_tex_coords_portable = Some(predictor);
@@ -876,13 +921,16 @@ impl SequentialIntegerAttributeEncoder {
                         let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                         let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
                         selected_transform_type = predictor.get_transform_type();
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
+                        if predictor
+                            .compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                None,
+                            )
+                            .is_err()
+                        {
                             return false;
                         }
                         predictor_delta = Some(predictor);
@@ -894,13 +942,16 @@ impl SequentialIntegerAttributeEncoder {
                     let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                     let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
                     selected_transform_type = predictor.get_transform_type();
-                    if !predictor.compute_correction_values(
-                        &values,
-                        &mut corrections,
-                        num_values,
-                        num_components,
-                        None,
-                    ) {
+                    if predictor
+                        .compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        )
+                        .is_err()
+                    {
                         return false;
                     }
                     predictor_delta = Some(predictor);
@@ -978,7 +1029,7 @@ impl SequentialIntegerAttributeEncoder {
                                 debug_log!("No portable position for GeometricNormal");
                                 return false;
                             };
-                            if !predictor.set_parent_attribute(pos_att) {
+                            if predictor.set_parent_attribute(pos_att).is_err() {
                                 debug_log!("Failed to set parent for GeometricNormal");
                                 return false;
                             }
@@ -986,15 +1037,20 @@ impl SequentialIntegerAttributeEncoder {
                             let entry_to_point_id_map: Vec<u32> =
                                 point_ids.iter().map(|p| p.0).collect();
 
-                            if !predictor.compute_correction_values(
-                                &values,
-                                &mut corrections,
-                                num_values,
-                                num_components,
-                                Some(crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(
-                                    &entry_to_point_id_map,
-                                )),
-                            ) {
+                            if predictor
+                                .compute_correction_values(
+                                    &values,
+                                    &mut corrections,
+                                    num_values,
+                                    num_components,
+                                    Some(
+                                        crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(
+                                            &entry_to_point_id_map,
+                                        ),
+                                    ),
+                                )
+                                .is_err()
+                            {
                                 return false;
                             }
                             predictor_geometric_normal = Some(predictor);
@@ -1020,13 +1076,16 @@ impl SequentialIntegerAttributeEncoder {
                             let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                             let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
                             selected_transform_type = predictor.get_transform_type();
-                            if !predictor.compute_correction_values(
-                                &values,
-                                &mut corrections,
-                                num_values,
-                                num_components,
-                                None,
-                            ) {
+                            if predictor
+                                .compute_correction_values(
+                                    &values,
+                                    &mut corrections,
+                                    num_values,
+                                    num_components,
+                                    None,
+                                )
+                                .is_err()
+                            {
                                 return false;
                             }
                             predictor_delta = Some(predictor);
@@ -1038,13 +1097,16 @@ impl SequentialIntegerAttributeEncoder {
                         let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                         let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
                         selected_transform_type = predictor.get_transform_type();
-                        if !predictor.compute_correction_values(
-                            &values,
-                            &mut corrections,
-                            num_values,
-                            num_components,
-                            None,
-                        ) {
+                        if predictor
+                            .compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                None,
+                            )
+                            .is_err()
+                        {
                             return false;
                         }
                         predictor_delta = Some(predictor);
@@ -1056,13 +1118,16 @@ impl SequentialIntegerAttributeEncoder {
                     let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                     let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
                     selected_transform_type = predictor.get_transform_type();
-                    if !predictor.compute_correction_values(
-                        &values,
-                        &mut corrections,
-                        num_values,
-                        num_components,
-                        None,
-                    ) {
+                    if predictor
+                        .compute_correction_values(
+                            &values,
+                            &mut corrections,
+                            num_values,
+                            num_components,
+                            None,
+                        )
+                        .is_err()
+                    {
                         return false;
                     }
                     predictor_delta = Some(predictor);
@@ -1300,7 +1365,7 @@ fn try_encode_prediction_data<'a, P: PredictionSchemeEncoder<'a, i32, i32>>(
     if out.is_none() {
         if let Some(mut predictor) = predictor {
             let mut pred_data = Vec::new();
-            if !predictor.encode_prediction_data(&mut pred_data) {
+            if predictor.encode_prediction_data(&mut pred_data).is_err() {
                 return false;
             }
             *out = Some(pred_data);

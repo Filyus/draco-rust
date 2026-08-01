@@ -30,6 +30,7 @@ use crate::prediction_scheme::{PredictionSchemeEncoder, PredictionSchemeEncoding
 use crate::rans_bit_encoder::RAnsBitEncoder;
 #[cfg(feature = "encoder")]
 use crate::shannon_entropy::ShannonEntropyTracker;
+use crate::status::{DracoError, Status};
 
 pub const MAX_NUM_PARALLELOGRAMS: usize = 4;
 
@@ -117,8 +118,11 @@ where
         crate::geometry_attribute::GeometryAttributeType::Generic
     }
 
-    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> bool {
-        false
+    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
+        Err(DracoError::InvalidParameter(
+            "The constrained multi-parallelogram prediction scheme takes no parent attribute"
+                .to_string(),
+        ))
     }
 
     fn get_transform_type(&self) -> PredictionSchemeTransformType {
@@ -218,25 +222,30 @@ where
         size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
-    ) -> bool {
+    ) -> Status {
         self.transform.init(in_data, size, num_components);
 
         if num_components == 0 || !size.is_multiple_of(num_components) {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "{size} values do not divide into {num_components} components"
+            )));
         }
         if size == 0 {
             // No values, so no entry 0 for the tail of this function to encode.
-            return true;
+            return Ok(());
         }
         let num_entries = size / num_components;
 
-        let corner_table = match self.mesh_data.corner_table() {
-            Some(ct) => ct,
-            None => return false,
+        let missing = |what: &str| {
+            DracoError::DracoError(format!(
+                "Constrained multi-parallelogram prediction has no {what}"
+            ))
         };
-        let vertex_to_data_map = match self.mesh_data.vertex_to_data_map() {
-            Some(map) => map,
-            None => return false,
+        let Some(corner_table) = self.mesh_data.corner_table() else {
+            return Err(missing("corner table"));
+        };
+        let Some(vertex_to_data_map) = self.mesh_data.vertex_to_data_map() else {
+            return Err(missing("vertex-to-data map"));
         };
 
         for i in 0..MAX_NUM_PARALLELOGRAMS {
@@ -339,7 +348,9 @@ where
             while c != INVALID_CORNER_INDEX {
                 swing_steps += 1;
                 if swing_steps > max_swing_steps {
-                    return false;
+                    return Err(DracoError::DracoError(
+                        "Corner fan does not close after every corner was visited".to_string(),
+                    ));
                 }
                 let opp = corner_table.opposite(c);
                 if opp != INVALID_CORNER_INDEX {
@@ -722,10 +733,10 @@ where
             out_corr[c] = corr_val[c];
         }
 
-        true
+        Ok(())
     }
 
-    fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> bool {
+    fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> Status {
         let mut enc = EncoderBuffer::new();
         // Propagate the target version so crease-edge rANS streams pick the right
         // size-prefix encoding (pre-2.2 u32 vs 2.2+ varint).
@@ -771,13 +782,11 @@ where
 
         // Encode underlying transform data second (e.g. Wrap min/max bounds).
         let mut transform_data = Vec::new();
-        if !self.transform.encode_transform_data(&mut transform_data) {
-            return false;
-        }
+        self.transform.encode_transform_data(&mut transform_data)?;
         enc.encode_data(&transform_data);
 
         buffer.extend_from_slice(enc.data());
-        true
+        Ok(())
     }
 }
 
@@ -856,8 +865,11 @@ where
         crate::geometry_attribute::GeometryAttributeType::Generic
     }
 
-    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> bool {
-        false
+    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
+        Err(DracoError::InvalidParameter(
+            "The constrained multi-parallelogram prediction scheme takes no parent attribute"
+                .to_string(),
+        ))
     }
 
     fn get_transform_type(&self) -> PredictionSchemeTransformType {
@@ -874,7 +886,7 @@ where
     Transform: PredictionSchemeDecodingTransform<DataType, CorrType>,
     i64: From<DataType>,
 {
-    fn decode_prediction_data(&mut self, buffer: &mut DecoderBuffer) -> bool {
+    fn decode_prediction_data(&mut self, buffer: &mut DecoderBuffer) -> Status {
         // Draco bitstream order (see C++ MeshPredictionSchemeConstrainedMultiParallelogramDecoder):
         // 1) (optional) mode for < v2.2
         // 2) crease-edge flag streams
@@ -890,34 +902,48 @@ where
             if bitstream_version < 0x0202 {
                 match buffer.decode_u8() {
                     Ok(0) => {} // OPTIMAL_MULTI_PARALLELOGRAM
-                    _ => return false,
+                    Ok(mode) => {
+                        return Err(DracoError::UnsupportedFeature(format!(
+                            "Constrained multi-parallelogram prediction mode {mode}"
+                        )))
+                    }
+                    Err(_) => {
+                        return Err(DracoError::BufferError(
+                            "Stream ends before the pre-2.2 prediction mode byte".to_string(),
+                        ))
+                    }
                 }
             }
         }
 
         // Decode crease edges.
-        let corner_table = match self.mesh_data.corner_table() {
-            Some(ct) => ct,
-            None => {
-                return false;
-            }
+        let Some(corner_table) = self.mesh_data.corner_table() else {
+            return Err(DracoError::DracoError(
+                "Constrained multi-parallelogram prediction has no corner table".to_string(),
+            ));
         };
 
         for i in 0..MAX_NUM_PARALLELOGRAMS {
-            let num_flags = match buffer.decode_varint() {
-                Ok(v) => v as u32,
-                Err(_) => return false,
-            };
+            let num_flags = buffer.decode_varint().map_err(|_| {
+                DracoError::BufferError(format!(
+                    "Stream ends before the crease-edge flag count for context {i}"
+                ))
+            })? as u32;
 
             if num_flags > corner_table.num_corners() as u32 {
-                return false;
+                return Err(DracoError::DracoError(format!(
+                    "Context {i} declares {num_flags} crease-edge flags, more than the {} corners",
+                    corner_table.num_corners()
+                )));
             }
 
             if num_flags > 0 {
                 self.is_crease_edge[i].resize(num_flags as usize, false);
                 let mut ans_decoder = RAnsBitDecoder::new();
                 if !ans_decoder.start_decoding(buffer) {
-                    return false;
+                    return Err(DracoError::BufferError(format!(
+                        "Crease-edge rANS stream for context {i} is truncated"
+                    )));
                 }
                 for j in 0..num_flags {
                     self.is_crease_edge[i][j as usize] = ans_decoder.decode_next_bit();
@@ -927,10 +953,7 @@ where
         }
 
         // Decode underlying transform data last (e.g. Wrap min/max bounds).
-        if !self.transform.decode_transform_data(buffer) {
-            return false;
-        }
-        true
+        self.transform.decode_transform_data(buffer)
     }
 
     fn compute_original_values(
@@ -940,28 +963,36 @@ where
         size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
-    ) -> bool {
+    ) -> Status {
         self.transform.init(num_components);
 
         if size == 0 {
-            return true;
+            return Ok(());
         }
-        if num_components == 0 || !size.is_multiple_of(num_components) {
-            return false;
-        }
-        if size < num_components {
-            return false;
+        if num_components == 0 || !size.is_multiple_of(num_components) || size < num_components {
+            return Err(DracoError::InvalidParameter(format!(
+                "{size} values do not divide into {num_components} components"
+            )));
         }
         let num_entries = size / num_components;
 
+        let missing = |what: &str| {
+            DracoError::DracoError(format!(
+                "Constrained multi-parallelogram prediction has no {what}"
+            ))
+        };
         let Some(corner_table) = self.mesh_data.corner_table() else {
-            return false;
+            return Err(missing("corner table"));
         };
         let Some(vertex_to_data_map) = self.mesh_data.vertex_to_data_map() else {
-            return false;
+            return Err(missing("vertex-to-data map"));
         };
         if in_corr.len() < size || out_data.len() < size {
-            return false;
+            return Err(DracoError::DracoError(format!(
+                "Constrained multi-parallelogram prediction needs {size} values, has {} corrections and {} outputs",
+                in_corr.len(),
+                out_data.len()
+            )));
         }
 
         let mut multi_pred_vals = vec![DataType::default(); num_components];
@@ -1020,7 +1051,9 @@ where
             while c != INVALID_CORNER_INDEX {
                 swing_steps += 1;
                 if swing_steps > max_swing_steps {
-                    return false;
+                    return Err(DracoError::DracoError(
+                        "Corner fan does not close after every corner was visited".to_string(),
+                    ));
                 }
                 let opp = corner_table.opposite(c);
                 if opp != INVALID_CORNER_INDEX {
@@ -1079,9 +1112,12 @@ where
                     // Check bounds - if we've exhausted the flags, this is an error
                     if pos >= self.is_crease_edge[context].len() {
                         // This should never happen if encoder/decoder are in sync
-                        debug_log!("ERROR: is_crease_edge bounds exceeded: pos={} >= len={}, context={}, data_id={}", 
+                        debug_log!("ERROR: is_crease_edge bounds exceeded: pos={} >= len={}, context={}, data_id={}",
                             pos, self.is_crease_edge[context].len(), context, data_id);
-                        return false;
+                        return Err(DracoError::DracoError(format!(
+                            "Entry {data_id} reads crease-edge flag {pos} of {} in context {context}",
+                            self.is_crease_edge[context].len()
+                        )));
                     }
                     let is_crease = self.is_crease_edge[context][pos];
 
@@ -1089,23 +1125,31 @@ where
                         // Compute prediction for this parallelogram
                         let ci = corners[i];
                         let oci = corner_table.opposite(ci);
+                        let unmapped = || {
+                            DracoError::DracoError(
+                                "Parallelogram corner is outside the vertex-to-data map"
+                                    .to_string(),
+                            )
+                        };
                         let Some(&vert_opp) =
                             vertex_to_data_map.get(corner_table.vertex(oci).0 as usize)
                         else {
-                            return false;
+                            return Err(unmapped());
                         };
                         let Some(&vert_next) = vertex_to_data_map
                             .get(corner_table.vertex(corner_table.next(oci)).0 as usize)
                         else {
-                            return false;
+                            return Err(unmapped());
                         };
                         let Some(&vert_prev) = vertex_to_data_map
                             .get(corner_table.vertex(corner_table.previous(oci)).0 as usize)
                         else {
-                            return false;
+                            return Err(unmapped());
                         };
                         if vert_opp < 0 || vert_next < 0 || vert_prev < 0 {
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Parallelogram corner maps to no decoded entry".to_string(),
+                            ));
                         }
 
                         let v_opp_off = (vert_opp as usize) * num_components;
@@ -1115,7 +1159,9 @@ where
                             || v_next_off + num_components > out_data.len()
                             || v_prev_off + num_components > out_data.len()
                         {
-                            return false;
+                            return Err(DracoError::DracoError(
+                                "Parallelogram corner reads past the decoded values".to_string(),
+                            ));
                         }
 
                         for k in 0..num_components {
@@ -1157,6 +1203,6 @@ where
                 );
             }
         }
-        true
+        Ok(())
     }
 }

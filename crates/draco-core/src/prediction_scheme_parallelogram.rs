@@ -20,6 +20,7 @@ use crate::prediction_scheme::{PredictionSchemeDecoder, PredictionSchemeDecoding
 
 #[cfg(feature = "encoder")]
 use crate::prediction_scheme::{PredictionSchemeEncoder, PredictionSchemeEncodingTransform};
+use crate::status::{DracoError, Status};
 
 pub trait ParallelogramDataType: Copy + Default + 'static {
     fn compute_parallelogram_prediction(next: Self, prev: Self, opp: Self) -> Self;
@@ -174,8 +175,8 @@ where
         }
     }
 
-    fn encode_transform_data(&mut self, _buffer: &mut Vec<u8>) -> bool {
-        true
+    fn encode_transform_data(&mut self, _buffer: &mut Vec<u8>) -> Status {
+        Ok(())
     }
 }
 
@@ -240,8 +241,8 @@ where
     fn decode_transform_data(
         &mut self,
         _buffer: &mut crate::decoder_buffer::DecoderBuffer,
-    ) -> bool {
-        true
+    ) -> Status {
+        Ok(())
     }
 }
 
@@ -298,8 +299,10 @@ where
         GeometryAttributeType::Invalid
     }
 
-    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> bool {
-        false
+    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
+        Err(DracoError::InvalidParameter(
+            "The parallelogram prediction scheme takes no parent attribute".to_string(),
+        ))
     }
 }
 
@@ -318,7 +321,7 @@ where
         size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
-    ) -> bool {
+    ) -> Status {
         self.transform.init(in_data, size, num_components);
 
         // An attribute with no values has no entry 0, and the tail of this
@@ -326,10 +329,12 @@ where
         // that special-cases the first entry needs this guard; the sibling
         // schemes carry the same one.
         if num_components == 0 || !size.is_multiple_of(num_components) {
-            return false;
+            return Err(DracoError::InvalidParameter(format!(
+                "{size} values do not divide into {num_components} components"
+            )));
         }
         if size == 0 {
-            return true;
+            return Ok(());
         }
 
         let table = self.mesh_data.corner_table().unwrap();
@@ -379,10 +384,10 @@ where
         self.transform
             .compute_correction(original, &pred_vals, corr);
 
-        true
+        Ok(())
     }
 
-    fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> bool {
+    fn encode_prediction_data(&mut self, buffer: &mut Vec<u8>) -> Status {
         self.transform.encode_transform_data(buffer)
     }
 }
@@ -440,8 +445,10 @@ where
         GeometryAttributeType::Invalid
     }
 
-    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> bool {
-        false
+    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
+        Err(DracoError::InvalidParameter(
+            "The parallelogram prediction scheme takes no parent attribute".to_string(),
+        ))
     }
 }
 
@@ -460,30 +467,40 @@ where
         _size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
-    ) -> bool {
+    ) -> Status {
         self.transform.init(num_components);
 
         if num_components == 0 {
-            return false;
+            return Err(DracoError::InvalidParameter(
+                "Parallelogram prediction needs at least one component".to_string(),
+            ));
         }
 
+        let missing =
+            |what: &str| DracoError::DracoError(format!("Parallelogram prediction has no {what}"));
         let Some(table) = self.mesh_data.corner_table() else {
-            return false;
+            return Err(missing("corner table"));
         };
         let Some(vertex_to_data_map) = self.mesh_data.vertex_to_data_map() else {
-            return false;
+            return Err(missing("vertex-to-data map"));
         };
         let Some(data_to_corner_map) = self.mesh_data.data_to_corner_map() else {
-            return false;
+            return Err(missing("data-to-corner map"));
         };
         let Some(required_values) = data_to_corner_map.len().checked_mul(num_components) else {
-            return false;
+            return Err(DracoError::DracoError(
+                "Parallelogram prediction value count overflow".to_string(),
+            ));
         };
         if required_values == 0
             || in_corr.len() < required_values
             || out_data.len() < required_values
         {
-            return false;
+            return Err(DracoError::DracoError(format!(
+                "Parallelogram prediction needs {required_values} values, has {} corrections and {} outputs",
+                in_corr.len(),
+                out_data.len()
+            )));
         }
 
         let mut pred_vals = vec![DataType::default(); num_components];
@@ -527,13 +544,13 @@ where
             }
         }
 
-        true
+        Ok(())
     }
 
     fn decode_prediction_data(
         &mut self,
         buffer: &mut crate::decoder_buffer::DecoderBuffer,
-    ) -> bool {
+    ) -> Status {
         self.transform.decode_transform_data(buffer)
     }
 }
