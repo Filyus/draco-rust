@@ -34,7 +34,19 @@ const WASM_OPT_ARGS: &[&str] = &[
 ///
 /// A ceiling to catch drift, not a target: the module sits a little under it,
 /// and a change that needs more should say why rather than raise this quietly.
-const GLTF_GZIP_BUDGET: usize = 115 * 1024;
+///
+/// Raised from 115 KiB when the decode and encode paths stopped returning
+/// `bool`. Saying why, since the first explanation was wrong: making
+/// `DracoError` pointer-sized bought 2.6 KiB back, and the rest is the
+/// diagnostic text itself and the `format!` that builds it. Blanking every
+/// message in `draco-core` takes this module to 112 KiB, below where it stood
+/// before the conversion — so the messages, not the error type, are what a
+/// smaller build would have to give up, and they are the point of the release.
+///
+/// The headroom is deliberate. Two builds of one commit on the same machine
+/// differ by a byte, but Windows and Linux differ by about 875, and the ceiling
+/// this replaces had 87 bytes of room: it was passing inside its own noise.
+const GLTF_GZIP_BUDGET: usize = 128 * 1024;
 /// Gzip ceiling for the KTX2 transcoder module.
 ///
 /// Its own ceiling rather than a share of the glTF one, because it is fetched

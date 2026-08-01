@@ -79,8 +79,10 @@ struct Inner {
 /// dropping: every one of those functions returned through a hidden out-pointer
 /// and every `?` expanded to `String` drop glue. Boxing makes the success case a
 /// null pointer in a register and reduces the drop glue to one shared function.
-/// Measured on the glTF WASM module, that is roughly ten kilobytes of gzipped
-/// code, and none of it was the message text.
+/// Measured on the glTF WASM module, that is 2.6 KiB of gzipped code. It is not
+/// what dominates, and this comment says so because the first guess was wrong:
+/// the message text and the `format!` that builds it are worth 16 KiB in the
+/// same module, and no shape of the error type reaches those.
 ///
 /// The kind is matched with [`kind`](Self::kind) rather than by pattern, and it
 /// is `#[non_exhaustive]`, so a later release can tell one refusal from another
