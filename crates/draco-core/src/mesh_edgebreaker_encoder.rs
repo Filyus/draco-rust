@@ -115,6 +115,63 @@ impl EdgebreakerAttributeConnectivity {
     }
 }
 
+/// Which EdgeBreaker traversal a given encode will write.
+///
+/// The value is also the traversal decoder type byte in the stream: standard 0,
+/// predictive 1, valence 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgebreakerTraversal {
+    /// Symbols coded directly, no context. The default.
+    Standard,
+    /// Legacy type-1 traversal, pre-0.10.0 connectivity.
+    Predictive,
+    /// Symbols coded against the valence of the active vertex.
+    Valence,
+}
+
+impl EdgebreakerTraversal {
+    /// The traversal decoder type this traversal writes into the stream.
+    pub(crate) fn decoder_type(self) -> u8 {
+        match self {
+            EdgebreakerTraversal::Standard => 0,
+            EdgebreakerTraversal::Predictive => 1,
+            EdgebreakerTraversal::Valence => 2,
+        }
+    }
+}
+
+/// Picks the traversal for a mesh of `num_faces` faces at `speed`.
+///
+/// Shared by the encoder and by the version validation that runs before it, for
+/// the same reason [`select_mesh_encoding_method`] is: only the standard
+/// traversal has a pre-2.2 layout this crate cannot write, so the check has to
+/// ask the same question the encoder will answer later. Deriving it twice is
+/// how a version check passes for a traversal the encoder then does not use.
+///
+/// [`select_mesh_encoding_method`]: crate::mesh_encoder
+pub fn select_edgebreaker_traversal(
+    speed: usize,
+    num_faces: usize,
+    force_predictive: bool,
+) -> EdgebreakerTraversal {
+    if force_predictive {
+        return EdgebreakerTraversal::Predictive;
+    }
+    // C++ uses the standard traversal for speed >= 5, and for tiny meshes at any
+    // speed, where the valence contexts cost more than they save. See
+    // mesh_edgebreaker_encoder.cc: `const bool is_tiny_mesh = num_faces < 1000`.
+    let is_tiny_mesh = num_faces < 1000;
+    #[cfg(feature = "edgebreaker_valence_encode")]
+    if speed < 5 && !is_tiny_mesh {
+        return EdgebreakerTraversal::Valence;
+    }
+    #[cfg(not(feature = "edgebreaker_valence_encode"))]
+    {
+        let _ = (speed, is_tiny_mesh);
+    }
+    EdgebreakerTraversal::Standard
+}
+
 pub struct MeshEdgebreakerEncoder {
     visited_faces: Vec<bool>,
     visited_vertices: Vec<bool>,
@@ -143,6 +200,8 @@ pub struct MeshEdgebreakerEncoder {
     // Tracks which holes have been visited during encoding
     visited_holes: Vec<bool>,
     encoding_speed: usize,
+    /// Resolved by `select_edgebreaker_traversal` at the start of an encode.
+    traversal: EdgebreakerTraversal,
     /// One connectivity shared by more than one attribute; suppresses the
     /// speed-0 prediction-degree order for the position.
     single_connectivity_multi_attribute: bool,
@@ -188,6 +247,7 @@ impl MeshEdgebreakerEncoder {
             vertex_hole_id: vec![-1; num_vertices],
             visited_holes: Vec::new(),
             encoding_speed: 5, // Default
+            traversal: EdgebreakerTraversal::Standard,
             single_connectivity_multi_attribute: false,
             #[cfg(feature = "debug_logs")]
             verbose_logging: crate::debug_env_enabled("DRACO_VERBOSE"),
@@ -280,25 +340,14 @@ impl MeshEdgebreakerEncoder {
         self.encoding_speed = speed;
         self.single_connectivity_multi_attribute = single_connectivity && mesh.num_attributes() > 1;
 
-        // C++ uses standard encoding for:
-        // 1. speed >= 5, OR
-        // 2. tiny meshes (< 1000 faces) - overhead of predictive/valence is too big
-        // See mesh_edgebreaker_encoder.cc: const bool is_tiny_mesh = mesh()->num_faces() < 1000;
-        let is_tiny_mesh = mesh.num_faces() < 1000;
+        self.traversal = select_edgebreaker_traversal(speed, mesh.num_faces(), self.force_predictive);
 
         #[cfg(feature = "edgebreaker_valence_encode")]
-        if speed < 5 && !is_tiny_mesh && !self.force_predictive {
+        if self.traversal == EdgebreakerTraversal::Valence {
             let mut ve = MeshEdgebreakerTraversalValenceEncoder::new();
             ve.init(corner_table);
             self.valence_encoder = Some(ve);
-        }
-        #[cfg(not(feature = "edgebreaker_valence_encode"))]
-        {
-            let _ = speed;
-            let _ = is_tiny_mesh;
-        }
-        #[cfg(feature = "edgebreaker_valence_encode")]
-        if speed >= 5 || is_tiny_mesh {
+        } else {
             self.valence_encoder = None;
         }
 
@@ -384,18 +433,7 @@ impl MeshEdgebreakerEncoder {
             self.valence_encoder = valence_encoder;
         }
 
-        // Write traversal decoder type (Standard = 0, Predictive = 1, Valence = 2).
-        #[cfg(feature = "edgebreaker_valence_encode")]
-        let traversal_decoder_type = if self.force_predictive {
-            1
-        } else if self.valence_encoder.is_some() {
-            2
-        } else {
-            0
-        };
-        #[cfg(not(feature = "edgebreaker_valence_encode"))]
-        let traversal_decoder_type = if self.force_predictive { 1 } else { 0 };
-        out_buffer.encode_u8(traversal_decoder_type);
+        out_buffer.encode_u8(self.traversal.decoder_type());
 
         let bitstream_version = out_buffer.bitstream_version();
         // Pre-2.0 stores the connectivity counts as fixed u32; 2.0+ uses varints.

@@ -395,36 +395,25 @@ fn fuzz_point_cloud(spec: &GeometrySpec, payload: &[u8], input: &[u8]) {
 }
 
 /// Whether oracle 2 - anything the encoder accepted decodes - applies to this
-/// encode, or whether the failure is one of the still-open findings.
+/// encode.
 ///
-/// Decided from the geometry and from the error's *variant*, never from its
-/// text: an error message is not an interface, and a suppression keyed on one
-/// silently stops suppressing when the wording changes and silently starts
-/// covering an unrelated failure that happens to share a phrase.
+/// It now applies to every one of them. The target used to exclude any
+/// explicitly requested bitstream version, because `set_version` accepted an
+/// interval running down to 1.0 while legacy encode is gated field by field and
+/// several of those gates disagreed with the decoder. That exclusion covered
+/// the target's largest blind spot with the thing it was meant to find.
 ///
-/// Two exclusions, both still-open findings recorded in
-/// `hardening_status.yaml`:
-///
-/// 1. **An explicitly requested non-default bitstream version.** Legacy encode
-///    is version-gated field by field and several of those gates disagree with
-///    the decoder, so such a stream can be unreadable. Those encodes still run,
-///    because oracle 1 - no panics - applies to them; only the round-trip claim
-///    is held to the default version, which is what the crate documents.
-///
-/// One exclusion left, and it is recorded in `hardening_status.yaml`. The
-/// decoder's count-vs-size preflight used to be a second one; it is gone, along
-/// with the guards behind it.
-fn round_trip_is_claimed(spec: &GeometrySpec) -> bool {
-    if std::env::var_os("ENCODE_DRC_NO_DECODE_ORACLE").is_some() {
-        // Triage knob: with oracle 2 off, a campaign runs past every
-        // encoder/decoder disagreement and reports only panics. Used when one
-        // known disagreement keeps ending the run before the panics behind it.
-        return false;
-    }
-    if spec.version.is_some() {
-        return false;
-    }
-    true
+/// The encoder now claims an enumerated set of versions and refuses the rest -
+/// see `EncodeTarget::claimed_versions`, plus the traversal and attribute gates
+/// beside it - so "the encoder accepted it" and "the decoder can read it" are
+/// the same statement again, and a counterexample is a bug rather than a known
+/// gap. Anything refused returns before the decode, so the oracle only ever
+/// sees a stream the encoder stands behind.
+fn round_trip_is_claimed(_spec: &GeometrySpec) -> bool {
+    // Triage knob: with oracle 2 off, a campaign runs past every
+    // encoder/decoder disagreement and reports only panics. Used when one
+    // known disagreement keeps ending the run before the panics behind it.
+    std::env::var_os("ENCODE_DRC_NO_DECODE_ORACLE").is_none()
 }
 
 /// Hex of the whole fuzz input, printed with an oracle failure.

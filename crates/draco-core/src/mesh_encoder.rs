@@ -9,11 +9,16 @@ use crate::encoder_options::EncoderOptions;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::geometry_indices::{FaceIndex, PointIndex, INVALID_ATTRIBUTE_VALUE_INDEX};
 use crate::mesh::Mesh;
-use crate::mesh_edgebreaker_encoder::{EdgebreakerAttributeConnectivity, MeshEdgebreakerEncoder};
+use crate::mesh_edgebreaker_encoder::{
+    select_edgebreaker_traversal, EdgebreakerAttributeConnectivity, EdgebreakerTraversal,
+    MeshEdgebreakerEncoder,
+};
 use crate::metadata::METADATA_FLAG_MASK;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_encoder::GeometryEncoder;
-use crate::sequential_attribute_encoder::{select_sequential_encoder, SequentialAttributeEncoder};
+use crate::sequential_attribute_encoder::{
+    select_sequential_encoder, SequentialAttributeEncoder, SequentialAttributeEncoderType,
+};
 use crate::sequential_integer_attribute_encoder::SequentialIntegerAttributeEncoder;
 use crate::sequential_normal_attribute_encoder::SequentialNormalAttributeEncoder;
 use crate::status::{DracoError, Status};
@@ -319,7 +324,9 @@ impl MeshEncoder {
         crate::version::validate_encodable_version(major, minor, target)?;
         Self::validate_face_indices(self.mesh.as_ref().unwrap())?;
         self.validate_predictive_traversal()?;
+        self.validate_edgebreaker_traversal(self.mesh.as_ref().unwrap())?;
         self.validate_prediction_schemes(self.mesh.as_ref().unwrap())?;
+        self.validate_attribute_versions(self.mesh.as_ref().unwrap())?;
 
         // 1. Encode Header
         self.encode_header(out_buffer)?;
@@ -373,6 +380,79 @@ impl MeshEncoder {
         Ok(())
     }
 
+    /// The per-attribute encoder this encode will build, which is what decides
+    /// whether an attribute is subject to the version gates below.
+    ///
+    /// An attribute only meets a prediction scheme or a quantization transform
+    /// if it reaches the integer path; a float attribute with no quantization
+    /// goes to the generic encoder, where a requested prediction scheme is
+    /// simply never consulted. Asking the same function the encoder asks keeps
+    /// the two from disagreeing about which attributes a refusal covers.
+    fn attribute_encoder_type(&self, mesh: &Mesh, att_id: i32) -> SequentialAttributeEncoderType {
+        let quantization_bits = self
+            .options
+            .get_attribute_int(att_id, "quantization_bits", -1);
+        select_sequential_encoder(mesh.attribute(att_id), quantization_bits)
+    }
+
+    /// Rejects attribute coding a pre-2.2 target has no layout for.
+    ///
+    /// Two asymmetries, both measured by encoding and decoding rather than read
+    /// off the version constants:
+    ///
+    /// - **A quantized non-normal attribute below 2.0.** The encoder writes the
+    ///   quantization parameters after the prediction header at every version;
+    ///   the decoder reads them *before* the integer values below 2.0, which is
+    ///   where C++ Draco put them. A quantized normal is unaffected -- it takes
+    ///   the octahedron transform, which has its own pre-2.0 shim.
+    /// - **Prediction schemes 3 and 6 below 2.2.** The deprecated tex-coords
+    ///   scheme writes its orientation count as a varint while the decoder
+    ///   reads a `u32` below 2.2, and the geometric-normal scheme's pre-2.2
+    ///   prediction data carries a mode byte the encoder never writes.
+    ///
+    /// Each of these produced a stream this crate's own decoder rejects, at
+    /// every version in the claimed set that the condition reaches. Refusing is
+    /// the honest half of claiming a version: the alternative is writing the
+    /// legacy layouts, which nobody has asked for, and the round-trip test is
+    /// the definition of done if someone does.
+    fn validate_attribute_versions(&self, mesh: &Mesh) -> Status {
+        const TEX_COORDS_DEPRECATED: i32 = 3;
+        const GEOMETRIC_NORMAL: i32 = 6;
+
+        let (mut major, mut minor) = self.options.get_version();
+        if major == 0 && minor == 0 {
+            (major, minor) = DEFAULT_MESH_VERSION;
+        }
+        let below_2_0 = crate::version::version_less_than(major, minor, (2, 0));
+        let below_2_2 = crate::version::version_less_than(major, minor, (2, 2));
+        if !below_2_2 {
+            return Ok(());
+        }
+
+        for att_id in 0..mesh.num_attributes() {
+            let encoder_type = self.attribute_encoder_type(mesh, att_id);
+            if encoder_type == SequentialAttributeEncoderType::Generic {
+                // Never reaches a transform or a prediction scheme.
+                continue;
+            }
+            if below_2_0 && encoder_type == SequentialAttributeEncoderType::Quantization {
+                return Err(DracoError::UnsupportedVersion(format!(
+                    "Attribute {att_id} is quantized, which bitstream version {major}.{minor} \
+                     stores before the integer values while this crate writes it after; \
+                     quantize only at 2.0 or newer, or drop quantization_bits for it"
+                )));
+            }
+            let scheme = self.options.get_attribute_prediction_scheme(att_id);
+            if matches!(scheme, TEX_COORDS_DEPRECATED | GEOMETRIC_NORMAL) {
+                return Err(DracoError::UnsupportedVersion(format!(
+                    "Prediction scheme {scheme} on attribute {att_id} has no bitstream \
+                     {major}.{minor} layout in this crate; it requires 2.2 or newer"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Rejects the legacy predictive traversal on a version that cannot carry
     /// it.
     ///
@@ -396,6 +476,58 @@ impl MeshEncoder {
             )));
         }
         Ok(())
+    }
+
+    /// Rejects a pre-2.2 EdgeBreaker target the chosen traversal cannot write.
+    ///
+    /// The traversal block is the one part of EdgeBreaker connectivity this
+    /// crate writes in the 2.2 layout only: `encode_traversal_buffer` builds it
+    /// in a buffer pinned at 2.2, so the pre-2.2 start-face stream the decoder
+    /// then looks for is not where it looks. The valence and predictive
+    /// traversals each have their own legacy path and round-trip; the standard
+    /// one does not, at any version below 2.2, for any mesh -- an encode that
+    /// reaches it produces a stream whose decode fails with "Failed to start
+    /// start-face bit decoding".
+    ///
+    /// This is the one claim [`EncodeTarget::claimed_versions`] cannot make on
+    /// its own, because the traversal is not something the caller selects: it
+    /// follows from the speed and the face count, so 2.1 works on a 2048-face
+    /// mesh at speed 0 and fails on a 162-face one at the same speed.
+    ///
+    /// [`EncodeTarget::claimed_versions`]: crate::version::EncodeTarget::claimed_versions
+    fn validate_edgebreaker_traversal(&self, mesh: &Mesh) -> Status {
+        if select_mesh_encoding_method(&self.options) != 1 {
+            return Ok(());
+        }
+        let (mut major, mut minor) = self.options.get_version();
+        if major == 0 && minor == 0 {
+            (major, minor) = DEFAULT_MESH_VERSION;
+        }
+        if !crate::version::version_less_than(major, minor, (2, 2)) {
+            return Ok(());
+        }
+        let traversal = select_edgebreaker_traversal(
+            self.options.get_speed() as usize,
+            mesh.num_faces(),
+            self.options.get_global_int("force_predictive_traversal", 0) == 1,
+        );
+        if traversal != EdgebreakerTraversal::Standard {
+            return Ok(());
+        }
+        let alternatives = if cfg!(feature = "edgebreaker_valence_encode") {
+            "set encoding_speed below 5 on a mesh of at least 1000 faces for the valence \
+             traversal, or force_predictive_traversal below 2.0"
+        } else {
+            "set force_predictive_traversal below 2.0, or enable the \
+             edgebreaker_valence_encode feature"
+        };
+        Err(DracoError::UnsupportedVersion(format!(
+            "EdgeBreaker at bitstream version {major}.{minor} selected the standard traversal, \
+             whose connectivity block this crate writes in the 2.2 layout only \
+             ({} faces, encoding_speed {}): {alternatives}",
+            mesh.num_faces(),
+            self.options.get_speed(),
+        )))
     }
 
     /// Rejects a face that references a point the mesh does not have.
