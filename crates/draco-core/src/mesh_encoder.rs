@@ -263,6 +263,11 @@ impl MeshEncoder {
         if self.mesh.is_none() {
             return Err(DracoError::DracoError("Mesh not set".to_string()));
         }
+        crate::point_cloud_encoder::validate_encodable_attributes(self.mesh.as_ref().unwrap())?;
+        let (major, minor) = self.options.get_version();
+        crate::version::validate_encodable_version(major, minor, DEFAULT_MESH_VERSION)?;
+        Self::validate_face_indices(self.mesh.as_ref().unwrap())?;
+        self.validate_predictive_traversal()?;
 
         // 1. Encode Header
         self.encode_header(out_buffer)?;
@@ -282,6 +287,56 @@ impl MeshEncoder {
             .filter(|metadata| !metadata.is_empty())
         {
             metadata.encode(buffer)?;
+        }
+        Ok(())
+    }
+
+    /// Rejects the legacy predictive traversal on a version that cannot carry
+    /// it.
+    ///
+    /// `force_predictive_traversal` round-trips pre-0.10.0 connectivity and
+    /// only belongs in a target version below 2.0, which the encoder's own
+    /// comment said and nothing checked. Set on a current-version encode, it
+    /// produced a type-1 traversal inside a 2.x stream - which the decoder
+    /// refuses, since 2.x connectivity has no predictive traversal to read.
+    fn validate_predictive_traversal(&self) -> Status {
+        if self.options.get_global_int("force_predictive_traversal", 0) == 0 {
+            return Ok(());
+        }
+        let (mut major, mut minor) = self.options.get_version();
+        if major == 0 && minor == 0 {
+            (major, minor) = DEFAULT_MESH_VERSION;
+        }
+        if !crate::version::version_less_than(major, minor, (2, 0)) {
+            return Err(DracoError::UnsupportedFeature(format!(
+                "force_predictive_traversal requires a target bitstream version below 2.0, \
+                 not {major}.{minor}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Rejects a face that references a point the mesh does not have.
+    ///
+    /// The index buffer is the other half of caller-supplied geometry, and
+    /// nothing between a file and this encoder re-checks it against the point
+    /// count. Both connectivity paths then use face indices to index
+    /// point-sized arrays directly - `point_to_vertex[face[j]]` in the corner
+    /// table build is the shortest route to it - so an out-of-range index is a
+    /// panic rather than an encode failure. One pass here answers for every
+    /// such use.
+    fn validate_face_indices(mesh: &Mesh) -> Status {
+        let num_points = mesh.num_points();
+        for face_id in 0..mesh.num_faces() {
+            let face = mesh.face(FaceIndex(face_id as u32));
+            for index in face {
+                if index.0 as usize >= num_points {
+                    return Err(DracoError::DracoError(format!(
+                        "Face {face_id} references point {} but the mesh has {num_points} points",
+                        index.0
+                    )));
+                }
+            }
         }
         Ok(())
     }

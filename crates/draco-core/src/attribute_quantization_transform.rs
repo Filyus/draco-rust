@@ -132,15 +132,24 @@ impl AttributeQuantizationTransform {
         true
     }
 
+    /// Quantizes `attribute` into `target_attribute`, returning false when the
+    /// source cannot supply the values asked of it.
+    ///
+    /// The source offset is `mapped_index(point) * byte_stride`, and the mapped
+    /// index is caller data: an attribute whose point map does not cover the
+    /// points this encode walks yields the invalid index, whose offset is past
+    /// the end of any buffer. The octahedron transform's counterpart already
+    /// refuses a source too short for what it is asked to read; this one
+    /// indexed and panicked.
     fn generate_portable_attribute(
         &self,
         attribute: &PointAttribute,
         point_ids: &[PointIndex],
         target_attribute: &mut PointAttribute,
-    ) {
+    ) -> bool {
         if self.quantization_bits < 1 || self.quantization_bits > 31 {
             // Invalid state; caller should have initialized parameters.
-            return;
+            return false;
         }
         let num_points = if point_ids.is_empty() {
             attribute.size()
@@ -189,6 +198,9 @@ impl AttributeQuantizationTransform {
             for i in 0..num_points {
                 let src_offset = i * src_stride;
                 let dst_offset = i * dst_stride;
+                if src_offset + 12 > src_data.len() || dst_offset + 12 > dst_data.len() {
+                    return false;
+                }
 
                 // Read 3 floats
                 let raw_x = f32::from_le_bytes([
@@ -230,8 +242,15 @@ impl AttributeQuantizationTransform {
                     point_ids[i]
                 };
                 let att_val_idx = attribute.mapped_index(point_idx);
-                let src_offset = att_val_idx.0 as usize * src_stride;
+                let Some(src_offset) = (att_val_idx.0 as usize).checked_mul(src_stride) else {
+                    return false;
+                };
                 let dst_offset = i * dst_stride;
+                if src_offset + num_components * 4 > src_data.len()
+                    || dst_offset + num_components * 4 > dst_data.len()
+                {
+                    return false;
+                }
 
                 for c in 0..num_components {
                     // Read raw component then subtract min to match C++ ordering
@@ -272,6 +291,8 @@ impl AttributeQuantizationTransform {
                 }
             }
         }
+
+        true
     }
 }
 
@@ -331,8 +352,7 @@ impl AttributeTransform for AttributeQuantizationTransform {
         point_ids: &[PointIndex],
         target_attribute: &mut PointAttribute,
     ) -> bool {
-        self.generate_portable_attribute(attribute, point_ids, target_attribute);
-        true
+        self.generate_portable_attribute(attribute, point_ids, target_attribute)
     }
 
     fn inverse_transform_attribute(

@@ -210,6 +210,15 @@ where
     ) -> bool {
         self.transform.init(in_data, size, num_components);
 
+        // No values means no entry 0, which the tail encodes unconditionally,
+        // and `size - num_components` below would wrap.
+        if num_components == 0 || !size.is_multiple_of(num_components) {
+            return false;
+        }
+        if size == 0 {
+            return true;
+        }
+
         // Encode data from the back using D(i) = D(i) - D(i - 1).
         let mut i = size - num_components;
         while i > 0 {

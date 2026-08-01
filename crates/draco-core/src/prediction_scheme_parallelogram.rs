@@ -321,6 +321,17 @@ where
     ) -> bool {
         self.transform.init(in_data, size, num_components);
 
+        // An attribute with no values has no entry 0, and the tail of this
+        // function encodes entry 0 unconditionally. Every prediction scheme
+        // that special-cases the first entry needs this guard; the sibling
+        // schemes carry the same one.
+        if num_components == 0 || !size.is_multiple_of(num_components) {
+            return false;
+        }
+        if size == 0 {
+            return true;
+        }
+
         let table = self.mesh_data.corner_table().unwrap();
         let vertex_to_data_map = self.mesh_data.vertex_to_data_map().unwrap();
         let data_to_corner_map = self.mesh_data.data_to_corner_map().unwrap();

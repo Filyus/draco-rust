@@ -108,6 +108,45 @@ pub fn uses_varint_unique_id(major: u8, minor: u8) -> bool {
     version_at_least(major, minor, VERSION_VARINT_UNIQUE_ID)
 }
 
+/// Oldest bitstream version this crate encodes, matching the documented
+/// compatibility floor of Draco 1.0.0.
+pub const OLDEST_ENCODABLE_VERSION: (u8, u8) = (1, 0);
+
+/// Rejects a target bitstream version the encoder cannot actually write.
+///
+/// `set_version` takes two free bytes, and every version-dependent branch in
+/// the encoders asks a predicate such as [`has_header_flags`] about them. Those
+/// predicates answer for any input, so a version nobody supports does not fail:
+/// it silently selects an older header layout for some fields and the current
+/// one for others, and the result is a stream this crate's own decoder cannot
+/// read. Validating once, where the version enters, keeps that from being
+/// discovered field by field.
+///
+/// `(0, 0)` means "use the default" and is accepted here; the encoders
+/// substitute their own default for it.
+pub fn validate_encodable_version(
+    major: u8,
+    minor: u8,
+    latest: (u8, u8),
+) -> Result<(), crate::status::DracoError> {
+    if major == 0 && minor == 0 {
+        return Ok(());
+    }
+    if version_less_than(major, minor, OLDEST_ENCODABLE_VERSION) {
+        return Err(crate::status::DracoError::UnsupportedVersion(format!(
+            "Cannot encode bitstream version {major}.{minor}: oldest supported is {}.{}",
+            OLDEST_ENCODABLE_VERSION.0, OLDEST_ENCODABLE_VERSION.1
+        )));
+    }
+    if bitstream_version(major, minor) > bitstream_version(latest.0, latest.1) {
+        return Err(crate::status::DracoError::UnsupportedVersion(format!(
+            "Cannot encode bitstream version {major}.{minor}: newest supported is {}.{}",
+            latest.0, latest.1
+        )));
+    }
+    Ok(())
+}
+
 /// Packs a `(major, minor)` bitstream version into the single `0xMMmm` value
 /// used for ordered comparisons such as `bitstream_version(maj, min) < 0x0202`.
 /// Centralizes the encoding so call sites cannot transpose major/minor.

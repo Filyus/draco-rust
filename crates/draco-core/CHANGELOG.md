@@ -6,6 +6,36 @@ independently; its release tags are `draco-core-vX.Y.Z`.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- The encoders validate the geometry they are given before encoding it, and
+  refuse what they cannot encode instead of panicking. An attribute must have
+  components, a data type, and a point map that lands inside its own value
+  array; a mesh face must reference points the mesh has; the target bitstream
+  version must be one this crate writes (1.0 up to the newest for the geometry
+  type); and `force_predictive_traversal` requires a target below 2.0, which its
+  own comment already said and nothing checked. Callers passing geometry
+  assembled from a file - where the point count, index buffer and attribute
+  mappings come from the file and nothing re-checks them - now get a
+  `DracoError` where the encoder previously indexed off those numbers.
+
+### Fixed
+
+- A point cloud encoded at a bitstream version below 1.3 omitted the header
+  flags field, leaving the stream two bytes short of what its own decoder reads,
+  so an explicit `set_version(1, 0)` produced a `.drc` nothing could decode.
+  Upstream writes that field for every version, and the mesh encoder already
+  did.
+- The quantization transform reports a failure instead of indexing when a source
+  offset falls outside the attribute buffer, matching the octahedron transform's
+  counterpart.
+
+These came from a new encoder-side libFuzzer target, `encode_drc`, which
+builds geometry from the fuzz input, encodes it, and requires that anything the
+encoder accepts decodes. See [`FUZZING.md`](../../FUZZING.md).
+
 ## [1.1.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.0.5...draco-core-v1.1.0) - 2026-07-31
 
 ### Changed

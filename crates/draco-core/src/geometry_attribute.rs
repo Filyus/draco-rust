@@ -311,6 +311,17 @@ impl PointAttribute {
         self.base.set_num_components(num_components);
     }
 
+    /// Returns whether point ids are used directly as attribute value ids.
+    ///
+    /// The counterpart of [`set_identity_mapping`](Self::set_identity_mapping)
+    /// and [`set_explicit_mapping`](Self::set_explicit_mapping): with identity
+    /// mapping, point `i` reads value `i`, so a caller validating the mapping
+    /// answers in one comparison rather than a call to
+    /// [`mapped_index`](Self::mapped_index) per point.
+    pub fn is_mapping_identity(&self) -> bool {
+        self.identity_mapping
+    }
+
     /// Uses point ids directly as attribute value ids.
     pub fn set_identity_mapping(&mut self) {
         self.identity_mapping = true;

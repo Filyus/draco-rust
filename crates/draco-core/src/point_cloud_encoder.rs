@@ -19,6 +19,69 @@ use crate::version::{
 
 use crate::corner_table::CornerTable;
 
+/// Rejects attributes no encoder can represent, before any of them tries.
+///
+/// An attribute is a typed array, and both halves of its element type come from
+/// the caller: a component count and a scalar type. Neither is validated where
+/// it is set, because `PointAttribute::init` is a data-model API that mirrors
+/// C++ Draco and stores what it is given. So a geometry assembled from a file
+/// some other library parsed can reach the encoder with a zero-component or
+/// untyped attribute, and every encoder path then derives a stride, a
+/// dimension, or an axis count from it. The KD-tree coder takes the position
+/// attribute's component count as its dimension and indexes a per-axis array
+/// with it, which for zero components is an empty array indexed at 0.
+///
+/// This is the one place both encoders can share, so the refusal is stated once
+/// here rather than defended at each derivation.
+pub(crate) fn validate_encodable_attributes(point_cloud: &PointCloud) -> Status {
+    for att_id in 0..point_cloud.num_attributes() {
+        let attribute = point_cloud.attribute(att_id);
+        if attribute.num_components() == 0 {
+            return Err(DracoError::DracoError(format!(
+                "Attribute {att_id} has zero components and cannot be encoded"
+            )));
+        }
+        if attribute.data_type() == DataType::Invalid {
+            return Err(DracoError::DracoError(format!(
+                "Attribute {att_id} has an invalid data type and cannot be encoded"
+            )));
+        }
+
+        // Every point must land on a value the attribute actually holds. The
+        // encoders read attribute data by mapped index without re-checking it,
+        // which is correct for geometry they built themselves and wrong for
+        // geometry handed in: an identity-mapped attribute shorter than the
+        // point count, or an explicit map with an entry past the value array
+        // (including the invalid index a fresh map is filled with), otherwise
+        // reads past the value buffer.
+        //
+        // Identity mapping is the common case and answers in one comparison,
+        // since point i reads value i. Only an explicit map has to be walked,
+        // and that walk is the same order as the encode that follows it.
+        let num_values = attribute.size();
+        let num_points = point_cloud.num_points();
+        if attribute.is_mapping_identity() {
+            if num_points > num_values {
+                return Err(DracoError::DracoError(format!(
+                    "Attribute {att_id} holds {num_values} values for {num_points} points"
+                )));
+            }
+        } else {
+            for point in 0..num_points {
+                let value = attribute.mapped_index(PointIndex(point as u32));
+                if (value.0 as usize) >= num_values {
+                    return Err(DracoError::DracoError(format!(
+                        "Attribute {att_id} maps point {point} to value {} but holds \
+                         {num_values} values",
+                        value.0
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Picks sequential or KD-tree encoding, as C++ `ExpertEncoder::EncodeToBuffer`
 /// does for a point cloud.
 ///
@@ -228,6 +291,9 @@ impl PointCloudEncoder {
             return Err(DracoError::DracoError("Point cloud not set".to_string()));
         }
         let pc = self.point_cloud.as_ref().unwrap();
+        validate_encodable_attributes(pc)?;
+        let (major, minor) = self.options.get_version();
+        crate::version::validate_encodable_version(major, minor, DEFAULT_POINT_CLOUD_VERSION)?;
 
         let method = select_encoding_method(pc, &self.options)?;
 
@@ -537,10 +603,14 @@ impl PointCloudEncoder {
         buffer.encode_u8(self.get_geometry_type() as u8);
         buffer.encode_u8(method as u8);
 
-        if has_header_flags(major, minor) {
-            let flags = if has_metadata { METADATA_FLAG_MASK } else { 0 };
-            buffer.encode_u16(flags);
-        }
+        // The flags field is part of the header for every version this crate
+        // encodes: upstream `PointCloudEncoder::EncodeHeader` writes it
+        // unconditionally as far back as 1.0.0, and both decoders read it
+        // unconditionally. Writing it only from 1.3 left a stream that was two
+        // bytes short of what its own decoder expects, so an explicit
+        // `set_version(1, 0)` produced a `.drc` nothing could read.
+        let flags = if has_metadata { METADATA_FLAG_MASK } else { 0 };
+        buffer.encode_u16(flags);
         Ok(())
     }
 

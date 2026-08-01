@@ -214,6 +214,10 @@ where
         if num_components == 0 || !size.is_multiple_of(num_components) {
             return false;
         }
+        if size == 0 {
+            // No values, so no entry 0 for the tail of this function to encode.
+            return true;
+        }
         let num_entries = size / num_components;
 
         let corner_table = match self.mesh_data.corner_table() {
