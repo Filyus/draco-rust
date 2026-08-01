@@ -403,4 +403,4 @@ pub use keyframe_animation_encoder::KeyframeAnimationEncoder;
 pub use mesh_encoder::{EncodedAttributeInfo, EncodedMeshInfo, MeshEncoder};
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
-pub use point_cloud_encoder::PointCloudEncoder;
+pub use point_cloud_encoder::{EncodedPointCloudInfo, PointCloudEncoder};

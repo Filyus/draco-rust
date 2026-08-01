@@ -16,6 +16,7 @@ use crate::mesh_edgebreaker_encoder::{
 use crate::metadata::METADATA_FLAG_MASK;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_encoder::GeometryEncoder;
+use crate::prediction_scheme::{PredictionSchemeMethod, PredictionSchemeTransformType};
 use crate::sequential_attribute_encoder::{
     select_sequential_encoder, SequentialAttributeEncoder, SequentialAttributeEncoderType,
 };
@@ -119,14 +120,37 @@ pub struct MeshEncoder {
     point_to_vertex_map: Option<Vec<u32>>,
     /// Whether we're using single connectivity (all attributes share same corner table).
     use_single_connectivity: bool,
+    /// Prediction choices made by the attribute encoders, keyed by attribute
+    /// id. Collected as encoding runs because the encoders are built at their
+    /// use site and dropped there, and only they know what they settled on.
+    attribute_predictions: Vec<(i32, PredictionSchemeMethod, PredictionSchemeTransformType)>,
     encoded_mesh_info: Option<EncodedMeshInfo>,
 }
 
-/// Geometry shape and attribute metadata produced by a successful mesh encode.
+/// Geometry shape, encoder choices and attribute metadata produced by a
+/// successful mesh encode.
+///
+/// The encoder decides several things the caller does not state: the
+/// connectivity coder, the EdgeBreaker traversal, whether attributes share one
+/// connectivity, and a prediction scheme per attribute. Everything it resolved
+/// is reported here, so "what did this encode actually do" is answerable
+/// without re-deriving the selection rules or parsing the stream back.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct EncodedMeshInfo {
     /// Numeric Draco mesh encoding method used for the output.
     pub encoding_method: i32,
+    /// Bitstream version written, after the default was substituted for an
+    /// unset one.
+    pub bitstream_version: (u8, u8),
+    /// EdgeBreaker traversal written, or `None` for sequential connectivity.
+    pub traversal: Option<EdgebreakerTraversal>,
+    /// Speed the choices above were made at, after `encoding_speed` and
+    /// `decoding_speed` were resolved into one value.
+    pub speed: i32,
+    /// Whether every attribute shared the position's connectivity. When false,
+    /// attributes with seams were encoded against their own corner tables.
+    pub single_connectivity: bool,
     /// Number of faces encoded into the bitstream.
     pub num_encoded_faces: usize,
     /// Number of points encoded into the bitstream.
@@ -137,6 +161,7 @@ pub struct EncodedMeshInfo {
 
 /// Attribute metadata produced by a successful mesh encode.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct EncodedAttributeInfo {
     /// Source attribute id in the input mesh.
     pub source_attribute_id: i32,
@@ -152,6 +177,18 @@ pub struct EncodedAttributeInfo {
     pub unique_id: u32,
     /// Number of unique values encoded for the attribute.
     pub num_encoded_values: usize,
+    /// Per-attribute encoder the values went through, which is what decides
+    /// whether the two fields below are populated.
+    pub encoder_type: SequentialAttributeEncoderType,
+    /// Quantization bits applied, or `None` when the attribute was not
+    /// quantized. A `quantization_bits` option set on an integer or generic
+    /// attribute is ignored by the encoder and reported as `None` here.
+    pub quantization_bits: Option<i32>,
+    /// Prediction scheme and transform the encoder settled on, or `None` when
+    /// the attribute never reached the integer path. This is the resolved
+    /// choice, not the request: several schemes fall back to `Difference` when
+    /// the attribute or the mesh cannot support them.
+    pub prediction: Option<(PredictionSchemeMethod, PredictionSchemeTransformType)>,
     /// Minimum position components when known for position attributes.
     pub position_min: Option<Vec<f64>>,
     /// Maximum position components when known for position attributes.
@@ -236,6 +273,7 @@ impl MeshEncoder {
             method: 0,
             point_to_vertex_map: None,
             use_single_connectivity: false,
+            attribute_predictions: Vec::new(),
             encoded_mesh_info: None,
         }
     }
@@ -275,6 +313,7 @@ impl MeshEncoder {
         self.method = 0;
         self.point_to_vertex_map = None;
         self.use_single_connectivity = false;
+        self.attribute_predictions.clear();
     }
 
     /// Returns the assigned mesh, if any.
@@ -1074,6 +1113,10 @@ impl MeshEncoder {
         let mut quantization_transforms: Vec<Option<AttributeQuantizationTransform>> = Vec::new();
         let mut portable_attributes: Vec<Option<PointAttribute>> = Vec::new();
         let mut normal_encoders: Vec<Option<SequentialNormalAttributeEncoder>> = Vec::new();
+        // Collected here rather than written straight to `self`, which is
+        // borrowed as the `GeometryEncoder` the attribute encoders predict
+        // against for as long as this loop runs.
+        let mut predictions = Vec::new();
 
         // First pass: encode all attribute VALUES
         for i in 0..mesh.num_attributes() {
@@ -1104,6 +1147,9 @@ impl MeshEncoder {
                         return Err(DracoError::DracoError(
                             "Failed to encode normal values".to_string(),
                         ));
+                    }
+                    if let Some((method, transform)) = encoder.selected_prediction() {
+                        predictions.push((i, method, transform));
                     }
                     normal_encoders.push(Some(encoder));
                     quantization_transforms.push(None);
@@ -1140,6 +1186,9 @@ impl MeshEncoder {
                             i
                         )));
                     }
+                    if let Some((method, transform)) = att_encoder.selected_prediction() {
+                        predictions.push((i, method, transform));
+                    }
 
                     quantization_transforms.push(Some(q_transform));
                     portable_attributes.push(Some(portable));
@@ -1162,6 +1211,9 @@ impl MeshEncoder {
                             "Failed to encode attribute {}",
                             i
                         )));
+                    }
+                    if let Some((method, transform)) = att_encoder.selected_prediction() {
+                        predictions.push((i, method, transform));
                     }
                     quantization_transforms.push(None);
                     portable_attributes.push(None);
@@ -1227,6 +1279,7 @@ impl MeshEncoder {
             }
         }
 
+        self.attribute_predictions.extend(predictions);
         Ok(())
     }
 
@@ -1552,6 +1605,9 @@ impl MeshEncoder {
             .as_ref()
             .expect("mesh must be set before encoding");
         let mut normal_encoders: Vec<Option<SequentialNormalAttributeEncoder>> = Vec::new();
+        // See the sibling collection in `encode_attributes`: `self` is the
+        // `GeometryEncoder` the attribute encoders borrow for the whole loop.
+        let mut predictions = Vec::new();
 
         for (local_i, &att_id) in attr_ids.iter().enumerate() {
             let att = mesh.attribute(att_id);
@@ -1580,6 +1636,9 @@ impl MeshEncoder {
                         return Err(DracoError::DracoError(
                             "Failed to encode normal values".to_string(),
                         ));
+                    }
+                    if let Some((method, transform)) = encoder.selected_prediction() {
+                        predictions.push((att_id, method, transform));
                     }
                     normal_encoders.push(Some(encoder));
                 }
@@ -1611,6 +1670,9 @@ impl MeshEncoder {
                             att_id
                         )));
                     }
+                    if let Some((method, transform)) = att_encoder.selected_prediction() {
+                        predictions.push((att_id, method, transform));
+                    }
                     normal_encoders.push(None);
                 }
                 1 => {
@@ -1629,6 +1691,9 @@ impl MeshEncoder {
                             "Failed to encode attribute {}",
                             att_id
                         )));
+                    }
+                    if let Some((method, transform)) = att_encoder.selected_prediction() {
+                        predictions.push((att_id, method, transform));
                     }
                     normal_encoders.push(None);
                 }
@@ -1688,6 +1753,7 @@ impl MeshEncoder {
             }
         }
 
+        self.attribute_predictions.extend(predictions);
         Ok(())
     }
 
@@ -1713,11 +1779,29 @@ impl MeshEncoder {
 
             let (position_min, position_max) =
                 self.position_bounds_for_attribute(att_id, &point_ids)?;
-            let att = self
+            let mesh = self
                 .mesh
                 .as_ref()
-                .expect("mesh must be set before encoding")
-                .attribute(att_id);
+                .expect("mesh must be set before encoding");
+            let encoder_type = self.attribute_encoder_type(mesh, att_id);
+            let quantization_bits = match encoder_type {
+                SequentialAttributeEncoderType::Quantization
+                | SequentialAttributeEncoderType::Normals => Some(
+                    self.options
+                        .get_attribute_int(att_id, "quantization_bits", -1),
+                ),
+                // A `quantization_bits` option on an integer or generic
+                // attribute never reaches a transform, so reporting it would
+                // describe the request rather than the encode.
+                SequentialAttributeEncoderType::Integer
+                | SequentialAttributeEncoderType::Generic => None,
+            };
+            let prediction = self
+                .attribute_predictions
+                .iter()
+                .find(|(id, _, _)| *id == att_id)
+                .map(|&(_, method, transform)| (method, transform));
+            let att = mesh.attribute(att_id);
             attributes.push(EncodedAttributeInfo {
                 source_attribute_id: att_id,
                 attribute_type: att.attribute_type(),
@@ -1726,6 +1810,9 @@ impl MeshEncoder {
                 normalized: att.normalized(),
                 unique_id: att.unique_id(),
                 num_encoded_values,
+                encoder_type,
+                quantization_bits,
+                prediction,
                 position_min,
                 position_max,
             });
@@ -1745,8 +1832,24 @@ impl MeshEncoder {
         self.active_corner_table = None;
         self.active_data_to_corner_map = None;
         self.active_vertex_to_data_map = None;
+
+        let (mut major, mut minor) = self.options.get_version();
+        if major == 0 && minor == 0 {
+            (major, minor) = DEFAULT_MESH_VERSION;
+        }
+        let traversal = (self.method == 1).then(|| {
+            select_edgebreaker_traversal(
+                self.options.get_speed() as usize,
+                num_faces,
+                self.options.get_global_int("force_predictive_traversal", 0) == 1,
+            )
+        });
         self.encoded_mesh_info = Some(EncodedMeshInfo {
             encoding_method: self.method,
+            bitstream_version: (major, minor),
+            traversal,
+            speed: self.options.get_speed(),
+            single_connectivity: self.use_single_connectivity,
             num_encoded_faces: num_faces,
             num_encoded_points: encoded_num_points,
             attributes,

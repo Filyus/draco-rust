@@ -81,6 +81,12 @@ pub struct SequentialIntegerAttributeEncoder {
     /// Stores the quantization transform if one was applied, for later encoding
     quantization_transform: Option<AttributeQuantizationTransform>,
     transform_family: IntPredictionTransformFamily,
+    /// What `encode_values` settled on, recorded where it writes the two bytes
+    /// into the stream. The choice is the encoder's to make -- a caller asking
+    /// for a scheme gets it only when the attribute and the mesh support one,
+    /// and several arms fall back to `Difference` -- so this is the only place
+    /// that knows the answer.
+    selected_prediction: Option<(PredictionSchemeMethod, PredictionSchemeTransformType)>,
 }
 
 impl Default for SequentialIntegerAttributeEncoder {
@@ -95,7 +101,16 @@ impl SequentialIntegerAttributeEncoder {
             base: SequentialAttributeEncoder::new(),
             quantization_transform: None,
             transform_family: IntPredictionTransformFamily::Wrap,
+            selected_prediction: None,
         }
+    }
+
+    /// The prediction scheme and transform the last `encode_values` chose, or
+    /// `None` if it has not run.
+    pub fn selected_prediction(
+        &self,
+    ) -> Option<(PredictionSchemeMethod, PredictionSchemeTransformType)> {
+        self.selected_prediction
     }
 
     /// Selects the transform family the prediction schemes are built with.
@@ -1070,6 +1085,7 @@ impl SequentialIntegerAttributeEncoder {
                 selected_transform_type
             );
         }
+        self.selected_prediction = Some((selected_method, selected_transform_type));
         out_buffer.encode_u8(selected_method as u8);
 
         if selected_method != PredictionSchemeMethod::None {

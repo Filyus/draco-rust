@@ -38,6 +38,17 @@ impl SequentialNormalAttributeEncoder {
         }
     }
 
+    /// The prediction scheme and transform the octahedron-folded values were
+    /// encoded with. Delegated: a normal is encoded as integers once folded.
+    pub fn selected_prediction(
+        &self,
+    ) -> Option<(
+        crate::prediction_scheme::PredictionSchemeMethod,
+        crate::prediction_scheme::PredictionSchemeTransformType,
+    )> {
+        self.base.selected_prediction()
+    }
+
     pub fn init(
         &mut self,
         point_cloud: &PointCloud,

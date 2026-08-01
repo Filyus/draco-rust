@@ -131,7 +131,7 @@ pub enum EdgebreakerTraversal {
 
 impl EdgebreakerTraversal {
     /// The traversal decoder type this traversal writes into the stream.
-    pub(crate) fn decoder_type(self) -> u8 {
+    pub fn decoder_type(self) -> u8 {
         match self {
             EdgebreakerTraversal::Standard => 0,
             EdgebreakerTraversal::Predictive => 1,

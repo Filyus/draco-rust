@@ -8,8 +8,13 @@ use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::{AttributeValueIndex, FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 use draco_core::mesh_decoder::MeshDecoder;
+use draco_core::mesh_edgebreaker_encoder::EdgebreakerTraversal;
 use draco_core::mesh_encoder::{EncodedMeshInfo, MeshEncoder};
-use draco_core::version::has_header_flags;
+use draco_core::point_cloud::PointCloud;
+use draco_core::point_cloud_encoder::PointCloudEncoder;
+use draco_core::prediction_scheme::{PredictionSchemeMethod, PredictionSchemeTransformType};
+use draco_core::sequential_attribute_encoder::SequentialAttributeEncoderType;
+use draco_core::version::{has_header_flags, DEFAULT_MESH_VERSION, DEFAULT_POINT_CLOUD_VERSION};
 
 fn write_f32s(attribute: &mut PointAttribute, values: &[f32]) {
     for (i, value) in values.iter().enumerate() {
@@ -357,4 +362,253 @@ fn multi_attribute_encoded_mesh_info_matches_decoded_mesh() {
 
     assert_eq!(info.encoding_method, 1);
     assert_info_matches_decoded(&info, &decoded);
+}
+
+/// The report names the traversal the stream actually carries.
+///
+/// Checked against the traversal byte parsed back out of the bitstream rather
+/// than against a second call to the selection rule, so the two cannot agree by
+/// sharing a mistake. The traversal is not something the caller sets -- it
+/// follows from the speed and the face count -- which is what makes reporting
+/// it worth anything.
+#[test]
+fn encoded_mesh_info_reports_the_traversal_the_stream_carries() {
+    let cases: [(&str, Mesh, i32, EdgebreakerTraversal); 3] = [
+        (
+            "speed 5 selects standard",
+            build_grid_mesh(32),
+            5,
+            EdgebreakerTraversal::Standard,
+        ),
+        (
+            "speed 0 over 1000 faces selects valence",
+            build_grid_mesh(32),
+            0,
+            EdgebreakerTraversal::Valence,
+        ),
+        (
+            "a tiny mesh stays standard at any speed",
+            build_triangle(),
+            0,
+            EdgebreakerTraversal::Standard,
+        ),
+    ];
+
+    for (label, mesh, speed, expected) in cases {
+        let mut options = EncoderOptions::new();
+        options.set_global_int("encoding_method", 1);
+        options.set_global_int("encoding_speed", speed);
+        options.set_global_int("decoding_speed", speed);
+        options.set_attribute_int(0, "quantization_bits", 12);
+
+        let (info, _, bytes) = encode_decode_bytes_with_info(mesh, options);
+        assert_eq!(info.traversal, Some(expected), "{label}");
+        assert_eq!(
+            edgebreaker_traversal_type(&bytes),
+            expected.decoder_type(),
+            "{label}: the stream disagrees with the report"
+        );
+    }
+}
+
+/// Sequential connectivity has no traversal to report.
+#[test]
+fn sequential_encoded_mesh_info_reports_no_traversal() {
+    let mut options = EncoderOptions::new();
+    options.set_global_int("encoding_method", 0);
+
+    let (info, _) = encode_decode_with_info(build_triangle(), options);
+    assert_eq!(info.encoding_method, 0);
+    assert_eq!(info.traversal, None);
+}
+
+/// The globals the encoder resolved -- version, speed, shared connectivity --
+/// are reported as resolved, not as requested.
+#[test]
+fn encoded_mesh_info_reports_the_resolved_globals() {
+    // Nothing set: the version defaults, and the speed resolves to 5 from the
+    // -1 that both speed options carry when absent.
+    let (info, _) = encode_decode_with_info(build_triangle(), EncoderOptions::new());
+    assert_eq!(info.bitstream_version, DEFAULT_MESH_VERSION);
+    assert_eq!(info.speed, 5);
+
+    // get_speed is the maximum of the two, so the higher one wins.
+    let mut options = EncoderOptions::new();
+    options.set_global_int("encoding_speed", 3);
+    options.set_global_int("decoding_speed", 7);
+    let (info, _) = encode_decode_with_info(build_triangle(), options);
+    assert_eq!(info.speed, 7);
+
+    // A seam mesh encoded with split connectivity, then without it.
+    let mut split = EncoderOptions::new();
+    split.set_global_int("encoding_method", 1);
+    split.set_global_int("split_mesh_on_seams", 0);
+    let (info, _) = encode_decode_with_info(build_uv_seam_mesh(), split);
+    assert!(!info.single_connectivity);
+
+    let mut single = EncoderOptions::new();
+    single.set_global_int("encoding_method", 1);
+    single.set_global_int("split_mesh_on_seams", 1);
+    let (info, _) = encode_decode_with_info(build_uv_seam_mesh(), single);
+    assert!(info.single_connectivity);
+}
+
+/// Each attribute reports the encoder it went through, and the quantization and
+/// prediction that follow from it.
+#[test]
+fn encoded_attribute_info_reports_the_per_attribute_choices() {
+    let mut options = EncoderOptions::new();
+    options.set_attribute_int(0, "quantization_bits", 12); // position, float
+    options.set_attribute_int(1, "quantization_bits", 8); // normal, float
+    // Attribute 2 is a u8 colour: an integer type, so quantization_bits would
+    // be ignored. Set one anyway -- the report must not repeat it back.
+    options.set_attribute_int(2, "quantization_bits", 9);
+    // Attribute 3 is a float tex coord with no quantization: generic encoder.
+
+    let (info, _) = encode_decode_with_info(build_multi_attribute_quad(), options);
+
+    let position = &info.attributes[0];
+    assert_eq!(
+        position.encoder_type,
+        SequentialAttributeEncoderType::Quantization
+    );
+    assert_eq!(position.quantization_bits, Some(12));
+    assert!(
+        position.prediction.is_some(),
+        "a quantized position goes through the integer path and picks a scheme"
+    );
+
+    let normal = &info.attributes[1];
+    assert_eq!(normal.encoder_type, SequentialAttributeEncoderType::Normals);
+    assert_eq!(normal.quantization_bits, Some(8));
+    assert!(
+        matches!(
+            normal.prediction,
+            Some((
+                _,
+                PredictionSchemeTransformType::NormalOctahedronCanonicalized
+                    | PredictionSchemeTransformType::NormalOctahedron
+            ))
+        ),
+        "a normal folds onto the octahedron: {:?}",
+        normal.prediction
+    );
+
+    let color = &info.attributes[2];
+    assert_eq!(color.encoder_type, SequentialAttributeEncoderType::Integer);
+    assert_eq!(
+        color.quantization_bits, None,
+        "quantization_bits on an integer attribute is never applied"
+    );
+
+    let tex_coord = &info.attributes[3];
+    assert_eq!(
+        tex_coord.encoder_type,
+        SequentialAttributeEncoderType::Generic
+    );
+    assert_eq!(tex_coord.quantization_bits, None);
+    assert_eq!(
+        tex_coord.prediction, None,
+        "the generic encoder never reaches a prediction scheme"
+    );
+}
+
+/// A requested prediction scheme is reported by the name the encoder settled
+/// on, which is the point: the request is not always what runs.
+#[test]
+fn encoded_attribute_info_reports_the_scheme_that_ran() {
+    let scheme_for = |scheme: i32| {
+        let mut options = EncoderOptions::new();
+        options.set_global_int("encoding_method", 1);
+        options.set_global_int("encoding_speed", 0);
+        options.set_global_int("decoding_speed", 0);
+        options.set_attribute_int(0, "quantization_bits", 12);
+        options.set_attribute_int(0, "prediction_scheme", scheme);
+        let (info, _) = encode_decode_with_info(build_grid_mesh(32), options);
+        info.attributes[0].prediction.map(|(method, _)| method)
+    };
+
+    assert_eq!(
+        scheme_for(0),
+        Some(PredictionSchemeMethod::Difference),
+        "difference is available for any attribute"
+    );
+    assert_eq!(
+        scheme_for(1),
+        Some(PredictionSchemeMethod::MeshPredictionParallelogram)
+    );
+    assert_eq!(
+        scheme_for(4),
+        Some(PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram)
+    );
+}
+
+/// The point-cloud encoder picks KD-tree over sequential on its own, and the
+/// report is the only way to find out which one ran.
+#[test]
+fn encoded_point_cloud_info_reports_the_method_chosen() {
+    fn float_cloud() -> PointCloud {
+        let mut pc = PointCloud::new();
+        let mut position = PointAttribute::new();
+        position.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            3,
+        );
+        write_f32s(&mut position, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+        pc.set_num_points(3);
+        pc.add_attribute(position);
+        pc
+    }
+
+    let encode = |options: EncoderOptions| {
+        let mut encoder = PointCloudEncoder::new();
+        encoder.set_point_cloud(float_cloud());
+        let mut bytes = EncoderBuffer::new();
+        encoder.encode(&options, &mut bytes).expect("encode");
+        let info = encoder
+            .encoded_point_cloud_info()
+            .cloned()
+            .expect("successful encode should expose point cloud info");
+        // The method also sits in the header, one byte after the geometry type.
+        assert_eq!(
+            bytes.data()[8] as i32,
+            info.encoding_method,
+            "the stream disagrees with the report"
+        );
+        info
+    };
+
+    // Unquantized floats: the KD-tree coder works on integers alone, so it is
+    // not eligible and the encoder falls back to sequential.
+    let info = encode(EncoderOptions::new());
+    assert_eq!(info.encoding_method, 0);
+    assert_eq!(info.bitstream_version, DEFAULT_POINT_CLOUD_VERSION);
+    assert_eq!(info.num_encoded_points, 3);
+    assert_eq!(
+        info.attributes[0].encoder_type,
+        SequentialAttributeEncoderType::Generic
+    );
+
+    // Quantized: every attribute is eligible, so the KD-tree coder is chosen
+    // without the caller asking. It has no per-attribute report.
+    let mut quantized = EncoderOptions::new();
+    quantized.set_attribute_int(0, "quantization_bits", 12);
+    let info = encode(quantized);
+    assert_eq!(info.encoding_method, 1);
+    assert!(info.attributes.is_empty());
+
+    // Asked for sequential explicitly, the same quantized cloud reports it.
+    let mut sequential = EncoderOptions::new();
+    sequential.set_attribute_int(0, "quantization_bits", 12);
+    sequential.set_global_int("encoding_method", 0);
+    let info = encode(sequential);
+    assert_eq!(info.encoding_method, 0);
+    assert_eq!(
+        info.attributes[0].encoder_type,
+        SequentialAttributeEncoderType::Quantization
+    );
+    assert_eq!(info.attributes[0].quantization_bits, Some(12));
 }

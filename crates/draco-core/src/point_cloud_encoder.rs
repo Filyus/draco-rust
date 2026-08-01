@@ -6,6 +6,7 @@ use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::PointIndex;
 use crate::kd_tree_attributes_encoder::KdTreeAttributesEncoder;
 use crate::mesh::Mesh;
+use crate::mesh_encoder::EncodedAttributeInfo;
 use crate::metadata::METADATA_FLAG_MASK;
 use crate::point_cloud::PointCloud;
 use crate::sequential_attribute_encoder::{
@@ -283,6 +284,33 @@ pub trait GeometryEncoder {
 pub struct PointCloudEncoder {
     point_cloud: Option<PointCloud>,
     options: EncoderOptions,
+    encoded_point_cloud_info: Option<EncodedPointCloudInfo>,
+}
+
+/// Encoder choices and attribute metadata from a successful point-cloud encode.
+///
+/// The counterpart of [`EncodedMeshInfo`], and it exists for the same reason:
+/// the encoder picks the KD-tree coder over the sequential one whenever every
+/// attribute is eligible, and a caller had no way to find out which one ran.
+///
+/// [`EncodedMeshInfo`]: crate::mesh_encoder::EncodedMeshInfo
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct EncodedPointCloudInfo {
+    /// Numeric Draco point-cloud encoding method used: 0 sequential, 1 KD-tree.
+    pub encoding_method: i32,
+    /// Bitstream version written, after the default was substituted for an
+    /// unset one.
+    pub bitstream_version: (u8, u8),
+    /// Speed the choices above were made at, after `encoding_speed` and
+    /// `decoding_speed` were resolved into one value.
+    pub speed: i32,
+    /// Number of points encoded into the bitstream.
+    pub num_encoded_points: usize,
+    /// Per-attribute information captured during encoding. Empty for the
+    /// KD-tree method, which encodes every attribute through one coder with no
+    /// per-attribute choice to report.
+    pub attributes: Vec<EncodedAttributeInfo>,
 }
 
 impl GeometryEncoder for PointCloudEncoder {
@@ -319,12 +347,18 @@ impl PointCloudEncoder {
         Self {
             point_cloud: None,
             options: EncoderOptions::default(),
+            encoded_point_cloud_info: None,
         }
     }
 
     /// Returns the point cloud assigned to this encoder, if any.
     pub fn point_cloud(&self) -> Option<&PointCloud> {
         self.point_cloud.as_ref()
+    }
+
+    /// Returns what the last successful encode chose, if one has run.
+    pub fn encoded_point_cloud_info(&self) -> Option<&EncodedPointCloudInfo> {
+        self.encoded_point_cloud_info.as_ref()
     }
 
     /// Assigns the point cloud to encode.
@@ -343,6 +377,7 @@ impl PointCloudEncoder {
     /// unsupported, or attribute encoding fails.
     pub fn encode(&mut self, options: &EncoderOptions, out_buffer: &mut EncoderBuffer) -> Status {
         self.options = options.clone();
+        self.encoded_point_cloud_info = None;
 
         if self.point_cloud.is_none() {
             return Err(DracoError::DracoError("Point cloud not set".to_string()));
@@ -357,6 +392,36 @@ impl PointCloudEncoder {
             crate::version::EncodeTarget::PointCloudSequential
         };
         crate::version::validate_encodable_version(major, minor, target)?;
+
+        let attributes = self.encode_geometry(out_buffer, method)?;
+
+        let (mut major, mut minor) = self.options.get_version();
+        if major == 0 && minor == 0 {
+            (major, minor) = DEFAULT_POINT_CLOUD_VERSION;
+        }
+        self.encoded_point_cloud_info = Some(EncodedPointCloudInfo {
+            encoding_method: method,
+            bitstream_version: (major, minor),
+            speed: self.options.get_speed(),
+            num_encoded_points: self
+                .point_cloud
+                .as_ref()
+                .expect("point cloud set")
+                .num_points(),
+            attributes,
+        });
+        Ok(())
+    }
+
+    /// The encode itself, split out so [`encode`](Self::encode) has one place
+    /// to record what it chose. Returns the per-attribute report, empty for the
+    /// KD-tree method and for a cloud with no attributes.
+    fn encode_geometry(
+        &mut self,
+        out_buffer: &mut EncoderBuffer,
+        method: i32,
+    ) -> Result<Vec<EncodedAttributeInfo>, DracoError> {
+        let pc = self.point_cloud.as_ref().expect("point cloud set");
 
         // 1. Encode Header
         self.encode_header(out_buffer, method)?;
@@ -377,7 +442,7 @@ impl PointCloudEncoder {
             // cloud that has none.
             if pc.num_attributes() == 0 {
                 out_buffer.encode_u8(0);
-                return Ok(());
+                return Ok(Vec::new());
             }
 
             // Generate Attributes Encoders
@@ -447,7 +512,7 @@ impl PointCloudEncoder {
             // For empty point clouds (0 attributes), we write 0 encoders
             if num_attributes == 0 {
                 out_buffer.encode_u8(0);
-                return Ok(());
+                return Ok(Vec::new());
             }
 
             // For non-empty point clouds, use 1 encoder for all attributes
@@ -610,9 +675,49 @@ impl PointCloudEncoder {
                     }
                 }
             }
+
+            // Read back off the encoders that just ran: the prediction scheme
+            // is theirs to choose, and a request for one is only honoured when
+            // the attribute supports it.
+            let mut attributes = Vec::with_capacity(num_attributes as usize);
+            for i in 0..num_attributes {
+                let att = pc.attribute(i);
+                let encoder_type = encoder_types[i as usize];
+                let prediction = match encoder_type {
+                    SequentialAttributeEncoderType::Normals => normal_encoders[i as usize]
+                        .as_ref()
+                        .and_then(|encoder| encoder.selected_prediction()),
+                    _ => integer_encoders[i as usize]
+                        .as_ref()
+                        .and_then(|encoder| encoder.selected_prediction()),
+                };
+                let quantization_bits = match encoder_type {
+                    SequentialAttributeEncoderType::Quantization
+                    | SequentialAttributeEncoderType::Normals => {
+                        Some(self.options.get_attribute_int(i, "quantization_bits", -1))
+                    }
+                    SequentialAttributeEncoderType::Integer
+                    | SequentialAttributeEncoderType::Generic => None,
+                };
+                attributes.push(EncodedAttributeInfo {
+                    source_attribute_id: i,
+                    attribute_type: att.attribute_type(),
+                    data_type: att.data_type(),
+                    num_components: att.num_components(),
+                    normalized: att.normalized(),
+                    unique_id: att.unique_id(),
+                    num_encoded_values: att.size(),
+                    encoder_type,
+                    quantization_bits,
+                    prediction,
+                    position_min: None,
+                    position_max: None,
+                });
+            }
+            return Ok(attributes);
         }
 
-        Ok(())
+        Ok(Vec::new())
     }
 
     fn encode_metadata(&self, buffer: &mut EncoderBuffer) -> Status {
