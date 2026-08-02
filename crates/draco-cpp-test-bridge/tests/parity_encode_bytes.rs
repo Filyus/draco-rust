@@ -355,6 +355,75 @@ fn parity_encode_bytes_all_speeds() {
     }
 }
 
+/// The standard-vs-valence traversal boundary, which is `speed >= 5 || num_faces
+/// < 1000` on both sides.
+///
+/// Upstream reaches that expression through two feature flags that this crate
+/// has no equivalent for: `MeshEdgebreakerEncoder::InitializeEncoder` reads
+/// `IsFeatureSupported(kEdgebreaker)` and `kPredictiveEdgebreaker`, both of
+/// which `EncoderOptions::CreateDefaultOptions` sets and `CreateEmptyOptions`
+/// does not. Hardcoding them as available is only right because every upstream
+/// path has them on -- `EncoderBase`'s constructor and `Reset` both build
+/// default options, and the one place that starts from empty options
+/// (`Encoder::CreateExpertEncoderOptions`) copies the feature set straight back
+/// in. With both on, upstream's condition reduces to exactly the one below.
+///
+/// The other parity tests here all use grids under 1000 faces, so they only ever
+/// exercise the standard traversal. These four cases sit either side of the
+/// threshold at the speed either side of the cutoff, so the valence arm is
+/// covered at a fixed size rather than only when the random sweep happens to
+/// roll a large enough grid.
+#[test]
+fn parity_encode_bytes_across_the_traversal_threshold() {
+    let _output_lock = OUTPUT_LOCK.lock().unwrap();
+    common::disable_noisy_debug_env();
+
+    if !draco_cpp_test_bridge::is_available() {
+        eprintln!("SKIPPING: C++ test bridge not available");
+        return;
+    }
+
+    print_size_table_header("C++ vs Rust Byte Comparison: Traversal Threshold");
+
+    // (n-1)^2 * 2 faces: 23 -> 968 (tiny), 24 -> 1058 (not tiny).
+    for grid_size in [23, 24] {
+        let (positions, faces) = create_grid_mesh_data(grid_size);
+        let num_faces = faces.len() / 3;
+        let mesh = create_rust_mesh(&positions, &faces);
+
+        for speed in [4, 5] {
+            let rust_bytes = encode_rust(&mesh, speed, 14);
+            let cpp_bytes =
+                draco_cpp_test_bridge::encode_cpp_mesh(&positions, &faces, speed, speed, 14)
+                    .expect("C++ encoding failed");
+
+            let expected = if speed >= 5 || num_faces < 1000 {
+                "standard"
+            } else {
+                "valence"
+            };
+            print_size_row(
+                &format!("{num_faces}f speed {speed}"),
+                cpp_bytes.len(),
+                rust_bytes.len(),
+                if rust_bytes == cpp_bytes {
+                    "✓ MATCH"
+                } else {
+                    "✗ DIFF"
+                },
+            );
+
+            assert_eq!(
+                rust_bytes,
+                cpp_bytes,
+                "{num_faces} faces at speed {speed} (expected the {expected} traversal) \
+                 diverges from C++ at byte {:?}",
+                find_first_difference(&rust_bytes, &cpp_bytes)
+            );
+        }
+    }
+}
+
 /// Speeds outside the documented 0..=10, where the two used to part company.
 ///
 /// The entropy coder's compression level is `10 - speed`, and upstream sets it
