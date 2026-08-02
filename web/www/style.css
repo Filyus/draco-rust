@@ -424,29 +424,34 @@ input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var
    band on the shared 0..16 scale. */
 input[type="range"].quant-range,
 input[type="range"].quant-range:hover {
+    height: 3px;
     background: linear-gradient(to right,
             rgba(240, 180, 79, 0.8) 0%, rgba(240, 180, 79, 0.8) var(--good-from),
             rgba(53, 213, 138, 0.85) var(--good-from), rgba(53, 213, 138, 0.85) var(--good-to),
             #43618c var(--good-to), #43618c 100%);
 }
 
+/* Both of these read at --muted, not --dim: --dim is for a value sitting beside
+   the label that names it, where the eye already knows what it is looking at.
+   Prose has to be read, and at this size --dim on the panel is too faint for
+   that. */
 .quant-hint {
-    margin: 1px 0 0;
-    color: var(--dim);
-    font-size: 0.62rem;
+    margin: 2px 0 0;
+    color: var(--muted);
+    font-size: 0.65rem;
     line-height: 1.5;
 }
 
 /* A key on its own row. Inline in the sentence the swatches read as punctuation
    and the whole line became hard to parse. */
 .quant-key-list {
-    margin: 4px 0 0;
+    margin: 5px 0 0;
     padding: 0;
     display: flex;
     flex-wrap: wrap;
-    gap: 4px 12px;
-    color: var(--dim);
-    font-size: 0.62rem;
+    gap: 5px 12px;
+    color: var(--muted);
+    font-size: 0.65rem;
     list-style: none;
 }
 
@@ -478,8 +483,8 @@ input[type="range"] {
 input[type="range"]:hover { background: #4b6385; }
 
 input[type="range"]::-webkit-slider-thumb {
-    width: 14px;
-    height: 14px;
+    width: 10px;
+    height: 10px;
     appearance: none;
     border: 0;
     border-radius: 50%;
@@ -490,12 +495,12 @@ input[type="range"]::-webkit-slider-thumb {
 
 input[type="range"]:hover::-webkit-slider-thumb {
     background: #70a4ff;
-    box-shadow: 0 0 0 4px rgba(77, 140, 255, 0.14);
+    box-shadow: 0 0 0 3px rgba(77, 140, 255, 0.14);
 }
 
 input[type="range"]::-moz-range-thumb {
-    width: 14px;
-    height: 14px;
+    width: 10px;
+    height: 10px;
     border: 0;
     border-radius: 50%;
     background: var(--accent);
@@ -505,7 +510,7 @@ input[type="range"]::-moz-range-thumb {
 
 input[type="range"]:hover::-moz-range-thumb {
     background: #70a4ff;
-    box-shadow: 0 0 0 4px rgba(77, 140, 255, 0.14);
+    box-shadow: 0 0 0 3px rgba(77, 140, 255, 0.14);
 }
 
 input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; background: var(--accent); }
@@ -515,6 +520,15 @@ input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; bac
    underneath. Boundaries sit between steps: 3|4 at 35%, 5|6 at 55%, 7|8 at 75%.
    Firefox paints ::-moz-range-progress over the track, which would hide the
    bands, so that one is made transparent for this variant only. */
+/* The speed slider keeps the larger handle. It is the one control here whose
+   value is a judgement rather than a number to nudge, it stands alone rather
+   than in a stack of five, and the wider handle is what makes its bands legible
+   as something to aim at. */
+input[type="range"].zoned-range::-webkit-slider-thumb { width: 14px; height: 14px; }
+input[type="range"].zoned-range::-moz-range-thumb { width: 14px; height: 14px; }
+input[type="range"].zoned-range:hover::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(77, 140, 255, 0.14); }
+input[type="range"].zoned-range:hover::-moz-range-thumb { box-shadow: 0 0 0 4px rgba(77, 140, 255, 0.14); }
+
 input[type="range"].zoned-range,
 input[type="range"].zoned-range:hover {
     background: linear-gradient(to right,
