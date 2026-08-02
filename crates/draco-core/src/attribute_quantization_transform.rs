@@ -20,13 +20,19 @@ use crate::status::{DracoError, Status};
 
 /// The quantization bit counts this transform can represent.
 ///
-/// Deliberately wider than the octahedron transform's `2..=30`: the two carry
-/// different payloads and upstream validates them separately.
-const VALID_QUANTIZATION_BITS: std::ops::RangeInclusive<i32> = 1..=31;
+/// Matches upstream's `AttributeQuantizationTransform::IsQuantizationValid`
+/// (`1..=30`); the octahedron transform validates its own narrower `2..=30`
+/// separately. A prior version of this constant read `1..=31` on the theory
+/// that the two ranges were deliberately different sizes -- they are not: 30
+/// is upstream's ceiling on both, and 31 quantizes and encodes but produces a
+/// stream no decoder, including this crate's own, can read back, because a
+/// prediction residual that wide needs a bit width the tagged symbol decoder
+/// could not yet represent.
+const VALID_QUANTIZATION_BITS: std::ops::RangeInclusive<i32> = 1..=30;
 
 fn invalid_quantization_bits(bits: i32) -> DracoError {
     DracoError::invalid_parameter(format!(
-        "Quantization bits {bits} outside the supported range 1..=31"
+        "Quantization bits {bits} outside the supported range 1..=30"
     ))
 }
 
@@ -226,8 +232,9 @@ impl AttributeQuantizationTransform {
             num_points,
         );
 
-        // quantization_bits is allowed up to 31. Use a wider type to avoid
-        // overflowing signed shifts (e.g. 1 << 31 on i32).
+        // quantization_bits tops out at 30, so this fits in i32 either way;
+        // the u64 shift is kept so a future range change doesn't have to
+        // remember to widen it.
         let max_quantized_value: i32 = ((1u64 << (self.quantization_bits as u32)) - 1) as i32;
         let mut quantizer = Quantizer::new();
         quantizer.init(self.range, max_quantized_value);
@@ -444,8 +451,9 @@ impl AttributeTransform for AttributeQuantizationTransform {
             return Err(invalid_quantization_bits(self.quantization_bits));
         }
 
-        // quantization_bits is allowed up to 31. Use a wider type to avoid
-        // overflowing signed shifts (e.g. 1 << 31 on i32).
+        // quantization_bits tops out at 30, so this fits in i32 either way;
+        // the u64 shift is kept so a future range change doesn't have to
+        // remember to widen it.
         let max_quantized_value: i32 = ((1u64 << (self.quantization_bits as u32)) - 1) as i32;
         let mut dequantizer = Dequantizer::new();
         if !dequantizer.init(self.range, max_quantized_value) {
@@ -943,5 +951,42 @@ mod tests {
                 assert_ne!(a, b, "distinct faults must report distinct messages");
             }
         }
+    }
+
+    /// Matches upstream's `IsQuantizationValid`: 30 is the ceiling, not 31.
+    ///
+    /// 31 used to pass this check, and both `compute_parameters` and the
+    /// dequantizing half of a round trip would run to completion -- the
+    /// stream it produced was simply one no decoder, including this crate's
+    /// own, could read back, because a prediction residual that wide needs a
+    /// bit width the tagged symbol scheme could not yet represent.
+    #[test]
+    fn quantization_bits_ceiling_is_30_not_31() {
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            2,
+        );
+        for (i, v) in [0.0f32, 0.0, 0.0, 1.0, 1.0, 1.0].iter().enumerate() {
+            attribute.buffer_mut().write(i * 4, &v.to_le_bytes());
+        }
+
+        let mut at_ceiling = AttributeQuantizationTransform::new();
+        assert!(
+            at_ceiling.compute_parameters(&attribute, 30).is_ok(),
+            "30 is upstream's own ceiling and must still be accepted"
+        );
+
+        let mut past_ceiling = AttributeQuantizationTransform::new();
+        let err = past_ceiling
+            .compute_parameters(&attribute, 31)
+            .expect_err("31 must be refused, not silently accepted");
+        assert!(
+            err.to_string().contains("1..=30"),
+            "the error should name the actual supported range, got: {err}"
+        );
     }
 }

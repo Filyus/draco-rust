@@ -229,6 +229,15 @@ premise holds, and the encoder reports the choices it makes for itself.
   `quantization_bits` at its upper bound — reachable with no quantization
   involved at all, from `symbol_encoding::encode_symbols`/`decode_symbols`
   directly on a single `u32::MAX` value.
+- `AttributeQuantizationTransform` accepted `quantization_bits` up to 31.
+  Upstream's own `IsQuantizationValid` caps it at 30, same ceiling as the
+  octahedron transform's `2..=30`; a prior comment on the Rust constant read
+  the two ranges as deliberately different sizes, which is not why they
+  differ — 30 is the shared ceiling, and 31 quantized and encoded without
+  complaint into a stream that a real mesh's prediction residuals could drive
+  straight into the bit-reader bug above, on decode by this crate or any
+  other. This narrows the range to match upstream rather than relying on the
+  bit-reader fix alone to make 31 safe.
 
 ## [1.2.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.1.0...draco-core-v1.2.0) - 2026-08-01
 
