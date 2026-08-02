@@ -636,3 +636,44 @@ mod tests {
         assert!(!decode_tagged_symbols(5, 2, &mut buffer, &mut symbols));
     }
 }
+
+#[cfg(all(test, feature = "encoder", feature = "decoder"))]
+mod roundtrip_tests {
+    use super::*;
+
+    /// A symbol whose top bit is set forces the tagged scheme's per-chunk
+    /// bit length to 32 (`max_value_bit_length` past 18 always selects
+    /// TAGGED). `DecoderBuffer::decode_least_significant_bits32_fast` used to
+    /// compute `1u32 << nbits` for that width, which panics in a debug build
+    /// and silently returns 0 in release; this is unrelated to quantization
+    /// bit counts and reproduces the same way with no attribute involved.
+    #[test]
+    fn tagged_scheme_round_trips_a_full_width_symbol() {
+        let symbols = [u32::MAX];
+        let options = SymbolEncodingOptions::default();
+
+        let mut target = EncoderBuffer::new();
+        assert!(encode_symbols(&symbols, 1, &options, &mut target));
+
+        let data = target.data().to_vec();
+        let mut source = DecoderBuffer::new(&data);
+        let mut out = [0u32; 1];
+        assert!(decode_symbols(1, 1, &options, &mut source, &mut out));
+        assert_eq!(out[0], u32::MAX);
+    }
+
+    #[test]
+    fn tagged_scheme_round_trips_mixed_width_symbols() {
+        let symbols = [0u32, 1, u32::MAX, 1 << 30, u32::MAX - 1];
+        let options = SymbolEncodingOptions::default();
+
+        let mut target = EncoderBuffer::new();
+        assert!(encode_symbols(&symbols, 1, &options, &mut target));
+
+        let data = target.data().to_vec();
+        let mut source = DecoderBuffer::new(&data);
+        let mut out = [0u32; 5];
+        assert!(decode_symbols(5, 1, &options, &mut source, &mut out));
+        assert_eq!(out, symbols);
+    }
+}

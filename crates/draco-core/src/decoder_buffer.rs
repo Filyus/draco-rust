@@ -199,6 +199,14 @@ impl<'a> DecoderBuffer<'a> {
         if nbits == 0 {
             return Ok(0);
         }
+        // The tagged symbol scheme's per-chunk bit length is a full byte
+        // (0..=255) read straight off the wire and checked only against
+        // `> 32`, so 32 itself reaches here as a legitimate width -- a
+        // 32-bit-wide residual is what the scheme exists for. `nbits` past
+        // 32 is not a width this format defines.
+        if nbits > 32 {
+            return Err(DracoError::buffer("Bit width exceeds 32 bits"));
+        }
 
         let total_bit_offset = self.current_bit_offset;
         let byte_offset = self.bit_start_pos + total_bit_offset / 8;
@@ -226,7 +234,10 @@ impl<'a> DecoderBuffer<'a> {
             }
             v
         };
-        let value = ((raw >> bit_shift) as u32) & ((1u32 << nbits) - 1);
+        // Masking with a u64 keeps `nbits == 32` in range for the shift;
+        // `1u32 << 32` is exactly the overflow this guards against.
+        let mask = (1u64 << nbits) - 1;
+        let value = ((raw >> bit_shift) & mask) as u32;
 
         self.current_bit_offset += nbits as usize;
         Ok(value)
@@ -455,5 +466,42 @@ mod tests {
         assert_eq!(buffer.position(), 0);
         assert!(buffer.try_advance(4).is_ok());
         assert_eq!(buffer.position(), 4);
+    }
+
+    #[test]
+    fn decode_least_significant_bits32_reads_full_width() {
+        // `(1u32 << 32) - 1` is the overflow this width used to hit.
+        let data = [0xffu8; 5];
+        let mut buffer = DecoderBuffer::new(&data);
+
+        buffer.start_bit_decoding(false).unwrap();
+        assert_eq!(
+            buffer.decode_least_significant_bits32(32).unwrap(),
+            u32::MAX
+        );
+    }
+
+    #[test]
+    fn decode_least_significant_bits32_reads_full_width_past_a_bit_shift() {
+        // Same width, but starting mid-byte so the fast path's `raw >>
+        // bit_shift` also has to keep all 32 bits in range.
+        let data = [0xffu8; 6];
+        let mut buffer = DecoderBuffer::new(&data);
+
+        buffer.start_bit_decoding(false).unwrap();
+        assert_eq!(buffer.decode_least_significant_bits32(3).unwrap(), 0b111);
+        assert_eq!(
+            buffer.decode_least_significant_bits32(32).unwrap(),
+            u32::MAX
+        );
+    }
+
+    #[test]
+    fn decode_least_significant_bits32_rejects_width_above_32() {
+        let data = [0xffu8; 5];
+        let mut buffer = DecoderBuffer::new(&data);
+
+        buffer.start_bit_decoding(false).unwrap();
+        assert!(buffer.decode_least_significant_bits32(33).is_err());
     }
 }

@@ -216,6 +216,19 @@ premise holds, and the encoder reports the choices it makes for itself.
   fallible, and the product is computed with `checked_mul` — `usize` is 32 bits
   on the wasm32 target this ships to, where a large point count times 255
   components wraps rather than saturating.
+- `DecoderBuffer::decode_least_significant_bits32` rejected `nbits > 32` but
+  not `nbits == 32` itself, and computed `1u32 << nbits` to build the mask —
+  the exact width the tagged symbol scheme uses for a prediction residual
+  whose top bit is set, which its own decode loop already treated as valid
+  (`len == 0 || len > 32` rejects only the two neighbors of 32). A debug build
+  panics with "attempt to shift left with overflow"; a release build does not
+  panic and instead returns 0 for the read while reporting success, so the
+  decoded attribute is silently wrong rather than absent. `DirectBitDecoder`,
+  `RAnsBitDecoder` and `FoldedBit32Decoder` already handled width 32 correctly
+  in the same crate; only this one bit reader had not. Found while checking
+  `quantization_bits` at its upper bound — reachable with no quantization
+  involved at all, from `symbol_encoding::encode_symbols`/`decode_symbols`
+  directly on a single `u32::MAX` value.
 
 ## [1.2.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.1.0...draco-core-v1.2.0) - 2026-08-01
 
