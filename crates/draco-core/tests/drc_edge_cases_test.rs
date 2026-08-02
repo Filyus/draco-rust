@@ -917,6 +917,96 @@ fn legacy_attribute_streams_decode_to_reference_values() {
     }
 }
 
+/// The pair above never puts a `GENERIC` attribute on a legacy stream, so it
+/// never reaches `SequentialIntegerAttributeDecoder` -- position, normal and
+/// texcoord are all quantized floats decoded by a different coder entirely.
+/// `cube_att_material.obj` is `cube_att.obj` (the source behind every other
+/// `cube_att.*` fixture in this suite) with its twelve faces split `usemtl
+/// matA`/`matB`; the real `draco_encoder`'s OBJ reader turns that into a
+/// `Uint8` `GENERIC` attribute carrying the material id, one value per
+/// point. There is no C++-side ground truth to diff against here: the
+/// historical 1.0.0 OBJ writer drops a `GENERIC` attribute on export even
+/// though the bitstream carries it (verified separately -- the 1.0.0 file is
+/// larger with the attribute than without, and this crate decodes four
+/// distinct point values from it), and neither writer round-trips one at all
+/// without `mtllib`/`usemtl` in the source plus an attribute named "material"
+/// in the stream's own metadata. So this compares real 1.0.0/1.1.0 encodes,
+/// sequential and EdgeBreaker, against a real 2.2 encode of the same source
+/// at matching quantization (`-qp 14 -qt 12 -qn 10`), exactly as the pair
+/// above compares normal/color -- except `GENERIC` here is `Uint8`, which
+/// quantization never touches, so unlike position/normal/texcoord this one
+/// attribute is expected exact rather than tolerance-close for reasons other
+/// than the coder being tested.
+#[cfg(feature = "legacy_bitstream_decode")]
+#[test]
+fn legacy_material_attribute_matches_the_modern_reference() {
+    use draco_core::draco_types::DataType;
+    use draco_core::geometry_attribute::GeometryAttributeType;
+
+    fn decode(fixture: &str) -> Mesh {
+        let bytes = std::fs::read(repo_testdata_dir().join(fixture))
+            .unwrap_or_else(|e| panic!("read {fixture}: {e}"));
+        let mut buffer = DecoderBuffer::new(&bytes);
+        let mut mesh = Mesh::new();
+        MeshDecoder::new()
+            .decode(&mut buffer, &mut mesh)
+            .unwrap_or_else(|e| panic!("{fixture} decode: {e:?}"));
+        mesh
+    }
+
+    // One row per mesh point: position (for matching, not compared directly)
+    // paired with the material id read off that point, since GENERIC has no
+    // named accessor and must be joined to a stable key by hand.
+    fn position_to_material(mesh: &Mesh) -> Vec<([u8; 12], u8)> {
+        let pos_id = mesh.named_attribute_id(GeometryAttributeType::Position);
+        let mat_id = mesh.named_attribute_id(GeometryAttributeType::Generic);
+        assert!(pos_id >= 0, "missing POSITION attribute");
+        assert!(mat_id >= 0, "missing GENERIC attribute");
+        let pos = mesh.attribute(pos_id);
+        let mat = mesh.attribute(mat_id);
+        assert_eq!(mat.data_type(), DataType::Uint8, "material should be Uint8");
+        assert_eq!(mat.num_components(), 1);
+
+        let mut rows: Vec<([u8; 12], u8)> = (0..mesh.num_points())
+            .map(|point_value| {
+                let point = draco_core::geometry_indices::PointIndex(point_value as u32);
+                let pos_index = pos.mapped_index(point).0 as usize;
+                let pos_offset = pos_index * pos.byte_stride() as usize;
+                let mut pos_bytes = [0u8; 12];
+                pos.buffer().read(pos_offset, &mut pos_bytes);
+
+                let mat_index = mat.mapped_index(point).0 as usize;
+                let mut mat_byte = [0u8; 1];
+                mat.buffer()
+                    .read(mat_index * mat.byte_stride() as usize, &mut mat_byte);
+
+                (pos_bytes, mat_byte[0])
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    let modern = decode("legacy_draco/cube_att_material.mesh_eb.2.2.drc");
+    let modern_rows = position_to_material(&modern);
+
+    for early_f in [
+        "legacy_draco/cube_att_material.mesh_seq.1.0.0.drc",
+        "legacy_draco/cube_att_material.mesh_eb.1.0.0.drc",
+        "legacy_draco/cube_att_material.mesh_seq.1.1.0.drc",
+        "legacy_draco/cube_att_material.mesh_eb.1.1.0.drc",
+    ] {
+        let early = decode(early_f);
+        assert_eq!(early.num_faces(), modern.num_faces(), "{early_f}: faces");
+        assert_eq!(early.num_points(), modern.num_points(), "{early_f}: points");
+        assert_eq!(
+            position_to_material(&early),
+            modern_rows,
+            "{early_f}: (position, material) pairs differ from the 2.2 encoding"
+        );
+    }
+}
+
 /// The 0.9.1 normals use the legacy non-canonicalized octahedron prediction
 /// transform (id 2) over a predictive EdgeBreaker connectivity. Unlike the
 /// 1.1.0/2.2 pair above, the 0.9.1 encoder quantizes the octahedral grid
