@@ -68,6 +68,48 @@ impl EncoderOptions {
         }
     }
 
+    /// Sets both speeds from a `draco_encoder`-style compression level.
+    ///
+    /// The CLI's `-cl` runs 0 (least compression) to 10 (most), the opposite
+    /// sense of `encoding_speed`/`decoding_speed`, and converts with
+    /// `speed = 10 - compression_level` before calling the same
+    /// `SetSpeedOptions` this crate mirrors; this method does the same
+    /// conversion and nothing else. `level` is not range-checked, matching
+    /// the CLI, which passes an out-of-range `-cl` straight through the same
+    /// subtraction rather than rejecting it.
+    pub fn set_compression_level(&mut self, level: i32) {
+        let speed = 10 - level;
+        self.set_global_int("encoding_speed", speed);
+        self.set_global_int("decoding_speed", speed);
+    }
+
+    /// Returns `10 - `[`get_speed`](Self::get_speed)`()`, the CLI's compression
+    /// level for the speed this instance currently carries.
+    ///
+    /// A fresh `EncoderOptions` reports 5 here, not the CLI's own default of
+    /// 7 — the two tools default to different speeds (5 here, 3 there), and
+    /// this getter reads what is actually set rather than what the CLI would
+    /// have chosen.
+    pub fn get_compression_level(&self) -> i32 {
+        10 - self.get_speed()
+    }
+
+    /// Sets `quantization_bits` for one attribute id.
+    ///
+    /// Equivalent to `ExpertEncoder::SetAttributeQuantization` and to what the
+    /// CLI's `-qp`/`-qt`/`-qn`/`-qg` resolve to once they have picked an
+    /// attribute id for POSITION/TEX_COORD/NORMAL/GENERIC; this method takes
+    /// the id directly rather than a geometry attribute type.
+    pub fn set_attribute_quantization(&mut self, att_id: i32, quantization_bits: i32) {
+        self.set_attribute_int(att_id, "quantization_bits", quantization_bits);
+    }
+
+    /// Returns the `quantization_bits` set for one attribute id, or -1 if
+    /// none was set for it or globally.
+    pub fn get_attribute_quantization(&self, att_id: i32) -> i32 {
+        self.get_attribute_int(att_id, "quantization_bits", -1)
+    }
+
     /// Returns the forced prediction scheme, or -1 for the encoder default.
     pub fn get_prediction_scheme(&self) -> i32 {
         self.get_global_int("prediction_scheme", -1)
@@ -147,5 +189,59 @@ impl EncoderOptions {
         // Fallback to global options if not found for attribute?
         // Draco C++ implementation does fallback to global options.
         self.get_global_int(key, default_val)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `draco_encoder`'s own default is `-cl 7`; this crate's is speed 5.
+    /// Verified against the CLI: `EncoderOptions::new()` and
+    /// `draco_encoder -cl 5 -qp 0` produce byte-identical output.
+    #[test]
+    fn compression_level_defaults_to_5_not_the_cli_default_of_7() {
+        let options = EncoderOptions::new();
+        assert_eq!(options.get_compression_level(), 5);
+    }
+
+    /// `speed = 10 - compression_level`, matching `draco_encoder.cc`'s own
+    /// conversion before it calls `SetSpeedOptions`.
+    #[test]
+    fn set_compression_level_matches_the_cli_conversion() {
+        let mut options = EncoderOptions::new();
+        options.set_compression_level(7);
+        assert_eq!(options.get_speed(), 3);
+        assert_eq!(options.get_encoding_speed(), 3);
+        assert_eq!(options.get_decoding_speed(), 3);
+        assert_eq!(options.get_compression_level(), 7);
+    }
+
+    #[test]
+    fn set_compression_level_round_trips_the_full_cli_range() {
+        for level in 0..=10 {
+            let mut options = EncoderOptions::new();
+            options.set_compression_level(level);
+            assert_eq!(options.get_compression_level(), level);
+        }
+    }
+
+    #[test]
+    fn attribute_quantization_defaults_to_unset() {
+        let options = EncoderOptions::new();
+        assert_eq!(options.get_attribute_quantization(0), -1);
+    }
+
+    #[test]
+    fn set_attribute_quantization_round_trips() {
+        let mut options = EncoderOptions::new();
+        options.set_attribute_quantization(0, 14);
+        options.set_attribute_quantization(1, 10);
+
+        assert_eq!(options.get_attribute_quantization(0), 14);
+        assert_eq!(options.get_attribute_quantization(1), 10);
+        // Unset attributes fall back to the global value, same as
+        // `get_attribute_int` -- there is none here, so -1.
+        assert_eq!(options.get_attribute_quantization(2), -1);
     }
 }

@@ -96,8 +96,7 @@ fn encode_mesh(mesh: &Mesh) -> Result<Vec<u8>, draco_core::DracoError> {
     encoder.set_mesh(mesh.clone());
 
     let mut options = EncoderOptions::new();
-    options.set_global_int("encoding_speed", 5);
-    options.set_global_int("decoding_speed", 5);
+    options.set_compression_level(7); // draco_encoder's own -cl default
 
     let mut out = EncoderBuffer::new();
     encoder.encode(&options, &mut out)?;

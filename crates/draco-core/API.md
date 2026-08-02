@@ -373,7 +373,15 @@ Bit-level writes: `start_bit_encoding`, `encode_least_significant_bits32`, and
 
 ### EncoderOptions
 
-Configuration for encoding.
+Configuration for encoding. Keys and semantics mirror the C++ library's
+`EncoderOptions`/`ExpertEncoder` layer (`encoding_speed`, `decoding_speed`,
+`quantization_bits` keyed by attribute id, `prediction_scheme`,
+`encoding_method`) — not the `draco_encoder` CLI, whose `-cl` and
+`-qp`/`-qt`/`-qn`/`-qg` flags are a thin, CLI-only layer on top that resolves
+an attribute *type* to an attribute *id* and renames/inverts a couple of
+knobs on the way in. `set_compression_level` and `set_attribute_quantization`
+below exist so a caller porting CLI settings does not have to do that
+translation by hand.
 
 ```rust
 use draco_core::EncoderOptions;
@@ -401,13 +409,57 @@ Common knobs: `get_encoding_speed`, `get_decoding_speed`, `get_speed`,
 `set_encoding_method`, `get_encoding_method`, `set_prediction_scheme`,
 `get_prediction_scheme`, `set_version`, and `get_version`.
 
+CLI-equivalent convenience: `set_compression_level`, `get_compression_level`,
+`set_attribute_quantization`, and `get_attribute_quantization`.
+
 **Common Options:**
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `encoding_speed` | i32 | 5 | 0=best compression, 10=fastest |
 | `decoding_speed` | i32 | 5 | 0=best compression, 10=fastest |
-| `quantization_bits` | i32 | varies | Bits per component |
+| `quantization_bits` | i32 | unset (no quantization) | Bits per component, 1..=30 for position/generic attributes, 2..=30 for normals |
+
+#### Relationship to the `draco_encoder` CLI
+
+The CLI's `-cl <0..10>` is compression level — 0 least, 10 most — the reverse
+sense of `encoding_speed`/`decoding_speed`, where 10 is fastest. The CLI
+converts once, in its own `main()`, before calling the same `SetSpeedOptions`
+this crate's `set_global_int("encoding_speed"/"decoding_speed", _)` writes to:
+
+```text
+speed = 10 - compression_level
+```
+
+`set_compression_level`/`get_compression_level` apply exactly that conversion
+and nothing else; they do not add a `compression_level` key, since none
+exists at this layer in the C++ library either. Confirmed byte-identical
+against C++ Draco 1.5.7 for every integer speed/level pair in the documented
+0..=10 range.
+
+The two tools default to different speeds: `EncoderOptions::new()` is speed 5
+(`get_compression_level()` reports 5), while the CLI defaults to `-cl 7`
+(speed 3). `EncoderOptions::new()` with no changes is byte-identical to
+`draco_encoder -cl 5 -qp 0` (no position quantization) — not to the CLI run
+with no flags at all, which is `-cl 7 -qp 11`.
+
+`-qp`/`-qt`/`-qn`/`-qg` all set the same `quantization_bits` key, once the CLI
+has resolved POSITION/TEX_COORD/NORMAL/GENERIC to the attribute id this
+library's options are keyed by; `set_attribute_quantization(att_id, bits)` is
+that same call one layer down, and `-1` on `get_attribute_quantization`
+means unset, same as an omitted CLI flag (which quantizes nothing, not zero
+bits).
+
+Neither `set_global_int("encoding_speed", _)` nor `set_compression_level`
+range-checks its input, matching the CLI, which passes `-cl` through the same
+subtraction unchecked. Both sides agree on every integer in 0..=10; outside
+it, this crate's `10 - speed` is unclamped everywhere, while upstream clamps
+one specific internal knob derived from it (the entropy coder's own
+compression-level input) back to its documented default of 7 before use, so
+a speed more than a few units outside 0..=10 can diverge from the CLI's
+output by a few bytes in the entropy-coded section. No supported input is
+affected; this is stated for completeness, not as a caveat callers need to
+plan around.
 
 ---
 

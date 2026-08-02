@@ -33,6 +33,19 @@ premise holds, and the encoder reports the choices it makes for itself.
   are `#[non_exhaustive]`.
 - `ErrorKind::AllocationExceedsInput` tells apart a decode refused for asking to
   allocate more than its input could describe.
+- `EncoderOptions::set_compression_level`/`get_compression_level` and
+  `set_attribute_quantization`/`get_attribute_quantization` cover what the
+  `draco_encoder` CLI's `-cl` and `-qp`/`-qt`/`-qn`/`-qg` resolve to at this
+  layer, for callers porting CLI settings. `EncoderOptions` already mirrors
+  the C++ *library's* `encoding_speed`/`decoding_speed`/`quantization_bits`
+  keys byte-for-byte; the CLI's `-cl` is a different, inverted number
+  (`speed = 10 - compression_level`) that exists one layer up, in the CLI
+  binary alone, and the two were easy to conflate — passing a CLI compression
+  level straight into `encoding_speed` silently asks for the opposite of what
+  was intended. The new methods are the CLI's own conversion and nothing more;
+  see `API.md` for the full comparison and the one documented case where they
+  still diverge (an out-of-range `-cl`, which upstream's entropy coder quietly
+  drops back to a hardcoded default that the equivalent Rust code does not).
 
 ### Changed
 
