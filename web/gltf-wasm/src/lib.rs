@@ -13,7 +13,7 @@ use draco_gltf::{
 #[cfg(feature = "read")]
 use draco_gltf::{ComponentType, PackedAttribute, PackedIndices, PrimitiveIndex, PrimitiveMode};
 #[cfg(feature = "draco-encode")]
-use draco_gltf::{CompressionOptions, GeometryEncoding, MeshIndex};
+use draco_gltf::{CompressionOptions, GeometryEncoding, MeshIndex, QuantizationBits};
 use js_sys::{Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 
@@ -503,15 +503,28 @@ impl GltfAsset {
     }
 
     /// Stores one primitive with document-preserving Draco compression.
+    ///
+    /// A quantization argument of 0 leaves that attribute type in floating
+    /// point, which is what this method did for every type before they were
+    /// exposed. That is rarely what a caller wants: an unquantized attribute
+    /// never reaches Draco's integer coder, so no prediction scheme runs on it
+    /// and the encoding speed stops changing its size at all.
     #[cfg(feature = "draco-encode")]
     #[wasm_bindgen(js_name = compressPrimitive)]
+    #[allow(clippy::too_many_arguments)]
     pub fn compress_primitive(
         &mut self,
         mesh: usize,
         primitive: usize,
         encoding_speed: u8,
         decoding_speed: u8,
+        position_bits: u8,
+        normal_bits: u8,
+        texcoord_bits: u8,
+        color_bits: u8,
+        generic_bits: u8,
     ) -> Result<usize, JsValue> {
+        let bits = |value: u8| (value > 0).then_some(value);
         self.import
             .compress_primitive(
                 MeshIndex(mesh),
@@ -519,6 +532,13 @@ impl GltfAsset {
                 CompressionOptions {
                     encoding_speed,
                     decoding_speed,
+                    quantization: QuantizationBits {
+                        position: bits(position_bits),
+                        normal: bits(normal_bits),
+                        tex_coord: bits(texcoord_bits),
+                        color: bits(color_bits),
+                        generic: bits(generic_bits),
+                    },
                     ..CompressionOptions::default()
                 },
             )

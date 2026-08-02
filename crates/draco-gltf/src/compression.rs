@@ -3,6 +3,7 @@ use draco_core::{
     draco_types::DataType,
     encoder_buffer::EncoderBuffer,
     encoder_options::EncoderOptions,
+    geometry_attribute::GeometryAttributeType,
     mesh_encoder::{EncodedMeshInfo, MeshEncoder},
 };
 
@@ -679,6 +680,16 @@ pub struct CompressionOptions {
     /// Maximum number of resolved binary bytes permitted after compression.
     /// The limit includes retained fallback data and four-byte padding.
     pub max_output_bytes: Option<usize>,
+    /// Quantization applied per attribute type, or `None` to leave an attribute
+    /// in its original floating-point form.
+    ///
+    /// Without quantization an attribute never reaches Draco's integer coder,
+    /// so no prediction scheme runs on it and the entropy stage has nothing to
+    /// work with -- a compressed primitive stays close to its uncompressed size
+    /// and the encoding speed stops making any difference to it. `None` is the
+    /// default so that existing callers keep the bytes they already produce;
+    /// anything writing assets for delivery wants values here.
+    pub quantization: QuantizationBits,
 }
 impl Default for CompressionOptions {
     fn default() -> Self {
@@ -687,6 +698,58 @@ impl Default for CompressionOptions {
             decoding_speed: 5,
             mode: CompressionMode::DracoOnly,
             max_output_bytes: None,
+            quantization: QuantizationBits::default(),
+        }
+    }
+}
+
+/// Quantization bit counts per attribute type, as the `draco_encoder` CLI's
+/// `-qp`/`-qn`/`-qt`/`-qg` express them.
+///
+/// [`QuantizationBits::NONE`] is the default and quantizes nothing.
+/// [`QuantizationBits::GLTF`] carries what Blender's glTF exporter uses, which
+/// is the closest thing to a convention for delivered glTF assets.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct QuantizationBits {
+    /// Bits for `POSITION`.
+    pub position: Option<u8>,
+    /// Bits for `NORMAL`.
+    pub normal: Option<u8>,
+    /// Bits for `TEXCOORD_n`.
+    pub tex_coord: Option<u8>,
+    /// Bits for `COLOR_n`.
+    pub color: Option<u8>,
+    /// Bits for every other attribute, `_`-prefixed ones included.
+    pub generic: Option<u8>,
+}
+
+impl QuantizationBits {
+    /// Quantizes nothing, which is what this crate did before the field existed.
+    pub const NONE: Self = Self {
+        position: None,
+        normal: None,
+        tex_coord: None,
+        color: None,
+        generic: None,
+    };
+
+    /// What Blender's glTF exporter writes: 14/10/12/10/12.
+    pub const GLTF: Self = Self {
+        position: Some(14),
+        normal: Some(10),
+        tex_coord: Some(12),
+        color: Some(10),
+        generic: Some(12),
+    };
+
+    /// The bits for one attribute type, or `None` to leave it unquantized.
+    fn for_attribute(self, attribute_type: GeometryAttributeType) -> Option<u8> {
+        match attribute_type {
+            GeometryAttributeType::Position => self.position,
+            GeometryAttributeType::Normal => self.normal,
+            GeometryAttributeType::TexCoord => self.tex_coord,
+            GeometryAttributeType::Color => self.color,
+            _ => self.generic,
         }
     }
 }
@@ -715,11 +778,20 @@ impl Import {
         mesh: draco_core::Mesh,
         options: CompressionOptions,
     ) -> Result<(Vec<u8>, EncodedMeshInfo)> {
-        let mut encoder = MeshEncoder::new();
-        encoder.set_mesh(mesh);
         let mut settings = EncoderOptions::new();
         settings.set_global_int("encoding_speed", options.encoding_speed as i32);
         settings.set_global_int("decoding_speed", options.decoding_speed as i32);
+        // Quantization is keyed by attribute id here, while the caller names
+        // attribute types, so the mapping has to happen against the mesh that is
+        // about to be encoded rather than in the options.
+        for attribute_id in 0..mesh.num_attributes() {
+            let attribute_type = mesh.attribute(attribute_id).attribute_type();
+            if let Some(bits) = options.quantization.for_attribute(attribute_type) {
+                settings.set_attribute_int(attribute_id, "quantization_bits", bits as i32);
+            }
+        }
+        let mut encoder = MeshEncoder::new();
+        encoder.set_mesh(mesh);
         let mut output = EncoderBuffer::new();
         encoder
             .encode(&settings, &mut output)

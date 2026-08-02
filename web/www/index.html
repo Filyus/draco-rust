@@ -166,9 +166,11 @@
                             <div class="slider-row">
                                 <div class="slider-header">
                                     <span>Encoding Speed</span>
-                                    <span><span id="speed-value">5</span> (0=best, 10=fastest)</span>
+                                    <span><span id="speed-value">4</span> (0=best, 10=fastest)</span>
                                 </div>
-                                <input type="range" id="encoding-speed" min="0" max="10" value="5">
+                                <input type="range" id="encoding-speed" class="zoned-range" min="0" max="10" value="4"
+                                       aria-describedby="speed-note">
+                                <p class="slider-note" id="speed-note" data-zone="best"></p>
                             </div>
 
                             <div class="slider-row">
@@ -187,29 +189,60 @@
                                 </div>
                             </div>
 
-                            <div class="slider-row">
-                                <div class="slider-header">
-                                    <span>Position Quantization</span>
-                                    <span><span id="position-bits-value">14</span> bits (0=no quant)</span>
-                                </div>
-                                <input type="range" id="position-bits" min="0" max="16" value="14">
-                            </div>
+                            <details class="slider-group" id="quantization-group">
+                                <summary>
+                                    <span class="scene-info-chevron" aria-hidden="true"></span>
+                                    <span>Quantization</span>
+                                    <span id="quantization-summary">14/10/12/10/12 bits</span>
+                                </summary>
 
-                            <div class="slider-row">
-                                <div class="slider-header">
-                                    <span>Normal Quantization</span>
-                                    <span><span id="normal-bits-value">10</span> bits</span>
-                                </div>
-                                <input type="range" id="normal-bits" min="6" max="14" value="10">
-                            </div>
+                                <div class="slider-group-body">
+                                    <label class="quant-row">
+                                        <span>Position</span>
+                                        <input type="range" class="zoned-range quant-range" id="position-bits"
+                                               min="0" max="16" value="14" style="--good-from: 59.4%; --good-to: 96.9%">
+                                        <span id="position-bits-value">14</span>
+                                    </label>
 
-                            <div class="slider-row">
-                                <div class="slider-header">
-                                    <span>TexCoord Quantization</span>
-                                    <span><span id="texcoord-bits-value">12</span> bits</span>
+                                    <label class="quant-row">
+                                        <span>Normal</span>
+                                        <input type="range" class="zoned-range quant-range" id="normal-bits"
+                                               min="0" max="16" value="10" style="--good-from: 40.6%; --good-to: 71.9%">
+                                        <span id="normal-bits-value">10</span>
+                                    </label>
+
+                                    <label class="quant-row">
+                                        <span>TexCoord</span>
+                                        <input type="range" class="zoned-range quant-range" id="texcoord-bits"
+                                               min="0" max="16" value="12" style="--good-from: 53.1%; --good-to: 84.4%">
+                                        <span id="texcoord-bits-value">12</span>
+                                    </label>
+
+                                    <label class="quant-row">
+                                        <span>Color</span>
+                                        <input type="range" class="zoned-range quant-range" id="color-bits"
+                                               min="0" max="16" value="10" style="--good-from: 40.6%; --good-to: 71.9%">
+                                        <span id="color-bits-value">10</span>
+                                    </label>
+
+                                    <label class="quant-row">
+                                        <span>Generic</span>
+                                        <input type="range" class="zoned-range quant-range" id="generic-bits"
+                                               min="0" max="16" value="12" style="--good-from: 40.6%; --good-to: 84.4%">
+                                        <span id="generic-bits-value">12</span>
+                                    </label>
+
+                                    <ul class="quant-key-list">
+                                        <li><span class="quant-key quant-key-low"></span>loses precision</li>
+                                        <li><span class="quant-key quant-key-good"></span>usual range</li>
+                                        <li><span class="quant-key quant-key-high"></span>only adds bytes</li>
+                                    </ul>
+                                    <p class="quant-hint">
+                                        Bits per component. 0 keeps the attribute in floating point — exact, and much
+                                        larger.
+                                    </p>
                                 </div>
-                                <input type="range" id="texcoord-bits" min="8" max="14" value="12">
-                            </div>
+                            </details>
                         </div>
                     </div>
 

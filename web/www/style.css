@@ -359,6 +359,109 @@ input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var
 }
 
 .slider-row { display: flex; flex-direction: column; gap: 7px; }
+
+/* Five quantization sliders is more panel than the export button can spare at a
+   zoomed-in window, and their defaults are the ones most exports want, so they
+   fold into one row that states what they currently are. */
+.slider-group { border-radius: 8px; background: var(--surface-3); }
+
+.slider-group > summary {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 9px;
+    color: var(--muted);
+    font-size: 0.68rem;
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+}
+
+.slider-group > summary::-webkit-details-marker { display: none; }
+.slider-group > summary:hover { color: var(--text); }
+
+/* The marker is the same `.scene-info-chevron` badge the Contents card uses;
+   this only teaches it to turn for a second `details`. */
+.slider-group[open] .scene-info-chevron::before { transform: rotate(90deg); }
+
+/* The value is pushed to the right edge from here rather than by spreading the
+   whole row, which would strand the marker away from the label it belongs to. */
+.slider-group > summary > span:last-child {
+    margin-left: auto;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+}
+
+.slider-group[open] > summary { color: var(--text); }
+
+.slider-group-body {
+    padding: 2px 9px 9px;
+    display: grid;
+    gap: 7px;
+}
+
+/* One line per attribute rather than the two a `.slider-row` takes. Five of
+   these stacked two-high was taller expanded than the controls it replaced,
+   which defeated the point of folding them. */
+.quant-row {
+    display: grid;
+    grid-template-columns: 62px 1fr 22px;
+    align-items: center;
+    gap: 9px;
+    color: var(--muted);
+    font-size: 0.66rem;
+    cursor: pointer;
+}
+
+.quant-row > input[type="range"] { margin: 0; }
+.quant-row > span:last-child { color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+.quant-row:hover { color: var(--text); }
+
+/* Same idea as the speed track, with the bands placed per attribute: the green
+   one spans the values `draco_encoder` and Blender's exporter both default
+   into, so a setting either tool would produce reads as safe. `--good-from` and
+   `--good-to` are set on each input, since every attribute wants a different
+   band on the shared 0..16 scale. */
+input[type="range"].quant-range,
+input[type="range"].quant-range:hover {
+    background: linear-gradient(to right,
+            rgba(240, 180, 79, 0.8) 0%, rgba(240, 180, 79, 0.8) var(--good-from),
+            rgba(53, 213, 138, 0.85) var(--good-from), rgba(53, 213, 138, 0.85) var(--good-to),
+            #43618c var(--good-to), #43618c 100%);
+}
+
+.quant-hint {
+    margin: 1px 0 0;
+    color: var(--dim);
+    font-size: 0.62rem;
+    line-height: 1.5;
+}
+
+/* A key on its own row. Inline in the sentence the swatches read as punctuation
+   and the whole line became hard to parse. */
+.quant-key-list {
+    margin: 4px 0 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    color: var(--dim);
+    font-size: 0.62rem;
+    list-style: none;
+}
+
+.quant-key-list > li { display: inline-flex; align-items: center; gap: 5px; }
+
+.quant-key {
+    flex: none;
+    width: 14px;
+    height: 4px;
+    border-radius: 99px;
+}
+
+.quant-key-low { background: rgba(240, 180, 79, 0.8); }
+.quant-key-good { background: rgba(53, 213, 138, 0.85); }
+.quant-key-high { background: #43618c; }
 .slider-header { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 0.68rem; }
 
 input[type="range"] {
@@ -406,6 +509,42 @@ input[type="range"]:hover::-moz-range-thumb {
 }
 
 input[type="range"]::-moz-range-progress { height: 4px; border-radius: 99px; background: var(--accent); }
+
+/* A range whose track is banded by what each region of the scale costs, so the
+   trade-off is visible before the slider is moved rather than only in the note
+   underneath. Boundaries sit between steps: 3|4 at 35%, 5|6 at 55%, 7|8 at 75%.
+   Firefox paints ::-moz-range-progress over the track, which would hide the
+   bands, so that one is made transparent for this variant only. */
+input[type="range"].zoned-range,
+input[type="range"].zoned-range:hover {
+    background: linear-gradient(to right,
+            #43618c 0%, #43618c 35%,
+            rgba(53, 213, 138, 0.85) 35%, rgba(53, 213, 138, 0.85) 55%,
+            rgba(240, 180, 79, 0.8) 55%, rgba(240, 180, 79, 0.8) 75%,
+            rgba(255, 112, 130, 0.75) 75%, rgba(255, 112, 130, 0.75) 100%);
+}
+
+input[type="range"].zoned-range::-moz-range-progress { background: transparent; }
+
+.slider-note {
+    /* Three lines are reserved whatever the current text needs, so moving the
+       slider recolours and rewrites the note without moving the controls under
+       it. The copy is kept within three lines at this panel width; the floor is
+       what stops the shorter entries from collapsing the box. */
+    min-height: calc(3 * 1.45 * 0.66rem);
+    margin: 1px 0 0;
+    padding-left: 7px;
+    border-left: 2px solid var(--dim);
+    color: var(--muted);
+    font-size: 0.66rem;
+    line-height: 1.45;
+    transition: border-color 140ms ease;
+}
+
+.slider-note[data-zone="deep"] { border-left-color: #43618c; }
+.slider-note[data-zone="best"] { border-left-color: var(--success); }
+.slider-note[data-zone="fast"] { border-left-color: var(--warning); }
+.slider-note[data-zone="bulky"] { border-left-color: var(--error); }
 
 .primary-btn {
     width: 100%;

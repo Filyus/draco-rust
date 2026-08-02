@@ -9,6 +9,30 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `CompressionOptions::quantization` and `QuantizationBits`, which set Draco's
+  per-attribute-type quantization for a compressed primitive. `QuantizationBits`
+  carries `position`, `normal`, `tex_coord`, `color` and `generic`, each
+  `Option<u8>`; `QuantizationBits::GLTF` is Blender's 14/10/12/10/12 and
+  `QuantizationBits::NONE` is the default, so existing callers keep the bytes
+  they already produce.
+
+  Nothing here quantized before, which cost more than size. An unquantized
+  attribute never reaches Draco's integer coder, so no prediction scheme runs on
+  it and the entropy stage has nothing to work with: on a 3042-face grid the
+  payload was 20,017 bytes with no quantization and 2,334 with these defaults,
+  and the encoding speed made no difference to the output at all across 0–9.
+
+### Changed
+
+- `draco-encode` now enables `draco-core/edgebreaker_valence_encode`, matching
+  the `edgebreaker_valence_decode` the decode side already had. Without the
+  encoder half `select_edgebreaker_traversal` can only answer "standard", so
+  every encoding speed below 5 — the whole range where Draco asks for the
+  valence traversal — wrote the same stream as speed 5. On the grid above it is
+  worth 23% at the default speed, against 1.1 KiB of gzipped WASM.
+
 ## [0.2.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.1.0...draco-gltf-v0.2.0) - 2026-07-29
 
 ### Added

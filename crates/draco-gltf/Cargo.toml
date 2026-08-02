@@ -46,7 +46,11 @@ accessors = ["read"]
 write = ["read", "strict-validation"]
 # Document-preserving Draco encoding. Decoding is required for recompression and
 # atomic decompression transforms.
-draco-encode = ["write", "draco-decode", "draco-core/encoder"]
+# The valence traversal is enabled on both sides deliberately. Without the
+# encoder half, `select_edgebreaker_traversal` can only ever answer "standard",
+# so every encoding speed below 5 -- the whole range where Draco asks for it --
+# writes the same stream as speed 5 does.
+draco-encode = ["write", "draco-decode", "draco-core/encoder", "draco-core/edgebreaker_valence_encode"]
 # Release-grade scene API.
 full = ["read", "accessors", "strict-validation", "draco-decode", "write", "draco-encode"]
 # Repository-fixture tests are intentionally opt-in and are not run from the

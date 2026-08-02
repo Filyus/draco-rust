@@ -43,6 +43,8 @@ export const encodingMethod = element<HTMLSelectElement>('encoding-method');
 export const positionBits = element<HTMLInputElement>('position-bits');
 export const normalBits = element<HTMLInputElement>('normal-bits');
 export const texcoordBits = element<HTMLInputElement>('texcoord-bits');
+export const colorBits = element<HTMLInputElement>('color-bits');
+export const genericBits = element<HTMLInputElement>('generic-bits');
 export const exportBtn = element<HTMLButtonElement>('export-btn');
 export const consoleEl = element('console');
 

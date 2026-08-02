@@ -70,6 +70,8 @@ export interface ExportSettings {
   positionBits?: number;
   normalBits?: number;
   texcoordBits?: number;
+  colorBits?: number;
+  genericBits?: number;
 }
 
 /** Route the loaded file to a writer and report what the route cost. */
@@ -124,6 +126,62 @@ export async function runExport(settings: ExportSettings): Promise<ExportOutcome
   return exportFlattenedMeshes(settings, loaded);
 }
 
+/** What the Draco pass reads out of the export controls. */
+export type DracoPassSettings = Pick<
+  ExportSettings,
+  'useDraco' | 'encodingSpeed' | 'positionBits' | 'normalBits' | 'texcoordBits' | 'colorBits' | 'genericBits'
+>;
+
+/**
+ * Quantization defaults, matching the sliders the panel ships with, which in
+ * turn match Blender's glTF exporter: 14/10/12/10/12.
+ *
+ * A caller that omits them still gets a quantized payload, because the
+ * alternative is not "slightly larger" — an unquantized attribute never reaches
+ * Draco's integer coder, so no prediction scheme runs on it and the encoding
+ * speed makes no difference to it whatsoever.
+ */
+const DRACO_DEFAULT_BITS = {
+  position: 14, normal: 10, texcoord: 12, color: 10, generic: 12,
+} as const;
+
+function dracoQuantization(settings: DracoPassSettings) {
+  return {
+    position: settings.positionBits ?? DRACO_DEFAULT_BITS.position,
+    normal: settings.normalBits ?? DRACO_DEFAULT_BITS.normal,
+    texcoord: settings.texcoordBits ?? DRACO_DEFAULT_BITS.texcoord,
+    color: settings.colorBits ?? DRACO_DEFAULT_BITS.color,
+    generic: settings.genericBits ?? DRACO_DEFAULT_BITS.generic,
+  };
+}
+
+/**
+ * One `compressPrimitive` call, with both speeds carrying the slider.
+ *
+ * Draco resolves its two speeds as `max(encoding, decoding)`, so a decoding
+ * speed pinned at a constant silently raises every slider position below it and
+ * leaves that whole part of the control with no effect.
+ */
+function compressOnePrimitive(
+  asset: { compressPrimitive: (...args: number[]) => number },
+  mesh: number,
+  primitive: number,
+  encodingSpeed: number,
+  quantization: ReturnType<typeof dracoQuantization>,
+): number {
+  return asset.compressPrimitive(
+    mesh,
+    primitive,
+    encodingSpeed,
+    encodingSpeed,
+    quantization.position,
+    quantization.normal,
+    quantization.texcoord,
+    quantization.color,
+    quantization.generic,
+  ) || 0;
+}
+
 /**
  * GLB from the portable document — the route every non-glTF source takes.
  *
@@ -136,13 +194,13 @@ export async function runExport(settings: ExportSettings): Promise<ExportOutcome
  */
 export function exportSceneDocumentToGlb(
   document: SceneDocument,
-  settings?: Pick<ExportSettings, 'useDraco' | 'encodingSpeed'>,
+  settings?: DracoPassSettings,
 ): ExportOutcome {
   if (!modules.gltf.loaded) throw new Error('glTF module not loaded');
   const output = serializeSceneDocumentToGlb(document, modules.gltf.module);
   const warnings = [...(output.warnings || [])];
   const compressed = settings?.useDraco
-    ? compressGlb(output.binary, settings.encodingSpeed, warnings)
+    ? compressGlb(output.binary, settings, warnings)
     : null;
   return {
     result: {
@@ -166,8 +224,10 @@ export function exportSceneDocumentToGlb(
  * the export still succeeds and hands over the uncompressed bytes with the
  * reason attached, rather than failing and leaving the user with nothing.
  */
-function compressGlb(glb: Uint8Array, encodingSpeed: number, warnings: string[]) {
+function compressGlb(glb: Uint8Array, settings: DracoPassSettings, warnings: string[]) {
   const asset = modules.gltf.module.GltfAsset.withResources(glb, Object.create(null), '2.1');
+  const { encodingSpeed } = settings;
+  const quantization = dracoQuantization(settings);
   try {
     if (typeof asset.compressPrimitive !== 'function') {
       warnings.push('Draco encoding is not included in this WASM build; the GLB was written uncompressed');
@@ -178,7 +238,7 @@ function compressGlb(glb: Uint8Array, encodingSpeed: number, warnings: string[])
     for (let mesh = 0; mesh < asset.meshCount(); mesh += 1) {
       const primitiveCount = asset.primitiveCount(mesh);
       for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
-        compressedBytes += asset.compressPrimitive(mesh, primitive, encodingSpeed, 5) || 0;
+        compressedBytes += compressOnePrimitive(asset, mesh, primitive, encodingSpeed, quantization);
         compressedPrimitives += 1;
       }
     }
@@ -229,12 +289,13 @@ export function exportGltfDocument(settings: ExportSettings): ExportOutcome {
       if (typeof asset.compressPrimitive !== 'function') {
         throw new Error('Draco encoding is not included in this WASM build');
       }
+      const quantization = dracoQuantization(settings);
       for (let mesh = 0; mesh < asset.meshCount(); mesh += 1) {
         const primitiveCount = asset.primitiveCount(mesh);
         for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
           // The encoder reports the payload it wrote; summing it is the only
           // compression figure this path can honestly produce.
-          compressedBytes += asset.compressPrimitive(mesh, primitive, encodingSpeed, 5) || 0;
+          compressedBytes += compressOnePrimitive(asset, mesh, primitive, encodingSpeed, quantization);
           compressedPrimitives += 1;
         }
       }

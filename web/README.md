@@ -82,6 +82,65 @@ is a different route from Draco inside glTF: there the payload is a
 `KHR_draco_mesh_compression` extension and `gltf-wasm` owns it. The export
 panel's quantization controls reach both, because both end at the same encoder.
 
+### Quantization is what makes the compression work
+
+Quantization is the dominant term in the size of a compressed primitive, and
+not for the usual reason. An unquantized attribute never reaches Draco's
+integer coder at all: no prediction scheme runs on it, the entropy stage has
+nothing to work with, and the encoding speed stops changing its size. On a
+3042-face grid the payload went from 20,017 bytes with nothing quantized to
+2,334 with the panel's defaults — 8.6× — and the speed control went from inert
+across 0–9 to a real spread.
+
+The defaults are Blender's: position 14, normal 10, tex coord 12, colour 10,
+generic 12. Zero on any of them means "leave this attribute in floating point",
+which is worth reaching for only when a consumer needs exact values.
+
+### What the speed scale means
+
+The export panel's speed slider is Draco's own scale — 0 asks for the smallest
+file, 10 for the fastest encode — and not the `draco_encoder` CLI's inverted
+`-cl` compression level, which exists only inside that binary and converts once
+as `speed = 10 - level`. Both speeds Draco carries are set from the one control,
+because the encoder resolves the pair as `max(encoding, decoding)`: pinning the
+decoding speed at a constant silently raises every position below it, which is
+what used to make the whole compression half of the slider inert.
+
+The scale is not a single dial trading size for time evenly. It switches four
+separate things at four thresholds, and two of them move against the label:
+
+| speed | what changes |
+|---|---|
+| below 2 | constrained multi-parallelogram instead of parallelogram |
+| below 4 | normals predicted from position, tex coords from position |
+| below 5 | valence edgebreaker traversal instead of standard |
+| 6 and up | the mesh is split along attribute seams |
+| 8 and up | plain difference prediction for positions |
+| exactly 10 | sequential encoding — connectivity is not compressed |
+
+Measured on this project's own coders, against meshes exported from Blender and
+the same models welded the way an OBJ import leaves them:
+
+- **Below 4 is only worth it for welded geometry.** Those predictors need
+  vertices shared between faces to have anything to reuse. On OBJ/PLY input they
+  reach 13–34% below speed 5; on glTF input, where every vertex is already
+  unique, the file stops shrinking (and on one mesh grew 6%) while decoding
+  stayed about 1.5× slower.
+- **Speed 4 is the safe default**, and what the panel ships. It was smallest or
+  within about two percent of smallest on every mesh in both classes, and it is
+  what Blender's own glTF exporter uses. It is also the first position that
+  picks the valence traversal, worth 23% on the grid above against speed 5 —
+  `draco-gltf` enables `edgebreaker_valence_encode` for exactly that reason,
+  since without the encoder half every speed below 5 writes what 5 writes.
+- **6 and 7 are a real option for glTF only.** Splitting on seams costs nothing
+  when the mesh arrives already split, so the size matches speed 5 while decode
+  drops roughly 40%. On a welded mesh with UV or normal seams the same switch
+  more than tripled the file.
+- **8 and above only cost.** 4–11% larger at 8 and 9, and 1.5–3× at 10.
+
+None of this changes fidelity: the prediction and entropy stages are lossless
+over the quantized integers, so only the quantization sliders affect accuracy.
+
 A source that arrives as a bare mesh list — OBJ, PLY, STL and `.drc` — reaches
 glTF through the same portable document FBX uses: `buildSceneDocumentFromMeshes`
 turns the list into a `SceneDocument`, which the GLB writer already knows how to

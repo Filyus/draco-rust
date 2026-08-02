@@ -55,7 +55,11 @@ pub trait GeometryDecoder {
 /// parameters shifted: the range came out zero and every position dequantized to
 /// the origin, with the point and face counts still right and the decode still
 /// reporting success. Draco writes `PREDICTION_NONE` at compression level 0.
-#[cfg(feature = "point_cloud_decode")]
+/// Gated on `decoder` rather than `point_cloud_decode`, because the mesh
+/// decoder's own pre-1.2 shims call it too -- a build with `decoder` but
+/// without `point_cloud_decode`, which is what `drc-wasm` asks for, otherwise
+/// fails to compile.
+#[cfg(feature = "decoder")]
 pub(crate) fn carries_transform_byte(method_byte: u8) -> bool {
     method_byte != 0xFF && method_byte != 0xFE
 }

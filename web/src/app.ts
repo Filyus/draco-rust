@@ -50,6 +50,8 @@ import {
   scenePanel,
   sceneSection,
   texcoordBits,
+  colorBits,
+  genericBits,
   useDraco,
   viewerAutoRotateBtn,
   viewerResetBtn,
@@ -140,6 +142,80 @@ async function init() {
 
 
 
+/**
+ * What each region of the encoding-speed scale actually costs.
+ *
+ * Draco's speed is not one dial trading size for time evenly: it switches four
+ * separate things at four thresholds, and two of them move the opposite way
+ * from what the label suggests. The figures come from encoding and decoding
+ * real meshes with this project's own coders -- a 3k-face sphere, a 16k-face
+ * head and a 26k-face torus straight out of Blender, plus the same models
+ * welded the way an OBJ import leaves them.
+ *
+ * The two counter-intuitive parts are worth stating plainly, because a user
+ * dragging toward "best" is otherwise misled:
+ *
+ * - Below speed 4 the encoder switches to predictors that guess one attribute
+ *   from another. Those need vertices shared between faces to have anything to
+ *   reuse; glTF geometry has none, so the file stops shrinking while the decode
+ *   keeps getting slower.
+ * - At speed 6 the encoder splits the mesh along attribute seams. For glTF that
+ *   is free, because the mesh arrives already split -- same bytes, noticeably
+ *   faster decode. For a welded mesh it duplicates every seam vertex and the
+ *   file can more than triple.
+ */
+const ENCODING_SPEED_NOTES: { upTo: number; zone: string; text: string }[] = [
+  {
+    upTo: 3,
+    zone: 'deep',
+    text: 'Smaller only where faces share vertices, as in OBJ and PLY — up to 30%. glTF gains nothing below 4 and decodes ~1.5× slower.',
+  },
+  {
+    upTo: 4,
+    zone: 'best',
+    text: 'Recommended. Smallest or near-smallest on every mesh measured, and the setting Blender’s glTF exporter uses.',
+  },
+  {
+    upTo: 5,
+    zone: 'best',
+    text: 'Balanced, and Draco’s own default — about 2% larger than 4 on most meshes. Either is safe on any input.',
+  },
+  {
+    upTo: 7,
+    zone: 'fast',
+    text: 'Same size as 5 on glTF geometry and roughly 40% faster to decode — but a mesh with UV or normal seams can grow several times over.',
+  },
+  {
+    upTo: 10,
+    zone: 'bulky',
+    text: 'Larger for little gain: 4–11% at 8 and 9, and 1.5–3× at 10, where connectivity is stored without compression. Preview only.',
+  },
+];
+
+/** Mirrors the encoding-speed slider into its readout and its explanation. */
+function updateEncodingSpeedNote() {
+  const speed = Number(encodingSpeed.value);
+  element('speed-value').textContent = encodingSpeed.value;
+  const note = ENCODING_SPEED_NOTES.find((entry) => speed <= entry.upTo)
+    ?? ENCODING_SPEED_NOTES[ENCODING_SPEED_NOTES.length - 1]!;
+  const noteElement = element('speed-note');
+  noteElement.textContent = note.text;
+  noteElement.dataset.zone = note.zone;
+}
+
+/**
+ * Restates the collapsed quantization group's current bits.
+ *
+ * The group is folded by default because five sliders push the export button
+ * past the bottom of a zoomed-in panel, so the summary has to carry enough for
+ * a glance to confirm the defaults are still in place.
+ */
+function updateQuantizationSummary() {
+  const bits = [positionBits, normalBits, texcoordBits, colorBits, genericBits]
+    .map((input) => (Number(input.value) === 0 ? 'off' : input.value));
+  element('quantization-summary').textContent = `${bits.join('/')} bits`;
+}
+
 // Setup event listeners
 function setupEventListeners() {
   // Drag and drop
@@ -186,18 +262,29 @@ function setupEventListeners() {
   });
   
   // Quantization sliders
-  encodingSpeed.addEventListener('input', () => {
-    element('speed-value').textContent = encodingSpeed.value;
-  });
+  encodingSpeed.addEventListener('input', updateEncodingSpeedNote);
+  updateEncodingSpeedNote();
   positionBits.addEventListener('input', () => {
     element('position-bits-value').textContent = positionBits.value;
+    updateQuantizationSummary();
   });
   normalBits.addEventListener('input', () => {
     element('normal-bits-value').textContent = normalBits.value;
+    updateQuantizationSummary();
   });
   texcoordBits.addEventListener('input', () => {
     element('texcoord-bits-value').textContent = texcoordBits.value;
+    updateQuantizationSummary();
   });
+  colorBits.addEventListener('input', () => {
+    element('color-bits-value').textContent = colorBits.value;
+    updateQuantizationSummary();
+  });
+  genericBits.addEventListener('input', () => {
+    element('generic-bits-value').textContent = genericBits.value;
+    updateQuantizationSummary();
+  });
+  updateQuantizationSummary();
   
   // Export button
   exportBtn.addEventListener('click', exportFile);

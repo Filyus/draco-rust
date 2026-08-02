@@ -200,6 +200,88 @@ if (typeof gltfModule.GltfAsset?.prototype?.compressPrimitive === 'function') {
     format: 'glb', includeNormals: true, includeUvs: true, useDraco: true, encodingSpeed: 5,
   });
   assert.equal(routed.result.draco_stats?.primitives, 1, 'the FBX-to-GLB route must honour the checkbox');
+
+  // The slider has to reach the encoder across its whole range, not just above
+  // the middle. Draco resolves its two speeds as `max(encoding, decoding)`, so
+  // while this route pinned the decoding speed at 5, every position from 0 to 5
+  // arrived as 5 and the compression half of the control did nothing.
+  //
+  // Asserted on the arguments rather than the bytes, because a triangle is too
+  // small for the speeds to separate; the payload comparison lives in the
+  // browser suite where a real model is loaded.
+  const seen: number[][] = [];
+  const realCompress = gltfModule.GltfAsset.prototype.compressPrimitive;
+  gltfModule.GltfAsset.prototype.compressPrimitive = function (this: unknown, ...args: number[]) {
+    seen.push(args.slice(2));
+    return realCompress.apply(this, args);
+  };
+  try {
+    exportSceneDocumentToGlb(triangle, {
+      useDraco: true, encodingSpeed: 0,
+      positionBits: 14, normalBits: 10, texcoordBits: 12, colorBits: 10, genericBits: 12,
+    });
+  } finally {
+    gltfModule.GltfAsset.prototype.compressPrimitive = realCompress;
+  }
+  assert.deepEqual(
+    seen,
+    [[0, 0, 14, 10, 12, 10, 12]],
+    'both speeds must carry the slider, and every quantization control must reach the encoder',
+  );
+
+  // Quantization is the dominant term in the size of a compressed glTF: without
+  // it an attribute never reaches Draco's integer coder, so no prediction scheme
+  // runs and the encoding speed changes nothing either. This route used to pass
+  // none at all.
+  const gridSize = 40;
+  const gridPositions: number[] = [];
+  for (let y = 0; y < gridSize; y += 1) {
+    for (let x = 0; x < gridSize; x += 1) {
+      gridPositions.push(x, y, Math.sin(x * 0.3) * Math.cos(y * 0.3));
+    }
+  }
+  const gridIndices: number[] = [];
+  for (let y = 0; y < gridSize - 1; y += 1) {
+    for (let x = 0; x < gridSize - 1; x += 1) {
+      const i = y * gridSize + x;
+      gridIndices.push(i, i + 1, i + gridSize, i + 1, i + gridSize + 1, i + gridSize);
+    }
+  }
+  const grid = createSceneDocument({
+    accessors: [
+      {
+        bytes: new Uint8Array(new Float32Array(gridPositions).buffer),
+        componentType: 5126,
+        components: 3,
+        count: gridPositions.length / 3,
+        min: [0, 0, -1],
+        max: [gridSize, gridSize, 1],
+      },
+      {
+        bytes: new Uint8Array(new Uint32Array(gridIndices).buffer),
+        componentType: 5125,
+        components: 1,
+        count: gridIndices.length,
+      },
+    ] as any,
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1 }] }] as any,
+    nodes: [{ name: 'grid', mesh: 0 }] as any,
+    rootNodes: [0],
+  });
+
+  const quantized = exportSceneDocumentToGlb(grid, {
+    useDraco: true, encodingSpeed: 4,
+    positionBits: 11, normalBits: 8, texcoordBits: 10, colorBits: 8, genericBits: 8,
+  });
+  const unquantized = exportSceneDocumentToGlb(grid, {
+    useDraco: true, encodingSpeed: 4,
+    positionBits: 0, normalBits: 0, texcoordBits: 0, colorBits: 0, genericBits: 0,
+  });
+  assert.ok(
+    quantized.result.draco_stats!.compressed_size * 2 < unquantized.result.draco_stats!.compressed_size,
+    'quantization must reach the glTF Draco pass: '
+      + `${quantized.result.draco_stats!.compressed_size} vs ${unquantized.result.draco_stats!.compressed_size}`,
+  );
 } else {
   console.log('export-branches: Draco leg skipped (this WASM profile has no encoder)');
 }

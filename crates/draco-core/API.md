@@ -477,6 +477,39 @@ for "unset", so it resolves to the default speed of 5.
 Byte parity across `-20..=20` is pinned by
 `parity_encode_bytes_speeds_outside_the_documented_range`.
 
+#### What each speed actually changes
+
+The speed is not one dial trading size for time evenly. It switches six things
+at six thresholds, and which of them help depends on whether the mesh shares
+vertices between faces:
+
+| speed | what changes |
+|---|---|
+| below 2 | `MeshPredictionConstrainedMultiParallelogram` instead of the plain parallelogram |
+| below 4 | `MeshPredictionGeometricNormal` for normals, `MeshPredictionTexCoordsPortable` for tex coords |
+| below 5 | valence EdgeBreaker traversal instead of standard, for meshes of 1000 faces or more |
+| 6 and up | `split_mesh_on_seams` — one connectivity for every attribute |
+| 8 and up | `Difference` instead of the parallelogram for positions |
+| exactly 10 | sequential encoding instead of EdgeBreaker |
+
+Plus the entropy coder's own level, `10 - speed`, which shifts the symbol bit
+length by a step at 4, 6, 8 and 10.
+
+The two thresholds worth knowing before picking a value are the middle ones.
+Below 4, the schemes that predict one attribute from another need shared
+vertices to have anything to reuse, so they pay off on OBJ/PLY-shaped geometry
+(13–34% smaller in measurement) and do nothing on glTF-shaped geometry, where
+every vertex is already unique. At 6 the encoder splits the mesh along
+attribute seams, which is free for glTF geometry — same bytes, noticeably faster
+decode — and can more than triple a welded mesh with UV or normal seams.
+
+Speed 4 was smallest or near-smallest on every mesh measured in both classes,
+which is also the value `draco_encoder -cl 6` produces and what Blender's glTF
+exporter defaults to.
+
+Speed affects size and time only. Prediction and entropy coding are lossless
+over the quantized integers, so accuracy is set by `quantization_bits` alone.
+
 ---
 
 ## Decoding API

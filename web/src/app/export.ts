@@ -1,6 +1,6 @@
 import { formatFileSize } from './format.ts';
 import { errorMessage, log } from './log.ts';
-import { compressionStatFields, compressionStats, dracoOptions, element, encodingSpeed, exportFormat, normalBits, positionBits, texcoordBits, useDraco } from './dom.ts';
+import { colorBits, compressionStatFields, compressionStats, dracoOptions, element, encodingSpeed, exportFormat, genericBits, normalBits, positionBits, texcoordBits, useDraco } from './dom.ts';
 import { state } from './state.ts';
 import { runExport } from './export-branches.ts';
 import type { DracoStats, ExportOutcome, ExportResult, ExportSettings } from './export-branches.ts';
@@ -54,6 +54,8 @@ function exportSettings(): ExportSettings {
     positionBits: Number(positionBits.value),
     normalBits: Number(normalBits.value),
     texcoordBits: Number(texcoordBits.value),
+    colorBits: Number(colorBits.value),
+    genericBits: Number(genericBits.value),
   };
 }
 
