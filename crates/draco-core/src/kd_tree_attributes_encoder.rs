@@ -156,8 +156,20 @@ impl KdTreeAttributesEncoder {
         // is the larger of the encoding and decoding speeds.
         let speed = options.get_speed();
         // Saturating because the speed is a caller-set option with no declared
-        // range and `10 - i32::MIN` overflows; the clamp that follows makes the
-        // saturated end indistinguishable from any other extreme speed.
+        // range and `10 - i32::MIN` overflows.
+        //
+        // The lower bound is this crate's, and deliberately so. Upstream writes
+        // `std::min(10 - GetSpeed(), 6)` into a `uint8_t`, so a speed above 10
+        // makes the subtraction negative and the narrowing turns it into 255 or
+        // thereabouts; upstream then encodes that byte and only afterwards hits
+        // the `default:` arm of its level switch and fails the encode, leaving a
+        // stray level byte in the buffer. Its own `DRACO_DCHECK_LE` on the same
+        // line says that state is not intended, so clamping keeps the invariant
+        // upstream asserts rather than reproducing what its release build does
+        // when the assert is compiled out. Verified against C++ 1.5.7: every
+        // speed at or below 10 is byte-identical either way, and at 11 and above
+        // upstream's encode fails outright rather than producing a stream this
+        // could differ from.
         let mut compression_level: u8 = 10i32.saturating_sub(speed).clamp(0, 6) as u8;
         if compression_level == 6 && self.num_components > 15 {
             compression_level = 5;

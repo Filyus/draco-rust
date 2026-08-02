@@ -43,9 +43,7 @@ premise holds, and the encoder reports the choices it makes for itself.
   binary alone, and the two were easy to conflate — passing a CLI compression
   level straight into `encoding_speed` silently asks for the opposite of what
   was intended. The new methods are the CLI's own conversion and nothing more;
-  see `API.md` for the full comparison and the one documented case where they
-  still diverge (an out-of-range `-cl`, which upstream's entropy coder quietly
-  drops back to a hardcoded default that the equivalent Rust code does not).
+  see `API.md` for the full comparison.
 
 ### Changed
 
@@ -154,6 +152,16 @@ premise holds, and the encoder reports the choices it makes for itself.
 
 ### Fixed
 
+- An encoding speed outside the documented 0..=10 produced different bytes from
+  C++ Draco. The entropy coder's compression level is `10 - speed`, and upstream
+  sets it through `SetSymbolEncodingCompressionLevel`, which refuses anything
+  outside 0..=10 and leaves the option unset, so `EncodeSymbols` falls back to
+  its own default of 7; this crate passed the raw value through, so a speed of
+  11 became level -1 and shortened the symbol bit length by 2 where upstream
+  adjusted nothing. Byte parity now holds across -20..=20, pinned by
+  `parity_encode_bytes_speeds_outside_the_documented_range` — which also gave
+  the neighbouring `parity_encode_bytes_all_speeds` the assertions it had been
+  missing, having only ever printed its verdict.
 - Quantizing an attribute with parameters computed for a narrower one panicked
   with "the len is 2 but the index is 2", reachable through the public
   `AttributeTransform::transform_attribute`. The inverse direction had checked

@@ -1162,18 +1162,26 @@ impl SequentialIntegerAttributeEncoder {
         // Write compression level/type (1 = compressed with symbols)
         out_buffer.encode_u8(1);
 
-        let symbol_options = SymbolEncodingOptions {
-            // The larger of the two speeds, as SetSymbolEncodingCompressionLevel
-            // is handed `10 - GetSpeed()`. Reading the encoding speed alone
-            // agrees only while the two are set to the same value.
-            //
-            // Saturating because the speed is a caller-set option with no
-            // declared range: `10 - i32::MIN` overflows. The result is
-            // identical for every speed a caller would pass, and
-            // `encode_symbols` classifies the level by range rather than by
-            // exact value, so the saturated end behaves as the extreme it is.
-            compression_level: 10i32.saturating_sub(options.get_speed()),
-        };
+        // The larger of the two speeds, as SetSymbolEncodingCompressionLevel is
+        // handed `10 - GetSpeed()`. Reading the encoding speed alone agrees
+        // only while the two are set to the same value. Saturating because the
+        // speed is a caller-set option with no declared range and
+        // `10 - i32::MIN` overflows.
+        //
+        // Out of range the level is discarded rather than clamped, which is
+        // upstream's own behaviour and not a safety choice: its setter refuses
+        // anything outside 0..=10 and leaves the option unset, so `EncodeSymbols`
+        // reads `kDefaultSymbolCodingCompressionLevel` -- 7, what
+        // `SymbolEncodingOptions::default()` already carries. The two differ in
+        // what they write. Clamping a speed of 11 gives level 0, which subtracts
+        // 2 from the symbol bit length; discarding it gives 7, which adjusts
+        // nothing. Verified against C++ 1.5.7: speeds at or below -2 and at or
+        // above 11 produced different bytes before this, and match after.
+        let mut symbol_options = SymbolEncodingOptions::default();
+        let compression_level = 10i32.saturating_sub(options.get_speed());
+        if (0..=10).contains(&compression_level) {
+            symbol_options.compression_level = compression_level;
+        }
 
         let _start_len = out_buffer.size();
         if !encode_symbols(&symbols, num_components, &symbol_options, out_buffer) {

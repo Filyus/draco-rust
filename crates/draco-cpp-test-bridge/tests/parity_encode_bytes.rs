@@ -344,5 +344,67 @@ fn parity_encode_bytes_all_speeds() {
             rust_bytes.len(),
             status,
         );
+
+        assert_eq!(
+            rust_bytes,
+            cpp_bytes,
+            "speed {speed}: {status} (C++ {} bytes, Rust {} bytes)",
+            cpp_bytes.len(),
+            rust_bytes.len()
+        );
+    }
+}
+
+/// Speeds outside the documented 0..=10, where the two used to part company.
+///
+/// The entropy coder's compression level is `10 - speed`, and upstream sets it
+/// through `SetSymbolEncodingCompressionLevel`, which *refuses* a value outside
+/// 0..=10 and leaves the option unset -- so `EncodeSymbols` reads its own
+/// `kDefaultSymbolCodingCompressionLevel` of 7. Saturating or clamping instead
+/// picks the opposite extreme: a speed of 11 clamps to level 0, which shortens
+/// the symbol bit length by 2, where the fallback to 7 adjusts nothing. Both
+/// write a valid stream, so nothing fails; they are simply different streams.
+///
+/// Speed -1 is in the list because it is not out of range at all -- it is the
+/// sentinel both implementations use for "unset", so it resolves to the default
+/// speed of 5 rather than to level 11.
+#[test]
+fn parity_encode_bytes_speeds_outside_the_documented_range() {
+    let _output_lock = OUTPUT_LOCK.lock().unwrap();
+    common::disable_noisy_debug_env();
+
+    if !draco_cpp_test_bridge::is_available() {
+        eprintln!("SKIPPING: C++ test bridge not available");
+        return;
+    }
+
+    print_size_table_header("C++ vs Rust Byte Comparison: Speeds Outside 0..=10");
+
+    let (positions, faces) = create_grid_mesh_data(20);
+    let mesh = create_rust_mesh(&positions, &faces);
+
+    for speed in [
+        -20, -11, -6, -5, -2, -1, 0, 1, 2, 3, 5, 7, 8, 9, 10, 11, 12, 15, 20,
+    ] {
+        let rust_bytes = encode_rust(&mesh, speed, 14);
+        let cpp_bytes =
+            draco_cpp_test_bridge::encode_cpp_mesh(&positions, &faces, speed, speed, 14)
+                .expect("C++ encoding failed");
+
+        let matched = rust_bytes == cpp_bytes;
+        print_size_row(
+            &format!("speed {speed:3}"),
+            cpp_bytes.len(),
+            rust_bytes.len(),
+            if matched { "✓ MATCH" } else { "✗ DIFF" },
+        );
+
+        assert_eq!(
+            rust_bytes,
+            cpp_bytes,
+            "speed {speed} (entropy level {}) diverges from C++ at byte {:?}",
+            10i32.saturating_sub(speed),
+            find_first_difference(&rust_bytes, &cpp_bytes)
+        );
     }
 }

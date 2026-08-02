@@ -452,14 +452,30 @@ bits).
 
 Neither `set_global_int("encoding_speed", _)` nor `set_compression_level`
 range-checks its input, matching the CLI, which passes `-cl` through the same
-subtraction unchecked. Both sides agree on every integer in 0..=10; outside
-it, this crate's `10 - speed` is unclamped everywhere, while upstream clamps
-one specific internal knob derived from it (the entropy coder's own
-compression-level input) back to its documented default of 7 before use, so
-a speed more than a few units outside 0..=10 can diverge from the CLI's
-output by a few bytes in the entropy-coded section. No supported input is
-affected; this is stated for completeness, not as a caveat callers need to
-plan around.
+subtraction unchecked. An out-of-range speed is therefore accepted, and the
+encoded bytes match upstream for it as well — including the two places where
+`10 - speed` leaving `0..=10` changes what upstream does:
+
+- The entropy coder's compression level is set through
+  `SetSymbolEncodingCompressionLevel`, which *refuses* a value outside
+  `0..=10` and leaves the option unset, so `EncodeSymbols` falls back to its
+  own default of 7. This crate mirrors the refusal rather than clamping,
+  because the two write different streams: clamping a speed of 11 gives level
+  0, which shortens the symbol bit length by 2, where the fallback to 7
+  adjusts nothing.
+- The KD-tree point-cloud encoder derives its own level as
+  `min(10 - speed, 6)` into a `uint8_t`. Above speed 10 that narrows a
+  negative value, and upstream writes the resulting byte and then fails the
+  encode on its level switch. This crate clamps the low end to 0 instead,
+  which is the invariant upstream's own `DRACO_DCHECK_LE` asserts on that
+  line; the difference is only reachable where upstream produces no usable
+  stream at all.
+
+Speed `-1` is not out of range: it is the sentinel both implementations use
+for "unset", so it resolves to the default speed of 5.
+
+Byte parity across `-20..=20` is pinned by
+`parity_encode_bytes_speeds_outside_the_documented_range`.
 
 ---
 
