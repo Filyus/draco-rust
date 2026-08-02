@@ -403,13 +403,20 @@ input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var
 /* One line per attribute rather than the two a `.slider-row` takes. Five of
    these stacked two-high was taller expanded than the controls it replaced,
    which defeated the point of folding them. */
+/* The row height is pinned rather than derived from its contents. Left to the
+   text it is a `rem` line box measured against a px-tall track, and the two
+   round apart at fractional zoom, so the five rows ended up different heights
+   from each other at 110% and again at 125%. A px floor rounds once, for every
+   row alike. */
 .quant-row {
+    min-height: 20px;
     display: grid;
     grid-template-columns: 62px 1fr 22px;
     align-items: center;
     gap: 9px;
     color: var(--muted);
     font-size: 0.66rem;
+    line-height: 1;
     cursor: pointer;
 }
 
@@ -424,7 +431,10 @@ input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var
    band on the shared 0..16 scale. */
 input[type="range"].quant-range,
 input[type="range"].quant-range:hover {
-    height: 3px;
+    /* 4px, like every other track here: an odd height cannot be halved evenly
+       when the row centres it, so it lands on a half-pixel and the browser
+       rounds it up or down depending on where the row happens to sit. */
+    height: 4px;
     background: linear-gradient(to right,
             rgba(240, 180, 79, 0.8) 0%, rgba(240, 180, 79, 0.8) var(--good-from),
             rgba(53, 213, 138, 0.85) var(--good-from), rgba(53, 213, 138, 0.85) var(--good-to),
