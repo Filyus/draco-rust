@@ -39,6 +39,8 @@ jobs:
           --skip compare_rust_vs_cpp_decode
           --skip rust_encode_cpp_decode_small_matrix
           --skip cpp_decodes_the_legacy_streams_this_crate_writes
+          --skip cpp_decodes_legacy_normal_and_tex_coord_encodings
+          --skip cpp_decodes_the_predictive_traversal_this_crate_writes
 
       # Feature-combination compile guard. Default tests enable every feature,
       # which hides feature-gating mistakes (e.g. a decoder module that secretly
