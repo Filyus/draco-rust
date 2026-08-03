@@ -10,240 +10,21 @@
 
 use wasm_bindgen::prelude::*;
 
-use js_sys::Uint8Array;
-use js_sys::{Array, Float32Array, Float64Array, Object, Reflect, Uint32Array};
-#[cfg(feature = "write")]
-use wasm_bindgen::JsCast;
+use js_sys::{Array, Object};
 
-// ===========================================================================
-// JavaScript bridge
-//
-// Values cross the wasm boundary as plain JavaScript objects built and read by
-// hand instead of serde structures: geometry goes over as typed arrays, which
-// cross in bulk and give JavaScript an array it owns outright. The cost of
-// dropping serde is that nothing here validates untrusted input for us, so
-// every field read from JavaScript is guarded individually. Field names are
-// whatever serde emitted before: `type` plus camelCase on the extra
-// attributes, `type` plus snake_case on the attribute list and stats.
-// ===========================================================================
-
-/// Set a property on a JavaScript object.
-fn set_js(obj: &Object, key: &str, value: &JsValue) {
-    let _ = Reflect::set(obj, &JsValue::from_str(key), value);
-}
-
-fn set_bool(obj: &Object, key: &str, value: bool) {
-    set_js(obj, key, &JsValue::from_bool(value));
-}
-
-/// Set an optional string, to `undefined` when absent, so the key stays present
-/// with the same shape the serde output used to have.
-fn set_opt_string(obj: &Object, key: &str, value: &Option<String>) {
-    match value {
-        Some(text) => set_js(obj, key, &JsValue::from_str(text)),
-        None => set_js(obj, key, &JsValue::UNDEFINED),
-    }
-}
-
+// The conversion layer is `wasm-bridge`, shared with the other four modules:
+// geometry crosses as typed arrays, and everything read back from JavaScript is
+// validated there rather than trusted. Field names stay whatever serde emitted
+// before: `type` plus camelCase on the extra attributes, `type` plus
+// snake_case on the attribute list and stats.
 #[cfg(feature = "read")]
-fn set_string_array(obj: &Object, key: &str, values: &[String]) {
-    let array = Array::new();
-    for value in values {
-        array.push(&JsValue::from_str(value));
-    }
-    set_js(obj, key, &array.into());
-}
-
-#[cfg(feature = "read")]
-fn f32_array_to_js(values: &[f32]) -> JsValue {
-    Float32Array::from(values).into()
-}
-
-#[cfg(feature = "read")]
-fn u32_array_to_js(values: &[u32]) -> JsValue {
-    Uint32Array::from(values).into()
-}
-
-#[cfg(feature = "read")]
-fn u8_array_to_js(values: &[u8]) -> JsValue {
-    Uint8Array::from(values).into()
-}
-
-#[cfg(feature = "read")]
-fn f64_array_to_js(values: &[f64]) -> JsValue {
-    Float64Array::from(values).into()
-}
-
+use wasm_bridge::{f32_array_to_js, f64_array_to_js, set_string_array, u32_array_to_js};
 #[cfg(feature = "write")]
-fn bytes_to_js(values: &[u8]) -> JsValue {
-    Uint8Array::from(values).into()
-}
-
-/// Read a field that must be present on an object. An absent key reads back as
-/// `undefined` from JavaScript, which is an error to be reported, not a value.
-#[cfg(feature = "write")]
-fn get_field(obj: &JsValue, key: &str) -> Option<JsValue> {
-    if !obj.is_object() {
-        return None;
-    }
-    match Reflect::get(obj, &JsValue::from_str(key)) {
-        Ok(value) if value.is_undefined() || value.is_null() => None,
-        Ok(value) => Some(value),
-        Err(_) => None,
-    }
-}
-
-#[cfg(feature = "write")]
-fn opt_bool_from_js(obj: &JsValue, key: &str) -> Option<bool> {
-    if !obj.is_object() {
-        return None;
-    }
-    match Reflect::get(obj, &JsValue::from_str(key)) {
-        Ok(value) => value.as_bool(),
-        _ => None,
-    }
-}
-
-#[cfg(feature = "write")]
-fn opt_i32_from_js(obj: &JsValue, key: &str) -> Option<i32> {
-    if !obj.is_object() {
-        return None;
-    }
-    match Reflect::get(obj, &JsValue::from_str(key)) {
-        Ok(value) => value.as_f64().map(|number| number as i32),
-        _ => None,
-    }
-}
-
-/// A float array from JavaScript: a `Float32Array` copies across in bulk, a
-/// plain array is walked element by element. Every element must be a number.
-#[cfg(feature = "write")]
-fn f32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<f32>, String> {
-    if let Some(typed) = value.dyn_ref::<Float32Array>() {
-        return Ok(typed.to_vec());
-    }
-    let array = value
-        .dyn_ref::<Array>()
-        .ok_or_else(|| format!("{field} must be a Float32Array or a plain array"))?;
-    let mut out = Vec::with_capacity(array.length() as usize);
-    for index in 0..array.length() {
-        match array.get(index).as_f64() {
-            Some(value) => out.push(value as f32),
-            None => return Err(format!("{field} must contain only numbers")),
-        }
-    }
-    Ok(out)
-}
-
-/// One element of a plain array, checked against the range its slot admits.
-///
-/// The cast on its own is not enough. A float-to-integer `as` in Rust
-/// saturates, so `-1` would land on vertex zero and `1e9` on the last vertex,
-/// both as a silently wrong file rather than as a refusal.
-#[cfg(feature = "write")]
-fn whole_number(value: &JsValue, field: &str, min: f64, max: f64) -> Result<f64, String> {
-    let number = value
-        .as_f64()
-        .ok_or_else(|| format!("{field} must contain only numbers"))?;
-    if !number.is_finite() || number.fract() != 0.0 {
-        return Err(format!("{field} must contain whole numbers"));
-    }
-    if number < min || number > max {
-        return Err(format!("{field} must stay within {min}..={max}"));
-    }
-    Ok(number)
-}
-
-#[cfg(feature = "write")]
-fn u32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u32>, String> {
-    if let Some(typed) = value.dyn_ref::<Uint32Array>() {
-        return Ok(typed.to_vec());
-    }
-    let array = value
-        .dyn_ref::<Array>()
-        .ok_or_else(|| format!("{field} must be a Uint32Array or a plain array"))?;
-    let mut out = Vec::with_capacity(array.length() as usize);
-    for index in 0..array.length() {
-        out.push(whole_number(&array.get(index), field, 0.0, f64::from(u32::MAX))? as u32);
-    }
-    Ok(out)
-}
-
-/// A byte array from JavaScript.
-///
-/// Colours arrive already in the 0..255 byte domain: the shell scales every
-/// float and normalized accessor before it calls in. A float typed array
-/// therefore means the caller still holds 0..1 values, and casting those would
-/// write an almost black mesh instead of failing — so the type is refused
-/// rather than converted, because nothing here can tell 0..1 from 0..255 once
-/// the values are in.
-#[cfg(feature = "write")]
-fn u8_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u8>, String> {
-    if let Some(typed) = value.dyn_ref::<Uint8Array>() {
-        return Ok(typed.to_vec());
-    }
-    if value.dyn_ref::<Float32Array>().is_some() || value.dyn_ref::<Float64Array>().is_some() {
-        return Err(format!(
-            "{field} must hold 0..255 bytes; a float array is 0..1 data that the caller has to scale first"
-        ));
-    }
-    let array = value
-        .dyn_ref::<Array>()
-        .ok_or_else(|| format!("{field} must be a Uint8Array or a plain array"))?;
-    let mut out = Vec::with_capacity(array.length() as usize);
-    for index in 0..array.length() {
-        out.push(whole_number(&array.get(index), field, 0.0, 255.0)? as u8);
-    }
-    Ok(out)
-}
-
-#[cfg(feature = "write")]
-fn f64_array_from_js(value: &JsValue, field: &str) -> Result<Vec<f64>, String> {
-    if let Some(typed) = value.dyn_ref::<Float64Array>() {
-        return Ok(typed.to_vec());
-    }
-    let array = value
-        .dyn_ref::<Array>()
-        .ok_or_else(|| format!("{field} must be a Float64Array or a plain array"))?;
-    let mut out = Vec::with_capacity(array.length() as usize);
-    for index in 0..array.length() {
-        match array.get(index).as_f64() {
-            Some(value) => out.push(value),
-            None => return Err(format!("{field} must contain only numbers")),
-        }
-    }
-    Ok(out)
-}
-
-#[cfg(feature = "write")]
-fn required_f32_array(value: &JsValue, field: &str) -> Result<Vec<f32>, String> {
-    let value =
-        get_field(value, field).ok_or_else(|| format!("mesh must be an object with {field}"))?;
-    f32_array_from_js(&value, field)
-}
-
-#[cfg(feature = "write")]
-fn required_u32_array(value: &JsValue, field: &str) -> Result<Vec<u32>, String> {
-    let value =
-        get_field(value, field).ok_or_else(|| format!("mesh must be an object with {field}"))?;
-    u32_array_from_js(&value, field)
-}
-
-#[cfg(feature = "write")]
-fn optional_f32_array(value: &JsValue, field: &str) -> Result<Option<Vec<f32>>, String> {
-    match get_field(value, field) {
-        Some(value) => Ok(Some(f32_array_from_js(&value, field)?)),
-        None => Ok(None),
-    }
-}
-
-#[cfg(feature = "write")]
-fn optional_u8_array(value: &JsValue, field: &str) -> Result<Option<Vec<u8>>, String> {
-    match get_field(value, field) {
-        Some(value) => Ok(Some(u8_array_from_js(&value, field)?)),
-        None => Ok(None),
-    }
-}
+use wasm_bridge::{
+    f64_array_from_js, get_field, opt_bool_from_js, opt_i32_from_js, optional_f32_array,
+    optional_u8_array, required_f32_array, required_u32_array,
+};
+use wasm_bridge::{set_bool, set_js, set_opt_string, u8_array_to_js};
 
 /// Install the panic hook, so a panic reads as a message rather than a trap.
 #[wasm_bindgen(start)]
@@ -935,7 +716,7 @@ fn export_result_to_js(result: &ExportResult) -> JsValue {
     let obj = Object::new();
     set_bool(&obj, "success", result.success);
     match &result.binary_data {
-        Some(bytes) => set_js(&obj, "binary_data", &bytes_to_js(bytes)),
+        Some(bytes) => set_js(&obj, "binary_data", &u8_array_to_js(bytes)),
         None => set_js(&obj, "binary_data", &JsValue::UNDEFINED),
     }
     set_opt_string(&obj, "error", &result.error);

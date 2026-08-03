@@ -1,0 +1,14 @@
+[package]
+name = "wasm-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Shared JavaScript conversion helpers for the Draco web WASM modules"
+repository = "https://github.com/Filyus/draco-rust"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "build-tool",
     "dev-server",
+    "wasm-bridge",
     "obj-wasm",
     "ply-wasm",
     "stl-wasm",

@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
+wasm-bridge = { path = "../wasm-bridge" }
 console_error_panic_hook = { workspace = true, optional = true }
 draco-core = { path = "../../crates/draco-core", default-features = false, optional = true }
 draco-io = { path = "../../crates/draco-io", default-features = false, optional = true }
