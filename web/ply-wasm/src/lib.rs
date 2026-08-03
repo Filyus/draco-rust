@@ -955,10 +955,7 @@ fn mesh_input_to_core_mesh(input: &MeshInput, options: &ExportOptions) -> Result
         false,
         vertex_count,
     );
-    for (i, chunk) in input.positions.chunks_exact(3).enumerate() {
-        let bytes: Vec<u8> = chunk.iter().flat_map(|value| value.to_le_bytes()).collect();
-        pos_att.buffer_mut().write(i * 12, &bytes);
-    }
+    pos_att.buffer_mut().write_f32s_le(0, &input.positions);
     mesh.add_attribute(pos_att);
 
     if options.include_normals.unwrap_or(true) {
@@ -972,11 +969,9 @@ fn mesh_input_to_core_mesh(input: &MeshInput, options: &ExportOptions) -> Result
                     false,
                     vertex_count,
                 );
-                for (i, chunk) in normals.chunks_exact(3).take(vertex_count).enumerate() {
-                    let bytes: Vec<u8> =
-                        chunk.iter().flat_map(|value| value.to_le_bytes()).collect();
-                    normal_att.buffer_mut().write(i * 12, &bytes);
-                }
+                normal_att
+                    .buffer_mut()
+                    .write_f32s_le(0, &normals[..vertex_count * 3]);
                 mesh.add_attribute(normal_att);
             }
         }
@@ -1013,11 +1008,9 @@ fn mesh_input_to_core_mesh(input: &MeshInput, options: &ExportOptions) -> Result
                     false,
                     vertex_count,
                 );
-                for (i, chunk) in uvs.chunks_exact(2).take(vertex_count).enumerate() {
-                    let bytes: Vec<u8> =
-                        chunk.iter().flat_map(|value| value.to_le_bytes()).collect();
-                    uv_att.buffer_mut().write(i * 8, &bytes);
-                }
+                uv_att
+                    .buffer_mut()
+                    .write_f32s_le(0, &uvs[..vertex_count * 2]);
                 mesh.add_attribute(uv_att);
             }
         }

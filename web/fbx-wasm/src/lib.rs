@@ -3206,13 +3206,7 @@ fn mesh_input_to_core_mesh(input: &MeshInput) -> Result<Mesh, String> {
         false,
         point_count,
     );
-    for (index, values) in input.positions.chunks_exact(3).enumerate() {
-        let bytes: Vec<u8> = values
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect();
-        position.buffer_mut().write(index * 12, &bytes);
-    }
+    position.buffer_mut().write_f32s_le(0, &input.positions);
     mesh.add_attribute(position);
     if let Some(normals) = &input.normals {
         if normals.len() >= point_count * 3 {
@@ -3224,13 +3218,9 @@ fn mesh_input_to_core_mesh(input: &MeshInput) -> Result<Mesh, String> {
                 false,
                 point_count,
             );
-            for (index, values) in normals.chunks_exact(3).take(point_count).enumerate() {
-                let bytes: Vec<u8> = values
-                    .iter()
-                    .flat_map(|value| value.to_le_bytes())
-                    .collect();
-                normal.buffer_mut().write(index * 12, &bytes);
-            }
+            normal
+                .buffer_mut()
+                .write_f32s_le(0, &normals[..point_count * 3]);
             mesh.add_attribute(normal);
         }
     }
@@ -3244,13 +3234,9 @@ fn mesh_input_to_core_mesh(input: &MeshInput) -> Result<Mesh, String> {
                 false,
                 point_count,
             );
-            for (index, values) in uvs.chunks_exact(2).take(point_count).enumerate() {
-                let bytes: Vec<u8> = values
-                    .iter()
-                    .flat_map(|value| value.to_le_bytes())
-                    .collect();
-                tex_coord.buffer_mut().write(index * 8, &bytes);
-            }
+            tex_coord
+                .buffer_mut()
+                .write_f32s_le(0, &uvs[..point_count * 2]);
             mesh.add_attribute(tex_coord);
         }
     }

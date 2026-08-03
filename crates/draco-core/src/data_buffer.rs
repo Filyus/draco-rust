@@ -84,6 +84,24 @@ impl DataBuffer {
         true
     }
 
+    /// Write a slice of `f32` values at `byte_pos` as little-endian bytes,
+    /// resizing the buffer if the range runs past its current length.
+    ///
+    /// The slice is written in one pass with no intermediate allocation,
+    /// which is what the wasm writer bridges use for position, normal and
+    /// texcoord attributes.
+    pub fn write_f32s_le(&mut self, byte_pos: usize, values: &[f32]) {
+        let len = values.len() * 4;
+        let end = byte_pos + len;
+        if end > self.data.len() {
+            self.data.resize(end, 0);
+        }
+        let dst = &mut self.data[byte_pos..end];
+        for (index, value) in values.iter().enumerate() {
+            dst[index * 4..(index + 1) * 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
     pub fn copy(
         &mut self,
         dst_offset: usize,
@@ -151,5 +169,24 @@ mod tests {
 
         assert!(buffer.try_resize(usize::MAX).is_err());
         assert_eq!(buffer.data_size(), 0);
+    }
+
+    #[test]
+    fn write_f32s_le_writes_little_endian() {
+        let mut buffer = DataBuffer::new();
+        buffer.resize(12);
+        buffer.write_f32s_le(0, &[1.0, -2.5, 0.0]);
+        assert_eq!(
+            buffer.data(),
+            &[0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x20, 0xc0, 0x00, 0x00, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn write_f32s_le_resizes_past_the_end() {
+        let mut buffer = DataBuffer::new();
+        buffer.write_f32s_le(4, &[1.0]);
+        assert_eq!(buffer.data_size(), 8);
+        assert_eq!(&buffer.data()[..4], &[0, 0, 0, 0]);
     }
 }

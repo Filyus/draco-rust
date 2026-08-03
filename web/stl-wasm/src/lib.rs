@@ -476,10 +476,7 @@ fn mesh_input_to_core_mesh(input: &MeshInput) -> Result<Mesh, String> {
         false,
         vertex_count,
     );
-    for (index, chunk) in input.positions.chunks_exact(3).enumerate() {
-        let bytes: Vec<u8> = chunk.iter().flat_map(|value| value.to_le_bytes()).collect();
-        positions.buffer_mut().write(index * 12, &bytes);
-    }
+    positions.buffer_mut().write_f32s_le(0, &input.positions);
     mesh.add_attribute(positions);
 
     mesh.set_num_faces(input.indices.len() / 3);

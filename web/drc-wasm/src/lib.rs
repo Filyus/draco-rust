@@ -683,21 +683,21 @@ fn scalar_as_f64(data_type: DataType, bytes: &[u8]) -> f64 {
     }
 }
 
-/// The same value back in the component type it came from.
+/// The same value back in the component type it came from, appended to `out`.
 #[cfg(feature = "write")]
-fn scalar_to_bytes(data_type: DataType, value: f64) -> Vec<u8> {
+fn write_scalar_le(data_type: DataType, value: f64, out: &mut Vec<u8>) {
     match data_type {
-        DataType::Float32 => (value as f32).to_le_bytes().to_vec(),
-        DataType::Float64 => value.to_le_bytes().to_vec(),
-        DataType::Int8 => (value as i8).to_le_bytes().to_vec(),
-        DataType::Uint8 | DataType::Bool => (value as u8).to_le_bytes().to_vec(),
-        DataType::Int16 => (value as i16).to_le_bytes().to_vec(),
-        DataType::Uint16 => (value as u16).to_le_bytes().to_vec(),
-        DataType::Int32 => (value as i32).to_le_bytes().to_vec(),
-        DataType::Uint32 => (value as u32).to_le_bytes().to_vec(),
-        DataType::Int64 => (value as i64).to_le_bytes().to_vec(),
-        DataType::Uint64 => (value as u64).to_le_bytes().to_vec(),
-        DataType::Invalid => Vec::new(),
+        DataType::Float32 => out.extend_from_slice(&(value as f32).to_le_bytes()),
+        DataType::Float64 => out.extend_from_slice(&value.to_le_bytes()),
+        DataType::Int8 => out.extend_from_slice(&(value as i8).to_le_bytes()),
+        DataType::Uint8 | DataType::Bool => out.extend_from_slice(&(value as u8).to_le_bytes()),
+        DataType::Int16 => out.extend_from_slice(&(value as i16).to_le_bytes()),
+        DataType::Uint16 => out.extend_from_slice(&(value as u16).to_le_bytes()),
+        DataType::Int32 => out.extend_from_slice(&(value as i32).to_le_bytes()),
+        DataType::Uint32 => out.extend_from_slice(&(value as u32).to_le_bytes()),
+        DataType::Int64 => out.extend_from_slice(&(value as i64).to_le_bytes()),
+        DataType::Uint64 => out.extend_from_slice(&(value as u64).to_le_bytes()),
+        DataType::Invalid => {}
     }
 }
 
@@ -1207,20 +1207,11 @@ fn mesh_input_to_core_mesh(
             extra.normalized,
             vertex_count,
         );
-        for (index, chunk) in extra
-            .values
-            .chunks_exact(components)
-            .take(vertex_count)
-            .enumerate()
-        {
-            let bytes: Vec<u8> = chunk
-                .iter()
-                .flat_map(|value| scalar_to_bytes(data_type, *value))
-                .collect();
-            attribute
-                .buffer_mut()
-                .write(index * components * width, &bytes);
+        let mut bytes = Vec::with_capacity(vertex_count * components * width);
+        for value in extra.values.iter().take(vertex_count * components) {
+            write_scalar_le(data_type, *value, &mut bytes);
         }
+        attribute.buffer_mut().write(0, &bytes);
         let unique_id = if taken.contains(&extra.unique_id) {
             (0u32..).find(|id| !taken.contains(id)).unwrap()
         } else {
@@ -1273,14 +1264,17 @@ fn float_attribute(
         vertex_count,
     );
     let width = components * 4;
-    for (index, chunk) in values
-        .chunks_exact(components)
-        .take(vertex_count)
-        .enumerate()
-    {
-        let bytes: Vec<u8> = chunk.iter().flat_map(|value| value.to_le_bytes()).collect();
-        attribute.buffer_mut().write(index * width, &bytes);
-    }
+    let mut attribute = PointAttribute::new();
+    attribute.init(
+        attribute_type,
+        components as u8,
+        DataType::Float32,
+        false,
+        vertex_count,
+    );
+    attribute
+        .buffer_mut()
+        .write_f32s_le(0, &values[..vertex_count * components]);
     attribute
 }
 
