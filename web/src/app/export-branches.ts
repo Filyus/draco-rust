@@ -41,6 +41,16 @@ export interface ExportResult {
   message?: string;
   /** Set by any route that writes a Draco-compressed payload. */
   draco_stats?: DracoStats | null;
+  /** Set by an FBX route with the actual zlib-compressed array totals. */
+  fbx_stats?: FbxStats | null;
+}
+
+/** What the FBX writer actually stored with zlib array encoding. */
+export interface FbxStats {
+  requested: boolean;
+  compressed_arrays: number;
+  compressed_raw_bytes: number;
+  compressed_stored_bytes: number;
 }
 
 /** What the Draco encoder reported about the pass, summed over primitives. */
@@ -75,6 +85,8 @@ export interface ExportSettings {
   includeNormals: boolean;
   includeUvs: boolean;
   useDraco: boolean;
+  /** Whether binary FBX arrays may use zlib compression. */
+  fbxCompression?: boolean;
   encodingSpeed: number;
   /** Quantization, shared by the glTF Draco pass and the `.drc` route. */
   positionBits?: number;
@@ -109,14 +121,14 @@ export async function runExport(settings: ExportSettings): Promise<ExportOutcome
       provenance: state.currentFbxProvenance,
     });
     return {
-      result: await exportToFbxScene(scene, legacyFbx),
+      result: await exportToFbxScene(scene, legacyFbx, settings.fbxCompression),
       warnings: [...(scene.warnings || [])],
     };
   }
   if (isFbxTarget && loaded.scene) {
     const scene = prepareFbxSceneForExport(loaded.scene, settings, legacyFbx);
     return {
-      result: await exportToFbxScene(scene, legacyFbx),
+      result: await exportToFbxScene(scene, legacyFbx, settings.fbxCompression),
       warnings: [...(scene.warnings || [])],
     };
   }
@@ -129,7 +141,7 @@ export async function runExport(settings: ExportSettings): Promise<ExportOutcome
     );
     const scene = prepareFbxSceneForExport(source, settings, legacyFbx);
     return {
-      result: await exportToFbxScene(scene, legacyFbx),
+      result: await exportToFbxScene(scene, legacyFbx, settings.fbxCompression),
       warnings: [...(scene.warnings || [])],
     };
   }
@@ -455,7 +467,7 @@ async function exportFlattenedMeshes(settings: ExportSettings, loaded: LoadedFil
     }
     case 'fbx':
     case 'fbx-legacy':
-      return { result: await exportToFbx(meshes), warnings };
+      return { result: await exportToFbx(meshes, settings.fbxCompression), warnings };
     default:
       return { result: { success: false, error: `Unknown export format ${format}` }, warnings };
   }
@@ -726,21 +738,30 @@ function asGltfIfAsked(outcome: ExportOutcome, format: string): ExportOutcome {
  * used to fall back to the writer's defaults, and those described a space this
  * path never wrote.
  */
-export async function exportToFbx(meshes: PreparedMesh[]) {
+export async function exportToFbx(meshes: PreparedMesh[], compression = false) {
   if (!modules.fbx.loaded) {
     return { success: false, error: 'FBX module not loaded' };
   }
   return modules.fbx.module.create_fbx(meshes, {
     version: 7500,
     globalSettings: FBX_METERS_Y_UP,
+    compression,
   });
 }
 
-export async function exportToFbxScene(scene: FbxSceneData, legacyCompatibility = false) {
+export async function exportToFbxScene(
+  scene: FbxSceneData,
+  legacyCompatibility = false,
+  compression = false,
+) {
   if (!modules.fbx.loaded) {
     return { success: false, error: 'FBX module not loaded' };
   }
-  return modules.fbx.module.create_fbx_scene(scene, { version: 7500, legacyCompatibility });
+  return modules.fbx.module.create_fbx_scene(scene, {
+    version: 7500,
+    legacyCompatibility,
+    compression,
+  });
 }
 
 /** Merge multiple meshes into one. */

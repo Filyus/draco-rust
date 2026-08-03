@@ -48,6 +48,8 @@ use draco_core::geometry_indices::FaceIndex;
 use draco_core::mesh::Mesh;
 #[cfg(any(feature = "read", feature = "write"))]
 use draco_io::{FbxGlobalSettings, FbxNodeId, FbxScene, FbxSceneNode, FbxTransformStack};
+#[cfg(feature = "write")]
+use draco_io::{FbxWriteStats, FbxWriter};
 
 /// Mesh data produced by the FBX reader, for JavaScript interop.
 #[cfg(feature = "read")]
@@ -1490,6 +1492,9 @@ pub struct ExportOptions {
     /// coordinates, so without this the file fell back to the writer's default
     /// axes -- which said one thing while the caller had written another.
     pub global_settings: Option<GlobalSettingsInput>,
+    /// Whether binary FBX arrays should be zlib-compressed when that saves space.
+    #[serde(default)]
+    pub compression: bool,
 }
 
 /// Export result.
@@ -1499,6 +1504,29 @@ pub struct ExportResult {
     pub success: bool,
     pub binary_data: Option<Vec<u8>>,
     pub error: Option<String>,
+    pub fbx_stats: Option<FbxCompressionStats>,
+}
+
+/// What the FBX writer actually compressed inside the binary container.
+#[cfg(feature = "write")]
+#[derive(Serialize, Deserialize)]
+pub struct FbxCompressionStats {
+    pub requested: bool,
+    pub compressed_arrays: usize,
+    pub compressed_raw_bytes: usize,
+    pub compressed_stored_bytes: usize,
+}
+
+#[cfg(feature = "write")]
+impl FbxCompressionStats {
+    fn from_writer(requested: bool, stats: FbxWriteStats) -> Self {
+        Self {
+            requested,
+            compressed_arrays: stats.compressed_arrays,
+            compressed_raw_bytes: stats.compressed_raw_bytes,
+            compressed_stored_bytes: stats.compressed_stored_bytes,
+        }
+    }
 }
 
 /// Create FBX binary content from mesh data.
@@ -1512,13 +1540,14 @@ pub fn create_fbx(meshes_js: JsValue, options_js: JsValue) -> JsValue {
                 success: false,
                 binary_data: None,
                 error: Some(format!("Invalid mesh data: {}", e)),
+                fbx_stats: None,
             };
             return serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL);
         }
     };
 
     let options: ExportOptions = serde_wasm_bindgen::from_value(options_js).unwrap_or_default();
-    let result = create_fbx_internal(&meshes, options.global_settings);
+    let result = create_fbx_internal(&meshes, options.global_settings, options.compression);
     serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
 }
 
@@ -1526,24 +1555,30 @@ pub fn create_fbx(meshes_js: JsValue, options_js: JsValue) -> JsValue {
 /// textures, animation, and local transforms.
 #[cfg(feature = "write")]
 #[wasm_bindgen]
-pub fn create_fbx_scene(scene_js: JsValue, _options_js: JsValue) -> JsValue {
+pub fn create_fbx_scene(scene_js: JsValue, options_js: JsValue) -> JsValue {
+    let options: ExportOptions = serde_wasm_bindgen::from_value(options_js).unwrap_or_default();
     let result = match serde_wasm_bindgen::from_value::<SceneInput>(scene_js) {
         Ok(input) => scene_input_to_fbx_scene(input)
-            .and_then(|scene| scene.to_bytes().map_err(|error| error.to_string()))
-            .map(|binary_data| ExportResult {
+            .and_then(|scene| {
+                write_fbx_scene(&scene, options.compression).map_err(|error| error.to_string())
+            })
+            .map(|(binary_data, fbx_stats)| ExportResult {
                 success: true,
                 binary_data: Some(binary_data),
                 error: None,
+                fbx_stats: Some(fbx_stats),
             })
             .unwrap_or_else(|error| ExportResult {
                 success: false,
                 binary_data: None,
                 error: Some(error),
+                fbx_stats: None,
             }),
         Err(error) => ExportResult {
             success: false,
             binary_data: None,
             error: Some(format!("Invalid scene data: {error}")),
+            fbx_stats: None,
         },
     };
     serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
@@ -1967,6 +2002,7 @@ fn mesh_input_to_core_mesh(input: &MeshInput) -> Result<Mesh, String> {
 fn create_fbx_internal(
     meshes: &[MeshInput],
     global_settings: Option<GlobalSettingsInput>,
+    compression: bool,
 ) -> ExportResult {
     // The legacy `create_fbx` entry point receives a flat mesh list with no
     // hierarchy, so every mesh becomes its own root Model. Materials,
@@ -1983,21 +2019,38 @@ fn create_fbx_internal(
                 success: false,
                 binary_data: None,
                 error: Some(error),
+                fbx_stats: None,
             }
         }
     };
-    match scene.to_bytes() {
-        Ok(binary_data) => ExportResult {
+    match write_fbx_scene(&scene, compression) {
+        Ok((binary_data, fbx_stats)) => ExportResult {
             success: true,
             binary_data: Some(binary_data),
             error: None,
+            fbx_stats: Some(fbx_stats),
         },
         Err(error) => ExportResult {
             success: false,
             binary_data: None,
             error: Some(error.to_string()),
+            fbx_stats: None,
         },
     }
+}
+
+#[cfg(feature = "write")]
+fn write_fbx_scene(
+    scene: &FbxScene,
+    compression: bool,
+) -> Result<(Vec<u8>, FbxCompressionStats), std::io::Error> {
+    let mut writer = FbxWriter::new().with_compression(compression);
+    writer.add_scene(scene)?;
+    let (binary_data, stats) = writer.write_to_vec_with_stats()?;
+    Ok((
+        binary_data,
+        FbxCompressionStats::from_writer(compression, stats),
+    ))
 }
 
 #[cfg(feature = "write")]
@@ -2185,7 +2238,7 @@ mod writer_tests {
 
         // No `globalSettings`: the writer's own defaults, which is what a caller
         // that states no space gets.
-        let result = create_fbx_internal(&[mesh], None);
+        let result = create_fbx_internal(&[mesh], None, false);
         assert!(result.success);
         assert!(result.binary_data.is_some());
 

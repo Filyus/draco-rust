@@ -90,7 +90,7 @@ pub use fbx_scene::{
     FbxTransformStack, FbxUvSet, FbxWarning, FbxWarningCode,
 };
 #[cfg(feature = "fbx-writer")]
-pub use fbx_writer::{FbxFormat, FbxWriter};
+pub use fbx_writer::{FbxFormat, FbxWriteStats, FbxWriter};
 #[cfg(feature = "gltf-container")]
 pub use gltf_container::{
     decode_data_uri, inspect_glb, parse_glb_json_and_bin, parse_gltf_container,

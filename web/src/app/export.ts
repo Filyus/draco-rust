@@ -1,6 +1,6 @@
 import { formatFileSize } from './format.ts';
 import { errorMessage, log } from './log.ts';
-import { colorBits, dracoOptions, encodingSpeed, exportFormat, exportStatFields, exportStats, genericBits, includeNormals, includeUvs, normalBits, positionBits, texcoordBits, useDraco } from './dom.ts';
+import { colorBits, dracoOptions, encodingSpeed, exportFormat, exportStatFields, exportStats, fbxOptions, genericBits, includeNormals, includeUvs, normalBits, positionBits, texcoordBits, useDraco, useFbxCompression } from './dom.ts';
 import { state } from './state.ts';
 import { runExport } from './export-branches.ts';
 import type { DracoStats, ExportOutcome, ExportResult, ExportSettings } from './export-branches.ts';
@@ -28,6 +28,7 @@ export function updateExportOptions() {
   } else {
     dracoOptions.style.display = 'none';
   }
+  fbxOptions.style.display = format === 'fbx' || format === 'fbx-legacy' ? 'block' : 'none';
 }
 
 /**
@@ -49,6 +50,7 @@ function exportSettings(): ExportSettings {
     includeNormals: includeNormals.checked,
     includeUvs: includeUvs.checked,
     useDraco: useDraco.checked,
+    fbxCompression: useFbxCompression.checked,
     encodingSpeed: Number(encodingSpeed.value),
     positionBits: Number(positionBits.value),
     normalBits: Number(normalBits.value),
@@ -135,13 +137,16 @@ export function downloadResult(result: ExportResult, format: string) {
 export function displayExportStats(format: string, result: ExportResult) {
   const outputSize = exportResultSize(result);
   const stats = result.draco_stats;
+  const fbxStats = result.fbx_stats;
   exportStatFields.format.textContent = format === 'fbx-legacy'
     ? 'FBX (legacy)'
     : format.toUpperCase();
   exportStatFields.fileSize.textContent = outputSize === undefined ? '—' : formatFileSize(outputSize);
   exportStatFields.compression.textContent = stats
     ? `Draco (${stats.primitives} ${stats.primitives === 1 ? 'primitive' : 'primitives'})`
-    : 'None';
+    : fbxStats?.requested
+      ? fbxStats.compressed_arrays > 0 ? 'FBX (zlib arrays)' : 'FBX (zlib requested; no arrays compressed)'
+      : 'None';
 
   if (stats) {
     const dracoSize = stats.compressed_size;
@@ -155,6 +160,19 @@ export function displayExportStats(format: string, result: ExportResult) {
     exportStatFields.dracoDetails.style.display = 'block';
   } else {
     exportStatFields.dracoDetails.style.display = 'none';
+  }
+  if (fbxStats?.requested) {
+    const rawBytes = fbxStats.compressed_raw_bytes;
+    const storedBytes = fbxStats.compressed_stored_bytes;
+    exportStatFields.fbxMethod.textContent = 'zlib';
+    exportStatFields.fbxArrays.textContent = String(fbxStats.compressed_arrays);
+    exportStatFields.fbxPayload.textContent = `${formatFileSize(storedBytes)} stored / ${formatFileSize(rawBytes)} raw`;
+    exportStatFields.fbxSavings.textContent = rawBytes > 0
+      ? `${((1 - storedBytes / rawBytes) * 100).toFixed(1)}%`
+      : '—';
+    exportStatFields.fbxDetails.style.display = 'block';
+  } else {
+    exportStatFields.fbxDetails.style.display = 'none';
   }
   exportStats.style.display = 'block';
 }

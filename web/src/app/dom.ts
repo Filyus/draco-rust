@@ -39,6 +39,8 @@ export const useDracoLabel = element('use-draco-label');
 export const includeNormals = element<HTMLInputElement>('include-normals');
 export const includeUvs = element<HTMLInputElement>('include-uvs');
 export const dracoOptions = element('draco-options');
+export const fbxOptions = element('fbx-options');
+export const useFbxCompression = element<HTMLInputElement>('use-fbx-compression');
 export const dracoSettings = element('draco-settings');
 export const encodingSpeed = element<HTMLSelectElement>('encoding-speed');
 export const encodingMethod = element<HTMLSelectElement>('encoding-method');
@@ -124,11 +126,16 @@ export const exportStatFields = {
   compression: element('stats-compression'),
   fileSize: element('stats-file-size'),
   dracoDetails: element('stats-draco-details'),
+  fbxDetails: element('stats-fbx-details'),
   method: element('stats-method'),
   speed: element('stats-speed'),
   prediction: element('stats-prediction'),
   dracoSize: element('stats-draco-size'),
   share: element('stats-draco-share'),
+  fbxMethod: element('stats-fbx-method'),
+  fbxArrays: element('stats-fbx-arrays'),
+  fbxPayload: element('stats-fbx-payload'),
+  fbxSavings: element('stats-fbx-savings'),
 };
 
 export const sceneCapabilitySummary = element('scene-capability-summary');

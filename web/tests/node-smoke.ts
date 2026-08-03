@@ -133,6 +133,13 @@ const fbxExport = fbx.create_fbx_scene(fbxScene, {});
 if (!fbxExport.success || !fbxExport.binary_data?.length) {
   throw new Error(`FBX scene export smoke failed: ${fbxExport.error}`);
 }
+const compressedFbxExport = fbx.create_fbx_scene(fbxScene, { compression: true });
+if (
+  !compressedFbxExport.success
+  || !compressedFbxExport.fbx_stats?.requested
+) {
+  throw new Error(`FBX compression smoke failed: ${JSON.stringify(compressedFbxExport)}`);
+}
 const fbxRoundtrip = fbx.parse_fbx(fbxExport.binary_data);
 if (
   !fbxRoundtrip.success

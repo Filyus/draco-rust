@@ -246,6 +246,14 @@
                         </div>
                     </div>
 
+                    <div class="option-group" id="fbx-options" style="display: none;">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="use-fbx-compression">
+                            <span>Compress FBX arrays (zlib)</span>
+                        </label>
+                        <p class="slider-note">Compresses large binary FBX arrays when this saves space. ASCII FBX is not affected.</p>
+                    </div>
+
                     <button id="export-btn" class="primary-btn">
                         <span>⬇</span> Convert &amp; Download
                     </button>
@@ -262,6 +270,12 @@
                                 <div><strong>Method:</strong> <span id="stats-method">-</span></div>
                                 <div><strong>Speed:</strong> <span id="stats-speed">-</span></div>
                                 <div><strong>Prediction Schemes:</strong> <span id="stats-prediction">-</span></div>
+                            </div>
+                            <div id="stats-fbx-details" style="display: none; margin-top: 0.35rem;">
+                                <div><strong>FBX Array Compression:</strong> <span id="stats-fbx-method">-</span></div>
+                                <div><strong>Compressed Arrays:</strong> <span id="stats-fbx-arrays">-</span></div>
+                                <div><strong>Compressed Array Data:</strong> <span id="stats-fbx-payload">-</span></div>
+                                <div><strong>Compression Savings:</strong> <span id="stats-fbx-savings">-</span></div>
                             </div>
                         </div>
                     </div>

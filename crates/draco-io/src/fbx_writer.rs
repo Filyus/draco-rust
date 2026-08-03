@@ -49,6 +49,8 @@ use crate::fbx_node::{FbxNode, FbxProperty};
 use crate::fbx_scene::FbxNodeAttribute;
 use crate::traits::{WriteToBytes, Writer};
 
+pub use crate::fbx_encoder::FbxWriteStats;
+
 /// Container an FBX document is written in.
 ///
 /// Both spell the same tree of records; they differ only in how one record is
@@ -701,8 +703,16 @@ impl FbxWriter {
 
     /// Write the FBX data into a byte vector.
     pub fn write_to_vec(&self) -> io::Result<Vec<u8>> {
+        self.write_to_vec_with_stats().map(|(data, _)| data)
+    }
+
+    /// Write the FBX data and report arrays that were actually zlib-compressed.
+    pub fn write_to_vec_with_stats(&self) -> io::Result<(Vec<u8>, FbxWriteStats)> {
         if self.format == FbxFormat::Ascii {
-            return print_document(&self.build_document()?);
+            return Ok((
+                print_document(&self.build_document()?)?,
+                FbxWriteStats::default(),
+            ));
         }
         let options = WriterOptions {
             compress: self.compress,
@@ -714,13 +724,14 @@ impl FbxWriter {
         cursor.write_all(FBX_MAGIC)?;
         cursor.write_all(&[0x1A, 0x00])?; // Reserved bytes
         cursor.write_all(&FBX_VERSION.to_le_bytes())?;
+        let mut stats = FbxWriteStats::default();
         for node in self.build_document()? {
-            encode_node(&mut cursor, &node, is_64, &options)?;
+            stats += encode_node(&mut cursor, &node, is_64, &options)?;
         }
         // Marks the end of the top-level nodes.
         write_null_record(&mut cursor, is_64)?;
         write_footer(&mut cursor)?;
-        Ok(cursor.into_inner())
+        Ok((cursor.into_inner(), stats))
     }
 
     /// Get the number of meshes added.
@@ -3856,10 +3867,9 @@ mod tests {
             .with_compression_threshold(0);
         Writer::add_mesh(&mut writer, &mesh, None).unwrap();
 
-        let mut buffer = Cursor::new(Vec::new());
-        writer.write_to(&mut buffer).unwrap();
-
-        let data = buffer.into_inner();
+        let (data, stats) = writer.write_to_vec_with_stats().unwrap();
         assert!(!data.is_empty());
+        assert!(stats.compressed_arrays > 0);
+        assert!(stats.compressed_stored_bytes < stats.compressed_raw_bytes);
     }
 }

@@ -16,6 +16,25 @@ use std::io::{self, Seek, SeekFrom, Write};
 use crate::fbx_ascii_syntax::FBX_VERSION;
 use crate::fbx_node::{FbxNode, FbxProperty};
 
+/// Statistics about FBX array compression performed by the binary writer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FbxWriteStats {
+    /// Number of arrays that were actually stored with zlib encoding.
+    pub compressed_arrays: usize,
+    /// Size of those arrays before zlib compression.
+    pub compressed_raw_bytes: usize,
+    /// Size of those arrays after zlib compression.
+    pub compressed_stored_bytes: usize,
+}
+
+impl std::ops::AddAssign for FbxWriteStats {
+    fn add_assign(&mut self, other: Self) {
+        self.compressed_arrays += other.compressed_arrays;
+        self.compressed_raw_bytes += other.compressed_raw_bytes;
+        self.compressed_stored_bytes += other.compressed_stored_bytes;
+    }
+}
+
 /// FBX file magic: "Kaydara FBX Binary  \0"
 pub(crate) const FBX_MAGIC: &[u8; 21] = b"Kaydara FBX Binary  \0";
 
@@ -66,8 +85,9 @@ pub(crate) fn encode_node<W: Write + Seek>(
     node: &FbxNode,
     is_64: bool,
     options: &WriterOptions,
-) -> io::Result<()> {
+) -> io::Result<FbxWriteStats> {
     let mut record = NodeWriter::start(writer, &node.name, is_64)?;
+    let mut stats = FbxWriteStats::default();
     for property in &node.properties {
         match property {
             FbxProperty::Bool(value) => record.write_property_bool(*value)?,
@@ -79,23 +99,36 @@ pub(crate) fn encode_node<W: Write + Seek>(
             FbxProperty::F64(value) => record.write_property_f64(*value)?,
             FbxProperty::String(value) => record.write_property_string(value)?,
             FbxProperty::Raw(value) => record.write_property_raw(value)?,
-            FbxProperty::BoolArray(values) => record.write_property_bool_array(values, options)?,
-            FbxProperty::I32Array(values) => record.write_property_i32_array(values, options)?,
-            FbxProperty::I64Array(values) => record.write_property_i64_array(values, options)?,
-            FbxProperty::F32Array(values) => record.write_property_f32_array(values, options)?,
-            FbxProperty::F64Array(values) => record.write_property_f64_array(values, options)?,
+            FbxProperty::BoolArray(values) => {
+                stats += record.write_property_bool_array(values, options)?
+            }
+            FbxProperty::I32Array(values) => {
+                stats += record.write_property_i32_array(values, options)?
+            }
+            FbxProperty::I64Array(values) => {
+                stats += record.write_property_i64_array(values, options)?
+            }
+            FbxProperty::F32Array(values) => {
+                stats += record.write_property_f32_array(values, options)?
+            }
+            FbxProperty::F64Array(values) => {
+                stats += record.write_property_f64_array(values, options)?
+            }
         }
     }
     if node.children.is_empty() {
-        record.finish()
+        record.finish()?;
     } else {
+        let mut child_stats = FbxWriteStats::default();
         record.finish_with_children(|w| {
             for child in &node.children {
-                encode_node(w, child, is_64, options)?;
+                child_stats += encode_node(w, child, is_64, options)?;
             }
             Ok(())
-        })
+        })?;
+        stats += child_stats;
     }
+    Ok(stats)
 }
 
 /// Helper struct for writing FBX nodes.
@@ -194,7 +227,7 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         &mut self,
         values: &[bool],
         options: &WriterOptions,
-    ) -> io::Result<()> {
+    ) -> io::Result<FbxWriteStats> {
         self.write_array_property(b'b', values, options, |v| vec![u8::from(*v)])
     }
 
@@ -202,7 +235,7 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         &mut self,
         values: &[f64],
         options: &WriterOptions,
-    ) -> io::Result<()> {
+    ) -> io::Result<FbxWriteStats> {
         self.write_array_property(b'd', values, options, |v| v.to_le_bytes().to_vec())
     }
 
@@ -210,7 +243,7 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         &mut self,
         values: &[i32],
         options: &WriterOptions,
-    ) -> io::Result<()> {
+    ) -> io::Result<FbxWriteStats> {
         self.write_array_property(b'i', values, options, |v| v.to_le_bytes().to_vec())
     }
 
@@ -218,7 +251,7 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         &mut self,
         values: &[i64],
         options: &WriterOptions,
-    ) -> io::Result<()> {
+    ) -> io::Result<FbxWriteStats> {
         self.write_array_property(b'l', values, options, |v| v.to_le_bytes().to_vec())
     }
 
@@ -226,7 +259,7 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         &mut self,
         values: &[f32],
         options: &WriterOptions,
-    ) -> io::Result<()> {
+    ) -> io::Result<FbxWriteStats> {
         self.write_array_property(b'f', values, options, |v| v.to_le_bytes().to_vec())
     }
 
@@ -244,7 +277,7 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         values: &[T],
         options: &WriterOptions,
         to_bytes: F,
-    ) -> io::Result<()>
+    ) -> io::Result<FbxWriteStats>
     where
         F: Fn(&T) -> Vec<u8>,
     {
@@ -271,7 +304,11 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
                     .write_all(&(compressed.len() as u32).to_le_bytes())?;
                 self.writer.write_all(&compressed)?;
                 self.num_properties += 1;
-                return Ok(());
+                return Ok(FbxWriteStats {
+                    compressed_arrays: 1,
+                    compressed_raw_bytes: raw_size,
+                    compressed_stored_bytes: compressed.len(),
+                });
             }
         }
 
@@ -283,7 +320,7 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         self.writer.write_all(&(raw_size as u32).to_le_bytes())?;
         self.writer.write_all(&raw_data)?;
         self.num_properties += 1;
-        Ok(())
+        Ok(FbxWriteStats::default())
     }
 
     fn finish(self) -> io::Result<()> {

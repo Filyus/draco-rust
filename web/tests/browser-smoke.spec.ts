@@ -2365,6 +2365,19 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
     await expect(page.locator('#stats-draco-share')).toHaveText(/\d+\.\d%/);
   }
 
+  await page.locator('[data-choice-for="export-format"] [data-value="fbx"]').click();
+  await expect(page.locator('#fbx-options')).toBeVisible();
+  await page.locator('#use-fbx-compression').check();
+  const compressedFbxDownload = page.waitForEvent('download');
+  await page.locator('#export-btn').click();
+  await compressedFbxDownload;
+  await expect(page.locator('#stats-compression')).toHaveText('FBX (zlib arrays)');
+  await expect(page.locator('#stats-fbx-details')).toBeVisible();
+  await expect(page.locator('#stats-fbx-method')).toHaveText('zlib');
+  await expect(page.locator('#stats-fbx-arrays')).toHaveText(/\d+/);
+  await expect(page.locator('#stats-fbx-payload')).toContainText('stored');
+  await expect(page.locator('#stats-fbx-savings')).toHaveText(/\d+\.\d%/);
+
   await page.locator('#position-bits').evaluate((input) => {
     const slider = input as HTMLInputElement;
     slider.value = String(Number(slider.value) - 1);
