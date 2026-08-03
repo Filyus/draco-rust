@@ -2329,6 +2329,7 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
   // value. JSON glTF goes through the same compressed GLB and must retain it.
   for (const format of ['glb', 'gltf']) {
     await page.locator(`[data-choice-for="export-format"] [data-value="${format}"]`).click();
+    await expect(page.locator('#export-stats')).toBeHidden();
     const compressedDownload = page.waitForEvent('download');
     await page.locator('#export-btn').click();
     await compressedDownload;
@@ -2362,6 +2363,13 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
     await expect(page.locator('#stats-file-size')).toHaveText(/\d/);
     await expect(page.locator('#stats-draco-share')).toHaveText(/\d+\.\d%/);
   }
+
+  await page.locator('#position-bits').evaluate((input) => {
+    const slider = input as HTMLInputElement;
+    slider.value = String(Number(slider.value) - 1);
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect(page.locator('#export-stats')).toBeHidden();
 
   await page.locator('[data-choice-for="export-format"] [data-value="drc"]').click();
   const downloadPromise = page.waitForEvent('download');

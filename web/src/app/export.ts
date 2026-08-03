@@ -1,6 +1,6 @@
 import { formatFileSize } from './format.ts';
 import { errorMessage, log } from './log.ts';
-import { colorBits, dracoOptions, element, encodingSpeed, exportFormat, exportStatFields, exportStats, genericBits, normalBits, positionBits, texcoordBits, useDraco } from './dom.ts';
+import { colorBits, dracoOptions, encodingSpeed, exportFormat, exportStatFields, exportStats, genericBits, includeNormals, includeUvs, normalBits, positionBits, texcoordBits, useDraco } from './dom.ts';
 import { state } from './state.ts';
 import { runExport } from './export-branches.ts';
 import type { DracoStats, ExportOutcome, ExportResult, ExportSettings } from './export-branches.ts';
@@ -39,14 +39,15 @@ export function updateExportOptions() {
  */
 export function clearExportStats() {
   exportStats.style.display = 'none';
+  hidePredictionTooltip();
 }
 
 /** The export controls as the routes want them: plain values, read once. */
 function exportSettings(): ExportSettings {
   return {
     format: exportFormat.value,
-    includeNormals: element<HTMLInputElement>('include-normals').checked,
-    includeUvs: element<HTMLInputElement>('include-uvs').checked,
+    includeNormals: includeNormals.checked,
+    includeUvs: includeUvs.checked,
     useDraco: useDraco.checked,
     encodingSpeed: Number(encodingSpeed.value),
     positionBits: Number(positionBits.value),

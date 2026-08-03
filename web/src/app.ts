@@ -52,6 +52,8 @@ import {
   texcoordBits,
   colorBits,
   genericBits,
+  includeNormals,
+  includeUvs,
   useDraco,
   viewerAutoRotateBtn,
   viewerResetBtn,
@@ -253,34 +255,53 @@ function setupEventListeners() {
   // Clear file
   clearFileBtn.addEventListener('click', clearFile);
   
-  // Export format change
-  exportFormat.addEventListener('change', updateExportOptions);
+  // Any export-control change invalidates the report for the previous file.
+  // It describes the bytes from one exact set of options, so leaving it up
+  // while editing the next export would make the numbers look current when
+  // they are not.
+  const clearExportReport = () => clearExportStats();
+  exportFormat.addEventListener('change', () => {
+    clearExportReport();
+    updateExportOptions();
+  });
+  encodingMethod.addEventListener('change', clearExportReport);
+  includeNormals.addEventListener('change', clearExportReport);
+  includeUvs.addEventListener('change', clearExportReport);
   
   // Draco checkbox
   useDraco.addEventListener('change', () => {
+    clearExportReport();
     dracoSettings.style.display = useDraco.checked ? 'grid' : 'none';
   });
   
   // Quantization sliders
-  encodingSpeed.addEventListener('input', updateEncodingSpeedNote);
+  encodingSpeed.addEventListener('input', () => {
+    clearExportReport();
+    updateEncodingSpeedNote();
+  });
   updateEncodingSpeedNote();
   positionBits.addEventListener('input', () => {
+    clearExportReport();
     element('position-bits-value').textContent = positionBits.value;
     updateQuantizationSummary();
   });
   normalBits.addEventListener('input', () => {
+    clearExportReport();
     element('normal-bits-value').textContent = normalBits.value;
     updateQuantizationSummary();
   });
   texcoordBits.addEventListener('input', () => {
+    clearExportReport();
     element('texcoord-bits-value').textContent = texcoordBits.value;
     updateQuantizationSummary();
   });
   colorBits.addEventListener('input', () => {
+    clearExportReport();
     element('color-bits-value').textContent = colorBits.value;
     updateQuantizationSummary();
   });
   genericBits.addEventListener('input', () => {
+    clearExportReport();
     element('generic-bits-value').textContent = genericBits.value;
     updateQuantizationSummary();
   });
