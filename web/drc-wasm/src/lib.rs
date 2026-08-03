@@ -8,8 +8,216 @@
 //! The two halves are independent: build with `--features read` or
 //! `--features write` (both are on by default).
 
-use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
+
+use js_sys::Uint8Array;
+use js_sys::{Array, Float32Array, Float64Array, Object, Reflect, Uint32Array};
+#[cfg(feature = "write")]
+use wasm_bindgen::JsCast;
+
+// ===========================================================================
+// JavaScript bridge
+//
+// Values cross the wasm boundary as plain JavaScript objects built and read by
+// hand instead of serde structures: geometry goes over as typed arrays, which
+// cross in bulk and give JavaScript an array it owns outright. The cost of
+// dropping serde is that nothing here validates untrusted input for us, so
+// every field read from JavaScript is guarded individually. Field names are
+// whatever serde emitted before: `type` plus camelCase on the extra
+// attributes, `type` plus snake_case on the attribute list and stats.
+// ===========================================================================
+
+/// Set a property on a JavaScript object.
+fn set_js(obj: &Object, key: &str, value: &JsValue) {
+    let _ = Reflect::set(obj, &JsValue::from_str(key), value);
+}
+
+fn set_bool(obj: &Object, key: &str, value: bool) {
+    set_js(obj, key, &JsValue::from_bool(value));
+}
+
+/// Set an optional string, to `undefined` when absent, so the key stays present
+/// with the same shape the serde output used to have.
+fn set_opt_string(obj: &Object, key: &str, value: &Option<String>) {
+    match value {
+        Some(text) => set_js(obj, key, &JsValue::from_str(text)),
+        None => set_js(obj, key, &JsValue::UNDEFINED),
+    }
+}
+
+#[cfg(feature = "read")]
+fn set_string_array(obj: &Object, key: &str, values: &[String]) {
+    let array = Array::new();
+    for value in values {
+        array.push(&JsValue::from_str(value));
+    }
+    set_js(obj, key, &array.into());
+}
+
+#[cfg(feature = "read")]
+fn f32_array_to_js(values: &[f32]) -> JsValue {
+    Float32Array::from(values).into()
+}
+
+#[cfg(feature = "read")]
+fn u32_array_to_js(values: &[u32]) -> JsValue {
+    Uint32Array::from(values).into()
+}
+
+#[cfg(feature = "read")]
+fn u8_array_to_js(values: &[u8]) -> JsValue {
+    Uint8Array::from(values).into()
+}
+
+#[cfg(feature = "read")]
+fn f64_array_to_js(values: &[f64]) -> JsValue {
+    Float64Array::from(values).into()
+}
+
+#[cfg(feature = "write")]
+fn bytes_to_js(values: &[u8]) -> JsValue {
+    Uint8Array::from(values).into()
+}
+
+/// Read a field that must be present on an object. An absent key reads back as
+/// `undefined` from JavaScript, which is an error to be reported, not a value.
+#[cfg(feature = "write")]
+fn get_field(obj: &JsValue, key: &str) -> Option<JsValue> {
+    if !obj.is_object() {
+        return None;
+    }
+    match Reflect::get(obj, &JsValue::from_str(key)) {
+        Ok(value) if value.is_undefined() || value.is_null() => None,
+        Ok(value) => Some(value),
+        Err(_) => None,
+    }
+}
+
+#[cfg(feature = "write")]
+fn opt_bool_from_js(obj: &JsValue, key: &str) -> Option<bool> {
+    if !obj.is_object() {
+        return None;
+    }
+    match Reflect::get(obj, &JsValue::from_str(key)) {
+        Ok(value) => value.as_bool(),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "write")]
+fn opt_i32_from_js(obj: &JsValue, key: &str) -> Option<i32> {
+    if !obj.is_object() {
+        return None;
+    }
+    match Reflect::get(obj, &JsValue::from_str(key)) {
+        Ok(value) => value.as_f64().map(|number| number as i32),
+        _ => None,
+    }
+}
+
+/// A float array from JavaScript: a `Float32Array` copies across in bulk, a
+/// plain array is walked element by element. Every element must be a number.
+#[cfg(feature = "write")]
+fn f32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<f32>, String> {
+    if let Some(typed) = value.dyn_ref::<Float32Array>() {
+        return Ok(typed.to_vec());
+    }
+    let array = value
+        .dyn_ref::<Array>()
+        .ok_or_else(|| format!("{field} must be a Float32Array or a plain array"))?;
+    let mut out = Vec::with_capacity(array.length() as usize);
+    for index in 0..array.length() {
+        match array.get(index).as_f64() {
+            Some(value) => out.push(value as f32),
+            None => return Err(format!("{field} must contain only numbers")),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "write")]
+fn u32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u32>, String> {
+    if let Some(typed) = value.dyn_ref::<Uint32Array>() {
+        return Ok(typed.to_vec());
+    }
+    let array = value
+        .dyn_ref::<Array>()
+        .ok_or_else(|| format!("{field} must be a Uint32Array or a plain array"))?;
+    let mut out = Vec::with_capacity(array.length() as usize);
+    for index in 0..array.length() {
+        match array.get(index).as_f64() {
+            Some(value) => out.push(value as u32),
+            None => return Err(format!("{field} must contain only numbers")),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "write")]
+fn u8_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u8>, String> {
+    if let Some(typed) = value.dyn_ref::<Uint8Array>() {
+        return Ok(typed.to_vec());
+    }
+    let array = value
+        .dyn_ref::<Array>()
+        .ok_or_else(|| format!("{field} must be a Uint8Array or a plain array"))?;
+    let mut out = Vec::with_capacity(array.length() as usize);
+    for index in 0..array.length() {
+        match array.get(index).as_f64() {
+            Some(value) => out.push(value as u8),
+            None => return Err(format!("{field} must contain only numbers")),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "write")]
+fn f64_array_from_js(value: &JsValue, field: &str) -> Result<Vec<f64>, String> {
+    if let Some(typed) = value.dyn_ref::<Float64Array>() {
+        return Ok(typed.to_vec());
+    }
+    let array = value
+        .dyn_ref::<Array>()
+        .ok_or_else(|| format!("{field} must be a Float64Array or a plain array"))?;
+    let mut out = Vec::with_capacity(array.length() as usize);
+    for index in 0..array.length() {
+        match array.get(index).as_f64() {
+            Some(value) => out.push(value),
+            None => return Err(format!("{field} must contain only numbers")),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "write")]
+fn required_f32_array(value: &JsValue, field: &str) -> Result<Vec<f32>, String> {
+    let value =
+        get_field(value, field).ok_or_else(|| format!("mesh must be an object with {field}"))?;
+    f32_array_from_js(&value, field)
+}
+
+#[cfg(feature = "write")]
+fn required_u32_array(value: &JsValue, field: &str) -> Result<Vec<u32>, String> {
+    let value =
+        get_field(value, field).ok_or_else(|| format!("mesh must be an object with {field}"))?;
+    u32_array_from_js(&value, field)
+}
+
+#[cfg(feature = "write")]
+fn optional_f32_array(value: &JsValue, field: &str) -> Result<Option<Vec<f32>>, String> {
+    match get_field(value, field) {
+        Some(value) => Ok(Some(f32_array_from_js(&value, field)?)),
+        None => Ok(None),
+    }
+}
+
+#[cfg(feature = "write")]
+fn optional_u8_array(value: &JsValue, field: &str) -> Result<Option<Vec<u8>>, String> {
+    match get_field(value, field) {
+        Some(value) => Ok(Some(u8_array_from_js(&value, field)?)),
+        None => Ok(None),
+    }
+}
 
 /// Install the panic hook, so a panic reads as a message rather than a trap.
 #[wasm_bindgen(start)]
@@ -41,7 +249,6 @@ use draco_core::mesh::Mesh;
 
 /// Mesh data produced by the decoder, for JavaScript interop.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize)]
 pub struct MeshData {
     /// Vertex positions as a flat array `[x0, y0, z0, x1, ...]`.
     pub positions: Vec<f32>,
@@ -70,11 +277,9 @@ pub struct MeshData {
 /// survive the crossing into JavaScript and back with the declared type still
 /// deciding what is written.
 #[cfg(any(feature = "read", feature = "write"))]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct ExtraAttribute {
     /// `POSITION`, `NORMAL`, `COLOR`, `TEX_COORD` or `GENERIC`.
-    #[serde(rename = "type")]
     pub attribute_type: String,
     /// Scalar components per value.
     pub components: u8,
@@ -90,7 +295,6 @@ pub struct ExtraAttribute {
 
 /// What the decoder hands back: the mesh, or why there is none.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize)]
 pub struct ParseResult {
     /// Whether a mesh was decoded.
     pub success: bool,
@@ -113,10 +317,8 @@ pub struct ParseResult {
 /// generic at all, so this list is what makes the difference visible instead of
 /// the extra attributes simply not arriving.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize)]
 pub struct AttributeInfo {
     /// `POSITION`, `NORMAL`, `COLOR`, `TEX_COORD` or `GENERIC`.
-    #[serde(rename = "type")]
     pub attribute_type: String,
     /// Scalar components per value.
     pub components: u8,
@@ -135,8 +337,76 @@ pub struct AttributeInfo {
 #[cfg(feature = "read")]
 #[wasm_bindgen]
 pub fn parse_drc_bytes(data: &[u8]) -> JsValue {
-    let result = parse_drc_internal(data);
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    parse_result_to_js(&parse_drc_internal(data))
+}
+
+#[cfg(feature = "read")]
+fn extra_attribute_to_js(extra: &ExtraAttribute) -> JsValue {
+    let obj = Object::new();
+    set_js(&obj, "type", &JsValue::from_str(&extra.attribute_type));
+    set_js(&obj, "components", &JsValue::from(extra.components as u32));
+    set_js(&obj, "dataType", &JsValue::from_str(&extra.data_type));
+    set_js(&obj, "uniqueId", &JsValue::from(extra.unique_id));
+    set_bool(&obj, "normalized", extra.normalized);
+    set_js(&obj, "values", &f64_array_to_js(&extra.values));
+    obj.into()
+}
+
+#[cfg(feature = "read")]
+fn parse_result_to_js(result: &ParseResult) -> JsValue {
+    let obj = Object::new();
+    set_bool(&obj, "success", result.success);
+    let meshes = Array::new();
+    for mesh in &result.meshes {
+        let mesh_obj = Object::new();
+        set_js(&mesh_obj, "positions", &f32_array_to_js(&mesh.positions));
+        set_js(&mesh_obj, "indices", &u32_array_to_js(&mesh.indices));
+        set_js(&mesh_obj, "normals", &f32_array_to_js(&mesh.normals));
+        set_js(&mesh_obj, "uvs", &f32_array_to_js(&mesh.uvs));
+        set_js(&mesh_obj, "colors", &u8_array_to_js(&mesh.colors));
+        let extras = Array::new();
+        for extra in &mesh.extras {
+            extras.push(&extra_attribute_to_js(extra));
+        }
+        set_js(&mesh_obj, "extras", &extras.into());
+        meshes.push(&mesh_obj.into());
+    }
+    set_js(&obj, "meshes", &meshes.into());
+    set_opt_string(&obj, "error", &result.error);
+    set_string_array(&obj, "warnings", &result.warnings);
+    let attributes = Array::new();
+    for attribute in &result.attributes {
+        let attribute_obj = Object::new();
+        set_js(
+            &attribute_obj,
+            "type",
+            &JsValue::from_str(&attribute.attribute_type),
+        );
+        set_js(
+            &attribute_obj,
+            "components",
+            &JsValue::from(attribute.components as u32),
+        );
+        set_js(
+            &attribute_obj,
+            "data_type",
+            &JsValue::from_str(&attribute.data_type),
+        );
+        set_js(
+            &attribute_obj,
+            "unique_id",
+            &JsValue::from(attribute.unique_id),
+        );
+        set_js(
+            &attribute_obj,
+            "values",
+            &JsValue::from_f64(attribute.values as f64),
+        );
+        set_bool(&attribute_obj, "read", attribute.read);
+        attributes.push(&attribute_obj.into());
+    }
+    set_js(&obj, "attributes", &attributes.into());
+    obj.into()
 }
 
 #[cfg(feature = "read")]
@@ -468,7 +738,7 @@ fn read_colors(mesh: &Mesh) -> Vec<u8> {
 
 /// Input mesh data consumed by the encoder, from JavaScript.
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct MeshInput {
     /// Vertex positions as a flat array `[x0, y0, z0, x1, ...]`.
     pub positions: Vec<f32>,
@@ -486,7 +756,7 @@ pub struct MeshInput {
 
 /// Encoder options, named as the export panel's controls are.
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Default)]
 pub struct ExportOptions {
     /// 0 is the smallest file, 10 the fastest encode. Draco's own scale.
     pub encoding_speed: Option<i32>,
@@ -508,7 +778,6 @@ pub struct ExportOptions {
 
 /// Export result. `binary_data` is the payload; `.drc` has no text container.
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize)]
 pub struct ExportResult {
     /// Whether the payload was encoded.
     pub success: bool,
@@ -522,7 +791,6 @@ pub struct ExportResult {
 
 /// What the encoder did, in the shape the export panel already reads.
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize)]
 pub struct DracoStats {
     /// Always 1 here: a `.drc` holds one mesh.
     pub primitives: usize,
@@ -621,24 +889,126 @@ fn prediction_scheme_name(
 #[cfg(feature = "write")]
 #[wasm_bindgen]
 pub fn create_drc(mesh_js: JsValue, options_js: JsValue) -> JsValue {
-    let mesh: MeshInput = match serde_wasm_bindgen::from_value(mesh_js) {
+    let mesh = match mesh_input_from_js(&mesh_js) {
         Ok(mesh) => mesh,
         Err(error) => {
-            return to_js(&ExportResult {
+            return export_result_to_js(&ExportResult {
                 success: false,
                 binary_data: None,
-                error: Some(format!("Invalid mesh data: {error}")),
+                error: Some(error),
                 draco_stats: None,
             });
         }
     };
-    let options: ExportOptions = serde_wasm_bindgen::from_value(options_js).unwrap_or_default();
-    to_js(&create_drc_internal(&mesh, &options))
+    let options = export_options_from_js(&options_js);
+    export_result_to_js(&create_drc_internal(&mesh, &options))
 }
 
 #[cfg(feature = "write")]
-fn to_js(result: &ExportResult) -> JsValue {
-    serde_wasm_bindgen::to_value(result).unwrap_or(JsValue::NULL)
+fn export_result_to_js(result: &ExportResult) -> JsValue {
+    let obj = Object::new();
+    set_bool(&obj, "success", result.success);
+    match &result.binary_data {
+        Some(bytes) => set_js(&obj, "binary_data", &bytes_to_js(bytes)),
+        None => set_js(&obj, "binary_data", &JsValue::UNDEFINED),
+    }
+    set_opt_string(&obj, "error", &result.error);
+    match &result.draco_stats {
+        Some(stats) => {
+            let stats_obj = Object::new();
+            set_js(
+                &stats_obj,
+                "primitives",
+                &JsValue::from_f64(stats.primitives as f64),
+            );
+            set_js(&stats_obj, "speed", &JsValue::from(stats.speed));
+            set_js(
+                &stats_obj,
+                "compressed_size",
+                &JsValue::from_f64(stats.compressed_size as f64),
+            );
+            set_opt_string(&stats_obj, "method", &stats.method);
+            set_opt_string(&stats_obj, "prediction_scheme", &stats.prediction_scheme);
+            set_js(&obj, "draco_stats", &stats_obj.into());
+        }
+        None => set_js(&obj, "draco_stats", &JsValue::UNDEFINED),
+    }
+    obj.into()
+}
+
+#[cfg(feature = "write")]
+fn mesh_input_from_js(value: &JsValue) -> Result<MeshInput, String> {
+    Ok(MeshInput {
+        positions: required_f32_array(value, "positions")?,
+        indices: required_u32_array(value, "indices")?,
+        normals: optional_f32_array(value, "normals")?,
+        uvs: optional_f32_array(value, "uvs")?,
+        colors: optional_u8_array(value, "colors")?,
+        extras: optional_extras(value)?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn optional_extras(value: &JsValue) -> Result<Option<Vec<ExtraAttribute>>, String> {
+    match get_field(value, "extras") {
+        None => Ok(None),
+        Some(extras) => {
+            let array = extras
+                .dyn_ref::<Array>()
+                .ok_or_else(|| "extras must be an array".to_string())?;
+            let mut out = Vec::with_capacity(array.length() as usize);
+            for index in 0..array.length() {
+                out.push(extra_attribute_from_js(&array.get(index))?);
+            }
+            Ok(Some(out))
+        }
+    }
+}
+
+#[cfg(feature = "write")]
+fn extra_attribute_from_js(value: &JsValue) -> Result<ExtraAttribute, String> {
+    let attribute_type = get_field(value, "type")
+        .and_then(|value| value.as_string())
+        .ok_or_else(|| "an extra attribute must have a type".to_string())?;
+    let components = get_field(value, "components")
+        .and_then(|value| value.as_f64())
+        .ok_or_else(|| "an extra attribute must state its components".to_string())?
+        as u8;
+    let data_type = get_field(value, "dataType")
+        .and_then(|value| value.as_string())
+        .ok_or_else(|| "an extra attribute must have a dataType".to_string())?;
+    let unique_id = get_field(value, "uniqueId")
+        .and_then(|value| value.as_f64())
+        .ok_or_else(|| "an extra attribute must have a uniqueId".to_string())?
+        as u32;
+    let normalized = get_field(value, "normalized")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let values = get_field(value, "values")
+        .ok_or_else(|| "an extra attribute must have values".to_string())?;
+    let values = f64_array_from_js(&values, "values")?;
+    Ok(ExtraAttribute {
+        attribute_type,
+        components,
+        data_type,
+        unique_id,
+        normalized,
+        values,
+    })
+}
+
+#[cfg(feature = "write")]
+fn export_options_from_js(value: &JsValue) -> ExportOptions {
+    ExportOptions {
+        encoding_speed: opt_i32_from_js(value, "encoding_speed"),
+        decoding_speed: opt_i32_from_js(value, "decoding_speed"),
+        position_bits: opt_i32_from_js(value, "position_bits"),
+        normal_bits: opt_i32_from_js(value, "normal_bits"),
+        texcoord_bits: opt_i32_from_js(value, "texcoord_bits"),
+        include_normals: opt_bool_from_js(value, "include_normals"),
+        include_uvs: opt_bool_from_js(value, "include_uvs"),
+        include_colors: opt_bool_from_js(value, "include_colors"),
+    }
 }
 
 #[cfg(feature = "write")]
