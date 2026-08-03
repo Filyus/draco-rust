@@ -2342,6 +2342,7 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
     await predictionInfo.hover();
     const predictionTooltip = page.locator('.stats-prediction-tooltip');
     await expect(predictionTooltip).toBeVisible();
+    await expect(predictionTooltip).toContainText('Predictor:');
     await expect(predictionTooltip).toContainText('Wrap');
     const alignment = await predictionInfo.evaluate((icon) => {
       const tooltip = document.querySelector('.stats-prediction-tooltip')!;

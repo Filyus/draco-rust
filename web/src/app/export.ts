@@ -159,7 +159,7 @@ export function displayExportStats(format: string, result: ExportResult) {
   exportStats.style.display = 'block';
 }
 
-/** Render one compact row per attribute and keep the transform in a tooltip. */
+/** Render one compact row per attribute and keep the full choice in a tooltip. */
 function renderPredictionSchemes(value?: string) {
   const container = exportStatFields.prediction;
   container.replaceChildren();
@@ -180,7 +180,8 @@ function renderPredictionSchemes(value?: string) {
     const row = document.createElement('div');
     row.className = 'stats-prediction-row';
     const name = document.createElement('span');
-    name.textContent = `${match[1]}: ${match[2]}`;
+    name.className = 'stats-prediction-name';
+    name.textContent = `${match[1]}: ${compactPredictionScheme(match[2])}`;
     const info = document.createElement('span');
     info.className = 'stats-prediction-info';
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -194,7 +195,7 @@ function renderPredictionSchemes(value?: string) {
     stem.setAttribute('d', 'M8 7.2v4.2M8 4.7v.1');
     icon.append(circle, stem);
     info.append(icon);
-    const tooltip = `Transform: ${match[3]}`;
+    const tooltip = `Predictor: ${match[2]}\nTransform: ${match[3]}`;
     info.dataset.tooltip = tooltip;
     info.setAttribute('aria-label', tooltip);
     info.tabIndex = 0;
@@ -205,6 +206,13 @@ function renderPredictionSchemes(value?: string) {
     row.append(name, info);
     container.append(row);
   }
+}
+
+/** Keep common verbose Draco predictor names readable in the narrow sidebar. */
+function compactPredictionScheme(value: string) {
+  if (value === 'Constrained multi-parallelogram') return 'Constrained';
+  if (value === 'MeshPredictionParallelogram') return 'Parallelogram';
+  return value;
 }
 
 let activePredictionTooltip: HTMLDivElement | null = null;
