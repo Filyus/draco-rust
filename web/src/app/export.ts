@@ -145,7 +145,7 @@ export function displayExportStats(format: string, result: ExportResult) {
 
   if (stats) {
     const dracoSize = stats.compressed_size;
-    exportStatFields.method.textContent = stats.method || '—';
+    exportStatFields.method.textContent = displayMethodName(stats.method);
     exportStatFields.speed.textContent = `${stats.speed} (${stats.speed === 0 ? 'best compression' : stats.speed === 10 ? 'fastest' : 'balanced'})`;
     renderPredictionSchemes(stats.prediction_scheme);
     exportStatFields.dracoSize.textContent = formatFileSize(dracoSize);
@@ -157,6 +157,11 @@ export function displayExportStats(format: string, result: ExportResult) {
     exportStatFields.dracoDetails.style.display = 'none';
   }
   exportStats.style.display = 'block';
+}
+
+function displayMethodName(method?: string) {
+  if (!method) return '—';
+  return method.charAt(0).toUpperCase() + method.slice(1);
 }
 
 /** Render one compact row per attribute and keep the full choice in a tooltip. */

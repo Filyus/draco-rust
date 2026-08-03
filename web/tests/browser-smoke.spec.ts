@@ -2334,7 +2334,7 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
     await page.locator('#export-btn').click();
     await compressedDownload;
     await expect(page.locator('#export-stats')).toBeVisible();
-    await expect(page.locator('#stats-method')).toHaveText('edgebreaker');
+    await expect(page.locator('#stats-method')).toHaveText('Edgebreaker');
     await expect(page.locator('#stats-prediction')).toContainText('POSITION:');
     await expect(page.locator('#stats-prediction')).not.toContainText('MeshPrediction');
     const predictionInfo = page.locator('.stats-prediction-info').first();
@@ -2379,7 +2379,7 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
   await expect(page.locator('#export-stats')).toBeVisible();
   // Which method the encoder settled on is its decision, not the caller's, and
   // the panel used to have no way to name it.
-  await expect(page.locator('#stats-method')).toHaveText('edgebreaker');
+  await expect(page.locator('#stats-method')).toHaveText('Edgebreaker');
 
   // A .drc carries geometry and nothing else: no nodes, no materials, and no
   // statement about how the file that produced it was written.
