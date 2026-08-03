@@ -500,33 +500,32 @@ export function prepareMeshesForExport(
     name: set.name,
     mapping: set.mapping,
     reference: set.reference,
-    values: Array.from(set.values || []),
-    indices: Array.from(set.indices || []),
+    values: set.values || [],
+    indices: set.indices || [],
   }));
   return meshes.map((mesh, idx) => ({
     name: mesh.name || `mesh_${idx}`,
     // The `usemtl` name, which only the glTF route uses: it is the one target
     // that can hold what an OBJ's material library says.
     material: mesh.material,
-    positions: Array.from(mesh.positions || []),
-    indices: Array.from(mesh.indices || []),
-    normals: settings.includeNormals ? Array.from(mesh.normals || []) : null,
-    uvs: settings.includeUvs ? Array.from(mesh.uvs || []) : null,
+    // Reader arrays are already owned typed arrays, so pass them through.
+    positions: mesh.positions || [],
+    indices: mesh.indices || [],
+    normals: settings.includeNormals ? mesh.normals || [] : null,
+    uvs: settings.includeUvs ? mesh.uvs || [] : null,
     // No checkbox governs colours: PLY and Draco are the only targets that can
     // hold them, and a file carrying them has nowhere else for them to go.
-    colors: mesh.colors ? Array.from(mesh.colors) : null,
+    colors: mesh.colors || null,
     // Carried, not read. Only the writer that produced them can put them back,
     // and it does so by the description rather than by any meaning.
     extras: (mesh.extras || []).map((extra) => ({
       ...extra,
-      values: Array.from(extra.values),
+      values: extra.values,
     })),
     // No checkbox governs colours: PLY and Draco are the only targets that can
     // hold them, and a file carrying them has nowhere else for them to go.
-    controlPoints: mesh.controlPoints ? Array.from(mesh.controlPoints) : null,
-    polygonVertexIndices: mesh.polygonVertexIndices
-      ? Array.from(mesh.polygonVertexIndices)
-      : null,
+    controlPoints: mesh.controlPoints || null,
+    polygonVertexIndices: mesh.polygonVertexIndices || null,
     uvSets: layerSets(mesh.uvSets),
     normalSets: layerSets(mesh.normalSets),
     colorSets: layerSets(mesh.colorSets),
@@ -830,7 +829,9 @@ export function mergeMeshes(meshes: PreparedMesh[]) {
     const vertices = mesh.positions.length / 3;
     append(merged.positions, mesh.positions);
     if (mesh.indices) {
-      for (const idx of mesh.indices) merged.indices.push(idx + vertexOffset);
+      for (let index = 0; index < mesh.indices.length; index += 1) {
+        merged.indices.push(mesh.indices[index] + vertexOffset);
+      }
     }
     appendChannel(merged.normals, mesh.normals, 3, [0, 0, 0]);
     appendChannel(merged.uvs, mesh.uvs, 2, [0, 0]);

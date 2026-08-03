@@ -158,9 +158,23 @@ fn u8_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u8>, String> {
     if let Some(typed) = value.dyn_ref::<Uint8Array>() {
         return Ok(typed.to_vec());
     }
-    let array = value
-        .dyn_ref::<Array>()
-        .ok_or_else(|| format!("{field} must be a Uint8Array or a plain array"))?;
+    if let Some(typed) = value.dyn_ref::<Float32Array>() {
+        return Ok(typed
+            .to_vec()
+            .into_iter()
+            .map(|value| value as u8)
+            .collect());
+    }
+    if let Some(typed) = value.dyn_ref::<Float64Array>() {
+        return Ok(typed
+            .to_vec()
+            .into_iter()
+            .map(|value| value as u8)
+            .collect());
+    }
+    let array = value.dyn_ref::<Array>().ok_or_else(|| {
+        format!("{field} must be a Uint8Array, Float32Array, Float64Array or a plain array")
+    })?;
     let mut out = Vec::with_capacity(array.length() as usize);
     for index in 0..array.length() {
         match array.get(index).as_f64() {
