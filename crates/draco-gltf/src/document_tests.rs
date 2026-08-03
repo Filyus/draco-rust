@@ -1037,6 +1037,66 @@ mod compression_tests {
         assert_eq!(import.document.to_json_bytes().unwrap(), before);
     }
 
+    /// Forcing overrides what speed alone would have picked, in both
+    /// directions: EdgeBreaker at speed 10, where the encoder's own default
+    /// always chooses sequential, and sequential well below 10, where it
+    /// always chooses EdgeBreaker. `encoding_method` on the report is
+    /// `draco-core`'s own 0/1 (sequential/EdgeBreaker), not this option's
+    /// 0/1/2 (auto/sequential/EdgeBreaker) convention.
+    #[test]
+    fn encoding_method_overrides_the_speed_default() {
+        let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+
+        let mut forced_edgebreaker = parse(input, ValidationProfile::Gltf20).unwrap();
+        let report = forced_edgebreaker
+            .compress_primitive(
+                crate::MeshIndex(0),
+                0,
+                crate::CompressionOptions {
+                    encoding_speed: 10,
+                    encoding_method: 2,
+                    ..crate::CompressionOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            report.encoding_method, 1,
+            "speed 10 should not force sequential when EdgeBreaker is requested"
+        );
+
+        let mut forced_sequential = parse(input, ValidationProfile::Gltf20).unwrap();
+        let report = forced_sequential
+            .compress_primitive(
+                crate::MeshIndex(0),
+                0,
+                crate::CompressionOptions {
+                    encoding_speed: 4,
+                    encoding_method: 1,
+                    ..crate::CompressionOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            report.encoding_method, 0,
+            "speed 4 should not force EdgeBreaker when sequential is requested"
+        );
+
+        // 0 (and the default) still means "auto": unforced, speed 4 is EdgeBreaker.
+        let mut auto = parse(input, ValidationProfile::Gltf20).unwrap();
+        let report = auto
+            .compress_primitive(
+                crate::MeshIndex(0),
+                0,
+                crate::CompressionOptions {
+                    encoding_speed: 4,
+                    encoding_method: 0,
+                    ..crate::CompressionOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(report.encoding_method, 1);
+    }
+
     #[test]
     fn draco_only_deduplicates_overlapping_retained_ranges() {
         let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36},{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"images":[{"bufferView":1,"mimeType":"application/octet-stream"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]},{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;

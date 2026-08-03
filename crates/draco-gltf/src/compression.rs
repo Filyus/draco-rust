@@ -690,6 +690,17 @@ pub struct CompressionOptions {
     /// default so that existing callers keep the bytes they already produce;
     /// anything writing assets for delivery wants values here.
     pub quantization: QuantizationBits,
+    /// Forces the mesh connectivity coder, or picks automatically.
+    ///
+    /// `0` (the default) leaves the choice to `draco-core`'s own encoder,
+    /// which without a forced method falls back to the C++ `ExpertEncoder`
+    /// default: EdgeBreaker unless speed is 10. `1` forces sequential, `2`
+    /// forces EdgeBreaker. This is the caller-facing convention rather than
+    /// `EncoderOptions::set_encoding_method`'s own (`-1`/`0`/`1`) so that the
+    /// value an omitted argument coerces to at every FFI boundary above this
+    /// -- 0 -- already means "leave it alone" and cannot be mistaken for a
+    /// forced choice.
+    pub encoding_method: i32,
 }
 impl Default for CompressionOptions {
     fn default() -> Self {
@@ -699,6 +710,7 @@ impl Default for CompressionOptions {
             mode: CompressionMode::DracoOnly,
             max_output_bytes: None,
             quantization: QuantizationBits::default(),
+            encoding_method: 0,
         }
     }
 }
@@ -863,6 +875,14 @@ impl Import {
         let mut settings = EncoderOptions::new();
         settings.set_global_int("encoding_speed", options.encoding_speed as i32);
         settings.set_global_int("decoding_speed", options.decoding_speed as i32);
+        // Left untouched for "auto" (0): the encoder's own default, applied by
+        // never calling this, is what every caller got before this field
+        // existed and what `CompressionOptions::default()` still asks for.
+        match options.encoding_method {
+            1 => settings.set_encoding_method(0), // force sequential
+            2 => settings.set_encoding_method(1), // force EdgeBreaker
+            _ => {}
+        }
         // Quantization is keyed by attribute id here, while the caller names
         // attribute types, so the mapping has to happen against the mesh that is
         // about to be encoded rather than in the options.
