@@ -41,6 +41,7 @@ export const includeUvs = element<HTMLInputElement>('include-uvs');
 export const dracoOptions = element('draco-options');
 export const fbxOptions = element('fbx-options');
 export const useFbxCompression = element<HTMLInputElement>('use-fbx-compression');
+export const useFbxLegacy = element<HTMLInputElement>('use-fbx-legacy');
 export const dracoSettings = element('draco-settings');
 export const encodingSpeed = element<HTMLSelectElement>('encoding-speed');
 export const encodingMethod = element<HTMLSelectElement>('encoding-method');

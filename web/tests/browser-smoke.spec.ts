@@ -2067,7 +2067,7 @@ test('every source format converts to every target format', async ({ page }) => 
   const { validateBytes } = await import('gltf-validator');
   for (const source of sources) {
     await load(source.name, source.buffer, source.companions);
-    for (const target of ['glb', 'gltf', 'obj', 'ply', 'stl', 'drc', 'fbx', 'fbx-legacy']) {
+    for (const target of ['glb', 'gltf', 'obj', 'ply', 'stl', 'drc', 'fbx']) {
       const bytes = await exportAs(target);
       expect(bytes.length, `${source.name} -> ${target} produced nothing`).toBeGreaterThan(0);
       if (target !== 'glb' && target !== 'gltf') continue;
@@ -2368,6 +2368,7 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
   await page.locator('[data-choice-for="export-format"] [data-value="fbx"]').click();
   await expect(page.locator('#fbx-options')).toBeVisible();
   await expect(page.locator('#use-fbx-compression')).toBeChecked();
+  await expect(page.locator('#use-fbx-legacy')).not.toBeChecked();
   const compressedFbxDownload = page.waitForEvent('download');
   await page.locator('#export-btn').click();
   await compressedFbxDownload;
@@ -2378,6 +2379,9 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
   await expect(page.locator('#stats-fbx-stored')).toHaveText(/\d/);
   await expect(page.locator('#stats-fbx-raw')).toHaveText(/\d/);
   await expect(page.locator('#stats-fbx-savings')).toHaveText(/\d+\.\d%/);
+
+  await page.locator('#use-fbx-legacy').check();
+  await expect(page.locator('#export-stats')).toBeHidden();
 
   await page.locator('#position-bits').evaluate((input) => {
     const slider = input as HTMLInputElement;

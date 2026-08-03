@@ -131,7 +131,6 @@
                             <option value="stl">STL (Stereolithography)</option>
                             <option value="drc">DRC (Draco compressed)</option>
                             <option value="fbx">FBX (Autodesk)</option>
-                            <option value="fbx-legacy">Legacy FBX (Blender)</option>
                         </select>
                         <div class="choice-grid format-choices" data-choice-for="export-format" role="group" aria-label="Target Format">
                             <button type="button" data-value="glb" title="GLB (Binary glTF)">GLB</button>
@@ -141,7 +140,6 @@
                             <button type="button" data-value="stl" title="STL (Stereolithography)">STL</button>
                             <button type="button" data-value="drc" title="DRC (standalone Draco payload)">DRC</button>
                             <button type="button" data-value="fbx" title="FBX (Autodesk)">FBX</button>
-                            <button type="button" data-value="fbx-legacy" title="FBX for Blender's legacy importer">Legacy FBX</button>
                         </div>
 
                         <div class="checkbox-row">
@@ -252,6 +250,10 @@
                             <span>Compress FBX arrays (zlib)</span>
                         </label>
                         <p class="slider-note">Compresses large binary FBX arrays when this saves space. ASCII FBX is not affected.</p>
+                        <label class="checkbox-label" title="Use this for Blender 4.4 and older, or when explicitly using Blender's Legacy Python importer. Blender 4.5 introduced the modern ufbx-based importer, while keeping the legacy one.">
+                            <input type="checkbox" id="use-fbx-legacy">
+                            <span>Legacy Blender compatibility</span>
+                        </label>
                     </div>
 
                     <button id="export-btn" class="primary-btn">

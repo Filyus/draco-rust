@@ -35,6 +35,7 @@ import {
   encodingMethod,
   encodingSpeed,
   useFbxCompression,
+  useFbxLegacy,
   exportBtn,
   exportFormat,
   exportSection,
@@ -269,6 +270,7 @@ function setupEventListeners() {
   includeNormals.addEventListener('change', clearExportReport);
   includeUvs.addEventListener('change', clearExportReport);
   useFbxCompression.addEventListener('change', clearExportReport);
+  useFbxLegacy.addEventListener('change', clearExportReport);
   
   // Draco checkbox
   useDraco.addEventListener('change', () => {

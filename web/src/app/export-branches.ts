@@ -87,6 +87,8 @@ export interface ExportSettings {
   useDraco: boolean;
   /** Whether binary FBX arrays may use zlib compression. */
   fbxCompression?: boolean;
+  /** Whether to flatten animation curves for Blender's legacy Python importer. */
+  fbxLegacyCompatibility?: boolean;
   encodingSpeed: number;
   /** Quantization, shared by the glTF Draco pass and the `.drc` route. */
   positionBits?: number;
@@ -99,7 +101,8 @@ export interface ExportSettings {
 /** Route the loaded file to a writer and report what the route cost. */
 export async function runExport(settings: ExportSettings): Promise<ExportOutcome> {
   const { format } = settings;
-  const legacyFbx = format === 'fbx-legacy';
+  const legacyFbx = format === 'fbx-legacy'
+    || (format === 'fbx' && settings.fbxLegacyCompatibility === true);
   const isFbxTarget = format === 'fbx' || legacyFbx;
   // export.ts checks this before offering the controls; repeated here because
   // every route below reads the parse result and none of them can invent one.

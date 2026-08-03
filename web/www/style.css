@@ -283,7 +283,7 @@ input:focus-visible,
 
 /* Export controls */
 .option-group { display: flex; flex-direction: column; gap: 8px; }
-.option-group + .option-group { margin-top: -3px; }
+.option-group + .option-group { margin-top: -6px; }
 label { color: #aebed5; font-size: 0.73rem; }
 
 select,
@@ -572,6 +572,7 @@ input[type="range"].zoned-range::-moz-range-progress { background: transparent; 
 
 #fbx-options .slider-note {
     min-height: calc(2 * 1.45 * 0.66rem);
+    margin-bottom: 7px;
 }
 
 .primary-btn {
