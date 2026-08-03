@@ -337,7 +337,7 @@ select.native-choice { display: none; }
 .checkbox-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .checkbox-label { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
 .checkbox-row .checkbox-label,
-#draco-options > .checkbox-label {
+.option-group > .checkbox-label {
     min-height: 28px;
     padding: 3px 0;
     border-radius: 5px;
@@ -345,8 +345,8 @@ select.native-choice { display: none; }
     transition: color 140ms ease, background 140ms ease;
 }
 .checkbox-row .checkbox-label:hover,
-#draco-options > .checkbox-label:hover { color: #fff; background: transparent; }
-#draco-options > .checkbox-label { align-self: flex-start; }
+.option-group > .checkbox-label:hover { color: #fff; background: transparent; }
+.option-group > .checkbox-label { align-self: flex-start; }
 input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
 
 .draco-sliders {
