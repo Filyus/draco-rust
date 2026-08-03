@@ -5,6 +5,25 @@ use crate::geometry_indices::{AttributeValueIndex, PointIndex, INVALID_ATTRIBUTE
 use crate::status::DracoError;
 use std::convert::TryFrom;
 
+/// Widen one stored scalar to `f32`, whatever Draco declared its type to be.
+///
+/// `bytes` must be exactly the declared type's width; callers slice it from the
+/// attribute buffer. A type with no numeric reading -- `Bool` and the 64-bit
+/// integers, which do not survive an `f32` anyway -- reads as zero.
+fn scalar_as_f32(data_type: DataType, bytes: &[u8]) -> f32 {
+    match data_type {
+        DataType::Float32 => f32::from_le_bytes(bytes.try_into().unwrap()),
+        DataType::Float64 => f64::from_le_bytes(bytes.try_into().unwrap()) as f32,
+        DataType::Int8 => bytes[0] as i8 as f32,
+        DataType::Uint8 => bytes[0] as f32,
+        DataType::Int16 => i16::from_le_bytes(bytes.try_into().unwrap()) as f32,
+        DataType::Uint16 => u16::from_le_bytes(bytes.try_into().unwrap()) as f32,
+        DataType::Int32 => i32::from_le_bytes(bytes.try_into().unwrap()) as f32,
+        DataType::Uint32 => u32::from_le_bytes(bytes.try_into().unwrap()) as f32,
+        _ => 0.0,
+    }
+}
+
 /// Semantic role of a geometry attribute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeometryAttributeType {
@@ -253,6 +272,65 @@ impl PointAttribute {
         self.num_unique_entries
     }
 
+    /// Read `components` scalars per point as `f32`, in point order.
+    ///
+    /// The inverse of [`DataBuffer::update_f32s_le`](crate::data_buffer::DataBuffer::update_f32s_le):
+    /// whatever component type the attribute stores widens to `f32`, and the
+    /// value index mapping is followed, so an attribute with fewer unique
+    /// values than points still lands on the right one.
+    ///
+    /// The output is always `num_points * components` long, zero-filled where
+    /// the attribute has nothing to give. That matters because the result is a
+    /// channel addressed by vertex index: returning a short row for an
+    /// attribute with fewer components than asked for would shift every vertex
+    /// after it onto the wrong values, which is worse than a zero.
+    ///
+    /// The ordinary case -- float32, tightly packed, identity mapping, asking
+    /// for exactly what the attribute has -- is converted in one pass rather
+    /// than one bounds-checked read per point.
+    pub fn read_f32s(&self, num_points: usize, components: usize) -> Vec<f32> {
+        let mut values = vec![0.0f32; num_points * components];
+        if components == 0 {
+            return values;
+        }
+        let stride = self.byte_stride() as usize;
+        let width = self.data_type().byte_length();
+        let data = self.buffer.data();
+
+        if self.identity_mapping
+            && self.data_type() == DataType::Float32
+            && components == self.num_components() as usize
+            && stride == components * 4
+            && data.len() >= num_points * stride
+        {
+            let packed = &data[..num_points * stride];
+            for (out, bytes) in values.iter_mut().zip(packed.chunks_exact(4)) {
+                *out = f32::from_le_bytes(bytes.try_into().unwrap());
+            }
+            return values;
+        }
+
+        let available = (self.num_components() as usize).min(components);
+        for point in 0..num_points {
+            let value_index = self.mapped_index(PointIndex(point as u32)).0 as usize;
+            // Also catches INVALID_ATTRIBUTE_VALUE_INDEX, whose `usize` product
+            // with the stride would overflow on a 32-bit target.
+            if value_index >= self.num_unique_entries {
+                continue;
+            }
+            let base = value_index * stride;
+            for component in 0..available {
+                let offset = base + component * width;
+                if offset + width > data.len() {
+                    continue;
+                }
+                values[point * components + component] =
+                    scalar_as_f32(self.data_type(), &data[offset..offset + width]);
+            }
+        }
+        values
+    }
+
     /// Resizes the unique attribute value storage.
     pub fn resize_unique_entries(&mut self, num_attribute_values: usize) -> Result<(), DracoError> {
         let byte_stride = self.byte_stride() as usize;
@@ -397,6 +475,86 @@ impl PointAttribute {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn float_attribute(components: u8, values: &[f32]) -> PointAttribute {
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            components,
+            DataType::Float32,
+            false,
+            values.len() / components as usize,
+        );
+        attribute.buffer_mut().update_f32s_le(0, values);
+        attribute
+    }
+
+    /// The packed float path, which is what every WASM reader hits.
+    #[test]
+    fn read_f32s_reads_packed_floats() {
+        let attribute = float_attribute(3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(
+            attribute.read_f32s(2, 3),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
+    }
+
+    /// Asking for more components than the attribute has pads rather than
+    /// shortening the row. A short row would shift every later vertex onto the
+    /// wrong values, because the result is addressed by vertex index.
+    #[test]
+    fn read_f32s_pads_missing_components() {
+        let attribute = float_attribute(2, &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            attribute.read_f32s(2, 3),
+            vec![1.0, 2.0, 0.0, 3.0, 4.0, 0.0]
+        );
+    }
+
+    /// Asking for fewer takes the leading components and drops the rest.
+    #[test]
+    fn read_f32s_truncates_extra_components() {
+        let attribute = float_attribute(3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(attribute.read_f32s(2, 2), vec![1.0, 2.0, 4.0, 5.0]);
+    }
+
+    /// A widening type takes the slow path and still comes back as f32.
+    #[test]
+    fn read_f32s_widens_integer_components() {
+        let mut attribute = PointAttribute::new();
+        attribute.init(GeometryAttributeType::Color, 2, DataType::Uint8, true, 2);
+        attribute.buffer_mut().update(&[1, 2, 250, 255], None);
+        assert_eq!(attribute.read_f32s(2, 2), vec![1.0, 2.0, 250.0, 255.0]);
+    }
+
+    /// Points beyond what the attribute stores read as zero rather than
+    /// panicking or running off the buffer.
+    #[test]
+    fn read_f32s_zero_fills_points_past_the_end() {
+        let attribute = float_attribute(3, &[1.0, 2.0, 3.0]);
+        assert_eq!(
+            attribute.read_f32s(2, 3),
+            vec![1.0, 2.0, 3.0, 0.0, 0.0, 0.0]
+        );
+    }
+
+    /// A non-identity mapping is followed, so two points sharing one value both
+    /// read it. The fast path must not swallow this case.
+    #[test]
+    fn read_f32s_follows_the_value_mapping() {
+        let mut attribute = float_attribute(3, &[7.0, 8.0, 9.0]);
+        attribute.set_explicit_mapping(2);
+        attribute
+            .try_set_point_map_entry(PointIndex(0), AttributeValueIndex(0))
+            .unwrap();
+        attribute
+            .try_set_point_map_entry(PointIndex(1), AttributeValueIndex(0))
+            .unwrap();
+        assert_eq!(
+            attribute.read_f32s(2, 3),
+            vec![7.0, 8.0, 9.0, 7.0, 8.0, 9.0]
+        );
+    }
 
     #[test]
     fn try_set_point_map_entry_rejects_out_of_range_point() {

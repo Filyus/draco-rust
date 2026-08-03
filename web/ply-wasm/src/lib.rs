@@ -131,16 +131,12 @@ fn parse_result_to_js(result: &ParseResult) -> JsValue {
     obj.into()
 }
 
-/// Parse PLY file content from a string (ASCII PLY).
-#[cfg(feature = "read")]
-#[wasm_bindgen]
-pub fn parse_ply(content: &str) -> JsValue {
-    let result =
-        parse_ply_with_core(content.as_bytes()).unwrap_or_else(|_| parse_ply_internal(content));
-    parse_result_to_js(&result)
-}
-
 /// Parse PLY file content from bytes.
+///
+/// Bytes rather than a string: PLY is a binary container as often as a text
+/// one, and the string entry point that used to sit beside this could only
+/// reach the ASCII half. It had no callers left, so it is gone rather than
+/// kept as a second way in.
 #[cfg(feature = "read")]
 #[wasm_bindgen]
 pub fn parse_ply_bytes(data: &[u8]) -> JsValue {
@@ -259,42 +255,8 @@ fn read_attribute_as_f32(
     if att_id < 0 {
         return Vec::new();
     }
-    let att = mesh.attribute(att_id);
-    let stride = att.byte_stride() as usize;
-    let count = mesh.num_points();
-    let mut out = Vec::with_capacity(count * components);
-    for point in 0..count {
-        let base = point * stride;
-        for component in 0..components.min(att.num_components() as usize) {
-            let offset = base + component * att.data_type().byte_length();
-            let data = att.buffer().data();
-            let value = match att.data_type() {
-                DataType::Float32 => {
-                    f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
-                }
-                DataType::Float64 => {
-                    f64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as f32
-                }
-                DataType::Int32 => {
-                    i32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as f32
-                }
-                DataType::Uint32 => {
-                    u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as f32
-                }
-                DataType::Int16 => {
-                    i16::from_le_bytes(data[offset..offset + 2].try_into().unwrap()) as f32
-                }
-                DataType::Uint16 => {
-                    u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap()) as f32
-                }
-                DataType::Int8 => data[offset] as i8 as f32,
-                DataType::Uint8 => data[offset] as f32,
-                _ => 0.0,
-            };
-            out.push(value);
-        }
-    }
-    out
+    mesh.attribute(att_id)
+        .read_f32s(mesh.num_points(), components)
 }
 
 #[cfg(feature = "read")]

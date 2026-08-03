@@ -108,7 +108,7 @@ pub fn supported_extensions() -> Vec<String> {
 // Reader
 // ===========================================================================
 
-#[cfg(any(feature = "read", feature = "write"))]
+#[cfg(feature = "write")]
 use draco_core::draco_types::DataType;
 #[cfg(any(feature = "read", feature = "write"))]
 use draco_core::geometry_attribute::GeometryAttributeType;
@@ -1695,41 +1695,8 @@ fn read_attribute_as_f32(
     if attribute_id < 0 {
         return Vec::new();
     }
-    let attribute = mesh.attribute(attribute_id);
-    let stride = attribute.byte_stride() as usize;
-    let data = attribute.buffer().data();
-    let mut output = Vec::with_capacity(mesh.num_points() * components);
-    for point in 0..mesh.num_points() {
-        let base = point * stride;
-        for component in 0..components.min(attribute.num_components() as usize) {
-            let offset = base + component * attribute.data_type().byte_length();
-            let value = match attribute.data_type() {
-                DataType::Float32 => {
-                    f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
-                }
-                DataType::Float64 => {
-                    f64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as f32
-                }
-                DataType::Int32 => {
-                    i32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as f32
-                }
-                DataType::Uint32 => {
-                    u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as f32
-                }
-                DataType::Int16 => {
-                    i16::from_le_bytes(data[offset..offset + 2].try_into().unwrap()) as f32
-                }
-                DataType::Uint16 => {
-                    u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap()) as f32
-                }
-                DataType::Int8 => data[offset] as i8 as f32,
-                DataType::Uint8 => data[offset] as f32,
-                _ => 0.0,
-            };
-            output.push(value);
-        }
-    }
-    output
+    mesh.attribute(attribute_id)
+        .read_f32s(mesh.num_points(), components)
 }
 
 // ===========================================================================

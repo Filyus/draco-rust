@@ -176,19 +176,7 @@ fn read_attribute_as_f32(mesh: &Mesh, attribute_type: GeometryAttributeType) -> 
     if attribute.data_type() != DataType::Float32 || attribute.num_components() != 3 {
         return Vec::new();
     }
-    let stride = attribute.byte_stride() as usize;
-    let mut values = Vec::with_capacity(mesh.num_points() * 3);
-    for point in 0..mesh.num_points() {
-        let mut bytes = [0u8; 12];
-        attribute.buffer().read(point * stride, &mut bytes);
-        for component in 0..3 {
-            let start = component * 4;
-            values.push(f32::from_le_bytes(
-                bytes[start..start + 4].try_into().unwrap(),
-            ));
-        }
-    }
-    values
+    attribute.read_f32s(mesh.num_points(), 3)
 }
 
 // ===========================================================================

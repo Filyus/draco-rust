@@ -43,7 +43,7 @@
     "test:gltf-summary-parity": "node tests/gltf-summary-parity.ts",
     "test:export-branches": "node tests/export-branches.ts",
     "test:wasm-bridge": "node tests/wasm-bridge-contract.ts",
-    "bench:export": "node tests/export-benchmark.ts",
+    "bench:formats": "node tests/format-benchmark.ts",
     "test:fbx-export-interpretation": "node tests/fbx-export-interpretation.ts",
     "test:scene-document-samplers": "node tests/scene-document-gltf-samplers.ts",
     "test:gltf-accessor-dedup": "node tests/gltf-accessor-dedup.ts",

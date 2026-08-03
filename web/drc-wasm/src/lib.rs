@@ -385,27 +385,8 @@ fn read_attribute_as_f32(
     if attribute_id < 0 {
         return Vec::new();
     }
-    let attribute = mesh.attribute(attribute_id);
-    let available = (attribute.num_components() as usize).min(components);
-    let stride = attribute.byte_stride() as usize;
-    let width = attribute.data_type().byte_length();
-    let data = attribute.buffer().data();
-    let mut values = Vec::with_capacity(mesh.num_points() * components);
-    for point in 0..mesh.num_points() {
-        let value_index = attribute.mapped_index(PointIndex(point as u32)).0 as usize;
-        for component in 0..components {
-            let offset = value_index * stride + component * width;
-            if component >= available || offset + width > data.len() {
-                values.push(0.0);
-                continue;
-            }
-            values.push(scalar_as_f32(
-                attribute.data_type(),
-                &data[offset..offset + width],
-            ));
-        }
-    }
-    values
+    mesh.attribute(attribute_id)
+        .read_f32s(mesh.num_points(), components)
 }
 
 /// A component's name, and the same name read back.
@@ -493,21 +474,6 @@ fn write_scalar_le(data_type: DataType, value: f64, out: &mut Vec<u8>) {
         DataType::Int64 => out.extend_from_slice(&(value as i64).to_le_bytes()),
         DataType::Uint64 => out.extend_from_slice(&(value as u64).to_le_bytes()),
         DataType::Invalid => {}
-    }
-}
-
-#[cfg(feature = "read")]
-fn scalar_as_f32(data_type: DataType, bytes: &[u8]) -> f32 {
-    match data_type {
-        DataType::Float32 => f32::from_le_bytes(bytes.try_into().unwrap()),
-        DataType::Float64 => f64::from_le_bytes(bytes.try_into().unwrap()) as f32,
-        DataType::Int8 => bytes[0] as i8 as f32,
-        DataType::Uint8 => bytes[0] as f32,
-        DataType::Int16 => i16::from_le_bytes(bytes.try_into().unwrap()) as f32,
-        DataType::Uint16 => u16::from_le_bytes(bytes.try_into().unwrap()) as f32,
-        DataType::Int32 => i32::from_le_bytes(bytes.try_into().unwrap()) as f32,
-        DataType::Uint32 => u32::from_le_bytes(bytes.try_into().unwrap()) as f32,
-        _ => 0.0,
     }
 }
 
