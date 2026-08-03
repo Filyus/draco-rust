@@ -96,6 +96,13 @@ export interface ExportSettings {
   /** Whether to flatten animation curves for Blender's legacy Python importer. */
   fbxLegacyCompatibility?: boolean;
   encodingSpeed: number;
+  /**
+   * Forces the Draco mesh connectivity coder, or leaves it to the encoder's
+   * own default. `0` (or unset) is auto, `1` forces sequential, `2` forces
+   * EdgeBreaker -- matching what `compressPrimitive` and `create_drc` both
+   * read, since both routes hit the same encoder underneath.
+   */
+  encodingMethod?: number;
   /** Quantization, shared by the glTF Draco pass and the `.drc` route. */
   positionBits?: number;
   normalBits?: number;
@@ -160,7 +167,8 @@ export async function runExport(settings: ExportSettings): Promise<ExportOutcome
 /** What the Draco pass reads out of the export controls. */
 export type DracoPassSettings = Pick<
   ExportSettings,
-  'useDraco' | 'encodingSpeed' | 'positionBits' | 'normalBits' | 'texcoordBits' | 'colorBits' | 'genericBits'
+  | 'useDraco' | 'encodingSpeed' | 'encodingMethod'
+  | 'positionBits' | 'normalBits' | 'texcoordBits' | 'colorBits' | 'genericBits'
 >;
 
 /**
@@ -199,6 +207,7 @@ function compressOnePrimitive(
   primitive: number,
   encodingSpeed: number,
   quantization: ReturnType<typeof dracoQuantization>,
+  encodingMethod?: number,
 ): DracoPrimitiveReport {
   return asset.compressPrimitive(
     mesh,
@@ -210,6 +219,7 @@ function compressOnePrimitive(
     quantization.texcoord,
     quantization.color,
     quantization.generic,
+    encodingMethod ?? 0,
   );
 }
 
@@ -277,7 +287,7 @@ export function exportSceneDocumentToGlb(
  */
 function compressGlb(glb: Uint8Array, settings: DracoPassSettings, warnings: string[]) {
   const asset = modules.gltf.module.GltfAsset.withResources(glb, Object.create(null), '2.1');
-  const { encodingSpeed } = settings;
+  const { encodingSpeed, encodingMethod } = settings;
   const quantization = dracoQuantization(settings);
   try {
     if (typeof asset.compressPrimitive !== 'function') {
@@ -288,7 +298,7 @@ function compressGlb(glb: Uint8Array, settings: DracoPassSettings, warnings: str
     for (let mesh = 0; mesh < asset.meshCount(); mesh += 1) {
       const primitiveCount = asset.primitiveCount(mesh);
       for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
-        reports.push(compressOnePrimitive(asset, mesh, primitive, encodingSpeed, quantization));
+        reports.push(compressOnePrimitive(asset, mesh, primitive, encodingSpeed, quantization, encodingMethod));
       }
     }
     return {
@@ -323,7 +333,7 @@ function compressGlb(glb: Uint8Array, settings: DracoPassSettings, warnings: str
  * It reports no warnings for the same reason: it loses nothing.
  */
 export function exportGltfDocument(settings: ExportSettings): ExportOutcome {
-  const { format, useDraco, encodingSpeed } = settings;
+  const { format, useDraco, encodingSpeed, encodingMethod } = settings;
   if (!modules.gltf.loaded) throw new Error('glTF module not loaded');
 
   const asset = modules.gltf.module.GltfAsset.withResources(
@@ -343,7 +353,7 @@ export function exportGltfDocument(settings: ExportSettings): ExportOutcome {
         for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
           // The encoder reports the payload it wrote; summing it is the only
           // compression figure this path can honestly produce.
-          reports.push(compressOnePrimitive(asset, mesh, primitive, encodingSpeed, quantization));
+          reports.push(compressOnePrimitive(asset, mesh, primitive, encodingSpeed, quantization, encodingMethod));
         }
       }
     }
@@ -690,6 +700,7 @@ export async function exportToDrc(meshes: PreparedMesh[], settings: ExportSettin
   const merged = mergeMeshes(meshes);
   return modules.drc.module.create_drc(merged, {
     encoding_speed: settings.encodingSpeed,
+    encoding_method: settings.encodingMethod,
     position_bits: settings.positionBits,
     normal_bits: settings.normalBits,
     texcoord_bits: settings.texcoordBits,

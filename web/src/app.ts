@@ -196,7 +196,22 @@ const ENCODING_SPEED_NOTES: { upTo: number; zone: string; text: string }[] = [
   },
 ];
 
-/** Mirrors the encoding-speed slider into its readout and its explanation. */
+/**
+ * Matches the CSS gradient stops on `.zoned-range`/`.quant-range`, so the
+ * thumb reads as sitting inside the band it currently occupies instead of as
+ * a fixed accent dot unrelated to the track underneath it.
+ */
+const ZONE_COLORS: Record<string, string> = {
+  deep: '#43618c',
+  best: 'var(--success)',
+  fast: 'var(--warning)',
+  bulky: 'var(--error)',
+  low: 'var(--warning)',
+  good: 'var(--success)',
+  high: '#43618c',
+};
+
+/** Mirrors the encoding-speed slider into its readout, its explanation, and its thumb color. */
 function updateEncodingSpeedNote() {
   const speed = Number(encodingSpeed.value);
   element('speed-value').textContent = encodingSpeed.value;
@@ -205,6 +220,29 @@ function updateEncodingSpeedNote() {
   const noteElement = element('speed-note');
   noteElement.textContent = note.text;
   noteElement.dataset.zone = note.zone;
+  encodingSpeed.style.setProperty('--thumb-color', ZONE_COLORS[note.zone] ?? 'var(--accent)');
+}
+
+/**
+ * Colors a quantization slider's thumb to match the band its value sits in.
+ *
+ * `--good-from`/`--good-to` are already set per slider as percentages of its
+ * own 0..16 range to paint the track (see the quant-range rule in
+ * style.css), so the same two numbers decide the thumb color rather than a
+ * second copy of the thresholds that could drift from the track they describe.
+ */
+function updateQuantThumbColor(input: HTMLInputElement) {
+  const min = Number(input.min || '0');
+  const max = Number(input.max || '100');
+  const goodFrom = parseFloat(input.style.getPropertyValue('--good-from')) || 0;
+  const goodTo = parseFloat(input.style.getPropertyValue('--good-to')) || 100;
+  const percent = max === min ? 0 : ((Number(input.value) - min) / (max - min)) * 100;
+  const color = percent < goodFrom
+    ? ZONE_COLORS.low
+    : percent < goodTo
+      ? ZONE_COLORS.good
+      : ZONE_COLORS.high;
+  input.style.setProperty('--thumb-color', color);
 }
 
 /**
@@ -218,6 +256,17 @@ function updateQuantizationSummary() {
   const bits = [positionBits, normalBits, texcoordBits, colorBits, genericBits]
     .map((input) => (Number(input.value) === 0 ? 'off' : input.value));
   element('quantization-summary').textContent = `${bits.join('/')} bits`;
+}
+
+const ENCODING_METHOD_LABELS: Record<string, string> = {
+  0: 'Auto',
+  1: 'Sequential',
+  2: 'Edgebreaker',
+};
+
+/** Restates the collapsed method group's current pick, folded for the same reason as quantization. */
+function updateMethodSummary() {
+  element('method-summary').textContent = ENCODING_METHOD_LABELS[encodingMethod.value] ?? 'Auto';
 }
 
 // Setup event listeners
@@ -266,7 +315,11 @@ function setupEventListeners() {
     clearExportReport();
     updateExportOptions();
   });
-  encodingMethod.addEventListener('change', clearExportReport);
+  encodingMethod.addEventListener('change', () => {
+    clearExportReport();
+    updateMethodSummary();
+  });
+  updateMethodSummary();
   includeNormals.addEventListener('change', clearExportReport);
   includeUvs.addEventListener('change', clearExportReport);
   useFbxCompression.addEventListener('change', clearExportReport);
@@ -288,29 +341,37 @@ function setupEventListeners() {
     clearExportReport();
     element('position-bits-value').textContent = positionBits.value;
     updateQuantizationSummary();
+    updateQuantThumbColor(positionBits);
   });
   normalBits.addEventListener('input', () => {
     clearExportReport();
     element('normal-bits-value').textContent = normalBits.value;
     updateQuantizationSummary();
+    updateQuantThumbColor(normalBits);
   });
   texcoordBits.addEventListener('input', () => {
     clearExportReport();
     element('texcoord-bits-value').textContent = texcoordBits.value;
     updateQuantizationSummary();
+    updateQuantThumbColor(texcoordBits);
   });
   colorBits.addEventListener('input', () => {
     clearExportReport();
     element('color-bits-value').textContent = colorBits.value;
     updateQuantizationSummary();
+    updateQuantThumbColor(colorBits);
   });
   genericBits.addEventListener('input', () => {
     clearExportReport();
     element('generic-bits-value').textContent = genericBits.value;
     updateQuantizationSummary();
+    updateQuantThumbColor(genericBits);
   });
   updateQuantizationSummary();
-  
+  for (const input of [positionBits, normalBits, texcoordBits, colorBits, genericBits]) {
+    updateQuantThumbColor(input);
+  }
+
   // Export button
   exportBtn.addEventListener('click', exportFile);
 

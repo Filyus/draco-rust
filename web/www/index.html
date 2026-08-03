@@ -171,21 +171,32 @@
                                 <p class="slider-note" id="speed-note" data-zone="best"></p>
                             </div>
 
-                            <div class="slider-row">
-                                <div class="slider-header">
+                            <details class="slider-group" id="method-group">
+                                <summary>
+                                    <span class="scene-info-chevron" aria-hidden="true"></span>
                                     <span>Compression Method</span>
+                                    <span id="method-summary">Auto</span>
+                                </summary>
+
+                                <div class="slider-group-body">
+                                    <select id="encoding-method" class="native-choice" aria-hidden="true" tabindex="-1">
+                                        <option value="0" selected>Auto</option>
+                                        <option value="1">Sequential</option>
+                                        <option value="2">Edgebreaker</option>
+                                    </select>
+                                    <div class="choice-grid method-choices" data-choice-for="encoding-method" role="group" aria-label="Compression Method">
+                                        <button type="button" data-value="0">Auto</button>
+                                        <button type="button" data-value="1">Sequential</button>
+                                        <button type="button" data-value="2">Edgebreaker</button>
+                                    </div>
+                                    <p class="slider-note">
+                                        Rarely changes anything you would notice: EdgeBreaker — Auto's usual pick —
+                                        is smaller for nearly every mesh. Sequential trades size for simpler,
+                                        slightly faster decoding, and is what Auto already switches to once
+                                        Encoding Speed reaches 10.
+                                    </p>
                                 </div>
-                                <select id="encoding-method" class="native-choice" aria-hidden="true" tabindex="-1">
-                                    <option value="-1" selected>Auto</option>
-                                    <option value="0">Sequential</option>
-                                    <option value="1">Edgebreaker</option>
-                                </select>
-                                <div class="choice-grid method-choices" data-choice-for="encoding-method" role="group" aria-label="Compression Method">
-                                    <button type="button" data-value="-1">Auto</button>
-                                    <button type="button" data-value="0">Sequential</button>
-                                    <button type="button" data-value="1">Edgebreaker</button>
-                                </div>
-                            </div>
+                            </details>
 
                             <details class="slider-group" id="quantization-group">
                                 <summary>

@@ -1,6 +1,6 @@
 import { formatFileSize } from './format.ts';
 import { errorMessage, log } from './log.ts';
-import { colorBits, dracoOptions, encodingSpeed, exportFormat, exportStatFields, exportStats, fbxOptions, genericBits, includeNormals, includeUvs, normalBits, positionBits, texcoordBits, useDraco, useFbxCompression, useFbxLegacy } from './dom.ts';
+import { colorBits, dracoOptions, encodingMethod, encodingSpeed, exportFormat, exportStatFields, exportStats, fbxOptions, genericBits, includeNormals, includeUvs, normalBits, positionBits, texcoordBits, useDraco, useFbxCompression, useFbxLegacy } from './dom.ts';
 import { state } from './state.ts';
 import { runExport } from './export-branches.ts';
 import type { DracoStats, ExportOutcome, ExportResult, ExportSettings } from './export-branches.ts';
@@ -52,6 +52,7 @@ function exportSettings(): ExportSettings {
     fbxCompression: useFbxCompression.checked,
     fbxLegacyCompatibility: useFbxLegacy.checked,
     encodingSpeed: Number(encodingSpeed.value),
+    encodingMethod: Number(encodingMethod.value),
     positionBits: Number(positionBits.value),
     normalBits: Number(normalBits.value),
     texcoordBits: Number(texcoordBits.value),

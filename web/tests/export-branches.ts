@@ -237,8 +237,29 @@ if (typeof gltfModule.GltfAsset?.prototype?.compressPrimitive === 'function') {
   }
   assert.deepEqual(
     seen,
-    [[0, 0, 14, 10, 12, 10, 12]],
-    'both speeds must carry the slider, and every quantization control must reach the encoder',
+    [[0, 0, 14, 10, 12, 10, 12, 0]],
+    'both speeds must carry the slider, every quantization control must reach the encoder, '
+    + 'and an unset encoding method must arrive as 0 (auto)',
+  );
+
+  // A forced method has to reach the same call, not just default through it.
+  seen.length = 0;
+  gltfModule.GltfAsset.prototype.compressPrimitive = function (this: unknown, ...args: number[]) {
+    seen.push(args.slice(2));
+    return realCompress.apply(this, args);
+  };
+  try {
+    exportSceneDocumentToGlb(triangle, {
+      useDraco: true, encodingSpeed: 0, encodingMethod: 2,
+      positionBits: 14, normalBits: 10, texcoordBits: 12, colorBits: 10, genericBits: 12,
+    });
+  } finally {
+    gltfModule.GltfAsset.prototype.compressPrimitive = realCompress;
+  }
+  assert.deepEqual(
+    seen,
+    [[0, 0, 14, 10, 12, 10, 12, 2]],
+    'a forced encoding method must reach compressPrimitive as the trailing argument',
   );
 
   // Quantization is the dominant term in the size of a compressed glTF: without
