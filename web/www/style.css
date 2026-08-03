@@ -570,6 +570,10 @@ input[type="range"].zoned-range::-moz-range-progress { background: transparent; 
 .slider-note[data-zone="fast"] { border-left-color: var(--warning); }
 .slider-note[data-zone="bulky"] { border-left-color: var(--error); }
 
+#fbx-options .slider-note {
+    min-height: calc(2 * 1.45 * 0.66rem);
+}
+
 .primary-btn {
     width: 100%;
     min-height: 39px;
