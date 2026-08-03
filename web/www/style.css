@@ -595,19 +595,28 @@ input[type="range"].zoned-range::-moz-range-progress { background: transparent; 
     background: var(--surface-2) !important;
 }
 
+.stats-prediction-scroll {
+    max-width: 100%;
+    margin-top: 3px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+}
+
 #stats-prediction {
-    width: calc(100% - 20px);
-    margin: 3px 0 0;
+    width: max-content;
+    min-width: 100%;
+    margin: 0;
     border-collapse: collapse;
-    table-layout: fixed;
+    table-layout: auto;
 }
 
 .stats-prediction-table th,
 .stats-prediction-table td {
-    padding: 2px 0;
+    padding: 2px 12px 2px 0;
     text-align: left;
     vertical-align: middle;
     line-height: 1.25;
+    white-space: nowrap;
 }
 
 .stats-prediction-table thead th {
@@ -616,85 +625,9 @@ input[type="range"].zoned-range::-moz-range-progress { background: transparent; 
     font-weight: 650;
 }
 
-.stats-prediction-table th:first-child { width: 48%; }
-
 .stats-prediction-table tbody th {
-    padding-right: 7px;
     color: #c7d8ed;
     font-weight: 400;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.stats-prediction-table tbody td { min-width: 0; }
-
-.stats-prediction-value {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 3px;
-}
-
-.stats-prediction-scheme {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.stats-prediction-info {
-    box-sizing: border-box;
-    width: 16px;
-    height: 16px;
-    display: inline-flex;
-    flex: 0 0 16px;
-    align-items: center;
-    justify-content: center;
-    color: #93c5fd;
-    cursor: pointer;
-}
-
-.stats-prediction-info svg {
-    width: 16px;
-    height: 16px;
-    display: block;
-}
-
-.stats-prediction-info circle {
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.15;
-}
-
-.stats-prediction-info path {
-    fill: none;
-    stroke: currentColor;
-    stroke-linecap: round;
-    stroke-width: 1.35;
-}
-
-.stats-prediction-info:focus-visible {
-    outline: 2px solid #bfdbfe;
-    outline-offset: 2px;
-    border-radius: 50%;
-}
-
-.stats-prediction-tooltip {
-    position: fixed;
-    z-index: 10000;
-    width: max-content;
-    max-width: min(190px, calc(100vw - 32px));
-    padding: 6px 8px;
-    border: 1px solid #475569;
-    border-radius: 5px;
-    background: #0f172a;
-    color: #f8fafc;
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1.3;
-    white-space: pre-line;
-    pointer-events: none;
 }
 
 .stats-fbx-row {

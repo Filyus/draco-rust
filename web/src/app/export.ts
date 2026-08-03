@@ -40,7 +40,6 @@ export function updateExportOptions() {
  */
 export function clearExportStats() {
   exportStats.style.display = 'none';
-  hidePredictionTooltip();
 }
 
 /** The export controls as the routes want them: plain values, read once. */
@@ -193,7 +192,7 @@ function renderPredictionSchemes(value?: string) {
   if (!value) {
     const row = document.createElement('tr');
     const cell = document.createElement('td');
-    cell.colSpan = 2;
+    cell.colSpan = 3;
     cell.textContent = '—';
     row.append(cell);
     body.append(row);
@@ -205,7 +204,7 @@ function renderPredictionSchemes(value?: string) {
     if (!match) {
       const row = document.createElement('tr');
       const cell = document.createElement('td');
-      cell.colSpan = 2;
+      cell.colSpan = 3;
       cell.textContent = entry;
       row.append(cell);
       body.append(row);
@@ -216,76 +215,10 @@ function renderPredictionSchemes(value?: string) {
     attribute.scope = 'row';
     attribute.textContent = match[1];
     const predictor = document.createElement('td');
-    const predictorValue = document.createElement('span');
-    predictorValue.className = 'stats-prediction-value';
-    const scheme = document.createElement('span');
-    scheme.className = 'stats-prediction-scheme';
-    scheme.textContent = compactPredictionScheme(match[2]);
-    const info = document.createElement('span');
-    info.className = 'stats-prediction-info';
-    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    icon.setAttribute('viewBox', '0 0 16 16');
-    icon.setAttribute('aria-hidden', 'true');
-    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    circle.setAttribute('cx', '8');
-    circle.setAttribute('cy', '8');
-    circle.setAttribute('r', '7');
-    const stem = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    stem.setAttribute('d', 'M8 7.2v4.2M8 4.7v.1');
-    icon.append(circle, stem);
-    info.append(icon);
-    const tooltip = `Predictor: ${match[2]}\nTransform: ${match[3]}`;
-    info.dataset.tooltip = tooltip;
-    info.setAttribute('aria-label', tooltip);
-    info.tabIndex = 0;
-    info.addEventListener('mouseenter', () => showPredictionTooltip(info));
-    info.addEventListener('mouseleave', hidePredictionTooltip);
-    info.addEventListener('focus', () => showPredictionTooltip(info));
-    info.addEventListener('blur', hidePredictionTooltip);
-    predictorValue.append(scheme, info);
-    predictor.append(predictorValue);
-    row.append(attribute, predictor);
+    predictor.textContent = match[2];
+    const transform = document.createElement('td');
+    transform.textContent = match[3];
+    row.append(attribute, predictor, transform);
     body.append(row);
   }
-}
-
-/** Keep common verbose Draco predictor names readable in the narrow sidebar. */
-function compactPredictionScheme(value: string) {
-  if (value === 'Constrained multi-parallelogram') return 'Constrained';
-  if (value === 'MeshPredictionParallelogram') return 'Parallelogram';
-  return value;
-}
-
-let activePredictionTooltip: HTMLDivElement | null = null;
-
-/** Place the tooltip in the document body so the sidebar cannot clip it. */
-function showPredictionTooltip(anchor: HTMLElement) {
-  hidePredictionTooltip();
-  const tooltip = document.createElement('div');
-  tooltip.className = 'stats-prediction-tooltip';
-  tooltip.textContent = anchor.dataset.tooltip || '';
-  document.body.append(tooltip);
-  activePredictionTooltip = tooltip;
-
-  const rect = anchor.getBoundingClientRect();
-  const margin = 8;
-  const gap = 1;
-  const centered = rect.left + (rect.width - tooltip.offsetWidth) / 2;
-  const left = Math.min(
-    Math.max(margin, centered),
-    window.innerWidth - tooltip.offsetWidth - margin,
-  );
-  const above = rect.top - tooltip.offsetHeight - gap;
-  const below = rect.bottom + gap;
-  const top = Math.min(
-    Math.max(margin, above >= margin ? above : below),
-    window.innerHeight - tooltip.offsetHeight - margin,
-  );
-  tooltip.style.left = `${left}px`;
-  tooltip.style.top = `${top}px`;
-}
-
-function hidePredictionTooltip() {
-  activePredictionTooltip?.remove();
-  activePredictionTooltip = null;
 }

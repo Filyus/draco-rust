@@ -2335,32 +2335,10 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
     await compressedDownload;
     await expect(page.locator('#export-stats')).toBeVisible();
     await expect(page.locator('#stats-method')).toHaveText('Edgebreaker');
-    await expect(page.locator('#stats-prediction thead th')).toHaveText(['Attribute', 'Predictor']);
+    await expect(page.locator('#stats-prediction thead th')).toHaveText(['Attribute', 'Predictor', 'Transform']);
     await expect(page.locator('#stats-prediction tbody th').first()).toHaveText('POSITION');
-    await expect(page.locator('#stats-prediction')).not.toContainText('MeshPrediction');
-    const predictionInfo = page.locator('.stats-prediction-info').first();
-    await expect(predictionInfo).toHaveAttribute('data-tooltip', /Wrap/);
-    await predictionInfo.hover();
-    const predictionTooltip = page.locator('.stats-prediction-tooltip');
-    await expect(predictionTooltip).toBeVisible();
-    await expect(predictionTooltip).toContainText('Predictor:');
-    await expect(predictionTooltip).toContainText('Wrap');
-    const alignment = await predictionInfo.evaluate((icon) => {
-      const tooltip = document.querySelector('.stats-prediction-tooltip')!;
-      const iconBox = icon.getBoundingClientRect();
-      const tooltipBox = tooltip.getBoundingClientRect();
-      return {
-        horizontal: Math.abs(
-          (iconBox.left + iconBox.width / 2) - (tooltipBox.left + tooltipBox.width / 2),
-        ),
-        gap: Math.min(
-          Math.abs(tooltipBox.bottom - iconBox.top),
-          Math.abs(iconBox.bottom - tooltipBox.top),
-        ),
-      };
-    });
-    expect(alignment.horizontal).toBeLessThan(2);
-    expect(alignment.gap).toBeLessThan(6);
+    await expect(page.locator('#stats-prediction tbody tr').first().locator('th, td'))
+      .toHaveText(['POSITION', 'Parallelogram', 'Wrap']);
     await expect(page.locator('#stats-draco-size')).toHaveText(/\d/);
     await expect(page.locator('#stats-file-size')).toHaveText(/\d/);
     await expect(page.locator('#stats-draco-share')).toHaveText(/\d+\.\d%/);
