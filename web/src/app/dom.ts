@@ -121,7 +121,9 @@ export const compressionStatFields = {
   method: element('stats-method'),
   speed: element('stats-speed'),
   prediction: element('stats-prediction'),
-  size: element('stats-size'),
+  dracoSize: element('stats-draco-size'),
+  fileSize: element('stats-file-size'),
+  share: element('stats-draco-share'),
 };
 
 export const sceneCapabilitySummary = element('scene-capability-summary');

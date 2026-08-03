@@ -2319,6 +2319,45 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
   await expect(page.locator('#console')).toContainText('Preview ready');
   await expect(page.locator('#scene-node-stat')).toHaveText('2');
 
+  // The glTF WASM writer returns the encoder's resolved choices for both
+  // containers; the panel must show those choices rather than only the slider
+  // value. JSON glTF goes through the same compressed GLB and must retain it.
+  for (const format of ['glb', 'gltf']) {
+    await page.locator(`[data-choice-for="export-format"] [data-value="${format}"]`).click();
+    const compressedDownload = page.waitForEvent('download');
+    await page.locator('#export-btn').click();
+    await compressedDownload;
+    await expect(page.locator('#compression-stats')).toBeVisible();
+    await expect(page.locator('#stats-method')).toHaveText('edgebreaker');
+    await expect(page.locator('#stats-prediction')).toContainText('POSITION:');
+    await expect(page.locator('#stats-prediction')).not.toContainText('MeshPrediction');
+    const predictionInfo = page.locator('.stats-prediction-info').first();
+    await expect(predictionInfo).toHaveAttribute('data-tooltip', /Wrap/);
+    await predictionInfo.hover();
+    const predictionTooltip = page.locator('.stats-prediction-tooltip');
+    await expect(predictionTooltip).toBeVisible();
+    await expect(predictionTooltip).toContainText('Wrap');
+    const alignment = await predictionInfo.evaluate((icon) => {
+      const tooltip = document.querySelector('.stats-prediction-tooltip')!;
+      const iconBox = icon.getBoundingClientRect();
+      const tooltipBox = tooltip.getBoundingClientRect();
+      return {
+        horizontal: Math.abs(
+          (iconBox.left + iconBox.width / 2) - (tooltipBox.left + tooltipBox.width / 2),
+        ),
+        gap: Math.min(
+          Math.abs(tooltipBox.bottom - iconBox.top),
+          Math.abs(iconBox.bottom - tooltipBox.top),
+        ),
+      };
+    });
+    expect(alignment.horizontal).toBeLessThan(2);
+    expect(alignment.gap).toBeLessThan(6);
+    await expect(page.locator('#stats-draco-size')).toHaveText(/\d/);
+    await expect(page.locator('#stats-file-size')).toHaveText(/\d/);
+    await expect(page.locator('#stats-draco-share')).toHaveText(/\d+\.\d%/);
+  }
+
   await page.locator('[data-choice-for="export-format"] [data-value="drc"]').click();
   const downloadPromise = page.waitForEvent('download');
   await page.locator('#export-btn').click();

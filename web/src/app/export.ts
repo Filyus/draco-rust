@@ -80,7 +80,12 @@ export async function exportFile() {
     const result = outcome.result;
     if (result && result.success) {
       downloadResult(result, settings.format);
-      if (result.draco_stats) displayCompressionStats(result.draco_stats);
+      if (result.draco_stats) {
+        displayCompressionStats({
+          ...result.draco_stats,
+          output_size: exportResultSize(result),
+        });
+      }
       else compressionStats.style.display = 'none';
       log(result.message || 'Export complete!', 'success');
     } else {
@@ -89,6 +94,14 @@ export async function exportFile() {
   } catch (error) {
     log(`Export error: ${errorMessage(error)}`, 'error');
   }
+}
+
+/** The byte size of exactly what the download button hands to the browser. */
+function exportResultSize(result: ExportResult): number | undefined {
+  if (result.binary_data) return new Uint8Array(result.binary_data).byteLength;
+  if (result.json_data !== undefined) return new TextEncoder().encode(result.json_data).byteLength;
+  if (result.data !== undefined) return new TextEncoder().encode(result.data).byteLength;
+  return undefined;
 }
 
 export function logSceneDocumentCapabilities(capabilities: ExportOutcome['capabilities'] = {}) {
@@ -134,12 +147,100 @@ export function downloadResult(result: ExportResult, format: string) {
 export function displayCompressionStats(stats: DracoStats) {
   compressionStatFields.method.textContent = stats.method || '—';
   compressionStatFields.speed.textContent = `${stats.speed} (${stats.speed === 0 ? 'best compression' : stats.speed === 10 ? 'fastest' : 'balanced'})`;
-  compressionStatFields.prediction.textContent = stats.prediction_scheme || '—';
-  compressionStatFields.size.textContent = formatFileSize(stats.compressed_size);
+  renderPredictionSchemes(stats.prediction_scheme);
+  const outputSize = stats.output_size ?? stats.compressed_size;
+  compressionStatFields.dracoSize.textContent = formatFileSize(stats.compressed_size);
+  compressionStatFields.fileSize.textContent = formatFileSize(outputSize);
+  compressionStatFields.share.textContent = outputSize > 0
+    ? `${(stats.compressed_size / outputSize * 100).toFixed(1)}%`
+    : '—';
   compressionStats.style.display = 'block';
   log(
     `Compression: ${stats.primitives ?? 0} primitives at speed ${stats.speed}, `
-    + `${formatFileSize(stats.compressed_size)} of Draco payload`,
+    + `Draco payload ${formatFileSize(stats.compressed_size)}, `
+    + `exported file ${formatFileSize(outputSize)}`,
     'success',
   );
+}
+
+/** Render one compact row per attribute and keep the transform in a tooltip. */
+function renderPredictionSchemes(value?: string) {
+  const container = compressionStatFields.prediction;
+  container.replaceChildren();
+  if (!value) {
+    container.textContent = '—';
+    return;
+  }
+
+  for (const entry of value.split('; ')) {
+    const match = entry.match(/^(.+): (.+) \((.+)\)$/);
+    if (!match) {
+      const fallback = document.createElement('div');
+      fallback.className = 'stats-prediction-row';
+      fallback.textContent = entry;
+      container.append(fallback);
+      continue;
+    }
+    const row = document.createElement('div');
+    row.className = 'stats-prediction-row';
+    const name = document.createElement('span');
+    name.textContent = `${match[1]}: ${match[2]}`;
+    const info = document.createElement('span');
+    info.className = 'stats-prediction-info';
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 16 16');
+    icon.setAttribute('aria-hidden', 'true');
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('cx', '8');
+    circle.setAttribute('cy', '8');
+    circle.setAttribute('r', '7');
+    const stem = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    stem.setAttribute('d', 'M8 7.2v4.2M8 4.7v.1');
+    icon.append(circle, stem);
+    info.append(icon);
+    const tooltip = `Transform: ${match[3]}`;
+    info.dataset.tooltip = tooltip;
+    info.setAttribute('aria-label', tooltip);
+    info.tabIndex = 0;
+    info.addEventListener('mouseenter', () => showPredictionTooltip(info));
+    info.addEventListener('mouseleave', hidePredictionTooltip);
+    info.addEventListener('focus', () => showPredictionTooltip(info));
+    info.addEventListener('blur', hidePredictionTooltip);
+    row.append(name, info);
+    container.append(row);
+  }
+}
+
+let activePredictionTooltip: HTMLDivElement | null = null;
+
+/** Place the tooltip in the document body so the sidebar cannot clip it. */
+function showPredictionTooltip(anchor: HTMLElement) {
+  hidePredictionTooltip();
+  const tooltip = document.createElement('div');
+  tooltip.className = 'stats-prediction-tooltip';
+  tooltip.textContent = anchor.dataset.tooltip || '';
+  document.body.append(tooltip);
+  activePredictionTooltip = tooltip;
+
+  const rect = anchor.getBoundingClientRect();
+  const margin = 8;
+  const gap = 1;
+  const centered = rect.left + (rect.width - tooltip.offsetWidth) / 2;
+  const left = Math.min(
+    Math.max(margin, centered),
+    window.innerWidth - tooltip.offsetWidth - margin,
+  );
+  const above = rect.top - tooltip.offsetHeight - gap;
+  const below = rect.bottom + gap;
+  const top = Math.min(
+    Math.max(margin, above >= margin ? above : below),
+    window.innerHeight - tooltip.offsetHeight - margin,
+  );
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${top}px`;
+}
+
+function hidePredictionTooltip() {
+  activePredictionTooltip?.remove();
+  activePredictionTooltip = null;
 }
