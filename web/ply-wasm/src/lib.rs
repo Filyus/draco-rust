@@ -79,11 +79,10 @@ pub struct PlyHeader {
     pub properties: Vec<String>,
 }
 
-/// Helper to convert a ParseResult to JsValue via JSON.
+/// Helper to convert a ParseResult to JsValue.
 #[cfg(feature = "read")]
 fn to_js_value(result: &ParseResult) -> JsValue {
-    let json = serde_json::to_string(result).unwrap_or_else(|_| "{}".to_string());
-    js_sys::JSON::parse(&json).unwrap_or(JsValue::NULL)
+    serde_wasm_bindgen::to_value(result).unwrap_or(JsValue::NULL)
 }
 
 /// Parse PLY file content from a string (ASCII PLY).

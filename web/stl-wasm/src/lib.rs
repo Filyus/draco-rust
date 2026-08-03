@@ -73,8 +73,7 @@ pub struct ParseResult {
 #[wasm_bindgen]
 pub fn parse_stl_bytes(data: &[u8]) -> JsValue {
     let result = parse_stl_internal(data);
-    let json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
-    js_sys::JSON::parse(&json).unwrap_or(JsValue::NULL)
+    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
 }
 
 #[cfg(feature = "read")]
