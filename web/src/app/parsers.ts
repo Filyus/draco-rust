@@ -18,9 +18,11 @@ export async function parseObjFile(data: Uint8Array, resources = Object.create(n
     return { success: false, error: 'OBJ module not loaded' };
   }
 
-  const textContent = new TextDecoder().decode(data);
-  const result = modules.obj.module.parse_obj(textContent);
+  // The geometry crosses as bytes; the text is still decoded here because the
+  // MTL scraping below works on lines.
+  const result = modules.obj.module.parse_obj_bytes(data);
   if (result?.success) {
+    const textContent = new TextDecoder().decode(data);
     result.materials = parseObjMaterials(textContent, resources, result.warnings || (result.warnings = []));
   }
   return result;
