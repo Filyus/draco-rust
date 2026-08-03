@@ -39,7 +39,7 @@ export interface ExportResult {
   binary_data?: ArrayLike<number>;
   /** What the route did, for the console. */
   message?: string;
-  /** Set only by the Draco pass on the raw glTF route. */
+  /** Set by any route that writes a Draco-compressed payload. */
   draco_stats?: DracoStats | null;
 }
 
@@ -47,9 +47,19 @@ export interface ExportResult {
 export interface DracoStats {
   speed: number;
   compressed_size: number;
+  /** Size of the complete downloaded export, when known to the UI. */
+  output_size?: number;
   primitives: number;
   method?: string;
   prediction_scheme?: string;
+}
+
+/** What one glTF WASM compression call says the encoder actually selected. */
+interface DracoPrimitiveReport {
+  encoded_bytes: number;
+  method: string;
+  speed: number;
+  prediction_scheme?: string | null;
 }
 
 /** What one export route produced, and what it cost to produce it. */
@@ -163,12 +173,12 @@ function dracoQuantization(settings: DracoPassSettings) {
  * leaves that whole part of the control with no effect.
  */
 function compressOnePrimitive(
-  asset: { compressPrimitive: (...args: number[]) => number },
+  asset: { compressPrimitive: (...args: number[]) => DracoPrimitiveReport },
   mesh: number,
   primitive: number,
   encodingSpeed: number,
   quantization: ReturnType<typeof dracoQuantization>,
-): number {
+): DracoPrimitiveReport {
   return asset.compressPrimitive(
     mesh,
     primitive,
@@ -179,7 +189,25 @@ function compressOnePrimitive(
     quantization.texcoord,
     quantization.color,
     quantization.generic,
-  ) || 0;
+  );
+}
+
+function aggregateDracoStats(
+  reports: DracoPrimitiveReport[],
+  requestedSpeed: number,
+): DracoStats {
+  const unique = (values: Array<string | null | undefined>) => [...new Set(
+    values.filter((value): value is string => Boolean(value)),
+  )];
+  const methods = unique(reports.map((report) => report.method));
+  const predictions = unique(reports.map((report) => report.prediction_scheme));
+  return {
+    speed: reports[0]?.speed ?? requestedSpeed,
+    compressed_size: reports.reduce((total, report) => total + report.encoded_bytes, 0),
+    primitives: reports.length,
+    ...(methods.length > 0 ? { method: methods.join(', ') } : {}),
+    ...(predictions.length > 0 ? { prediction_scheme: predictions.join('; ') } : {}),
+  };
 }
 
 /**
@@ -233,18 +261,16 @@ function compressGlb(glb: Uint8Array, settings: DracoPassSettings, warnings: str
       warnings.push('Draco encoding is not included in this WASM build; the GLB was written uncompressed');
       return null;
     }
-    let compressedBytes = 0;
-    let compressedPrimitives = 0;
+    const reports: DracoPrimitiveReport[] = [];
     for (let mesh = 0; mesh < asset.meshCount(); mesh += 1) {
       const primitiveCount = asset.primitiveCount(mesh);
       for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
-        compressedBytes += compressOnePrimitive(asset, mesh, primitive, encodingSpeed, quantization);
-        compressedPrimitives += 1;
+        reports.push(compressOnePrimitive(asset, mesh, primitive, encodingSpeed, quantization));
       }
     }
     return {
       binary: asset.glb(2),
-      stats: { speed: encodingSpeed, compressed_size: compressedBytes, primitives: compressedPrimitives },
+      stats: aggregateDracoStats(reports, encodingSpeed),
     };
   } catch (error) {
     warnings.push(
@@ -283,8 +309,7 @@ export function exportGltfDocument(settings: ExportSettings): ExportOutcome {
     '2.1',
   );
   try {
-    let compressedBytes = 0;
-    let compressedPrimitives = 0;
+    const reports: DracoPrimitiveReport[] = [];
     if (useDraco) {
       if (typeof asset.compressPrimitive !== 'function') {
         throw new Error('Draco encoding is not included in this WASM build');
@@ -295,13 +320,12 @@ export function exportGltfDocument(settings: ExportSettings): ExportOutcome {
         for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
           // The encoder reports the payload it wrote; summing it is the only
           // compression figure this path can honestly produce.
-          compressedBytes += compressOnePrimitive(asset, mesh, primitive, encodingSpeed, quantization);
-          compressedPrimitives += 1;
+          reports.push(compressOnePrimitive(asset, mesh, primitive, encodingSpeed, quantization));
         }
       }
     }
     const dracoStats = useDraco
-      ? { speed: encodingSpeed, compressed_size: compressedBytes, primitives: compressedPrimitives }
+      ? aggregateDracoStats(reports, encodingSpeed)
       : null;
 
     if (format === 'glb') {

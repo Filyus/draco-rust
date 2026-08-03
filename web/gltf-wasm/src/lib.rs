@@ -181,6 +181,35 @@ fn summary_to_js(summary: AssetSummary) -> JsValue {
     object.into()
 }
 
+#[cfg(feature = "draco-encode")]
+fn compression_report_to_js(report: draco_gltf::CompressionReport) -> JsValue {
+    let method = match report.encoding_method {
+        0 => "sequential".to_string(),
+        1 => "edgebreaker".to_string(),
+        other => format!("method {other}"),
+    };
+    let object = Object::new();
+    let fields = [
+        (
+            "encoded_bytes",
+            JsValue::from_f64(report.encoded_bytes as f64),
+        ),
+        ("method", JsValue::from_str(&method)),
+        ("speed", JsValue::from_f64(report.encoding_speed as f64)),
+        (
+            "prediction_scheme",
+            report
+                .prediction_scheme
+                .map_or(JsValue::NULL, |value| JsValue::from_str(&value)),
+        ),
+    ];
+    for (key, value) in fields {
+        Reflect::set(&object, &JsValue::from_str(key), &value)
+            .expect("writing a fresh JavaScript compression report cannot fail");
+    }
+    object.into()
+}
+
 #[wasm_bindgen(start)]
 pub fn init() {
     #[cfg(feature = "console_error_panic_hook")]
@@ -523,7 +552,7 @@ impl GltfAsset {
         texcoord_bits: u8,
         color_bits: u8,
         generic_bits: u8,
-    ) -> Result<usize, JsValue> {
+    ) -> Result<JsValue, JsValue> {
         let bits = |value: u8| (value > 0).then_some(value);
         self.import
             .compress_primitive(
@@ -542,7 +571,7 @@ impl GltfAsset {
                     ..CompressionOptions::default()
                 },
             )
-            .map(|report| report.encoded_bytes)
+            .map(compression_report_to_js)
             .map_err(wasm_error)
     }
 }

@@ -533,9 +533,89 @@ pub struct DracoStats {
     pub compressed_size: usize,
     /// `edgebreaker` or `sequential`, as the encoder settled it.
     pub method: Option<String>,
-    /// Left unnamed: the encoder chooses one per attribute and records none of
-    /// them, so there is no single answer to report here.
+    /// The schemes selected per attribute, including their semantic names.
     pub prediction_scheme: Option<String>,
+}
+
+#[cfg(feature = "write")]
+fn prediction_summary(info: &draco_core::EncodedMeshInfo) -> Option<String> {
+    let schemes: Vec<String> = info
+        .attributes
+        .iter()
+        .filter_map(|attribute| {
+            let (method, transform) = attribute.prediction?;
+            let semantic = match attribute.attribute_type {
+                draco_core::geometry_attribute::GeometryAttributeType::Position => "POSITION",
+                draco_core::geometry_attribute::GeometryAttributeType::Normal => "NORMAL",
+                draco_core::geometry_attribute::GeometryAttributeType::Color => "COLOR",
+                draco_core::geometry_attribute::GeometryAttributeType::TexCoord => "TEX_COORD",
+                draco_core::geometry_attribute::GeometryAttributeType::Generic => "GENERIC",
+                draco_core::geometry_attribute::GeometryAttributeType::Invalid => "INVALID",
+            };
+            Some(format!(
+                "{semantic}: {}",
+                prediction_scheme_name(method, transform),
+            ))
+        })
+        .collect();
+    (!schemes.is_empty()).then(|| schemes.join("; "))
+}
+
+#[cfg(feature = "write")]
+fn prediction_scheme_name(
+    method: draco_core::prediction_scheme::PredictionSchemeMethod,
+    transform: draco_core::prediction_scheme::PredictionSchemeTransformType,
+) -> String {
+    let method = match method {
+        draco_core::prediction_scheme::PredictionSchemeMethod::None => "None",
+        draco_core::prediction_scheme::PredictionSchemeMethod::Undefined => "Undefined",
+        draco_core::prediction_scheme::PredictionSchemeMethod::Difference => "Difference",
+        draco_core::prediction_scheme::PredictionSchemeMethod::MeshPredictionParallelogram => {
+            "Parallelogram"
+        }
+        draco_core::prediction_scheme::PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
+            "Multi-parallelogram"
+        }
+        draco_core::prediction_scheme::PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
+            "TexCoords (legacy)"
+        }
+        draco_core::prediction_scheme::PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
+            "Constrained multi-parallelogram"
+        }
+        draco_core::prediction_scheme::PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
+            "TexCoords"
+        }
+        draco_core::prediction_scheme::PredictionSchemeMethod::MeshPredictionGeometricNormal => {
+            "Geometric normal"
+        }
+    };
+    let transform = match transform {
+        draco_core::prediction_scheme::PredictionSchemeTransformType::None => "None",
+        draco_core::prediction_scheme::PredictionSchemeTransformType::Delta => "Delta",
+        draco_core::prediction_scheme::PredictionSchemeTransformType::Wrap => "Wrap",
+        draco_core::prediction_scheme::PredictionSchemeTransformType::NormalOctahedron => {
+            "Normal octahedron"
+        }
+        draco_core::prediction_scheme::PredictionSchemeTransformType::NormalOctahedronCanonicalized => {
+            "Canonicalized normal octahedron"
+        }
+        draco_core::prediction_scheme::PredictionSchemeTransformType::Parallelogram => {
+            "Parallelogram"
+        }
+        draco_core::prediction_scheme::PredictionSchemeTransformType::TexCoordsPortable => {
+            "TexCoords"
+        }
+        draco_core::prediction_scheme::PredictionSchemeTransformType::GeometricNormal => {
+            "Geometric normal"
+        }
+        draco_core::prediction_scheme::PredictionSchemeTransformType::MultiParallelogram => {
+            "Multi-parallelogram"
+        }
+        draco_core::prediction_scheme::PredictionSchemeTransformType::ConstrainedMultiParallelogram => {
+            "Constrained multi-parallelogram"
+        }
+    };
+    format!("{method} ({transform})")
 }
 
 /// Encode mesh data into a standalone Draco payload.
@@ -597,21 +677,21 @@ fn create_drc_internal(input: &MeshInput, options: &ExportOptions) -> ExportResu
             // Which method it settled on is a decision, not an echo of the
             // request: with no explicit choice the encoder takes sequential at
             // speed 10 and edgebreaker below it.
-            let method = encoder
-                .encoded_mesh_info()
-                .map(|info| match info.encoding_method {
-                    1 => "edgebreaker".to_string(),
-                    0 => "sequential".to_string(),
-                    other => format!("method {other}"),
-                });
+            let info = encoder.encoded_mesh_info();
+            let method = info.map(|info| match info.encoding_method {
+                1 => "edgebreaker".to_string(),
+                0 => "sequential".to_string(),
+                other => format!("method {other}"),
+            });
+            let actual_speed = info.map_or(speed, |info| info.speed);
             ExportResult {
                 success: true,
                 draco_stats: Some(DracoStats {
                     primitives: 1,
-                    speed,
+                    speed: actual_speed,
                     compressed_size: bytes.len(),
                     method,
-                    prediction_scheme: None,
+                    prediction_scheme: info.and_then(prediction_summary),
                 }),
                 binary_data: Some(bytes),
                 error: None,

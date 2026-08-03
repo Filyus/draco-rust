@@ -769,6 +769,88 @@ pub struct CompressionReport {
     /// Bytes removed from the resolved binary store; zero for a fallback that
     /// retains all ordinary geometry.
     pub reclaimed_bytes: usize,
+    /// Numeric Draco mesh encoding method selected for the payload.
+    pub encoding_method: i32,
+    /// Resolved Draco speed used by the encoder.
+    pub encoding_speed: i32,
+    /// The prediction schemes selected for the encoded attributes, formatted
+    /// with their glTF semantic. Absent when no attribute reached the integer
+    /// prediction path.
+    pub prediction_scheme: Option<String>,
+}
+
+fn prediction_scheme_name(
+    method: draco_core::prediction_scheme::PredictionSchemeMethod,
+    transform: draco_core::prediction_scheme::PredictionSchemeTransformType,
+) -> String {
+    let method = match method {
+        draco_core::prediction_scheme::PredictionSchemeMethod::None => "None",
+        draco_core::prediction_scheme::PredictionSchemeMethod::Undefined => "Undefined",
+        draco_core::prediction_scheme::PredictionSchemeMethod::Difference => "Difference",
+        draco_core::prediction_scheme::PredictionSchemeMethod::MeshPredictionParallelogram => {
+            "Parallelogram"
+        }
+        draco_core::prediction_scheme::PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
+            "Multi-parallelogram"
+        }
+        draco_core::prediction_scheme::PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
+            "TexCoords (legacy)"
+        }
+        draco_core::prediction_scheme::PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
+            "Constrained multi-parallelogram"
+        }
+        draco_core::prediction_scheme::PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
+            "TexCoords"
+        }
+        draco_core::prediction_scheme::PredictionSchemeMethod::MeshPredictionGeometricNormal => {
+            "Geometric normal"
+        }
+    };
+    let transform = match transform {
+        draco_core::prediction_scheme::PredictionSchemeTransformType::None => "None",
+        draco_core::prediction_scheme::PredictionSchemeTransformType::Delta => "Delta",
+        draco_core::prediction_scheme::PredictionSchemeTransformType::Wrap => "Wrap",
+        draco_core::prediction_scheme::PredictionSchemeTransformType::NormalOctahedron => {
+            "Normal octahedron"
+        }
+        draco_core::prediction_scheme::PredictionSchemeTransformType::NormalOctahedronCanonicalized => {
+            "Canonicalized normal octahedron"
+        }
+        draco_core::prediction_scheme::PredictionSchemeTransformType::Parallelogram => {
+            "Parallelogram"
+        }
+        draco_core::prediction_scheme::PredictionSchemeTransformType::TexCoordsPortable => {
+            "TexCoords"
+        }
+        draco_core::prediction_scheme::PredictionSchemeTransformType::GeometricNormal => {
+            "Geometric normal"
+        }
+        draco_core::prediction_scheme::PredictionSchemeTransformType::MultiParallelogram => {
+            "Multi-parallelogram"
+        }
+        draco_core::prediction_scheme::PredictionSchemeTransformType::ConstrainedMultiParallelogram => {
+            "Constrained multi-parallelogram"
+        }
+    };
+    format!("{method} ({transform})")
+}
+
+fn prediction_summary(info: &EncodedMeshInfo, mapping: &[(String, u32)]) -> Option<String> {
+    let schemes: Vec<String> = mapping
+        .iter()
+        .filter_map(|(semantic, unique_id)| {
+            let attribute = info
+                .attributes
+                .iter()
+                .find(|attribute| attribute.unique_id == *unique_id)?;
+            let (method, transform) = attribute.prediction?;
+            Some(format!(
+                "{semantic}: {}",
+                prediction_scheme_name(method, transform)
+            ))
+        })
+        .collect();
+    (!schemes.is_empty()).then(|| schemes.join("; "))
 }
 
 impl Import {
@@ -852,6 +934,9 @@ impl Import {
         }
         let (geometry, mapping) = self.decode_geometry_primitive(reference)?;
         let (bytes, encoded_info) = self.encode_draco_geometry(geometry, options)?;
+        let encoding_method = encoded_info.encoding_method;
+        let encoding_speed = encoded_info.speed;
+        let prediction_scheme = prediction_summary(&encoded_info, &mapping);
         let layout = DracoGeometryLayout::from_encoded_info(&encoded_info, &mapping)?;
         let buffer = self.resources.buffers.len();
         let view;
@@ -923,6 +1008,9 @@ impl Import {
             source_bytes,
             output_bytes,
             reclaimed_bytes: source_bytes.saturating_sub(output_bytes),
+            encoding_method,
+            encoding_speed,
+            prediction_scheme,
         })
     }
 }
