@@ -135,6 +135,25 @@ fn f32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<f32>, String> {
     Ok(out)
 }
 
+/// One element of a plain array, checked against the range its slot admits.
+///
+/// The cast on its own is not enough. A float-to-integer `as` in Rust
+/// saturates, so `-1` would land on vertex zero and `1e9` on the last vertex,
+/// both as a silently wrong file rather than as a refusal.
+#[cfg(feature = "write")]
+fn whole_number(value: &JsValue, field: &str, min: f64, max: f64) -> Result<f64, String> {
+    let number = value
+        .as_f64()
+        .ok_or_else(|| format!("{field} must contain only numbers"))?;
+    if !number.is_finite() || number.fract() != 0.0 {
+        return Err(format!("{field} must contain whole numbers"));
+    }
+    if number < min || number > max {
+        return Err(format!("{field} must stay within {min}..={max}"));
+    }
+    Ok(number)
+}
+
 #[cfg(feature = "write")]
 fn u32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u32>, String> {
     if let Some(typed) = value.dyn_ref::<Uint32Array>() {
@@ -145,42 +164,35 @@ fn u32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u32>, String> {
         .ok_or_else(|| format!("{field} must be a Uint32Array or a plain array"))?;
     let mut out = Vec::with_capacity(array.length() as usize);
     for index in 0..array.length() {
-        match array.get(index).as_f64() {
-            Some(value) => out.push(value as u32),
-            None => return Err(format!("{field} must contain only numbers")),
-        }
+        out.push(whole_number(&array.get(index), field, 0.0, f64::from(u32::MAX))? as u32);
     }
     Ok(out)
 }
 
+/// A byte array from JavaScript.
+///
+/// Colours arrive already in the 0..255 byte domain: the shell scales every
+/// float and normalized accessor before it calls in. A float typed array
+/// therefore means the caller still holds 0..1 values, and casting those would
+/// write an almost black mesh instead of failing — so the type is refused
+/// rather than converted, because nothing here can tell 0..1 from 0..255 once
+/// the values are in.
 #[cfg(feature = "write")]
 fn u8_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u8>, String> {
     if let Some(typed) = value.dyn_ref::<Uint8Array>() {
         return Ok(typed.to_vec());
     }
-    if let Some(typed) = value.dyn_ref::<Float32Array>() {
-        return Ok(typed
-            .to_vec()
-            .into_iter()
-            .map(|value| value as u8)
-            .collect());
+    if value.dyn_ref::<Float32Array>().is_some() || value.dyn_ref::<Float64Array>().is_some() {
+        return Err(format!(
+            "{field} must hold 0..255 bytes; a float array is 0..1 data that the caller has to scale first"
+        ));
     }
-    if let Some(typed) = value.dyn_ref::<Float64Array>() {
-        return Ok(typed
-            .to_vec()
-            .into_iter()
-            .map(|value| value as u8)
-            .collect());
-    }
-    let array = value.dyn_ref::<Array>().ok_or_else(|| {
-        format!("{field} must be a Uint8Array, Float32Array, Float64Array or a plain array")
-    })?;
+    let array = value
+        .dyn_ref::<Array>()
+        .ok_or_else(|| format!("{field} must be a Uint8Array or a plain array"))?;
     let mut out = Vec::with_capacity(array.length() as usize);
     for index in 0..array.length() {
-        match array.get(index).as_f64() {
-            Some(value) => out.push(value as u8),
-            None => return Err(format!("{field} must contain only numbers")),
-        }
+        out.push(whole_number(&array.get(index), field, 0.0, 255.0)? as u8);
     }
     Ok(out)
 }
@@ -1263,18 +1275,9 @@ fn float_attribute(
         false,
         vertex_count,
     );
-    let width = components * 4;
-    let mut attribute = PointAttribute::new();
-    attribute.init(
-        attribute_type,
-        components as u8,
-        DataType::Float32,
-        false,
-        vertex_count,
-    );
     attribute
         .buffer_mut()
-        .write_f32s_le(0, &values[..vertex_count * components]);
+        .update_f32s_le(0, &values[..vertex_count * components]);
     attribute
 }
 

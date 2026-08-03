@@ -195,6 +195,25 @@ fn f32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<f32>, String> {
     Ok(out)
 }
 
+/// One element of a plain array, checked against the range its slot admits.
+///
+/// The cast on its own is not enough. A float-to-integer `as` in Rust
+/// saturates, so `-1` would land on vertex zero and `1e9` on the last vertex,
+/// both as a silently wrong file rather than as a refusal.
+#[cfg(feature = "write")]
+fn whole_number(value: &JsValue, field: &str, min: f64, max: f64) -> Result<f64, String> {
+    let number = value
+        .as_f64()
+        .ok_or_else(|| format!("{field} must contain only numbers"))?;
+    if !number.is_finite() || number.fract() != 0.0 {
+        return Err(format!("{field} must contain whole numbers"));
+    }
+    if number < min || number > max {
+        return Err(format!("{field} must stay within {min}..={max}"));
+    }
+    Ok(number)
+}
+
 #[cfg(feature = "write")]
 fn u32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u32>, String> {
     if let Some(typed) = value.dyn_ref::<Uint32Array>() {
@@ -205,14 +224,15 @@ fn u32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u32>, String> {
         .ok_or_else(|| format!("{field} must be a Uint32Array or a plain array"))?;
     let mut out = Vec::with_capacity(array.length() as usize);
     for index in 0..array.length() {
-        match array.get(index).as_f64() {
-            Some(value) => out.push(value as u32),
-            None => return Err(format!("{field} must contain only numbers")),
-        }
+        out.push(whole_number(&array.get(index), field, 0.0, f64::from(u32::MAX))? as u32);
     }
     Ok(out)
 }
 
+/// Signed, because FBX means something by the sign: a negative entry in
+/// `polygonVertexIndices` closes a polygon and `-1` in `materialIndices` means
+/// no material. So this range admits negatives where `u32_array_from_js` does
+/// not, and clamps at the `i32` ends rather than at zero.
 #[cfg(feature = "write")]
 fn i32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<i32>, String> {
     if let Some(typed) = value.dyn_ref::<Int32Array>() {
@@ -223,10 +243,12 @@ fn i32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<i32>, String> {
         .ok_or_else(|| format!("{field} must be an Int32Array or a plain array"))?;
     let mut out = Vec::with_capacity(array.length() as usize);
     for index in 0..array.length() {
-        match array.get(index).as_f64() {
-            Some(value) => out.push(value as i32),
-            None => return Err(format!("{field} must contain only numbers")),
-        }
+        out.push(whole_number(
+            &array.get(index),
+            field,
+            f64::from(i32::MIN),
+            f64::from(i32::MAX),
+        )? as i32);
     }
     Ok(out)
 }
@@ -249,6 +271,9 @@ fn f64_array_from_js(value: &JsValue, field: &str) -> Result<Vec<f64>, String> {
     Ok(out)
 }
 
+/// Raw bytes — embedded texture content, which is a file rather than a channel.
+/// A float typed array is not a byte array and falls through to the error below
+/// rather than being cast into one.
 #[cfg(feature = "write")]
 fn u8_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u8>, String> {
     if let Some(typed) = value.dyn_ref::<Uint8Array>() {
@@ -259,10 +284,7 @@ fn u8_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u8>, String> {
         .ok_or_else(|| format!("{field} must be a Uint8Array or a plain array"))?;
     let mut out = Vec::with_capacity(array.length() as usize);
     for index in 0..array.length() {
-        match array.get(index).as_f64() {
-            Some(value) => out.push(value as u8),
-            None => return Err(format!("{field} must contain only numbers")),
-        }
+        out.push(whole_number(&array.get(index), field, 0.0, 255.0)? as u8);
     }
     Ok(out)
 }
@@ -3206,7 +3228,7 @@ fn mesh_input_to_core_mesh(input: &MeshInput) -> Result<Mesh, String> {
         false,
         point_count,
     );
-    position.buffer_mut().write_f32s_le(0, &input.positions);
+    position.buffer_mut().update_f32s_le(0, &input.positions);
     mesh.add_attribute(position);
     if let Some(normals) = &input.normals {
         if normals.len() >= point_count * 3 {
@@ -3220,7 +3242,7 @@ fn mesh_input_to_core_mesh(input: &MeshInput) -> Result<Mesh, String> {
             );
             normal
                 .buffer_mut()
-                .write_f32s_le(0, &normals[..point_count * 3]);
+                .update_f32s_le(0, &normals[..point_count * 3]);
             mesh.add_attribute(normal);
         }
     }
@@ -3236,7 +3258,7 @@ fn mesh_input_to_core_mesh(input: &MeshInput) -> Result<Mesh, String> {
             );
             tex_coord
                 .buffer_mut()
-                .write_f32s_le(0, &uvs[..point_count * 2]);
+                .update_f32s_le(0, &uvs[..point_count * 2]);
             mesh.add_attribute(tex_coord);
         }
     }

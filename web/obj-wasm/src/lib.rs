@@ -125,6 +125,25 @@ fn f32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<f32>, String> {
     Ok(out)
 }
 
+/// One element of a plain array, checked against the range its slot admits.
+///
+/// The cast on its own is not enough. A float-to-integer `as` in Rust
+/// saturates, so `-1` would land on vertex zero and `1e9` on the last vertex,
+/// both as a silently wrong file rather than as a refusal.
+#[cfg(feature = "write")]
+fn whole_number(value: &JsValue, field: &str, min: f64, max: f64) -> Result<f64, String> {
+    let number = value
+        .as_f64()
+        .ok_or_else(|| format!("{field} must contain only numbers"))?;
+    if !number.is_finite() || number.fract() != 0.0 {
+        return Err(format!("{field} must contain whole numbers"));
+    }
+    if number < min || number > max {
+        return Err(format!("{field} must stay within {min}..={max}"));
+    }
+    Ok(number)
+}
+
 #[cfg(feature = "write")]
 fn u32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u32>, String> {
     if let Some(typed) = value.dyn_ref::<Uint32Array>() {
@@ -135,10 +154,7 @@ fn u32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u32>, String> {
         .ok_or_else(|| format!("{field} must be a Uint32Array or a plain array"))?;
     let mut out = Vec::with_capacity(array.length() as usize);
     for index in 0..array.length() {
-        match array.get(index).as_f64() {
-            Some(value) => out.push(value as u32),
-            None => return Err(format!("{field} must contain only numbers")),
-        }
+        out.push(whole_number(&array.get(index), field, 0.0, f64::from(u32::MAX))? as u32);
     }
     Ok(out)
 }
@@ -215,19 +231,18 @@ pub struct ParseResult {
     pub warnings: Vec<String>,
 }
 
-/// Parse OBJ file content from a string.
-#[cfg(feature = "read")]
-#[wasm_bindgen]
-pub fn parse_obj(content: &str) -> JsValue {
-    parse_result_to_js(&parse_obj_internal(content))
-}
-
 /// Parse OBJ file content from bytes.
+///
+/// Bytes rather than a string: a file arrives as bytes, and handing them over
+/// as one avoids decoding the whole of it into UTF-16 on the JavaScript side
+/// only to encode it back on the way in. The string entry point this replaced
+/// is gone rather than kept beside it, so there is one way in and no second
+/// signature to keep in step.
 #[cfg(feature = "read")]
 #[wasm_bindgen]
 pub fn parse_obj_bytes(data: &[u8]) -> JsValue {
     match std::str::from_utf8(data) {
-        Ok(content) => parse_obj(content),
+        Ok(content) => parse_result_to_js(&parse_obj_internal(content)),
         Err(e) => {
             let result = ParseResult {
                 success: false,

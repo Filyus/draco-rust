@@ -84,15 +84,18 @@ impl DataBuffer {
         true
     }
 
-    /// Write a slice of `f32` values at `byte_pos` as little-endian bytes,
-    /// resizing the buffer if the range runs past its current length.
+    /// Write a slice of `f32` at `byte_pos` as little-endian bytes, growing the
+    /// buffer when the range runs past its end.
     ///
-    /// The slice is written in one pass with no intermediate allocation,
-    /// which is what the wasm writer bridges use for position, normal and
-    /// texcoord attributes.
-    pub fn write_f32s_le(&mut self, byte_pos: usize, values: &[f32]) {
-        let len = values.len() * 4;
-        let end = byte_pos + len;
+    /// Named for [`update`](Self::update) rather than for
+    /// [`write`](Self::write) because it grows the way `update` does: `write`
+    /// panics past the end and `try_write` refuses, so a `write_` name here
+    /// would promise bounds this does not enforce. The whole slice goes in one
+    /// pass, with no per-value buffer in between.
+    pub fn update_f32s_le(&mut self, byte_pos: usize, values: &[f32]) {
+        let end = byte_pos
+            .checked_add(values.len() * 4)
+            .expect("f32 slice range overflows the address space");
         if end > self.data.len() {
             self.data.resize(end, 0);
         }
@@ -100,6 +103,7 @@ impl DataBuffer {
         for (index, value) in values.iter().enumerate() {
             dst[index * 4..(index + 1) * 4].copy_from_slice(&value.to_le_bytes());
         }
+        self.descriptor.buffer_update_count += 1;
     }
 
     pub fn copy(
@@ -171,11 +175,14 @@ mod tests {
         assert_eq!(buffer.data_size(), 0);
     }
 
+    /// Little-endian by construction rather than by host: the expected bytes
+    /// are spelled out, so a big-endian host would fail here rather than write
+    /// a file no reader accepts.
     #[test]
-    fn write_f32s_le_writes_little_endian() {
+    fn update_f32s_le_writes_little_endian() {
         let mut buffer = DataBuffer::new();
         buffer.resize(12);
-        buffer.write_f32s_le(0, &[1.0, -2.5, 0.0]);
+        buffer.update_f32s_le(0, &[1.0, -2.5, 0.0]);
         assert_eq!(
             buffer.data(),
             &[0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x20, 0xc0, 0x00, 0x00, 0x00, 0x00]
@@ -183,10 +190,41 @@ mod tests {
     }
 
     #[test]
-    fn write_f32s_le_resizes_past_the_end() {
+    fn update_f32s_le_grows_past_the_end() {
         let mut buffer = DataBuffer::new();
-        buffer.write_f32s_le(4, &[1.0]);
+        buffer.update_f32s_le(4, &[1.0]);
         assert_eq!(buffer.data_size(), 8);
         assert_eq!(&buffer.data()[..4], &[0, 0, 0, 0]);
+    }
+
+    /// Writing at an offset leaves what is already there alone, which is what
+    /// lets an attribute be filled in more than one call.
+    #[test]
+    fn update_f32s_le_leaves_the_surrounding_bytes() {
+        let mut buffer = DataBuffer::new();
+        buffer.resize(12);
+        buffer.update(&[0xff; 12], None);
+        buffer.update_f32s_le(4, &[0.0]);
+        assert_eq!(&buffer.data()[..4], &[0xff; 4]);
+        assert_eq!(&buffer.data()[4..8], &[0, 0, 0, 0]);
+        assert_eq!(&buffer.data()[8..], &[0xff; 4]);
+    }
+
+    /// Counted as an update, the same as `update`, because it is one: a buffer
+    /// whose count did not move reads as untouched to anything watching it.
+    #[test]
+    fn update_f32s_le_counts_as_an_update() {
+        let mut buffer = DataBuffer::new();
+        let before = buffer.update_count();
+        buffer.update_f32s_le(0, &[1.0]);
+        assert_eq!(buffer.update_count(), before + 1);
+    }
+
+    /// An empty slice is a no-op rather than a resize to `byte_pos`.
+    #[test]
+    fn update_f32s_le_accepts_an_empty_slice() {
+        let mut buffer = DataBuffer::new();
+        buffer.update_f32s_le(0, &[]);
+        assert_eq!(buffer.data_size(), 0);
     }
 }

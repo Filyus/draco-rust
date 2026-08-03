@@ -515,6 +515,12 @@ export function prepareMeshesForExport(
     uvs: settings.includeUvs ? mesh.uvs || [] : null,
     // No checkbox governs colours: PLY and Draco are the only targets that can
     // hold them, and a file carrying them has nowhere else for them to go.
+    //
+    // Passed through in whatever the reader produced, which is always the
+    // 0..255 byte domain — `colorBytes` and `rgbaBytes` scale float and
+    // normalized accessors before a mesh ever reaches here. The writers refuse
+    // a float array outright rather than cast one, so a source that skipped
+    // that scaling fails loudly instead of exporting an almost black mesh.
     colors: mesh.colors || null,
     // Carried, not read. Only the writer that produced them can put them back,
     // and it does so by the description rather than by any meaning.
@@ -522,8 +528,7 @@ export function prepareMeshesForExport(
       ...extra,
       values: extra.values,
     })),
-    // No checkbox governs colours: PLY and Draco are the only targets that can
-    // hold them, and a file carrying them has nowhere else for them to go.
+    // Carried for the FBX writer, which rebuilds its polygon list from them.
     controlPoints: mesh.controlPoints || null,
     polygonVertexIndices: mesh.polygonVertexIndices || null,
     uvSets: layerSets(mesh.uvSets),
@@ -835,6 +840,9 @@ export function mergeMeshes(meshes: PreparedMesh[]) {
     }
     appendChannel(merged.normals, mesh.normals, 3, [0, 0, 0]);
     appendChannel(merged.uvs, mesh.uvs, 2, [0, 0]);
+    // Opaque white as bytes, which is the domain every reader hands colours
+    // over in. A 0..1 source would make this filler 255 times too bright, so
+    // the scaling belongs upstream of the merge rather than here.
     appendChannel(merged.colors, mesh.colors, 4, [255, 255, 255, 255]);
     for (const extra of mesh.extras || []) {
       const key = describeExtra(extra);
