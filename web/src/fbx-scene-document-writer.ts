@@ -257,7 +257,9 @@ function buildNodeMeshes(
         : buildSkin(document, primitive, skinIndex, nodeIndex, worlds, space, warnings);
     }
     if (sourceUnits && sourceMesh?.controlPoints?.length) {
-      meshInput.controlPoints = sourceMesh.controlPoints.flat();
+      // `controlPoints` crosses the wasm bridge as a Float32Array, which has no
+      // `.flat()`; take an owned copy into a plain array first.
+      meshInput.controlPoints = Array.from(sourceMesh.controlPoints).flat();
       meshInput.polygonVertexIndices = sourceMesh.polygonVertexIndices?.slice() || [];
     }
     return meshInput;

@@ -5,8 +5,376 @@
 //! `--features read` or `--features write` (both are on by default) to control
 //! which half of the API is exported.
 
-use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
+
+#[cfg(feature = "read")]
+use js_sys::Uint16Array;
+use js_sys::{
+    Array, Float32Array, Float64Array, Int32Array, Object, Reflect, Uint32Array, Uint8Array,
+};
+#[cfg(feature = "write")]
+use wasm_bindgen::JsCast;
+
+// ===========================================================================
+// JavaScript bridge
+//
+// Values cross the wasm boundary as plain JavaScript objects built and read by
+// hand instead of serde structures: geometry goes over as typed arrays, which
+// cross in bulk and give JavaScript an array it owns outright. The cost of
+// dropping serde is that nothing here validates untrusted input for us, so
+// every field read from JavaScript is guarded individually. Small fixed-size
+// values (matrices, vec3s, per-triangle material assignments) stay plain
+// arrays because the shell distinguishes them with `Array.isArray`.
+// ===========================================================================
+
+/// Set a property on a JavaScript object.
+fn set_js(obj: &Object, key: &str, value: &JsValue) {
+    let _ = Reflect::set(obj, &JsValue::from_str(key), value);
+}
+
+fn set_bool(obj: &Object, key: &str, value: bool) {
+    set_js(obj, key, &JsValue::from_bool(value));
+}
+
+fn set_u32(obj: &Object, key: &str, value: u32) {
+    set_js(obj, key, &JsValue::from_f64(value as f64));
+}
+
+#[cfg(feature = "read")]
+fn set_i32(obj: &Object, key: &str, value: i32) {
+    set_js(obj, key, &JsValue::from_f64(value as f64));
+}
+
+#[cfg(feature = "read")]
+fn set_f64(obj: &Object, key: &str, value: f64) {
+    set_js(obj, key, &JsValue::from_f64(value));
+}
+
+#[cfg(feature = "read")]
+fn set_string_array(obj: &Object, key: &str, values: &[String]) {
+    let array = Array::new();
+    for value in values {
+        array.push(&JsValue::from_str(value));
+    }
+    set_js(obj, key, &array.into());
+}
+
+#[cfg(feature = "read")]
+fn f32_array_to_js(values: &[f32]) -> JsValue {
+    Float32Array::from(values).into()
+}
+
+#[cfg(feature = "read")]
+fn u32_array_to_js(values: &[u32]) -> JsValue {
+    Uint32Array::from(values).into()
+}
+
+#[cfg(feature = "read")]
+fn i32_array_to_js(values: &[i32]) -> JsValue {
+    Int32Array::from(values).into()
+}
+
+#[cfg(feature = "read")]
+fn u16_array_to_js(values: &[u16]) -> JsValue {
+    Uint16Array::from(values).into()
+}
+
+#[cfg(feature = "read")]
+fn f64_array_to_js(values: &[f64]) -> JsValue {
+    Float64Array::from(values).into()
+}
+
+fn u8_array_to_js(values: &[u8]) -> JsValue {
+    Uint8Array::from(values).into()
+}
+
+/// A small fixed-size value (matrix row, vec3 colour, ...) that the shell
+/// checks with `Array.isArray`, so it crosses as a plain array, not a typed
+/// one. The reader's own matrix fields keep this exact serde shape.
+#[cfg(feature = "read")]
+fn plain_f32_array_to_js(values: &[f32]) -> JsValue {
+    let array = Array::new();
+    for value in values {
+        array.push(&JsValue::from_f64(*value as f64));
+    }
+    array.into()
+}
+
+/// Read a field that must be present on an object. An absent key reads back as
+/// `undefined` from JavaScript, which is an error to be reported, not a value.
+#[cfg(feature = "write")]
+fn get_field(obj: &JsValue, key: &str) -> Option<JsValue> {
+    if !obj.is_object() {
+        return None;
+    }
+    match Reflect::get(obj, &JsValue::from_str(key)) {
+        Ok(value) if value.is_undefined() || value.is_null() => None,
+        Ok(value) => Some(value),
+        Err(_) => None,
+    }
+}
+
+/// Read a string field, tolerating an absent one.
+#[cfg(feature = "write")]
+fn opt_string_from_js(obj: &JsValue, key: &str) -> Option<String> {
+    if !obj.is_object() {
+        return None;
+    }
+    match Reflect::get(obj, &JsValue::from_str(key)) {
+        Ok(value) if value.is_string() => value.as_string(),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "write")]
+fn opt_bool_from_js(obj: &JsValue, key: &str) -> Option<bool> {
+    if !obj.is_object() {
+        return None;
+    }
+    match Reflect::get(obj, &JsValue::from_str(key)) {
+        Ok(value) => value.as_bool(),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "write")]
+fn opt_u32_from_js(obj: &JsValue, key: &str) -> Option<u32> {
+    if !obj.is_object() {
+        return None;
+    }
+    match Reflect::get(obj, &JsValue::from_str(key)) {
+        Ok(value) => value.as_f64().map(|number| number as u32),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "write")]
+fn opt_i32_from_js(obj: &JsValue, key: &str) -> Option<i32> {
+    if !obj.is_object() {
+        return None;
+    }
+    match Reflect::get(obj, &JsValue::from_str(key)) {
+        Ok(value) => value.as_f64().map(|number| number as i32),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "write")]
+fn opt_f64_from_js(obj: &JsValue, key: &str) -> Option<f64> {
+    if !obj.is_object() {
+        return None;
+    }
+    match Reflect::get(obj, &JsValue::from_str(key)) {
+        Ok(value) => value.as_f64(),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "write")]
+fn f32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<f32>, String> {
+    if let Some(typed) = value.dyn_ref::<Float32Array>() {
+        return Ok(typed.to_vec());
+    }
+    if let Some(typed) = value.dyn_ref::<Float64Array>() {
+        return Ok(typed
+            .to_vec()
+            .into_iter()
+            .map(|value| value as f32)
+            .collect());
+    }
+    let array = value
+        .dyn_ref::<Array>()
+        .ok_or_else(|| format!("{field} must be a Float32Array or a plain array"))?;
+    let mut out = Vec::with_capacity(array.length() as usize);
+    for index in 0..array.length() {
+        match array.get(index).as_f64() {
+            Some(value) => out.push(value as f32),
+            None => return Err(format!("{field} must contain only numbers")),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "write")]
+fn u32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u32>, String> {
+    if let Some(typed) = value.dyn_ref::<Uint32Array>() {
+        return Ok(typed.to_vec());
+    }
+    let array = value
+        .dyn_ref::<Array>()
+        .ok_or_else(|| format!("{field} must be a Uint32Array or a plain array"))?;
+    let mut out = Vec::with_capacity(array.length() as usize);
+    for index in 0..array.length() {
+        match array.get(index).as_f64() {
+            Some(value) => out.push(value as u32),
+            None => return Err(format!("{field} must contain only numbers")),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "write")]
+fn i32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<i32>, String> {
+    if let Some(typed) = value.dyn_ref::<Int32Array>() {
+        return Ok(typed.to_vec());
+    }
+    let array = value
+        .dyn_ref::<Array>()
+        .ok_or_else(|| format!("{field} must be an Int32Array or a plain array"))?;
+    let mut out = Vec::with_capacity(array.length() as usize);
+    for index in 0..array.length() {
+        match array.get(index).as_f64() {
+            Some(value) => out.push(value as i32),
+            None => return Err(format!("{field} must contain only numbers")),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "write")]
+fn f64_array_from_js(value: &JsValue, field: &str) -> Result<Vec<f64>, String> {
+    if let Some(typed) = value.dyn_ref::<Float64Array>() {
+        return Ok(typed.to_vec());
+    }
+    let array = value
+        .dyn_ref::<Array>()
+        .ok_or_else(|| format!("{field} must be a Float64Array or a plain array"))?;
+    let mut out = Vec::with_capacity(array.length() as usize);
+    for index in 0..array.length() {
+        match array.get(index).as_f64() {
+            Some(value) => out.push(value),
+            None => return Err(format!("{field} must contain only numbers")),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "write")]
+fn u8_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u8>, String> {
+    if let Some(typed) = value.dyn_ref::<Uint8Array>() {
+        return Ok(typed.to_vec());
+    }
+    let array = value
+        .dyn_ref::<Array>()
+        .ok_or_else(|| format!("{field} must be a Uint8Array or a plain array"))?;
+    let mut out = Vec::with_capacity(array.length() as usize);
+    for index in 0..array.length() {
+        match array.get(index).as_f64() {
+            Some(value) => out.push(value as u8),
+            None => return Err(format!("{field} must contain only numbers")),
+        }
+    }
+    Ok(out)
+}
+
+/// A required float array field on an object.
+#[cfg(feature = "write")]
+fn required_f32_array(value: &JsValue, field: &str) -> Result<Vec<f32>, String> {
+    let value =
+        get_field(value, field).ok_or_else(|| format!("mesh must be an object with {field}"))?;
+    f32_array_from_js(&value, field)
+}
+
+#[cfg(feature = "write")]
+fn optional_f32_array(value: &JsValue, field: &str) -> Result<Option<Vec<f32>>, String> {
+    match get_field(value, field) {
+        Some(value) => Ok(Some(f32_array_from_js(&value, field)?)),
+        None => Ok(None),
+    }
+}
+
+/// A required numeric scalar field.
+#[cfg(feature = "write")]
+fn required_u32(value: &JsValue, field: &str) -> Result<u32, String> {
+    let value = get_field(value, field).ok_or_else(|| format!("{field} is required"))?;
+    value
+        .as_f64()
+        .map(|number| number as u32)
+        .ok_or_else(|| format!("{field} must be a number"))
+}
+
+#[cfg(feature = "write")]
+fn required_f64(value: &JsValue, field: &str) -> Result<f64, String> {
+    let value = get_field(value, field).ok_or_else(|| format!("{field} is required"))?;
+    value
+        .as_f64()
+        .ok_or_else(|| format!("{field} must be a number"))
+}
+
+#[cfg(feature = "write")]
+fn required_string(value: &JsValue, field: &str) -> Result<String, String> {
+    let value = get_field(value, field).ok_or_else(|| format!("{field} is required"))?;
+    value
+        .as_string()
+        .ok_or_else(|| format!("{field} must be a string"))
+}
+
+/// Read a fixed-size vec3 from an optional field. Absent becomes `None`;
+/// present but not three numbers is an error, matching the old serde shape.
+#[cfg(feature = "write")]
+fn optional_vec3(value: &JsValue, field: &str) -> Result<Option<[f32; 3]>, String> {
+    match get_field(value, field) {
+        Some(field_value) => {
+            let values = f32_array_from_js(&field_value, field)?;
+            if values.len() != 3 {
+                return Err(format!("{field} must contain exactly 3 values"));
+            }
+            Ok(Some([values[0], values[1], values[2]]))
+        }
+        None => Ok(None),
+    }
+}
+
+#[cfg(feature = "write")]
+fn optional_u32_array(value: &JsValue, field: &str) -> Result<Option<Vec<u32>>, String> {
+    match get_field(value, field) {
+        Some(field_value) => Ok(Some(u32_array_from_js(&field_value, field)?)),
+        None => Ok(None),
+    }
+}
+
+#[cfg(feature = "write")]
+fn optional_i32_array(value: &JsValue, field: &str) -> Result<Option<Vec<i32>>, String> {
+    match get_field(value, field) {
+        Some(field_value) => Ok(Some(i32_array_from_js(&field_value, field)?)),
+        None => Ok(None),
+    }
+}
+
+/// Read a required array field off an object.
+#[cfg(feature = "write")]
+fn required_u32_array(value: &JsValue, field: &str) -> Result<Vec<u32>, String> {
+    let value = get_field(value, field).ok_or_else(|| format!("{field} is required"))?;
+    u32_array_from_js(&value, field)
+}
+
+#[cfg(feature = "write")]
+fn required_i32_array(value: &JsValue, field: &str) -> Result<Vec<i32>, String> {
+    let value = get_field(value, field).ok_or_else(|| format!("{field} is required"))?;
+    i32_array_from_js(&value, field)
+}
+
+#[cfg(feature = "write")]
+fn required_f64_array(value: &JsValue, field: &str) -> Result<Vec<f64>, String> {
+    let value = get_field(value, field).ok_or_else(|| format!("{field} is required"))?;
+    f64_array_from_js(&value, field)
+}
+
+/// Read a required object field.
+#[cfg(feature = "write")]
+fn required_object(value: &JsValue, field: &str) -> Result<JsValue, String> {
+    get_field(value, field).ok_or_else(|| format!("{field} is required"))
+}
+
+/// Read a `Vec<u8>`-backed field (embedded texture bytes), accepting both a
+/// `Uint8Array` and a plain array.
+#[cfg(feature = "write")]
+fn optional_u8_array(value: &JsValue, field: &str) -> Result<Option<Vec<u8>>, String> {
+    match get_field(value, field) {
+        Some(value) => Ok(Some(u8_array_from_js(&value, field)?)),
+        None => Ok(None),
+    }
+}
 
 /// FBX file magic: "Kaydara FBX Binary  \0".
 ///
@@ -47,14 +415,13 @@ use draco_core::geometry_indices::FaceIndex;
 #[cfg(any(feature = "read", feature = "write"))]
 use draco_core::mesh::Mesh;
 #[cfg(any(feature = "read", feature = "write"))]
-use draco_io::{FbxGlobalSettings, FbxNodeId, FbxScene, FbxSceneNode, FbxTransformStack};
+use draco_io::{FbxGlobalSettings, FbxScene, FbxSceneNode, FbxTransformStack};
 #[cfg(feature = "write")]
-use draco_io::{FbxWriteStats, FbxWriter};
+use draco_io::{FbxNodeId, FbxWriteStats, FbxWriter};
 
 /// Mesh data produced by the FBX reader, for JavaScript interop.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct MeshData {
     /// Mesh name
     pub name: Option<String>,
@@ -67,77 +434,56 @@ pub struct MeshData {
     /// Texture coordinates (if present)
     pub uvs: Vec<f32>,
     /// Per-render-vertex linear RGBA, from the first colour layer.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub colors: Vec<f32>,
     /// Per-render-vertex tangents from the first tangent layer, `xyzw` with
     /// the handedness sign in `w` -- exactly glTF's `TANGENT` layout.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tangents: Vec<f32>,
     /// Every UV layer resolved onto render vertices, in source order.
     ///
     /// `uvs` is the first of these; the rest become `TEXCOORD_1`..
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uv_layers: Vec<Vec<f32>>,
     /// Per-triangle indices into the scene material list.
     ///
     /// This retains FBX `LayerElementMaterial` assignments for a later
     /// hierarchy-preserving export. The first value is also exposed through
     /// `material` for the preview's single-material primitive path.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub material_indices: Vec<i32>,
     /// Index of the first material applied to this mesh, when present.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material: Option<usize>,
     /// Full FBX skin clusters, without a GPU influence limit.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skin: Option<SkinOutput>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub morph_targets: Vec<MorphTargetOutput>,
     /// First four influences per point for the WebGL preview. `skin` retains
     /// every FBX influence for a later export.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub joints0: Vec<u16>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub weights0: Vec<f32>,
     /// Optional second four-influence set for portable eight-influence data.
     /// The viewer may consume both sets; exporters can preserve them even
     /// when a source format exposes more influences than the GPU path needs.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub joints1: Vec<u16>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub weights1: Vec<f32>,
     /// Original FBX control points, retained for scene round-trip.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub control_points: Vec<f32>,
     /// Original FBX polygon-corner index stream.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub polygon_vertex_indices: Vec<i32>,
     /// Original UV layers, including mapping/reference metadata.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uv_sets: Vec<UvSetOutput>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub normal_sets: Vec<NormalSetOutput>,
     /// Original `LayerElementColor` layers, including mapping metadata.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub color_sets: Vec<ColorSetOutput>,
     /// Original `LayerElementTangent` layers.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tangent_sets: Vec<TangentSetOutput>,
     /// Original `LayerElementBinormal` layers.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub binormal_sets: Vec<TangentSetOutput>,
     /// Original `LayerElementSmoothing` layers, carried opaquely: glTF has no
     /// hard-edge concept, so these exist to survive an FBX-to-FBX rewrite.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub smoothing_layers: Vec<SmoothingLayerOutput>,
     /// Original edge and vertex crease layers, carried opaquely.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub crease_layers: Vec<CreaseLayerOutput>,
 }
 
 /// A `LayerElementSmoothing` crossing the WASM boundary, in both directions.
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 pub struct SmoothingLayerOutput {
     pub mapping: Option<String>,
     /// One integer flag per edge or per polygon.
@@ -146,8 +492,7 @@ pub struct SmoothingLayerOutput {
 
 /// A `LayerElementEdgeCrease` or `LayerElementVertexCrease` crossing the WASM
 /// boundary, in both directions.
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 pub struct CreaseLayerOutput {
     /// `"edge"` or `"vertex"`; anything else is read as `"edge"`.
     pub kind: String,
@@ -158,8 +503,7 @@ pub struct CreaseLayerOutput {
 
 /// A `LayerElementTangent` or `LayerElementBinormal` crossing the WASM
 /// boundary, in both directions.
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 pub struct TangentSetOutput {
     pub name: Option<String>,
     pub mapping: Option<String>,
@@ -168,12 +512,10 @@ pub struct TangentSetOutput {
     pub values: Vec<f32>,
     pub indices: Vec<i32>,
     /// Whether `w` came from the file rather than being defaulted to `+1`.
-    #[serde(default)]
     pub has_handedness: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 pub struct ColorSetOutput {
     pub name: Option<String>,
     pub mapping: Option<String>,
@@ -183,8 +525,7 @@ pub struct ColorSetOutput {
     pub indices: Vec<i32>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 pub struct UvSetOutput {
     pub name: Option<String>,
     pub mapping: Option<String>,
@@ -193,8 +534,7 @@ pub struct UvSetOutput {
     pub indices: Vec<i32>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 pub struct NormalSetOutput {
     pub name: Option<String>,
     pub mapping: Option<String>,
@@ -204,32 +544,26 @@ pub struct NormalSetOutput {
 }
 
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct MorphTargetOutput {
     pub name: Option<String>,
     pub control_point_indices: Vec<u32>,
     /// Render-vertex indices after corner-domain expansion.  A control point
     /// can occur more than once when UVs or normals have seams.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub render_point_indices: Vec<u32>,
     pub position_deltas: Vec<f32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub render_position_deltas: Vec<f32>,
     pub normal_deltas: Option<Vec<f32>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_normal_deltas: Option<Vec<f32>>,
     pub default_weight: f32,
     pub full_weight: f32,
 }
 
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct SkinClusterOutput {
     pub joint_node_id: u32,
     pub control_point_indices: Vec<u32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub render_point_indices: Vec<u32>,
     pub weights: Vec<f32>,
     pub mesh_bind_transform: Vec<f32>,
@@ -238,16 +572,14 @@ pub struct SkinClusterOutput {
 }
 
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct SkinOutput {
     pub clusters: Vec<SkinClusterOutput>,
     pub bind_pose: Vec<BindPoseOutput>,
 }
 
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct BindPoseOutput {
     pub node_id: u32,
     pub matrix: Vec<f32>,
@@ -255,8 +587,7 @@ pub struct BindPoseOutput {
 
 /// Texture slot targeted by a binding.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TextureSlotOutput {
     Diffuse,
     Normal,
@@ -284,8 +615,7 @@ impl From<draco_io::FbxTextureSlot> for TextureSlotOutput {
 
 /// Texture binding output to JavaScript.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct TextureBindingOutput {
     pub slot: TextureSlotOutput,
     pub texture_index: usize,
@@ -293,57 +623,39 @@ pub struct TextureBindingOutput {
 
 /// Texture object output to JavaScript.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 pub struct TextureOutput {
     pub name: Option<String>,
     /// Embedded image bytes (PNG/JPG), when present.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<Vec<u8>>,
     /// Relative filename / external reference, when present.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
 }
 
 /// Material object output to JavaScript.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 pub struct MaterialOutput {
     pub name: Option<String>,
     pub shading_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diffuse: Option<[f32; 3]>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub specular: Option<[f32; 3]>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emissive: Option<[f32; 3]>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ambient: Option<[f32; 3]>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diffuse_factor: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub specular_factor: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shininess: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emissive_factor: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reflection_factor: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transparency_factor: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bump_factor: Option<f32>,
-    #[serde(default)]
     pub textures: Vec<TextureBindingOutput>,
 }
 
 /// Animation channel path (which TRS component the channel drives).
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AnimChannelPathOutput {
     Translation,
     Rotation,
@@ -365,8 +677,7 @@ impl From<draco_io::FbxAnimChannelPath> for AnimChannelPathOutput {
 
 /// Animation interpolation mode.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AnimInterpolationOutput {
     Step,
     Linear,
@@ -386,38 +697,32 @@ impl From<draco_io::FbxAnimInterpolation> for AnimInterpolationOutput {
 
 /// Animation sampler (flat TRS component track).
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct AnimSamplerOutput {
     /// Strictly increasing keyframe times in seconds.
     pub input: Vec<f32>,
     /// Flattened keyframe values, 3 values per input entry (radians for rotation).
     pub output: Vec<f32>,
     pub interpolation: AnimInterpolationOutput,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_tangents: Option<Vec<f32>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out_tangents: Option<Vec<f32>>,
 }
 
 /// One animation channel: drives one TRS path of one named node.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct AnimChannelOutput {
     pub node_id: u32,
     /// Name of the target model node.
     pub node_name: String,
     pub path: AnimChannelPathOutput,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub morph_target_index: Option<u32>,
     pub sampler: AnimSamplerOutput,
 }
 
 /// One animation take.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct AnimationOutput {
     pub name: Option<String>,
     pub duration: f32,
@@ -426,8 +731,6 @@ pub struct AnimationOutput {
 
 /// Parse result containing meshes and any warnings/errors.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ParseResult {
     pub success: bool,
     pub meshes: Vec<MeshData>,
@@ -438,36 +741,26 @@ pub struct ParseResult {
     /// FBX model hierarchy and local transforms, when available.
     pub scene: Option<SceneOutput>,
     /// Materials carried at the top level, mirroring `scene.materials`.
-    #[serde(default)]
     pub materials: Vec<MaterialOutput>,
     /// Textures carried at the top level, mirroring `scene.textures`.
-    #[serde(default)]
     pub textures: Vec<TextureOutput>,
     /// Animations carried at the top level, mirroring `scene.animations`.
-    #[serde(default)]
     pub animations: Vec<AnimationOutput>,
 }
 
 /// Scene data returned to JavaScript for hierarchy-preserving previews.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SceneOutput {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global_settings: Option<GlobalSettingsOutput>,
     pub root_nodes: Vec<SceneNodeOutput>,
-    #[serde(default)]
     pub materials: Vec<MaterialOutput>,
-    #[serde(default)]
     pub textures: Vec<TextureOutput>,
-    #[serde(default)]
     pub animations: Vec<AnimationOutput>,
 }
 
 /// Source-only FBX coordinate/unit/time metadata for provenance exports.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 pub struct GlobalSettingsOutput {
     pub up_axis: Option<i32>,
     pub up_axis_sign: Option<i32>,
@@ -482,19 +775,15 @@ pub struct GlobalSettingsOutput {
 
 /// One FBX model node returned to JavaScript.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SceneNodeOutput {
     pub id: u32,
     pub name: Option<String>,
     /// Column-major local transform used by WebGL.
     pub matrix: Option<Vec<f32>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform_stack: Option<TransformStackOutput>,
     /// True when the source Model used pre/post rotation or pivot terms.
     /// The JS FBX adapter uses the skin bind pose as the baked local basis
     /// for these nodes; plain Model TRS remains authored animation data.
-    #[serde(default)]
     pub has_complex_transform_stack: bool,
     pub meshes: Vec<MeshData>,
     pub children: Vec<SceneNodeOutput>,
@@ -502,8 +791,7 @@ pub struct SceneNodeOutput {
 
 /// Raw FBX Model transform-stack values preserved for source-provenance export.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 pub struct TransformStackOutput {
     pub translation: Option<[f32; 3]>,
     pub rotation: Option<[f32; 3]>,
@@ -519,12 +807,656 @@ pub struct TransformStackOutput {
     pub inherit_type: Option<i32>,
 }
 
+// ---------------------------------------------------------------------------
+// Reader: Rust output structures -> JavaScript objects
+//
+// Geometry arrays cross as typed arrays; small fixed-size values (matrices,
+// vec3s) and the per-triangle material index list stay plain because the shell
+// inspects them with `Array.isArray`. Optional fields match the old serde
+// shape: `null` when always-present, omitted when `skip_serializing_if` used
+// to drop them.
+// ---------------------------------------------------------------------------
+
+fn set_opt_string_null(obj: &Object, key: &str, value: &Option<String>) {
+    match value {
+        Some(text) => set_js(obj, key, &JsValue::from_str(text)),
+        None => set_js(obj, key, &JsValue::NULL),
+    }
+}
+
+/// A `Vec<f32>` field the old serde contract always emitted.
+#[cfg(feature = "read")]
+fn set_f32_array(obj: &Object, key: &str, values: &[f32]) {
+    set_js(obj, key, &f32_array_to_js(values));
+}
+
+#[cfg(feature = "read")]
+fn set_u32_array(obj: &Object, key: &str, values: &[u32]) {
+    set_js(obj, key, &u32_array_to_js(values));
+}
+
+#[cfg(feature = "read")]
+fn set_i32_array(obj: &Object, key: &str, values: &[i32]) {
+    set_js(obj, key, &i32_array_to_js(values));
+}
+
+#[cfg(feature = "read")]
+fn set_f64_array(obj: &Object, key: &str, values: &[f64]) {
+    set_js(obj, key, &f64_array_to_js(values));
+}
+
+#[cfg(feature = "read")]
+fn set_plain_f32_array(obj: &Object, key: &str, values: &[f32]) {
+    set_js(obj, key, &plain_f32_array_to_js(values));
+}
+
+/// Set a fixed-size vec3 ([x, y, z]) as a plain array, matching serde.
+#[cfg(feature = "read")]
+fn set_opt_vec3(obj: &Object, key: &str, value: &Option<[f32; 3]>) {
+    match value {
+        Some(v) => {
+            let array = Array::new();
+            for component in v {
+                array.push(&JsValue::from_f64(*component as f64));
+            }
+            set_js(obj, key, &array.into());
+        }
+        None => set_js(obj, key, &JsValue::NULL),
+    }
+}
+
+/// Omitted when empty, like the serde `skip_serializing_if = "Vec::is_empty"`.
+#[cfg(feature = "read")]
+fn set_opt_vec3_skipped(obj: &Object, key: &str, value: &Option<[f32; 3]>) {
+    if value.is_some() {
+        set_opt_vec3(obj, key, value);
+    }
+}
+
+/// Omitted when empty, like the serde `skip_serializing_if = "Vec::is_empty"`.
+#[cfg(feature = "read")]
+fn set_skipped_f32_array(obj: &Object, key: &str, values: &[f32]) {
+    if !values.is_empty() {
+        set_f32_array(obj, key, values);
+    }
+}
+
+#[cfg(feature = "read")]
+fn set_skipped_u32_array(obj: &Object, key: &str, values: &[u32]) {
+    if !values.is_empty() {
+        set_u32_array(obj, key, values);
+    }
+}
+
+#[cfg(feature = "read")]
+fn set_skipped_i32_array(obj: &Object, key: &str, values: &[i32]) {
+    if !values.is_empty() {
+        set_i32_array(obj, key, values);
+    }
+}
+
+/// Per-triangle material assignments stay a plain array: the shell checks them
+/// with `Array.isArray` before feeding them back into the writer.
+#[cfg(feature = "read")]
+fn set_skipped_plain_i32_array(obj: &Object, key: &str, values: &[i32]) {
+    if values.is_empty() {
+        return;
+    }
+    let array = Array::new();
+    for value in values {
+        array.push(&JsValue::from_f64(*value as f64));
+    }
+    set_js(obj, key, &array.into());
+}
+
+#[cfg(feature = "read")]
+fn set_skipped_string_array(obj: &Object, key: &str, values: &[String]) {
+    if !values.is_empty() {
+        set_string_array(obj, key, values);
+    }
+}
+
+#[cfg(feature = "read")]
+fn set_skipped_opt_string(obj: &Object, key: &str, value: &Option<String>) {
+    if value.is_some() {
+        set_opt_string_null(obj, key, value);
+    }
+}
+
+#[cfg(feature = "read")]
+fn set_skipped_u8_array(obj: &Object, key: &str, values: &Option<Vec<u8>>) {
+    if let Some(bytes) = values {
+        set_js(obj, key, &u8_array_to_js(bytes));
+    }
+}
+
+#[cfg(feature = "read")]
+fn texture_slot_to_js(slot: &TextureSlotOutput) -> JsValue {
+    let text = match slot {
+        TextureSlotOutput::Diffuse => "diffuse",
+        TextureSlotOutput::Normal => "normal",
+        TextureSlotOutput::Emissive => "emissive",
+        TextureSlotOutput::Specular => "specular",
+        TextureSlotOutput::Roughness => "roughness",
+        TextureSlotOutput::Metallic => "metallic",
+        TextureSlotOutput::Ambient => "ambient",
+    };
+    JsValue::from_str(text)
+}
+
+#[cfg(feature = "read")]
+fn anim_channel_path_to_js(path: &AnimChannelPathOutput) -> JsValue {
+    let text = match path {
+        AnimChannelPathOutput::Translation => "translation",
+        AnimChannelPathOutput::Rotation => "rotation",
+        AnimChannelPathOutput::Scale => "scale",
+        AnimChannelPathOutput::MorphWeight => "morphweight",
+    };
+    JsValue::from_str(text)
+}
+
+#[cfg(feature = "read")]
+fn anim_interpolation_to_js(interpolation: &AnimInterpolationOutput) -> JsValue {
+    let text = match interpolation {
+        AnimInterpolationOutput::Step => "step",
+        AnimInterpolationOutput::Linear => "linear",
+        AnimInterpolationOutput::Cubic => "cubic",
+    };
+    JsValue::from_str(text)
+}
+
+#[cfg(feature = "read")]
+fn smoothing_layer_to_js(layer: &SmoothingLayerOutput) -> Object {
+    let obj = Object::new();
+    set_opt_string_null(&obj, "mapping", &layer.mapping);
+    set_i32_array(&obj, "values", &layer.values);
+    obj
+}
+
+#[cfg(feature = "read")]
+fn crease_layer_to_js(layer: &CreaseLayerOutput) -> Object {
+    let obj = Object::new();
+    set_js(&obj, "kind", &JsValue::from_str(&layer.kind));
+    set_opt_string_null(&obj, "mapping", &layer.mapping);
+    set_f64_array(&obj, "values", &layer.values);
+    obj
+}
+
+#[cfg(feature = "read")]
+fn tangent_set_to_js(set: &TangentSetOutput) -> Object {
+    let obj = Object::new();
+    set_opt_string_null(&obj, "name", &set.name);
+    set_opt_string_null(&obj, "mapping", &set.mapping);
+    set_opt_string_null(&obj, "reference", &set.reference);
+    set_f32_array(&obj, "values", &set.values);
+    set_i32_array(&obj, "indices", &set.indices);
+    set_bool(&obj, "hasHandedness", set.has_handedness);
+    obj
+}
+
+#[cfg(feature = "read")]
+fn color_set_to_js(set: &ColorSetOutput) -> Object {
+    let obj = Object::new();
+    set_opt_string_null(&obj, "name", &set.name);
+    set_opt_string_null(&obj, "mapping", &set.mapping);
+    set_opt_string_null(&obj, "reference", &set.reference);
+    set_f32_array(&obj, "values", &set.values);
+    set_i32_array(&obj, "indices", &set.indices);
+    obj
+}
+
+#[cfg(feature = "read")]
+fn uv_set_to_js(set: &UvSetOutput) -> Object {
+    let obj = Object::new();
+    set_opt_string_null(&obj, "name", &set.name);
+    set_opt_string_null(&obj, "mapping", &set.mapping);
+    set_opt_string_null(&obj, "reference", &set.reference);
+    set_f32_array(&obj, "values", &set.values);
+    set_i32_array(&obj, "indices", &set.indices);
+    obj
+}
+
+#[cfg(feature = "read")]
+fn normal_set_to_js(set: &NormalSetOutput) -> Object {
+    let obj = Object::new();
+    set_opt_string_null(&obj, "name", &set.name);
+    set_opt_string_null(&obj, "mapping", &set.mapping);
+    set_opt_string_null(&obj, "reference", &set.reference);
+    set_f32_array(&obj, "values", &set.values);
+    set_i32_array(&obj, "indices", &set.indices);
+    obj
+}
+
+#[cfg(feature = "read")]
+fn morph_target_to_js(target: &MorphTargetOutput) -> Object {
+    let obj = Object::new();
+    set_opt_string_null(&obj, "name", &target.name);
+    set_u32_array(&obj, "controlPointIndices", &target.control_point_indices);
+    set_skipped_u32_array(&obj, "renderPointIndices", &target.render_point_indices);
+    set_f32_array(&obj, "positionDeltas", &target.position_deltas);
+    set_skipped_f32_array(&obj, "renderPositionDeltas", &target.render_position_deltas);
+    match &target.normal_deltas {
+        Some(deltas) => set_f32_array(&obj, "normalDeltas", deltas),
+        None => set_js(&obj, "normalDeltas", &JsValue::NULL),
+    }
+    set_skipped_opt_string_owned(&obj, "renderNormalDeltas", &target.render_normal_deltas);
+    set_f64(&obj, "defaultWeight", target.default_weight as f64);
+    set_f64(&obj, "fullWeight", target.full_weight as f64);
+    obj
+}
+
+/// A `Vec<f32>` that was `Option<Vec<f32>>` with a skip on None.
+#[cfg(feature = "read")]
+fn set_skipped_opt_string_owned(obj: &Object, key: &str, value: &Option<Vec<f32>>) {
+    if let Some(values) = value {
+        set_f32_array(obj, key, values);
+    }
+}
+
+#[cfg(feature = "read")]
+fn skin_cluster_to_js(cluster: &SkinClusterOutput) -> Object {
+    let obj = Object::new();
+    set_u32(&obj, "jointNodeId", cluster.joint_node_id);
+    set_u32_array(&obj, "controlPointIndices", &cluster.control_point_indices);
+    set_skipped_u32_array(&obj, "renderPointIndices", &cluster.render_point_indices);
+    set_f32_array(&obj, "weights", &cluster.weights);
+    set_plain_f32_array(&obj, "meshBindTransform", &cluster.mesh_bind_transform);
+    set_plain_f32_array(&obj, "jointBindTransform", &cluster.joint_bind_transform);
+    match &cluster.armature_bind_transform {
+        Some(matrix) => set_plain_f32_array(&obj, "armatureBindTransform", matrix),
+        None => set_js(&obj, "armatureBindTransform", &JsValue::NULL),
+    }
+    obj
+}
+
+#[cfg(feature = "read")]
+fn bind_pose_to_js(pose: &BindPoseOutput) -> Object {
+    let obj = Object::new();
+    set_u32(&obj, "nodeId", pose.node_id);
+    set_plain_f32_array(&obj, "matrix", &pose.matrix);
+    obj
+}
+
+#[cfg(feature = "read")]
+fn skin_to_js(skin: &SkinOutput) -> Object {
+    let obj = Object::new();
+    let clusters = Array::new();
+    for cluster in &skin.clusters {
+        clusters.push(&skin_cluster_to_js(cluster).into());
+    }
+    set_js(&obj, "clusters", &clusters.into());
+    let bind_pose = Array::new();
+    for pose in &skin.bind_pose {
+        bind_pose.push(&bind_pose_to_js(pose).into());
+    }
+    set_js(&obj, "bindPose", &bind_pose.into());
+    obj
+}
+
+#[cfg(feature = "read")]
+fn texture_binding_to_js(binding: &TextureBindingOutput) -> Object {
+    let obj = Object::new();
+    set_js(&obj, "slot", &texture_slot_to_js(&binding.slot));
+    set_u32(&obj, "textureIndex", binding.texture_index as u32);
+    obj
+}
+
+#[cfg(feature = "read")]
+fn texture_to_js(texture: &TextureOutput) -> Object {
+    let obj = Object::new();
+    set_opt_string_null(&obj, "name", &texture.name);
+    set_skipped_u8_array(&obj, "content", &texture.content);
+    set_skipped_opt_string(&obj, "filename", &texture.filename);
+    obj
+}
+
+#[cfg(feature = "read")]
+fn material_to_js(material: &MaterialOutput) -> Object {
+    let obj = Object::new();
+    set_opt_string_null(&obj, "name", &material.name);
+    set_opt_string_null(&obj, "shadingModel", &material.shading_model);
+    set_opt_vec3_skipped(&obj, "diffuse", &material.diffuse);
+    set_opt_vec3_skipped(&obj, "specular", &material.specular);
+    set_opt_vec3_skipped(&obj, "emissive", &material.emissive);
+    set_opt_vec3_skipped(&obj, "ambient", &material.ambient);
+    set_skipped_opt_f64(&obj, "diffuseFactor", &material.diffuse_factor);
+    set_skipped_opt_f64(&obj, "specularFactor", &material.specular_factor);
+    set_skipped_opt_f64(&obj, "shininess", &material.shininess);
+    set_skipped_opt_f64(&obj, "emissiveFactor", &material.emissive_factor);
+    set_skipped_opt_f64(&obj, "reflectionFactor", &material.reflection_factor);
+    set_skipped_opt_f64(&obj, "transparencyFactor", &material.transparency_factor);
+    set_skipped_opt_f64(&obj, "opacity", &material.opacity);
+    set_skipped_opt_f64(&obj, "bumpFactor", &material.bump_factor);
+    let textures = Array::new();
+    for binding in &material.textures {
+        textures.push(&texture_binding_to_js(binding).into());
+    }
+    set_js(&obj, "textures", &textures.into());
+    obj
+}
+
+#[cfg(feature = "read")]
+fn set_skipped_opt_f64(obj: &Object, key: &str, value: &Option<f32>) {
+    if let Some(value) = value {
+        set_f64(obj, key, *value as f64);
+    }
+}
+
+#[cfg(feature = "read")]
+fn anim_sampler_to_js(sampler: &AnimSamplerOutput) -> Object {
+    let obj = Object::new();
+    set_f32_array(&obj, "input", &sampler.input);
+    set_f32_array(&obj, "output", &sampler.output);
+    set_js(
+        &obj,
+        "interpolation",
+        &anim_interpolation_to_js(&sampler.interpolation),
+    );
+    match &sampler.in_tangents {
+        Some(values) => set_f32_array(&obj, "inTangents", values),
+        None => (),
+    }
+    match &sampler.out_tangents {
+        Some(values) => set_f32_array(&obj, "outTangents", values),
+        None => (),
+    }
+    obj
+}
+
+#[cfg(feature = "read")]
+fn anim_channel_to_js(channel: &AnimChannelOutput) -> Object {
+    let obj = Object::new();
+    set_u32(&obj, "nodeId", channel.node_id);
+    set_js(&obj, "nodeName", &JsValue::from_str(&channel.node_name));
+    set_js(&obj, "path", &anim_channel_path_to_js(&channel.path));
+    if let Some(index) = channel.morph_target_index {
+        set_u32(&obj, "morphTargetIndex", index);
+    }
+    set_js(
+        &obj,
+        "sampler",
+        &anim_sampler_to_js(&channel.sampler).into(),
+    );
+    obj
+}
+
+#[cfg(feature = "read")]
+fn animation_to_js(animation: &AnimationOutput) -> Object {
+    let obj = Object::new();
+    set_opt_string_null(&obj, "name", &animation.name);
+    set_f64(&obj, "duration", animation.duration as f64);
+    let channels = Array::new();
+    for channel in &animation.channels {
+        channels.push(&anim_channel_to_js(channel).into());
+    }
+    set_js(&obj, "channels", &channels.into());
+    obj
+}
+
+#[cfg(feature = "read")]
+fn global_settings_to_js(settings: &GlobalSettingsOutput) -> Object {
+    let obj = Object::new();
+    set_skipped_opt_i32_nullable(&obj, "upAxis", &settings.up_axis);
+    set_skipped_opt_i32_nullable(&obj, "upAxisSign", &settings.up_axis_sign);
+    set_skipped_opt_i32_nullable(&obj, "frontAxis", &settings.front_axis);
+    set_skipped_opt_i32_nullable(&obj, "frontAxisSign", &settings.front_axis_sign);
+    set_skipped_opt_i32_nullable(&obj, "coordAxis", &settings.coord_axis);
+    set_skipped_opt_i32_nullable(&obj, "coordAxisSign", &settings.coord_axis_sign);
+    set_skipped_opt_f64_nullable(&obj, "unitScaleFactor", &settings.unit_scale_factor);
+    set_skipped_opt_f64_nullable(
+        &obj,
+        "originalUnitScaleFactor",
+        &settings.original_unit_scale_factor,
+    );
+    set_skipped_opt_i32_nullable(&obj, "timeMode", &settings.time_mode);
+    obj
+}
+
+/// An `Option<i32>` the serde contract always emitted, as `null` when absent.
+#[cfg(feature = "read")]
+fn set_skipped_opt_i32_nullable(obj: &Object, key: &str, value: &Option<i32>) {
+    match value {
+        Some(value) => set_i32(obj, key, *value),
+        None => set_js(obj, key, &JsValue::NULL),
+    }
+}
+
+#[cfg(feature = "read")]
+fn set_skipped_opt_f64_nullable(obj: &Object, key: &str, value: &Option<f64>) {
+    match value {
+        Some(value) => set_f64(obj, key, *value),
+        None => set_js(obj, key, &JsValue::NULL),
+    }
+}
+
+#[cfg(feature = "read")]
+fn transform_stack_to_js(stack: &TransformStackOutput) -> Object {
+    let obj = Object::new();
+    set_opt_vec3(&obj, "translation", &stack.translation);
+    set_opt_vec3(&obj, "rotation", &stack.rotation);
+    set_opt_vec3(&obj, "scaling", &stack.scaling);
+    set_skipped_opt_i32_nullable(&obj, "rotationOrder", &stack.rotation_order);
+    set_skipped_opt_bool_nullable(&obj, "rotationActive", &stack.rotation_active);
+    set_opt_vec3(&obj, "preRotation", &stack.pre_rotation);
+    set_opt_vec3(&obj, "postRotation", &stack.post_rotation);
+    set_opt_vec3(&obj, "rotationOffset", &stack.rotation_offset);
+    set_opt_vec3(&obj, "rotationPivot", &stack.rotation_pivot);
+    set_opt_vec3(&obj, "scalingOffset", &stack.scaling_offset);
+    set_opt_vec3(&obj, "scalingPivot", &stack.scaling_pivot);
+    set_skipped_opt_i32_nullable(&obj, "inheritType", &stack.inherit_type);
+    obj
+}
+
+#[cfg(feature = "read")]
+fn set_skipped_opt_bool_nullable(obj: &Object, key: &str, value: &Option<bool>) {
+    match value {
+        Some(value) => set_bool(obj, key, *value),
+        None => set_js(obj, key, &JsValue::NULL),
+    }
+}
+
+#[cfg(feature = "read")]
+fn scene_node_to_js(node: &SceneNodeOutput) -> Object {
+    let obj = Object::new();
+    set_u32(&obj, "id", node.id);
+    set_opt_string_null(&obj, "name", &node.name);
+    match &node.matrix {
+        Some(matrix) => set_plain_f32_array(&obj, "matrix", matrix),
+        None => set_js(&obj, "matrix", &JsValue::NULL),
+    }
+    if let Some(stack) = &node.transform_stack {
+        set_js(&obj, "transformStack", &transform_stack_to_js(stack).into());
+    }
+    set_bool(
+        &obj,
+        "hasComplexTransformStack",
+        node.has_complex_transform_stack,
+    );
+    let meshes = Array::new();
+    for mesh in &node.meshes {
+        meshes.push(&mesh_data_to_js(mesh).into());
+    }
+    set_js(&obj, "meshes", &meshes.into());
+    let children = Array::new();
+    for child in &node.children {
+        children.push(&scene_node_to_js(child).into());
+    }
+    set_js(&obj, "children", &children.into());
+    obj
+}
+
+#[cfg(feature = "read")]
+fn mesh_data_to_js(mesh: &MeshData) -> Object {
+    let obj = Object::new();
+    set_opt_string_null(&obj, "name", &mesh.name);
+    set_f32_array(&obj, "positions", &mesh.positions);
+    set_u32_array(&obj, "indices", &mesh.indices);
+    set_f32_array(&obj, "normals", &mesh.normals);
+    set_f32_array(&obj, "uvs", &mesh.uvs);
+    set_skipped_f32_array(&obj, "colors", &mesh.colors);
+    set_skipped_f32_array(&obj, "tangents", &mesh.tangents);
+    if !mesh.uv_layers.is_empty() {
+        let layers = Array::new();
+        for layer in &mesh.uv_layers {
+            layers.push(&f32_array_to_js(layer));
+        }
+        set_js(&obj, "uvLayers", &layers.into());
+    }
+    set_skipped_plain_i32_array(&obj, "materialIndices", &mesh.material_indices);
+    if let Some(material) = &mesh.material {
+        set_u32(&obj, "material", *material as u32);
+    }
+    if let Some(skin) = &mesh.skin {
+        set_js(&obj, "skin", &skin_to_js(skin).into());
+    }
+    if !mesh.morph_targets.is_empty() {
+        let targets = Array::new();
+        for target in &mesh.morph_targets {
+            targets.push(&morph_target_to_js(target).into());
+        }
+        set_js(&obj, "morphTargets", &targets.into());
+    }
+    set_skipped_u16_array(&obj, "joints0", &mesh.joints0);
+    set_skipped_f32_array(&obj, "weights0", &mesh.weights0);
+    set_skipped_u16_array(&obj, "joints1", &mesh.joints1);
+    set_skipped_f32_array(&obj, "weights1", &mesh.weights1);
+    set_skipped_f32_array(&obj, "controlPoints", &mesh.control_points);
+    set_skipped_i32_array(&obj, "polygonVertexIndices", &mesh.polygon_vertex_indices);
+    if !mesh.uv_sets.is_empty() {
+        let sets = Array::new();
+        for set in &mesh.uv_sets {
+            sets.push(&uv_set_to_js(set).into());
+        }
+        set_js(&obj, "uvSets", &sets.into());
+    }
+    if !mesh.normal_sets.is_empty() {
+        let sets = Array::new();
+        for set in &mesh.normal_sets {
+            sets.push(&normal_set_to_js(set).into());
+        }
+        set_js(&obj, "normalSets", &sets.into());
+    }
+    if !mesh.color_sets.is_empty() {
+        let sets = Array::new();
+        for set in &mesh.color_sets {
+            sets.push(&color_set_to_js(set).into());
+        }
+        set_js(&obj, "colorSets", &sets.into());
+    }
+    if !mesh.tangent_sets.is_empty() {
+        let sets = Array::new();
+        for set in &mesh.tangent_sets {
+            sets.push(&tangent_set_to_js(set).into());
+        }
+        set_js(&obj, "tangentSets", &sets.into());
+    }
+    if !mesh.binormal_sets.is_empty() {
+        let sets = Array::new();
+        for set in &mesh.binormal_sets {
+            sets.push(&tangent_set_to_js(set).into());
+        }
+        set_js(&obj, "binormalSets", &sets.into());
+    }
+    if !mesh.smoothing_layers.is_empty() {
+        let layers = Array::new();
+        for layer in &mesh.smoothing_layers {
+            layers.push(&smoothing_layer_to_js(layer).into());
+        }
+        set_js(&obj, "smoothingLayers", &layers.into());
+    }
+    if !mesh.crease_layers.is_empty() {
+        let layers = Array::new();
+        for layer in &mesh.crease_layers {
+            layers.push(&crease_layer_to_js(layer).into());
+        }
+        set_js(&obj, "creaseLayers", &layers.into());
+    }
+    obj
+}
+
+#[cfg(feature = "read")]
+fn set_skipped_u16_array(obj: &Object, key: &str, values: &[u16]) {
+    if !values.is_empty() {
+        set_js(obj, key, &u16_array_to_js(values));
+    }
+}
+
+#[cfg(feature = "read")]
+fn scene_output_to_js(scene: &SceneOutput) -> Object {
+    let obj = Object::new();
+    if let Some(settings) = &scene.global_settings {
+        set_js(
+            &obj,
+            "globalSettings",
+            &global_settings_to_js(settings).into(),
+        );
+    }
+    let root_nodes = Array::new();
+    for node in &scene.root_nodes {
+        root_nodes.push(&scene_node_to_js(node).into());
+    }
+    set_js(&obj, "rootNodes", &root_nodes.into());
+    let materials = Array::new();
+    for material in &scene.materials {
+        materials.push(&material_to_js(material).into());
+    }
+    set_js(&obj, "materials", &materials.into());
+    let textures = Array::new();
+    for texture in &scene.textures {
+        textures.push(&texture_to_js(texture).into());
+    }
+    set_js(&obj, "textures", &textures.into());
+    let animations = Array::new();
+    for animation in &scene.animations {
+        animations.push(&animation_to_js(animation).into());
+    }
+    set_js(&obj, "animations", &animations.into());
+    obj
+}
+
+#[cfg(feature = "read")]
+fn parse_result_to_js(result: &ParseResult) -> JsValue {
+    let obj = Object::new();
+    set_bool(&obj, "success", result.success);
+    let meshes = Array::new();
+    for mesh in &result.meshes {
+        meshes.push(&mesh_data_to_js(mesh).into());
+    }
+    set_js(&obj, "meshes", &meshes.into());
+    set_opt_string_null(&obj, "error", &result.error);
+    set_skipped_string_array(&obj, "warnings", &result.warnings);
+    match result.version {
+        Some(version) => set_u32(&obj, "version", version),
+        None => set_js(&obj, "version", &JsValue::NULL),
+    }
+    match &result.scene {
+        Some(scene) => set_js(&obj, "scene", &scene_output_to_js(scene).into()),
+        None => set_js(&obj, "scene", &JsValue::NULL),
+    }
+    let materials = Array::new();
+    for material in &result.materials {
+        materials.push(&material_to_js(material).into());
+    }
+    set_js(&obj, "materials", &materials.into());
+    let textures = Array::new();
+    for texture in &result.textures {
+        textures.push(&texture_to_js(texture).into());
+    }
+    set_js(&obj, "textures", &textures.into());
+    let animations = Array::new();
+    for animation in &result.animations {
+        animations.push(&animation_to_js(animation).into());
+    }
+    set_js(&obj, "animations", &animations.into());
+    obj.into()
+}
+
 /// Parse FBX binary file content.
 #[cfg(feature = "read")]
 #[wasm_bindgen]
 pub fn parse_fbx(data: &[u8]) -> JsValue {
     let result = parse_fbx_scene(data);
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    parse_result_to_js(&result)
 }
 
 #[cfg(feature = "read")]
@@ -1127,8 +2059,7 @@ use draco_io::{FbxAnimChannelPath, FbxAnimation};
 
 /// Input mesh data consumed by the FBX writer, from JavaScript.
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct MeshInput {
     /// Mesh name
     pub name: Option<String>,
@@ -1141,51 +2072,34 @@ pub struct MeshInput {
     /// Texture coordinates (optional)
     pub uvs: Option<Vec<f32>>,
     /// Optional original FBX control points and polygon-corner stream.
-    #[serde(default)]
     pub control_points: Option<Vec<f32>>,
-    #[serde(default)]
     pub polygon_vertex_indices: Option<Vec<i32>>,
-    #[serde(default)]
     pub uv_sets: Vec<UvSetOutput>,
-    #[serde(default)]
     pub normal_sets: Vec<NormalSetOutput>,
     /// Tangent layers to write, `xyzw` per value.
-    #[serde(default)]
     pub tangent_sets: Vec<TangentSetOutput>,
     /// Binormal layers to write.
-    #[serde(default)]
     pub binormal_sets: Vec<TangentSetOutput>,
     /// Smoothing layers to write.
-    #[serde(default)]
     pub smoothing_layers: Vec<SmoothingLayerOutput>,
     /// Crease layers to write.
-    #[serde(default)]
     pub crease_layers: Vec<CreaseLayerOutput>,
-    #[serde(default)]
     pub color_sets: Vec<ColorSetOutput>,
-    #[serde(default)]
     pub edges: Vec<i32>,
     /// Per-triangle indices into `SceneInput::materials`.
-    #[serde(default)]
     pub material_indices: Vec<i32>,
-    #[serde(default)]
     pub skin: Option<SkinInput>,
-    #[serde(default)]
     pub morph_targets: Vec<MorphTargetInput>,
 }
 
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct MorphTargetInput {
     pub name: Option<String>,
     pub control_point_indices: Vec<u32>,
     pub position_deltas: Vec<f32>,
-    #[serde(default)]
     pub normal_deltas: Option<Vec<f32>>,
-    #[serde(default)]
     pub default_weight: f32,
-    #[serde(default = "default_full_morph_weight")]
     pub full_weight: f32,
 }
 
@@ -1195,56 +2109,43 @@ fn default_full_morph_weight() -> f32 {
 }
 
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct SkinClusterInput {
     pub joint_node_id: u32,
     pub control_point_indices: Vec<u32>,
-    #[serde(default)]
     pub render_point_indices: Vec<u32>,
     pub weights: Vec<f32>,
     pub mesh_bind_transform: Vec<f32>,
     pub joint_bind_transform: Vec<f32>,
-    #[serde(default)]
     pub armature_bind_transform: Option<Vec<f32>>,
 }
 
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct BindPoseInput {
     pub node_id: u32,
     pub matrix: Vec<f32>,
 }
 
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct SkinInput {
     pub clusters: Vec<SkinClusterInput>,
-    #[serde(default)]
     pub bind_pose: Vec<BindPoseInput>,
 }
 
 /// A hierarchy-preserving FBX export scene supplied by JavaScript.
 #[cfg(feature = "write")]
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SceneInput {
-    #[serde(default)]
     pub global_settings: Option<GlobalSettingsInput>,
     pub root_nodes: Vec<SceneNodeInput>,
-    #[serde(default)]
     pub materials: Vec<MaterialInput>,
-    #[serde(default)]
     pub textures: Vec<TextureInput>,
-    #[serde(default)]
     pub animations: Vec<AnimationInput>,
 }
 
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 pub struct GlobalSettingsInput {
     pub up_axis: Option<i32>,
     pub up_axis_sign: Option<i32>,
@@ -1276,28 +2177,21 @@ impl From<GlobalSettingsInput> for FbxGlobalSettings {
 
 /// One FBX model node supplied by JavaScript.
 #[cfg(feature = "write")]
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SceneNodeInput {
     /// Stable scene-local node id. Missing ids are assigned deterministically.
-    #[serde(default)]
     pub id: u32,
     pub name: Option<String>,
     /// Row-major local affine transform, as used by `FbxTransform`.
     pub matrix: Option<Vec<f32>>,
-    #[serde(default)]
     pub transform_stack: Option<TransformStackInput>,
-    #[serde(default)]
     pub meshes: Vec<MeshInput>,
     /// Per-mesh material index list, mirroring `FbxMeshInstance::material_indices`.
-    #[serde(default)]
     pub children: Vec<SceneNodeInput>,
 }
 
 /// Raw supported FBX Model stack supplied to the typed writer.
 #[cfg(feature = "write")]
-#[derive(Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 pub struct TransformStackInput {
     pub translation: Option<[f32; 3]>,
     pub rotation: Option<[f32; 3]>,
@@ -1335,8 +2229,7 @@ impl From<TransformStackInput> for FbxTransformStack {
 
 /// Material input supplied by JavaScript for the FBX writer.
 #[cfg(feature = "write")]
-#[derive(Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct MaterialInput {
     pub name: Option<String>,
     pub shading_model: Option<String>,
@@ -1352,13 +2245,11 @@ pub struct MaterialInput {
     pub transparency_factor: Option<f32>,
     pub opacity: Option<f32>,
     pub bump_factor: Option<f32>,
-    #[serde(default)]
     pub textures: Vec<TextureBindingInput>,
 }
 
 #[cfg(feature = "write")]
-#[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy)]
 pub enum TextureSlotInput {
     Diffuse,
     Normal,
@@ -1385,16 +2276,13 @@ impl From<TextureSlotInput> for FbxTextureSlot {
 }
 
 #[cfg(feature = "write")]
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TextureBindingInput {
     pub slot: TextureSlotInput,
     pub texture_index: usize,
 }
 
 #[cfg(feature = "write")]
-#[derive(Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct TextureInput {
     pub name: Option<String>,
     pub content: Option<Vec<u8>>,
@@ -1403,8 +2291,6 @@ pub struct TextureInput {
 
 /// Animation input supplied by JavaScript.
 #[cfg(feature = "write")]
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AnimationInput {
     pub name: Option<String>,
     pub duration: f32,
@@ -1412,21 +2298,16 @@ pub struct AnimationInput {
 }
 
 #[cfg(feature = "write")]
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AnimChannelInput {
-    #[serde(default)]
     pub node_id: u32,
     pub node_name: String,
     pub path: AnimChannelPathInput,
-    #[serde(default)]
     pub morph_target_index: Option<u32>,
     pub sampler: AnimSamplerInput,
 }
 
 #[cfg(feature = "write")]
-#[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy)]
 pub enum AnimChannelPathInput {
     Translation,
     Rotation,
@@ -1447,21 +2328,16 @@ impl From<AnimChannelPathInput> for FbxAnimChannelPath {
 }
 
 #[cfg(feature = "write")]
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AnimSamplerInput {
     pub input: Vec<f32>,
     pub output: Vec<f32>,
     pub interpolation: AnimInterpolationInput,
-    #[serde(default)]
     pub in_tangents: Option<Vec<f32>>,
-    #[serde(default)]
     pub out_tangents: Option<Vec<f32>>,
 }
 
 #[cfg(feature = "write")]
-#[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy)]
 pub enum AnimInterpolationInput {
     Step,
     Linear,
@@ -1481,8 +2357,7 @@ impl From<AnimInterpolationInput> for FbxAnimInterpolation {
 
 /// Export options.
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct ExportOptions {
     /// FBX version (default: 7500 for FBX 7.5)
     pub version: Option<u32>,
@@ -1493,13 +2368,11 @@ pub struct ExportOptions {
     /// axes -- which said one thing while the caller had written another.
     pub global_settings: Option<GlobalSettingsInput>,
     /// Whether binary FBX arrays should be zlib-compressed when that saves space.
-    #[serde(default)]
     pub compression: bool,
 }
 
 /// Export result.
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize)]
 pub struct ExportResult {
     pub success: bool,
     pub binary_data: Option<Vec<u8>>,
@@ -1509,7 +2382,6 @@ pub struct ExportResult {
 
 /// What the FBX writer actually compressed inside the binary container.
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize)]
 pub struct FbxCompressionStats {
     pub requested: bool,
     pub compressed_arrays: usize,
@@ -1529,26 +2401,427 @@ impl FbxCompressionStats {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Writer: JavaScript objects -> Rust input structures
+//
+// The shell feeds the writer back the reader's own output (through
+// `structuredClone`), so every numeric field accepts both typed arrays and
+// plain arrays. Required fields produce a descriptive error when missing.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "write")]
+fn fbx_compression_stats_to_js(stats: &FbxCompressionStats) -> Object {
+    let obj = Object::new();
+    set_bool(&obj, "requested", stats.requested);
+    set_u32(&obj, "compressed_arrays", stats.compressed_arrays as u32);
+    set_u32(
+        &obj,
+        "compressed_raw_bytes",
+        stats.compressed_raw_bytes as u32,
+    );
+    set_u32(
+        &obj,
+        "compressed_stored_bytes",
+        stats.compressed_stored_bytes as u32,
+    );
+    obj
+}
+
+#[cfg(feature = "write")]
+fn export_result_to_js(result: &ExportResult) -> JsValue {
+    let obj = Object::new();
+    set_bool(&obj, "success", result.success);
+    match &result.binary_data {
+        Some(data) => set_js(&obj, "binary_data", &u8_array_to_js(data)),
+        None => set_js(&obj, "binary_data", &JsValue::NULL),
+    }
+    set_opt_string_null(&obj, "error", &result.error);
+    match &result.fbx_stats {
+        Some(stats) => set_js(
+            &obj,
+            "fbx_stats",
+            &fbx_compression_stats_to_js(stats).into(),
+        ),
+        None => set_js(&obj, "fbx_stats", &JsValue::NULL),
+    }
+    obj.into()
+}
+
+#[cfg(feature = "write")]
+fn smoothing_layer_from_js(value: &JsValue) -> Result<SmoothingLayerOutput, String> {
+    Ok(SmoothingLayerOutput {
+        mapping: opt_string_from_js(value, "mapping"),
+        values: required_i32_array(value, "values")?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn crease_layer_from_js(value: &JsValue) -> Result<CreaseLayerOutput, String> {
+    Ok(CreaseLayerOutput {
+        kind: opt_string_from_js(value, "kind").unwrap_or_else(|| "edge".to_string()),
+        mapping: opt_string_from_js(value, "mapping"),
+        values: required_f64_array(value, "values")?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn tangent_set_from_js(value: &JsValue) -> Result<TangentSetOutput, String> {
+    Ok(TangentSetOutput {
+        name: opt_string_from_js(value, "name"),
+        mapping: opt_string_from_js(value, "mapping"),
+        reference: opt_string_from_js(value, "reference"),
+        values: required_f32_array(value, "values")?,
+        indices: required_i32_array(value, "indices")?,
+        has_handedness: opt_bool_from_js(value, "hasHandedness").unwrap_or(false),
+    })
+}
+
+#[cfg(feature = "write")]
+fn color_set_from_js(value: &JsValue) -> Result<ColorSetOutput, String> {
+    Ok(ColorSetOutput {
+        name: opt_string_from_js(value, "name"),
+        mapping: opt_string_from_js(value, "mapping"),
+        reference: opt_string_from_js(value, "reference"),
+        values: required_f32_array(value, "values")?,
+        indices: required_i32_array(value, "indices")?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn uv_set_from_js(value: &JsValue) -> Result<UvSetOutput, String> {
+    Ok(UvSetOutput {
+        name: opt_string_from_js(value, "name"),
+        mapping: opt_string_from_js(value, "mapping"),
+        reference: opt_string_from_js(value, "reference"),
+        values: required_f32_array(value, "values")?,
+        indices: required_i32_array(value, "indices")?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn normal_set_from_js(value: &JsValue) -> Result<NormalSetOutput, String> {
+    Ok(NormalSetOutput {
+        name: opt_string_from_js(value, "name"),
+        mapping: opt_string_from_js(value, "mapping"),
+        reference: opt_string_from_js(value, "reference"),
+        values: required_f32_array(value, "values")?,
+        indices: required_i32_array(value, "indices")?,
+    })
+}
+
+/// Read a `Vec<Layer>` where each element is an object.
+#[cfg(feature = "write")]
+fn layers_from_js<T>(
+    value: &JsValue,
+    field: &str,
+    reader: impl Fn(&JsValue) -> Result<T, String>,
+) -> Result<Vec<T>, String> {
+    match get_field(value, field) {
+        Some(field_value) => {
+            let array = field_value
+                .dyn_ref::<Array>()
+                .ok_or_else(|| format!("{field} must be an array"))?;
+            let mut out = Vec::with_capacity(array.length() as usize);
+            for index in 0..array.length() {
+                out.push(reader(&array.get(index))?);
+            }
+            Ok(out)
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+#[cfg(feature = "write")]
+fn morph_target_input_from_js(value: &JsValue) -> Result<MorphTargetInput, String> {
+    Ok(MorphTargetInput {
+        name: opt_string_from_js(value, "name"),
+        control_point_indices: required_u32_array(value, "controlPointIndices")?,
+        position_deltas: required_f32_array(value, "positionDeltas")?,
+        normal_deltas: optional_f32_array(value, "normalDeltas")?,
+        default_weight: opt_f64_from_js(value, "defaultWeight").unwrap_or(0.0) as f32,
+        full_weight: opt_f64_from_js(value, "fullWeight")
+            .unwrap_or_else(|| default_full_morph_weight() as f64) as f32,
+    })
+}
+
+#[cfg(feature = "write")]
+fn skin_cluster_input_from_js(value: &JsValue) -> Result<SkinClusterInput, String> {
+    Ok(SkinClusterInput {
+        joint_node_id: required_u32(value, "jointNodeId")?,
+        control_point_indices: required_u32_array(value, "controlPointIndices")?,
+        render_point_indices: optional_u32_array(value, "renderPointIndices")?.unwrap_or_default(),
+        weights: required_f32_array(value, "weights")?,
+        mesh_bind_transform: required_f32_array(value, "meshBindTransform")?,
+        joint_bind_transform: required_f32_array(value, "jointBindTransform")?,
+        armature_bind_transform: optional_f32_array(value, "armatureBindTransform")?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn bind_pose_input_from_js(value: &JsValue) -> Result<BindPoseInput, String> {
+    Ok(BindPoseInput {
+        node_id: required_u32(value, "nodeId")?,
+        matrix: required_f32_array(value, "matrix")?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn skin_input_from_js(value: &JsValue) -> Result<SkinInput, String> {
+    Ok(SkinInput {
+        clusters: layers_from_js(value, "clusters", skin_cluster_input_from_js)?,
+        bind_pose: layers_from_js(value, "bindPose", bind_pose_input_from_js)?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn texture_slot_input_from_js(value: &JsValue) -> Result<TextureSlotInput, String> {
+    let text = value
+        .as_string()
+        .ok_or_else(|| "texture slot must be a string".to_string())?;
+    match text.as_str() {
+        "diffuse" => Ok(TextureSlotInput::Diffuse),
+        "normal" => Ok(TextureSlotInput::Normal),
+        "emissive" => Ok(TextureSlotInput::Emissive),
+        "specular" => Ok(TextureSlotInput::Specular),
+        "roughness" => Ok(TextureSlotInput::Roughness),
+        "metallic" => Ok(TextureSlotInput::Metallic),
+        "ambient" => Ok(TextureSlotInput::Ambient),
+        _ => Err(format!("unknown texture slot: {text}")),
+    }
+}
+
+#[cfg(feature = "write")]
+fn texture_binding_input_from_js(value: &JsValue) -> Result<TextureBindingInput, String> {
+    Ok(TextureBindingInput {
+        slot: texture_slot_input_from_js(&required_object(value, "slot")?)?,
+        texture_index: required_u32(value, "textureIndex")? as usize,
+    })
+}
+
+#[cfg(feature = "write")]
+fn texture_input_from_js(value: &JsValue) -> Result<TextureInput, String> {
+    Ok(TextureInput {
+        name: opt_string_from_js(value, "name"),
+        content: optional_u8_array(value, "content")?,
+        filename: opt_string_from_js(value, "filename"),
+    })
+}
+
+#[cfg(feature = "write")]
+fn material_input_from_js(value: &JsValue) -> Result<MaterialInput, String> {
+    Ok(MaterialInput {
+        name: opt_string_from_js(value, "name"),
+        shading_model: opt_string_from_js(value, "shadingModel"),
+        diffuse: optional_vec3(value, "diffuse")?,
+        specular: optional_vec3(value, "specular")?,
+        emissive: optional_vec3(value, "emissive")?,
+        ambient: optional_vec3(value, "ambient")?,
+        diffuse_factor: opt_f64_from_js(value, "diffuseFactor").map(|v| v as f32),
+        specular_factor: opt_f64_from_js(value, "specularFactor").map(|v| v as f32),
+        shininess: opt_f64_from_js(value, "shininess").map(|v| v as f32),
+        emissive_factor: opt_f64_from_js(value, "emissiveFactor").map(|v| v as f32),
+        reflection_factor: opt_f64_from_js(value, "reflectionFactor").map(|v| v as f32),
+        transparency_factor: opt_f64_from_js(value, "transparencyFactor").map(|v| v as f32),
+        opacity: opt_f64_from_js(value, "opacity").map(|v| v as f32),
+        bump_factor: opt_f64_from_js(value, "bumpFactor").map(|v| v as f32),
+        textures: layers_from_js(value, "textures", texture_binding_input_from_js)?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn anim_channel_path_input_from_js(value: &JsValue) -> Result<AnimChannelPathInput, String> {
+    let text = value
+        .as_string()
+        .ok_or_else(|| "animation channel path must be a string".to_string())?;
+    match text.as_str() {
+        "translation" => Ok(AnimChannelPathInput::Translation),
+        "rotation" => Ok(AnimChannelPathInput::Rotation),
+        "scale" => Ok(AnimChannelPathInput::Scale),
+        "morphweight" => Ok(AnimChannelPathInput::MorphWeight),
+        _ => Err(format!("unknown animation channel path: {text}")),
+    }
+}
+
+#[cfg(feature = "write")]
+fn anim_interpolation_input_from_js(value: &JsValue) -> Result<AnimInterpolationInput, String> {
+    let text = value
+        .as_string()
+        .ok_or_else(|| "animation interpolation must be a string".to_string())?;
+    match text.as_str() {
+        "step" => Ok(AnimInterpolationInput::Step),
+        "linear" => Ok(AnimInterpolationInput::Linear),
+        "cubic" => Ok(AnimInterpolationInput::Cubic),
+        _ => Err(format!("unknown animation interpolation: {text}")),
+    }
+}
+
+#[cfg(feature = "write")]
+fn anim_sampler_input_from_js(value: &JsValue) -> Result<AnimSamplerInput, String> {
+    Ok(AnimSamplerInput {
+        input: required_f32_array(value, "input")?,
+        output: required_f32_array(value, "output")?,
+        interpolation: anim_interpolation_input_from_js(&required_object(value, "interpolation")?)?,
+        in_tangents: optional_f32_array(value, "inTangents")?,
+        out_tangents: optional_f32_array(value, "outTangents")?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn anim_channel_input_from_js(value: &JsValue) -> Result<AnimChannelInput, String> {
+    Ok(AnimChannelInput {
+        node_id: opt_u32_from_js(value, "nodeId").unwrap_or(0),
+        node_name: required_string(value, "nodeName")?,
+        path: anim_channel_path_input_from_js(&required_object(value, "path")?)?,
+        morph_target_index: opt_u32_from_js(value, "morphTargetIndex"),
+        sampler: anim_sampler_input_from_js(&required_object(value, "sampler")?)?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn animation_input_from_js(value: &JsValue) -> Result<AnimationInput, String> {
+    Ok(AnimationInput {
+        name: opt_string_from_js(value, "name"),
+        duration: required_f64(value, "duration")? as f32,
+        channels: layers_from_js(value, "channels", anim_channel_input_from_js)?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn global_settings_input_from_js(value: &JsValue) -> Result<GlobalSettingsInput, String> {
+    Ok(GlobalSettingsInput {
+        up_axis: opt_i32_from_js(value, "upAxis"),
+        up_axis_sign: opt_i32_from_js(value, "upAxisSign"),
+        front_axis: opt_i32_from_js(value, "frontAxis"),
+        front_axis_sign: opt_i32_from_js(value, "frontAxisSign"),
+        coord_axis: opt_i32_from_js(value, "coordAxis"),
+        coord_axis_sign: opt_i32_from_js(value, "coordAxisSign"),
+        unit_scale_factor: opt_f64_from_js(value, "unitScaleFactor"),
+        original_unit_scale_factor: opt_f64_from_js(value, "originalUnitScaleFactor"),
+        time_mode: opt_i32_from_js(value, "timeMode"),
+    })
+}
+
+#[cfg(feature = "write")]
+fn transform_stack_input_from_js(value: &JsValue) -> Result<TransformStackInput, String> {
+    Ok(TransformStackInput {
+        translation: optional_vec3(value, "translation")?,
+        rotation: optional_vec3(value, "rotation")?,
+        scaling: optional_vec3(value, "scaling")?,
+        rotation_order: opt_i32_from_js(value, "rotationOrder"),
+        rotation_active: opt_bool_from_js(value, "rotationActive"),
+        pre_rotation: optional_vec3(value, "preRotation")?,
+        post_rotation: optional_vec3(value, "postRotation")?,
+        rotation_offset: optional_vec3(value, "rotationOffset")?,
+        rotation_pivot: optional_vec3(value, "rotationPivot")?,
+        scaling_offset: optional_vec3(value, "scalingOffset")?,
+        scaling_pivot: optional_vec3(value, "scalingPivot")?,
+        inherit_type: opt_i32_from_js(value, "inheritType"),
+    })
+}
+
+#[cfg(feature = "write")]
+fn mesh_input_from_js(value: &JsValue) -> Result<MeshInput, String> {
+    Ok(MeshInput {
+        name: opt_string_from_js(value, "name"),
+        positions: required_f32_array(value, "positions")?,
+        indices: required_u32_array(value, "indices")?,
+        normals: optional_f32_array(value, "normals")?,
+        uvs: optional_f32_array(value, "uvs")?,
+        control_points: optional_f32_array(value, "controlPoints")?,
+        polygon_vertex_indices: optional_i32_array(value, "polygonVertexIndices")?,
+        uv_sets: layers_from_js(value, "uvSets", uv_set_from_js)?,
+        normal_sets: layers_from_js(value, "normalSets", normal_set_from_js)?,
+        tangent_sets: layers_from_js(value, "tangentSets", tangent_set_from_js)?,
+        binormal_sets: layers_from_js(value, "binormalSets", tangent_set_from_js)?,
+        smoothing_layers: layers_from_js(value, "smoothingLayers", smoothing_layer_from_js)?,
+        crease_layers: layers_from_js(value, "creaseLayers", crease_layer_from_js)?,
+        color_sets: layers_from_js(value, "colorSets", color_set_from_js)?,
+        edges: optional_i32_array(value, "edges")?.unwrap_or_default(),
+        material_indices: optional_i32_array(value, "materialIndices")?.unwrap_or_default(),
+        skin: match get_field(value, "skin") {
+            Some(skin) => Some(skin_input_from_js(&skin)?),
+            None => None,
+        },
+        morph_targets: layers_from_js(value, "morphTargets", morph_target_input_from_js)?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn scene_node_input_from_js(value: &JsValue) -> Result<SceneNodeInput, String> {
+    Ok(SceneNodeInput {
+        id: opt_u32_from_js(value, "id").unwrap_or(0),
+        name: opt_string_from_js(value, "name"),
+        matrix: optional_f32_array(value, "matrix")?,
+        transform_stack: match get_field(value, "transformStack") {
+            Some(stack) => Some(transform_stack_input_from_js(&stack)?),
+            None => None,
+        },
+        meshes: layers_from_js(value, "meshes", mesh_input_from_js)?,
+        children: layers_from_js(value, "children", scene_node_input_from_js)?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn scene_input_from_js(value: &JsValue) -> Result<SceneInput, String> {
+    Ok(SceneInput {
+        global_settings: match get_field(value, "globalSettings") {
+            Some(settings) => Some(global_settings_input_from_js(&settings)?),
+            None => None,
+        },
+        root_nodes: layers_from_js(value, "rootNodes", scene_node_input_from_js)?,
+        materials: layers_from_js(value, "materials", material_input_from_js)?,
+        textures: layers_from_js(value, "textures", texture_input_from_js)?,
+        animations: layers_from_js(value, "animations", animation_input_from_js)?,
+    })
+}
+
+/// Read `ExportOptions` into `(global_settings, compression)`.
+#[cfg(feature = "write")]
+fn export_options_from_js(
+    options_js: &JsValue,
+) -> Result<(Option<GlobalSettingsInput>, bool), String> {
+    if !options_js.is_object() {
+        return Ok((None, false));
+    }
+    let global_settings = match get_field(options_js, "globalSettings") {
+        Some(settings) => Some(global_settings_input_from_js(&settings)?),
+        None => None,
+    };
+    let compression = opt_bool_from_js(options_js, "compression").unwrap_or(false);
+    Ok((global_settings, compression))
+}
+
 /// Create FBX binary content from mesh data.
 #[cfg(feature = "write")]
 #[wasm_bindgen]
 pub fn create_fbx(meshes_js: JsValue, options_js: JsValue) -> JsValue {
-    let meshes: Vec<MeshInput> = match serde_wasm_bindgen::from_value(meshes_js) {
+    let meshes: Result<Vec<MeshInput>, String> = (|| {
+        let array = meshes_js
+            .dyn_ref::<Array>()
+            .ok_or_else(|| "meshes must be an array".to_string())?;
+        let mut out = Vec::with_capacity(array.length() as usize);
+        for index in 0..array.length() {
+            out.push(mesh_input_from_js(&array.get(index))?);
+        }
+        Ok(out)
+    })();
+    let meshes = match meshes {
         Ok(m) => m,
         Err(e) => {
             let result = ExportResult {
                 success: false,
                 binary_data: None,
-                error: Some(format!("Invalid mesh data: {}", e)),
+                error: Some(format!("Invalid mesh data: {e}")),
                 fbx_stats: None,
             };
-            return serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL);
+            return export_result_to_js(&result);
         }
     };
 
-    let options: ExportOptions = serde_wasm_bindgen::from_value(options_js).unwrap_or_default();
-    let result = create_fbx_internal(&meshes, options.global_settings, options.compression);
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    let (global_settings, compression) =
+        export_options_from_js(&options_js).unwrap_or((None, false));
+    let result = create_fbx_internal(&meshes, global_settings, compression);
+    export_result_to_js(&result)
 }
 
 /// Create FBX binary content while preserving model hierarchy, materials,
@@ -1556,11 +2829,11 @@ pub fn create_fbx(meshes_js: JsValue, options_js: JsValue) -> JsValue {
 #[cfg(feature = "write")]
 #[wasm_bindgen]
 pub fn create_fbx_scene(scene_js: JsValue, options_js: JsValue) -> JsValue {
-    let options: ExportOptions = serde_wasm_bindgen::from_value(options_js).unwrap_or_default();
-    let result = match serde_wasm_bindgen::from_value::<SceneInput>(scene_js) {
+    let (_, compression) = export_options_from_js(&options_js).unwrap_or((None, false));
+    let result = match scene_input_from_js(&scene_js) {
         Ok(input) => scene_input_to_fbx_scene(input)
             .and_then(|scene| {
-                write_fbx_scene(&scene, options.compression).map_err(|error| error.to_string())
+                write_fbx_scene(&scene, compression).map_err(|error| error.to_string())
             })
             .map(|(binary_data, fbx_stats)| ExportResult {
                 success: true,
@@ -1581,7 +2854,7 @@ pub fn create_fbx_scene(scene_js: JsValue, options_js: JsValue) -> JsValue {
             fbx_stats: None,
         },
     };
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    export_result_to_js(&result)
 }
 
 #[cfg(feature = "write")]
