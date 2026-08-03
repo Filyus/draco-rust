@@ -2027,6 +2027,9 @@ pub struct ExportOptions {
     pub global_settings: Option<GlobalSettingsInput>,
     /// Whether binary FBX arrays should be zlib-compressed when that saves space.
     pub compression: bool,
+    /// zlib level for compressed arrays (see `FbxWriter::with_compression_level`).
+    /// Ignored when `compression` is false.
+    pub compression_level: u8,
 }
 
 /// Export result.
@@ -2433,20 +2436,28 @@ fn scene_input_from_js(value: &JsValue) -> Result<SceneInput, String> {
     })
 }
 
-/// Read `ExportOptions` into `(global_settings, compression)`.
+/// Read `ExportOptions` into `(global_settings, compression, compression_level)`.
+///
+/// `compression_level` defaults to 2, matching `FbxWriter`'s own default: mesh
+/// attribute arrays barely compress better at higher levels (see
+/// `fbx_encoder::write_array_property`), so an absent slider value should
+/// mean the same thing an absent one always meant before this option existed.
 #[cfg(feature = "write")]
 fn export_options_from_js(
     options_js: &JsValue,
-) -> Result<(Option<GlobalSettingsInput>, bool), String> {
+) -> Result<(Option<GlobalSettingsInput>, bool, u8), String> {
     if !options_js.is_object() {
-        return Ok((None, false));
+        return Ok((None, false, 2));
     }
     let global_settings = match get_field(options_js, "globalSettings") {
         Some(settings) => Some(global_settings_input_from_js(&settings)?),
         None => None,
     };
     let compression = opt_bool_from_js(options_js, "compression").unwrap_or(false);
-    Ok((global_settings, compression))
+    let compression_level = opt_u32_from_js(options_js, "compressionLevel")
+        .map(|level| level.min(u32::from(u8::MAX)) as u8)
+        .unwrap_or(2);
+    Ok((global_settings, compression, compression_level))
 }
 
 /// Create FBX binary content from mesh data.
@@ -2476,9 +2487,9 @@ pub fn create_fbx(meshes_js: JsValue, options_js: JsValue) -> JsValue {
         }
     };
 
-    let (global_settings, compression) =
-        export_options_from_js(&options_js).unwrap_or((None, false));
-    let result = create_fbx_internal(&meshes, global_settings, compression);
+    let (global_settings, compression, compression_level) =
+        export_options_from_js(&options_js).unwrap_or((None, false, 2));
+    let result = create_fbx_internal(&meshes, global_settings, compression, compression_level);
     export_result_to_js(&result)
 }
 
@@ -2487,11 +2498,13 @@ pub fn create_fbx(meshes_js: JsValue, options_js: JsValue) -> JsValue {
 #[cfg(feature = "write")]
 #[wasm_bindgen]
 pub fn create_fbx_scene(scene_js: JsValue, options_js: JsValue) -> JsValue {
-    let (_, compression) = export_options_from_js(&options_js).unwrap_or((None, false));
+    let (_, compression, compression_level) =
+        export_options_from_js(&options_js).unwrap_or((None, false, 2));
     let result = match scene_input_from_js(&scene_js) {
         Ok(input) => scene_input_to_fbx_scene(input)
             .and_then(|scene| {
-                write_fbx_scene(&scene, compression).map_err(|error| error.to_string())
+                write_fbx_scene(&scene, compression, compression_level)
+                    .map_err(|error| error.to_string())
             })
             .map(|(binary_data, fbx_stats)| ExportResult {
                 success: true,
@@ -2920,6 +2933,7 @@ fn create_fbx_internal(
     meshes: &[MeshInput],
     global_settings: Option<GlobalSettingsInput>,
     compression: bool,
+    compression_level: u8,
 ) -> ExportResult {
     // The legacy `create_fbx` entry point receives a flat mesh list with no
     // hierarchy, so every mesh becomes its own root Model. Materials,
@@ -2940,7 +2954,7 @@ fn create_fbx_internal(
             }
         }
     };
-    match write_fbx_scene(&scene, compression) {
+    match write_fbx_scene(&scene, compression, compression_level) {
         Ok((binary_data, fbx_stats)) => ExportResult {
             success: true,
             binary_data: Some(binary_data),
@@ -2960,8 +2974,11 @@ fn create_fbx_internal(
 fn write_fbx_scene(
     scene: &FbxScene,
     compression: bool,
+    compression_level: u8,
 ) -> Result<(Vec<u8>, FbxCompressionStats), std::io::Error> {
-    let mut writer = FbxWriter::new().with_compression(compression);
+    let mut writer = FbxWriter::new()
+        .with_compression(compression)
+        .with_compression_level(compression_level);
     writer.add_scene(scene)?;
     let (binary_data, stats) = writer.write_to_vec_with_stats()?;
     Ok((
@@ -3155,12 +3172,59 @@ mod writer_tests {
 
         // No `globalSettings`: the writer's own defaults, which is what a caller
         // that states no space gets.
-        let result = create_fbx_internal(&[mesh], None, false);
+        let result = create_fbx_internal(&[mesh], None, false, 2);
         assert!(result.success);
         assert!(result.binary_data.is_some());
 
         let data = result.binary_data.unwrap();
         assert!(data.len() > 27);
         assert_eq!(&data[0..21], FBX_MAGIC);
+    }
+
+    /// `compressionLevel` has to reach the encoder through this entry point
+    /// specifically, not just through `FbxWriter` directly: a fan of
+    /// triangles repeating a handful of positions gives a deeper search
+    /// something real to find, so two very different levels have to produce
+    /// different stored sizes.
+    #[test]
+    fn compression_level_reaches_create_fbx_internal() {
+        let spokes = 4000;
+        let mut positions = vec![0.0, 0.0, 0.0]; // center
+        let mut indices = Vec::with_capacity(spokes * 3);
+        for i in 0..spokes {
+            positions.extend([(i % 8) as f32, 1.0, 0.0]);
+            let next = (i + 1) % spokes;
+            indices.extend([0, (i + 1) as u32, (next + 1) as u32]);
+        }
+        let mesh = MeshInput {
+            name: Some("Fan".to_string()),
+            positions,
+            indices,
+            normals: None,
+            uvs: None,
+            control_points: None,
+            polygon_vertex_indices: None,
+            uv_sets: Vec::new(),
+            normal_sets: Vec::new(),
+            color_sets: Vec::new(),
+            tangent_sets: Vec::new(),
+            binormal_sets: Vec::new(),
+            smoothing_layers: Vec::new(),
+            crease_layers: Vec::new(),
+            edges: Vec::new(),
+            material_indices: Vec::new(),
+            skin: None,
+            morph_targets: Vec::new(),
+        };
+
+        let shallow = create_fbx_internal(std::slice::from_ref(&mesh), None, true, 1);
+        let deep = create_fbx_internal(std::slice::from_ref(&mesh), None, true, 9);
+        assert!(shallow.success && deep.success);
+        assert_ne!(
+            shallow.binary_data.unwrap().len(),
+            deep.binary_data.unwrap().len(),
+            "level 1 and level 9 produced the same size -- compressionLevel is not \
+             reaching the encoder through create_fbx",
+        );
     }
 }
