@@ -549,6 +549,13 @@ pub struct ExportOptions {
     pub include_uvs: Option<bool>,
     /// Whether to write colors, when the mesh has them.
     pub include_colors: Option<bool>,
+    /// Forces the mesh connectivity coder, or picks automatically.
+    ///
+    /// Absent or `0` leaves the choice to the encoder's own default
+    /// (sequential at speed 10, EdgeBreaker otherwise); `1` forces
+    /// sequential, `2` forces EdgeBreaker. Matches the convention
+    /// `gltf-wasm`'s `compressPrimitive` uses for the same control.
+    pub encoding_method: Option<i32>,
 }
 
 /// Export result. `binary_data` is the payload; `.drc` has no text container.
@@ -783,6 +790,7 @@ fn export_options_from_js(value: &JsValue) -> ExportOptions {
         include_normals: opt_bool_from_js(value, "include_normals"),
         include_uvs: opt_bool_from_js(value, "include_uvs"),
         include_colors: opt_bool_from_js(value, "include_colors"),
+        encoding_method: opt_i32_from_js(value, "encoding_method"),
     }
 }
 
@@ -808,6 +816,14 @@ fn create_drc_internal(input: &MeshInput, options: &ExportOptions) -> ExportResu
     let mut settings = EncoderOptions::new();
     settings.set_global_int("encoding_speed", speed);
     settings.set_global_int("decoding_speed", options.decoding_speed.unwrap_or(speed));
+    // Left untouched for "auto" (absent or 0): the encoder's own default,
+    // applied by never calling this, is what every caller got before this
+    // option existed.
+    match options.encoding_method.unwrap_or(0) {
+        1 => settings.set_encoding_method(0), // force sequential
+        2 => settings.set_encoding_method(1), // force EdgeBreaker
+        _ => {}
+    }
     for (attribute_id, bits) in quantization {
         settings.set_attribute_int(attribute_id, "quantization_bits", bits);
     }
@@ -1185,6 +1201,55 @@ mod tests {
         assert_eq!(
             exported.draco_stats.unwrap().method.as_deref(),
             Some("sequential"),
+        );
+    }
+
+    /// Forcing overrides what speed alone would have picked, in both
+    /// directions: EdgeBreaker at speed 10, where auto always chooses
+    /// sequential, and sequential well below 10, where auto always chooses
+    /// EdgeBreaker.
+    #[test]
+    fn test_encoding_method_overrides_the_speed_default() {
+        let forced_edgebreaker = create_drc_internal(
+            &quad(),
+            &ExportOptions {
+                encoding_speed: Some(10),
+                encoding_method: Some(2),
+                ..Default::default()
+            },
+        );
+        assert!(forced_edgebreaker.success, "{:?}", forced_edgebreaker.error);
+        assert_eq!(
+            forced_edgebreaker.draco_stats.unwrap().method.as_deref(),
+            Some("edgebreaker"),
+        );
+
+        let forced_sequential = create_drc_internal(
+            &quad(),
+            &ExportOptions {
+                encoding_speed: Some(4),
+                encoding_method: Some(1),
+                ..Default::default()
+            },
+        );
+        assert!(forced_sequential.success, "{:?}", forced_sequential.error);
+        assert_eq!(
+            forced_sequential.draco_stats.unwrap().method.as_deref(),
+            Some("sequential"),
+        );
+
+        // 0 (and absent) still means "auto": unforced, speed 4 is EdgeBreaker.
+        let auto = create_drc_internal(
+            &quad(),
+            &ExportOptions {
+                encoding_speed: Some(4),
+                encoding_method: Some(0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            auto.draco_stats.unwrap().method.as_deref(),
+            Some("edgebreaker")
         );
     }
 
