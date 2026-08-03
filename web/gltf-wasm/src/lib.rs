@@ -546,6 +546,12 @@ impl GltfAsset {
     /// exposed. That is rarely what a caller wants: an unquantized attribute
     /// never reaches Draco's integer coder, so no prediction scheme runs on it
     /// and the encoding speed stops changing its size at all.
+    ///
+    /// `encoding_method` is appended last, after every argument an existing
+    /// caller already passes, so a call written before this parameter existed
+    /// keeps compiling: a JavaScript call short of trailing arguments sends
+    /// `undefined` for each, which coerces to `0` crossing into this `u8` --
+    /// and `0` is "auto", the exact behavior those callers already got.
     #[cfg(feature = "draco-encode")]
     #[wasm_bindgen(js_name = compressPrimitive)]
     #[allow(clippy::too_many_arguments)]
@@ -560,6 +566,7 @@ impl GltfAsset {
         texcoord_bits: u8,
         color_bits: u8,
         generic_bits: u8,
+        encoding_method: u8,
     ) -> Result<JsValue, JsValue> {
         let bits = |value: u8| (value > 0).then_some(value);
         self.import
@@ -576,6 +583,7 @@ impl GltfAsset {
                         color: bits(color_bits),
                         generic: bits(generic_bits),
                     },
+                    encoding_method: i32::from(encoding_method),
                     ..CompressionOptions::default()
                 },
             )
