@@ -260,36 +260,6 @@
                         <span>⬇</span> Convert &amp; Download
                     </button>
 
-                    <div id="export-stats" class="stats-box" style="display: none;">
-                        <strong class="stats-box-title">📦 Export Report:</strong>
-                        <div class="stats-box-body">
-                            <div><strong>Format:</strong> <span id="stats-format">-</span></div>
-                            <div><strong>Exported File:</strong> <span id="stats-file-size">-</span></div>
-                            <div><strong>Compression:</strong> <span id="stats-compression">-</span></div>
-                            <div id="stats-draco-details" style="display: none; margin-top: 0.35rem;">
-                                <div class="stats-draco-row"><strong>Draco Payload:</strong> <span id="stats-draco-size">-</span></div>
-                                <div><strong>Compression Savings (binary data):</strong> <span id="stats-draco-savings">-</span></div>
-                                <div><strong>Method:</strong> <span id="stats-method">-</span></div>
-                                <div><strong>Speed:</strong> <span id="stats-speed">-</span></div>
-                                <div><strong>Prediction Schemes:</strong></div>
-                                <div class="stats-prediction-scroll">
-                                    <table id="stats-prediction" class="stats-prediction-table" aria-label="Prediction schemes">
-                                        <thead>
-                                            <tr><th scope="col">Attribute</th><th scope="col">Predictor</th><th scope="col">Transform</th></tr>
-                                        </thead>
-                                        <tbody></tbody>
-                                    </table>
-                                </div>
-                            </div>
-                            <div id="stats-fbx-details" style="display: none; margin-top: 0.35rem;">
-                                <div><strong>FBX Array Compression:</strong> <span id="stats-fbx-method">-</span></div>
-                                <div><strong>Compressed Arrays:</strong> <span id="stats-fbx-arrays">-</span></div>
-                                <div class="stats-fbx-row"><strong>Raw Data:</strong> <span id="stats-fbx-raw">-</span></div>
-                                <div class="stats-fbx-row"><strong>Stored Data:</strong> <span id="stats-fbx-stored">-</span></div>
-                                <div><strong>Compression Savings:</strong> <span id="stats-fbx-savings">-</span></div>
-                            </div>
-                        </div>
-                    </div>
                 </section>
 
             </aside>
@@ -445,7 +415,38 @@
                 </details>
             </aside>
 
-            <aside id="export-sidebar" class="sidebar export-sidebar" style="display: none;"></aside>
+            <aside id="export-sidebar" class="sidebar export-sidebar" style="display: none;">
+                <div id="export-stats" class="card stats-box" style="display: none;">
+                    <h2>📦 Export Report:</h2>
+                    <div class="stats-box-body">
+                        <div><strong>Format:</strong> <span id="stats-format">-</span></div>
+                        <div><strong>Exported File:</strong> <span id="stats-file-size">-</span></div>
+                        <div><strong>Compression:</strong> <span id="stats-compression">-</span></div>
+                        <div id="stats-draco-details" style="display: none; margin-top: 0.35rem;">
+                            <div class="stats-draco-row"><strong>Draco Payload:</strong> <span id="stats-draco-size">-</span></div>
+                            <div><strong>Compression Savings (binary data):</strong> <span id="stats-draco-savings">-</span></div>
+                            <div><strong>Method:</strong> <span id="stats-method">-</span></div>
+                            <div><strong>Speed:</strong> <span id="stats-speed">-</span></div>
+                            <div><strong>Prediction Schemes:</strong></div>
+                            <div class="stats-prediction-scroll">
+                                <table id="stats-prediction" class="stats-prediction-table" aria-label="Prediction schemes">
+                                    <thead>
+                                        <tr><th scope="col">Attribute</th><th scope="col">Predictor</th><th scope="col">Transform</th></tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div id="stats-fbx-details" style="display: none; margin-top: 0.35rem;">
+                            <div><strong>FBX Array Compression:</strong> <span id="stats-fbx-method">-</span></div>
+                            <div><strong>Compressed Arrays:</strong> <span id="stats-fbx-arrays">-</span></div>
+                            <div class="stats-fbx-row"><strong>Raw Data:</strong> <span id="stats-fbx-raw">-</span></div>
+                            <div class="stats-fbx-row"><strong>Stored Data:</strong> <span id="stats-fbx-stored">-</span></div>
+                            <div><strong>Compression Savings:</strong> <span id="stats-fbx-savings">-</span></div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
 
             <!-- The single warnings panel; app.js moves it under the Export panel. -->
             <aside id="scene-warnings-section" class="card scene-warnings-section" hidden>

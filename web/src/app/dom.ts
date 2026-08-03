@@ -165,7 +165,8 @@ if (sidebar && sceneInfo && sceneInfo.parentElement !== sidebar) {
   sidebar.append(sceneInfo);
 }
 if (exportSidebar && exportSection && exportSection.parentElement !== exportSidebar) {
-  exportSidebar.append(exportSection);
+  if (exportStats.parentElement === exportSidebar) exportSidebar.insertBefore(exportSection, exportStats);
+  else exportSidebar.append(exportSection);
 }
 // Every warning the app produces lands in this one card, directly under Export.
 if (exportSidebar && sceneWarningsSection && sceneWarningsSection.parentElement !== exportSidebar) {

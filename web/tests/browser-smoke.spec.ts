@@ -252,6 +252,8 @@ test('FBX SceneDocument exports through the typed FBX writer', async ({ page }) 
   await expect(page.locator('#scene-panel')).toBeVisible();
   expect(await page.locator('#scene-panel').evaluate((element) => Boolean(element.closest('#scene-section')))).toBe(true);
   expect(await page.locator('#export-section').evaluate((element) => Boolean(element.closest('#export-sidebar')))).toBe(true);
+  expect(await page.locator('#export-stats').evaluate((element) => Boolean(element.closest('#export-sidebar')))).toBe(true);
+  expect(await page.locator('#export-stats').evaluate((element) => element.parentElement?.children[1] === element)).toBe(true);
   // Warnings have a single home, directly under the Export panel.
   await expect(page.locator('#warnings-container')).toHaveCount(0);
   expect(await page.locator('#scene-warnings-section').evaluate((element) => Boolean(element.closest('#export-sidebar')))).toBe(true);
