@@ -34,6 +34,8 @@ import {
   element,
   encodingMethod,
   encodingSpeed,
+  fbxCompressionLevel,
+  fbxCompressionLevelRow,
   useFbxCompression,
   useFbxLegacy,
   exportBtn,
@@ -322,9 +324,19 @@ function setupEventListeners() {
   updateMethodSummary();
   includeNormals.addEventListener('change', clearExportReport);
   includeUvs.addEventListener('change', clearExportReport);
-  useFbxCompression.addEventListener('change', clearExportReport);
+  useFbxCompression.addEventListener('change', () => {
+    clearExportReport();
+    fbxCompressionLevelRow.style.display = useFbxCompression.checked ? 'block' : 'none';
+  });
+  fbxCompressionLevelRow.style.display = useFbxCompression.checked ? 'block' : 'none';
+  fbxCompressionLevel.addEventListener('input', () => {
+    clearExportReport();
+    element('fbx-compression-level-value').textContent = fbxCompressionLevel.value;
+    updateQuantThumbColor(fbxCompressionLevel);
+  });
+  updateQuantThumbColor(fbxCompressionLevel);
   useFbxLegacy.addEventListener('change', clearExportReport);
-  
+
   // Draco checkbox
   useDraco.addEventListener('change', () => {
     clearExportReport();

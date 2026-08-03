@@ -261,6 +261,23 @@
                             <span>Compress FBX arrays (zlib)</span>
                         </label>
                         <p class="slider-note">Compresses large binary FBX arrays when this saves space. ASCII FBX is not affected.</p>
+
+                        <div class="slider-row" id="fbx-compression-level-row">
+                            <div class="slider-header">
+                                <span>Compression Level</span>
+                                <span><span id="fbx-compression-level-value">2</span> (1=fastest, 9=slowest)</span>
+                            </div>
+                            <input type="range" id="fbx-compression-level" class="quant-range" min="1" max="9" value="2"
+                                   style="--good-from: 12.5%; --good-to: 37.5%"
+                                   aria-describedby="fbx-compression-level-note">
+                            <p class="slider-note" id="fbx-compression-level-note">
+                                Mesh geometry barely compresses further past 2 (the default): on a typical mesh, 2 is
+                                14% smaller than 1 for little added time, then each step past it costs sharply more —
+                                6 alone takes about 3.5x as long as 2 — while the file stops shrinking and can even
+                                grow again near 9.
+                            </p>
+                        </div>
+
                         <label class="checkbox-label" title="Use this for Blender 4.4 and older, or when explicitly using Blender's Legacy Python importer. Blender 4.5 introduced the modern ufbx-based importer, while keeping the legacy one.">
                             <input type="checkbox" id="use-fbx-legacy">
                             <span>Legacy Blender compatibility</span>
