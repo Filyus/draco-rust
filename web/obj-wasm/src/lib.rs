@@ -141,47 +141,59 @@ fn parse_obj_internal(content: &str) -> ParseResult {
             continue;
         }
 
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.is_empty() {
+        // Tokenized with a forward-only iterator rather than collected into a
+        // Vec: on a 51MB file that is one heap allocation per line (and,
+        // inside "f", one more per face-vertex token below) purely to hold
+        // tokens that are only ever read in sequence. `tokens` starts past the
+        // keyword in every arm, matching what `parts[1..]` used to mean.
+        let mut tokens = line.split_whitespace();
+        let Some(keyword) = tokens.next() else {
             continue;
-        }
+        };
 
-        match parts[0] {
-            "v" if parts.len() >= 4 => {
-                if let (Ok(x), Ok(y), Ok(z)) = (
-                    parts[1].parse::<f32>(),
-                    parts[2].parse::<f32>(),
-                    parts[3].parse::<f32>(),
-                ) {
-                    positions.push([x, y, z]);
-                } else {
-                    warnings.push(format!("Line {}: Invalid vertex coordinates", line_num + 1));
+        match keyword {
+            "v" => {
+                if let (Some(x), Some(y), Some(z)) = (tokens.next(), tokens.next(), tokens.next()) {
+                    if let (Ok(x), Ok(y), Ok(z)) =
+                        (x.parse::<f32>(), y.parse::<f32>(), z.parse::<f32>())
+                    {
+                        positions.push([x, y, z]);
+                    } else {
+                        warnings.push(format!("Line {}: Invalid vertex coordinates", line_num + 1));
+                    }
                 }
             }
-            "vn" if parts.len() >= 4 => {
-                if let (Ok(x), Ok(y), Ok(z)) = (
-                    parts[1].parse::<f32>(),
-                    parts[2].parse::<f32>(),
-                    parts[3].parse::<f32>(),
-                ) {
-                    normals.push([x, y, z]);
+            "vn" => {
+                if let (Some(x), Some(y), Some(z)) = (tokens.next(), tokens.next(), tokens.next()) {
+                    if let (Ok(x), Ok(y), Ok(z)) =
+                        (x.parse::<f32>(), y.parse::<f32>(), z.parse::<f32>())
+                    {
+                        normals.push([x, y, z]);
+                    }
                 }
             }
-            "vt" if parts.len() >= 3 => {
-                if let (Ok(u), Ok(v)) = (parts[1].parse::<f32>(), parts[2].parse::<f32>()) {
-                    texcoords.push([u, v]);
+            "vt" => {
+                if let (Some(u), Some(v)) = (tokens.next(), tokens.next()) {
+                    if let (Ok(u), Ok(v)) = (u.parse::<f32>(), v.parse::<f32>()) {
+                        texcoords.push([u, v]);
+                    }
                 }
             }
             "usemtl" => {
-                current_material = (!parts[1..].is_empty()).then(|| parts[1..].join(" "));
+                let rest: Vec<&str> = tokens.collect();
+                current_material = (!rest.is_empty()).then(|| rest.join(" "));
             }
             "f" => {
                 let mut face_verts: Vec<ObjVertexRef> = Vec::new();
-                for part in parts.iter().skip(1) {
-                    let indices: Vec<&str> = part.split('/').collect();
-                    let vi: usize = indices[0].parse::<usize>().unwrap_or(1) - 1;
-                    let ti: Option<usize> = indices
-                        .get(1)
+                for part in tokens {
+                    // `part` comes from `split_whitespace`, which never yields
+                    // an empty slice, so `part.split('/')` always has a first
+                    // element -- the same guarantee the old `indices[0]`
+                    // relied on.
+                    let mut corner = part.split('/');
+                    let vi: usize = corner.next().unwrap().parse::<usize>().unwrap_or(1) - 1;
+                    let ti: Option<usize> = corner
+                        .next()
                         .and_then(|s| {
                             if s.is_empty() {
                                 None
@@ -190,8 +202,8 @@ fn parse_obj_internal(content: &str) -> ParseResult {
                             }
                         })
                         .map(|i| i - 1);
-                    let ni: Option<usize> = indices
-                        .get(2)
+                    let ni: Option<usize> = corner
+                        .next()
                         .and_then(|s| s.parse::<usize>().ok())
                         .map(|i| i - 1);
                     face_verts.push((vi, ti, ni));
