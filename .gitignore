@@ -41,6 +41,7 @@ Makefile
 !testdata/test_nm_seq_100.obj
 !testdata/mat_test.obj
 !testdata/cube_att_material.obj
+!testdata/test_cube_shared.obj
 *.a
 *.o
 *.dylib

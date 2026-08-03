@@ -7,6 +7,9 @@
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
+#[cfg(feature = "read")]
+use std::collections::HashMap;
+
 /// Initialize panic hook for better error messages in browser console.
 #[wasm_bindgen(start)]
 pub fn init() {
@@ -223,19 +226,27 @@ fn build_mesh(
     warnings: &mut Vec<String>,
     material: Option<String>,
 ) -> MeshData {
-    // Convert to indexed mesh (triangulate if needed).
+    // Convert to indexed mesh (triangulate if needed). Deduplicate corners in
+    // face-traversal order, matching the crate/C++ OBJ loader behavior: two
+    // corners sharing (position, normal, uv) indices are one vertex.
     let mut out_positions: Vec<f32> = Vec::new();
     let mut out_normals: Vec<f32> = Vec::new();
     let mut out_uvs: Vec<f32> = Vec::new();
     let mut out_indices: Vec<u32> = Vec::new();
+    let mut vertex_map: HashMap<ObjVertexRef, u32> = HashMap::new();
 
-    // Simple approach: expand all vertices (no deduplication for simplicity)
-    let mut vertex_count: u32 = 0;
     for face in faces {
         // Triangulate polygon (fan triangulation)
         for i in 1..face.len() - 1 {
             let triangle = [&face[0], &face[i], &face[i + 1]];
             for &(vi, ti, ni) in &triangle {
+                let vertex_ref = (*vi, *ti, *ni);
+                if let Some(&point_id) = vertex_map.get(&vertex_ref) {
+                    out_indices.push(point_id);
+                    continue;
+                }
+
+                let point_id = (out_positions.len() / 3) as u32;
                 if *vi < positions.len() {
                     out_positions.extend_from_slice(&positions[*vi]);
                 } else {
@@ -259,8 +270,8 @@ fn build_mesh(
                     }
                 }
 
-                out_indices.push(vertex_count);
-                vertex_count += 1;
+                vertex_map.insert(vertex_ref, point_id);
+                out_indices.push(point_id);
             }
         }
     }
@@ -526,8 +537,32 @@ f 1 3 4
         let result = parse_obj_internal(obj);
         assert!(result.success);
         assert_eq!(result.meshes.len(), 1);
-        assert_eq!(result.meshes[0].positions.len(), 18); // 6 vertices * 3 components
+        assert_eq!(result.meshes[0].positions.len(), 12); // 4 unique vertices * 3
         assert_eq!(result.meshes[0].indices.len(), 6); // 2 triangles * 3 indices
+        assert!(result.meshes[0].indices.iter().all(|&i| i < 4));
+    }
+
+    #[test]
+    fn test_dedups_shared_vertices() {
+        let result = parse_obj_internal(include_str!("../../../testdata/test_cube_shared.obj"));
+        assert!(result.success);
+        assert_eq!(result.meshes.len(), 1);
+        assert_eq!(result.meshes[0].positions.len(), 24); // 8 vertices * 3
+        assert_eq!(result.meshes[0].indices.len(), 36); // 12 triangles * 3
+        assert!(result.meshes[0].indices.iter().all(|&i| i < 8));
+    }
+
+    #[test]
+    fn test_dedups_by_full_corner_not_position() {
+        // The same position with different normals must stay separate vertices.
+        let obj =
+            "v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nvn 0 0 -1\nf 1//1 2//1 3//1\nf 1//2 3//2 2//2\n";
+        let result = parse_obj_internal(obj);
+
+        assert!(result.success);
+        assert_eq!(result.meshes[0].positions.len(), 18); // 6 corner-vertices * 3
+        assert_eq!(result.meshes[0].normals.len(), 18);
+        assert_eq!(result.meshes[0].indices.len(), 6);
     }
 
     #[test]
@@ -542,6 +577,7 @@ f 1 3 4
             result.meshes[0].normals.len()
         );
         assert_eq!(result.meshes[0].indices.len(), 170 * 3);
+        assert!(result.meshes[0].positions.len() < 170 * 3 * 3); // deduplicated
     }
 
     #[test]
