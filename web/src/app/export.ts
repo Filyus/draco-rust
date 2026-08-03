@@ -166,7 +166,8 @@ export function displayExportStats(format: string, result: ExportResult) {
     const storedBytes = fbxStats.compressed_stored_bytes;
     exportStatFields.fbxMethod.textContent = 'zlib';
     exportStatFields.fbxArrays.textContent = String(fbxStats.compressed_arrays);
-    exportStatFields.fbxPayload.textContent = `${formatFileSize(storedBytes)} stored / ${formatFileSize(rawBytes)} raw`;
+    exportStatFields.fbxStored.textContent = formatFileSize(storedBytes);
+    exportStatFields.fbxRaw.textContent = formatFileSize(rawBytes);
     exportStatFields.fbxSavings.textContent = rawBytes > 0
       ? `${((1 - storedBytes / rawBytes) * 100).toFixed(1)}%`
       : '—';

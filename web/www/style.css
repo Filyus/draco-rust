@@ -664,6 +664,13 @@ input[type="range"].zoned-range::-moz-range-progress { background: transparent; 
     pointer-events: none;
 }
 
+.stats-fbx-row {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    white-space: nowrap;
+}
+
 /* Viewer */
 #viewer-section {
     min-height: 0;

@@ -134,7 +134,8 @@ export const exportStatFields = {
   share: element('stats-draco-share'),
   fbxMethod: element('stats-fbx-method'),
   fbxArrays: element('stats-fbx-arrays'),
-  fbxPayload: element('stats-fbx-payload'),
+  fbxStored: element('stats-fbx-stored'),
+  fbxRaw: element('stats-fbx-raw'),
   fbxSavings: element('stats-fbx-savings'),
 };
 

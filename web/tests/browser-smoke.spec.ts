@@ -2367,7 +2367,7 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
 
   await page.locator('[data-choice-for="export-format"] [data-value="fbx"]').click();
   await expect(page.locator('#fbx-options')).toBeVisible();
-  await page.locator('#use-fbx-compression').check();
+  await expect(page.locator('#use-fbx-compression')).toBeChecked();
   const compressedFbxDownload = page.waitForEvent('download');
   await page.locator('#export-btn').click();
   await compressedFbxDownload;
@@ -2375,7 +2375,8 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
   await expect(page.locator('#stats-fbx-details')).toBeVisible();
   await expect(page.locator('#stats-fbx-method')).toHaveText('zlib');
   await expect(page.locator('#stats-fbx-arrays')).toHaveText(/\d+/);
-  await expect(page.locator('#stats-fbx-payload')).toContainText('stored');
+  await expect(page.locator('#stats-fbx-stored')).toHaveText(/\d/);
+  await expect(page.locator('#stats-fbx-raw')).toHaveText(/\d/);
   await expect(page.locator('#stats-fbx-savings')).toHaveText(/\d+\.\d%/);
 
   await page.locator('#position-bits').evaluate((input) => {
