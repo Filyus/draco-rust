@@ -250,15 +250,19 @@
                         <span>⬇</span> Convert &amp; Download
                     </button>
 
-                    <div id="compression-stats" class="stats-box" style="display: none; margin-top: 1rem; padding: 1rem; background: #1e3a5f; border-radius: 8px; border: 1px solid #3b82f6; color: #f8fafc;">
-                        <strong style="color: #60a5fa;">✅ Compression Statistics:</strong>
+                    <div id="export-stats" class="stats-box" style="display: none; margin-top: 1rem; padding: 1rem; background: #1e3a5f; border-radius: 8px; border: 1px solid #3b82f6; color: #f8fafc;">
+                        <strong style="color: #60a5fa;">📦 Export Report:</strong>
                         <div style="margin-top: 0.5rem; font-size: 0.9rem; color: #e2e8f0;">
-                            <div><strong>Method:</strong> <span id="stats-method">-</span></div>
-                            <div><strong>Speed:</strong> <span id="stats-speed">-</span></div>
-                            <div><strong>Prediction Schemes:</strong> <span id="stats-prediction">-</span></div>
-                            <div><strong>Draco Payload:</strong> <span id="stats-draco-size">-</span></div>
+                            <div><strong>Format:</strong> <span id="stats-format">-</span></div>
                             <div><strong>Exported File:</strong> <span id="stats-file-size">-</span></div>
-                            <div><strong>Draco Share:</strong> <span id="stats-draco-share">-</span></div>
+                            <div><strong>Compression:</strong> <span id="stats-compression">-</span></div>
+                            <div id="stats-draco-details" style="display: none; margin-top: 0.35rem;">
+                                <div><strong>Draco Payload:</strong> <span id="stats-draco-size">-</span></div>
+                                <div><strong>Draco Share:</strong> <span id="stats-draco-share">-</span></div>
+                                <div><strong>Method:</strong> <span id="stats-method">-</span></div>
+                                <div><strong>Speed:</strong> <span id="stats-speed">-</span></div>
+                                <div><strong>Prediction Schemes:</strong> <span id="stats-prediction">-</span></div>
+                            </div>
                         </div>
                     </div>
                 </section>

@@ -1,6 +1,6 @@
 import { formatFileSize } from './format.ts';
 import { errorMessage, log } from './log.ts';
-import { colorBits, compressionStatFields, compressionStats, dracoOptions, element, encodingSpeed, exportFormat, genericBits, normalBits, positionBits, texcoordBits, useDraco } from './dom.ts';
+import { colorBits, dracoOptions, element, encodingSpeed, exportFormat, exportStatFields, exportStats, genericBits, normalBits, positionBits, texcoordBits, useDraco } from './dom.ts';
 import { state } from './state.ts';
 import { runExport } from './export-branches.ts';
 import type { DracoStats, ExportOutcome, ExportResult, ExportSettings } from './export-branches.ts';
@@ -34,13 +34,11 @@ export function updateExportOptions() {
  * Put away what the last export reported.
  *
  * The panel describes a file that was written, not the one that is open, so it
- * has to go the moment a different file is loaded. Left up, it read as a
- * property of the new file — opening a 1.8 KB `.drc` right after exporting one
- * showed "Compressed Size: 1.8 KB" beside it, which is the same number for an
- * entirely different reason.
+ * has to go the moment a different file is loaded. Left up, it reads as a
+ * property of the new file rather than as a report about the previous export.
  */
-export function clearCompressionStats() {
-  compressionStats.style.display = 'none';
+export function clearExportStats() {
+  exportStats.style.display = 'none';
 }
 
 /** The export controls as the routes want them: plain values, read once. */
@@ -80,13 +78,7 @@ export async function exportFile() {
     const result = outcome.result;
     if (result && result.success) {
       downloadResult(result, settings.format);
-      if (result.draco_stats) {
-        displayCompressionStats({
-          ...result.draco_stats,
-          output_size: exportResultSize(result),
-        });
-      }
-      else compressionStats.style.display = 'none';
+      displayExportStats(settings.format, result);
       log(result.message || 'Export complete!', 'success');
     } else {
       log(`Export failed: ${result?.error || 'Unknown error'}`, 'error');
@@ -138,34 +130,37 @@ export function downloadResult(result: ExportResult, format: string) {
   URL.revokeObjectURL(url);
 }
 
-/**
- * Show what the Draco pass actually wrote.
- *
- * Only the encoder knows which method and prediction scheme it chose, and the
- * binding reports neither, so those read as unknown rather than as a guess.
- */
-export function displayCompressionStats(stats: DracoStats) {
-  compressionStatFields.method.textContent = stats.method || '—';
-  compressionStatFields.speed.textContent = `${stats.speed} (${stats.speed === 0 ? 'best compression' : stats.speed === 10 ? 'fastest' : 'balanced'})`;
-  renderPredictionSchemes(stats.prediction_scheme);
-  const outputSize = stats.output_size ?? stats.compressed_size;
-  compressionStatFields.dracoSize.textContent = formatFileSize(stats.compressed_size);
-  compressionStatFields.fileSize.textContent = formatFileSize(outputSize);
-  compressionStatFields.share.textContent = outputSize > 0
-    ? `${(stats.compressed_size / outputSize * 100).toFixed(1)}%`
-    : '—';
-  compressionStats.style.display = 'block';
-  log(
-    `Compression: ${stats.primitives ?? 0} primitives at speed ${stats.speed}, `
-    + `Draco payload ${formatFileSize(stats.compressed_size)}, `
-    + `exported file ${formatFileSize(outputSize)}`,
-    'success',
-  );
+/** Show the complete result of an export, with Draco details when available. */
+export function displayExportStats(format: string, result: ExportResult) {
+  const outputSize = exportResultSize(result);
+  const stats = result.draco_stats;
+  exportStatFields.format.textContent = format === 'fbx-legacy'
+    ? 'FBX (legacy)'
+    : format.toUpperCase();
+  exportStatFields.fileSize.textContent = outputSize === undefined ? '—' : formatFileSize(outputSize);
+  exportStatFields.compression.textContent = stats
+    ? `Draco (${stats.primitives} ${stats.primitives === 1 ? 'primitive' : 'primitives'})`
+    : 'None';
+
+  if (stats) {
+    const dracoSize = stats.compressed_size;
+    exportStatFields.method.textContent = stats.method || '—';
+    exportStatFields.speed.textContent = `${stats.speed} (${stats.speed === 0 ? 'best compression' : stats.speed === 10 ? 'fastest' : 'balanced'})`;
+    renderPredictionSchemes(stats.prediction_scheme);
+    exportStatFields.dracoSize.textContent = formatFileSize(dracoSize);
+    exportStatFields.share.textContent = outputSize && outputSize > 0
+      ? `${(dracoSize / outputSize * 100).toFixed(1)}%`
+      : '—';
+    exportStatFields.dracoDetails.style.display = 'block';
+  } else {
+    exportStatFields.dracoDetails.style.display = 'none';
+  }
+  exportStats.style.display = 'block';
 }
 
 /** Render one compact row per attribute and keep the transform in a tooltip. */
 function renderPredictionSchemes(value?: string) {
-  const container = compressionStatFields.prediction;
+  const container = exportStatFields.prediction;
   container.replaceChildren();
   if (!value) {
     container.textContent = '—';

@@ -115,14 +115,17 @@ export const meshStatFields = {
   hasUvs: element('has-uvs'),
 };
 
-/** The Draco compression report, shown only after an encode. */
-export const compressionStats = element('compression-stats');
-export const compressionStatFields = {
+/** The report for the most recent successful export. */
+export const exportStats = element('export-stats');
+export const exportStatFields = {
+  format: element('stats-format'),
+  compression: element('stats-compression'),
+  fileSize: element('stats-file-size'),
+  dracoDetails: element('stats-draco-details'),
   method: element('stats-method'),
   speed: element('stats-speed'),
   prediction: element('stats-prediction'),
   dracoSize: element('stats-draco-size'),
-  fileSize: element('stats-file-size'),
   share: element('stats-draco-share'),
 };
 

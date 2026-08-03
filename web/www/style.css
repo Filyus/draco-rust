@@ -582,7 +582,7 @@ input[type="range"].zoned-range::-moz-range-progress { background: transparent; 
     font-size: 0.81rem;
 }
 
-#compression-stats {
+#export-stats {
     margin-top: 0 !important;
     padding: 10px !important;
     border: 0 !important;

@@ -84,7 +84,7 @@ import {
   updateAnimationScrub,
   updateAnimationUi,
 } from './app/animation-ui.ts';
-import { clearCompressionStats, exportFile, updateExportOptions } from './app/export.ts';
+import { clearExportStats, exportFile, updateExportOptions } from './app/export.ts';
 import {
   ensureViewer,
   installViewerToggles,
@@ -392,7 +392,7 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
     state.currentGltfProvenance = null;
     state.currentVariant = null;
     clearWarningPanel();
-    clearCompressionStats();
+    clearExportStats();
 
     // Counted rather than assumed: with a folder the selection is arbitrarily
     // large and the number that means anything is what the model actually
@@ -551,7 +551,7 @@ function clearFile() {
   scenePanel.hidden = true;
   sceneInfo.hidden = true;
   clearWarningPanel();
-  clearCompressionStats();
+  clearExportStats();
   sceneSection.style.display = 'none';
   exportSidebar.style.display = 'none';
   workspace.classList.remove('export-loaded');

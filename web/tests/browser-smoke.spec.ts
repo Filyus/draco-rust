@@ -2276,6 +2276,11 @@ test('vertex colours survive an export to PLY and to .drc', async ({ page }) => 
   };
 
   const ply = (await exportTo('ply')).toString('utf8');
+  await expect(page.locator('#export-stats')).toBeVisible();
+  await expect(page.locator('#stats-format')).toHaveText('PLY');
+  await expect(page.locator('#stats-compression')).toHaveText('None');
+  await expect(page.locator('#stats-file-size')).toHaveText(/\d/);
+  await expect(page.locator('#stats-draco-details')).toBeHidden();
   expect(ply).toContain('property uchar red');
   // The corners, in the file's own order: opaque red, green, blue.
   const vertexLines = ply.split(/\r?\n/).slice(ply.split(/\r?\n/).indexOf('end_header') + 1, -2);
@@ -2327,7 +2332,7 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
     const compressedDownload = page.waitForEvent('download');
     await page.locator('#export-btn').click();
     await compressedDownload;
-    await expect(page.locator('#compression-stats')).toBeVisible();
+    await expect(page.locator('#export-stats')).toBeVisible();
     await expect(page.locator('#stats-method')).toHaveText('edgebreaker');
     await expect(page.locator('#stats-prediction')).toContainText('POSITION:');
     await expect(page.locator('#stats-prediction')).not.toContainText('MeshPrediction');
@@ -2362,7 +2367,7 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
   const downloadPromise = page.waitForEvent('download');
   await page.locator('#export-btn').click();
   const bytes = await readFile((await (await downloadPromise).path())!);
-  await expect(page.locator('#compression-stats')).toBeVisible();
+  await expect(page.locator('#export-stats')).toBeVisible();
   // Which method the encoder settled on is its decision, not the caller's, and
   // the panel used to have no way to name it.
   await expect(page.locator('#stats-method')).toHaveText('edgebreaker');
@@ -2377,7 +2382,7 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
   await expect(page.locator('#console')).toContainText('Successfully parsed stale.drc');
   await expect(page.locator('#scene-node-stat')).toHaveText('—');
   await expect(page.locator('#scene-material-stat')).toHaveText('—');
-  await expect(page.locator('#compression-stats')).toBeHidden();
+  await expect(page.locator('#export-stats')).toBeHidden();
   // The geometry readout shares the row and must still be the new file's.
   await expect(page.locator('#triangle-count')).toHaveText('12');
 });
