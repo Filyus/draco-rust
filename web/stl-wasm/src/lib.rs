@@ -44,9 +44,13 @@ pub fn supported_extensions() -> Vec<String> {
 #[cfg(any(feature = "read", feature = "write"))]
 use draco_core::draco_types::DataType;
 #[cfg(any(feature = "read", feature = "write"))]
-use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use draco_core::geometry_attribute::GeometryAttributeType;
+#[cfg(feature = "write")]
+use draco_core::geometry_attribute::PointAttribute;
 #[cfg(any(feature = "read", feature = "write"))]
-use draco_core::geometry_indices::{FaceIndex, PointIndex};
+use draco_core::geometry_indices::FaceIndex;
+#[cfg(feature = "write")]
+use draco_core::geometry_indices::PointIndex;
 #[cfg(any(feature = "read", feature = "write"))]
 use draco_core::mesh::Mesh;
 

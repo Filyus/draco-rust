@@ -46,7 +46,9 @@ pub fn supported_extensions() -> Vec<String> {
 }
 
 use draco_core::draco_types::DataType;
-use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use draco_core::geometry_attribute::GeometryAttributeType;
+#[cfg(feature = "write")]
+use draco_core::geometry_attribute::PointAttribute;
 use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 
@@ -410,7 +412,7 @@ fn read_attribute_as_f32(
 ///
 /// The pair is written together because they are one contract: a name this side
 /// cannot parse means an attribute that decoded and cannot be written again.
-#[cfg(any(feature = "read", feature = "write"))]
+#[cfg(feature = "read")]
 fn data_type_name(data_type: DataType) -> &'static str {
     match data_type {
         DataType::Int8 => "int8",
