@@ -62,6 +62,7 @@ const FBX_FOOTER_MAGIC: [u8; 16] = [
 pub(crate) struct WriterOptions {
     pub(crate) compress: bool,
     pub(crate) compression_threshold: usize,
+    pub(crate) compression_level: u8,
 }
 
 impl Default for WriterOptions {
@@ -69,6 +70,7 @@ impl Default for WriterOptions {
         Self {
             compress: false,
             compression_threshold: 128,
+            compression_level: 2,
         }
     }
 }
@@ -312,20 +314,20 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         #[cfg(feature = "compression")]
         if should_compress {
             use miniz_oxide::deflate::compress_to_vec_zlib;
-            // Mesh attribute arrays are the near-noise deflate is bad at: a
-            // 263k-vertex benchmark mesh landed at 94-96% of its raw size at
-            // every level from 1 to 6 alike, on positions/normals/uvs/colors,
-            // because floating-point geometry has too little repeated
-            // structure for LZ77 to exploit regardless of search depth. Level
-            // 6 spent roughly 3.4x the time of level 2 for about 6% less
-            // output on that mesh; level 2 also beat level 1 on both size and
-            // time in the same measurement, which is deflate's search-depth
-            // schedule being non-monotonic at the low end rather than a
-            // fluke -- it was measured twice. Decoded content is identical at
-            // every level, as it has to be: the level only shapes how hard the
-            // encoder looks for matches, never what the decompressor reads
-            // back.
-            let compressed = compress_to_vec_zlib(&raw_data, 2);
+            // `options.compression_level` defaults to 2 (see
+            // FbxWriter::with_compression_level) rather than the conventional
+            // 6. Mesh attribute arrays are the near-noise deflate is bad at: a
+            // 263k-vertex benchmark mesh (positions/normals/uvs/colors, on
+            // miniz_oxide 0.9.1) measured 1 at 184ms/4.66MB, 2 at
+            // 215ms/4.00MB, then 3-9 climbing to 2.57s while size mostly
+            // stays flat or worsens (9 lands back at 4.01MB). 2 is the
+            // default because it is the last point where a real size drop
+            // still costs a small, roughly-linear amount of time; past it the
+            // curve steepens for a shrinking, sometimes negative, return.
+            // Decoded content is identical at every level, as it has to be:
+            // the level only shapes how hard the encoder looks for matches,
+            // never what the decompressor reads back.
+            let compressed = compress_to_vec_zlib(&raw_data, options.compression_level);
 
             // Only use compression if it actually saves space
             if compressed.len() < raw_size {
@@ -541,6 +543,7 @@ mod tests {
         let options = WriterOptions {
             compress: true,
             compression_threshold: 128,
+            compression_level: 2,
         };
 
         let read = round_trip(std::slice::from_ref(&node), &options);

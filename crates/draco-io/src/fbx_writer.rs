@@ -105,6 +105,11 @@ pub struct FbxWriter {
     compress: bool,
     /// Minimum array size (in bytes) to consider for compression.
     compression_threshold: usize,
+    /// zlib level passed to `compress_to_vec_zlib`, clamped to 10 internally.
+    /// Mesh attribute arrays barely compress better past the low end (see
+    /// `write_array_property`), so 2 is the default rather than the
+    /// conventional 6.
+    compression_level: u8,
     /// Meshes to write, with optional names.
     meshes: Vec<MeshData>,
     /// FBX model nodes, including nodes without attached geometry.
@@ -260,6 +265,7 @@ impl FbxWriter {
             format: FbxFormat::Binary,
             compress: false,
             compression_threshold: 128,
+            compression_level: 2,
             meshes: Vec::new(),
             models: Vec::new(),
             materials: Vec::new(),
@@ -299,6 +305,21 @@ impl FbxWriter {
     /// if compression is enabled. Default is 128 bytes.
     pub fn with_compression_threshold(mut self, threshold: usize) -> Self {
         self.compression_threshold = threshold;
+        self
+    }
+
+    /// Set the zlib level `compress_to_vec_zlib` is called with, clamped to
+    /// 10 internally regardless of what is passed here.
+    ///
+    /// Mesh attribute data is close to noise for deflate: a 263k-vertex
+    /// benchmark mesh (positions/normals/uvs/colors, miniz_oxide 0.9.1)
+    /// measured level 1 at 184ms for 4.66MB, level 2 (the default) at 215ms
+    /// for 4.00MB, and levels 3 through 9 climbing to 2.57s while the size
+    /// mostly holds flat or gets worse -- level 9 lands back at 4.01MB, no
+    /// smaller than level 1. This exists for a caller who wants to trade
+    /// that curve back for a smaller file regardless.
+    pub fn with_compression_level(mut self, level: u8) -> Self {
+        self.compression_level = level;
         self
     }
 
@@ -717,6 +738,7 @@ impl FbxWriter {
         let options = WriterOptions {
             compress: self.compress,
             compression_threshold: self.compression_threshold,
+            compression_level: self.compression_level,
         };
         let is_64 = FBX_VERSION >= 7500;
 
@@ -3871,5 +3893,77 @@ mod tests {
         assert!(!data.is_empty());
         assert!(stats.compressed_arrays > 0);
         assert!(stats.compressed_stored_bytes < stats.compressed_raw_bytes);
+    }
+
+    /// A mesh with real repeated structure for deflate to find: a fan of
+    /// triangles around one center point, which repeats the same handful of
+    /// distinct coordinates thousands of times. A three-vertex triangle has
+    /// nothing for a deeper search to exploit either way, so it cannot tell
+    /// `with_compression_level` from a no-op.
+    fn create_repetitive_fan_mesh(spokes: usize) -> Mesh {
+        let mut mesh = Mesh::new();
+        let mut pos_att = PointAttribute::new();
+        let vertex_count = spokes + 1;
+        pos_att.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            vertex_count,
+        );
+        let buffer = pos_att.buffer_mut();
+        buffer.write(0, &[0u8; 12]); // center, at the origin
+        for i in 0..spokes {
+            let angle_step = (i % 8) as f32; // few distinct directions, repeated
+            let pos: [f32; 3] = [angle_step, 1.0, 0.0];
+            let bytes: Vec<u8> = pos.iter().flat_map(|v| v.to_le_bytes()).collect();
+            buffer.write((i + 1) * 12, &bytes);
+        }
+        mesh.add_attribute(pos_att);
+
+        mesh.set_num_faces(spokes);
+        for i in 0..spokes {
+            let next = (i + 1) % spokes;
+            mesh.set_face(
+                FaceIndex(i as u32),
+                [
+                    PointIndex(0),
+                    PointIndex((i + 1) as u32),
+                    PointIndex((next + 1) as u32),
+                ],
+            );
+        }
+        mesh
+    }
+
+    /// `with_compression_level` has to reach the encoder, not just be stored:
+    /// a deeper search (a higher level) on data with real repeated structure
+    /// finds a smaller encoding than a shallow one, so the stored byte counts
+    /// have to differ between two very different levels.
+    #[test]
+    fn compression_level_changes_the_stored_size() {
+        let mesh = create_repetitive_fan_mesh(4000);
+
+        let mut shallow = FbxWriter::new()
+            .with_compression(true)
+            .with_compression_threshold(0)
+            .with_compression_level(1);
+        Writer::add_mesh(&mut shallow, &mesh, None).unwrap();
+        let (_, shallow_stats) = shallow.write_to_vec_with_stats().unwrap();
+
+        let mut deep = FbxWriter::new()
+            .with_compression(true)
+            .with_compression_threshold(0)
+            .with_compression_level(9);
+        Writer::add_mesh(&mut deep, &mesh, None).unwrap();
+        let (_, deep_stats) = deep.write_to_vec_with_stats().unwrap();
+
+        assert!(shallow_stats.compressed_arrays > 0);
+        assert!(deep_stats.compressed_arrays > 0);
+        assert_ne!(
+            shallow_stats.compressed_stored_bytes, deep_stats.compressed_stored_bytes,
+            "level 1 and level 9 produced the same size on data with real repeated \
+             structure -- with_compression_level is not reaching the encoder",
+        );
     }
 }
