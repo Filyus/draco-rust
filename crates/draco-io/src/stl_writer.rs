@@ -170,17 +170,23 @@ impl StlWriter {
         } else {
             &self.name
         };
-        let mut text = String::new();
-        text.push_str(&format!("solid {name}\n"));
+        // Formatted into the buffer rather than through `format!`, which builds
+        // and drops a String per line — four of them per facet. Writing into a
+        // String cannot fail, so the results are discarded rather than
+        // propagated. Roughly 180 bytes a facet, taken in one allocation.
+        use std::fmt::Write as _;
+
+        let mut text = String::with_capacity(self.triangles.len() * 180 + name.len() * 2 + 32);
+        let _ = writeln!(text, "solid {name}");
         for triangle in &self.triangles {
             let [nx, ny, nz] = facet_normal(triangle);
-            text.push_str(&format!("  facet normal {nx} {ny} {nz}\n    outer loop\n"));
+            let _ = writeln!(text, "  facet normal {nx} {ny} {nz}\n    outer loop");
             for [x, y, z] in triangle {
-                text.push_str(&format!("      vertex {x} {y} {z}\n"));
+                let _ = writeln!(text, "      vertex {x} {y} {z}");
             }
             text.push_str("    endloop\n  endfacet\n");
         }
-        text.push_str(&format!("endsolid {name}\n"));
+        let _ = writeln!(text, "endsolid {name}");
         text
     }
 }
