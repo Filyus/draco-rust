@@ -630,6 +630,7 @@ input[type="range"].zoned-range::-moz-range-progress { background: transparent; 
     font-weight: 400;
 }
 
+.stats-draco-row,
 .stats-fbx-row {
     display: flex;
     align-items: baseline;

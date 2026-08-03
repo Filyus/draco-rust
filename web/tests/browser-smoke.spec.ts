@@ -2341,7 +2341,8 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
       .toHaveText(['POSITION', 'Parallelogram', 'Wrap']);
     await expect(page.locator('#stats-draco-size')).toHaveText(/\d/);
     await expect(page.locator('#stats-file-size')).toHaveText(/\d/);
-    await expect(page.locator('#stats-draco-share')).toHaveText(/\d+\.\d%/);
+    await expect(page.locator('#stats-draco-size')).toHaveText(/\(\d+\.\d% file\)/);
+    await expect(page.locator('#stats-draco-savings')).toHaveText(/-?\d+\.\d%/);
   }
 
   await page.locator('[data-choice-for="export-format"] [data-value="fbx"]').click();

@@ -194,6 +194,14 @@ fn compression_report_to_js(report: draco_gltf::CompressionReport) -> JsValue {
             "encoded_bytes",
             JsValue::from_f64(report.encoded_bytes as f64),
         ),
+        (
+            "source_bytes",
+            JsValue::from_f64(report.source_bytes as f64),
+        ),
+        (
+            "output_bytes",
+            JsValue::from_f64(report.output_bytes as f64),
+        ),
         ("method", JsValue::from_str(&method)),
         ("speed", JsValue::from_f64(report.encoding_speed as f64)),
         (

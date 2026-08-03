@@ -186,6 +186,8 @@ if (typeof gltfModule.GltfAsset?.prototype?.compressPrimitive === 'function') {
   );
   assert.equal(compressed.result.draco_stats!.primitives, 1);
   assert.ok(compressed.result.draco_stats!.compressed_size > 0);
+  assert.ok(compressed.result.draco_stats!.source_bytes > 0);
+  assert.ok(compressed.result.draco_stats!.output_bytes > 0);
   assert.equal(
     compressed.result.draco_stats!.method,
     'edgebreaker',

@@ -57,6 +57,10 @@ export interface FbxStats {
 export interface DracoStats {
   speed: number;
   compressed_size: number;
+  /** Resolved binary bytes before Draco rewrites the geometry resources. */
+  source_bytes: number;
+  /** Resolved binary bytes remaining after Draco rewrites the geometry resources. */
+  output_bytes: number;
   /** Size of the complete downloaded export, when known to the UI. */
   output_size?: number;
   primitives: number;
@@ -67,6 +71,8 @@ export interface DracoStats {
 /** What one glTF WASM compression call says the encoder actually selected. */
 interface DracoPrimitiveReport {
   encoded_bytes: number;
+  source_bytes: number;
+  output_bytes: number;
   method: string;
   speed: number;
   prediction_scheme?: string | null;
@@ -219,6 +225,8 @@ function aggregateDracoStats(
   return {
     speed: reports[0]?.speed ?? requestedSpeed,
     compressed_size: reports.reduce((total, report) => total + report.encoded_bytes, 0),
+    source_bytes: reports.reduce((total, report) => total + report.source_bytes, 0),
+    output_bytes: reports.reduce((total, report) => total + report.output_bytes, 0),
     primitives: reports.length,
     ...(methods.length > 0 ? { method: methods.join(', ') } : {}),
     ...(predictions.length > 0 ? { prediction_scheme: predictions.join('; ') } : {}),

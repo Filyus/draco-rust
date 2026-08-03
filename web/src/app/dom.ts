@@ -132,7 +132,7 @@ export const exportStatFields = {
   speed: element('stats-speed'),
   prediction: element('stats-prediction'),
   dracoSize: element('stats-draco-size'),
-  share: element('stats-draco-share'),
+  dracoSavings: element('stats-draco-savings'),
   fbxMethod: element('stats-fbx-method'),
   fbxArrays: element('stats-fbx-arrays'),
   fbxStored: element('stats-fbx-stored'),

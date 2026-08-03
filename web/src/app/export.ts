@@ -153,9 +153,12 @@ export function displayExportStats(format: string, result: ExportResult) {
     exportStatFields.method.textContent = displayMethodName(stats.method);
     exportStatFields.speed.textContent = `${stats.speed} (${stats.speed === 0 ? 'best compression' : stats.speed === 10 ? 'fastest' : 'balanced'})`;
     renderPredictionSchemes(stats.prediction_scheme);
-    exportStatFields.dracoSize.textContent = formatFileSize(dracoSize);
-    exportStatFields.share.textContent = outputSize && outputSize > 0
-      ? `${(dracoSize / outputSize * 100).toFixed(1)}%`
+    const payloadPercentage = outputSize && outputSize > 0
+      ? `${(dracoSize / outputSize * 100).toFixed(1)}% file`
+      : 'file percentage unavailable';
+    exportStatFields.dracoSize.textContent = `${formatFileSize(dracoSize)} (${payloadPercentage})`;
+    exportStatFields.dracoSavings.textContent = stats.source_bytes > 0
+      ? `${((1 - stats.output_bytes / stats.source_bytes) * 100).toFixed(1)}%`
       : '—';
     exportStatFields.dracoDetails.style.display = 'block';
   } else {
