@@ -596,19 +596,47 @@ input[type="range"].zoned-range::-moz-range-progress { background: transparent; 
 }
 
 #stats-prediction {
-    display: block;
-    margin: 3px 0 0 12px;
+    width: 100%;
+    margin: 3px 0 0;
+    border-collapse: collapse;
+    table-layout: fixed;
 }
 
-.stats-prediction-row {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 4px;
+.stats-prediction-table th,
+.stats-prediction-table td {
+    padding: 2px 0;
+    text-align: left;
+    vertical-align: middle;
+    line-height: 1.25;
+}
+
+.stats-prediction-table thead th {
+    color: var(--muted);
+    font-size: 0.62rem;
+    font-weight: 650;
+}
+
+.stats-prediction-table th:first-child { width: 36%; }
+
+.stats-prediction-table tbody th {
+    padding-right: 7px;
+    color: #c7d8ed;
+    font-weight: 400;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.stats-prediction-name {
+.stats-prediction-table tbody td { min-width: 0; }
+
+.stats-prediction-value {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 3px;
+}
+
+.stats-prediction-scheme {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -656,7 +684,7 @@ input[type="range"].zoned-range::-moz-range-progress { background: transparent; 
     position: fixed;
     z-index: 10000;
     width: max-content;
-    max-width: min(260px, calc(100vw - 32px));
+    max-width: min(190px, calc(100vw - 32px));
     padding: 6px 8px;
     border: 1px solid #475569;
     border-radius: 5px;

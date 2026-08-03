@@ -184,29 +184,43 @@ function displayMethodName(method?: string) {
   return method.charAt(0).toUpperCase() + method.slice(1);
 }
 
-/** Render one compact row per attribute and keep the full choice in a tooltip. */
+/** Render a compact attribute/predictor table and keep full choices in tooltips. */
 function renderPredictionSchemes(value?: string) {
   const container = exportStatFields.prediction;
-  container.replaceChildren();
+  const body = container.querySelector('tbody');
+  if (!body) return;
+  body.replaceChildren();
   if (!value) {
-    container.textContent = '—';
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 2;
+    cell.textContent = '—';
+    row.append(cell);
+    body.append(row);
     return;
   }
 
   for (const entry of value.split('; ')) {
     const match = entry.match(/^(.+): (.+) \((.+)\)$/);
     if (!match) {
-      const fallback = document.createElement('div');
-      fallback.className = 'stats-prediction-row';
-      fallback.textContent = entry;
-      container.append(fallback);
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 2;
+      cell.textContent = entry;
+      row.append(cell);
+      body.append(row);
       continue;
     }
-    const row = document.createElement('div');
-    row.className = 'stats-prediction-row';
-    const name = document.createElement('span');
-    name.className = 'stats-prediction-name';
-    name.textContent = `${match[1]}: ${compactPredictionScheme(match[2])}`;
+    const row = document.createElement('tr');
+    const attribute = document.createElement('th');
+    attribute.scope = 'row';
+    attribute.textContent = match[1];
+    const predictor = document.createElement('td');
+    const predictorValue = document.createElement('span');
+    predictorValue.className = 'stats-prediction-value';
+    const scheme = document.createElement('span');
+    scheme.className = 'stats-prediction-scheme';
+    scheme.textContent = compactPredictionScheme(match[2]);
     const info = document.createElement('span');
     info.className = 'stats-prediction-info';
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -228,8 +242,10 @@ function renderPredictionSchemes(value?: string) {
     info.addEventListener('mouseleave', hidePredictionTooltip);
     info.addEventListener('focus', () => showPredictionTooltip(info));
     info.addEventListener('blur', hidePredictionTooltip);
-    row.append(name, info);
-    container.append(row);
+    predictorValue.append(scheme, info);
+    predictor.append(predictorValue);
+    row.append(attribute, predictor);
+    body.append(row);
   }
 }
 

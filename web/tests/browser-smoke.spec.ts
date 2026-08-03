@@ -2335,7 +2335,8 @@ test('opening a file clears what the previous one reported', async ({ page }) =>
     await compressedDownload;
     await expect(page.locator('#export-stats')).toBeVisible();
     await expect(page.locator('#stats-method')).toHaveText('Edgebreaker');
-    await expect(page.locator('#stats-prediction')).toContainText('POSITION:');
+    await expect(page.locator('#stats-prediction thead th')).toHaveText(['Attribute', 'Predictor']);
+    await expect(page.locator('#stats-prediction tbody th').first()).toHaveText('POSITION');
     await expect(page.locator('#stats-prediction')).not.toContainText('MeshPrediction');
     const predictionInfo = page.locator('.stats-prediction-info').first();
     await expect(predictionInfo).toHaveAttribute('data-tooltip', /Wrap/);
