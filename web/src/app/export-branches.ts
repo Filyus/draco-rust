@@ -664,7 +664,10 @@ export async function exportToStl(meshes: PreparedMesh[]) {
   }
   const merged = mergeMeshes(meshes);
   return modules.stl.module.create_stl(
-    { positions: merged.positions, indices: merged.indices },
+    {
+      positions: new Float32Array(merged.positions),
+      indices: new Uint32Array(merged.indices),
+    },
     { format: 'binary', name: merged.name },
   );
 }

@@ -5,8 +5,129 @@
 //! The JavaScript shapes match the OBJ and PLY modules, so the shell's intake
 //! and export routes treat every flat mesh format the same way.
 
-use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
+
+#[cfg(feature = "write")]
+use js_sys::Uint8Array;
+use js_sys::{Array, Float32Array, Object, Reflect, Uint32Array};
+#[cfg(feature = "write")]
+use wasm_bindgen::JsCast;
+
+// ===========================================================================
+// JavaScript bridge
+//
+// Values cross the wasm boundary as plain JavaScript objects built and read by
+// hand instead of serde structures: geometry goes over as typed arrays, which
+// cross in bulk and give JavaScript an array it owns outright. The cost of
+// dropping serde is that nothing here validates untrusted input for us, so
+// every field read from JavaScript is guarded individually.
+// ===========================================================================
+
+/// Set a property on a JavaScript object.
+fn set_js(obj: &Object, key: &str, value: &JsValue) {
+    let _ = Reflect::set(obj, &JsValue::from_str(key), value);
+}
+
+fn set_bool(obj: &Object, key: &str, value: bool) {
+    set_js(obj, key, &JsValue::from_bool(value));
+}
+
+/// Set an optional string, to `undefined` when absent, so the key stays present
+/// with the same shape the serde output used to have.
+fn set_opt_string(obj: &Object, key: &str, value: &Option<String>) {
+    match value {
+        Some(text) => set_js(obj, key, &JsValue::from_str(text)),
+        None => set_js(obj, key, &JsValue::UNDEFINED),
+    }
+}
+
+#[cfg(feature = "read")]
+fn set_string_array(obj: &Object, key: &str, values: &[String]) {
+    let array = Array::new();
+    for value in values {
+        array.push(&JsValue::from_str(value));
+    }
+    set_js(obj, key, &array.into());
+}
+
+#[cfg(feature = "read")]
+fn f32_array_to_js(values: &[f32]) -> JsValue {
+    Float32Array::from(values).into()
+}
+
+#[cfg(feature = "read")]
+fn u32_array_to_js(values: &[u32]) -> JsValue {
+    Uint32Array::from(values).into()
+}
+
+#[cfg(feature = "write")]
+fn bytes_to_js(values: &[u8]) -> JsValue {
+    Uint8Array::from(values).into()
+}
+
+/// Read a field that must be present on an object. An absent key reads back as
+/// `undefined` from JavaScript, which is an error to be reported, not a value.
+#[cfg(feature = "write")]
+fn get_field(obj: &JsValue, key: &str) -> Option<JsValue> {
+    if !obj.is_object() {
+        return None;
+    }
+    match Reflect::get(obj, &JsValue::from_str(key)) {
+        Ok(value) if value.is_undefined() || value.is_null() => None,
+        Ok(value) => Some(value),
+        Err(_) => None,
+    }
+}
+
+/// Read a string field, tolerating an absent one.
+#[cfg(feature = "write")]
+fn opt_string_from_js(obj: &JsValue, key: &str) -> Option<String> {
+    if !obj.is_object() {
+        return None;
+    }
+    match Reflect::get(obj, &JsValue::from_str(key)) {
+        Ok(value) if value.is_string() => value.as_string(),
+        _ => None,
+    }
+}
+
+/// A float array from JavaScript: a `Float32Array` copies across in bulk, a
+/// plain array is walked element by element. Every element must be a number.
+#[cfg(feature = "write")]
+fn f32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<f32>, String> {
+    if let Some(typed) = value.dyn_ref::<Float32Array>() {
+        return Ok(typed.to_vec());
+    }
+    let array = value
+        .dyn_ref::<Array>()
+        .ok_or_else(|| format!("{field} must be a Float32Array or a plain array"))?;
+    let mut out = Vec::with_capacity(array.length() as usize);
+    for index in 0..array.length() {
+        match array.get(index).as_f64() {
+            Some(value) => out.push(value as f32),
+            None => return Err(format!("{field} must contain only numbers")),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "write")]
+fn u32_array_from_js(value: &JsValue, field: &str) -> Result<Vec<u32>, String> {
+    if let Some(typed) = value.dyn_ref::<Uint32Array>() {
+        return Ok(typed.to_vec());
+    }
+    let array = value
+        .dyn_ref::<Array>()
+        .ok_or_else(|| format!("{field} must be a Uint32Array or a plain array"))?;
+    let mut out = Vec::with_capacity(array.length() as usize);
+    for index in 0..array.length() {
+        match array.get(index).as_f64() {
+            Some(value) => out.push(value as u32),
+            None => return Err(format!("{field} must contain only numbers")),
+        }
+    }
+    Ok(out)
+}
 
 /// Install the panic hook, so a panic reads as a message rather than a trap.
 #[wasm_bindgen(start)]
@@ -42,7 +163,6 @@ use draco_core::mesh::Mesh;
 
 /// Mesh data produced by the reader, for JavaScript interop.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize)]
 pub struct MeshData {
     /// Vertex positions as a flat array `[x0, y0, z0, x1, ...]`.
     pub positions: Vec<f32>,
@@ -54,7 +174,6 @@ pub struct MeshData {
 
 /// What the reader hands back: the mesh, or why there is none.
 #[cfg(feature = "read")]
-#[derive(Serialize, Deserialize)]
 pub struct ParseResult {
     /// Whether a mesh was produced.
     pub success: bool,
@@ -72,8 +191,26 @@ pub struct ParseResult {
 #[cfg(feature = "read")]
 #[wasm_bindgen]
 pub fn parse_stl_bytes(data: &[u8]) -> JsValue {
-    let result = parse_stl_internal(data);
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    parse_result_to_js(&parse_stl_internal(data))
+}
+
+#[cfg(feature = "read")]
+fn parse_result_to_js(result: &ParseResult) -> JsValue {
+    let obj = Object::new();
+    set_bool(&obj, "success", result.success);
+    let meshes = Array::new();
+    for mesh in &result.meshes {
+        let mesh_obj = Object::new();
+        set_js(&mesh_obj, "positions", &f32_array_to_js(&mesh.positions));
+        set_js(&mesh_obj, "indices", &u32_array_to_js(&mesh.indices));
+        set_js(&mesh_obj, "normals", &f32_array_to_js(&mesh.normals));
+        meshes.push(&mesh_obj.into());
+    }
+    set_js(&obj, "meshes", &meshes.into());
+    set_opt_string(&obj, "error", &result.error);
+    set_string_array(&obj, "warnings", &result.warnings);
+    set_opt_string(&obj, "container", &result.container);
+    obj.into()
 }
 
 #[cfg(feature = "read")]
@@ -163,7 +300,6 @@ fn read_attribute_as_f32(mesh: &Mesh, attribute_type: GeometryAttributeType) -> 
 
 /// Input mesh data consumed by the writer, from JavaScript.
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize, Clone)]
 pub struct MeshInput {
     /// Vertex positions as a flat array `[x0, y0, z0, x1, ...]`.
     pub positions: Vec<f32>,
@@ -173,7 +309,6 @@ pub struct MeshInput {
 
 /// Export options.
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize, Default)]
 pub struct ExportOptions {
     /// `binary` (the default) or `ascii`.
     pub format: Option<String>,
@@ -183,7 +318,6 @@ pub struct ExportOptions {
 
 /// Export result.
 #[cfg(feature = "write")]
-#[derive(Serialize, Deserialize)]
 pub struct ExportResult {
     /// Whether the file was written.
     pub success: bool,
@@ -199,24 +333,52 @@ pub struct ExportResult {
 #[cfg(feature = "write")]
 #[wasm_bindgen]
 pub fn create_stl(mesh_js: JsValue, options_js: JsValue) -> JsValue {
-    let mesh: MeshInput = match serde_wasm_bindgen::from_value(mesh_js) {
+    let mesh = match mesh_input_from_js(&mesh_js) {
         Ok(mesh) => mesh,
         Err(error) => {
-            return to_js(&ExportResult {
+            return export_result_to_js(&ExportResult {
                 success: false,
                 data: None,
                 binary_data: None,
-                error: Some(format!("Invalid mesh data: {error}")),
+                error: Some(error),
             });
         }
     };
-    let options: ExportOptions = serde_wasm_bindgen::from_value(options_js).unwrap_or_default();
-    to_js(&create_stl_internal(&mesh, &options))
+    let options = export_options_from_js(&options_js);
+    export_result_to_js(&create_stl_internal(&mesh, &options))
 }
 
 #[cfg(feature = "write")]
-fn to_js(result: &ExportResult) -> JsValue {
-    serde_wasm_bindgen::to_value(result).unwrap_or(JsValue::NULL)
+fn export_result_to_js(result: &ExportResult) -> JsValue {
+    let obj = Object::new();
+    set_bool(&obj, "success", result.success);
+    set_opt_string(&obj, "data", &result.data);
+    match &result.binary_data {
+        Some(bytes) => set_js(&obj, "binary_data", &bytes_to_js(bytes)),
+        None => set_js(&obj, "binary_data", &JsValue::UNDEFINED),
+    }
+    set_opt_string(&obj, "error", &result.error);
+    obj.into()
+}
+
+#[cfg(feature = "write")]
+fn mesh_input_from_js(value: &JsValue) -> Result<MeshInput, String> {
+    let positions = get_field(value, "positions")
+        .ok_or_else(|| "mesh must be an object with positions and indices".to_string())?;
+    let indices = get_field(value, "indices")
+        .ok_or_else(|| "mesh must be an object with positions and indices".to_string())?;
+    Ok(MeshInput {
+        positions: f32_array_from_js(&positions, "positions")?,
+        indices: u32_array_from_js(&indices, "indices")?,
+    })
+}
+
+#[cfg(feature = "write")]
+fn export_options_from_js(value: &JsValue) -> ExportOptions {
+    ExportOptions {
+        format: opt_string_from_js(value, "format"),
+        name: opt_string_from_js(value, "name"),
+    }
 }
 
 #[cfg(feature = "write")]
