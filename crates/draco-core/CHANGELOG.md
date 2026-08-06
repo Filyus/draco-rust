@@ -14,8 +14,8 @@ refused. Ninety-odd functions across the decode and encode paths returned a
 an unsupported feature alike, and the reason — where one existed at all — went
 to a `debug_log!` the release build drops. `DracoError` itself became an opaque
 struct with an `ErrorKind`, which is the change every caller sees. Alongside
-that, the version `set_version` accepts is now an enumeration of combinations
-that have a round-trip test, the header count guard is replaced by one whose
+that, the bitstream versions an encode accepts are now an enumeration of
+combinations that have a round-trip test, the header count guard is replaced by one whose
 premise holds, and the encoder reports the choices it makes for itself.
 
 ### Added
@@ -44,6 +44,22 @@ premise holds, and the encoder reports the choices it makes for itself.
   level straight into `encoding_speed` silently asks for the opposite of what
   was intended. The new methods are the CLI's own conversion and nothing more;
   see `API.md` for the full comparison.
+- `PointAttribute::read_f32s` and `DataBuffer::update_f32s_le` move a float
+  channel out of and into an attribute buffer in one pass, without a per-value
+  intermediate. They are inverses and are meant to be used as a pair.
+  `read_f32s` widens whatever component type the attribute stores, follows the
+  value index mapping — so an attribute with fewer unique values than points
+  still lands on the right one — and always returns `num_points * components`
+  values, zero-filling what the attribute has nothing to give. The length is
+  the point of it: the result is a channel addressed by vertex index, so a
+  short row for an attribute with fewer components than asked for shifts every
+  later vertex onto the wrong values, which is worse than a zero. The four
+  copies of this reader that preceded it had drifted into three different
+  answers, and two of them indexed the buffer by point directly, which is only
+  correct while the mapping is the identity. `update_f32s_le` is named for
+  `update` rather than for `write` because it grows the buffer past its end,
+  which `write` panics on and `try_write` refuses, and it counts as an update
+  so a buffer whose count did not move genuinely was not touched.
 
 ### Changed
 
@@ -83,11 +99,20 @@ premise holds, and the encoder reports the choices it makes for itself.
   crate encodes and decodes back byte-exactly, so there is no local signal, and
   the guard belongs at the call sites where the read count is bounded
   structurally.
-- **Breaking.** `set_version` takes an enumeration of geometry/coder
-  combinations that have an encode/decode round-trip test, rather than the
-  interval from 1.0 to the newest — 259 values for a mesh, including minors that
-  never existed, most of which produced a stream this crate's own decoder
-  rejects. The list is shorter than what the setter accepted and longer than
+- **Breaking.** The bitstream versions an encode accepts are an enumeration per
+  geometry/coder combination — `version::EncodeTarget::claimed_versions` — each
+  entry carrying an encode/decode round-trip test, rather than the interval
+  from 1.0 to the newest: 259 values for a mesh, including minors that never
+  existed, most of which produced a stream this crate's own decoder rejects.
+  `EncoderOptions::set_version` still takes `(major, minor)` and still accepts
+  any pair; what changed is where an unsupported one is refused. The check is
+  `version::validate_encodable_version`, run by `MeshEncoder::encode` and
+  `PointCloudEncoder::encode` once the target is known — it cannot run in the
+  setter, which does not yet know whether it is configuring a mesh or a point
+  cloud, EdgeBreaker or sequential. So a version that used to encode into an
+  unreadable stream now fails at `encode()`, with an `UnsupportedVersion` error
+  naming what the target does claim, and `(0, 0)` still means "use the
+  default". The list is shorter than what the setter accepted and longer than
   what it wrote correctly: the pre-2.2 layout fixes below are what a legacy
   version can now carry, and an EdgeBreaker mesh is claimed at 2.2, 2.1, 2.0,
   1.2 and 1.1. Narrowing cannot diverge from upstream: C++ Draco has no version
@@ -259,6 +284,14 @@ premise holds, and the encoder reports the choices it makes for itself.
   straight into the bit-reader bug above, on decode by this crate or any
   other. This narrows the range to match upstream rather than relying on the
   bit-reader fix alone to make 31 safe.
+- `decoder` without `point_cloud_decode` failed to compile. The pre-1.2 shim
+  `carries_transform_byte` sat behind `point_cloud_decode` while the mesh
+  decoder's own legacy path calls it too; it is now gated on both of its
+  callers — `point_cloud_decode` and `legacy_bitstream_decode` — which also
+  keeps it from reading as dead code in a `decoder` build that compiles
+  neither. All 128 combinations of the crate's seven encode/decode features
+  build with no warnings, as do `debug_logs` and `force_sequential_seeds` on
+  top of the defaults.
 
 ## [1.2.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.1.0...draco-core-v1.2.0) - 2026-08-01
 
