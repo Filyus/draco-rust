@@ -42,18 +42,43 @@ jobs:
           --skip cpp_decodes_legacy_normal_and_tex_coord_encodings
           --skip cpp_decodes_the_predictive_traversal_this_crate_writes
 
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+
       # Feature-combination compile guard. Default tests enable every feature,
       # which hides feature-gating mistakes (e.g. a decoder module that secretly
-      # needs point_cloud_decode). Check the meaningful single-direction combos.
+      # needs point_cloud_decode).
+      #
+      # This is a full powerset rather than a hand-picked list because a list
+      # missed the bug it was written for. The five combinations checked here
+      # before -- none, decoder, decoder+point_cloud_decode, encoder,
+      # all-features -- did not fail when carries_transform_byte was gated on
+      # point_cloud_decode alone, because the mesh decoder's call sites sit
+      # behind legacy_bitstream_decode, which no entry enabled except
+      # all-features, where point_cloud_decode is on too and everything agrees.
+      # The broken configuration was decoder+legacy_bitstream_decode, one pair
+      # away from two of the entries and covered by neither.
+      #
+      # debug_logs and force_sequential_seeds are excluded: they gate logging
+      # and a test seed rather than any cfg the modules are shaped by, and
+      # including them doubles the run twice over. They are checked once each,
+      # on top of the defaults, in the step below.
       - name: Check draco-core feature combinations
         env:
           RUSTFLAGS: -D warnings
         run: |
-          cargo check --manifest-path crates/Cargo.toml -p draco-core --no-default-features
-          cargo check --manifest-path crates/Cargo.toml -p draco-core --no-default-features --features decoder
-          cargo check --manifest-path crates/Cargo.toml -p draco-core --no-default-features --features decoder,point_cloud_decode
-          cargo check --manifest-path crates/Cargo.toml -p draco-core --no-default-features --features encoder
-          cargo check --manifest-path crates/Cargo.toml -p draco-core --all-features
+          cargo hack check --manifest-path crates/Cargo.toml -p draco-core \
+            --feature-powerset --no-dev-deps \
+            --exclude-features debug_logs,force_sequential_seeds
+
+      - name: Check draco-core auxiliary feature flags
+        env:
+          RUSTFLAGS: -D warnings
+        run: |
+          cargo check --manifest-path crates/Cargo.toml -p draco-core --features debug_logs
+          cargo check --manifest-path crates/Cargo.toml -p draco-core --features force_sequential_seeds
 
       - name: Test draco-io
         run: cargo test --manifest-path crates/Cargo.toml -p draco-io --features test
