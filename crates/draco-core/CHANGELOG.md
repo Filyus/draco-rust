@@ -289,9 +289,11 @@ premise holds, and the encoder reports the choices it makes for itself.
   decoder's own legacy path calls it too; it is now gated on both of its
   callers — `point_cloud_decode` and `legacy_bitstream_decode` — which also
   keeps it from reading as dead code in a `decoder` build that compiles
-  neither. All 128 combinations of the crate's seven encode/decode features
-  build with no warnings, as do `debug_logs` and `force_sequential_seeds` on
-  top of the defaults.
+  neither. Every combination of the crate's seven encode/decode features — 46
+  distinct sets once the ones an implied feature makes identical are folded
+  together — builds with no warnings, as do `debug_logs` and
+  `force_sequential_seeds` on top of the defaults. CI checks the powerset now
+  rather than a picked list, because a picked list is what let this through.
 
 ## [1.2.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.1.0...draco-core-v1.2.0) - 2026-08-01
 
