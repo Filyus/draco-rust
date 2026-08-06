@@ -92,6 +92,18 @@ jobs:
           cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-geometry
           cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features draco-decode
 
+      # draco-io has eighteen features, so its full powerset is 18,513
+      # configurations -- not a thing CI can run. Depth 2 is 150 and covers
+      # every pair, which is the shape these gating mistakes take: an item
+      # gated on one feature whose callers sit behind another. The steps above
+      # and below stay because they run tests, not just a compile.
+      - name: Check draco-io feature pairs
+        env:
+          RUSTFLAGS: -D warnings
+        run: |
+          cargo hack check --manifest-path crates/Cargo.toml -p draco-io \
+            --feature-powerset --depth 2 --no-dev-deps
+
       # FBX is the only hand-rolled untrusted binary parser in the workspace,
       # so every feature slice of it needs to keep compiling on its own. The
       # reader without `compression` must still build and report a precise
@@ -107,20 +119,14 @@ jobs:
       - name: Test draco-gltf
         run: cargo test --manifest-path crates/Cargo.toml -p draco-gltf --features test
 
-      # Check the two supported minimal public surfaces and their wasm32 builds.
+      # 58 configurations on the host target, then the wasm32 builds the
+      # powerset does not reach -- it varies features, not targets.
       - name: Check draco-gltf feature/target combinations
         env:
           RUSTFLAGS: -D warnings
         run: |
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features document
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features geometry
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features read
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features strict-validation
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features read,strict-validation
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features accessors
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features read,draco-decode
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features write
-          cargo check --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features draco-encode
+          cargo hack check --manifest-path crates/Cargo.toml -p draco-gltf \
+            --feature-powerset --no-dev-deps
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --features full
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --no-default-features --features read,draco-decode
           cargo check --manifest-path crates/Cargo.toml -p draco-gltf --target wasm32-unknown-unknown --no-default-features --features read,draco-decode,strict-validation
@@ -152,15 +158,8 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
         run: |
-          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features etc1s
-          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features uastc
-          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features etc1s,uastc
-          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features etc1s,bc
-          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features etc1s,etc
-          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features uastc,bc
-          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features uastc,astc
-          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features etc1s,astc
-          cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features uastc,etc
+          cargo hack check --manifest-path crates/Cargo.toml -p draco-texture \
+            --feature-powerset --no-dev-deps
           cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features etc1s,uastc,bc
           cargo check --manifest-path crates/Cargo.toml -p draco-texture --no-default-features --features etc1s,uastc,etc,astc
           cargo check --manifest-path crates/Cargo.toml -p draco-texture --target wasm32-unknown-unknown
