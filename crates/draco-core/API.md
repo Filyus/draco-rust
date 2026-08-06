@@ -17,6 +17,7 @@ Complete API documentation for the draco-core crate.
   - [EncodedMeshInfo](#encodedmeshinfo)
   - [EncodedAttributeInfo](#encodedattributeinfo)
   - [PointCloudEncoder](#pointcloudencoder)
+  - [EncodedPointCloudInfo](#encodedpointcloudinfo)
   - [EncoderBuffer](#encoderbuffer)
   - [EncoderOptions](#encoderoptions)
 - [Decoding API](#decoding-api)
@@ -133,6 +134,18 @@ Initialization and shape: `new`, `init`, `try_init`, `size`,
 `normalized`, `byte_stride`, and `byte_offset`.
 
 Storage: `buffer` and `buffer_mut` expose the raw `DataBuffer`.
+
+Float channels: `read_f32s(num_points, components)` reads the attribute out as
+`f32`, and `DataBuffer::update_f32s_le(byte_pos, values)` writes one back in.
+They are inverses and are meant to be used as a pair, each moving the whole
+slice in one pass instead of a bounds-checked read or write per point.
+`read_f32s` widens whatever component type is stored, follows the point-to-
+value mapping, and always returns `num_points * components` values, zero-
+filling what the attribute has nothing to give — the result is a channel
+addressed by vertex index, so a short row would shift every later vertex onto
+the wrong values. `update_f32s_le` is named for `update` rather than for
+`write` because it grows the buffer past its end, which `write` panics on and
+`try_write` refuses.
 
 Point-to-value mapping: `mapped_index`, `set_identity_mapping`,
 `set_explicit_mapping`, `set_point_map_entry`, and `try_set_point_map_entry`.
@@ -283,8 +296,13 @@ It is primarily useful for container writers such as glTF
 `KHR_draco_mesh_compression`.
 
 ```rust
+#[non_exhaustive]
 pub struct EncodedMeshInfo {
     pub encoding_method: i32,
+    pub bitstream_version: (u8, u8),
+    pub traversal: Option<EdgebreakerTraversal>,
+    pub speed: i32,
+    pub single_connectivity: bool,
     pub num_encoded_faces: usize,
     pub num_encoded_points: usize,
     pub attributes: Vec<EncodedAttributeInfo>,
@@ -296,6 +314,16 @@ attribute accessors. Individual attributes also report their own
 `num_encoded_values`, which can differ when split attribute connectivity or
 seams are involved.
 
+The values are the ones the encoder resolved, not the ones requested:
+`bitstream_version` is what was written after a default was substituted for an
+unset version, `traversal` is `None` for sequential connectivity, and `speed`
+is the single value `encoding_speed` and `decoding_speed` resolved into.
+`single_connectivity` is false when attributes with seams were encoded against
+their own corner tables rather than the position's.
+
+The struct is `#[non_exhaustive]`: match it with `..` and construct it only
+through the encoder.
+
 ---
 
 ### EncodedAttributeInfo
@@ -303,6 +331,7 @@ seams are involved.
 Attribute summary produced by `MeshEncoder`.
 
 ```rust
+#[non_exhaustive]
 pub struct EncodedAttributeInfo {
     pub source_attribute_id: i32,
     pub attribute_type: GeometryAttributeType,
@@ -311,6 +340,9 @@ pub struct EncodedAttributeInfo {
     pub normalized: bool,
     pub unique_id: u32,
     pub num_encoded_values: usize,
+    pub encoder_type: SequentialAttributeEncoderType,
+    pub quantization_bits: Option<i32>,
+    pub prediction: Option<(PredictionSchemeMethod, PredictionSchemeTransformType)>,
     pub position_min: Option<Vec<f64>>,
     pub position_max: Option<Vec<f64>>,
 }
@@ -318,6 +350,19 @@ pub struct EncodedAttributeInfo {
 
 `unique_id` is the Draco attribute id that container formats should reference.
 `position_min` and `position_max` are populated only for position attributes.
+
+`encoder_type`, `quantization_bits` and `prediction` report what the encoder
+settled on rather than what was asked for. Several encoder arms fall back to
+`Difference` when the attribute or the mesh cannot support the requested
+scheme, and `quantization_bits` is the count a transform actually applied — so
+a value set on an integer attribute is not repeated back as though it had been
+used. The struct is `#[non_exhaustive]`.
+
+The three field types are not re-exported at the crate root; reach them at
+`sequential_attribute_encoder::SequentialAttributeEncoderType` and
+`prediction_scheme::{PredictionSchemeMethod, PredictionSchemeTransformType}`.
+`EncodedMeshInfo::traversal` is likewise
+`mesh_edgebreaker_encoder::EdgebreakerTraversal`.
 
 ---
 
@@ -339,7 +384,34 @@ let mut buffer = EncoderBuffer::new();
 encoder.encode(&options, &mut buffer)?;
 ```
 
-**API Surface:** `new`, `set_point_cloud`, `point_cloud`, and `encode`.
+**API Surface:** `new`, `set_point_cloud`, `point_cloud`, `encode`, and
+`encoded_point_cloud_info`.
+
+---
+
+### EncodedPointCloudInfo
+
+Summary produced by `PointCloudEncoder` after a successful `encode()`, returned
+by `encoded_point_cloud_info` as `Option<&EncodedPointCloudInfo>` — `None`
+until an encode has run. The counterpart of `EncodedMeshInfo`, and it exists
+for the same reason: the encoder picks the KD-tree coder over the sequential
+one on its own whenever every attribute is eligible, and a caller otherwise had
+no way to find out which one ran.
+
+```rust
+#[non_exhaustive]
+pub struct EncodedPointCloudInfo {
+    pub encoding_method: i32,
+    pub bitstream_version: (u8, u8),
+    pub speed: i32,
+    pub num_encoded_points: usize,
+    pub attributes: Vec<EncodedAttributeInfo>,
+}
+```
+
+`encoding_method` is 0 for sequential and 1 for KD-tree. `attributes` is empty
+for the KD-tree method, which encodes every attribute through one coder and so
+has no per-attribute choice to report.
 
 ---
 
@@ -411,6 +483,13 @@ Common knobs: `get_encoding_speed`, `get_decoding_speed`, `get_speed`,
 
 CLI-equivalent convenience: `set_compression_level`, `get_compression_level`,
 `set_attribute_quantization`, and `get_attribute_quantization`.
+
+`set_version` accepts any `(major, minor)`, but the encode does not: each
+geometry/coder combination claims the bitstream versions that have an
+encode/decode round-trip test, listed by `version::EncodeTarget::claimed_versions`
+and enforced by `MeshEncoder::encode` and `PointCloudEncoder::encode`. An
+unclaimed version fails there with `ErrorKind::UnsupportedVersion` naming what
+the target does claim. `(0, 0)` means "use the default".
 
 **Common Options:**
 
