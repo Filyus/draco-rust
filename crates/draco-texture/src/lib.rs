@@ -33,10 +33,15 @@
 #![deny(missing_docs)]
 
 /// Writing values into an ASTC block, which both sources share.
-#[cfg(feature = "astc")]
+///
+/// Gated on having a source as well as the target: `astc` alone selects an
+/// output nothing can be turned into, and the packing is then written for
+/// nobody. Both consumers name a source -- `etc1s_to_astc` and
+/// `uastc_to_astc` -- so the condition here is theirs, not this module's.
+#[cfg(all(feature = "astc", any(feature = "etc1s", feature = "uastc")))]
 mod astc_pack;
 /// The fixed tables ASTC packing reads.
-#[cfg(feature = "astc")]
+#[cfg(all(feature = "astc", any(feature = "etc1s", feature = "uastc")))]
 mod astc_tables;
 /// Packing a BC7 block, and the tables it and the UASTC mapping share.
 #[cfg(all(feature = "uastc", feature = "bc"))]
