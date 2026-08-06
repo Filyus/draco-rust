@@ -112,6 +112,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Building this crate with `--no-default-features` compiles. It never did:
+  `document`, `json`, `extensions` and `import` are unconditional here, and
+  `Error`, `ImportOptions` and the `draco_io` re-exports all name types from
+  `draco-io`'s `gltf-container`, so a featureless build produced a page of
+  unresolved imports rather than a smaller crate. That feature is now enabled
+  on the dependency itself. The `document` feature still names it, so a caller
+  reading the feature graph sees what it always saw.
+
 - A Draco primitive whose accessors declare fewer points than the stream
   decodes is read rather than rejected. Draco stores connectivity per position
   vertex and re-splits it at attribute seams, so a mesh with a normal or UV
