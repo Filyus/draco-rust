@@ -62,6 +62,10 @@ const FBX_FOOTER_MAGIC: [u8; 16] = [
 pub(crate) struct WriterOptions {
     pub(crate) compress: bool,
     pub(crate) compression_threshold: usize,
+    /// Read only where deflate is compiled in. The field is carried in either
+    /// build so `WriterOptions` has one shape and the writers that fill it need
+    /// no `cfg` of their own.
+    #[cfg_attr(not(feature = "compression"), allow(dead_code))]
     pub(crate) compression_level: u8,
 }
 

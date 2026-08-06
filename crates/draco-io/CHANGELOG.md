@@ -22,6 +22,11 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A build with FBX writing but without `compression` no longer warns that
+  `WriterOptions::compression_level` is never read. The field arrived with the
+  deflate level knob and is read only where deflate is compiled in; it stays
+  present in either build so the struct has one shape and the writers filling
+  it need no `cfg` of their own.
 - The PLY and STL writers no longer panic on a mesh whose position or normal
   attribute is not `Float32x3`. A `.drc` declares its own attribute data types,
   so `MeshDecoder` returns Uint8x3 positions or Int16x3 normals as readily as
