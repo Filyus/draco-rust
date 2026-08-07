@@ -2051,6 +2051,8 @@ test('every source format converts to every target format', async ({ page }) => 
   const pageLog: string[] = [];
   page.on('console', (message) => pageLog.push(`[${message.type()}] ${message.text()}`));
   page.on('pageerror', (error) => pageLog.push(`[pageerror] ${error.message}`));
+  let downloadsSeen = 0;
+  page.on('download', () => { downloadsSeen += 1; });
 
   const exportAs = async (format: string) => {
     await page.locator(`[data-choice-for="export-format"] [data-value="${format}"]`).click();
@@ -2064,8 +2066,21 @@ test('every source format converts to every target format', async ({ page }) => 
       file = await download;
     } catch {
       const panel = await page.locator('#console').innerText().catch(() => '(unreadable)');
+      // Chromium refuses a programmatic download when the page has no transient
+      // user activation, and treats it as an automatic one -- allowed once per
+      // page, blocked after. `a.click()` runs after `await runExport(...)`, so
+      // whether the activation from the export button survives that await is a
+      // property of how long the export took, which is a property of the
+      // machine. That is the shape of a failure that is deterministic on one
+      // runner and absent on every faster one, so it is worth knowing rather
+      // than guessing at.
+      const activation = await page.evaluate(() => ({
+        active: navigator.userActivation?.isActive ?? null,
+        hasBeenActive: navigator.userActivation?.hasBeenActive ?? null,
+      })).catch(() => ({ active: 'unreadable', hasBeenActive: 'unreadable' }));
       throw new Error(
-        `no download for "${format}" within 30s\n`
+        `no download for "${format}" within 30s after ${downloadsSeen} successful ones\n`
+        + `user activation at failure: ${JSON.stringify(activation)}\n`
         + `--- #console panel ---\n${panel.slice(-2000)}\n`
         + `--- browser console (last 40) ---\n${pageLog.slice(-40).join('\n')}`,
       );
