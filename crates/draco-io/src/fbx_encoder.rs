@@ -303,10 +303,11 @@ impl<'a, W: Write + Seek> NodeWriter<'a, W> {
         // fresh heap Vec per element and flattening them: for a 263k-vertex
         // mesh's position/normal/uv/color/index arrays combined, that used to
         // be several million short-lived allocations, most of what this
-        // function cost independent of compression. `size_of::<T>()` is the
-        // exact serialized width for every type this is called with --
-        // bool, f32, f64, i32, i64 -- so the buffer never has to regrow.
-        let mut raw_data = Vec::with_capacity(values.len() * std::mem::size_of::<T>());
+        // function cost independent of compression. `size_of_val(values)` is
+        // `values.len() * size_of::<T>()`, which is the exact serialized width
+        // for every type this is called with -- bool, f32, f64, i32, i64 -- so
+        // the buffer never has to regrow.
+        let mut raw_data = Vec::with_capacity(std::mem::size_of_val(values));
         for value in values {
             write_element(value, &mut raw_data);
         }
