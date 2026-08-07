@@ -2048,6 +2048,22 @@ test('every source format converts to every target format', async ({ page }) => 
   // Windows, not in a Linux container with optimized wasm, and not across the
   // full suite at one worker on a two-CPU quota. So the next failure has to
   // carry its own evidence.
+  // The last link in the chain the page controls. The app reports the export
+  // complete and the stats card carries the right byte count, so the bytes are
+  // made; what is not known is whether the anchor click reaches the browser.
+  // Recorded here so the failure can say which side lost it.
+  await page.evaluate(() => {
+    const clicks: string[] = [];
+    (window as unknown as { __downloadClicks: string[] }).__downloadClicks = clicks;
+    const original = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function patched(this: HTMLAnchorElement) {
+      if (this.download) {
+        clicks.push(`${this.download} <- ${this.href.slice(0, 12)} in=${this.isConnected}`);
+      }
+      return original.call(this);
+    };
+  });
+
   const pageLog: string[] = [];
   page.on('console', (message) => pageLog.push(`[${message.type()}] ${message.text()}`));
   page.on('pageerror', (error) => pageLog.push(`[pageerror] ${error.message}`));
@@ -2074,6 +2090,9 @@ test('every source format converts to every target format', async ({ page }) => 
         .locator('#export-stats')
         .innerText()
         .catch(() => '(unreadable)');
+      const clicks: string[] = await page
+        .evaluate(() => (window as unknown as { __downloadClicks: string[] }).__downloadClicks ?? [])
+        .catch(() => ['(unreadable)']);
       // Chromium refuses a programmatic download when the page has no transient
       // user activation, and treats it as an automatic one -- allowed once per
       // page, blocked after. `a.click()` runs after `await runExport(...)`, so
