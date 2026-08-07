@@ -843,13 +843,11 @@ fn anim_sampler_to_js(sampler: &AnimSamplerOutput) -> Object {
         "interpolation",
         &anim_interpolation_to_js(&sampler.interpolation),
     );
-    match &sampler.in_tangents {
-        Some(values) => set_f32_array(&obj, "inTangents", values),
-        None => (),
+    if let Some(values) = &sampler.in_tangents {
+        set_f32_array(&obj, "inTangents", values);
     }
-    match &sampler.out_tangents {
-        Some(values) => set_f32_array(&obj, "outTangents", values),
-        None => (),
+    if let Some(values) = &sampler.out_tangents {
+        set_f32_array(&obj, "outTangents", values);
     }
     obj
 }
