@@ -14,6 +14,7 @@ use crate::point_cloud::PointCloud;
 use crate::prediction_scheme::EntryToPointIdMap;
 #[cfg(feature = "point_cloud_decode")]
 use crate::sequential_integer_attribute_decoder::SequentialIntegerAttributeDecoder;
+#[cfg(feature = "point_cloud_decode")]
 use crate::status::{DracoError, Status};
 
 #[cfg(feature = "point_cloud_decode")]

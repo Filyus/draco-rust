@@ -269,7 +269,10 @@ impl PointAttribute {
     /// the ceiling the decode works towards; what is deferred is the memory.
     /// Not for the KD-tree path, which writes at computed offsets and needs the
     /// buffer sized first; that path bounds its own allocation instead.
-    #[cfg(feature = "decoder")]
+    ///
+    /// Gated on its callers rather than on `decoder`: both live in the
+    /// point-cloud path, so a mesh-only decode build never reaches it.
+    #[cfg(feature = "point_cloud_decode")]
     pub(crate) fn init_deferred(
         &mut self,
         attribute_type: GeometryAttributeType,

@@ -10,7 +10,7 @@ use crate::corner_table::CornerTable;
 use crate::decoder_buffer::DecoderBuffer;
 use crate::draco_types::DataType;
 use crate::geometry_attribute::PointAttribute;
-use crate::geometry_indices::{CornerIndex, PointIndex, INVALID_CORNER_INDEX};
+use crate::geometry_indices::{CornerIndex, INVALID_CORNER_INDEX};
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_decoder::PointCloudDecoder;
@@ -1100,7 +1100,7 @@ impl SequentialIntegerAttributeDecoder {
             if num_points > 0 {
                 debug_log!(
                     "Sequential Decoded: Point 0 ID = {:?}, Value[0] = {}",
-                    PointIndex(point_ids.get(0).unwrap_or(u32::MAX)),
+                    crate::geometry_indices::PointIndex(point_ids.get(0).unwrap_or(u32::MAX)),
                     values[0]
                 );
                 // Debug: print all decoded values (quantized) and where they go
@@ -1114,7 +1114,9 @@ impl SequentialIntegerAttributeDecoder {
                             "  data_id={} -> point_ids[{}]={:?}: quantized({}, {}, {})",
                             i,
                             i,
-                            PointIndex(point_ids.get(i).unwrap_or(u32::MAX)),
+                            crate::geometry_indices::PointIndex(
+                                point_ids.get(i).unwrap_or(u32::MAX)
+                            ),
                             x,
                             y,
                             z
@@ -1274,7 +1276,7 @@ fn write_value_from_i32(
 mod tests {
     use super::*;
     use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
-    use crate::geometry_indices::VertexIndex;
+    use crate::geometry_indices::{PointIndex, VertexIndex};
     use crate::point_cloud::PointCloud;
 
     #[test]
