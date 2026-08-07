@@ -144,7 +144,15 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
         #[cfg(not(feature = "legacy_bitstream_decode"))]
         let _ = bitstream_version;
 
-        self.vertex_valences.resize(self.num_vertices, 0);
+        // Not sized from `num_vertices` here. That count is
+        // `num_encoded_vertices + num_split_symbols`, and the first term is a
+        // varint the header supplies, so honouring it costs four bytes per
+        // claimed vertex before a single one has been decoded.
+        // `on_vertex_created` grows the table as vertices actually appear, and
+        // every read goes through `get`/`get_mut`, so a vertex that was never
+        // created reads as absent rather than as valence zero -- which is a
+        // refusal the pre-sized table used to swallow.
+        self.vertex_valences.clear();
 
         self.min_valence = 2;
         self.max_valence = 7;

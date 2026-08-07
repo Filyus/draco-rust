@@ -112,10 +112,11 @@ impl KdTreeAttributesDecoder {
                 Err(_) => return false,
             };
 
-            // The point count came out of the header and this is the first
-            // buffer sized from it, so it is where a count the stream cannot be
-            // describing has to be refused - the header guard that used to do
-            // it was unsound and is gone.
+            // The ratio still refuses the absurd, but the buffer is not taken
+            // here: the point count came out of the header, and this decoder
+            // runs before a single point has been read. It is sized in
+            // `decode_portable_attributes`, once the KD-tree has produced the
+            // values and their length has been checked against the count.
             if crate::decode_budget::ensure_elements_are_backed(
                 point_cloud.num_points(),
                 num_components as usize * data_type.byte_length(),
@@ -127,7 +128,7 @@ impl KdTreeAttributesDecoder {
             }
             let mut att = PointAttribute::new();
             if att
-                .try_init(
+                .init_deferred(
                     att_type,
                     num_components,
                     data_type,
@@ -242,6 +243,28 @@ impl KdTreeAttributesDecoder {
         };
         if decoded.len() != expected_decoded_len {
             return false;
+        }
+
+        // The attribute buffers are taken here rather than when the attributes
+        // were declared. The values exist now -- `decoded` holds them and its
+        // length has just been checked against the declared count -- so this is
+        // memory backed by data instead of by a header. The fills below write
+        // at computed offsets and need the room in one piece, which is why this
+        // path sizes up front at all.
+        for &att_id in &self.attribute_ids {
+            let Ok(att) = point_cloud.try_attribute_mut(att_id) else {
+                return false;
+            };
+            let Ok(stride) = usize::try_from(att.byte_stride()) else {
+                return false;
+            };
+            let Some(required) = att.size().checked_mul(stride) else {
+                return false;
+            };
+            if att.buffer().data_size() < required && att.buffer_mut().try_resize(required).is_err()
+            {
+                return false;
+            }
         }
 
         // Fill non-float attributes directly, and create portable attributes for float.

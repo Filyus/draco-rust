@@ -54,7 +54,10 @@ impl<'a> MeshEdgebreakerTraversalPredictiveDecoder<'a> {
         let split_event_remaining = topology_split_data.len();
         Self {
             num_vertices,
-            vertex_valences: vec![0; num_vertices],
+            // Empty for the same reason as the valence traversal: the count
+            // is the header's claim, and `on_vertex_created` grows this as
+            // vertices are decoded.
+            vertex_valences: Vec::new(),
             last_symbol: -1,
             predicted_symbol: -1,
             prediction_decoder,

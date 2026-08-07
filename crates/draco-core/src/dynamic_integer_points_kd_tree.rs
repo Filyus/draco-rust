@@ -522,7 +522,15 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
 
         let out_len = (self.num_points as usize).checked_mul(self.dimension as usize)?;
         let mut out: Vec<u32> = Vec::new();
-        if out.try_reserve_exact(out_len).is_err() {
+        // Reserved against the input, not against the count the stream declares:
+        // `decode_internal` appends, so everything past this arrives on points
+        // that were actually decoded. Eight values per remaining byte is the
+        // same allowance the symbol decoders take, and it leaves a header
+        // naming millions of points in a few kilobytes reserving kilobytes.
+        if out
+            .try_reserve(out_len.min(buffer.remaining_size().saturating_mul(8)))
+            .is_err()
+        {
             return None;
         }
         if !self.decode_internal(self.num_points, &mut out) {
