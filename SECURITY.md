@@ -44,15 +44,16 @@ What the crate intentionally does **not** do:
 
 ## Memory safety (`unsafe`)
 
-The rule is per crate, because the two crates decode different things and a
-single rule for both was either too strict for one or too loose for the other.
-Both statements are enforced by the build rather than asserted here: CI runs
+The rule is per crate, because the three crates do different work and a single
+rule for all of them was either too strict for two or too loose for one. Every
+line of the table is enforced by the build rather than asserted here: CI runs
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
 
 | crate | rule | enforced by |
 |---|---|---|
 | `draco-core` | **No `unsafe`.** | `[lints.rust] unsafe_code = "forbid"` — a build failure, and `forbid` so no module can lift it locally |
 | `draco-io` | `unsafe` **permitted in narrow, audited paths**, each block carrying a `// SAFETY:` justification | `[lints.clippy] undocumented_unsafe_blocks` — an unjustified block fails the build |
+| `draco-gltf` | the same as `draco-io` | the same lint |
 
 **Why `draco-core` is the strict one.** Its algorithms — rANS, edgebreaker
 traversal, the prediction schemes, the KD-tree coder — are intricate, they run
@@ -61,12 +62,20 @@ of them would be hard to find by review and hard to attribute from a crash.
 Whatever `unsafe` could buy there is not worth being unable to reason about the
 result, so the door is shut and the compiler holds it.
 
-**Why `draco-io` is not.** It is the file-format layer, and the work in its hot
-paths is a different shape: byte shuffling, endian swaps, fixed-stride copies
-between typed buffers, and container parsing whose bounds are established at the
-point of use rather than carried through an algorithm. That is exactly the shape
-SIMD and unchecked indexing help with, and each such path is small enough to
-audit in isolation. It is a different risk profile, not a lower standard.
+**Why the other two are not.** They are the file-format and document layers, and
+the work in their hot paths is a different shape: byte shuffling, endian swaps,
+fixed-stride copies between typed buffers, accessor strides and buffer views,
+and container parsing whose bounds are established at the point of use rather
+than carried through an algorithm. That is exactly the shape SIMD and unchecked
+indexing help with, and each such path is small enough to audit in isolation. It
+is a different risk profile, not a lower standard.
+
+The split is by *what the code does*, not by how much it is trusted. A
+`draco-gltf` accessor walk reads offsets and strides straight out of a `.gltf`
+that a hostile caller wrote, so nothing here says its input is safer than
+`draco-core`'s — it says the bound on each read is established a line or two
+away rather than carried through a decoder's state, which is what makes a
+`// SAFETY:` comment able to say something true and checkable.
 
 **What is required of an `unsafe` block here**, and it is all of it, not a
 choice:
@@ -82,10 +91,11 @@ choice:
   `unsafe` made faster and that nothing fuzzes is the one combination this
   policy exists to prevent.
 
-**Paths using `unsafe` in `draco-io`'s library today: none.** The permission is
-in place so that a measured optimisation does not have to relitigate the policy
-to land; it is not an invitation to reach for it first. Safe Rust that measures
-the same wins. When the first block lands, it is listed here.
+**Paths using `unsafe` in the `draco-io` and `draco-gltf` libraries today:
+none.** The permission is in place so that a measured optimisation does not have
+to relitigate the policy to land; it is not an invitation to reach for it first.
+Safe Rust that measures the same wins. When the first block lands, it is listed
+here.
 
 One *test* uses it, and it is listed because a policy whose table is
 selectively complete is worth nothing:

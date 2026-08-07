@@ -47,9 +47,15 @@ rather than by review:
 - `draco-core` forbids it (`[lints.rust] unsafe_code = "forbid"`). Do not
   propose lifting it for speed; its algorithms run on bitstream-controlled
   indices and are the wrong place to be unable to reason about a crash.
-- `draco-io` permits it in narrow, audited paths, with a `// SAFETY:` comment on
-  every block naming the invariant *and where it was established*. CI runs
-  clippy with `-D warnings`, so `undocumented_unsafe_blocks` is binding.
+- `draco-io` and `draco-gltf` permit it in narrow, audited paths, with a
+  `// SAFETY:` comment on every block naming the invariant *and where it was
+  established*. CI runs clippy with `-D warnings`, so
+  `undocumented_unsafe_blocks` is binding.
+
+The split is by what the code does, not by how much its input is trusted: a
+glTF accessor walk reads offsets and strides out of a file a hostile caller
+wrote, and it is on the permissive side because each bound is established a line
+or two from the read rather than carried through a decoder's state.
 
 Before writing one, read [`SECURITY.md`](SECURITY.md#memory-safety-unsafe): it
 lists what a block has to carry, and it wants the path added to its table and

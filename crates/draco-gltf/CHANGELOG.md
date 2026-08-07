@@ -9,6 +9,22 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- This crate permits `unsafe` in narrow, audited paths, on the same terms as
+  `draco-io`, where `SECURITY.md` previously ruled it out for the whole
+  workspace at once. Every block must carry a `// SAFETY:` comment naming its
+  invariant **and where that invariant was established**;
+  `undocumented_unsafe_blocks` is on and CI runs clippy with `-D warnings`, so
+  an unjustified block does not build. **No path in the library uses `unsafe`
+  today** and nothing that ships changes; what changes is that a measured
+  optimisation no longer has to relitigate the policy to land. The split is by
+  what the code does rather than by how much its input is trusted — an accessor
+  walk reads offsets and strides straight out of a file a hostile caller wrote,
+  and it is on this side because each bound is established a line or two from
+  the read rather than carried through a decoder's state. `draco-core` keeps the
+  rule absolute, with the compiler holding it.
+
 ### Added
 
 - `CompressionOptions::quantization` and `QuantizationBits`, which set Draco's

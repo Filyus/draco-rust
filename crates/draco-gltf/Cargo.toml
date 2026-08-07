@@ -17,6 +17,17 @@ rustdoc-args = ["--cfg", "docsrs"]
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 
+[lints.clippy]
+# `unsafe` is permitted here on the same terms as `draco-io` -- see SECURITY.md,
+# "Memory safety" -- and every block must carry a `// SAFETY:` justification. CI
+# runs clippy with `-D warnings`, so `warn` is enforced rather than advisory.
+#
+# This crate sits on `draco-io`'s side of the split rather than `draco-core`'s:
+# it owns the document model and the container/accessor work, so what is hot
+# here is buffer views, accessor strides and JSON, not a bitstream decoder
+# running on attacker-controlled indices.
+undocumented_unsafe_blocks = "warn"
+
 [dependencies]
 draco-core = { version = "1.0.0", path = "../draco-core", default-features = false }
 # The shared container/resource layer lives in draco-io; this crate owns the
