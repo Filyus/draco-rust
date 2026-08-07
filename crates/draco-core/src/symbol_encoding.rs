@@ -455,17 +455,16 @@ pub fn decode_symbols(
     num_components: usize,
     _options: &SymbolEncodingOptions,
     in_buffer: &mut DecoderBuffer,
-    symbols: &mut [u32],
+    symbols: &mut Vec<u32>,
 ) -> bool {
+    symbols.clear();
     if num_values == 0 {
         return true;
     }
-    if num_components == 0
-        || symbols.len() < num_values
-        || !num_values.is_multiple_of(num_components)
-    {
+    if num_components == 0 || !num_values.is_multiple_of(num_components) {
         return false;
     }
+    reserve_within_input(symbols, num_values, in_buffer);
 
     let scheme = match in_buffer.decode_u8() {
         Ok(v) => v,
@@ -480,16 +479,33 @@ pub fn decode_symbols(
     }
 }
 
+/// Reserves for what the stream could plausibly produce, not for what it says.
+///
+/// The declared count is a ceiling to decode up to, never a size to allocate:
+/// a nine-byte header naming two billion symbols must not reserve for them
+/// before the stream has produced one. So the starting capacity is bounded by
+/// the input -- one symbol per *bit* of what remains, the same bound
+/// `MeshEdgebreakerDecoder` already uses for its symbol run -- and anything
+/// past that arrives through `push`, whose growth is backed by symbols that
+/// were actually decoded.
+///
+/// A bit per symbol rather than a byte per symbol because the byte was both
+/// wrong and slow: entropy coding beats one symbol per byte routinely, so real
+/// streams reserved a fraction of what they needed and paid for the
+/// reallocations -- 598 to 698 us on a 10,000-point decode. At eight per byte a
+/// real stream reserves once, and a 9 KB stream claiming two billion symbols
+/// still reserves 289 KB rather than 8 GB.
+#[cfg(feature = "decoder")]
+fn reserve_within_input(symbols: &mut Vec<u32>, num_values: usize, in_buffer: &DecoderBuffer) {
+    symbols.reserve(num_values.min(in_buffer.remaining_size().saturating_mul(8)));
+}
+
 #[cfg(feature = "decoder")]
 pub fn decode_raw_symbols(
     num_values: usize,
     in_buffer: &mut DecoderBuffer,
-    symbols: &mut [u32],
+    symbols: &mut Vec<u32>,
 ) -> bool {
-    if symbols.len() < num_values {
-        return false;
-    }
-
     // Read serialized symbol-bit-length header (written by encoder)
     let symbols_bit_length = match in_buffer.decode_u8() {
         Ok(v) => v as u32,
@@ -510,11 +526,11 @@ pub fn decode_raw_symbols(
     if !decoder.start_decoding(in_buffer) {
         return false;
     }
-    for i in 0..num_values {
+    for _ in 0..num_values {
         let Some(symbol) = decoder.try_decode_symbol() else {
             return false;
         };
-        symbols[i] = symbol;
+        symbols.push(symbol);
     }
     true
 }
@@ -524,12 +540,9 @@ fn decode_tagged_symbols(
     num_values: usize,
     num_components: usize,
     in_buffer: &mut DecoderBuffer,
-    symbols: &mut [u32],
+    symbols: &mut Vec<u32>,
 ) -> bool {
-    if num_components == 0
-        || symbols.len() < num_values
-        || !num_values.is_multiple_of(num_components)
-    {
+    if num_components == 0 || !num_values.is_multiple_of(num_components) {
         return false;
     }
 
@@ -556,7 +569,6 @@ fn decode_tagged_symbols(
     // The bit stream is already bounded by start_bit_decoding.
 
     // Process each chunk
-    let mut val_idx = 0;
     for _ in 0..num_chunks {
         let Some(len) = tag_decoder.try_decode_symbol() else {
             return false;
@@ -569,8 +581,7 @@ fn decode_tagged_symbols(
                 Ok(v) => v,
                 Err(_) => return false,
             };
-            symbols[val_idx] = val;
-            val_idx += 1;
+            symbols.push(val);
         }
     }
 
@@ -585,9 +596,9 @@ mod tests {
 
     #[test]
     fn decode_raw_symbols_rejects_short_output() {
-        let bytes = [0u8]; // zero bit length would otherwise fill the output slice.
+        let bytes = [0u8]; // A zero bit length would otherwise fill the sink.
         let mut buffer = DecoderBuffer::new(&bytes);
-        let mut symbols = [];
+        let mut symbols = Vec::new();
 
         assert!(!decode_raw_symbols(1, &mut buffer, &mut symbols));
     }
@@ -596,7 +607,7 @@ mod tests {
     fn decode_symbols_rejects_non_draco_scheme_ids() {
         let bytes = [2u8];
         let mut buffer = DecoderBuffer::new(&bytes);
-        let mut symbols = [0u32; 1];
+        let mut symbols = Vec::new();
         let options = SymbolEncodingOptions::default();
 
         assert!(!decode_symbols(1, 1, &options, &mut buffer, &mut symbols));
@@ -606,7 +617,7 @@ mod tests {
     fn decode_raw_symbols_rejects_zero_bit_length() {
         let bytes = [0u8];
         let mut buffer = DecoderBuffer::new(&bytes);
-        let mut symbols = [0u32; 1];
+        let mut symbols: Vec<u32> = Vec::new();
 
         assert!(!decode_raw_symbols(1, &mut buffer, &mut symbols));
     }
@@ -615,7 +626,7 @@ mod tests {
     fn decode_raw_symbols_rejects_bit_length_above_draco_limit() {
         let bytes = [19u8];
         let mut buffer = DecoderBuffer::new(&bytes);
-        let mut symbols = [0u32; 1];
+        let mut symbols: Vec<u32> = Vec::new();
 
         assert!(!decode_raw_symbols(1, &mut buffer, &mut symbols));
     }
@@ -623,7 +634,7 @@ mod tests {
     #[test]
     fn decode_tagged_symbols_rejects_zero_components() {
         let mut buffer = DecoderBuffer::new(&[]);
-        let mut symbols = [0u32; 1];
+        let mut symbols: Vec<u32> = Vec::new();
 
         assert!(!decode_tagged_symbols(1, 0, &mut buffer, &mut symbols));
     }
@@ -631,7 +642,7 @@ mod tests {
     #[test]
     fn decode_tagged_symbols_rejects_partial_component_chunk() {
         let mut buffer = DecoderBuffer::new(&[]);
-        let mut symbols = [0u32; 5];
+        let mut symbols: Vec<u32> = Vec::new();
 
         assert!(!decode_tagged_symbols(5, 2, &mut buffer, &mut symbols));
     }
@@ -657,9 +668,9 @@ mod roundtrip_tests {
 
         let data = target.data().to_vec();
         let mut source = DecoderBuffer::new(&data);
-        let mut out = [0u32; 1];
+        let mut out = Vec::new();
         assert!(decode_symbols(1, 1, &options, &mut source, &mut out));
-        assert_eq!(out[0], u32::MAX);
+        assert_eq!(out, [u32::MAX]);
     }
 
     #[test]
@@ -672,7 +683,7 @@ mod roundtrip_tests {
 
         let data = target.data().to_vec();
         let mut source = DecoderBuffer::new(&data);
-        let mut out = [0u32; 5];
+        let mut out = Vec::new();
         assert!(decode_symbols(5, 1, &options, &mut source, &mut out));
         assert_eq!(out, symbols);
     }

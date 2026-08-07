@@ -165,7 +165,10 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
                 _ => return false,
             };
             if num_symbols > 0 {
-                self.context_symbols[i].resize(num_symbols, 0);
+                // Not resized to `num_symbols` first: that count is the
+                // stream's claim, and `decode_symbols` grows this as symbols
+                // are decoded, so a claim the stream cannot meet costs one
+                // small reservation rather than the whole context.
                 let options = SymbolEncodingOptions::default();
                 if !decode_symbols(
                     num_symbols,

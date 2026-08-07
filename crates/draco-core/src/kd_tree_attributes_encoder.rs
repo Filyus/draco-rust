@@ -13,6 +13,7 @@ use crate::encoder_buffer::EncoderBuffer;
 use crate::encoder_options::EncoderOptions;
 use crate::geometry_indices::PointIndex;
 use crate::point_cloud::PointCloud;
+use crate::prediction_scheme::EntryToPointIdMap;
 
 pub struct KdTreeAttributesEncoder {
     attribute_ids: Vec<i32>,
@@ -108,7 +109,11 @@ impl KdTreeAttributesEncoder {
                     portable_att.set_identity_mapping();
 
                     if transform
-                        .transform_attribute(att, &point_ids, &mut portable_att)
+                        .transform_attribute(
+                            att,
+                            EntryToPointIdMap::from_point_indices(&point_ids),
+                            &mut portable_att,
+                        )
                         .is_err()
                     {
                         return false;

@@ -15,6 +15,7 @@ use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::PointIndex;
+use crate::prediction_scheme::EntryToPointIdMap;
 use crate::quantization_utils::{Dequantizer, Quantizer};
 use crate::status::{DracoError, Status};
 
@@ -195,7 +196,7 @@ impl AttributeQuantizationTransform {
     fn generate_portable_attribute(
         &self,
         attribute: &PointAttribute,
-        point_ids: &[PointIndex],
+        point_ids: EntryToPointIdMap<'_>,
         target_attribute: &mut PointAttribute,
     ) -> Status {
         if !VALID_QUANTIZATION_BITS.contains(&self.quantization_bits) {
@@ -308,7 +309,7 @@ impl AttributeQuantizationTransform {
                 let point_idx = if point_ids.is_empty() {
                     PointIndex(i as u32)
                 } else {
-                    point_ids[i]
+                    PointIndex(point_ids.get(i).unwrap_or(u32::MAX))
                 };
                 let att_val_idx = attribute.mapped_index(point_idx);
                 let Some(src_offset) = (att_val_idx.0 as usize).checked_mul(src_stride) else {
@@ -429,7 +430,7 @@ impl AttributeTransform for AttributeQuantizationTransform {
     fn transform_attribute(
         &self,
         attribute: &PointAttribute,
-        point_ids: &[PointIndex],
+        point_ids: EntryToPointIdMap<'_>,
         target_attribute: &mut PointAttribute,
     ) -> Status {
         self.generate_portable_attribute(attribute, point_ids, target_attribute)
@@ -482,6 +483,28 @@ impl AttributeTransform for AttributeQuantizationTransform {
                 "Negative source byte stride".to_string(),
             ));
         };
+        // The target arrives unreserved from a decode: the count came out of a
+        // header, and reserving for a header is what let a 9 KB stream ask for
+        // gigabytes. It is sized here instead, where the values to put in it
+        // already exist -- in the source, whose own length is checked below and
+        // whose bytes came off the stream. A count the source cannot cover is
+        // still refused there rather than reserved for here.
+        if let (Some(required_src), Some(required_dst)) = (
+            num_values.checked_mul(src_stride),
+            num_values.checked_mul(dst_stride),
+        ) {
+            if attribute.buffer().data_size() >= required_src
+                && target_attribute.buffer().data_size() < required_dst
+            {
+                target_attribute
+                    .buffer_mut()
+                    .try_resize(required_dst)
+                    .map_err(|_| {
+                        DracoError::general("Failed to allocate dequantized values".to_string())
+                    })?;
+            }
+        }
+
         let src_buffer = attribute.buffer();
         let dst_buffer = target_attribute.buffer_mut();
         let src_data = src_buffer.data();
@@ -781,7 +804,7 @@ mod tests {
 
         let mut target = PointAttribute::default();
         let err = transform
-            .transform_attribute(&wide, &[], &mut target)
+            .transform_attribute(&wide, EntryToPointIdMap::identity(0), &mut target)
             .expect_err("three components against two min_values must be refused");
         assert!(
             err.to_string().contains("cover 2 components"),
@@ -938,7 +961,11 @@ mod tests {
             1,
         );
         let mismatched = narrow
-            .transform_attribute(&wide, &[], &mut PointAttribute::default())
+            .transform_attribute(
+                &wide,
+                EntryToPointIdMap::identity(0),
+                &mut PointAttribute::default(),
+            )
             .unwrap_err();
 
         let messages = [

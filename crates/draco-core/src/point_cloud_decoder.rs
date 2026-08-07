@@ -7,14 +7,13 @@ use crate::draco_types::DataType;
 #[cfg(feature = "point_cloud_decode")]
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 #[cfg(feature = "point_cloud_decode")]
-use crate::geometry_indices::PointIndex;
-#[cfg(feature = "point_cloud_decode")]
 use crate::kd_tree_attributes_decoder::KdTreeAttributesDecoder;
 use crate::mesh::Mesh;
 use crate::point_cloud::PointCloud;
 #[cfg(feature = "point_cloud_decode")]
-use crate::sequential_integer_attribute_decoder::SequentialIntegerAttributeDecoder;
+use crate::prediction_scheme::EntryToPointIdMap;
 #[cfg(feature = "point_cloud_decode")]
+use crate::sequential_integer_attribute_decoder::SequentialIntegerAttributeDecoder;
 use crate::status::{DracoError, Status};
 
 #[cfg(feature = "point_cloud_decode")]
@@ -115,23 +114,6 @@ impl Default for PointCloudDecoder {
 }
 
 #[cfg(feature = "point_cloud_decode")]
-fn make_point_ids(num_points: usize, stream_bytes: usize) -> Result<Vec<PointIndex>, DracoError> {
-    crate::decode_budget::ensure_elements_are_backed(
-        num_points,
-        std::mem::size_of::<PointIndex>(),
-        stream_bytes,
-    )?;
-    let mut point_ids = Vec::new();
-    point_ids
-        .try_reserve_exact(num_points)
-        .map_err(|_| DracoError::general("Failed to allocate point ids".to_string()))?;
-    for i in 0..num_points {
-        point_ids.push(PointIndex(i as u32));
-    }
-    Ok(point_ids)
-}
-
-#[cfg(feature = "point_cloud_decode")]
 fn validate_num_attributes_in_decoder(
     num_attributes_in_decoder: usize,
     remaining_bytes: usize,
@@ -175,6 +157,25 @@ fn decode_raw_attribute_values(
     let required_size = entry_size.checked_mul(num_points).ok_or_else(|| {
         DracoError::general("Point cloud raw attribute byte count overflow".to_string())
     })?;
+
+    // Raw values are copied straight out of the stream, so the stream itself is
+    // the bound: `required_size` bytes have to be there to be read. That makes
+    // this the one place the target can be sized from the declared count
+    // without taking the header's word for it -- if the bytes are absent the
+    // buffer is never reserved, and the decode fails on the count instead.
+    if attribute.buffer().data_size() < required_size {
+        if buffer.remaining_size() < required_size {
+            return Err(DracoError::general(
+                "Point cloud attribute buffer too small".to_string(),
+            ));
+        }
+        attribute
+            .buffer_mut()
+            .try_resize(required_size)
+            .map_err(|_| {
+                DracoError::general("Failed to allocate raw attribute values".to_string())
+            })?;
+    }
 
     let dst = attribute.buffer_mut().data_mut();
     if dst.len() < required_size {
@@ -410,16 +411,18 @@ impl PointCloudDecoder {
                     }
 
                     let mut att = PointAttribute::new();
-                    // First buffer sized from the header's point count, so this
-                    // is where a count the stream cannot describe is refused -
-                    // the header guard that used to do it was unsound and is
-                    // gone.
+                    // The ratio still refuses the absurd, but it is not what
+                    // keeps this bounded: a ratio scales with the input, and a
+                    // 9 KB stream declaring 33,686,016 points of 255 components
+                    // clears it while asking for 8 GB. The buffer is left
+                    // unreserved instead, and the decoder that writes the
+                    // values sizes it once they exist.
                     crate::decode_budget::ensure_elements_are_backed(
                         num_points,
                         spec.num_components as usize * spec.data_type.byte_length(),
                         buffer.size(),
                     )?;
-                    att.try_init(
+                    att.init_deferred(
                         spec.att_type,
                         spec.num_components,
                         spec.data_type,
@@ -431,8 +434,13 @@ impl PointCloudDecoder {
                     att_ids.push(att_id);
                 }
 
+                // The identity, and not written out. Entry `i` is point `i`
+                // here, so materializing it bought nothing and cost four bytes
+                // per point of a count the header supplies -- 134 MB from a
+                // 9 KB stream on one fuzz artifact, and gigabytes on a bigger
+                // claim. See `EntryToPointIdMap::Identity`.
                 let point_ids = if decoder_types.iter().any(|&decoder_type| decoder_type != 0) {
-                    Some(make_point_ids(num_points, buffer.size())?)
+                    Some(EntryToPointIdMap::identity(num_points))
                 } else {
                     None
                 };
@@ -441,7 +449,7 @@ impl PointCloudDecoder {
                     let decoder_type = decoder_types[local_i];
                     match decoder_type {
                         1 => {
-                            let point_ids = point_ids.as_ref().ok_or_else(|| {
+                            let point_ids = point_ids.ok_or_else(|| {
                                 DracoError::general(
                                     "Point ids missing for integer attribute decoder".to_string(),
                                 )
@@ -521,7 +529,7 @@ impl PointCloudDecoder {
                             };
                             att_decoder.decode_values(
                                 pc,
-                                point_ids.as_ref().ok_or_else(|| {
+                                point_ids.ok_or_else(|| {
                                     DracoError::general(
                                         "Point ids missing for quantized attribute decoder"
                                             .to_string(),
@@ -610,7 +618,7 @@ impl PointCloudDecoder {
                             };
                             att_decoder.decode_values(
                                 pc,
-                                point_ids.as_ref().ok_or_else(|| {
+                                point_ids.ok_or_else(|| {
                                     DracoError::general(
                                         "Point ids missing for normal attribute decoder"
                                             .to_string(),

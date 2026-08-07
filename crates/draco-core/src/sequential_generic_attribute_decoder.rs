@@ -5,9 +5,9 @@
 //! transform. Port of Draco's `sequential_generic_attribute_decoder` path.
 
 use crate::decoder_buffer::DecoderBuffer;
-use crate::geometry_indices::PointIndex;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_decoder::PointCloudDecoder;
+use crate::prediction_scheme::EntryToPointIdMap;
 use crate::sequential_attribute_decoder::SequentialAttributeDecoder;
 use crate::status::{DracoError, Status};
 
@@ -35,7 +35,7 @@ impl SequentialGenericAttributeDecoder {
     pub fn decode_values(
         &mut self,
         point_cloud: &mut PointCloud,
-        point_ids: &[PointIndex],
+        point_ids: EntryToPointIdMap<'_>,
         buffer: &mut DecoderBuffer,
     ) -> Status {
         let attribute_id = self.base.attribute_id();
@@ -77,7 +77,11 @@ mod tests {
         let mut buffer = DecoderBuffer::new(&[]);
 
         assert!(decoder
-            .decode_values(&mut point_cloud, &[], &mut buffer)
+            .decode_values(
+                &mut point_cloud,
+                EntryToPointIdMap::identity(0),
+                &mut buffer
+            )
             .is_err());
     }
 }

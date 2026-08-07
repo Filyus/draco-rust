@@ -13,6 +13,7 @@ use crate::encoder_options::EncoderOptions;
 use crate::geometry_indices::PointIndex;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_encoder::GeometryEncoder;
+use crate::prediction_scheme::EntryToPointIdMap;
 use crate::sequential_integer_attribute_encoder::{
     IntPredictionTransformFamily, SequentialIntegerAttributeEncoder,
 };
@@ -110,7 +111,7 @@ impl SequentialNormalAttributeEncoder {
         self.attribute_octahedron_transform
             .generate_portable_attribute(
                 attribute,
-                point_ids,
+                EntryToPointIdMap::from_point_indices(point_ids),
                 point_ids.len(),
                 &mut self.portable_attribute,
             )?;

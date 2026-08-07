@@ -62,6 +62,13 @@ pub enum PredictionSchemeTransformType {
 pub enum EntryToPointIdMap<'a> {
     PointIndices(&'a [PointIndex]),
     U32(&'a [u32]),
+    /// The identity of a given length: entry `i` is point `i`.
+    ///
+    /// A sequential decode has no permutation to speak of, and writing one out
+    /// costs four bytes per point taken from a count the header supplies --
+    /// which is the shape of every allocation this crate has had to bound. The
+    /// other two variants are for an order that really is an order.
+    Identity(usize),
 }
 
 impl<'a> EntryToPointIdMap<'a> {
@@ -75,11 +82,18 @@ impl<'a> EntryToPointIdMap<'a> {
         Self::U32(point_ids)
     }
 
+    /// The identity over `num_points` entries, without materializing it.
+    #[inline]
+    pub fn identity(num_points: usize) -> Self {
+        Self::Identity(num_points)
+    }
+
     #[inline]
     pub fn len(self) -> usize {
         match self {
             Self::PointIndices(point_ids) => point_ids.len(),
             Self::U32(point_ids) => point_ids.len(),
+            Self::Identity(num_points) => num_points,
         }
     }
 
@@ -93,6 +107,9 @@ impl<'a> EntryToPointIdMap<'a> {
         match self {
             Self::PointIndices(point_ids) => point_ids.get(index).map(|p| p.0),
             Self::U32(point_ids) => point_ids.get(index).copied(),
+            Self::Identity(num_points) => {
+                (index < num_points).then(|| u32::try_from(index).unwrap_or(u32::MAX))
+            }
         }
     }
 }

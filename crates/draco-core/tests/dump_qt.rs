@@ -3,6 +3,7 @@ use draco_core::attribute_transform::AttributeTransform;
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::PointIndex;
+use draco_core::prediction_scheme::EntryToPointIdMap;
 
 fn create_complex_mesh_pos_attr() -> PointAttribute {
     let grid_size = 50;
@@ -60,9 +61,13 @@ fn dump_rust_qt() {
 
     let mut target_attr = PointAttribute::new();
     let transformed = if point_ids.is_empty() {
-        transform.transform_attribute(&pos_attr, &[], &mut target_attr)
+        transform.transform_attribute(&pos_attr, EntryToPointIdMap::identity(0), &mut target_attr)
     } else {
-        transform.transform_attribute(&pos_attr, &point_ids, &mut target_attr)
+        transform.transform_attribute(
+            &pos_attr,
+            EntryToPointIdMap::from_point_indices(&point_ids),
+            &mut target_attr,
+        )
     };
     transformed.expect("transform_attribute failed");
 

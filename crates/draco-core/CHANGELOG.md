@@ -132,24 +132,39 @@ premise holds, and the encoder reports the choices it makes for itself.
   floor of an interval that no longer exists, nothing had read it since
   `claimed_versions` replaced that interval, and no released Draco ever wrote
   bitstream 1.0 — the oldest that turns up is 1.1, from Draco 0.9.1.
-- The decoder bounds allocations two ways, and which one applies depends on
-  what is being counted.
+- **A declared count no longer allocates.** The header's point, face and value
+  counts are what the decode works *towards*; the memory follows the data, and
+  arrives as the data does.
 
-  Buffers sized from a declared count of *values* are bounded by a ratio
-  against the input — 2^20 bytes per input byte — rather than by refusing a
-  count above the remaining bitstream in bits. That premise was false: geometry
-  whose values are all equal entropy-codes to a size independent of the count,
-  so this crate wrote 100,000 points into 171 bytes and then refused to read the
-  file back.
+  What this replaces is a guard that refused a count above the remaining
+  bitstream in bits. That premise was false — geometry whose values are all
+  equal entropy-codes to a size independent of the count, so this crate wrote
+  100,000 points into 171 bytes and then refused to read the file back — and
+  the ratio that replaced it, 2^20 bytes allocated per input byte, was the
+  wrong instrument rather than the wrong constant. A ratio scales with the
+  input, and the input is the attacker's: the `decode_drc` fuzz target found a
+  26 KB stream naming 1,095,910,464 faces that reserved 13 GB and cleared the
+  ratio with room to spare, then a 9 KB one naming 33,686,016 points of 255
+  components that reserved 8 GB. Halving the constant halves nothing — twice
+  the input buys twice the allocation.
 
-  A declared count of *symbols* is bounded at one bit each instead, because a
-  ratio is the wrong instrument for a count. A ratio scales with the input, and
-  the input is what an attacker supplies: a 26 KB stream naming 1,095,910,464
-  faces reserves 13 GB of indices and clears the ratio with room to spare, since
-  13 GB over 2^20 is 12 KB. Lowering the constant would not change that shape —
-  whatever it is, twice the input buys twice the allocation. This was found by
-  the `decode_drc` fuzz target and is pinned by
-  `a_face_count_beyond_one_bit_each_is_refused_before_allocation`.
+  So the decode paths grow instead. `decode_symbols` appends into a caller's
+  `Vec` rather than filling a slice sized up front, starting at eight symbols
+  per remaining input byte and growing on what it actually decodes. A
+  sequential attribute's buffer is left unreserved by `init_deferred` and sized
+  by whichever decoder writes it, once the values exist. Dequantization sizes
+  its target against the source it is reading. Raw values size theirs from the
+  stream, which has to carry them literally. `EntryToPointIdMap::Identity`
+  ends the four-bytes-per-point array that spelled out `0, 1, 2, …` for a
+  sequential decode. A symbol *count* keeps a floor of one bit each, which is
+  a real bound for a count even though the all-equal argument makes it false
+  for values; the ratio stays behind all of it as a backstop.
+
+  Measured on the two artifacts that started this: the largest single
+  allocation is now 26,386 and 9,034 bytes — the size of the input in both
+  cases, which is the property being aimed at. Across the 2,367-file
+  `decode_drc` corpus the largest is 8.4 MB, and `EdgebreakerConnectivityDecoder`
+  already worked this way, so this extends a line rather than opening one.
 
   Upstream's own `faces > remaining/3` is still not adopted: at three bytes per
   face it is 24 times stricter than one bit per symbol, so a file this crate

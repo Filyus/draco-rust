@@ -10,9 +10,9 @@ use crate::attribute_transform::AttributeTransform;
 use crate::corner_table::CornerTable;
 use crate::decoder_buffer::DecoderBuffer;
 use crate::draco_types::DataType;
-use crate::geometry_indices::PointIndex;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_decoder::PointCloudDecoder;
+use crate::prediction_scheme::EntryToPointIdMap;
 use crate::prediction_scheme_normal_octahedron_canonicalized_decoding_transform::PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform;
 use crate::sequential_integer_attribute_decoder::SequentialIntegerAttributeDecoder;
 use crate::status::{DracoError, Status};
@@ -79,7 +79,7 @@ impl SequentialNormalAttributeDecoder {
     pub fn decode_values(
         &mut self,
         point_cloud: &mut PointCloud,
-        point_ids: &[PointIndex],
+        point_ids: EntryToPointIdMap<'_>,
         buffer: &mut DecoderBuffer,
         corner_table: Option<&CornerTable>,
         data_to_corner_map: Option<&[u32]>,

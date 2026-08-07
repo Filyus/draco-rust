@@ -16,7 +16,9 @@ use crate::mesh_edgebreaker_encoder::{
 use crate::metadata::METADATA_FLAG_MASK;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_encoder::GeometryEncoder;
-use crate::prediction_scheme::{PredictionSchemeMethod, PredictionSchemeTransformType};
+use crate::prediction_scheme::{
+    EntryToPointIdMap, PredictionSchemeMethod, PredictionSchemeTransformType,
+};
 use crate::sequential_attribute_encoder::{
     select_sequential_encoder, SequentialAttributeEncoder, SequentialAttributeEncoderType,
 };
@@ -1121,7 +1123,11 @@ impl MeshEncoder {
                         })?;
                     let mut portable = PointAttribute::default();
                     q_transform
-                        .transform_attribute(att, &self.point_ids, &mut portable)
+                        .transform_attribute(
+                            att,
+                            EntryToPointIdMap::from_point_indices(&self.point_ids),
+                            &mut portable,
+                        )
                         .map_err(|e| {
                             DracoError::general(format!("Failed to quantize attribute: {e}"))
                         })?;
@@ -1482,7 +1488,11 @@ impl MeshEncoder {
                     })?;
                 let mut portable = PointAttribute::default();
                 q_transform
-                    .transform_attribute(att, point_ids, &mut portable)
+                    .transform_attribute(
+                        att,
+                        EntryToPointIdMap::from_point_indices(point_ids),
+                        &mut portable,
+                    )
                     .map_err(|e| {
                         DracoError::general(format!("Failed to quantize attribute: {e}"))
                     })?;
@@ -1855,7 +1865,11 @@ impl MeshEncoder {
 
             let mut portable = PointAttribute::default();
             q_transform
-                .transform_attribute(att, point_ids, &mut portable)
+                .transform_attribute(
+                    att,
+                    EntryToPointIdMap::from_point_indices(point_ids),
+                    &mut portable,
+                )
                 .map_err(|e| {
                     DracoError::general(format!(
                         "Failed to quantize position attribute for encoded mesh info: {e}"

@@ -15,7 +15,7 @@ use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_decoder::PointCloudDecoder;
 use crate::prediction_scheme::{
-    PredictionScheme, PredictionSchemeDecoder, PredictionSchemeMethod,
+    EntryToPointIdMap, PredictionScheme, PredictionSchemeDecoder, PredictionSchemeMethod,
     PredictionSchemeTransformType,
 };
 use crate::prediction_scheme_constrained_multi_parallelogram::MeshPredictionSchemeConstrainedMultiParallelogramDecoder;
@@ -144,7 +144,7 @@ impl SequentialIntegerAttributeDecoder {
     pub fn decode_values(
         &mut self,
         point_cloud: &mut PointCloud,
-        point_ids: &[PointIndex],
+        point_ids: EntryToPointIdMap<'_>,
         in_buffer: &mut DecoderBuffer,
         corner_table: Option<&CornerTable>,
         data_to_corner_map_override: Option<&[u32]>,
@@ -738,9 +738,7 @@ impl SequentialIntegerAttributeDecoder {
                     predictor.init(&mesh_data);
 
                     // Provide mapping from decoded-entry index to original point id.
-                    predictor.set_entry_to_point_id_map(
-                        crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
-                    );
+                    predictor.set_entry_to_point_id_map(point_ids);
 
                     // Set parent attribute (Position)
                     let pos_att_id = point_cloud.named_attribute_id(
@@ -821,11 +819,11 @@ impl SequentialIntegerAttributeDecoder {
         let corrections: Vec<i32> = if compressed > 0 {
             // Entropy-coded symbols are zigzag encoded UNLESS the prediction scheme
             // guarantees positive corrections (e.g., normal octahedron transform)
-            let Some(mut symbols) = try_zeroed::<u32>(num_values) else {
-                return Err(DracoError::general(format!(
-                    "Failed to allocate {num_values} decoded symbols"
-                )));
-            };
+            // Empty on purpose. `num_values` comes from the header, and the
+            // header is the attacker's: reserving for it here is what let a
+            // 9 KB stream ask for gigabytes before decoding a single symbol.
+            // `decode_symbols` grows this as symbols actually arrive.
+            let mut symbols = Vec::new();
             let options = SymbolEncodingOptions::default();
             if !decode_symbols(
                 num_values,
@@ -976,9 +974,7 @@ impl SequentialIntegerAttributeDecoder {
                     | PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram
                     | PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated
                     | PredictionSchemeMethod::MeshPredictionTexCoordsPortable
-                    | PredictionSchemeMethod::MeshPredictionGeometricNormal => Some(
-                        crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
-                    ),
+                    | PredictionSchemeMethod::MeshPredictionGeometricNormal => Some(point_ids),
                     _ => None,
                 };
                 run_compute_original_values(
@@ -1051,9 +1047,7 @@ impl SequentialIntegerAttributeDecoder {
             }
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
-                let map = Some(
-                    crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
-                );
+                let map = Some(point_ids);
                 run_compute_original_values(
                     predictor_tex_coords_deprecated_opt.as_mut(),
                     &corrections,
@@ -1070,9 +1064,7 @@ impl SequentialIntegerAttributeDecoder {
                 ));
             }
             PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
-                let map = Some(
-                    crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
-                );
+                let map = Some(point_ids);
                 run_compute_original_values(
                     predictor_tex_coords_opt.as_mut(),
                     &corrections,
@@ -1083,9 +1075,7 @@ impl SequentialIntegerAttributeDecoder {
                 )?;
             }
             PredictionSchemeMethod::MeshPredictionGeometricNormal => {
-                let map = Some(
-                    crate::prediction_scheme::EntryToPointIdMap::from_point_indices(point_ids),
-                );
+                let map = Some(point_ids);
                 run_compute_original_values(
                     predictor_geometric_normal_opt.as_mut(),
                     &corrections,
@@ -1110,7 +1100,7 @@ impl SequentialIntegerAttributeDecoder {
             if num_points > 0 {
                 debug_log!(
                     "Sequential Decoded: Point 0 ID = {:?}, Value[0] = {}",
-                    point_ids[0],
+                    PointIndex(point_ids.get(0).unwrap_or(u32::MAX)),
                     values[0]
                 );
                 // Debug: print all decoded values (quantized) and where they go
@@ -1124,7 +1114,7 @@ impl SequentialIntegerAttributeDecoder {
                             "  data_id={} -> point_ids[{}]={:?}: quantized({}, {}, {})",
                             i,
                             i,
-                            point_ids[i],
+                            PointIndex(point_ids.get(i).unwrap_or(u32::MAX)),
                             x,
                             y,
                             z
@@ -1352,7 +1342,7 @@ mod tests {
         assert!(decoder
             .decode_values(
                 &mut point_cloud,
-                &point_ids,
+                EntryToPointIdMap::from_point_indices(&point_ids),
                 &mut buffer,
                 None,
                 None,
@@ -1378,7 +1368,7 @@ mod tests {
         assert!(decoder
             .decode_values(
                 &mut point_cloud,
-                &point_ids,
+                EntryToPointIdMap::from_point_indices(&point_ids),
                 &mut buffer,
                 None,
                 None,

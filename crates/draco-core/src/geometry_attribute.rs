@@ -256,6 +256,50 @@ impl PointAttribute {
         Ok(())
     }
 
+    /// The same shape, without reserving for the values.
+    ///
+    /// For decode paths where the count comes from the header: it is what the
+    /// stream *claims*, and reserving for a claim is how a nine-byte header
+    /// names gigabytes. The decoders that fill this buffer size it themselves
+    /// as the values arrive -- the integer path resizes before it writes, the
+    /// generic path resizes only once the bytes are in the stream to be read --
+    /// so nothing here needs the room before there is anything to put in it.
+    ///
+    /// `num_unique_entries` still reports the declared count, because that is
+    /// the ceiling the decode works towards; what is deferred is the memory.
+    /// Not for the KD-tree path, which writes at computed offsets and needs the
+    /// buffer sized first; that path bounds its own allocation instead.
+    #[cfg(feature = "decoder")]
+    pub(crate) fn init_deferred(
+        &mut self,
+        attribute_type: GeometryAttributeType,
+        num_components: u8,
+        data_type: DataType,
+        normalized: bool,
+        num_attribute_values: usize,
+    ) -> Result<(), DracoError> {
+        let byte_stride = num_components as usize * data_type.byte_length();
+        // Still checked, so an overflowing shape is refused here rather than
+        // wrapping into a small buffer somewhere later.
+        num_attribute_values
+            .checked_mul(byte_stride)
+            .ok_or_else(|| {
+                DracoError::general("Point attribute buffer size overflow".to_string())
+            })?;
+        self.base.init(
+            attribute_type,
+            None,
+            num_components,
+            data_type,
+            normalized,
+            byte_stride as i64,
+            0,
+        );
+        self.num_unique_entries = num_attribute_values;
+        self.identity_mapping = true;
+        Ok(())
+    }
+
     /// Maps a point id to the corresponding attribute value id.
     pub fn mapped_index(&self, point_index: PointIndex) -> AttributeValueIndex {
         if self.identity_mapping {

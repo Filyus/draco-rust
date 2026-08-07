@@ -15,6 +15,7 @@ use crate::encoder_buffer::EncoderBuffer;
 use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::PointIndex;
 use crate::normal_compression_utils::OctahedronToolBox;
+use crate::prediction_scheme::EntryToPointIdMap;
 use crate::status::{DracoError, Status};
 
 pub struct AttributeOctahedronTransform {
@@ -55,7 +56,7 @@ impl AttributeOctahedronTransform {
     pub fn generate_portable_attribute(
         &self,
         attribute: &PointAttribute,
-        point_ids: &[PointIndex],
+        point_ids: EntryToPointIdMap<'_>,
         num_points: usize,
         target_attribute: &mut PointAttribute,
     ) -> Status {
@@ -101,7 +102,8 @@ impl AttributeOctahedronTransform {
         };
 
         if !point_ids.is_empty() {
-            for &point_id in point_ids {
+            for entry in 0..point_ids.len() {
+                let point_id = PointIndex(point_ids.get(entry).unwrap_or(u32::MAX));
                 let att_val_id = attribute.mapped_index(point_id);
                 let att_val = read_normal(att_val_id.0 as usize)?;
 
@@ -261,7 +263,7 @@ impl AttributeTransform for AttributeOctahedronTransform {
     fn transform_attribute(
         &self,
         attribute: &PointAttribute,
-        point_ids: &[PointIndex],
+        point_ids: EntryToPointIdMap<'_>,
         target_attribute: &mut PointAttribute,
     ) -> Status {
         self.generate_portable_attribute(
@@ -323,6 +325,7 @@ mod tests {
     use crate::decoder_buffer::DecoderBuffer;
     use crate::draco_types::DataType;
     use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+    use crate::prediction_scheme::EntryToPointIdMap;
 
     #[test]
     fn inverse_transform_rejects_truncated_portable_data() {
@@ -362,7 +365,7 @@ mod tests {
         target.init(GeometryAttributeType::Normal, 2, DataType::Uint32, false, 1);
 
         assert!(transform
-            .generate_portable_attribute(&source, &[], 1, &mut target)
+            .generate_portable_attribute(&source, EntryToPointIdMap::identity(0), 1, &mut target)
             .is_err());
     }
 

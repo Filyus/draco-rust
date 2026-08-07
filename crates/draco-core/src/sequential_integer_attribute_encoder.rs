@@ -19,7 +19,8 @@ use crate::point_cloud::PointCloud;
 use crate::point_cloud_encoder::GeometryEncoder;
 use crate::prediction_scheme::PredictionScheme;
 use crate::prediction_scheme::{
-    PredictionSchemeEncoder, PredictionSchemeMethod, PredictionSchemeTransformType,
+    EntryToPointIdMap, PredictionSchemeEncoder, PredictionSchemeMethod,
+    PredictionSchemeTransformType,
 };
 use crate::prediction_scheme_constrained_multi_parallelogram::MeshPredictionSchemeConstrainedMultiParallelogramEncoder;
 use crate::prediction_scheme_delta::PredictionSchemeDeltaEncoder;
@@ -232,7 +233,7 @@ impl SequentialIntegerAttributeEncoder {
                 q_transform.compute_parameters(attribute, quantization_bits)?;
                 q_transform.transform_attribute(
                     attribute,
-                    point_ids,
+                    EntryToPointIdMap::from_point_indices(point_ids),
                     &mut local_portable_attribute,
                 )?;
                 // Store transform for later encoding

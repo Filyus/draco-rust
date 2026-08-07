@@ -13,7 +13,7 @@ use crate::draco_types::DataType;
 #[cfg(feature = "encoder")]
 use crate::encoder_buffer::EncoderBuffer;
 use crate::geometry_attribute::PointAttribute;
-use crate::geometry_indices::PointIndex;
+use crate::prediction_scheme::EntryToPointIdMap;
 use crate::status::Status;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +53,7 @@ pub trait AttributeTransform {
     fn transform_attribute(
         &self,
         attribute: &PointAttribute,
-        point_ids: &[PointIndex],
+        point_ids: EntryToPointIdMap<'_>,
         target_attribute: &mut PointAttribute,
     ) -> Status;
 

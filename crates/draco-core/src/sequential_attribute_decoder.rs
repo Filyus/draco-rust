@@ -7,8 +7,8 @@
 
 use crate::decoder_buffer::DecoderBuffer;
 use crate::geometry_attribute::PointAttribute;
-use crate::geometry_indices::PointIndex;
 use crate::point_cloud_decoder::PointCloudDecoder;
+use crate::prediction_scheme::EntryToPointIdMap;
 
 pub struct SequentialAttributeDecoder {
     attribute_id: i32,
@@ -40,7 +40,7 @@ impl SequentialAttributeDecoder {
 
     pub fn decode_portable_attribute(
         &mut self,
-        _point_ids: &[PointIndex],
+        _point_ids: EntryToPointIdMap<'_>,
         _in_buffer: &mut DecoderBuffer,
     ) -> bool {
         true
@@ -48,13 +48,16 @@ impl SequentialAttributeDecoder {
 
     pub fn decode_data_needed_by_portable_transform(
         &mut self,
-        _point_ids: &[PointIndex],
+        _point_ids: EntryToPointIdMap<'_>,
         _in_buffer: &mut DecoderBuffer,
     ) -> bool {
         true
     }
 
-    pub fn transform_attribute_to_original_format(&mut self, _point_ids: &[PointIndex]) -> bool {
+    pub fn transform_attribute_to_original_format(
+        &mut self,
+        _point_ids: EntryToPointIdMap<'_>,
+    ) -> bool {
         true
     }
 }

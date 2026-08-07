@@ -4,6 +4,7 @@ use crate::draco_types::DataType;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::mesh::Mesh;
 use crate::point_cloud_decoder::PointCloudDecoder;
+use crate::prediction_scheme::EntryToPointIdMap;
 use crate::sequential_generic_attribute_decoder::SequentialGenericAttributeDecoder;
 use crate::sequential_integer_attribute_decoder::SequentialIntegerAttributeDecoder;
 use crate::status::{DracoError, Status};
@@ -345,7 +346,10 @@ impl MeshDecoder {
                     // because a ratio scales with the input an attacker
                     // supplies. See `decode_budget::ensure_symbols_are_backed`.
                     crate::decode_budget::ensure_symbols_are_backed(num_indices, buffer.size())?;
-                    let mut encoded_indices = make_zeroed_indices(num_indices, buffer.size())?;
+                    // Empty on purpose: `decode_symbols` grows it as symbols
+                    // arrive, so a count the stream cannot deliver costs one
+                    // small reservation instead of the whole array.
+                    let mut encoded_indices = Vec::new();
                     let options = crate::symbol_encoding::SymbolEncodingOptions::default();
                     if !crate::symbol_encoding::decode_symbols(
                         num_indices,
@@ -358,7 +362,10 @@ impl MeshDecoder {
                             "Failed to decode compressed sequential connectivity".to_string(),
                         ));
                     }
-                    let mut indices = make_zeroed_indices(num_indices, buffer.size())?;
+                    // Sized from what the decode produced rather than from what
+                    // the header claimed: on success the two are equal, and on
+                    // failure this line is not reached.
+                    let mut indices = make_zeroed_indices(encoded_indices.len(), buffer.size())?;
                     let mut last_index_value = 0i32;
                     for (dst, encoded_val) in indices.iter_mut().zip(encoded_indices) {
                         let mut index_diff = (encoded_val >> 1) as i32;
@@ -999,7 +1006,11 @@ impl MeshDecoder {
                     0 => {
                         let mut att_decoder = SequentialGenericAttributeDecoder::new();
                         att_decoder.init(&pc_decoder, att_id);
-                        att_decoder.decode_values(mesh, point_ids_for_values, buffer)?;
+                        att_decoder.decode_values(
+                            mesh,
+                            EntryToPointIdMap::from_point_indices(point_ids_for_values),
+                            buffer,
+                        )?;
                     }
                     1 => {
                         let mut att_decoder = SequentialIntegerAttributeDecoder::new();
@@ -1016,7 +1027,7 @@ impl MeshDecoder {
                         };
                         att_decoder.decode_values(
                             mesh,
-                            point_ids_for_values,
+                            EntryToPointIdMap::from_point_indices(point_ids_for_values),
                             buffer,
                             corner_table_for_decoder,
                             data_to_corner_map_override_for_values,
@@ -1117,7 +1128,7 @@ impl MeshDecoder {
                         };
                         att_decoder.decode_values(
                             mesh,
-                            point_ids_for_values,
+                            EntryToPointIdMap::from_point_indices(point_ids_for_values),
                             buffer,
                             corner_table_for_decoder,
                             data_to_corner_map_override_for_values,
@@ -1247,7 +1258,7 @@ impl MeshDecoder {
                         };
                         att_decoder.decode_values(
                             mesh,
-                            point_ids_for_values,
+                            EntryToPointIdMap::from_point_indices(point_ids_for_values),
                             buffer,
                             corner_table_for_decoder,
                             data_to_corner_map_override_for_values,

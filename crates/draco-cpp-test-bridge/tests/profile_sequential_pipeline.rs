@@ -10,6 +10,7 @@ use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
+use draco_core::prediction_scheme::EntryToPointIdMap;
 use draco_core::EncoderOptions;
 use std::f32::consts::PI;
 use std::path::PathBuf;
@@ -1015,7 +1016,11 @@ fn profile_encoding_stages() {
     for _ in 0..iterations {
         let mut portable = PointAttribute::default();
         q_transform
-            .transform_attribute(pos_att, &point_ids, &mut portable)
+            .transform_attribute(
+                pos_att,
+                EntryToPointIdMap::from_point_indices(&point_ids),
+                &mut portable,
+            )
             .expect("transform_attribute");
         std::hint::black_box(&portable);
     }
@@ -1024,7 +1029,11 @@ fn profile_encoding_stages() {
     // Get quantized values for symbol encoding test
     let mut portable = PointAttribute::default();
     q_transform
-        .transform_attribute(pos_att, &point_ids, &mut portable)
+        .transform_attribute(
+            pos_att,
+            EntryToPointIdMap::from_point_indices(&point_ids),
+            &mut portable,
+        )
         .expect("transform_attribute");
 
     // Stage 3: Value gathering from portable attribute
