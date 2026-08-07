@@ -52,6 +52,9 @@ pub enum Etc1sError {
     /// A header field holds a value the format does not allow.
     #[error("invalid ETC1S global data: {0}")]
     Invalid(&'static str),
+    /// The output for one image did not fit in memory.
+    #[error("ETC1S image of {0} bytes did not fit in memory")]
+    Allocation(usize),
     /// A stream index points outside its codebook.
     #[error("ETC1S stream references {kind} {index}, but only {count} exist")]
     OutOfRange {
@@ -116,6 +119,26 @@ pub struct Etc1sDecoder {
     selector_model: HuffmanTable,
     selector_history_rle_model: HuffmanTable,
     selector_history_size: u32,
+}
+
+/// A zeroed buffer of `len` bytes, or an error where `vec![0u8; len]` would
+/// have taken the process with it.
+///
+/// These lengths are some multiple of the level's width by height, and those
+/// are the file's word -- bounded by the reader at 16384 either way, which is
+/// generous enough that one level can legitimately ask for a gigabyte. That
+/// ceiling is deliberate and stays; what does not is reaching it through an
+/// infallible allocation, whose failure goes to `handle_alloc_error` and
+/// aborts. A 6,629-byte fixture with its dimensions patched to the ceiling did
+/// exactly that. On wasm32, where this actually runs, a gigabyte is refused by
+/// the heap rather than by the machine, so this is the difference between a
+/// caught error and a dead module.
+fn zeroed(len: usize) -> Result<Vec<u8>, Etc1sError> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(len)
+        .map_err(|_| Etc1sError::Allocation(len))?;
+    out.resize(len, 0);
+    Ok(out)
 }
 
 impl Etc1sDecoder {
@@ -319,7 +342,7 @@ impl Etc1sDecoder {
         width: u32,
         height: u32,
     ) -> Result<Vec<u8>, Etc1sError> {
-        let mut pixels = vec![0u8; (width as usize) * (height as usize) * 4];
+        let mut pixels = zeroed((width as usize) * (height as usize) * 4)?;
 
         // Alpha first, then colour: the colour pass leaves the alpha byte
         // alone when there is an alpha slice, and writes 255 when there is not.
@@ -362,7 +385,7 @@ impl Etc1sDecoder {
     ) -> Result<Vec<u8>, Etc1sError> {
         let converter = crate::etc1s_to_bc1::Bc1Converter::new();
         let blocks_x = width.div_ceil(4) as usize;
-        let mut blocks = vec![0u8; blocks_x * height.div_ceil(4) as usize * 8];
+        let mut blocks = zeroed(blocks_x * height.div_ceil(4) as usize * 8)?;
         let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
 
         self.walk_blocks(
@@ -393,7 +416,7 @@ impl Etc1sDecoder {
         height: u32,
     ) -> Result<Vec<u8>, Etc1sError> {
         let blocks_x = width.div_ceil(4) as usize;
-        let mut blocks = vec![0u8; blocks_x * height.div_ceil(4) as usize * 8];
+        let mut blocks = zeroed(blocks_x * height.div_ceil(4) as usize * 8)?;
         let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
         self.walk_blocks(
             data,
@@ -423,7 +446,7 @@ impl Etc1sDecoder {
     ) -> Result<Vec<u8>, Etc1sError> {
         let blocks_x = width.div_ceil(4) as usize;
         let blocks_y = height.div_ceil(4) as usize;
-        let mut blocks = vec![0u8; blocks_x * blocks_y * 16];
+        let mut blocks = zeroed(blocks_x * blocks_y * 16)?;
 
         if desc.alpha_length != 0 {
             let data = self.slice(level_data, desc.alpha_offset, desc.alpha_length)?;
@@ -482,7 +505,7 @@ impl Etc1sDecoder {
         let converter = crate::etc1s_to_bc1::Bc1Converter::new();
         let blocks_x = width.div_ceil(4) as usize;
         let blocks_y = height.div_ceil(4) as usize;
-        let mut blocks = vec![0u8; blocks_x * blocks_y * 16];
+        let mut blocks = zeroed(blocks_x * blocks_y * 16)?;
 
         if desc.alpha_length != 0 {
             let data = self.slice(level_data, desc.alpha_offset, desc.alpha_length)?;
@@ -538,11 +561,17 @@ impl Etc1sDecoder {
         let converter = AstcConverter::new();
         let blocks_x = width.div_ceil(4) as usize;
         let blocks_y = height.div_ceil(4) as usize;
-        let mut blocks = vec![0u8; blocks_x * blocks_y * 16];
+        let mut blocks = zeroed(blocks_x * blocks_y * 16)?;
 
         let mut alpha_blocks = Vec::new();
         if desc.alpha_length != 0 {
-            alpha_blocks = vec![Block::default(); blocks_x * blocks_y];
+            let count = blocks_x * blocks_y;
+            let mut buffer = Vec::new();
+            buffer
+                .try_reserve_exact(count)
+                .map_err(|_| Etc1sError::Allocation(count * std::mem::size_of::<Block>()))?;
+            buffer.resize(count, Block::default());
+            alpha_blocks = buffer;
             let data = self.slice(level_data, desc.alpha_offset, desc.alpha_length)?;
             self.walk_blocks(
                 data,

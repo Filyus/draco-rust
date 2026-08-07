@@ -287,6 +287,9 @@ pub enum UastcError {
     /// The level data is not a whole number of blocks.
     #[error("UASTC level is {0} bytes, which is not a whole number of 16-byte blocks")]
     Truncated(usize),
+    /// The output for one image did not fit in memory.
+    #[error("UASTC image of {0} bytes did not fit in memory")]
+    Allocation(usize),
     /// The block's leading bits name no mode.
     #[error("UASTC block {index} names mode {mode}, which does not exist")]
     BadMode {
@@ -305,6 +308,22 @@ pub enum UastcError {
     },
 }
 
+/// A zeroed buffer of `len` bytes, or an error rather than an abort.
+///
+/// The same reasoning as the ETC1S counterpart: these lengths come from the
+/// level's declared dimensions, and `vec![0u8; len]` cannot fail gracefully.
+/// A UASTC level is better placed than an ETC1S one -- its blocks are sixteen
+/// bytes each, so the caller has already had to supply 268 MB before this can
+/// be asked for a gigabyte -- but an abort is an abort, and this is the
+/// difference between an error and a dead module.
+fn zeroed(len: usize) -> Result<Vec<u8>, UastcError> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(len)
+        .map_err(|_| UastcError::Allocation(len))?;
+    out.resize(len, 0);
+    Ok(out)
+}
+
 /// Decode a whole mip level into RGBA8, `width * height * 4` bytes.
 ///
 /// The stored values come out as they are, with no transfer function applied,
@@ -319,7 +338,7 @@ pub fn decode_rgba(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uast
         return Err(UastcError::Truncated(data.len()));
     }
 
-    let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    let mut pixels = zeroed(width as usize * height as usize * 4)?;
     let mut texels = [[0u8; 4]; 16];
     for block_y in 0..blocks_y {
         for block_x in 0..blocks_x {
@@ -354,7 +373,7 @@ pub fn decode_astc(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uast
         return Err(UastcError::Truncated(data.len()));
     }
 
-    let mut blocks = vec![0u8; blocks_x * blocks_y * 16];
+    let mut blocks = zeroed(blocks_x * blocks_y * 16)?;
     for index in 0..blocks_x * blocks_y {
         let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
         let mut unpacked = unpack_block(block, index)?;
@@ -377,7 +396,7 @@ pub fn decode_etc1(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uast
         return Err(UastcError::Truncated(data.len()));
     }
 
-    let mut blocks = vec![0u8; blocks_x * blocks_y * 8];
+    let mut blocks = zeroed(blocks_x * blocks_y * 8)?;
     let mut texels = [[0u8; 4]; 16];
     for index in 0..blocks_x * blocks_y {
         let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
@@ -402,7 +421,7 @@ pub fn decode_etc2(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uast
         return Err(UastcError::Truncated(data.len()));
     }
 
-    let mut blocks = vec![0u8; blocks_x * blocks_y * 16];
+    let mut blocks = zeroed(blocks_x * blocks_y * 16)?;
     let mut texels = [[0u8; 4]; 16];
     for index in 0..blocks_x * blocks_y {
         let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
@@ -430,7 +449,7 @@ pub fn decode_bc7(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uastc
     }
 
     let converter = crate::uastc_to_bc7::Bc7Converter::new();
-    let mut blocks = vec![0u8; blocks_x * blocks_y * 16];
+    let mut blocks = zeroed(blocks_x * blocks_y * 16)?;
     for index in 0..blocks_x * blocks_y {
         let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
         let unpacked = unpack_block(block, index)?;
