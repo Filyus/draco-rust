@@ -171,23 +171,14 @@ impl AttributeOctahedronTransform {
             return Err(Self::invalid_quantization_bits(self.quantization_bits));
         }
 
-        let source_buffer = attribute.buffer();
-        let target_buffer = target_attribute.buffer_mut();
-
-        // Ensure target buffer has enough space
-        let Some(target_byte_size) = num_points.checked_mul(3).and_then(|v| v.checked_mul(4))
-        else {
-            return Err(DracoError::general(
-                "Octahedral target buffer size overflow".to_string(),
-            ));
-        };
-        if target_buffer.try_resize(target_byte_size).is_err() {
-            return Err(DracoError::general(
-                "Failed to allocate the octahedral target buffer".to_string(),
-            ));
-        }
-
-        let source_data = source_buffer.data();
+        // The source is checked before the target is sized, not after. Both
+        // sizes come from `num_points`, which is the count the attribute was
+        // declared with -- a header's word -- and the target buffer arrives
+        // unreserved from a decode, so this is where that count would first
+        // turn into memory. Checking the source first makes the allocation
+        // follow data that exists: `num_points` pairs of int32 are in hand
+        // before three floats per point are reserved for them.
+        //
         // Source data is int32 (s, t) pairs.
         let Some(source_byte_size) = num_points.checked_mul(2).and_then(|v| v.checked_mul(4))
         else {
@@ -195,11 +186,28 @@ impl AttributeOctahedronTransform {
                 "Octahedral source buffer size overflow".to_string(),
             ));
         };
-        if source_data.len() < source_byte_size {
+        if attribute.buffer().data_size() < source_byte_size {
             return Err(DracoError::general(
                 "Octahedral portable data is truncated".to_string(),
             ));
         }
+
+        let Some(target_byte_size) = num_points.checked_mul(3).and_then(|v| v.checked_mul(4))
+        else {
+            return Err(DracoError::general(
+                "Octahedral target buffer size overflow".to_string(),
+            ));
+        };
+
+        let source_buffer = attribute.buffer();
+        let target_buffer = target_attribute.buffer_mut();
+        if target_buffer.try_resize(target_byte_size).is_err() {
+            return Err(DracoError::general(
+                "Failed to allocate the octahedral target buffer".to_string(),
+            ));
+        }
+
+        let source_data = source_buffer.data();
 
         for i in 0..num_points {
             let offset = i * 8; // 2 int32s.
