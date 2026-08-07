@@ -2066,6 +2066,14 @@ test('every source format converts to every target format', async ({ page }) => 
       file = await download;
     } catch {
       const panel = await page.locator('#console').innerText().catch(() => '(unreadable)');
+      // What the app thinks it produced. displayExportStats runs before the
+      // "Export complete!" line, so this card is filled by the time the wait
+      // expires -- and it separates the two remaining explanations: bytes that
+      // differ on the runner, or the right bytes that never became a download.
+      const stats = await page
+        .locator('#export-stats')
+        .innerText()
+        .catch(() => '(unreadable)');
       // Chromium refuses a programmatic download when the page has no transient
       // user activation, and treats it as an automatic one -- allowed once per
       // page, blocked after. `a.click()` runs after `await runExport(...)`, so
