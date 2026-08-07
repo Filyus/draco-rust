@@ -2085,7 +2085,13 @@ test('every source format converts to every target format', async ({ page }) => 
         + `--- browser console (last 40) ---\n${pageLog.slice(-40).join('\n')}`,
       );
     }
-    return readFile((await file.path())!);
+    const bytes = await readFile((await file.path())!);
+    // Released rather than left for the context to collect. This test takes 51
+    // downloads and the failure has been the 41st every time, on the runner
+    // only, with user activation still live -- which is the shape of a resource
+    // running out rather than of a conversion going wrong.
+    await file.delete();
+    return bytes;
   };
 
   const testdata = (...parts: string[]) => path.join(repoRoot, 'testdata', ...parts);
