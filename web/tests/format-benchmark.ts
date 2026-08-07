@@ -97,11 +97,14 @@ function summarize(samples: number[]) {
  */
 const WARMUP_RUNS = 3;
 
-function measure(
+// Generic over what `call` returns rather than narrowing it to the two fields
+// this function reads: the caller wants the payload back, and a fixed parameter
+// type erases it, so `result.binary_data` below stops existing.
+function measure<T extends { success?: boolean; error?: string }>(
   label: string,
-  call: () => { success?: boolean; error?: string },
+  call: () => T,
   note = '',
-) {
+): T | null {
   let warm = call();
   for (let run = 1; run < WARMUP_RUNS; run += 1) warm = call();
   if (warm && warm.success === false) {
