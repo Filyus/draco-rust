@@ -2042,11 +2042,35 @@ test('every source format converts to every target format', async ({ page }) => 
     ]);
     await expect(page.locator('#console')).toContainText(`Successfully parsed ${name}`);
   };
+  // What the page said, kept so a download that never arrives can be explained
+  // rather than merely reported. This test has failed on CI twice with nothing
+  // but "waiting for event download", and it reproduces nowhere else: not on
+  // Windows, not in a Linux container with optimized wasm, and not across the
+  // full suite at one worker on a two-CPU quota. So the next failure has to
+  // carry its own evidence.
+  const pageLog: string[] = [];
+  page.on('console', (message) => pageLog.push(`[${message.type()}] ${message.text()}`));
+  page.on('pageerror', (error) => pageLog.push(`[pageerror] ${error.message}`));
+
   const exportAs = async (format: string) => {
     await page.locator(`[data-choice-for="export-format"] [data-value="${format}"]`).click();
-    const download = page.waitForEvent('download');
+    // Bounded rather than left to the test's own timeout: every export in this
+    // matrix takes well under a second, so thirty is already a hang, and
+    // spending the rest of the budget on it buys a less specific error.
+    const download = page.waitForEvent('download', { timeout: 30_000 });
     await page.locator('#export-btn').click();
-    return readFile((await (await download).path())!);
+    let file;
+    try {
+      file = await download;
+    } catch {
+      const panel = await page.locator('#console').innerText().catch(() => '(unreadable)');
+      throw new Error(
+        `no download for "${format}" within 30s\n`
+        + `--- #console panel ---\n${panel.slice(-2000)}\n`
+        + `--- browser console (last 40) ---\n${pageLog.slice(-40).join('\n')}`,
+      );
+    }
+    return readFile((await file.path())!);
   };
 
   const testdata = (...parts: string[]) => path.join(repoRoot, 'testdata', ...parts);
