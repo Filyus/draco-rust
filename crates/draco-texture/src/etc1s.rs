@@ -121,24 +121,15 @@ pub struct Etc1sDecoder {
     selector_history_size: u32,
 }
 
-/// A zeroed buffer of `len` bytes, or an error where `vec![0u8; len]` would
-/// have taken the process with it.
+/// How much room the output needs as the walk proceeds.
 ///
-/// These lengths are some multiple of the level's width by height, and those
-/// are the file's word -- bounded by the reader at 16384 either way, which is
-/// generous enough that one level can legitimately ask for a gigabyte. That
-/// ceiling is deliberate and stays; what does not is reaching it through an
-/// infallible allocation, whose failure goes to `handle_alloc_error` and
-/// aborts. A 6,629-byte fixture with its dimensions patched to the ceiling did
-/// exactly that. On wasm32, where this actually runs, a gigabyte is refused by
-/// the heap rather than by the machine, so this is the difference between a
-/// caught error and a dead module.
-fn zeroed(len: usize) -> Result<Vec<u8>, Etc1sError> {
-    let mut out = Vec::new();
-    out.try_reserve_exact(len)
-        .map_err(|_| Etc1sError::Allocation(len))?;
-    out.resize(len, 0);
-    Ok(out)
+/// One block row at a time, up to the whole image: the walk grows the buffer
+/// to `row_bytes` more after each row, stopping at `total_bytes` because the
+/// last row of a level whose height is not a multiple of four is partial.
+#[derive(Clone, Copy)]
+struct OutputShape {
+    row_bytes: usize,
+    total_bytes: usize,
 }
 
 impl Etc1sDecoder {
@@ -342,7 +333,9 @@ impl Etc1sDecoder {
         width: u32,
         height: u32,
     ) -> Result<Vec<u8>, Etc1sError> {
-        let mut pixels = zeroed((width as usize) * (height as usize) * 4)?;
+        let total = (width as usize) * (height as usize) * 4;
+        let row_bytes = (width as usize) * 4 * 4;
+        let mut pixels: Vec<u8> = Vec::new();
 
         // Alpha first, then colour: the colour pass leaves the alpha byte
         // alone when there is an alpha slice, and writes 255 when there is not.
@@ -352,7 +345,12 @@ impl Etc1sDecoder {
                 data,
                 width,
                 height,
-                block_writer(width, height, &mut pixels, SliceKind::Alpha),
+                &mut pixels,
+                OutputShape {
+                    row_bytes,
+                    total_bytes: total,
+                },
+                block_writer(width, height, SliceKind::Alpha),
             )?;
         }
         let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
@@ -365,7 +363,12 @@ impl Etc1sDecoder {
             data,
             width,
             height,
-            block_writer(width, height, &mut pixels, kind),
+            &mut pixels,
+            OutputShape {
+                row_bytes,
+                total_bytes: total,
+            },
+            block_writer(width, height, kind),
         )?;
         Ok(pixels)
     }
@@ -385,19 +388,25 @@ impl Etc1sDecoder {
     ) -> Result<Vec<u8>, Etc1sError> {
         let converter = crate::etc1s_to_bc1::Bc1Converter::new();
         let blocks_x = width.div_ceil(4) as usize;
-        let mut blocks = zeroed(blocks_x * height.div_ceil(4) as usize * 8)?;
+        let total = blocks_x * height.div_ceil(4) as usize * 8;
+        let mut blocks: Vec<u8> = Vec::new();
         let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
 
         self.walk_blocks(
             data,
             width,
             height,
-            |block_x, block_y, color5, inten5, selectors| {
+            &mut blocks,
+            OutputShape {
+                row_bytes: blocks_x * 8,
+                total_bytes: total,
+            },
+            |out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
                 let at = (block_y as usize * blocks_x + block_x as usize) * 8;
                 // Punch-through is allowed here: a standalone BC1 texture may use
                 // it, unlike the same blocks inside BC3.
                 let block = converter.convert(color5, inten5, selectors, true);
-                blocks[at..at + 8].copy_from_slice(&block.to_bytes());
+                out[at..at + 8].copy_from_slice(&block.to_bytes());
             },
         )?;
         Ok(blocks)
@@ -416,16 +425,22 @@ impl Etc1sDecoder {
         height: u32,
     ) -> Result<Vec<u8>, Etc1sError> {
         let blocks_x = width.div_ceil(4) as usize;
-        let mut blocks = zeroed(blocks_x * height.div_ceil(4) as usize * 8)?;
+        let total = blocks_x * height.div_ceil(4) as usize * 8;
+        let mut blocks: Vec<u8> = Vec::new();
         let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
         self.walk_blocks(
             data,
             width,
             height,
-            |block_x, block_y, color5, inten5, selectors| {
+            &mut blocks,
+            OutputShape {
+                row_bytes: blocks_x * 8,
+                total_bytes: total,
+            },
+            |out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
                 let at = (block_y as usize * blocks_x + block_x as usize) * 8;
                 let block = crate::etc1s_to_etc::convert_etc1(color5, inten5, selectors);
-                blocks[at..at + 8].copy_from_slice(&block.to_bytes());
+                out[at..at + 8].copy_from_slice(&block.to_bytes());
             },
         )?;
         Ok(blocks)
@@ -446,7 +461,8 @@ impl Etc1sDecoder {
     ) -> Result<Vec<u8>, Etc1sError> {
         let blocks_x = width.div_ceil(4) as usize;
         let blocks_y = height.div_ceil(4) as usize;
-        let mut blocks = zeroed(blocks_x * blocks_y * 16)?;
+        let total = blocks_x * blocks_y * 16;
+        let mut blocks: Vec<u8> = Vec::new();
 
         if desc.alpha_length != 0 {
             let data = self.slice(level_data, desc.alpha_offset, desc.alpha_length)?;
@@ -454,20 +470,17 @@ impl Etc1sDecoder {
                 data,
                 width,
                 height,
-                |block_x, block_y, color5, inten5, selectors| {
+                &mut blocks,
+                OutputShape {
+                    row_bytes: blocks_x * 16,
+                    total_bytes: total,
+                },
+                |out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
                     let at = (block_y as usize * blocks_x + block_x as usize) * 16;
                     let block = crate::etc1s_to_etc::convert_eac_alpha(color5, inten5, selectors);
-                    blocks[at..at + 8].copy_from_slice(&block.to_bytes());
+                    out[at..at + 8].copy_from_slice(&block.to_bytes());
                 },
             )?;
-        } else {
-            // Base 255 on table 13 with every texel on the middle step is a
-            // fully opaque EAC block, which is what an alpha-less file means.
-            for block in blocks.chunks_exact_mut(16) {
-                block[0] = 255;
-                block[1] = (1 << 4) | 13;
-                block[2..8].copy_from_slice(&[0x92, 0x49, 0x24, 0x92, 0x49, 0x24]);
-            }
         }
 
         let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
@@ -475,12 +488,29 @@ impl Etc1sDecoder {
             data,
             width,
             height,
-            |block_x, block_y, color5, inten5, selectors| {
+            &mut blocks,
+            OutputShape {
+                row_bytes: blocks_x * 16,
+                total_bytes: total,
+            },
+            |out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
                 let at = (block_y as usize * blocks_x + block_x as usize) * 16 + 8;
                 let block = crate::etc1s_to_etc::convert_etc1(color5, inten5, selectors);
-                blocks[at..at + 8].copy_from_slice(&block.to_bytes());
+                out[at..at + 8].copy_from_slice(&block.to_bytes());
             },
         )?;
+        if desc.alpha_length == 0 {
+            // Base 255 on table 13 with every texel on the middle step is a
+            // fully opaque EAC block, which is what an alpha-less file means.
+            // Filled after the colour pass rather than before it: the buffer
+            // grows with that pass now, so before it there is nothing to fill.
+            // The two halves are disjoint, so the order does not matter.
+            for block in blocks.chunks_exact_mut(16) {
+                block[0] = 255;
+                block[1] = (1 << 4) | 13;
+                block[2..8].copy_from_slice(&[0x92, 0x49, 0x24, 0x92, 0x49, 0x24]);
+            }
+        }
         Ok(blocks)
     }
 
@@ -505,7 +535,8 @@ impl Etc1sDecoder {
         let converter = crate::etc1s_to_bc1::Bc1Converter::new();
         let blocks_x = width.div_ceil(4) as usize;
         let blocks_y = height.div_ceil(4) as usize;
-        let mut blocks = zeroed(blocks_x * blocks_y * 16)?;
+        let total = blocks_x * blocks_y * 16;
+        let mut blocks: Vec<u8> = Vec::new();
 
         if desc.alpha_length != 0 {
             let data = self.slice(level_data, desc.alpha_offset, desc.alpha_length)?;
@@ -513,18 +544,17 @@ impl Etc1sDecoder {
                 data,
                 width,
                 height,
-                |block_x, block_y, color5, inten5, selectors| {
+                &mut blocks,
+                OutputShape {
+                    row_bytes: blocks_x * 16,
+                    total_bytes: total,
+                },
+                |out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
                     let at = (block_y as usize * blocks_x + block_x as usize) * 16;
                     let block = crate::etc1s_to_bc4::convert(color5, inten5, selectors);
-                    blocks[at..at + 8].copy_from_slice(&block.to_bytes());
+                    out[at..at + 8].copy_from_slice(&block.to_bytes());
                 },
             )?;
-        } else {
-            // 255 at both endpoints and every selector zero reads as opaque.
-            for block in blocks.chunks_exact_mut(16) {
-                block[0] = 255;
-                block[1] = 255;
-            }
         }
 
         let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
@@ -532,12 +562,26 @@ impl Etc1sDecoder {
             data,
             width,
             height,
-            |block_x, block_y, color5, inten5, selectors| {
+            &mut blocks,
+            OutputShape {
+                row_bytes: blocks_x * 16,
+                total_bytes: total,
+            },
+            |out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
                 let at = (block_y as usize * blocks_x + block_x as usize) * 16 + 8;
                 let block = converter.convert(color5, inten5, selectors, false);
-                blocks[at..at + 8].copy_from_slice(&block.to_bytes());
+                out[at..at + 8].copy_from_slice(&block.to_bytes());
             },
         )?;
+        if desc.alpha_length == 0 {
+            // 255 at both endpoints and every selector zero reads as opaque.
+            // After the colour pass for the same reason as the ETC2 path: the
+            // buffer only exists once that pass has grown it.
+            for block in blocks.chunks_exact_mut(16) {
+                block[0] = 255;
+                block[1] = 255;
+            }
+        }
         Ok(blocks)
     }
 
@@ -561,7 +605,8 @@ impl Etc1sDecoder {
         let converter = AstcConverter::new();
         let blocks_x = width.div_ceil(4) as usize;
         let blocks_y = height.div_ceil(4) as usize;
-        let mut blocks = zeroed(blocks_x * blocks_y * 16)?;
+        let total = blocks_x * blocks_y * 16;
+        let mut blocks: Vec<u8> = Vec::new();
 
         let mut alpha_blocks = Vec::new();
         if desc.alpha_length != 0 {
@@ -573,11 +618,23 @@ impl Etc1sDecoder {
             buffer.resize(count, Block::default());
             alpha_blocks = buffer;
             let data = self.slice(level_data, desc.alpha_offset, desc.alpha_length)?;
+            // This pass fills `alpha_blocks`, not a byte buffer, so it has no
+            // output to grow -- hence the empty one and the zero sizes. The
+            // block table it does fill is reserved above, fallibly: at the
+            // dimension ceiling it is 134 MB rather than the gigabyte the
+            // colour pass would have taken, and it is an error rather than an
+            // abort.
+            let mut unused = Vec::new();
             self.walk_blocks(
                 data,
                 width,
                 height,
-                |block_x, block_y, color5, inten5, selectors| {
+                &mut unused,
+                OutputShape {
+                    row_bytes: 0,
+                    total_bytes: 0,
+                },
+                |_out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
                     alpha_blocks[block_y as usize * blocks_x + block_x as usize] = Block {
                         color5,
                         inten5,
@@ -592,7 +649,12 @@ impl Etc1sDecoder {
             data,
             width,
             height,
-            |block_x, block_y, color5, inten5, selectors| {
+            &mut blocks,
+            OutputShape {
+                row_bytes: blocks_x * 16,
+                total_bytes: total,
+            },
+            |out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
                 let index = block_y as usize * blocks_x + block_x as usize;
                 let color = Block {
                     color5,
@@ -600,8 +662,7 @@ impl Etc1sDecoder {
                     selectors,
                 };
                 let alpha = alpha_blocks.get(index).copied();
-                blocks[index * 16..index * 16 + 16]
-                    .copy_from_slice(&converter.convert(color, alpha));
+                out[index * 16..index * 16 + 16].copy_from_slice(&converter.convert(color, alpha));
             },
         )?;
         Ok(blocks)
@@ -632,7 +693,9 @@ impl Etc1sDecoder {
         data: &[u8],
         width: u32,
         height: u32,
-        mut visit: impl FnMut(u32, u32, [u8; 3], u8, [u8; 4]),
+        out: &mut Vec<u8>,
+        shape: OutputShape,
+        mut visit: impl FnMut(&mut [u8], u32, u32, [u8; 3], u8, [u8; 4]),
     ) -> Result<(), Etc1sError> {
         let blocks_x = width.div_ceil(4);
         let blocks_y = height.div_ceil(4);
@@ -659,6 +722,22 @@ impl Etc1sDecoder {
         let history_rle_symbol = self.selector_history_size + selector_count;
 
         for block_y in 0..blocks_y {
+            // The output grows a block row at a time instead of being reserved
+            // from the level's declared dimensions. Those are the file's word:
+            // a 6,629-byte file naming 16384x16384 asked for a gigabyte before
+            // a single block had been read. Nothing bounds the block count from
+            // the slice -- RLE'd selectors go below a bit per block, which the
+            // fixtures show at 0.98 -- so the only honest bound is the decode
+            // itself, and a file whose data runs out now costs the rows it
+            // actually produced.
+            let needed = (block_y as usize + 1)
+                .saturating_mul(shape.row_bytes)
+                .min(shape.total_bytes);
+            if out.len() < needed {
+                out.try_reserve(needed - out.len())
+                    .map_err(|_| Etc1sError::Allocation(needed))?;
+                out.resize(needed, 0);
+            }
             let current = (block_y & 1) as usize;
             for block_x in 0..blocks_x {
                 // One symbol carries the predictors for a 2×2 group of blocks:
@@ -794,6 +873,7 @@ impl Etc1sDecoder {
                 let endpoint = self.endpoints[endpoint_index as usize];
                 let selector = self.selectors[selector_index as usize];
                 visit(
+                    &mut out[..],
                     block_x,
                     block_y,
                     endpoint.color5,
@@ -875,10 +955,9 @@ impl MoveToFront {
 fn block_writer(
     width: u32,
     height: u32,
-    pixels: &mut [u8],
     kind: SliceKind,
-) -> impl FnMut(u32, u32, [u8; 3], u8, [u8; 4]) + '_ {
-    move |block_x, block_y, color5, inten5, selectors| {
+) -> impl FnMut(&mut [u8], u32, u32, [u8; 3], u8, [u8; 4]) {
+    move |pixels: &mut [u8], block_x, block_y, color5, inten5, selectors| {
         let max_x = 4.min(width.saturating_sub(block_x * 4));
         let max_y = 4.min(height.saturating_sub(block_y * 4));
         let colors = block_colors5(color5, inten5);
