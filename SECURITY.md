@@ -23,11 +23,13 @@ What the crate guarantees today:
 - Malformed, truncated, and byte-mutated streams over the supported fixture set
   return a `DracoError` instead of panicking (covered by
   `crates/draco-core/tests/drc_edge_cases_test.rs`).
-- Bitstream-controlled counts (face counts, point counts, attribute counts) are
-  checked against what the stream could plausibly describe before large
-  allocations, and the allocations themselves are fallible. The check is a
-  ratio against the input size, not a cap on geometry: a large mesh scales its
-  own budget with it.
+- A bitstream-controlled count — faces, points, attribute values, symbols —
+  does not allocate. It is the ceiling a decode works towards; the buffers grow
+  as the data arrives, or are sized after the step that produced it. A header
+  naming a billion elements therefore costs one small reservation and an error,
+  not a reservation for a billion. A ratio against the input size remains
+  behind that as a backstop, and every allocation on these paths is fallible.
+  See [Bounding what a decode allocates](#bounding-what-a-decode-allocates).
 - Entropy, prediction, transform, and KD-tree decode paths use checked indexing
   and fallible buffer access on the audited paths.
 - A decode refusal names what it refused. The attribute transforms, the
@@ -133,6 +135,52 @@ selectively complete is worth nothing:
 |---|---|---|
 | `crates/draco-io/tests/reader_hardening_test.rs` | a counting `GlobalAlloc`, so a test can assert on what a reader *reserves* rather than on how long it takes to fail | every method forwards to `System` with the layout and pointer unchanged; the only addition is an atomic counter that allocates nothing |
 
+## Bounding what a decode allocates
+
+A count in the bitstream is a ceiling to check against, never a size to
+allocate. Two shapes satisfy that, and every decode path here uses one of them:
+
+- **Grow.** The buffer starts at what the input could plausibly back and
+  extends as output is produced, so a count nothing backs costs one small
+  reservation and then an error when the coder runs out. `decode_symbols`
+  appends into the caller's `Vec` starting at eight symbols per remaining input
+  byte; `DynamicIntegerPointsKdTreeDecoder` reserves on the same allowance;
+  `EdgebreakerConnectivityDecoder` and both EdgeBreaker traversals grow as
+  faces and vertices are decoded; `draco-texture` grows an ETC1S image one
+  block row at a time.
+- **Size after the data exists.** Where a consumer writes at computed offsets
+  and needs the buffer whole, the allocation follows the step that produced or
+  verified the bytes. A sequential attribute's buffer is left unreserved by
+  `PointAttribute::init_deferred` and sized by whichever decoder writes it; the
+  KD-tree sizes its attributes once the decoded array's length has been checked
+  against the count; dequantization and the inverse octahedral transform size
+  their target against the source they are reading; raw attribute values size
+  theirs from a stream that has to carry them literally.
+
+Two things this deliberately does *not* rely on:
+
+- **A ratio is not a bound.** It limits bytes allocated per byte read, and the
+  input is the attacker's to choose, so any constant is walked past by a larger
+  file. `decode_budget` keeps one as a backstop; it is not what makes these
+  paths safe.
+- **A per-element floor holds only where it is measured.** One bit per symbol
+  is a floor for a *count* — `ensure_symbols_are_backed` uses it for
+  connectivity — and it is false for entropy-coded values, and false for ETC1S
+  blocks, where the fixtures reach 0.98 bits per block.
+
+Allocations on these paths are fallible. `vec![0; n]` and
+`Vec::with_capacity(n)` abort through `handle_alloc_error`, which in the WASM
+modules would take the page, so a size that can come from a file goes through
+`try_reserve` and reports the module's own error instead. That holds even where
+a large allocation is a deliberate ceiling: `draco-texture` keeps the reference
+reader's 16384-texel dimension limit, and reaching it is an error.
+
+The property is measured rather than asserted. Two fuzz artifacts that reserved
+13 GB from 26 KB and 8 GB from 9 KB now allocate 26,386 and 9,034 bytes — the
+size of their own input. Across the 2,367-file `decode_drc` corpus the largest
+single allocation is 8.5 MB, down from 31.4 MB, with every file decoding to an
+identical verdict.
+
 ## Recommended caller limits for untrusted input
 
 Decoding hostile input safely is a shared responsibility. The decoder avoids
@@ -163,6 +211,11 @@ ceiling + isolation) and is a supported target for this crate.
   wrong-geometry rather than a memory-safety concern: the loops are driven by
   counts that have their own guards. Tracked in `hardening_status.yaml` as
   `rans-over-read-call-site-bounds`.
+- A `draco-texture` level at the 16384-texel dimension limit legitimately costs
+  a gigabyte, and the ETC1S block table for a level with alpha costs 134 MB.
+  Both are bounded, fallible, and reached only as far as the blocks that
+  actually decoded — but a caller handing this untrusted files should still put
+  a memory ceiling around it, as the table below recommends for geometry.
 
 ## Reporting a vulnerability
 
