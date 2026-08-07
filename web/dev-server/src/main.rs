@@ -61,13 +61,27 @@ fn spawn_connection_handler(stream: TcpStream, root: PathBuf) {
         }
 
         if let Err(err) = handle_connection(stream, &root) {
-            if err.kind() == io::ErrorKind::WouldBlock {
+            if client_went_away(err.kind()) {
                 return;
             }
 
             eprintln!("Request failed: {err}");
         }
     });
+}
+
+/// A browser hanging up mid-response is routine, not a request that failed.
+/// It preconnects sockets it never sends a request on, and it cancels loads
+/// still in flight whenever the page navigates -- both leave this side writing
+/// into a closed socket. Reporting them buried the real failures under a flood.
+fn client_went_away(kind: io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        io::ErrorKind::WouldBlock
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+    )
 }
 
 fn server_urls(port: &str) -> Vec<String> {
@@ -94,7 +108,11 @@ fn server_urls(port: &str) -> Vec<String> {
 fn handle_connection(mut stream: TcpStream, root: &Path) -> io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
+    if reader.read_line(&mut request_line)? == 0 {
+        // A preconnected socket the browser opened and closed without asking
+        // for anything. Answering it writes into a hung-up peer.
+        return Ok(());
+    }
 
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default();
