@@ -63,6 +63,15 @@ premise holds, and the encoder reports the choices it makes for itself.
 
 ### Changed
 
+- The crate's freedom from `unsafe` is now enforced by the compiler rather than
+  asserted in a document. `SECURITY.md` has long promised it and nothing
+  checked it; the manifest carries `[lints.rust] unsafe_code = "forbid"`, so an
+  `unsafe` block is a build failure, and `forbid` rather than `deny` so no
+  module can lift it locally. Nothing in the crate changes — there was none to
+  remove. The rule is now stated per crate, and it is deliberately not the same
+  one `draco-io` follows: the algorithms here run on bitstream-controlled
+  indices throughout, which is the wrong place to be unable to reason about a
+  crash.
 - **Breaking.** `DracoError` is an opaque struct one pointer wide, in the shape
   of `std::io::Error`, and the variants are now the `#[non_exhaustive]`
   `ErrorKind` enum reached through `kind()`. Construct with

@@ -11,22 +11,20 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- The `unsafe` rule is now stated per crate rather than for both at once, and
-  both halves are enforced by the build instead of asserted in a document.
-  `draco-core` forbids `unsafe` outright — `SECURITY.md` promised that and
-  nothing checked it, so it is now `[lints.rust] unsafe_code = "forbid"` and a
-  build failure. This crate instead permits it in narrow, audited paths, each
-  block carrying a `// SAFETY:` justification that names its invariant and where
-  that invariant was established; `undocumented_unsafe_blocks` is on and CI runs
-  clippy with `-D warnings`, so an unjustified block does not build. **No path
-  in this crate uses `unsafe` today** and the permission changes nothing that
-  ships; what it changes is that a measured optimisation in the byte-shuffling,
-  endian-swapping, fixed-stride part of a file-format layer no longer has to
-  relitigate the policy to land. `SECURITY.md` carries the requirements, the
-  (currently empty) table of such paths, and the reason the two crates differ:
-  a bitstream decoder running on attacker-controlled indices and a container
-  parser are not the same risk, and one rule for both was too strict for one of
-  them.
+- This crate permits `unsafe` in narrow, audited paths, where `SECURITY.md`
+  previously ruled it out for the whole workspace at once. Every block must
+  carry a `// SAFETY:` comment naming its invariant **and where that invariant
+  was established**; `undocumented_unsafe_blocks` is on and CI runs clippy with
+  `-D warnings`, so an unjustified block does not build. **No path in the
+  library uses `unsafe` today** and nothing that ships changes; what changes is
+  that a measured optimisation in the byte-shuffling, endian-swapping,
+  fixed-stride part of a file-format layer no longer has to relitigate the
+  policy to land. `draco-core` keeps the rule absolute and now has the compiler
+  holding it — a bitstream decoder running on attacker-controlled indices and a
+  container parser are not the same risk, and one rule for both was too strict
+  for one of them. `SECURITY.md` carries the requirements, including that the
+  invariant must come from the code and never from the file, and the table of
+  such paths.
 - The four mesh writers refuse a mesh whose attributes do not cover its points,
   at their entry points, instead of reading `point * byte_stride` through the
   panicking `DataBuffer::read` at nine call sites. Those reads are sound exactly
