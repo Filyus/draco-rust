@@ -531,9 +531,29 @@ impl<'a> Ktx2<'a> {
             Supercompression::None | Supercompression::BasisLz => Ok(Cow::Borrowed(raw)),
             Supercompression::Zstd => {
                 let expected = entry.uncompressed_byte_length as usize;
-                let mut out = Vec::with_capacity(expected);
-                ruzstd::FrameDecoder::new()
-                    .decode_all_to_vec(raw, &mut out)
+                // Not reserved from `expected`. That number is the level's own
+                // claim, and `level_ceiling` is a weak bound on it: it scales
+                // with `layerCount`, which the header may set to 65535, so a
+                // 512x512 level may legitimately claim 275 GB and a 19 KB file
+                // was enough to reach `Vec::with_capacity(100_000_000_000)` --
+                // an abort, because that reserve cannot fail gracefully.
+                //
+                // Decompressed through the streaming decoder instead, reading
+                // at most one byte past the claim: the vector grows on bytes
+                // the decoder actually produced, so a claim nothing backs costs
+                // nothing, and a stream that overruns its claim is caught by
+                // the length check below rather than by the allocator.
+                let mut out = Vec::new();
+                let decoder =
+                    ruzstd::StreamingDecoder::new(raw).map_err(|error| Ktx2Error::Decompress {
+                        level,
+                        reason: error.to_string(),
+                    })?;
+                use std::io::Read as _;
+                let overshoot = expected.saturating_add(1) as u64;
+                decoder
+                    .take(overshoot)
+                    .read_to_end(&mut out)
                     .map_err(|error| Ktx2Error::Decompress {
                         level,
                         reason: error.to_string(),
