@@ -2089,6 +2089,7 @@ test('every source format converts to every target format', async ({ page }) => 
       throw new Error(
         `no download for "${format}" within 30s after ${downloadsSeen} successful ones\n`
         + `user activation at failure: ${JSON.stringify(activation)}\n`
+        + `--- export stats card ---\n${stats}\n`
         + `--- #console panel ---\n${panel.slice(-2000)}\n`
         + `--- browser console (last 40) ---\n${pageLog.slice(-40).join('\n')}`,
       );
