@@ -132,13 +132,29 @@ premise holds, and the encoder reports the choices it makes for itself.
   floor of an interval that no longer exists, nothing had read it since
   `claimed_versions` replaced that interval, and no released Draco ever wrote
   bitstream 1.0 — the oldest that turns up is 1.1, from Draco 0.9.1.
-- The decoder bounds allocations by a ratio against the input — 2^20 bytes per
-  input byte, applied where buffers are sized — instead of refusing a declared
+- The decoder bounds allocations two ways, and which one applies depends on
+  what is being counted.
+
+  Buffers sized from a declared count of *values* are bounded by a ratio
+  against the input — 2^20 bytes per input byte — rather than by refusing a
   count above the remaining bitstream in bits. That premise was false: geometry
-  whose values are all equal entropy-codes to a size independent of the count, so
-  this crate wrote 100,000 points into 171 bytes and then refused to read the
-  file back. Upstream's own `faces > remaining/3` is deliberately not adopted; it
-  fails for the compressed connectivity branch for the same reason.
+  whose values are all equal entropy-codes to a size independent of the count,
+  so this crate wrote 100,000 points into 171 bytes and then refused to read the
+  file back.
+
+  A declared count of *symbols* is bounded at one bit each instead, because a
+  ratio is the wrong instrument for a count. A ratio scales with the input, and
+  the input is what an attacker supplies: a 26 KB stream naming 1,095,910,464
+  faces reserves 13 GB of indices and clears the ratio with room to spare, since
+  13 GB over 2^20 is 12 KB. Lowering the constant would not change that shape —
+  whatever it is, twice the input buys twice the allocation. This was found by
+  the `decode_drc` fuzz target and is pinned by
+  `a_face_count_beyond_one_bit_each_is_refused_before_allocation`.
+
+  Upstream's own `faces > remaining/3` is still not adopted: at three bytes per
+  face it is 24 times stricter than one bit per symbol, so a file this crate
+  accepts and upstream refuses still decodes here, which is the direction the
+  difference is meant to run.
 - A tex-coord prediction scheme forced onto an attribute that is not a texture
   coordinate is refused. Both tex-coord predictors work on two components, and a
   normal presents two once the octahedron transform has folded it from three, so

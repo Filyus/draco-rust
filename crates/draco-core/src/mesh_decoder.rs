@@ -339,7 +339,12 @@ impl MeshDecoder {
             if num_faces > 0 && num_points > 0 {
                 let connectivity_method = buffer.decode_u8()?;
                 if connectivity_method == 0 {
-                    // Compressed
+                    // Compressed. The symbol count is bounded before the buffer
+                    // it fills is sized: the ratio alone lets a 26 KB stream
+                    // declare 1,095,910,464 faces and reserve 13 GB for them,
+                    // because a ratio scales with the input an attacker
+                    // supplies. See `decode_budget::ensure_symbols_are_backed`.
+                    crate::decode_budget::ensure_symbols_are_backed(num_indices, buffer.size())?;
                     let mut encoded_indices = make_zeroed_indices(num_indices, buffer.size())?;
                     let options = crate::symbol_encoding::SymbolEncodingOptions::default();
                     if !crate::symbol_encoding::decode_symbols(

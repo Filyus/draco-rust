@@ -184,6 +184,38 @@ fn malformed_legacy_edgebreaker_counts_fail_before_allocation() {
         .expect_err("point-cloud decoder should reject the fuzz artifact before allocation");
 }
 
+/// A 2.0.0 regression, found by the `decode_drc` fuzz target: a mesh header
+/// naming 1,095,910,464 faces reserved 13 GB of indices from a 26 KB stream.
+///
+/// The ratio guard that replaced 1.2.0's count check accepts it — 13 GB over
+/// 2^20 is 12 KB, and the stream is larger than that — which is the whole
+/// shape of the problem: a ratio scales with the input, and the input is what
+/// an attacker supplies. 1.2.0 refused the same bytes with "Declared count
+/// 1095910464 exceeds what the remaining 26367 bytes can describe".
+///
+/// The body is zeros because the guard fires before anything reads it; only
+/// the length matters, and it has to clear the ratio for this to test the
+/// symbol bound rather than the ratio. Padded to 12,600 bytes for that reason:
+/// at 24 bytes the ratio catches it on its own and the case proves nothing.
+#[test]
+fn a_face_count_beyond_one_bit_each_is_refused_before_allocation() {
+    let header = [
+        68, 82, 65, 67, 79, 2, 0, 1, 0, 0, 0, 64, 68, 82, 65, 67, 79, 2, 2, 0, 0, 0, 0, 53,
+    ];
+    let mut stream = header.to_vec();
+    stream.resize(12_600, 0);
+
+    let error = decode_malformed_without_panic(DecoderKind::Mesh, &stream)
+        .expect_err("a face count no stream that size can carry must be refused");
+    assert!(
+        error.contains("declared 3287731392 symbols"),
+        "expected the symbol-count refusal, got: {error}"
+    );
+
+    decode_malformed_without_panic(DecoderKind::PointCloud, &stream)
+        .expect_err("the point-cloud decoder refuses a mesh bitstream");
+}
+
 #[test]
 fn malformed_drc_inputs_fail_without_panic() {
     let mut truncated_mesh_payload = draco_header(2, 0, 1, 0);
