@@ -2151,6 +2151,20 @@ test('every source format converts to every target format', async ({ page }) => 
 
   const { validateBytes } = await import('gltf-validator');
   for (const source of sources) {
+    // Reloaded between sources because the browser, not the page, stops
+    // delivering downloads after around forty of them. The evidence is that
+    // the page does everything: the console reports the export complete, the
+    // stats card carries the right byte count, and the recorded anchor click
+    // shows the right filename against a blob URL with the anchor in the
+    // document -- and no download event arrives. Chromium's allowance for
+    // downloads a page starts on its own is per navigation, so this resets it
+    // and holds each load to seven.
+    //
+    // It is not a workaround for a converter bug. Fifty-one downloads without
+    // a navigation is not something a user reaches; the matrix is what makes
+    // this test do it.
+    await page.reload();
+    await waitForConverterReady(page);
     await load(source.name, source.buffer, source.companions);
     for (const target of ['glb', 'gltf', 'obj', 'ply', 'stl', 'drc', 'fbx']) {
       // Printed before the export, not after, so a hang names the pair it hung
