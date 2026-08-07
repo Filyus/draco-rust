@@ -44,23 +44,46 @@ What the crate intentionally does **not** do:
 
 ## Memory safety (`unsafe`)
 
-The rule is per crate, because the three crates do different work and a single
-rule for all of them was either too strict for two or too loose for one. Every
-line of the table is enforced by the build rather than asserted here: CI runs
+The rule is per crate, because the crates do different work and a single rule
+for all of them was either too strict for some or too loose for others. Which
+rule a crate is under is decided by the build, not by this page: CI runs
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
 
 | crate | rule | enforced by |
 |---|---|---|
 | `draco-core` | **No `unsafe`.** | `[lints.rust] unsafe_code = "forbid"` — a build failure, and `forbid` so no module can lift it locally |
-| `draco-io` | `unsafe` **permitted in narrow, audited paths**, each block carrying a `// SAFETY:` justification | `[lints.clippy] undocumented_unsafe_blocks` — an unjustified block fails the build |
+| `draco-texture` | **No `unsafe`.** | the same lint |
+| `draco-io` | `unsafe` **permitted in narrow, audited paths**, each block carrying a `// SAFETY:` justification | `[lints.clippy] undocumented_unsafe_blocks` — a block with no comment at all fails the build |
 | `draco-gltf` | the same as `draco-io` | the same lint |
 
-**Why `draco-core` is the strict one.** Its algorithms — rANS, edgebreaker
+`draco-cpp-test-bridge` is outside the table: it exists to run the C++ library
+next to this one and is not shipped in any form. So are the `web/*-wasm`
+wrappers — none of them writes `unsafe`, but `#[wasm_bindgen]` expands to some,
+and `forbid` rejects what a macro generates as readily as what a human types.
+The rule belongs on the crates that hold the decoding, which is where a bug
+would be.
+
+The two halves are not enforced to the same depth, and it is worth being plain
+about it. `unsafe_code = "forbid"` checks the property itself — there is no way
+to have `unsafe` and a green build. `undocumented_unsafe_blocks` checks that a
+comment is *present*, not that it is true, and nothing machine-checks the
+requirements listed below. On the permissive side the build catches an omission
+and review catches everything else.
+
+**Why `draco-core` is strict.** Its algorithms — rANS, edgebreaker
 traversal, the prediction schemes, the KD-tree coder — are intricate, they run
 on bitstream-controlled indices throughout, and a memory-safety bug inside one
 of them would be hard to find by review and hard to attribute from a crash.
 Whatever `unsafe` could buy there is not worth being unable to reason about the
 result, so the door is shut and the compiler holds it.
+
+**`draco-texture` is strict for the same reason**, and it is in the table
+despite `publish = false`. That flag says where the crate is distributed, not
+what it is exposed to: it ships inside `ktx2-wasm` in the WASM release assets
+and transcodes whatever KTX2 the converter is handed. Its work is the same
+shape as `draco-core`'s — table-driven block decoding on indices that come out
+of the stream — so it belongs on the same side, and since it contains no
+`unsafe` today the rule costs nothing to adopt and fixes what already holds.
 
 **Why the other two are not.** They are the file-format and document layers, and
 the work in their hot paths is a different shape: byte shuffling, endian swaps,
@@ -89,7 +112,13 @@ choice:
 - an entry in the table below, so an audit reads one list rather than grepping;
 - coverage by the fuzz targets in [`FUZZING.md`](FUZZING.md). A path that
   `unsafe` made faster and that nothing fuzzes is the one combination this
-  policy exists to prevent.
+  policy exists to prevent;
+- a measurement of the safe version it replaces, stated with the block. The
+  permission exists so that a demonstrated win does not have to reargue the
+  policy — which means the win has to be demonstrated. `chunks_exact`,
+  `from_le_bytes` and `copy_from_slice` compile to the same instructions
+  often enough that "this is the fast way" is a hypothesis until a benchmark
+  says otherwise.
 
 **Paths using `unsafe` in the `draco-io` and `draco-gltf` libraries today:
 none.** The permission is in place so that a measured optimisation does not have

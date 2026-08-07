@@ -12,6 +12,14 @@ publish = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
+# On `draco-core`'s side of the split, for the same reason: this is a
+# table-driven block transcoder whose indices come out of the stream, so the
+# bound on a read is carried through the decode rather than established beside
+# it. `publish = false` is where it is distributed, not what it is exposed to --
+# the crate ships in `ktx2-wasm` and transcodes whatever file the converter is
+# handed. There is no `unsafe` here today, so this fixes the status quo rather
+# than changing anything. See SECURITY.md.
+unsafe_code = "forbid"
 
 [dependencies]
 thiserror = "2.0"

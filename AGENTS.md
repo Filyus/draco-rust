@@ -41,16 +41,22 @@ The three publishable crates are versioned and **released independently** (see
 
 ## Memory safety
 
-The `unsafe` rule is **per crate**, and both halves are enforced by the build
-rather than by review:
+The `unsafe` rule is **per crate**, and which crate is under which rule is
+decided by the build:
 
-- `draco-core` forbids it (`[lints.rust] unsafe_code = "forbid"`). Do not
-  propose lifting it for speed; its algorithms run on bitstream-controlled
-  indices and are the wrong place to be unable to reason about a crash.
+- `draco-core` and `draco-texture` forbid it (`[lints.rust] unsafe_code =
+  "forbid"`). Do not propose lifting it for speed; both run table-driven
+  decoding on bitstream-controlled indices and are the wrong place to be unable
+  to reason about a crash. `draco-texture` is in despite `publish = false` —
+  it ships in `ktx2-wasm` and transcodes whatever the converter is handed.
 - `draco-io` and `draco-gltf` permit it in narrow, audited paths, with a
   `// SAFETY:` comment on every block naming the invariant *and where it was
   established*. CI runs clippy with `-D warnings`, so
   `undocumented_unsafe_blocks` is binding.
+
+The depth differs: `forbid` checks the property, while
+`undocumented_unsafe_blocks` only checks that a comment exists. On the
+permissive side everything past the comment's presence is review.
 
 The split is by what the code does, not by how much its input is trusted: a
 glTF accessor walk reads offsets and strides out of a file a hostile caller
