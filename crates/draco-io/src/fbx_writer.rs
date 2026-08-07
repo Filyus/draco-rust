@@ -3941,6 +3941,7 @@ mod tests {
     /// finds a smaller encoding than a shallow one, so the stored byte counts
     /// have to differ between two very different levels.
     #[test]
+    #[cfg(feature = "compression")]
     fn compression_level_changes_the_stored_size() {
         let mesh = create_repetitive_fan_mesh(4000);
 
