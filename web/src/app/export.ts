@@ -125,14 +125,51 @@ export function downloadResult(result: ExportResult, format: string) {
     return;
   }
 
-  const url = URL.createObjectURL(blob);
+  const url = createDownloadUrl(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+}
+
+/**
+ * Object URLs handed to a download, revoked when the document goes away.
+ *
+ * `revokeObjectURL` used to run on the same turn as the anchor's `click()`.
+ * That click only queues the download -- the browser reads the blob on a
+ * later turn -- so revoking there can pull the URL out from under a download
+ * that has not started fetching, and nothing reports it: no exception, no
+ * event, and the export's own log line still says it finished. CI caught it
+ * twice on one conversion, with "Export complete!" in the converter's console
+ * and no file.
+ *
+ * There is no completion signal to revoke on: `<a download>` reports nothing
+ * back to the page. So the choice is to hold the URL for the document's
+ * lifetime or to guess an interval long enough, and a guessed interval is the
+ * same race with a longer arm. This holds them, and lets `pagehide` do what
+ * it would do anyway -- the browser releases a document's object URLs when it
+ * is destroyed, so this only makes the release explicit and immediate on a
+ * bfcache eviction.
+ *
+ * The cost is one retained blob per export until the page goes away. Exports
+ * are user-initiated and their bytes are already live in the result they came
+ * from, so this doubles a copy that exists rather than introducing one.
+ */
+const downloadUrls = new Set<string>();
+
+// Registered once, with the module, rather than on first use: a listener added
+// when the set is empty would be added again after `pagehide` cleared it.
+window.addEventListener('pagehide', () => {
+  for (const url of downloadUrls) URL.revokeObjectURL(url);
+  downloadUrls.clear();
+});
+
+function createDownloadUrl(blob: Blob): string {
+  const url = URL.createObjectURL(blob);
+  downloadUrls.add(url);
+  return url;
 }
 
 /** Show the complete result of an export, with Draco details when available. */
