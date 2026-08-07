@@ -15,6 +15,16 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
+# SECURITY.md promises this crate contains no `unsafe`. Until now that was a
+# sentence in a document; here it is a build failure. `forbid` rather than
+# `deny` so no module can lift it locally.
+#
+# It is a rule for this crate and not for `draco-io`, and the asymmetry is
+# deliberate: the algorithms here -- rANS, edgebreaker traversal, the
+# prediction schemes -- are intricate enough that a memory-safety bug in them
+# would be hard to find by review, and they run on bitstream-controlled indices
+# throughout. See SECURITY.md.
+unsafe_code = "forbid"
 
 [features]
 default = [

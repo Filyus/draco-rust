@@ -17,13 +17,25 @@ struct CountingAllocator;
 
 static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
 
+// SAFETY: every method forwards to `System`, which is a correct `GlobalAlloc`,
+// passing the layout and pointer through unchanged. The only thing added is an
+// atomic add on a counter, which allocates nothing and touches no allocator
+// state, so the obligations this impl carries are exactly `System`'s and are
+// discharged by delegating to it.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed);
+        // SAFETY: `layout` is the caller's and reaches `System` unchanged.
+        // Its validity is the caller's obligation under `GlobalAlloc::alloc`,
+        // and nothing here weakens it.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` was produced by this allocator, which hands back
+        // `System`'s pointers unchanged, and `layout` is the one it was
+        // allocated with. Both are the caller's obligations under
+        // `GlobalAlloc::dealloc` and both are forwarded intact.
         unsafe { System.dealloc(ptr, layout) }
     }
 }

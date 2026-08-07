@@ -27,6 +27,18 @@ autotests = false
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[lints.clippy]
+# `unsafe` is permitted here -- see SECURITY.md, "Memory safety" -- and every
+# block must carry a `// SAFETY:` justification. CI runs clippy with
+# `-D warnings`, so `warn` is enforced rather than advisory.
+#
+# `draco-core` forbids `unsafe` outright instead. This crate is the file-format
+# layer: its hot paths are byte shuffling, endian swaps and fixed-stride copies,
+# which are the shape SIMD and unchecked indexing actually help, and each one is
+# small enough to audit on its own. That is a different risk profile from a
+# bitstream decoder, not a lower standard.
+undocumented_unsafe_blocks = "warn"
+
 [dependencies]
 draco-core = { version = "1.0.4", path = "../draco-core", default-features = false }
 thiserror = "2.0.17"

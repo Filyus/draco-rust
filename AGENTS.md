@@ -39,6 +39,24 @@ To format the workspaces, run the same commands without `-- --check`.
 The three publishable crates are versioned and **released independently** (see
 [Releases](#releases)).
 
+## Memory safety
+
+The `unsafe` rule is **per crate**, and both halves are enforced by the build
+rather than by review:
+
+- `draco-core` forbids it (`[lints.rust] unsafe_code = "forbid"`). Do not
+  propose lifting it for speed; its algorithms run on bitstream-controlled
+  indices and are the wrong place to be unable to reason about a crash.
+- `draco-io` permits it in narrow, audited paths, with a `// SAFETY:` comment on
+  every block naming the invariant *and where it was established*. CI runs
+  clippy with `-D warnings`, so `undocumented_unsafe_blocks` is binding.
+
+Before writing one, read [`SECURITY.md`](SECURITY.md#memory-safety-unsafe): it
+lists what a block has to carry, and it wants the path added to its table and
+covered by a fuzz target. Also **price the safe version first and say what it
+measured** — the permission exists so a measured win does not have to argue the
+policy, not so `unsafe` is the first thing reached for.
+
 ## Commit conventions
 
 - Use concise, **domain-prefixed** subjects — not conventional `feat:`/`fix:`.
