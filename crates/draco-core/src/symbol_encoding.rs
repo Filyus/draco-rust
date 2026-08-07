@@ -652,6 +652,54 @@ mod tests {
 mod roundtrip_tests {
     use super::*;
 
+    /// The decode grows its sink; this is the case that needs it to.
+    ///
+    /// `reserve_within_input` starts at eight symbols per remaining input byte,
+    /// which is deliberately below what a compressible stream carries. Highly
+    /// repetitive symbols cost a fraction of a bit each, so this run holds far
+    /// more values than the reserve, and only decodes in full if `push` is
+    /// allowed to grow past it.
+    ///
+    /// The refusal tests cannot catch a broken growth path -- they assert that
+    /// oversized counts are rejected, which a decoder that never grows also
+    /// does. Falsified by making the raw scheme stop at `capacity()`: this
+    /// fails and nothing else does.
+    ///
+    /// Only the raw scheme needs it. Tagged spends at least one bit per value
+    /// plus a tag, so eight values per byte is its ceiling and the reserve is
+    /// always enough -- stopping *its* push at `capacity()` changes nothing,
+    /// which is the reason there is one case here rather than two.
+    #[test]
+    fn a_run_longer_than_the_reserve_decodes_in_full() {
+        // Two values, one rare: compressible enough that the byte count lands
+        // far under the symbol count, and still entropy coded rather than raw.
+        let symbols: Vec<u32> = (0..50_000u32).map(|i| u32::from(i % 997 == 0)).collect();
+        let options = SymbolEncodingOptions::default();
+
+        let mut target = EncoderBuffer::new();
+        assert!(encode_symbols(&symbols, 1, &options, &mut target));
+        let data = target.data().to_vec();
+
+        let reserve = data.len() * 8;
+        assert!(
+            symbols.len() > reserve,
+            "{} symbols in {} bytes reserves {reserve}: not past the initial              allowance, so this no longer tests growth",
+            symbols.len(),
+            data.len()
+        );
+
+        let mut source = DecoderBuffer::new(&data);
+        let mut out = Vec::new();
+        assert!(decode_symbols(
+            symbols.len(),
+            1,
+            &options,
+            &mut source,
+            &mut out
+        ));
+        assert_eq!(out, symbols, "the sink stopped short of the symbol count");
+    }
+
     /// A symbol whose top bit is set forces the tagged scheme's per-chunk
     /// bit length to 32 (`max_value_bit_length` past 18 always selects
     /// TAGGED). `DecoderBuffer::decode_least_significant_bits32_fast` used to
