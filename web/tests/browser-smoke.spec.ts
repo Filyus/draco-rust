@@ -2070,14 +2070,23 @@ test('every source format converts to every target format', async ({ page }) => 
   // STL and FBX have no checked-in fixture, so the suite writes its own — which
   // also makes them round trips rather than merely readable files.
   await load('matrix.glb', sources[1].buffer);
+  console.log('matrix: writing the stl source ...');
   sources.push({ name: 'matrix.stl', buffer: await exportAs('stl') });
+  console.log('matrix: writing the fbx source ...');
   sources.push({ name: 'matrix.fbx', buffer: await exportAs('fbx') });
 
   const { validateBytes } = await import('gltf-validator');
   for (const source of sources) {
     await load(source.name, source.buffer, source.companions);
     for (const target of ['glb', 'gltf', 'obj', 'ply', 'stl', 'drc', 'fbx']) {
+      // Printed before the export, not after, so a hang names the pair it hung
+      // on: the whole matrix shares one test timeout, and without this the
+      // failure reads only as "waiting for event download" with no way to tell
+      // one stuck conversion from forty-nine slow ones.
+      console.log(`matrix: ${source.name} -> ${target} ...`);
+      const startedAt = Date.now();
       const bytes = await exportAs(target);
+      console.log(`matrix: ${source.name} -> ${target} ${bytes.length}B in ${Date.now() - startedAt}ms`);
       expect(bytes.length, `${source.name} -> ${target} produced nothing`).toBeGreaterThan(0);
       if (target !== 'glb' && target !== 'gltf') continue;
       const report = await validateBytes(new Uint8Array(bytes));
