@@ -13,6 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use draco_texture::ktx2::{Ktx2, Ktx2Format, Supercompression};
+use draco_texture::transcode::{Target, Transcoder};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -270,6 +271,57 @@ mod hostile {
             Ktx2::parse(&bytes).is_ok(),
             "one byte over the real size is still within what the level could hold"
         );
+    }
+
+    /// The ceiling above is a ceiling on what an *image* could hold, and that
+    /// is the wrong question to ask before allocating.
+    ///
+    /// It scales with `layerCount`, which the format bounds only at 65535, so
+    /// a 512x512 level may claim 275 GB and clear it. Reserving from the claim
+    /// meant `Vec::with_capacity(100_000_000_000)` from a 19,833-byte file, and
+    /// that reserve cannot fail gracefully -- it aborted in the allocator.
+    ///
+    /// The level is decompressed into what the decoder produces instead, so a
+    /// claim nothing backs costs nothing and the length check reports it.
+    #[test]
+    fn a_level_claiming_more_than_it_carries_is_an_error_not_an_allocation() {
+        let mut bytes = with_word("2d_uastc.ktx2", 32, 65535); // layerCount
+        let claim: u64 = 100_000_000_000;
+        let at = level_entry(0) + 16;
+        bytes[at..at + 8].copy_from_slice(&claim.to_le_bytes());
+
+        // Under the ceiling, so the parse has to accept it: this is the case
+        // the ceiling cannot catch, which is the point of the test.
+        let file = Ktx2::parse(&bytes).expect("the claim is within level_ceiling");
+
+        let error = file
+            .level_bytes(0)
+            .expect_err("a level cannot deliver 100 GB from 19 KB");
+        let text = error.to_string();
+        assert!(
+            text.contains("decompress") && text.contains(&claim.to_string()),
+            "the mismatch should name what was claimed, got: {text}"
+        );
+    }
+
+    /// The same shape one layer down: an ETC1S image is sized from the level's
+    /// dimensions, which are the file's word.
+    ///
+    /// A 6,629-byte fixture with its dimensions raised to the implementation
+    /// limit reserved a gigabyte before a block had been read, and aborted.
+    /// The image now grows a block row at a time, so the decode stops where
+    /// the data does. Nothing here asserts a byte count -- the point is that
+    /// it returns at all.
+    #[test]
+    fn an_image_larger_than_its_slice_fails_instead_of_reserving_for_it() {
+        let mut bytes = with_word("2d_etc1s.ktx2", 20, MAX_DIMENSION);
+        bytes[24..28].copy_from_slice(&MAX_DIMENSION.to_le_bytes());
+
+        let file = Ktx2::parse(&bytes).expect("the dimensions are at the limit");
+        let transcoder = Transcoder::new(&file).expect("its codebooks still read");
+        transcoder
+            .decode(&file, 0, 0, 0, Target::Rgba8)
+            .expect_err("2,004 bytes cannot describe 16,777,216 blocks");
     }
 
     #[test]
