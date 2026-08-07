@@ -2020,7 +2020,14 @@ test('a .drc round trip keeps every attribute the flat mesh carries', async ({ p
  * valid means.
  */
 test('every source format converts to every target format', async ({ page }) => {
-  test.setTimeout(180000);
+  // The heaviest test in the suite by a wide margin: seven sources times seven
+  // targets is 49 exports, plus two to write the STL and FBX sources, plus a
+  // glTF-validator pass on the 14 glTF and GLB results -- all inside one test's
+  // budget. 180s was enough until it was not: it timed out on a runner where
+  // the whole suite took 8.6 minutes, and the same commit passed on a rerun
+  // where the suite took 5.9. Nothing hung -- the budget was simply close
+  // enough to the runner's spread to land on the wrong side of it.
+  test.setTimeout(300000);
   await page.goto('/index.html');
   await waitForConverterReady(page);
 
