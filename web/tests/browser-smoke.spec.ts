@@ -2152,16 +2152,22 @@ test('every source format converts to every target format', async ({ page }) => 
   const { validateBytes } = await import('gltf-validator');
   for (const source of sources) {
     // Reloaded between sources because the browser, not the page, stops
-    // delivering downloads after around forty of them. The evidence is that
+    // delivering downloads after several dozen of them. The evidence is that
     // the page does everything: the console reports the export complete, the
     // stats card carries the right byte count, and the recorded anchor click
     // shows the right filename against a blob URL with the anchor in the
-    // document -- and no download event arrives. Chromium's allowance for
-    // downloads a page starts on its own is per navigation, so this resets it
-    // and holds each load to seven.
+    // document -- and no download event arrives.
     //
-    // It is not a workaround for a converter bug. Fifty-one downloads without
-    // a navigation is not something a user reaches; the matrix is what makes
+    // Chromium's DownloadRequestLimiter is per tab, holds no timer, and its
+    // state is reset by navigation, so a reload clears it whichever count
+    // tripped. The exact trigger is not pinned down: the documented ceiling is
+    // kMaxDownloadsAtOnce = 50 and one run did fail on the 51st, but the
+    // others failed on the 41st, which that constant does not explain. What
+    // the reload does is bound each page load to seven downloads, an order
+    // below anything observed to fail.
+    //
+    // It is not a workaround for a converter bug. Forty downloads without a
+    // navigation is not something a user reaches; the matrix is what makes
     // this test do it.
     await page.reload();
     await waitForConverterReady(page);
