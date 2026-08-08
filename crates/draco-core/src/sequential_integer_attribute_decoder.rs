@@ -825,17 +825,16 @@ impl SequentialIntegerAttributeDecoder {
             // `decode_symbols` grows this as symbols actually arrive.
             let mut symbols = Vec::new();
             let options = SymbolEncodingOptions::default();
-            if !decode_symbols(
+            decode_symbols(
                 num_values,
                 num_components,
                 &options,
                 in_buffer,
                 &mut symbols,
-            ) {
-                return Err(DracoError::general(
-                    "Failed to decode the entropy-coded symbols".to_string(),
-                ));
-            }
+            )
+            .map_err(|err| {
+                DracoError::general(format!("Failed to decode the entropy-coded symbols: {err}"))
+            })?;
             symbols_to_corrections(symbols, needs_zigzag_conversion)
         } else {
             // Raw uncompressed integers. Read directly as bytes.

@@ -178,13 +178,17 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
                 // are decoded, so a claim the stream cannot meet costs one
                 // small reservation rather than the whole context.
                 let options = SymbolEncodingOptions::default();
-                if !decode_symbols(
+                // The traversal reports through `bool`, so the reason stops
+                // here rather than reaching the decoder; the log is what is
+                // left of it.
+                if let Err(err) = decode_symbols(
                     num_symbols,
                     1,
                     &options,
                     in_buffer,
                     &mut self.context_symbols[i],
                 ) {
+                    debug_log!("Failed to decode valence context {i}: {err}");
                     return false;
                 }
                 // Set counter to read from back

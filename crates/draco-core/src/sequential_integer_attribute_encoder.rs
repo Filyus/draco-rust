@@ -1185,11 +1185,11 @@ impl SequentialIntegerAttributeEncoder {
         }
 
         let _start_len = out_buffer.size();
-        if !encode_symbols(&symbols, num_components, &symbol_options, out_buffer) {
-            return Err(DracoError::general(
-                "Failed to entropy-code the prediction residuals".to_string(),
-            ));
-        }
+        encode_symbols(&symbols, num_components, &symbol_options, out_buffer).map_err(|err| {
+            DracoError::general(format!(
+                "Failed to entropy-code the prediction residuals: {err}"
+            ))
+        })?;
 
         // 7. Encode Prediction Data (after symbols)
         if selected_method != PredictionSchemeMethod::None {

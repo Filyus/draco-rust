@@ -4,6 +4,7 @@
 //! tagged and raw schemes with rANS entropy coding.
 
 use crate::rans_symbol_coding::compute_rans_precision_from_unique_symbols_bit_length;
+use crate::status::{DracoError, Status};
 
 #[cfg(feature = "encoder")]
 use crate::rans_symbol_coding::approximate_rans_frequency_table_bits;
@@ -40,9 +41,9 @@ pub fn encode_symbols(
     num_components: usize,
     options: &SymbolEncodingOptions,
     target_buffer: &mut EncoderBuffer,
-) -> bool {
+) -> Status {
     if symbols.is_empty() {
-        return true;
+        return Ok(());
     }
 
     // Compute bit lengths
@@ -259,7 +260,7 @@ pub fn encode_raw_symbols(
     max_value: u32,
     target_buffer: &mut EncoderBuffer,
     compression_level: i32,
-) -> bool {
+) -> Status {
     // num_values is known by decoder
 
     // Count frequencies
@@ -293,7 +294,7 @@ fn encode_raw_symbols_with_frequencies(
     num_unique_symbols: u32,
     target_buffer: &mut EncoderBuffer,
     compression_level: i32,
-) -> bool {
+) -> Status {
     let mut unique_symbols_bit_length: u32 = if num_unique_symbols > 0 {
         32 - num_unique_symbols.leading_zeros()
     } else {
@@ -328,7 +329,9 @@ fn encode_raw_symbols_with_frequencies(
         18 => encode_raw_symbols_internal::<18>(symbols, frequencies, target_buffer),
         19 => encode_raw_symbols_internal::<19>(symbols, frequencies, target_buffer),
         20 => encode_raw_symbols_internal::<20>(symbols, frequencies, target_buffer),
-        _ => false,
+        other => Err(DracoError::general(format!(
+            "rANS precision {other} bits has no encoder: the table covers 12..=20"
+        ))),
     }
 }
 
@@ -337,7 +340,7 @@ fn encode_raw_symbols_internal<const RANS_PRECISION_BITS: u32>(
     symbols: &[u32],
     frequencies: &[u64],
     target_buffer: &mut EncoderBuffer,
-) -> bool {
+) -> Status {
     let mut encoder = RAnsSymbolEncoder::<RANS_PRECISION_BITS>::new();
     encoder.create(frequencies, frequencies.len(), target_buffer);
     encoder.start_encoding_with_capacity(
@@ -351,7 +354,7 @@ fn encode_raw_symbols_internal<const RANS_PRECISION_BITS: u32>(
     }
 
     encoder.end_encoding(target_buffer);
-    true
+    Ok(())
 }
 
 /*
@@ -367,10 +370,12 @@ fn encode_raw_symbols_typed<const PRECISION_BITS: u32>(
     frequencies: &[u64],
     num_unique_symbols: usize,
     target_buffer: &mut EncoderBuffer,
-) -> bool {
+) -> Status {
     let mut encoder = RAnsSymbolEncoder::<PRECISION_BITS>::new();
     if !encoder.create(frequencies, num_unique_symbols, target_buffer) {
-        return false;
+        return Err(DracoError::general(
+            "Failed to build the rANS frequency table for the raw symbols",
+        ));
     }
 
     encoder.start_encoding(target_buffer);
@@ -378,7 +383,7 @@ fn encode_raw_symbols_typed<const PRECISION_BITS: u32>(
         encoder.encode_symbol(sym);
     }
     encoder.end_encoding(target_buffer);
-    true
+    Ok(())
 }
 
 #[cfg(feature = "encoder")]
@@ -387,7 +392,7 @@ fn encode_tagged_symbols(
     num_components: usize,
     bit_lengths: &[u32],
     target_buffer: &mut EncoderBuffer,
-) -> bool {
+) -> Status {
     // Scheme: Tagged is already written by caller
 
     // Encode bit lengths using RAns
@@ -401,7 +406,9 @@ fn encode_tagged_symbols(
     // which corresponds to rANS precision bits = 12.
     let mut tag_encoder = RAnsSymbolEncoder::<12>::new();
     if !tag_encoder.create(&frequencies, 33, target_buffer) {
-        return false;
+        return Err(DracoError::general(
+            "Failed to build the rANS frequency table for the tagged bit lengths",
+        ));
     }
 
     #[cfg(feature = "debug_logs")]
@@ -442,7 +449,7 @@ fn encode_tagged_symbols(
     tag_encoder.end_encoding(target_buffer);
     value_buffer.end_bit_encoding();
     target_buffer.encode_data(value_buffer.data());
-    true
+    Ok(())
 }
 
 // ============================================================================
@@ -456,26 +463,34 @@ pub fn decode_symbols(
     _options: &SymbolEncodingOptions,
     in_buffer: &mut DecoderBuffer,
     symbols: &mut Vec<u32>,
-) -> bool {
+) -> Status {
     symbols.clear();
     if num_values == 0 {
-        return true;
+        return Ok(());
     }
-    if num_components == 0 || !num_values.is_multiple_of(num_components) {
-        return false;
+    if num_components == 0 {
+        return Err(DracoError::invalid_parameter(
+            "Symbol decode needs at least one component",
+        ));
+    }
+    if !num_values.is_multiple_of(num_components) {
+        return Err(DracoError::invalid_parameter(format!(
+            "Symbol count {num_values} is not a multiple of the {num_components} components it is read into"
+        )));
     }
     reserve_within_input(symbols, num_values, in_buffer);
 
-    let scheme = match in_buffer.decode_u8() {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
+    let scheme = in_buffer
+        .decode_u8()
+        .map_err(|_| DracoError::buffer("Buffer ran out reading the symbol coding scheme"))?;
 
     // Draco uses: 0 = TAGGED, 1 = RAW.
     match scheme {
         0 => decode_tagged_symbols(num_values, num_components, in_buffer, symbols),
         1 => decode_raw_symbols(num_values, in_buffer, symbols),
-        _ => false,
+        other => Err(DracoError::unsupported_feature(format!(
+            "Unknown symbol coding scheme {other}: Draco defines 0 (tagged) and 1 (raw)"
+        ))),
     }
 }
 
@@ -505,14 +520,16 @@ pub fn decode_raw_symbols(
     num_values: usize,
     in_buffer: &mut DecoderBuffer,
     symbols: &mut Vec<u32>,
-) -> bool {
+) -> Status {
     // Read serialized symbol-bit-length header (written by encoder)
-    let symbols_bit_length = match in_buffer.decode_u8() {
-        Ok(v) => v as u32,
-        Err(_) => return false,
-    };
+    let symbols_bit_length = in_buffer
+        .decode_u8()
+        .map_err(|_| DracoError::buffer("Buffer ran out reading the raw symbol bit length"))?
+        as u32;
     if !(1..=18).contains(&symbols_bit_length) {
-        return false;
+        return Err(DracoError::general(format!(
+            "Raw symbol bit length {symbols_bit_length} outside the supported range 1..=18"
+        )));
     }
     let unique_symbols_bit_length = symbols_bit_length;
     let precision_bits =
@@ -521,18 +538,24 @@ pub fn decode_raw_symbols(
     // Use runtime precision to avoid monomorphization bloat
     let mut decoder = RAnsSymbolDecoder::new(precision_bits);
     if !decoder.create(in_buffer) {
-        return false;
+        return Err(DracoError::general(
+            "Failed to read the raw scheme's rANS frequency table",
+        ));
     }
     if !decoder.start_decoding(in_buffer) {
-        return false;
+        return Err(DracoError::general(
+            "Failed to start rANS decoding of the raw symbols",
+        ));
     }
-    for _ in 0..num_values {
+    for index in 0..num_values {
         let Some(symbol) = decoder.try_decode_symbol() else {
-            return false;
+            return Err(DracoError::general(format!(
+                "Raw symbol stream ended after {index} of {num_values} symbols"
+            )));
         };
         symbols.push(symbol);
     }
-    true
+    Ok(())
 }
 
 #[cfg(feature = "decoder")]
@@ -541,9 +564,11 @@ fn decode_tagged_symbols(
     num_components: usize,
     in_buffer: &mut DecoderBuffer,
     symbols: &mut Vec<u32>,
-) -> bool {
+) -> Status {
     if num_components == 0 || !num_values.is_multiple_of(num_components) {
-        return false;
+        return Err(DracoError::invalid_parameter(format!(
+            "Tagged symbol count {num_values} is not a multiple of the {num_components} components it is read into"
+        )));
     }
 
     // C++ uses RAnsSymbolDecoder<5> where 5 is unique_symbols_bit_length.
@@ -551,16 +576,20 @@ fn decode_tagged_symbols(
     let mut tag_decoder = RAnsSymbolDecoder::new(12);
 
     if !tag_decoder.create(in_buffer) {
-        return false;
+        return Err(DracoError::general(
+            "Failed to read the tagged scheme's rANS frequency table",
+        ));
     }
     if !tag_decoder.start_decoding(in_buffer) {
-        return false;
+        return Err(DracoError::general(
+            "Failed to start rANS decoding of the tagged symbol tags",
+        ));
     }
 
     // Start bit-decoding for raw values (value_buffer)
-    if in_buffer.start_bit_decoding(false).is_err() {
-        return false;
-    }
+    in_buffer
+        .start_bit_decoding(false)
+        .map_err(|_| DracoError::buffer("Buffer ran out starting the tagged value bit stream"))?;
 
     let num_chunks = num_values / num_components;
 
@@ -569,25 +598,32 @@ fn decode_tagged_symbols(
     // The bit stream is already bounded by start_bit_decoding.
 
     // Process each chunk
-    for _ in 0..num_chunks {
+    for chunk in 0..num_chunks {
         let Some(len) = tag_decoder.try_decode_symbol() else {
-            return false;
+            return Err(DracoError::general(format!(
+                "Tag stream ended after {chunk} of {num_chunks} chunks"
+            )));
         };
         if len == 0 || len > 32 {
-            return false;
+            return Err(DracoError::general(format!(
+                "Tagged value width {len} outside the supported range 1..=32"
+            )));
         }
         for _ in 0..num_components {
-            let val = match in_buffer.decode_least_significant_bits32_fast(len) {
-                Ok(v) => v,
-                Err(_) => return false,
-            };
+            let val = in_buffer
+                .decode_least_significant_bits32_fast(len)
+                .map_err(|_| {
+                    DracoError::buffer(format!(
+                        "Value bit stream ran out reading {len} bits in chunk {chunk} of {num_chunks}"
+                    ))
+                })?;
             symbols.push(val);
         }
     }
 
     in_buffer.end_bit_decoding();
 
-    true
+    Ok(())
 }
 
 #[cfg(all(test, feature = "decoder"))]
@@ -600,7 +636,7 @@ mod tests {
         let mut buffer = DecoderBuffer::new(&bytes);
         let mut symbols = Vec::new();
 
-        assert!(!decode_raw_symbols(1, &mut buffer, &mut symbols));
+        assert!(decode_raw_symbols(1, &mut buffer, &mut symbols).is_err());
     }
 
     #[test]
@@ -610,7 +646,10 @@ mod tests {
         let mut symbols = Vec::new();
         let options = SymbolEncodingOptions::default();
 
-        assert!(!decode_symbols(1, 1, &options, &mut buffer, &mut symbols));
+        // The id is what the refusal is about, so the refusal names it.
+        let err = decode_symbols(1, 1, &options, &mut buffer, &mut symbols).unwrap_err();
+        assert_eq!(err.kind(), crate::status::ErrorKind::UnsupportedFeature);
+        assert!(err.message().contains('2'), "{err}");
     }
 
     #[test]
@@ -619,7 +658,8 @@ mod tests {
         let mut buffer = DecoderBuffer::new(&bytes);
         let mut symbols: Vec<u32> = Vec::new();
 
-        assert!(!decode_raw_symbols(1, &mut buffer, &mut symbols));
+        let err = decode_raw_symbols(1, &mut buffer, &mut symbols).unwrap_err();
+        assert!(err.message().contains("1..=18"), "{err}");
     }
 
     #[test]
@@ -628,7 +668,8 @@ mod tests {
         let mut buffer = DecoderBuffer::new(&bytes);
         let mut symbols: Vec<u32> = Vec::new();
 
-        assert!(!decode_raw_symbols(1, &mut buffer, &mut symbols));
+        let err = decode_raw_symbols(1, &mut buffer, &mut symbols).unwrap_err();
+        assert!(err.message().contains("19"), "{err}");
     }
 
     #[test]
@@ -636,7 +677,7 @@ mod tests {
         let mut buffer = DecoderBuffer::new(&[]);
         let mut symbols: Vec<u32> = Vec::new();
 
-        assert!(!decode_tagged_symbols(1, 0, &mut buffer, &mut symbols));
+        assert!(decode_tagged_symbols(1, 0, &mut buffer, &mut symbols).is_err());
     }
 
     #[test]
@@ -644,7 +685,10 @@ mod tests {
         let mut buffer = DecoderBuffer::new(&[]);
         let mut symbols: Vec<u32> = Vec::new();
 
-        assert!(!decode_tagged_symbols(5, 2, &mut buffer, &mut symbols));
+        // The count and the component width both appear: which pair failed to
+        // divide is the whole content of the refusal.
+        let err = decode_tagged_symbols(5, 2, &mut buffer, &mut symbols).unwrap_err();
+        assert!(err.message().contains('5') && err.message().contains('2'), "{err}");
     }
 }
 
@@ -677,7 +721,7 @@ mod roundtrip_tests {
         let options = SymbolEncodingOptions::default();
 
         let mut target = EncoderBuffer::new();
-        assert!(encode_symbols(&symbols, 1, &options, &mut target));
+        encode_symbols(&symbols, 1, &options, &mut target).unwrap();
         let data = target.data().to_vec();
 
         let reserve = data.len() * 8;
@@ -690,13 +734,7 @@ mod roundtrip_tests {
 
         let mut source = DecoderBuffer::new(&data);
         let mut out = Vec::new();
-        assert!(decode_symbols(
-            symbols.len(),
-            1,
-            &options,
-            &mut source,
-            &mut out
-        ));
+        decode_symbols(symbols.len(), 1, &options, &mut source, &mut out).unwrap();
         assert_eq!(out, symbols, "the sink stopped short of the symbol count");
     }
 
@@ -712,12 +750,12 @@ mod roundtrip_tests {
         let options = SymbolEncodingOptions::default();
 
         let mut target = EncoderBuffer::new();
-        assert!(encode_symbols(&symbols, 1, &options, &mut target));
+        encode_symbols(&symbols, 1, &options, &mut target).unwrap();
 
         let data = target.data().to_vec();
         let mut source = DecoderBuffer::new(&data);
         let mut out = Vec::new();
-        assert!(decode_symbols(1, 1, &options, &mut source, &mut out));
+        decode_symbols(1, 1, &options, &mut source, &mut out).unwrap();
         assert_eq!(out, [u32::MAX]);
     }
 
@@ -727,12 +765,12 @@ mod roundtrip_tests {
         let options = SymbolEncodingOptions::default();
 
         let mut target = EncoderBuffer::new();
-        assert!(encode_symbols(&symbols, 1, &options, &mut target));
+        encode_symbols(&symbols, 1, &options, &mut target).unwrap();
 
         let data = target.data().to_vec();
         let mut source = DecoderBuffer::new(&data);
         let mut out = Vec::new();
-        assert!(decode_symbols(5, 1, &options, &mut source, &mut out));
+        decode_symbols(5, 1, &options, &mut source, &mut out).unwrap();
         assert_eq!(out, symbols);
     }
 }

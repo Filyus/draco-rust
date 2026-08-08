@@ -1208,7 +1208,7 @@ fn profile_encoding_stages() {
         let options = SymbolEncodingOptions {
             compression_level: 7,
         };
-        encode_symbols(&symbols, 3, &options, &mut buffer);
+        encode_symbols(&symbols, 3, &options, &mut buffer).unwrap();
         std::hint::black_box(&buffer);
     }
     let symbol_encode_us = avg_duration_us(start.elapsed(), iterations);
@@ -1432,7 +1432,7 @@ fn profile_symbol_encoding_details() {
         let options = SymbolEncodingOptions {
             compression_level: 7,
         };
-        encode_symbols(&symbols, num_components, &options, &mut buffer);
+        encode_symbols(&symbols, num_components, &options, &mut buffer).unwrap();
         std::hint::black_box(&buffer);
     }
     let full_encode_us = avg_duration_us(start.elapsed(), iterations);

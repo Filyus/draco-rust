@@ -13,12 +13,7 @@ fn test_rans_raw_symbol_roundtrip_small_alphabets_with_zeros() {
 
     // Encode
     let mut enc_buf = EncoderBuffer::new();
-    assert!(encode_symbols(
-        &symbols,
-        num_components,
-        &options,
-        &mut enc_buf
-    ));
+    encode_symbols(&symbols, num_components, &options, &mut enc_buf).unwrap();
 
     // Debug: show encoded bytes
     eprintln!(
@@ -38,14 +33,15 @@ fn test_rans_raw_symbol_roundtrip_small_alphabets_with_zeros() {
 
     // Decode
     let mut dec_buf = DecoderBuffer::new(enc_buf.data());
-    let mut out_symbols = vec![0u32; num_values];
-    assert!(decode_symbols(
+    let mut out_symbols = Vec::new();
+    decode_symbols(
         num_values,
         num_components,
         &options,
         &mut dec_buf,
-        &mut out_symbols
-    ));
+        &mut out_symbols,
+    )
+    .unwrap();
 
     assert_eq!(
         symbols, out_symbols,

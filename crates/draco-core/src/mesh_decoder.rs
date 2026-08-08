@@ -351,17 +351,18 @@ impl MeshDecoder {
                     // small reservation instead of the whole array.
                     let mut encoded_indices = Vec::new();
                     let options = crate::symbol_encoding::SymbolEncodingOptions::default();
-                    if !crate::symbol_encoding::decode_symbols(
+                    crate::symbol_encoding::decode_symbols(
                         num_indices,
                         1,
                         &options,
                         buffer,
                         &mut encoded_indices,
-                    ) {
-                        return Err(DracoError::general(
-                            "Failed to decode compressed sequential connectivity".to_string(),
-                        ));
-                    }
+                    )
+                    .map_err(|err| {
+                        DracoError::general(format!(
+                            "Failed to decode compressed sequential connectivity: {err}"
+                        ))
+                    })?;
                     // Sized from what the decode produced rather than from what
                     // the header claimed: on success the two are equal, and on
                     // failure this line is not reached.
