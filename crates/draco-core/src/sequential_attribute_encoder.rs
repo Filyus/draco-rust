@@ -80,18 +80,13 @@ impl SequentialAttributeEncoder {
         self.attribute_id
     }
 
-    pub fn init(&mut self, attribute_id: i32) -> bool {
+    pub fn init(&mut self, attribute_id: i32) {
         self.attribute_id = attribute_id;
-        true
     }
 
-    pub fn initialize_standalone(&mut self, _attribute: &PointAttribute) -> bool {
-        true
-    }
+    pub fn initialize_standalone(&mut self, _attribute: &PointAttribute) {}
 
-    pub fn transform_attribute_to_portable_format(&mut self, _point_ids: &[PointIndex]) -> bool {
-        true
-    }
+    pub fn transform_attribute_to_portable_format(&mut self, _point_ids: &[PointIndex]) {}
 
     pub fn encode_values(
         &mut self,

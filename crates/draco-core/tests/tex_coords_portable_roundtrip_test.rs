@@ -90,7 +90,7 @@ fn test_tex_coords_portable_roundtrip() {
 
     let pos_att_ref = mesh.attribute(pos_att_id);
     assert!(encoder.set_parent_attribute(pos_att_ref).is_ok());
-    assert!(encoder.init(&mesh_data));
+    encoder.init(&mesh_data);
 
     let mut out_corr = vec![0i32; 8];
     let entry_to_point_id_map = vec![0, 1, 2, 3];
@@ -122,7 +122,7 @@ fn test_tex_coords_portable_roundtrip() {
     let mut decoder = MeshPredictionSchemeTexCoordsPortableDecoder::new(transform_dec);
 
     assert!(decoder.set_parent_attribute(pos_att_ref).is_ok());
-    assert!(decoder.init(&mesh_data));
+    decoder.init(&mesh_data);
 
     assert!(decoder.decode_prediction_data(&mut decoder_buffer).is_ok());
 

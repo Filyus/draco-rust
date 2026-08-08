@@ -159,19 +159,19 @@ impl SequentialIntegerAttributeEncoder {
         self.transform_family = family;
     }
 
-    pub fn init(&mut self, attribute_id: i32) -> bool {
-        self.base.init(attribute_id)
+    pub fn init(&mut self, attribute_id: i32) {
+        self.base.init(attribute_id);
     }
 
     /// Encodes the quantization transform parameters if a quantization transform was applied.
     /// This should be called AFTER encode_values(), matching the C++ encoding order:
     /// 1. EncodePortableAttributes (encode_values) - prediction method + compressed data
     /// 2. EncodeDataNeededByPortableTransforms (this method) - quantization parameters
-    pub fn encode_data_needed_by_portable_transform(&self, out_buffer: &mut EncoderBuffer) -> bool {
+    pub fn encode_data_needed_by_portable_transform(&self, out_buffer: &mut EncoderBuffer) -> Status {
         if let Some(ref q_transform) = self.quantization_transform {
-            q_transform.encode_parameters(out_buffer).is_ok()
+            q_transform.encode_parameters(out_buffer)
         } else {
-            true // No transform to encode
+            Ok(()) // No transform to encode
         }
     }
 

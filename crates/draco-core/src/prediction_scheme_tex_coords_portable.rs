@@ -53,9 +53,8 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableDecoder<'a> {
         }
     }
 
-    pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) -> bool {
+    pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) {
         self.mesh_data = Some(mesh_data.clone());
-        true
     }
 
     fn get_position_for_entry_id(
@@ -752,9 +751,8 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
         self.bitstream_version = crate::version::bitstream_version(major, minor);
     }
 
-    pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) -> bool {
+    pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) {
         self.mesh_data = Some(mesh_data.clone());
-        true
     }
 
     fn get_position_for_entry_id(
@@ -1191,7 +1189,7 @@ mod tests {
 
         let transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
         let mut decoder = MeshPredictionSchemeTexCoordsPortableDecoder::new(transform);
-        assert!(decoder.init(&mesh_data));
+        decoder.init(&mesh_data);
 
         let mut predicted = [i32::MIN; 2];
         if decoder.compute_predicted_value(
@@ -1248,7 +1246,7 @@ mod tests {
         let transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
         let mut decoder = MeshPredictionSchemeTexCoordsPortableDecoder::new(transform);
         assert!(decoder.set_parent_attribute(&pos_att).is_ok());
-        assert!(decoder.init(&mesh_data));
+        decoder.init(&mesh_data);
 
         let data = [i32::MAX, i32::MAX, 0, 0, 1, 1];
         let mut predicted = [0; 2];

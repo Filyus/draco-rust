@@ -57,11 +57,7 @@ impl SequentialNormalAttributeEncoder {
         attribute_id: i32,
         options: &EncoderOptions,
     ) -> Status {
-        if !self.base.init(attribute_id) {
-            return Err(DracoError::invalid_parameter(format!(
-                "Attribute {attribute_id} is not a valid encoder attribute"
-            )));
-        }
+        self.base.init(attribute_id);
 
         let attribute = point_cloud.attribute(attribute_id);
         if attribute.num_components() != 3 {
@@ -81,10 +77,10 @@ impl SequentialNormalAttributeEncoder {
             .set_parameters(quantization_bits)
     }
 
-    pub fn encode_data_needed_by_portable_transform(&self, out_buffer: &mut EncoderBuffer) -> bool {
+    pub fn encode_data_needed_by_portable_transform(&self, out_buffer: &mut EncoderBuffer) -> Status {
         // The one byte AttributeOctahedronTransform::EncodeParameters writes.
         out_buffer.encode(self.attribute_octahedron_transform.quantization_bits() as u8);
-        true
+        Ok(())
     }
 
     pub fn encode_values(

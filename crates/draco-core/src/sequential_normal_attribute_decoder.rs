@@ -44,9 +44,7 @@ impl SequentialNormalAttributeDecoder {
         point_cloud: &PointCloud,
         attribute_id: i32,
     ) -> Status {
-        if !self.base.init(decoder, attribute_id) {
-            return Err(DracoError::general("Failed to init base".to_string()));
-        }
+        self.base.init(decoder, attribute_id);
 
         let attribute = point_cloud.try_attribute(attribute_id)?;
         if attribute.num_components() != 3 {

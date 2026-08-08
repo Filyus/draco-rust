@@ -79,9 +79,8 @@ impl<'a> MeshPredictionSchemeGeometricNormalDecoder<'a> {
         self.entry_to_point_id_map = Some(point_ids);
     }
 
-    pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) -> bool {
+    pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) {
         self.mesh_data = Some(mesh_data.clone());
-        true
     }
 
     fn is_initialized(&self) -> bool {
@@ -597,9 +596,8 @@ impl<'a> MeshPredictionSchemeGeometricNormalEncoder<'a> {
         self.bitstream_version = crate::version::bitstream_version(major, minor);
     }
 
-    pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) -> bool {
+    pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) {
         self.mesh_data = Some(mesh_data.clone());
-        true
     }
 
     fn compute_predicted_value(
@@ -1014,7 +1012,7 @@ mod tests {
         let mut decoder = MeshPredictionSchemeGeometricNormalDecoder::new(
             PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new(),
         );
-        assert!(decoder.init(&mesh_data));
+        decoder.init(&mesh_data);
         assert!(decoder.set_parent_attribute(&position_attribute).is_ok());
 
         let entry_to_point_id_map = [0u32];
@@ -1047,7 +1045,7 @@ mod tests {
         let mut decoder = MeshPredictionSchemeGeometricNormalDecoder::new(
             PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new(),
         );
-        assert!(decoder.init(&mesh_data));
+        decoder.init(&mesh_data);
         assert!(decoder.set_parent_attribute(&position_attribute).is_ok());
 
         let entry_to_point_id_map = [0u32];

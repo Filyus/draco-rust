@@ -121,9 +121,8 @@ impl SequentialIntegerAttributeDecoder {
         }
     }
 
-    pub fn init(&mut self, _decoder: &PointCloudDecoder, attribute_id: i32) -> bool {
+    pub fn init(&mut self, _decoder: &PointCloudDecoder, attribute_id: i32) {
         self.attribute = attribute_id;
-        true
     }
 
     pub fn attribute_id(&self) -> i32 {

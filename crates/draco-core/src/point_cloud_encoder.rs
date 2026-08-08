@@ -636,20 +636,22 @@ impl PointCloudEncoder {
                         if bitstream_version != 0 && bitstream_version < 0x0102 {
                             continue;
                         }
-                        if !att_encoder.encode_data_needed_by_portable_transform(out_buffer) {
-                            return Err(DracoError::general(format!(
-                                "Failed to encode normal attribute transform data {}",
-                                i
-                            )));
-                        }
+                        att_encoder
+                            .encode_data_needed_by_portable_transform(out_buffer)
+                            .map_err(|err| {
+                                DracoError::general(format!(
+                                    "Failed to encode normal attribute transform data {i}: {err}"
+                                ))
+                            })?;
                     }
                 } else if let Some(ref att_encoder) = integer_encoders[i] {
-                    if !att_encoder.encode_data_needed_by_portable_transform(out_buffer) {
-                        return Err(DracoError::general(format!(
-                            "Failed to encode quantization transform data {}",
-                            i
-                        )));
-                    }
+                    att_encoder
+                        .encode_data_needed_by_portable_transform(out_buffer)
+                        .map_err(|err| {
+                            DracoError::general(format!(
+                                "Failed to encode quantization transform data {i}: {err}"
+                            ))
+                        })?;
                 }
             }
 

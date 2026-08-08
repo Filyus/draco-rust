@@ -1201,11 +1201,13 @@ impl MeshEncoder {
                         continue;
                     }
                     if let Some(ref encoder) = normal_encoders[i as usize] {
-                        if !encoder.encode_data_needed_by_portable_transform(out_buffer) {
-                            return Err(DracoError::general(
-                                "Failed to encode normal transform data".to_string(),
-                            ));
-                        }
+                        encoder
+                            .encode_data_needed_by_portable_transform(out_buffer)
+                            .map_err(|err| {
+                                DracoError::general(format!(
+                                    "Failed to encode normal transform data: {err}"
+                                ))
+                            })?;
                     }
                 }
                 2 => {
@@ -1666,11 +1668,13 @@ impl MeshEncoder {
                         continue;
                     }
                     if let Some(ref encoder) = normal_encoders[local_i] {
-                        if !encoder.encode_data_needed_by_portable_transform(out_buffer) {
-                            return Err(DracoError::general(
-                                "Failed to encode normal transform data".to_string(),
-                            ));
-                        }
+                        encoder
+                            .encode_data_needed_by_portable_transform(out_buffer)
+                            .map_err(|err| {
+                                DracoError::general(format!(
+                                    "Failed to encode normal transform data: {err}"
+                                ))
+                            })?;
                     }
                 }
                 2 => {

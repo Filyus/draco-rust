@@ -28,8 +28,8 @@ impl SequentialGenericAttributeDecoder {
         }
     }
 
-    pub fn init(&mut self, decoder: &PointCloudDecoder, attribute_id: i32) -> bool {
-        self.base.init(decoder, attribute_id)
+    pub fn init(&mut self, decoder: &PointCloudDecoder, attribute_id: i32) {
+        self.base.init(decoder, attribute_id);
     }
 
     pub fn decode_values(
@@ -71,7 +71,7 @@ mod tests {
     fn decode_values_rejects_invalid_attribute_id() {
         let mut decoder = SequentialGenericAttributeDecoder::new();
         let point_cloud_decoder = PointCloudDecoder::new();
-        assert!(decoder.init(&point_cloud_decoder, 0));
+        decoder.init(&point_cloud_decoder, 0);
 
         let mut point_cloud = PointCloud::new();
         let mut buffer = DecoderBuffer::new(&[]);

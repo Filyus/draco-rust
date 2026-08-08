@@ -56,9 +56,8 @@ impl<'a, Transform> MeshPredictionSchemeTexCoordsDeprecatedEncoder<'a, Transform
         self.bitstream_version = crate::version::bitstream_version(major, minor);
     }
 
-    pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) -> bool {
+    pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) {
         self.mesh_data = Some(mesh_data.clone());
-        true
     }
 
     fn get_position_for_entry_id(
@@ -410,9 +409,8 @@ impl<'a, Transform> MeshPredictionSchemeTexCoordsDeprecatedDecoder<'a, Transform
         }
     }
 
-    pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) -> bool {
+    pub fn init(&mut self, mesh_data: &MeshPredictionSchemeData<'a>) {
         self.mesh_data = Some(mesh_data.clone());
-        true
     }
 
     fn get_position_for_entry_id(
@@ -837,7 +835,7 @@ mod tests {
     #[test]
     fn deprecated_tex_coords_decodes_orientation_prediction() {
         let mut corner_table = CornerTable::new(1);
-        assert!(corner_table.init(&[[VertexIndex(0), VertexIndex(1), VertexIndex(2)]]));
+        corner_table.init(&[[VertexIndex(0), VertexIndex(1), VertexIndex(2)]]);
         let data_to_corner_map = [1, 2, 0];
         let vertex_to_data_map = [2, 0, 1];
         let mut mesh_data = MeshPredictionSchemeData::new();
@@ -877,7 +875,7 @@ mod tests {
         let mut decoder = MeshPredictionSchemeTexCoordsDeprecatedDecoder::new(
             PredictionSchemeWrapDecodingTransform::<i32>::new(),
         );
-        assert!(decoder.init(&mesh_data));
+        decoder.init(&mesh_data);
         assert!(decoder.set_parent_attribute(&pos).is_ok());
         assert!(decoder.decode_prediction_data(&mut buffer).is_ok());
 
@@ -904,7 +902,7 @@ mod tests {
         use crate::prediction_scheme_wrap::PredictionSchemeWrapEncodingTransform;
 
         let mut corner_table = CornerTable::new(1);
-        assert!(corner_table.init(&[[VertexIndex(0), VertexIndex(1), VertexIndex(2)]]));
+        corner_table.init(&[[VertexIndex(0), VertexIndex(1), VertexIndex(2)]]);
         let data_to_corner_map = [1, 2, 0];
         let vertex_to_data_map = [2, 0, 1];
         let mut mesh_data = MeshPredictionSchemeData::new();
@@ -935,7 +933,7 @@ mod tests {
         let mut encoder = MeshPredictionSchemeTexCoordsDeprecatedEncoder::new(
             PredictionSchemeWrapEncodingTransform::<i32>::new(),
         );
-        assert!(encoder.init(&mesh_data));
+        encoder.init(&mesh_data);
         assert!(encoder.set_parent_attribute(&pos).is_ok());
         let mut corrections = [0; 6];
         assert!(encoder
@@ -947,7 +945,7 @@ mod tests {
         let mut decoder = MeshPredictionSchemeTexCoordsDeprecatedDecoder::new(
             PredictionSchemeWrapDecodingTransform::<i32>::new(),
         );
-        assert!(decoder.init(&mesh_data));
+        decoder.init(&mesh_data);
         assert!(decoder.set_parent_attribute(&pos).is_ok());
         let mut buffer = DecoderBuffer::new(&prediction_data);
         buffer.set_version(2, 2);
