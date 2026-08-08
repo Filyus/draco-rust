@@ -11,7 +11,7 @@ use crate::edgebreaker_connectivity_decoder::EdgebreakerTraversalDecoder;
 use crate::geometry_indices::{CornerIndex, VertexIndex};
 use crate::mesh_edgebreaker_shared::{EdgeFaceName, TopologySplitEventData};
 use crate::rans_bit_decoder::RAnsBitDecoder;
-use crate::status::DracoError;
+use crate::status::{DracoError, Status};
 use crate::symbol_encoding::decode_symbols;
 use crate::symbol_encoding::SymbolEncodingOptions;
 
@@ -107,7 +107,7 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
         num_vertices: usize,
         bitstream_version: u16,
         max_context_symbols: usize,
-    ) -> bool {
+    ) -> Status {
         self.num_vertices = num_vertices;
 
         // Before bitstream 2.2, the valence stream prefixes its own split-symbol
@@ -122,23 +122,33 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
             // read it only to keep the buffer aligned. The caller already folded
             // it into `num_vertices` (max_num_vertices = encoded + split).
             let num_split_symbols = if bitstream_version < 0x0200 {
-                match in_buffer.decode_u32() {
-                    Ok(v) => v as usize,
-                    Err(_) => return false,
-                }
+                in_buffer.decode_u32().map_err(|_| {
+                    DracoError::buffer("Buffer ran out reading the legacy split-symbol count")
+                })? as usize
             } else {
-                match in_buffer.decode_varint() {
-                    Ok(v) => v as usize,
-                    Err(_) => return false,
-                }
+                in_buffer.decode_varint().map_err(|_| {
+                    DracoError::buffer("Buffer ran out reading the legacy split-symbol count")
+                })? as usize
             };
             if num_split_symbols >= self.num_vertices {
-                return false;
+                return Err(DracoError::general(format!(
+                    "Legacy valence stream claims {num_split_symbols} split symbols against {} vertices",
+                    self.num_vertices
+                )));
             }
             // Valence mode byte; only EDGEBREAKER_VALENCE_MODE_2_7 (0) is supported.
             match in_buffer.decode_u8() {
                 Ok(0) => {}
-                _ => return false,
+                Ok(mode) => {
+                    return Err(DracoError::unsupported_feature(format!(
+                        "Valence mode {mode}: only mode 0 (valences 2..7) is defined"
+                    )))
+                }
+                Err(_) => {
+                    return Err(DracoError::buffer(
+                        "Buffer ran out reading the legacy valence mode byte",
+                    ))
+                }
             }
         }
         #[cfg(not(feature = "legacy_bitstream_decode"))]
@@ -164,13 +174,19 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
         let mut total_context_symbols = 0usize;
         for i in 0..num_unique_valences {
             // Read varint count
-            let num_symbols = match in_buffer.decode_varint() {
-                Ok(v) => v as usize,
-                Err(_) => return false,
-            };
+            let num_symbols = in_buffer.decode_varint().map_err(|_| {
+                DracoError::buffer(format!(
+                    "Buffer ran out reading the symbol count for valence context {i}"
+                ))
+            })? as usize;
             total_context_symbols = match total_context_symbols.checked_add(num_symbols) {
                 Some(v) if v <= max_context_symbols => v,
-                _ => return false,
+                _ => {
+                    return Err(DracoError::general(format!(
+                        "Valence contexts claim more than {max_context_symbols} symbols in total, \
+                         which is more than the connectivity has"
+                    )))
+                }
             };
             if num_symbols > 0 {
                 // Not resized to `num_symbols` first: that count is the
@@ -178,25 +194,22 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
                 // are decoded, so a claim the stream cannot meet costs one
                 // small reservation rather than the whole context.
                 let options = SymbolEncodingOptions::default();
-                // The traversal reports through `bool`, so the reason stops
-                // here rather than reaching the decoder; the log is what is
-                // left of it.
-                if let Err(err) = decode_symbols(
+                decode_symbols(
                     num_symbols,
                     1,
                     &options,
                     in_buffer,
                     &mut self.context_symbols[i],
-                ) {
-                    debug_log!("Failed to decode valence context {i}: {err}");
-                    return false;
-                }
+                )
+                .map_err(|err| {
+                    DracoError::general(format!("Valence context {i} of 6: {err}"))
+                })?;
                 // Set counter to read from back
                 self.context_counters[i] = num_symbols as i32;
             }
         }
 
-        true
+        Ok(())
     }
 
     fn checked_add_corner_vertex_valence(
@@ -420,7 +433,10 @@ mod legacy_tests {
             None,
         );
 
-        assert!(!decoder.init_from_buffer(&mut buffer, 4, 0x0101, 4));
+        let err = decoder
+            .init_from_buffer(&mut buffer, 4, 0x0101, 4)
+            .unwrap_err();
+        assert!(err.message().contains('4'), "{err}");
     }
 
     #[test]
@@ -439,7 +455,11 @@ mod legacy_tests {
             None,
         );
 
-        assert!(!decoder.init_from_buffer(&mut buffer, 4, 0x0101, 4));
+        // Both numbers appear: which count outran which is the refusal.
+        let err = decoder
+            .init_from_buffer(&mut buffer, 4, 0x0101, 4)
+            .unwrap_err();
+        assert!(err.message().contains("4 split symbols"), "{err}");
     }
 }
 

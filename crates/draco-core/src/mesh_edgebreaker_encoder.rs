@@ -1537,7 +1537,7 @@ impl MeshEdgebreakerEncoder {
                 out_buffer.encode_u8(0);
 
                 // Contexts.
-                valence_encoder.done(out_buffer, 7);
+                valence_encoder.done(out_buffer, 7)?;
                 return Ok(());
             }
 
@@ -1561,7 +1561,7 @@ impl MeshEdgebreakerEncoder {
             // C++ implementation passes nullptr for options in Done(), which uses the
             // default compression level of 7 (kDefaultSymbolCodingCompressionLevel).
             let compression_level = 7;
-            valence_encoder.done(out_buffer, compression_level);
+            valence_encoder.done(out_buffer, compression_level)?;
             return Ok(());
         }
 

@@ -8,6 +8,7 @@ use crate::corner_table::CornerTable;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::geometry_indices::{CornerIndex, VertexIndex, INVALID_CORNER_INDEX};
 use crate::mesh_edgebreaker_shared::EdgebreakerSymbol;
+use crate::status::{DracoError, Status};
 
 pub struct MeshEdgebreakerTraversalValenceEncoder {
     vertex_valences: Vec<i32>,
@@ -174,7 +175,7 @@ impl MeshEdgebreakerTraversalValenceEncoder {
         self.num_symbols
     }
 
-    pub fn done(&self, out_buffer: &mut EncoderBuffer, compression_level: i32) {
+    pub fn done(&self, out_buffer: &mut EncoderBuffer, compression_level: i32) -> Status {
         // Store the contexts.
         for symbols in &self.context_symbols {
             out_buffer.encode_varint(symbols.len() as u64);
@@ -188,13 +189,12 @@ impl MeshEdgebreakerTraversalValenceEncoder {
                 // We'll use a default compression level (e.g. 7) or pass it in.
                 // Let's assume we can change signature of done later if needed.
                 let options = crate::symbol_encoding::SymbolEncodingOptions { compression_level };
-                // `done` reports nothing, so a failure here can only be logged.
-                if let Err(err) =
-                    crate::symbol_encoding::encode_symbols(symbols, 1, &options, out_buffer)
-                {
-                    debug_log!("Error encoding valence symbols: {err}");
-                }
+                crate::symbol_encoding::encode_symbols(symbols, 1, &options, out_buffer)
+                    .map_err(|err| {
+                        DracoError::general(format!("Failed to encode valence symbols: {err}"))
+                    })?;
             }
         }
+        Ok(())
     }
 }
