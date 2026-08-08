@@ -13,6 +13,7 @@ use crate::encoder_buffer::EncoderBuffer;
 use crate::encoder_options::EncoderOptions;
 use crate::geometry_indices::PointIndex;
 use crate::point_cloud::PointCloud;
+use crate::status::{DracoError, Status};
 use crate::prediction_scheme::EntryToPointIdMap;
 
 pub struct KdTreeAttributesEncoder {
@@ -42,7 +43,7 @@ impl KdTreeAttributesEncoder {
         &self,
         point_cloud: &PointCloud,
         out_buffer: &mut EncoderBuffer,
-    ) -> bool {
+    ) -> Status {
         // Encode number of attributes
         out_buffer.encode_varint(self.attribute_ids.len() as u64);
 
@@ -55,7 +56,7 @@ impl KdTreeAttributesEncoder {
             out_buffer.encode_u8(if att.normalized() { 1 } else { 0 });
             out_buffer.encode_varint(att.unique_id() as u64);
         }
-        true
+        Ok(())
     }
 
     pub fn attribute_ids(&self) -> &[i32] {
@@ -66,7 +67,7 @@ impl KdTreeAttributesEncoder {
         &mut self,
         point_cloud: &PointCloud,
         options: &EncoderOptions,
-    ) -> bool {
+    ) -> Status {
         self.attribute_quantization_transforms.clear();
         self.quantized_portable_attributes.clear();
         self.min_signed_values.clear();
@@ -88,15 +89,12 @@ impl KdTreeAttributesEncoder {
                     let quantization_bits =
                         options.get_attribute_int(att_id, "quantization_bits", -1);
                     if quantization_bits < 1 {
-                        return false;
+                        return Err(DracoError::invalid_parameter(format!(
+                            "Attribute {att_id} is float and needs quantization_bits,                              which is {quantization_bits}"
+                        )));
                     }
                     let mut transform = AttributeQuantizationTransform::new();
-                    if transform
-                        .compute_parameters(att, quantization_bits)
-                        .is_err()
-                    {
-                        return false;
-                    }
+                    transform.compute_parameters(att, quantization_bits)?;
 
                     let mut portable_att = crate::geometry_attribute::PointAttribute::default();
                     portable_att.init(
@@ -108,16 +106,11 @@ impl KdTreeAttributesEncoder {
                     );
                     portable_att.set_identity_mapping();
 
-                    if transform
-                        .transform_attribute(
-                            att,
-                            EntryToPointIdMap::from_point_indices(&point_ids),
-                            &mut portable_att,
-                        )
-                        .is_err()
-                    {
-                        return false;
-                    }
+                    transform.transform_attribute(
+                        att,
+                        EntryToPointIdMap::from_point_indices(&point_ids),
+                        &mut portable_att,
+                    )?;
 
                     self.attribute_quantization_transforms.push(transform);
                     self.quantized_portable_attributes.push(portable_att);
@@ -148,7 +141,7 @@ impl KdTreeAttributesEncoder {
             }
         }
 
-        true
+        Ok(())
     }
 
     pub fn encode_attributes(
@@ -156,7 +149,7 @@ impl KdTreeAttributesEncoder {
         point_cloud: &PointCloud,
         options: &EncoderOptions,
         out_buffer: &mut EncoderBuffer,
-    ) -> bool {
+    ) -> Status {
         // Draco C++: compression_level = min(10 - GetSpeed(), 6), and GetSpeed
         // is the larger of the encoding and decoding speeds.
         let speed = options.get_speed();
@@ -210,8 +203,10 @@ impl KdTreeAttributesEncoder {
                     num_processed_quantized_attributes += 1;
                     pa
                 }
-                _ => {
-                    return false;
+                other => {
+                    return Err(DracoError::unsupported_feature(format!(
+                        "The KD-tree coder does not carry {other:?} attributes"
+                    )));
                 }
             };
 
@@ -274,12 +269,17 @@ impl KdTreeAttributesEncoder {
                         }
                     }
                 }
-                _ => {
-                    // Should only happen for Float32 which gets converted to Uint32 portable.
-                    if use_quantized {
-                        return false;
-                    }
-                    return false;
+                other => {
+                    // Float32 reaches here only as its Uint32 portable copy, so
+                    // this arm means the portable conversion did not happen.
+                    return Err(DracoError::general(format!(
+                        "Attribute {att_id} reached the KD-tree coder as {other:?}                         {}",
+                        if use_quantized {
+                            ", with a portable copy that is not Uint32"
+                        } else {
+                            ""
+                        }
+                    )));
                 }
             }
 
@@ -299,24 +299,23 @@ impl KdTreeAttributesEncoder {
 
         let mut encoder =
             DynamicIntegerPointsKdTreeEncoder::new(compression_level, self.num_components);
-        encoder.encode_points(&mut point_vector, num_bits, out_buffer)
+        encoder.encode_points(&mut point_vector, num_bits, out_buffer);
+        Ok(())
     }
 
     pub fn encode_data_needed_by_portable_transforms(
         &self,
         out_buffer: &mut EncoderBuffer,
-    ) -> bool {
+    ) -> Status {
         for t in &self.attribute_quantization_transforms {
-            if t.encode_parameters(out_buffer).is_err() {
-                return false;
-            }
+            t.encode_parameters(out_buffer)?;
         }
 
         for &minv in &self.min_signed_values {
             out_buffer.encode_varint_signed_i32(minv);
         }
 
-        true
+        Ok(())
     }
 }
 

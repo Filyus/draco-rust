@@ -310,16 +310,14 @@ impl PointCloudDecoder {
             // KD-tree encoding.
             for _ in 0..num_attributes_decoders {
                 let mut att_decoder = KdTreeAttributesDecoder::new(0);
-                if !att_decoder.decode_attributes_decoder_data(pc, buffer) {
-                    return Err(DracoError::general(
-                        "Failed to decode attribute metadata".to_string(),
-                    ));
-                }
-                if !att_decoder.decode_attributes(pc, buffer) {
-                    return Err(DracoError::general(
-                        "Failed to decode attributes".to_string(),
-                    ));
-                }
+                att_decoder
+                    .decode_attributes_decoder_data(pc, buffer)
+                    .map_err(|err| {
+                        DracoError::general(format!("Failed to decode attribute metadata: {err}"))
+                    })?;
+                att_decoder.decode_attributes(pc, buffer).map_err(|err| {
+                    DracoError::general(format!("Failed to decode attributes: {err}"))
+                })?;
             }
         } else {
             // Sequential encoding.

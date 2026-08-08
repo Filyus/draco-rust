@@ -452,11 +452,9 @@ impl PointCloudEncoder {
             out_buffer.encode_u8(1); // We have only 1 encoder
 
             // Init (Transform attributes to portable format)
-            if !att_encoder.transform_attributes_to_portable_format(pc, &self.options) {
-                return Err(DracoError::general(
-                    "Failed to transform attributes".to_string(),
-                ));
-            }
+            att_encoder
+                .transform_attributes_to_portable_format(pc, &self.options)
+                .map_err(|err| DracoError::general(format!("Failed to transform attributes: {err}")))?;
 
             // Note: KD-tree encoding does NOT write an encoder type identifier byte.
             // This is different from sequential encoding where each attribute has a decoder type.
@@ -464,25 +462,19 @@ impl PointCloudEncoder {
             // in the header is 1 (KD-tree).
 
             // Encode Attributes Encoder Data (Metadata)
-            if !att_encoder.encode_attributes_encoder_data(pc, out_buffer) {
-                return Err(DracoError::general(
-                    "Failed to encode attribute metadata".to_string(),
-                ));
-            }
+            att_encoder
+                .encode_attributes_encoder_data(pc, out_buffer)
+                .map_err(|err| DracoError::general(format!("Failed to encode attribute metadata: {err}")))?;
 
             // Encode Attributes (Portable Data)
-            if !att_encoder.encode_attributes(pc, &self.options, out_buffer) {
-                return Err(DracoError::general(
-                    "Failed to encode attributes".to_string(),
-                ));
-            }
+            att_encoder
+                .encode_attributes(pc, &self.options, out_buffer)
+                .map_err(|err| DracoError::general(format!("Failed to encode attributes: {err}")))?;
 
             // Encode Attributes Transform Data
-            if !att_encoder.encode_data_needed_by_portable_transforms(out_buffer) {
-                return Err(DracoError::general(
-                    "Failed to encode attribute transform data".to_string(),
-                ));
-            }
+            att_encoder
+                .encode_data_needed_by_portable_transforms(out_buffer)
+                .map_err(|err| DracoError::general(format!("Failed to encode attribute transform data: {err}")))?;
         } else {
             // Sequential Encoding (Draco v1.3)
             //

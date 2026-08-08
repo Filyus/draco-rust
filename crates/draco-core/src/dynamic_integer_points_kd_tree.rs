@@ -8,6 +8,8 @@
 #[cfg(feature = "decoder")]
 use crate::decoder_buffer::DecoderBuffer;
 #[cfg(feature = "decoder")]
+use crate::status::DracoError;
+#[cfg(feature = "decoder")]
 use crate::direct_bit_decoder::DirectBitDecoder;
 #[cfg(feature = "encoder")]
 use crate::direct_bit_encoder::DirectBitEncoder;
@@ -213,12 +215,12 @@ impl DynamicIntegerPointsKdTreeEncoder {
         points: &mut PointDVector,
         bit_length: u32,
         buffer: &mut EncoderBuffer,
-    ) -> bool {
+    ) {
         self.bit_length = bit_length;
         buffer.encode_u32(self.bit_length);
         buffer.encode_u32(points.num_points() as u32);
         if points.num_points() == 0 {
-            return true;
+            return;
         }
 
         self.numbers_encoder.start_encoding();
@@ -232,7 +234,6 @@ impl DynamicIntegerPointsKdTreeEncoder {
         self.remaining_bits_encoder.end_encoding(buffer);
         self.axis_encoder.end_encoding(buffer);
         self.half_encoder.end_encoding(buffer);
-        true
     }
 
     fn get_and_encode_axis(
@@ -491,50 +492,67 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
         &mut self,
         buffer: &mut DecoderBuffer<'a>,
         oit_max_points: u32,
-    ) -> Option<Vec<u32>> {
-        self.bit_length = buffer.decode_u32().ok()?;
+    ) -> Result<Vec<u32>, DracoError> {
+        self.bit_length = buffer
+            .decode_u32()
+            .map_err(|_| DracoError::buffer("Buffer ran out reading the KD-tree bit length"))?;
         if self.bit_length > 32 {
-            return None;
+            return Err(DracoError::general(format!(
+                "KD-tree bit length {} above the 32 a u32 coordinate holds",
+                self.bit_length
+            )));
         }
-        self.num_points = buffer.decode_u32().ok()?;
+        self.num_points = buffer
+            .decode_u32()
+            .map_err(|_| DracoError::buffer("Buffer ran out reading the KD-tree point count"))?;
         if self.num_points == 0 {
             self.num_decoded_points = 0;
-            return Some(Vec::new());
+            return Ok(Vec::new());
         }
         if self.num_points > oit_max_points {
-            return None;
+            return Err(DracoError::general(format!(
+                "KD-tree declares {} points against the {oit_max_points} the header allows",
+                self.num_points
+            )));
         }
 
         self.num_decoded_points = 0;
 
-        if !self.numbers_decoder.start_decoding(buffer) {
-            return None;
-        }
-        if !self.remaining_bits_decoder.start_decoding(buffer) {
-            return None;
-        }
-        if !self.axis_decoder.start_decoding(buffer) {
-            return None;
-        }
-        if !self.half_decoder.start_decoding(buffer) {
-            return None;
+        for (name, started) in [
+            ("numbers", self.numbers_decoder.start_decoding(buffer)),
+            (
+                "remaining bits",
+                self.remaining_bits_decoder.start_decoding(buffer),
+            ),
+            ("axis", self.axis_decoder.start_decoding(buffer)),
+            ("half", self.half_decoder.start_decoding(buffer)),
+        ] {
+            if !started {
+                return Err(DracoError::general(format!(
+                    "Failed to start the KD-tree's {name} decoder"
+                )));
+            }
         }
 
-        let out_len = (self.num_points as usize).checked_mul(self.dimension as usize)?;
+        let out_len = (self.num_points as usize)
+            .checked_mul(self.dimension as usize)
+            .ok_or_else(|| {
+                DracoError::general("KD-tree point count times dimension overflows a usize")
+            })?;
         let mut out: Vec<u32> = Vec::new();
         // Reserved against the input, not against the count the stream declares:
         // `decode_internal` appends, so everything past this arrives on points
         // that were actually decoded. Eight values per remaining byte is the
         // same allowance the symbol decoders take, and it leaves a header
         // naming millions of points in a few kilobytes reserving kilobytes.
-        if out
-            .try_reserve(out_len.min(buffer.remaining_size().saturating_mul(8)))
-            .is_err()
-        {
-            return None;
-        }
+        let reserve = out_len.min(buffer.remaining_size().saturating_mul(8));
+        out.try_reserve(reserve)
+            .map_err(|_| DracoError::allocation_exceeds_input(reserve * 4, buffer.size()))?;
         if !self.decode_internal(self.num_points, &mut out) {
-            return None;
+            return Err(DracoError::general(format!(
+                "KD-tree traversal failed after {} of {} points",
+                self.num_decoded_points, self.num_points
+            )));
         }
 
         self.numbers_decoder.end_decoding();
@@ -542,7 +560,7 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
         self.axis_decoder.end_decoding();
         self.half_decoder.end_decoding();
 
-        Some(out)
+        Ok(out)
     }
 
     fn get_axis(
