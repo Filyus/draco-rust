@@ -50,13 +50,32 @@
 //!   disabled". Turning every feature on deletes them. There is no feature set
 //!   that contains every message: the disabled-path text and the enabled-path
 //!   text exclude each other by construction.
-//! - **Proved unreachable.** The rest. `"rANS precision {n} bits has no
-//!   encoder"` sits on a match arm whose input is clamped to 1..=18 before it
-//!   arrives, and `"…overflows a usize"` on a `checked_mul` LLVM can show
-//!   cannot overflow. This is the interesting residue: a refusal that cannot be
-//!   produced is either a guard whose premise moved or one that was never
-//!   needed. Reading the list found `encode_raw_symbols_typed`, dead since
-//!   before this release and carrying a message of its own.
+//! - **Never monomorphised.** `Metadata::set_i32_array` takes
+//!   `name: impl Into<String>` and has no caller in the workspace, so no
+//!   instance of it is ever generated and `-C link-dead-code` cannot retain
+//!   what was never emitted. Absent for a reason that has nothing to do with
+//!   reachability.
+//! - **Proved unreachable.** The residue, and the part worth reading. Three
+//!   things turned up in it, and only one was a mistake:
+//!
+//!   `"Invalid sub-metadata count"` repeated a check `decode_bounded_count`
+//!   had already made on the same buffer state, so it could not fire. That
+//!   one was deleted.
+//!
+//!   `"Bit stream size too large"` guards `usize::try_from(u64)`, which is
+//!   infallible where usize is 64 bits and fallible on the wasm32 target this
+//!   crate ships to the web. It is dead *here* and load-bearing there, which
+//!   is the reason this list is read rather than acted on: "the compiler
+//!   dropped it" is not "delete it".
+//!
+//!   `"rANS precision {n} bits has no encoder"` sits on a match arm whose
+//!   input was clamped to 1..=18 a few lines earlier, and the `checked_mul`
+//!   overflow messages sit where the bound is already established. Those are
+//!   guards kept against a premise moving, and they cost nothing in the
+//!   binary precisely because the premise currently holds.
+//!
+//!   Reading the list also found `encode_raw_symbols_typed`, dead since before
+//!   this release and carrying a message of its own.
 //!
 //! `RUSTFLAGS="-C link-dead-code"` gives the whole-crate view -- 31 absent
 //! instead of 145 -- at the cost of a denominator stuffed with code nobody

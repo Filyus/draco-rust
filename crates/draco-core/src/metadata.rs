@@ -239,12 +239,12 @@ impl Metadata {
             metadata.entries.insert(name, value);
         }
 
+        // `decode_bounded_count` already refuses a count above the remaining
+        // size, and nothing is read between there and here, so the check that
+        // used to repeat it could not fire. The compiler had worked that out
+        // and dropped its message from the binary; this removes the source it
+        // was dropped from.
         let num_sub_metadata = decode_bounded_count(buffer, "sub-metadata count")?;
-        if num_sub_metadata > buffer.remaining_size() {
-            return Err(DracoError::general(
-                "Invalid sub-metadata count".to_string(),
-            ));
-        }
         for _ in 0..num_sub_metadata {
             let name = decode_name(buffer)?;
             if metadata.sub_metadata.contains_key(&name) {
