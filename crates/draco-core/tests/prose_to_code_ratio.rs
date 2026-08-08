@@ -28,12 +28,39 @@
 //!    is the one chosen because it encodes *and* decodes: a decode-only
 //!    example leaves every encoder message unlinked, and the ratio would then
 //!    measure which example was picked as much as anything else. It is built
-//!    `--all-features` for the same reason -- not because the extra features
-//!    carry messages (measured: they carry none, and prose comes out
-//!    byte-identical either way) but so that the number cannot move when the
-//!    default set is next edited.
+//!    `--all-features` so the number cannot move when the default set is next
+//!    edited -- not because the extra features carry messages. They carry
+//!    none, and they delete a dozen: see below.
 //! 3. The artifact's `.text` is read from its own section table — PE on
 //!    Windows, ELF elsewhere — and each fragment is searched for in the file.
+//!
+//! ## What the number is a share *of*
+//!
+//! Of the machine code in one linked artifact, which is narrower than "the
+//! crate". About a quarter of the crate's message fragments are absent from it,
+//! and the report names them because the reason matters:
+//!
+//! - **Not linked** (roughly 114 of 145 when this was written). The example
+//!   encodes and decodes a mesh, so the KD-tree encoder, the point-cloud
+//!   encoder and the normal encoder are never called and the linker never
+//!   pulls them in. Their messages do not ship *in this program*, which is the
+//!   honest answer for this program and the wrong answer for the crate.
+//! - **Compiled out by `--all-features`.** A dozen messages live under
+//!   `#[cfg(not(feature = …))]` and say so — "Point cloud decode support is
+//!   disabled". Turning every feature on deletes them. There is no feature set
+//!   that contains every message: the disabled-path text and the enabled-path
+//!   text exclude each other by construction.
+//! - **Proved unreachable.** The rest. `"rANS precision {n} bits has no
+//!   encoder"` sits on a match arm whose input is clamped to 1..=18 before it
+//!   arrives, and `"…overflows a usize"` on a `checked_mul` LLVM can show
+//!   cannot overflow. This is the interesting residue: a refusal that cannot be
+//!   produced is either a guard whose premise moved or one that was never
+//!   needed. Reading the list found `encode_raw_symbols_typed`, dead since
+//!   before this release and carrying a message of its own.
+//!
+//! `RUSTFLAGS="-C link-dead-code"` gives the whole-crate view -- 31 absent
+//! instead of 145 -- at the cost of a denominator stuffed with code nobody
+//! ships, so it is a diagnostic to run by hand rather than the measurement.
 //!
 //! ## What it cannot do
 //!

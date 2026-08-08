@@ -364,29 +364,6 @@ pub fn encode_raw_symbols_no_scheme(symbols: &[u32], max_value: u32, target_buff
 */
 
 #[cfg(feature = "encoder")]
-#[allow(dead_code)]
-fn encode_raw_symbols_typed<const PRECISION_BITS: u32>(
-    symbols: &[u32],
-    frequencies: &[u64],
-    num_unique_symbols: usize,
-    target_buffer: &mut EncoderBuffer,
-) -> Status {
-    let mut encoder = RAnsSymbolEncoder::<PRECISION_BITS>::new();
-    if !encoder.create(frequencies, num_unique_symbols, target_buffer) {
-        return Err(DracoError::general(
-            "Failed to build the rANS frequency table for the raw symbols",
-        ));
-    }
-
-    encoder.start_encoding(target_buffer);
-    for &sym in symbols.iter().rev() {
-        encoder.encode_symbol(sym);
-    }
-    encoder.end_encoding(target_buffer);
-    Ok(())
-}
-
-#[cfg(feature = "encoder")]
 fn encode_tagged_symbols(
     symbols: &[u32],
     num_components: usize,
