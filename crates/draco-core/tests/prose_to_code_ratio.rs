@@ -27,7 +27,11 @@
 //!    costs about fifteen seconds; after that it is cached. `debug_cube_v11`
 //!    is the one chosen because it encodes *and* decodes: a decode-only
 //!    example leaves every encoder message unlinked, and the ratio would then
-//!    measure which example was picked as much as anything else.
+//!    measure which example was picked as much as anything else. It is built
+//!    `--all-features` for the same reason -- not because the extra features
+//!    carry messages (measured: they carry none, and prose comes out
+//!    byte-identical either way) but so that the number cannot move when the
+//!    default set is next edited.
 //! 3. The artifact's `.text` is read from its own section table — PE on
 //!    Windows, ELF elsewhere — and each fragment is searched for in the file.
 //!
@@ -53,7 +57,7 @@ const MIN_FRAGMENT: usize = 8;
 
 /// Measured at the 2.0.0 release; printed on every run, so moving the ceiling
 /// is a decision made against a number.
-const RATIO_AT_2_0_0: f64 = 0.036_77;
+const RATIO_AT_2_0_0: f64 = 0.036_31;
 
 /// Prose may reach this share of `.text` before the build fails. Wide on
 /// purpose: converting another path to `Status` should not need this file
@@ -541,6 +545,7 @@ fn build_artifact() -> PathBuf {
         .args([
             "build",
             "--release",
+            "--all-features",
             "-p",
             "draco-core",
             "--example",
