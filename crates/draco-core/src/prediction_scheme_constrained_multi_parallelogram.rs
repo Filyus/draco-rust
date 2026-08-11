@@ -1164,14 +1164,23 @@ where
                             ));
                         }
 
-                        for k in 0..num_components {
-                            let p = DataType::compute_parallelogram_prediction(
-                                out_data[v_next_off + k],
-                                out_data[v_prev_off + k],
-                                out_data[v_opp_off + k],
-                            );
+                        // Slice each neighbour region to exactly num_components so the
+                        // inner loop is bounds-check-free: the guard above proves the
+                        // subslices are in range, and zipping equal-length slices indexes
+                        // via iterators rather than `[k]`. `out_data` is only read here,
+                        // so the three shared immutable reborrows coexist.
+                        let v_opp = &out_data[v_opp_off..v_opp_off + num_components];
+                        let v_next = &out_data[v_next_off..v_next_off + num_components];
+                        let v_prev = &out_data[v_prev_off..v_prev_off + num_components];
+                        for (((pv, &n), &pr), &op) in multi_pred_vals
+                            .iter_mut()
+                            .zip(v_next)
+                            .zip(v_prev)
+                            .zip(v_opp)
+                        {
+                            let p = DataType::compute_parallelogram_prediction(n, pr, op);
                             // Use add_as_unsigned for C++ compatible accumulation
-                            multi_pred_vals[k] = DataType::add_as_unsigned(multi_pred_vals[k], p);
+                            *pv = DataType::add_as_unsigned(*pv, p);
                         }
                         num_used_parallelograms += 1;
                     }
