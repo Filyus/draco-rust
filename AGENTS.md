@@ -100,6 +100,9 @@ cargo test --manifest-path web/Cargo.toml --workspace
 cargo package --manifest-path crates/draco-core/Cargo.toml
 ```
 
+[`TESTING.md`](TESTING.md) maps the parity/compatibility test targets, and
+[`PERFORMANCE.md`](PERFORMANCE.md) the benchmark and profiling targets.
+
 `draco-io` depends on a published `draco-core`, and `draco-gltf` on published
 `draco-core` + `draco-io`, so `cargo package`/`cargo publish` for a dependent
 crate can fail before its dependencies are published at the pinned versions.

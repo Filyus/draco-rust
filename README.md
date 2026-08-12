@@ -136,6 +136,17 @@ measured against; `--app` is the converter profile, which the front-end needs.
 The [web workspace guide](web/README.md) covers the module features, the
 TypeScript build, and the Node and Playwright suites.
 
+## Performance
+
+The crates build like any Rust library (`-Copt-level=3`) and carry no runtime
+knobs. Decode and encode are CPU-bound and branchy.
+
+- [`PERFORMANCE.md`](PERFORMANCE.md) — how to benchmark and profile
+  decode/encode, the Rust-vs-C++ speed snapshot, and per-stage breakdowns.
+- [`PGO.md`](PGO.md) — profile-guided optimisation: how it relates to a source
+  library, the two-pass build, training-corpus guidance, expected benefit, and
+  the WASM-target tradeoff.
+
 ## Repository layout
 
 | Path | Contents |
