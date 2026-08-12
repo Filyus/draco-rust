@@ -91,13 +91,21 @@ pub(crate) fn compute_parallelogram_prediction<DataType: ParallelogramDataType>(
         let v_next_off = (vert_next as usize) * num_components;
         let v_prev_off = (vert_prev as usize) * num_components;
 
-        for c in 0..num_components {
-            // Parallelogram: Prediction = (Next + Prev) - Opp
-            out_prediction[c] = DataType::compute_parallelogram_prediction(
-                in_data[v_next_off + c],
-                in_data[v_prev_off + c],
-                in_data[v_opp_off + c],
-            );
+        // Slice each neighbour region to exactly num_components so the inner
+        // loop is bounds-check-free: the guard above (vert_* < data_entry_id)
+        // proves v_*_off + num_components <= data_entry_id * num_components is
+        // within in_data, and zipping equal-length slices indexes via iterators
+        // rather than `[c]`. Parallelogram: Prediction = (Next + Prev) - Opp.
+        let v_opp = &in_data[v_opp_off..v_opp_off + num_components];
+        let v_next = &in_data[v_next_off..v_next_off + num_components];
+        let v_prev = &in_data[v_prev_off..v_prev_off + num_components];
+        for (((o, &n), &pr), &op) in out_prediction
+            .iter_mut()
+            .zip(v_next)
+            .zip(v_prev)
+            .zip(v_opp)
+        {
+            *o = DataType::compute_parallelogram_prediction(n, pr, op);
         }
 
         #[cfg(feature = "debug_logs")]
