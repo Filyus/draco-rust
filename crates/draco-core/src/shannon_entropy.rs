@@ -41,6 +41,14 @@ pub struct ShannonEntropyTracker {
     /// Frequencies of symbols at or above [`MAX_DENSE_SYMBOL`], which the dense
     /// table would have to be gigabytes to hold.
     sparse_frequencies: std::collections::HashMap<u32, i32>,
+    /// Memoised `f * log2(f)` keyed by integer frequency, filled lazily. The
+    /// tracker recomputes this for the old and new frequency of every symbol on
+    /// every `peek`/`push`, and the encoder peeks each candidate prediction
+    /// config, so the same small frequencies recur thousands of times. The
+    /// cached value is the exact f64 -- not an approximation -- so every entropy
+    /// estimate stays bit-for-bit what an uncached run would produce; only the
+    /// recomputation is skipped.
+    entropy_norm_cache: Vec<f64>,
 }
 
 impl Default for ShannonEntropyTracker {
@@ -55,7 +63,27 @@ impl ShannonEntropyTracker {
             entropy_data: EntropyData::default(),
             frequencies: Vec::new(),
             sparse_frequencies: std::collections::HashMap::new(),
+            entropy_norm_cache: Vec::new(),
         }
+    }
+
+    /// `f * log2(f)` for a non-negative integer frequency, memoised in
+    /// [`Self::entropy_norm_cache`]. Returns 0.0 for `f < 2` (matching
+    /// `1 * log2(1) == 0`; `f == 0` is unused since the caller guards it).
+    fn f_times_log2_f(&mut self, f: i32) -> f64 {
+        if f < 2 {
+            return 0.0;
+        }
+        let i = f as usize;
+        if i >= self.entropy_norm_cache.len() {
+            let old_len = self.entropy_norm_cache.len();
+            self.entropy_norm_cache.resize(i + 1, 0.0);
+            for j in old_len..=i {
+                let jf = j as f64;
+                self.entropy_norm_cache[j] = jf * jf.log2();
+            }
+        }
+        self.entropy_norm_cache[i]
     }
 
     pub fn push(&mut self, symbols: &[u32]) -> EntropyData {
@@ -101,7 +129,7 @@ impl ShannonEntropyTracker {
 
             let mut old_symbol_entropy_norm = 0.0;
             if frequency > 1 {
-                old_symbol_entropy_norm = (frequency as f64) * (frequency as f64).log2();
+                old_symbol_entropy_norm = self.f_times_log2_f(frequency);
             } else if frequency == 0 {
                 ret_data.num_unique_symbols += 1;
                 if symbol as i32 > ret_data.max_symbol {
@@ -117,7 +145,7 @@ impl ShannonEntropyTracker {
             } else if index < self.frequencies.len() {
                 self.frequencies[index] = frequency;
             }
-            let new_symbol_entropy_norm = (frequency as f64) * (frequency as f64).log2();
+            let new_symbol_entropy_norm = self.f_times_log2_f(frequency);
 
             ret_data.entropy_norm += new_symbol_entropy_norm - old_symbol_entropy_norm;
         }
