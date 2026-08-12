@@ -97,149 +97,220 @@ impl<'a> MeshPredictionSchemeGeometricNormalDecoder<'a> {
             && self.entry_to_point_id_map.is_some()
     }
 
-    fn get_position_for_corner(&self, corner_id: CornerIndex) -> [i32; 3] {
+    /// The position lookup the predictor runs on, resolved from this decoder's
+    /// own state. Only the tests reach for it this way; the decode pass builds
+    /// the same lookup once and keeps it.
+    #[cfg(test)]
+    fn corner_positions(&self) -> Option<CornerPositions<'_>> {
+        let mesh_data = self.mesh_data.as_ref()?;
+        Some(CornerPositions::new(
+            mesh_data.corner_table()?,
+            mesh_data.vertex_to_data_map()?,
+            self.entry_to_point_id_map?,
+            self.pos_attribute?,
+        ))
+    }
+}
+
+/// Resolves a vertex to its position, once, with no cache.
+///
+/// The corner table used for prediction may be seam-adjusted, which can
+/// introduce new vertex ids that don't correspond to original `PointIndex`.
+/// `vertex_to_data_map` + `entry_to_point_id_map` resolve back to an original
+/// point id. Any break in that chain means "no position", which the callers
+/// treat as the origin — the same answer Draco's C++ arrives at.
+#[cfg(feature = "decoder")]
+fn position_for_vertex(
+    vertex_to_data_map: &[i32],
+    entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'_>,
+    pos_attribute: &PointAttribute,
+    v: crate::geometry_indices::VertexIndex,
+) -> [i32; 3] {
+    let data_id = *vertex_to_data_map.get(v.0 as usize).unwrap_or(&-1);
+    if data_id < 0 {
+        return [0, 0, 0];
+    }
+    let Some(point_id) = entry_to_point_id_map.get(data_id as usize) else {
+        return [0, 0, 0];
+    };
+    let pos_val_id = pos_attribute.mapped_index(PointIndex(point_id));
+    if pos_val_id == INVALID_ATTRIBUTE_VALUE_INDEX {
+        return [0, 0, 0];
+    }
+
+    let mut pos = [0i64; 3];
+    if !read_vector3_as_i64(pos_attribute, pos_val_id.0 as usize, &mut pos) {
+        return [0, 0, 0];
+    }
+
+    let clamp_i32 = |x: i64| -> i32 {
+        if x > i32::MAX as i64 {
+            i32::MAX
+        } else if x < i32::MIN as i64 {
+            i32::MIN
+        } else {
+            x as i32
+        }
+    };
+    [clamp_i32(pos[0]), clamp_i32(pos[1]), clamp_i32(pos[2])]
+}
+
+/// The position lookup above, memoised per vertex.
+///
+/// The predictor walks every corner around a vertex and reads both neighbours'
+/// positions, so a given vertex's position is asked for once per incident
+/// corner — six times over on a regular mesh, and again for each of its
+/// neighbours' own predictions. The lookup is pure in the vertex: the parent
+/// position attribute is fully decoded before the normals that predict from it,
+/// and neither map changes during the pass. So decode each position once.
+#[cfg(feature = "decoder")]
+struct CornerPositions<'b> {
+    corner_table: &'b CornerTable,
+    vertex_to_data_map: &'b [i32],
+    entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'b>,
+    pos_attribute: &'b PointAttribute,
+    /// Indexed by vertex id; `cached[v]` says whether `cache[v]` was filled.
+    cache: Vec<[i32; 3]>,
+    cached: Vec<bool>,
+}
+
+#[cfg(feature = "decoder")]
+impl<'b> CornerPositions<'b> {
+    fn new(
+        corner_table: &'b CornerTable,
+        vertex_to_data_map: &'b [i32],
+        entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'b>,
+        pos_attribute: &'b PointAttribute,
+    ) -> Self {
+        // A vertex outside the map has no position anyway, so sizing the cache
+        // by the map covers every vertex that can produce one.
+        let num_vertices = vertex_to_data_map.len();
+        Self {
+            corner_table,
+            vertex_to_data_map,
+            entry_to_point_id_map,
+            pos_attribute,
+            cache: vec![[0i32; 3]; num_vertices],
+            cached: vec![false; num_vertices],
+        }
+    }
+
+    fn get(&mut self, corner_id: CornerIndex) -> [i32; 3] {
         if corner_id == INVALID_CORNER_INDEX {
             return [0, 0, 0];
         }
-
-        let Some(mesh_data) = self.mesh_data.as_ref() else {
-            return [0, 0, 0];
-        };
-        let Some(corner_table) = mesh_data.corner_table() else {
-            return [0, 0, 0];
-        };
-        let Some(vertex_to_data_map) = mesh_data.vertex_to_data_map() else {
-            return [0, 0, 0];
-        };
-        let Some(pos_attribute) = self.pos_attribute else {
-            return [0, 0, 0];
-        };
-
-        // The corner table used for prediction may be seam-adjusted, which can
-        // introduce new vertex ids that don't correspond to original PointIndex.
-        // Use vertex_to_data_map + entry_to_point_id_map to resolve to an original
-        // point id.
-        let v = corner_table.vertex(corner_id);
-        let data_id = *vertex_to_data_map.get(v.0 as usize).unwrap_or(&-1);
-        if data_id < 0 {
-            return [0, 0, 0];
+        let v = self.corner_table.vertex(corner_id);
+        let vi = v.0 as usize;
+        if vi >= self.cache.len() {
+            // Off the end of the map: the uncached path returns the origin.
+            return position_for_vertex(
+                self.vertex_to_data_map,
+                self.entry_to_point_id_map,
+                self.pos_attribute,
+                v,
+            );
         }
-        let data_id = data_id as usize;
-        let Some(entry_to_point_id_map) = self.entry_to_point_id_map else {
-            return [0, 0, 0];
-        };
-        let Some(point_id) = entry_to_point_id_map.get(data_id) else {
-            return [0, 0, 0];
-        };
-        let pos_val_id = pos_attribute.mapped_index(PointIndex(point_id));
-        if pos_val_id == INVALID_ATTRIBUTE_VALUE_INDEX {
-            return [0, 0, 0];
+        if self.cached[vi] {
+            return self.cache[vi];
         }
+        let pos = position_for_vertex(
+            self.vertex_to_data_map,
+            self.entry_to_point_id_map,
+            self.pos_attribute,
+            v,
+        );
+        self.cache[vi] = pos;
+        self.cached[vi] = true;
+        pos
+    }
+}
 
-        let mut pos = [0i64; 3];
-        if !read_vector3_as_i64(pos_attribute, pos_val_id.0 as usize, &mut pos) {
-            return [0, 0, 0];
-        }
-
-        let clamp_i32 = |x: i64| -> i32 {
-            if x > i32::MAX as i64 {
-                i32::MAX
-            } else if x < i32::MIN as i64 {
-                i32::MIN
-            } else {
-                x as i32
-            }
-        };
-        [clamp_i32(pos[0]), clamp_i32(pos[1]), clamp_i32(pos[2])]
+/// Predicts one normal from the geometry around `corner_id`.
+///
+/// Free-standing rather than a method so the caller can hold the resolved
+/// position lookup across the whole pass while still borrowing the decoder's
+/// other fields.
+#[cfg(feature = "decoder")]
+fn compute_predicted_value(
+    positions: &mut CornerPositions<'_>,
+    prediction_mode: NormalPredictionMode,
+    corner_id: CornerIndex,
+    prediction: &mut [i32; 3],
+) {
+    if corner_id == INVALID_CORNER_INDEX {
+        prediction[0] = 0;
+        prediction[1] = 0;
+        prediction[2] = 0;
+        return;
     }
 
-    fn compute_predicted_value(&self, corner_id: CornerIndex, prediction: &mut [i32; 3]) {
-        if corner_id == INVALID_CORNER_INDEX {
-            prediction[0] = 0;
-            prediction[1] = 0;
-            prediction[2] = 0;
-            return;
+    let corner_table = positions.corner_table;
+    let pos_cent = positions.get(corner_id);
+
+    let mut normal = [0i128; 3];
+
+    let mut cit = VertexCornersIterator::new(corner_table, corner_id);
+    while !cit.end() {
+        let c_next;
+        let c_prev;
+
+        if prediction_mode == NormalPredictionMode::OneTriangle {
+            c_next = corner_table.next(corner_id);
+            c_prev = corner_table.previous(corner_id);
+        } else {
+            c_next = corner_table.next(cit.corner());
+            c_prev = corner_table.previous(cit.corner());
         }
 
-        let Some(mesh_data) = self.mesh_data.as_ref() else {
-            prediction[0] = 0;
-            prediction[1] = 0;
-            prediction[2] = 0;
-            return;
-        };
-        let Some(corner_table) = mesh_data.corner_table() else {
-            prediction[0] = 0;
-            prediction[1] = 0;
-            prediction[2] = 0;
-            return;
-        };
-        let pos_cent = self.get_position_for_corner(corner_id);
+        let pos_prev = positions.get(c_prev);
+        let pos_next = positions.get(c_next);
 
-        let mut normal = [0i128; 3];
+        let v_next = [
+            pos_next[0] as i64 - pos_cent[0] as i64,
+            pos_next[1] as i64 - pos_cent[1] as i64,
+            pos_next[2] as i64 - pos_cent[2] as i64,
+        ];
+        let v_prev = [
+            pos_prev[0] as i64 - pos_cent[0] as i64,
+            pos_prev[1] as i64 - pos_cent[1] as i64,
+            pos_prev[2] as i64 - pos_cent[2] as i64,
+        ];
 
-        let mut cit = VertexCornersIterator::new(corner_table, corner_id);
-        while !cit.end() {
-            let c_next;
-            let c_prev;
+        let cross = [
+            v_next[1] as i128 * v_prev[2] as i128 - v_next[2] as i128 * v_prev[1] as i128,
+            v_next[2] as i128 * v_prev[0] as i128 - v_next[0] as i128 * v_prev[2] as i128,
+            v_next[0] as i128 * v_prev[1] as i128 - v_next[1] as i128 * v_prev[0] as i128,
+        ];
+        normal[0] += cross[0];
+        normal[1] += cross[1];
+        normal[2] += cross[2];
 
-            if self.prediction_mode == NormalPredictionMode::OneTriangle {
-                c_next = corner_table.next(corner_id);
-                c_prev = corner_table.previous(corner_id);
-            } else {
-                c_next = corner_table.next(cit.corner());
-                c_prev = corner_table.previous(cit.corner());
-            }
-
-            let pos_prev = self.get_position_for_corner(c_prev);
-            let pos_next = self.get_position_for_corner(c_next);
-
-            let v_next = [
-                pos_next[0] as i64 - pos_cent[0] as i64,
-                pos_next[1] as i64 - pos_cent[1] as i64,
-                pos_next[2] as i64 - pos_cent[2] as i64,
-            ];
-            let v_prev = [
-                pos_prev[0] as i64 - pos_cent[0] as i64,
-                pos_prev[1] as i64 - pos_cent[1] as i64,
-                pos_prev[2] as i64 - pos_cent[2] as i64,
-            ];
-
-            let cross = [
-                v_next[1] as i128 * v_prev[2] as i128 - v_next[2] as i128 * v_prev[1] as i128,
-                v_next[2] as i128 * v_prev[0] as i128 - v_next[0] as i128 * v_prev[2] as i128,
-                v_next[0] as i128 * v_prev[1] as i128 - v_next[1] as i128 * v_prev[0] as i128,
-            ];
-            normal[0] += cross[0];
-            normal[1] += cross[1];
-            normal[2] += cross[2];
-
-            if self.prediction_mode == NormalPredictionMode::OneTriangle {
-                break;
-            }
-
-            cit.next(corner_table);
+        if prediction_mode == NormalPredictionMode::OneTriangle {
+            break;
         }
 
-        if normal[0] == 0 && normal[1] == 0 && normal[2] == 0 {
-            prediction[0] = 0;
-            prediction[1] = 0;
-            prediction[2] = 0;
-            return;
-        }
-
-        let upper_bound = 1i128 << 29;
-        let abs_sum = normal[0].abs() + normal[1].abs() + normal[2].abs();
-        if abs_sum > upper_bound {
-            let quotient = abs_sum / upper_bound;
-            normal[0] /= quotient;
-            normal[1] /= quotient;
-            normal[2] /= quotient;
-        }
-
-        prediction[0] = normal[0] as i32;
-        prediction[1] = normal[1] as i32;
-        prediction[2] = normal[2] as i32;
+        cit.next(corner_table);
     }
+
+    if normal[0] == 0 && normal[1] == 0 && normal[2] == 0 {
+        prediction[0] = 0;
+        prediction[1] = 0;
+        prediction[2] = 0;
+        return;
+    }
+
+    let upper_bound = 1i128 << 29;
+    let abs_sum = normal[0].abs() + normal[1].abs() + normal[2].abs();
+    if abs_sum > upper_bound {
+        let quotient = abs_sum / upper_bound;
+        normal[0] /= quotient;
+        normal[1] /= quotient;
+        normal[2] /= quotient;
+    }
+
+    prediction[0] = normal[0] as i32;
+    prediction[1] = normal[1] as i32;
+    prediction[2] = normal[2] as i32;
 }
 
 #[cfg(feature = "decoder")]
@@ -321,11 +392,44 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
             )));
         }
 
+        // Resolve the position lookup once for the whole pass rather than once
+        // per corner. `is_initialized` already vouches for the corner table,
+        // the position attribute and the entry map; a missing vertex-to-data
+        // map leaves every position at the origin, which predicts a zero normal
+        // for every entry — the same as the per-corner lookup used to return.
+        let mut positions = match (
+            mesh_data.corner_table(),
+            mesh_data.vertex_to_data_map(),
+            self.pos_attribute,
+            self.entry_to_point_id_map,
+        ) {
+            (
+                Some(corner_table),
+                Some(vertex_to_data_map),
+                Some(pos_attribute),
+                Some(entry_map),
+            ) => Some(CornerPositions::new(
+                corner_table,
+                vertex_to_data_map,
+                entry_map,
+                pos_attribute,
+            )),
+            _ => None,
+        };
+
         let mut pred_normal_3d = [0i32; 3];
 
         for i in 0..corner_map_size {
             let corner_id = CornerIndex(data_to_corner_map[i]);
-            self.compute_predicted_value(corner_id, &mut pred_normal_3d);
+            match positions.as_mut() {
+                Some(positions) => compute_predicted_value(
+                    positions,
+                    self.prediction_mode,
+                    corner_id,
+                    &mut pred_normal_3d,
+                ),
+                None => pred_normal_3d = [0, 0, 0],
+            }
             self.octahedron_tool_box
                 .canonicalize_integer_vector(&mut pred_normal_3d);
 
@@ -1019,7 +1123,8 @@ mod tests {
         decoder
             .set_entry_to_point_id_map(EntryToPointIdMap::from_u32_slice(&entry_to_point_id_map));
 
-        assert_eq!(decoder.get_position_for_corner(CornerIndex(0)), [0, 0, 0]);
+        let mut positions = decoder.corner_positions().expect("lookup resolves");
+        assert_eq!(positions.get(CornerIndex(0)), [0, 0, 0]);
     }
 
     #[test]
@@ -1052,6 +1157,78 @@ mod tests {
         decoder
             .set_entry_to_point_id_map(EntryToPointIdMap::from_u32_slice(&entry_to_point_id_map));
 
-        assert_eq!(decoder.get_position_for_corner(CornerIndex(0)), [0, 0, 0]);
+        let mut positions = decoder.corner_positions().expect("lookup resolves");
+        assert_eq!(positions.get(CornerIndex(0)), [0, 0, 0]);
+    }
+
+    /// The memoised lookup must answer exactly what the uncached one does, for
+    /// every corner and on the second visit as well as the first. Without this,
+    /// a wrong cache is caught only by the C++ fingerprint parity suite, which
+    /// needs the reference build to be present.
+    #[test]
+    fn mesh_geometric_normal_position_cache_matches_the_uncached_lookup() {
+        // Two triangles sharing an edge, so vertices 1 and 2 each carry two
+        // corners and the second visit has to come out of the cache.
+        let mut corner_table = CornerTable::new(2);
+        corner_table.set_face_vertices(FaceIndex(0), PointIndex(0), PointIndex(1), PointIndex(2));
+        corner_table.set_face_vertices(FaceIndex(1), PointIndex(2), PointIndex(1), PointIndex(3));
+
+        let data_to_corner_map = [0u32, 1, 2, 3];
+        let vertex_to_data_map = [0, 1, 2, 3];
+        let mut mesh_data = MeshPredictionSchemeData::new();
+        mesh_data.set(&corner_table, &data_to_corner_map, &vertex_to_data_map);
+
+        let num_points = 4;
+        let mut position_attribute = PointAttribute::new();
+        position_attribute.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Int32,
+            false,
+            num_points,
+        );
+        // Distinct per point, so mixing two vertices up cannot go unnoticed.
+        for p in 0..num_points {
+            for c in 0..3 {
+                let value = (10 * p + c) as i32;
+                position_attribute
+                    .buffer_mut()
+                    .update(&value.to_le_bytes(), Some((p * 3 + c) * 4));
+            }
+        }
+
+        let mut decoder = MeshPredictionSchemeGeometricNormalDecoder::new(
+            PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new(),
+        );
+        decoder.init(&mesh_data);
+        assert!(decoder.set_parent_attribute(&position_attribute).is_ok());
+
+        let entry_to_point_id_map = [0u32, 1, 2, 3];
+        decoder
+            .set_entry_to_point_id_map(EntryToPointIdMap::from_u32_slice(&entry_to_point_id_map));
+
+        let mut positions = decoder.corner_positions().expect("lookup resolves");
+        for corner in 0..6u32 {
+            let corner = CornerIndex(corner);
+            let expected = position_for_vertex(
+                &vertex_to_data_map,
+                EntryToPointIdMap::from_u32_slice(&entry_to_point_id_map),
+                &position_attribute,
+                corner_table.vertex(corner),
+            );
+            assert_eq!(positions.get(corner), expected, "first visit, {corner:?}");
+            assert_eq!(positions.get(corner), expected, "cached visit, {corner:?}");
+        }
+
+        // The fixture is only meaningful if it really shares vertices between
+        // corners; otherwise nothing above ever reads the cache.
+        let vertices: Vec<_> = (0..6u32)
+            .map(|c| corner_table.vertex(CornerIndex(c)).0)
+            .collect();
+        let unique: std::collections::BTreeSet<_> = vertices.iter().collect();
+        assert!(
+            unique.len() < vertices.len(),
+            "shared vertices: {vertices:?}"
+        );
     }
 }
