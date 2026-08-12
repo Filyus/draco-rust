@@ -284,6 +284,20 @@ impl CornerTable {
     /// funnel through these two, and the corners reaching them come from
     /// decoded connectivity -- `is_index_consistent` exists to check a whole
     /// table up front, but only three sites call it.
+    ///
+    /// This and [`vertex`](Self::vertex) sit under every fan walk, so the
+    /// bounds check here has been measured rather than argued about (Stanford
+    /// Bunny decode, 30 interleaved runs per binary):
+    ///
+    /// - Spelling the same check as an explicit range test and a direct index
+    ///   instead of `.get().copied().unwrap_or(..)` changes nothing (+0.2%,
+    ///   inside the 0.4% that code layout moves between builds of identical
+    ///   source). It is not the `Option` that costs.
+    /// - Dropping the check via `get_unchecked` is worth **2.0%** of decode.
+    ///   That is the standing price of the no-`unsafe` promise in SECURITY.md
+    ///   on this path, and it is not recoverable by writing the check more
+    ///   cleverly -- only by removing it, or by a table where the sentinel is
+    ///   in range by construction.
     pub fn opposite(&self, corner: CornerIndex) -> CornerIndex {
         if corner == INVALID_CORNER_INDEX {
             return corner;
