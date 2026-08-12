@@ -536,44 +536,35 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
     }
 }
 
+/// Walks every corner attached to the vertex of the corner it starts from.
+///
+/// Starts where it is told and sweeps right; on a closed ring that returns to
+/// the start and the walk is done. Only a boundary stops the right sweep early,
+/// and only then does the walk go back to the start and sweep left for the rest
+/// of the fan.
+///
+/// The obvious alternative — find the leftmost corner first, then sweep right
+/// across the whole fan — costs a second full lap of `swing_left` before the
+/// first corner is ever yielded, and on a closed ring that lap ends exactly
+/// where it began, having established nothing. Both orders visit the same
+/// corners the same number of times, and the only consumer sums exact integer
+/// cross products over them, so the order is not observable.
 struct VertexCornersIterator {
-    _start_corner: CornerIndex,
+    /// Where the walk began, and what the right sweep must not return to.
+    start_corner: CornerIndex,
     corner: CornerIndex,
-    left_corner: CornerIndex,
+    /// Set once the right sweep has run into a boundary.
+    sweeping_left: bool,
     is_end: bool,
 }
 
 impl VertexCornersIterator {
-    fn new(corner_table: &CornerTable, corner_id: CornerIndex) -> Self {
-        if corner_id == INVALID_CORNER_INDEX {
-            return Self {
-                _start_corner: INVALID_CORNER_INDEX,
-                corner: INVALID_CORNER_INDEX,
-                left_corner: INVALID_CORNER_INDEX,
-                is_end: true,
-            };
-        }
-
-        let mut start_corner = corner_id;
-        let mut corner = corner_id;
-        let mut left_corner = corner_id;
-
-        let mut c = corner_table.swing_left(corner_id);
-        while c != INVALID_CORNER_INDEX {
-            corner = c;
-            left_corner = c;
-            if c == start_corner {
-                break;
-            }
-            c = corner_table.swing_left(c);
-        }
-        start_corner = corner;
-
+    fn new(_corner_table: &CornerTable, corner_id: CornerIndex) -> Self {
         Self {
-            _start_corner: start_corner,
-            corner,
-            left_corner,
-            is_end: false,
+            start_corner: corner_id,
+            corner: corner_id,
+            sweeping_left: false,
+            is_end: corner_id == INVALID_CORNER_INDEX,
         }
     }
 
@@ -589,13 +580,41 @@ impl VertexCornersIterator {
         if self.corner == INVALID_CORNER_INDEX {
             return;
         }
-        self.corner = corner_table.swing_right(self.corner);
-        if self.corner == self.left_corner {
-            self.corner = INVALID_CORNER_INDEX;
-            self.is_end = true;
-        } else if self.corner == INVALID_CORNER_INDEX {
-            self.is_end = true;
+
+        if !self.sweeping_left {
+            let right = corner_table.swing_right(self.corner);
+            if right == self.start_corner {
+                // Closed ring, back where it started: every corner is done.
+                self.finish();
+                return;
+            }
+            if right != INVALID_CORNER_INDEX {
+                self.corner = right;
+                return;
+            }
+            // Boundary. The corners left of the start are still unvisited.
+            self.sweeping_left = true;
+            self.set_or_finish(corner_table.swing_left(self.start_corner));
+            return;
         }
+
+        self.set_or_finish(corner_table.swing_left(self.corner));
+    }
+
+    fn set_or_finish(&mut self, corner: CornerIndex) {
+        // Returning to the start during the left sweep would mean the ring was
+        // closed after all, which the right sweep would have caught; treat it
+        // as the end rather than lapping the fan forever.
+        if corner == INVALID_CORNER_INDEX || corner == self.start_corner {
+            self.finish();
+        } else {
+            self.corner = corner;
+        }
+    }
+
+    fn finish(&mut self) {
+        self.corner = INVALID_CORNER_INDEX;
+        self.is_end = true;
     }
 }
 
@@ -1230,5 +1249,68 @@ mod tests {
             unique.len() < vertices.len(),
             "shared vertices: {vertices:?}"
         );
+    }
+
+    /// Builds a corner table from faces given as vertex triples.
+    fn corner_table_from(faces: &[[u32; 3]]) -> CornerTable {
+        let faces: Vec<[crate::geometry_indices::VertexIndex; 3]> = faces
+            .iter()
+            .map(|f| f.map(crate::geometry_indices::VertexIndex))
+            .collect();
+        let mut corner_table = CornerTable::new(faces.len());
+        assert!(corner_table.init(&faces), "corner table builds");
+        corner_table
+    }
+
+    /// Every corner the table says belongs to `v`, found without swinging.
+    fn corners_of(corner_table: &CornerTable, v: u32) -> std::collections::BTreeSet<u32> {
+        (0..corner_table.num_corners() as u32)
+            .filter(|&c| corner_table.vertex(CornerIndex(c)).0 == v)
+            .collect()
+    }
+
+    fn walk_from(corner_table: &CornerTable, start: CornerIndex) -> Vec<u32> {
+        let mut visited = Vec::new();
+        let mut cit = VertexCornersIterator::new(corner_table, start);
+        while !cit.end() {
+            visited.push(cit.corner().0);
+            cit.next(corner_table);
+            // The fixtures are tiny; a walk longer than the table means the
+            // iterator is lapping rather than terminating.
+            assert!(visited.len() <= corner_table.num_corners(), "walk loops");
+        }
+        visited
+    }
+
+    /// The walk must cover the vertex's whole fan exactly once, from whichever
+    /// corner it starts — including a fan with a boundary, where covering it
+    /// means sweeping both ways. Draco's own suite had nothing on this: with
+    /// the boundary sweep deleted, only the C++ legacy-normal decode test
+    /// noticed.
+    #[test]
+    fn vertex_corners_iterator_covers_the_fan_once_from_every_start() {
+        // Closed fan: three triangles around vertex 0, ring 1-2-3.
+        let closed = corner_table_from(&[[0, 1, 2], [0, 2, 3], [0, 3, 1]]);
+        // Open fan: the ring 1-2-3-4 is not closed back to 1.
+        let open = corner_table_from(&[[0, 1, 2], [0, 2, 3], [0, 3, 4]]);
+
+        for (name, corner_table) in [("closed", &closed), ("open", &open)] {
+            let expected = corners_of(corner_table, 0);
+            assert!(expected.len() == 3, "{name} fan has three corners at v0");
+
+            for &start in &expected {
+                let visited = walk_from(corner_table, CornerIndex(start));
+                let unique: std::collections::BTreeSet<_> = visited.iter().copied().collect();
+                assert_eq!(
+                    unique, expected,
+                    "{name} fan from corner {start}: visited {visited:?}"
+                );
+                assert_eq!(
+                    unique.len(),
+                    visited.len(),
+                    "{name} fan from corner {start} visits a corner twice: {visited:?}"
+                );
+            }
+        }
     }
 }
