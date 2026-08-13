@@ -573,20 +573,22 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             return Some(increment_mod(last_axis, self.dimension));
         }
 
-        let mut best_axis = 0u32;
-        if num_remaining_points < 64 {
-            for axis in 1..self.dimension {
-                if levels[best_axis as usize] > levels[axis as usize] {
-                    best_axis = axis;
-                }
-            }
+        let best_axis = if num_remaining_points < 64 {
+            // The shallowest axis, and on a tie the first of them -- which is
+            // what `min_by_key` returns. Written as a fold over the row rather
+            // than an indexed loop so the bound is established once.
+            levels
+                .iter()
+                .enumerate()
+                .min_by_key(|&(_, level)| *level)
+                .map_or(0, |(axis, _)| axis as u32)
         } else {
             let mut v = 0u32;
             if !self.axis_decoder.decode_least_significant_bits32(4, &mut v) {
                 return None;
             }
-            best_axis = v;
-        }
+            v
+        };
         Some(best_axis)
     }
 
@@ -596,6 +598,26 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
     }
 
     fn decode_internal(&mut self, num_points: u32, out: &mut Vec<u32>) -> bool {
+        // The two stacks move out of `self` for the duration of the walk so the
+        // node's base and level rows can be read in place. Held as fields they
+        // would alias the `&mut self` the decoders need, which is why this used
+        // to copy each row into a scratch vector and copy it back -- six
+        // memcpys per node, on a walk that visits two nodes per point.
+        let mut base_stack = std::mem::take(&mut self.base_stack);
+        let mut levels_stack = std::mem::take(&mut self.levels_stack);
+        let ok = self.decode_walk(num_points, out, &mut base_stack, &mut levels_stack);
+        self.base_stack = base_stack;
+        self.levels_stack = levels_stack;
+        ok
+    }
+
+    fn decode_walk(
+        &mut self,
+        num_points: u32,
+        out: &mut Vec<u32>,
+        base_stack: &mut [u32],
+        levels_stack: &mut [u32],
+    ) -> bool {
         #[derive(Clone, Copy)]
         struct Status {
             num_remaining_points: u32,
@@ -604,10 +626,8 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
         }
 
         let dimension = self.dimension as usize;
-        self.base_stack[0..dimension].fill(0);
-        self.levels_stack[0..dimension].fill(0);
-        let mut old_base = vec![0; dimension];
-        let mut levels = vec![0; dimension];
+        base_stack[0..dimension].fill(0);
+        levels_stack[0..dimension].fill(0);
 
         let mut stack: Vec<Status> = Vec::new();
         stack.push(Status {
@@ -622,36 +642,55 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             let stack_pos = status.stack_pos;
 
             let row_start = stack_pos * dimension;
-            old_base.copy_from_slice(&self.base_stack[row_start..row_start + dimension]);
-            levels.copy_from_slice(&self.levels_stack[row_start..row_start + dimension]);
+            let row_end = row_start + dimension;
+            // The child's rows are the ones immediately after this node's, so
+            // propagating to a child is a copy within the stack rather than a
+            // round trip through a scratch buffer.
+            let child_start = row_end;
+            let child_end = child_start + dimension;
+            // Both stacks hold `32 * dimension + 1` rows, and a path can split
+            // at most 32 times per axis, so a well-formed tree never reaches
+            // this. Checking once here refuses a malformed one where the row
+            // accesses below would otherwise panic, and leaves the compiler a
+            // bound it can carry through the rest of the node.
+            if base_stack.len() < child_end || levels_stack.len() < child_end {
+                return false;
+            }
 
             if num_remaining_points > num_points {
                 return false;
             }
 
-            let Some(axis) = self.get_axis(num_remaining_points, &levels, last_axis) else {
+            let Some(axis) = self.get_axis(
+                num_remaining_points,
+                &levels_stack[row_start..row_end],
+                last_axis,
+            ) else {
                 return false;
             };
             if axis >= self.dimension {
                 return false;
             }
+            let axis = axis as usize;
 
-            let level = levels[axis as usize];
+            let level = levels_stack[row_start + axis];
 
             if (self.bit_length - level) == 0 {
                 for _ in 0..num_remaining_points {
-                    out.extend_from_slice(&old_base);
+                    out.extend_from_slice(&base_stack[row_start..row_end]);
                     self.num_decoded_points += 1;
                 }
                 continue;
             }
 
             if num_remaining_points <= 2 {
-                self.axes[0] = axis;
+                self.axes[0] = axis as u32;
                 for i in 1..self.dimension as usize {
                     self.axes[i] = increment_mod(self.axes[i - 1], self.dimension);
                 }
 
+                let old_base = &base_stack[row_start..row_end];
+                let levels = &levels_stack[row_start..row_end];
                 for _ in 0..num_remaining_points {
                     for j in 0..self.dimension as usize {
                         self.p[self.axes[j] as usize] = 0;
@@ -679,9 +718,8 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
 
             let num_remaining_bits = self.bit_length - level;
             let modifier = 1u32 << (num_remaining_bits - 1);
-            let child_start = (stack_pos + 1) * dimension;
-            self.base_stack[child_start..child_start + dimension].copy_from_slice(&old_base);
-            self.base_stack[child_start + axis as usize] += modifier;
+            base_stack.copy_within(row_start..row_end, child_start);
+            base_stack[child_start + axis] += modifier;
 
             let incoming_bits = most_significant_bit(num_remaining_points);
             let mut number = 0u32;
@@ -709,21 +747,20 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
                 }
             }
 
-            levels[axis as usize] += 1;
-            self.levels_stack[row_start..row_start + dimension].copy_from_slice(&levels);
-            self.levels_stack[child_start..child_start + dimension].copy_from_slice(&levels);
+            levels_stack[row_start + axis] += 1;
+            levels_stack.copy_within(row_start..row_end, child_start);
 
             if first_half != 0 {
                 stack.push(Status {
                     num_remaining_points: first_half,
-                    last_axis: axis,
+                    last_axis: axis as u32,
                     stack_pos,
                 });
             }
             if second_half != 0 {
                 stack.push(Status {
                     num_remaining_points: second_half,
-                    last_axis: axis,
+                    last_axis: axis as u32,
                     stack_pos: stack_pos + 1,
                 });
             }
