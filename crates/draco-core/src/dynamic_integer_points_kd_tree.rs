@@ -446,7 +446,6 @@ pub struct DynamicIntegerPointsKdTreeDecoder<'a> {
     num_points: u32,
     num_decoded_points: u32,
     dimension: u32,
-    p: Vec<u32>,
     axes: Vec<u32>,
     base_stack: Vec<u32>,
     levels_stack: Vec<u32>,
@@ -473,7 +472,6 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             num_points: 0,
             num_decoded_points: 0,
             dimension,
-            p: vec![0; dimension as usize],
             axes: vec![0; dimension as usize],
             base_stack: vec![0; stack_len * dimension as usize],
             levels_stack: vec![0; stack_len * dimension as usize],
@@ -692,21 +690,28 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
                 let old_base = &base_stack[row_start..row_end];
                 let levels = &levels_stack[row_start..row_end];
                 for _ in 0..num_remaining_points {
-                    for j in 0..self.dimension as usize {
-                        self.p[self.axes[j] as usize] = 0;
-                        let num_bits = self.bit_length - levels[self.axes[j] as usize];
+                    // The point is assembled in the output vector rather than
+                    // in a scratch row that is then appended: `axes` is a
+                    // permutation of every dimension, so each of these slots is
+                    // written exactly once, and appending a scratch row would
+                    // be one more memcpy per point.
+                    let start = out.len();
+                    out.resize(start + dimension, 0);
+                    let p = &mut out[start..];
+                    for j in 0..dimension {
+                        let axis_j = self.axes[j] as usize;
+                        let num_bits = self.bit_length - levels[axis_j];
+                        let mut value = 0u32;
                         if num_bits != 0 {
-                            let ok = self.remaining_bits_decoder.decode_least_significant_bits32(
-                                num_bits,
-                                &mut self.p[self.axes[j] as usize],
-                            );
+                            let ok = self
+                                .remaining_bits_decoder
+                                .decode_least_significant_bits32(num_bits, &mut value);
                             if !ok {
                                 return false;
                             }
                         }
-                        self.p[self.axes[j] as usize] |= old_base[self.axes[j] as usize];
+                        p[axis_j] = value | old_base[axis_j];
                     }
-                    out.extend_from_slice(&self.p);
                     self.num_decoded_points += 1;
                 }
                 continue;
