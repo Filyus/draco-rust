@@ -583,75 +583,96 @@ impl CornerTable {
         }
 
         // 4. Connect half-edges
-        for c in 0..self.num_corners() {
-            let c_idx = CornerIndex(c as u32);
-            let tip_v = self.vertex(c_idx);
-            let source_v = self.vertex(self.next(c_idx));
-            let sink_v = self.vertex(self.previous(c_idx));
+        //
+        // Within a face, the corner after `local` and the one before it, as
+        // tables, so the loop below needs no wrap arithmetic.
+        const NEXT_LOCAL: [usize; 3] = [1, 2, 0];
+        const PREV_LOCAL: [usize; 3] = [2, 0, 1];
 
-            if tip_v == source_v || source_v == sink_v || sink_v == tip_v {
-                continue;
-            }
+        // Walked a face at a time: the three vertices each corner needs are its
+        // own face's, so reading the triple once replaces, per corner, the wrap
+        // arithmetic in `next`/`previous` and three checked map lookups. Same
+        // corners in the same order. `chunks_exact` also declines to invent a
+        // face out of a map whose length is not a multiple of three, which the
+        // per-corner form would have walked into.
+        for (face, face_base) in self
+            .corner_to_vertex_map
+            .chunks_exact(3)
+            .map(<[VertexIndex; 3]>::try_from)
+            .map(|face| face.expect("chunks_exact(3) yields three vertices"))
+            .zip((0..).step_by(3))
+        {
+            for local in 0..3 {
+                let c = face_base + local;
+                let c_idx = CornerIndex(c as u32);
+                let tip_v = face[local];
+                let source_v = face[NEXT_LOCAL[local]];
+                let sink_v = face[PREV_LOCAL[local]];
 
-            let mut opposite_c = INVALID_CORNER_INDEX;
-            let num_corners_on_vert = num_corners_on_vertices[sink_v.0 as usize];
-            let mut offset = vertex_offset[sink_v.0 as usize];
-
-            let mut found_match = false;
-            let mut match_pos_found: Option<usize> = None;
-
-            // Search for matching half-edge on sink vertex.
-            // Match C++ behavior: take the first match we find (early break).
-            for i in 0..num_corners_on_vert {
-                let other_v = vertex_edges[offset].sink_vert;
-                if other_v == INVALID_VERTEX_INDEX {
-                    break;
+                if tip_v == source_v || source_v == sink_v || sink_v == tip_v {
+                    continue;
                 }
-                if other_v == source_v {
-                    // Check for mirrored faces
-                    if tip_v == self.vertex(vertex_edges[offset].edge_corner) {
-                        offset += 1;
-                        continue;
-                    }
-                    // Take first match (matches C++ behavior)
-                    match_pos_found = Some(vertex_offset[sink_v.0 as usize] + i);
-                    break;
-                }
-                offset += 1;
-            }
 
-            if let Some(match_pos) = match_pos_found {
-                let start = vertex_offset[sink_v.0 as usize];
-                let count = num_corners_on_vertices[sink_v.0 as usize];
-                opposite_c = vertex_edges[match_pos].edge_corner;
+                let mut opposite_c = INVALID_CORNER_INDEX;
+                let num_corners_on_vert = num_corners_on_vertices[sink_v.0 as usize];
+                let mut offset = vertex_offset[sink_v.0 as usize];
 
-                // Shift elements left to remove the matched entry
-                if match_pos + 1 < start + count {
-                    vertex_edges.copy_within(match_pos + 1..start + count, match_pos);
-                }
-                if count > 0 {
-                    vertex_edges[start + count - 1].sink_vert = INVALID_VERTEX_INDEX;
-                    vertex_edges[start + count - 1].edge_corner = INVALID_CORNER_INDEX;
-                }
-                found_match = true;
-            }
+                let mut found_match = false;
+                let mut match_pos_found: Option<usize> = None;
 
-            // Debug logging removed to avoid noisy output during tests.
-
-            if !found_match {
-                // No opposite found, add to source vertex list
-                let num_corners_on_source = num_corners_on_vertices[source_v.0 as usize];
-                let base = vertex_offset[source_v.0 as usize];
-                for offset in base..base + num_corners_on_source {
-                    if vertex_edges[offset].sink_vert == INVALID_VERTEX_INDEX {
-                        vertex_edges[offset].sink_vert = sink_v;
-                        vertex_edges[offset].edge_corner = c_idx;
+                // Search for matching half-edge on sink vertex.
+                // Match C++ behavior: take the first match we find (early break).
+                for i in 0..num_corners_on_vert {
+                    let other_v = vertex_edges[offset].sink_vert;
+                    if other_v == INVALID_VERTEX_INDEX {
                         break;
                     }
+                    if other_v == source_v {
+                        // Check for mirrored faces
+                        if tip_v == self.vertex(vertex_edges[offset].edge_corner) {
+                            offset += 1;
+                            continue;
+                        }
+                        // Take first match (matches C++ behavior)
+                        match_pos_found = Some(vertex_offset[sink_v.0 as usize] + i);
+                        break;
+                    }
+                    offset += 1;
                 }
-            } else {
-                self.opposite_corners[c] = opposite_c;
-                self.opposite_corners[opposite_c.0 as usize] = c_idx;
+
+                if let Some(match_pos) = match_pos_found {
+                    let start = vertex_offset[sink_v.0 as usize];
+                    let count = num_corners_on_vertices[sink_v.0 as usize];
+                    opposite_c = vertex_edges[match_pos].edge_corner;
+
+                    // Shift elements left to remove the matched entry
+                    if match_pos + 1 < start + count {
+                        vertex_edges.copy_within(match_pos + 1..start + count, match_pos);
+                    }
+                    if count > 0 {
+                        vertex_edges[start + count - 1].sink_vert = INVALID_VERTEX_INDEX;
+                        vertex_edges[start + count - 1].edge_corner = INVALID_CORNER_INDEX;
+                    }
+                    found_match = true;
+                }
+
+                // Debug logging removed to avoid noisy output during tests.
+
+                if !found_match {
+                    // No opposite found, add to source vertex list
+                    let num_corners_on_source = num_corners_on_vertices[source_v.0 as usize];
+                    let base = vertex_offset[source_v.0 as usize];
+                    for offset in base..base + num_corners_on_source {
+                        if vertex_edges[offset].sink_vert == INVALID_VERTEX_INDEX {
+                            vertex_edges[offset].sink_vert = sink_v;
+                            vertex_edges[offset].edge_corner = c_idx;
+                            break;
+                        }
+                    }
+                } else {
+                    self.opposite_corners[c] = opposite_c;
+                    self.opposite_corners[opposite_c.0 as usize] = c_idx;
+                }
             }
         }
 
