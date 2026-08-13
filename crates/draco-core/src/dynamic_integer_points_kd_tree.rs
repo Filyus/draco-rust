@@ -446,7 +446,6 @@ pub struct DynamicIntegerPointsKdTreeDecoder<'a> {
     num_points: u32,
     num_decoded_points: u32,
     dimension: u32,
-    axes: Vec<u32>,
     base_stack: Vec<u32>,
     levels_stack: Vec<u32>,
     numbers_decoder: NumbersDecoder<'a>,
@@ -472,7 +471,6 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             num_points: 0,
             num_decoded_points: 0,
             dimension,
-            axes: vec![0; dimension as usize],
             base_stack: vec![0; stack_len * dimension as usize],
             levels_stack: vec![0; stack_len * dimension as usize],
             numbers_decoder,
@@ -682,24 +680,22 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             }
 
             if num_remaining_points <= 2 {
-                self.axes[0] = axis as u32;
-                for i in 1..self.dimension as usize {
-                    self.axes[i] = increment_mod(self.axes[i - 1], self.dimension);
-                }
-
                 let old_base = &base_stack[row_start..row_end];
                 let levels = &levels_stack[row_start..row_end];
                 for _ in 0..num_remaining_points {
                     // The point is assembled in the output vector rather than
-                    // in a scratch row that is then appended: `axes` is a
-                    // permutation of every dimension, so each of these slots is
-                    // written exactly once, and appending a scratch row would
-                    // be one more memcpy per point.
+                    // in a scratch row that is then appended: the axis order is
+                    // a permutation of every dimension, so each of these slots
+                    // is written exactly once, and appending a scratch row
+                    // would be one more memcpy per point.
                     let start = out.len();
                     out.resize(start + dimension, 0);
                     let p = &mut out[start..];
-                    for j in 0..dimension {
-                        let axis_j = self.axes[j] as usize;
+                    // That permutation is the rotation starting at `axis`, so
+                    // it is carried in a variable rather than materialised into
+                    // a table each node.
+                    let mut axis_j = axis;
+                    for _ in 0..dimension {
                         let num_bits = self.bit_length - levels[axis_j];
                         let mut value = 0u32;
                         if num_bits != 0 {
@@ -711,6 +707,7 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
                             }
                         }
                         p[axis_j] = value | old_base[axis_j];
+                        axis_j = increment_mod(axis_j as u32, self.dimension) as usize;
                     }
                     self.num_decoded_points += 1;
                 }
