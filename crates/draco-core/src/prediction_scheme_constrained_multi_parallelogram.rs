@@ -482,11 +482,8 @@ where
                 }
 
                 let entropy_data = self.entropy_tracker.peek(&entropy_symbols);
-                error.num_bits =
-                    ShannonEntropyTracker::get_number_of_data_bits_static(&entropy_data)
-                        + ShannonEntropyTracker::get_number_of_r_ans_table_bits_static(
-                            &entropy_data,
-                        );
+                error.num_bits = self.entropy_tracker.number_of_data_bits(&entropy_data)
+                    + ShannonEntropyTracker::get_number_of_r_ans_table_bits_static(&entropy_data);
 
                 // For the baseline: no parallelograms used, so total_used stays
                 // the same.
@@ -514,6 +511,15 @@ where
                 for slot in excluded.iter_mut().skip(num_used) {
                     *slot = true;
                 }
+
+                // Every config with this many parallelograms used pays the same
+                // overhead, so it is computed once per count rather than once
+                // per permutation -- it costs two logarithms.
+                let overhead_bits = Self::compute_overhead_bits(
+                    total_used_parallelograms[context] + num_used as i64,
+                    total_parallelograms[context],
+                );
+
                 loop {
                     let mut config: u32 = 0;
                     for (i, &is_excluded) in excluded.iter().enumerate() {
@@ -548,18 +554,14 @@ where
                     }
 
                     let entropy_data = self.entropy_tracker.peek(&entropy_symbols);
-                    error.num_bits =
-                        ShannonEntropyTracker::get_number_of_data_bits_static(&entropy_data)
-                            + ShannonEntropyTracker::get_number_of_r_ans_table_bits_static(
-                                &entropy_data,
-                            );
+                    error.num_bits = self.entropy_tracker.number_of_data_bits(&entropy_data)
+                        + ShannonEntropyTracker::get_number_of_r_ans_table_bits_static(
+                            &entropy_data,
+                        );
 
                     // Overhead bits assuming this config is chosen: total_used
-                    // increases by num_used.
-                    let overhead_bits = Self::compute_overhead_bits(
-                        total_used_parallelograms[context] + num_used as i64,
-                        total_parallelograms[context],
-                    );
+                    // increased by num_used, which is what the hoisted estimate
+                    // above already assumes.
                     error.num_bits += overhead_bits;
 
                     if error < best_error {

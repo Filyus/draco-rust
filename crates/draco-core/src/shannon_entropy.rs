@@ -49,6 +49,13 @@ pub struct ShannonEntropyTracker {
     /// estimate stays bit-for-bit what an uncached run would produce; only the
     /// recomputation is skipped.
     entropy_norm_cache: Vec<f64>,
+    /// The last `(n, n * log2(n))` computed for a whole value count, which is
+    /// the other half of every data-bits estimate. Unlike the frequencies
+    /// above, `n` is the running total, so a table keyed by it would grow to a
+    /// slot per symbol encoded; and unlike them it barely varies -- the encoder
+    /// scores every candidate configuration of one entry against the same
+    /// count, so remembering one answer is enough to skip nearly every call.
+    num_values_norm_cache: (i32, f64),
 }
 
 impl Default for ShannonEntropyTracker {
@@ -64,6 +71,9 @@ impl ShannonEntropyTracker {
             frequencies: Vec::new(),
             sparse_frequencies: std::collections::HashMap::new(),
             entropy_norm_cache: Vec::new(),
+            // No count has been scored yet; 0 never reaches the cached branch,
+            // since the estimate returns early below two values.
+            num_values_norm_cache: (0, 0.0),
         }
     }
 
@@ -175,6 +185,22 @@ impl ShannonEntropyTracker {
 
     pub fn get_number_of_data_bits(&self) -> i64 {
         Self::get_number_of_data_bits_static(&self.entropy_data)
+    }
+
+    /// [`get_number_of_data_bits_static`](Self::get_number_of_data_bits_static)
+    /// with the `n * log2(n)` term memoised across calls that share `n`.
+    ///
+    /// Identical arithmetic, so identical bits: the cached term is the exact
+    /// `f64` the uncached expression produces, not an approximation of it.
+    pub fn number_of_data_bits(&mut self, entropy_data: &EntropyData) -> i64 {
+        if entropy_data.num_values < 2 {
+            return 0;
+        }
+        if self.num_values_norm_cache.0 != entropy_data.num_values {
+            let n = entropy_data.num_values as f64;
+            self.num_values_norm_cache = (entropy_data.num_values, n * n.log2());
+        }
+        (self.num_values_norm_cache.1 - entropy_data.entropy_norm).ceil() as i64
     }
 
     pub fn get_number_of_r_ans_table_bits(&self) -> i64 {
