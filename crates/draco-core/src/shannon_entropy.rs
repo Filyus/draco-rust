@@ -48,6 +48,19 @@ pub struct ShannonEntropyTracker {
     /// cached value is the exact f64 -- not an approximation -- so every entropy
     /// estimate stays bit-for-bit what an uncached run would produce; only the
     /// recomputation is skipped.
+    ///
+    /// Being keyed by frequency, it grows to the highest frequency any one
+    /// symbol reaches -- at worst a slot per value encoded, if every residual
+    /// is the same, so 8 bytes per value against the 4 the portable attribute
+    /// already spends on it. Measured: the Stanford Bunny's position attribute
+    /// reaches 53628 entries (418 KiB) over 104499 values, a 100x100 grid
+    /// 22998 over 29997. There is one tracker per attribute predicted this way,
+    /// so a million-vertex mesh's positions cost single-digit megabytes.
+    ///
+    /// Capping it at 2^16 entries and computing above the cap was tried and
+    /// costs **1.2%** of encode: this is hot enough that one more comparison
+    /// per call is not free. The memory is bounded and proportional to the
+    /// input, so the comparison loses.
     entropy_norm_cache: Vec<f64>,
     /// The last `(n, n * log2(n))` computed for a whole value count, which is
     /// the other half of every data-bits estimate. Unlike the frequencies
