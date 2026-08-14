@@ -306,7 +306,8 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
     }
 
     fn rans_write(&mut self, sym: RAnsSymbol) {
-        // Hot path: avoid / and % by 256 (ANS_IO_BASE) and avoid computing both /p and %p.
+        // Hot path: the renormalization loop's divide and modulo are by
+        // ANS_IO_BASE (256), a constant, so they are a shift and a mask.
         let p = sym.prob;
         let renorm_bound = (Self::L_RANS_BASE / Self::RANS_PRECISION) * crate::ans::ANS_IO_BASE * p;
 
@@ -317,9 +318,14 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
             state >>= 8;
         }
 
-        // Compute quotient once; derive remainder without an extra division.
+        // `p` is a runtime probability, so this division is a real one -- but
+        // ask for the remainder directly rather than deriving it as
+        // `state - quot * p`. Both results come out of the same hardware
+        // `div`, and spelling the subtraction by hand adds a multiply and a
+        // subtract to every symbol: measured at 2.1% of encode, two builds per
+        // condition with disjoint clusters. See TRICKS.md.
         let quot = state / p;
-        let rem = state - quot * p;
+        let rem = state % p;
         state = quot * Self::RANS_PRECISION + rem + sym.cum_prob;
         self.ans.state = state;
     }
