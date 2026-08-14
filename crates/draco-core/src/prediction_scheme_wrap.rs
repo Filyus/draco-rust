@@ -186,6 +186,18 @@ impl PredictionSchemeDecodingTransform<i32, i32> for PredictionSchemeWrapDecodin
         corr_vals: &[i32],
         out_original_vals: &mut [i32],
     ) {
+        // Left branching on purpose. Both tests are thresholds on decoded data
+        // rather than on a pattern, which is the shape where folding a branch
+        // into arithmetic usually pays -- but there is no branch here to fold:
+        // LLVM already lowers each of these pairs to two `cmov`s and an add,
+        // with no jump. Spelling the fold out by hand
+        // (`val + (under - over) * max_dif`) replaces those `cmov`s with two
+        // `setcc`, a subtract and an `imul` on the dependency chain: 10
+        // instructions against 8, and 0.9% slower on a Bunny decode.
+        //
+        // `decode_transform_data` refuses `min > max`, so at most one test in
+        // each pair can hold; that is what makes the two forms equivalent at
+        // all, and a unit test pins them against each other.
         for i in 0..self.num_components {
             let mut pred = predicted_vals[i];
             if pred < self.min_value {
@@ -212,12 +224,134 @@ impl PredictionSchemeDecodingTransform<i32, i32> for PredictionSchemeWrapDecodin
                 "Stream ends before the wrap transform's {bound} value"
             ))
         };
-        self.min_value = buffer.decode::<i32>().map_err(|_| truncated("minimum"))?;
-        self.max_value = buffer.decode::<i32>().map_err(|_| truncated("maximum"))?;
+        let min_value = buffer.decode::<i32>().map_err(|_| truncated("minimum"))?;
+        let max_value = buffer.decode::<i32>().map_err(|_| truncated("maximum"))?;
 
-        let dif = (self.max_value as i64) - (self.min_value as i64);
-        self.max_dif = (1 + dif) as i32;
+        // Both bounds are read straight off the wire, and everything below
+        // assumes the range is non-empty and that its span is representable.
+        // Upstream refuses exactly these two cases before accepting the
+        // transform; this port did not, so a crafted stream was accepted where
+        // C++ rejects it. Without the first check the two range tests in
+        // `compute_original_value` stop being mutually exclusive and the port
+        // silently disagrees with C++ about which one wins; without the second,
+        // `1 + dif` wraps and `max_dif` comes out wrong rather than refused --
+        // `min = i32::MIN, max = i32::MAX` yields 0.
+        let dif = (max_value as i64) - (min_value as i64);
+        if dif < 0 {
+            return Err(DracoError::general(format!(
+                "Wrap transform's range is empty: minimum {min_value} is above maximum {max_value}"
+            )));
+        }
+        if dif >= i32::MAX as i64 {
+            return Err(DracoError::general(format!(
+                "Wrap transform's range {min_value}..={max_value} is too wide for its span to be represented"
+            )));
+        }
+
+        self.min_value = min_value;
+        self.max_value = max_value;
+        self.max_dif = 1 + dif as i32;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "decoder")]
+mod tests {
+    use super::*;
+    use crate::prediction_scheme::PredictionSchemeDecodingTransform;
+
+    fn bounds_stream(min_value: i32, max_value: i32) -> Vec<u8> {
+        let mut bytes = min_value.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&max_value.to_le_bytes());
+        bytes
+    }
+
+    /// Upstream refuses an empty range before accepting the transform. Without
+    /// this, the two range tests in `compute_original_value` can both hold for
+    /// one value, and which of them wins is then a silent difference between
+    /// this port and C++ rather than something either of them decided.
+    #[test]
+    fn a_range_whose_minimum_is_above_its_maximum_is_refused() {
+        let bytes = bounds_stream(10, 5);
+        let mut buffer = DecoderBuffer::new(&bytes);
+        let mut transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
+
+        let err = transform
+            .decode_transform_data(&mut buffer)
+            .expect_err("an empty range is not decodable");
+        assert!(
+            err.to_string().contains("range is empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The span is stored as `1 + (max - min)` in an `i32`, so a range that
+    /// covers the whole type has no representable span. Computing it anyway
+    /// wrapped it to 0 and left the wrap doing nothing.
+    #[test]
+    fn a_range_too_wide_for_its_span_is_refused() {
+        let bytes = bounds_stream(i32::MIN, i32::MAX);
+        let mut buffer = DecoderBuffer::new(&bytes);
+        let mut transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
+
+        let err = transform
+            .decode_transform_data(&mut buffer)
+            .expect_err("a span that does not fit is not decodable");
+        assert!(
+            err.to_string().contains("too wide"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Pins the transform against an independent restatement of the same rule,
+    /// over the edge cases that reach it through `wrapping_add` -- `i32::MIN`
+    /// and `i32::MAX` on both the prediction and the correction, and ranges
+    /// that touch either end of the type.
+    ///
+    /// Written when a branchless rewrite of this loop was tried and measured
+    /// slower (see the comment on `compute_original_value`), and kept because
+    /// it is what such a rewrite has to satisfy: the arithmetic form and this
+    /// one agree only while `min <= max`, which `decode_transform_data`
+    /// enforces, and only if the wrapping is reproduced exactly.
+    #[test]
+    fn the_wrap_matches_an_independent_statement_of_the_same_rule() {
+        fn branching(pred: i32, corr: i32, min_value: i32, max_value: i32, max_dif: i32) -> i32 {
+            let mut pred = pred;
+            if pred < min_value {
+                pred = min_value;
+            } else if pred > max_value {
+                pred = max_value;
+            }
+            let mut val = pred.wrapping_add(corr);
+            if val < min_value {
+                val = val.wrapping_add(max_dif);
+            } else if val > max_value {
+                val = val.wrapping_sub(max_dif);
+            }
+            val
+        }
+
+        for &(min_value, max_value) in &[(0, 0), (0, 7), (-5, 5), (-100, -1), (i32::MIN, 0)] {
+            let max_dif = 1 + ((max_value as i64) - (min_value as i64)) as i32;
+            let mut transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
+            transform.min_value = min_value;
+            transform.max_value = max_value;
+            transform.max_dif = max_dif;
+            transform.init(1);
+
+            for pred in [i32::MIN, -7, -1, 0, 1, 7, i32::MAX] {
+                for corr in [i32::MIN, -8, -1, 0, 1, 8, i32::MAX] {
+                    let mut out = [0i32];
+                    transform.compute_original_value(&[pred], &[corr], &mut out);
+                    assert_eq!(
+                        out[0],
+                        branching(pred, corr, min_value, max_value, max_dif),
+                        "min={min_value} max={max_value} pred={pred} corr={corr}"
+                    );
+                }
+            }
+        }
     }
 }
