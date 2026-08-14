@@ -117,13 +117,13 @@ impl OctahedronToolBox {
     }
 
     pub fn mod_max(&self, x: i32) -> i32 {
-        if x > self.center_value {
-            return x - self.max_quantized_value;
-        }
-        if x < -self.center_value {
-            return x + self.max_quantized_value;
-        }
-        x
+        // Branchless on purpose, unlike `CornerTable::next`'s wrap: the two
+        // conditions are mutually exclusive (they would need
+        // `center < x < -center`), and `x` is a decoded octahedral coordinate,
+        // so which way it falls is data and not a pattern the predictor learns.
+        let over = (x > self.center_value) as i32;
+        let under = (x < -self.center_value) as i32;
+        x + (under - over) * self.max_quantized_value
     }
 
     pub fn mod_max_positive(&self, x: i32) -> i32 {
