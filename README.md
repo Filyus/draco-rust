@@ -146,6 +146,10 @@ knobs. Decode and encode are CPU-bound and branchy.
 - [`PGO.md`](PGO.md) — profile-guided optimisation: how it relates to a source
   library, the two-pass build, training-corpus guidance, expected benefit, and
   the WASM-target tradeoff.
+- [`TRICKS.md`](TRICKS.md) — dated, code-level optimization techniques found in
+  this repo, each with a real before/after snippet: dispatch, error layout,
+  corner-table and entropy-coding tricks, a five-commit KD-tree case study, and
+  what was measured and rejected.
 
 ## Repository layout
 
