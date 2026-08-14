@@ -29,6 +29,45 @@ fn most_significant_bit(value: u32) -> u32 {
     31 - value.leading_zeros()
 }
 
+/// Copies the row at `src` onto the `dim` values that follow it.
+///
+/// `copy_within` with a length only known at run time is a `memmove` call, and
+/// a node's row is a handful of words -- the call dominated what it copied.
+/// Dispatching the common dimensions to a constant length turns each into a
+/// few loads and stores; anything wider falls back to the call, where its size
+/// makes the call worth what it costs.
+#[cfg(feature = "decoder")]
+#[inline]
+fn copy_row_to_next(stack: &mut [u32], src: usize, dim: usize) {
+    #[inline(always)]
+    fn fixed<const N: usize>(stack: &mut [u32], src: usize) {
+        // The caller bounds both rows before it reaches here, so this is the
+        // same range `copy_within` would have taken.
+        debug_assert!(stack.len() >= src + 2 * N);
+        let Some(window) = stack.get_mut(src..src + 2 * N) else {
+            return;
+        };
+        let (row, next) = window.split_at_mut(N);
+        next.copy_from_slice(row);
+    }
+
+    match dim {
+        1 => fixed::<1>(stack, src),
+        2 => fixed::<2>(stack, src),
+        3 => fixed::<3>(stack, src),
+        4 => fixed::<4>(stack, src),
+        5 => fixed::<5>(stack, src),
+        6 => fixed::<6>(stack, src),
+        7 => fixed::<7>(stack, src),
+        8 => fixed::<8>(stack, src),
+        9 => fixed::<9>(stack, src),
+        10 => fixed::<10>(stack, src),
+        11 => fixed::<11>(stack, src),
+        12 => fixed::<12>(stack, src),
+        _ => stack.copy_within(src..src + dim, src + dim),
+    }
+}
+
 fn increment_mod(v: u32, m: u32) -> u32 {
     let next = v + 1;
     if next >= m {
@@ -720,7 +759,7 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
 
             let num_remaining_bits = self.bit_length - level;
             let modifier = 1u32 << (num_remaining_bits - 1);
-            base_stack.copy_within(row_start..row_end, child_start);
+            copy_row_to_next(base_stack, row_start, dimension);
             base_stack[child_start + axis] += modifier;
 
             let incoming_bits = most_significant_bit(num_remaining_points);
@@ -750,7 +789,7 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             }
 
             levels_stack[row_start + axis] += 1;
-            levels_stack.copy_within(row_start..row_end, child_start);
+            copy_row_to_next(levels_stack, row_start, dimension);
 
             if first_half != 0 {
                 stack.push(Status {
