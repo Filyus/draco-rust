@@ -1217,3 +1217,38 @@ where
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "decoder"))]
+mod tests {
+    use super::*;
+    use crate::corner_table::CornerTable;
+    use crate::geometry_indices::VertexIndex;
+    use crate::prediction_scheme::PredictionSchemeDecoder;
+    use crate::prediction_scheme_wrap::PredictionSchemeWrapDecodingTransform;
+
+    #[test]
+    fn crease_edge_flag_count_above_the_corner_count_is_refused_before_reading() {
+        let mut corner_table = CornerTable::new(1);
+        corner_table.init(&[[VertexIndex(0), VertexIndex(1), VertexIndex(2)]]);
+        let mut mesh_data = MeshPredictionSchemeData::new();
+        mesh_data.set(&corner_table, &[1, 2, 0], &[2, 0, 1]);
+
+        // One face = three corners. A first context declaring four flags names
+        // more reads than the mesh has corners, and the refusal has to come
+        // before the rANS stream starts: `decode_next_bit` answers `false` for
+        // an encoded zero and for a spent stream alike, so the declared count
+        // checked against the corner count is the only bound on the reads.
+        let bytes = [4u8]; // varint: context 0 declares 4 crease-edge flags
+        let mut buffer = DecoderBuffer::new(&bytes);
+        buffer.set_version(2, 2);
+
+        let mut decoder = MeshPredictionSchemeConstrainedMultiParallelogramDecoder::<
+            i32,
+            i32,
+            PredictionSchemeWrapDecodingTransform<i32>,
+        >::new(PredictionSchemeWrapDecodingTransform::new(), mesh_data);
+
+        let err = decoder.decode_prediction_data(&mut buffer).unwrap_err();
+        assert!(err.message().contains("more than the 3 corners"), "{err}");
+    }
+}

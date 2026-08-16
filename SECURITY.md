@@ -204,13 +204,16 @@ ceiling + isolation) and is a supported target for this crate.
   hostile-input confidence depends on running it regularly with a persisted
   corpus; arbitrary-hostile-input safety is improving, not yet claimed absolute.
 - An rANS bit decoder cannot tell an encoded zero from a read past the encoded
-  bits, so a read count that overshoots yields deterministic garbage rather than
-  an error. The bound has to be structural at each call site — the crease-edge
-  flags against the corner count, the texture-coordinate orientations against
-  the entry count — and those bounds have not all been audited. This is a
+  bits, so a read count that overshoots yields deterministic garbage rather
+  than an error. The bound has to be structural at each call site, and every
+  call site has been audited: the crease-edge flags and the deprecated
+  texture-coordinate orientations against the corner count, the portable
+  orientations and the geometric-normal flip bits against the entry count,
+  the EdgeBreaker seam bits against the decoded face count, and the start-face
+  and predictive-traversal bits against the symbol count. This is a
   wrong-geometry rather than a memory-safety concern: the loops are driven by
-  counts that have their own guards. Tracked in `hardening_status.yaml` as
-  `rans-over-read-call-site-bounds`.
+  counts that have their own guards. The audit is recorded in
+  `hardening_status.yaml` under `rans-over-read-call-site-bounds`.
 - A `draco-texture` level at the 16384-texel dimension limit legitimately costs
   a gigabyte, and the ETC1S block table for a level with alpha costs 134 MB.
   Both are bounded, fallible, and reached only as far as the blocks that

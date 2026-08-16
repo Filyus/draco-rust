@@ -896,6 +896,31 @@ mod tests {
     }
 
     #[test]
+    fn deprecated_tex_coords_refuses_orientation_count_above_the_corner_count() {
+        let mut corner_table = CornerTable::new(1);
+        corner_table.init(&[[VertexIndex(0), VertexIndex(1), VertexIndex(2)]]);
+        let mut mesh_data = MeshPredictionSchemeData::new();
+        mesh_data.set(&corner_table, &[1, 2, 0], &[2, 0, 1]);
+
+        // One face = three corners. Four orientations would read one rANS bit
+        // each past what any three-corner mesh can consume, and the refusal has
+        // to come before the stream starts: `decode_next_bit` answers `false`
+        // for an encoded zero and for a spent stream alike, so the declared
+        // count checked against the corner count is the only bound.
+        let bytes = [4u8]; // varint: 4 orientations
+        let mut buffer = DecoderBuffer::new(&bytes);
+        buffer.set_version(2, 2);
+
+        let mut decoder = MeshPredictionSchemeTexCoordsDeprecatedDecoder::new(
+            PredictionSchemeWrapDecodingTransform::<i32>::new(),
+        );
+        decoder.init(&mesh_data);
+
+        let err = decoder.decode_prediction_data(&mut buffer).unwrap_err();
+        assert!(err.message().contains("more than the 3 corners"), "{err}");
+    }
+
+    #[test]
     #[cfg(all(feature = "encoder", feature = "decoder"))]
     fn deprecated_tex_coords_encoder_roundtrips_decoder() {
         use crate::prediction_scheme::PredictionSchemeEncoder;

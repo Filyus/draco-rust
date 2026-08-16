@@ -87,7 +87,11 @@ impl<'a> RAnsBitDecoder<'a> {
     /// So over-reading an rANS stream has to be prevented by bounding the read
     /// count against something structural, which is what the callers do: the
     /// crease-edge flags against the corner count, the texture-coordinate
-    /// orientations against the entry count.
+    /// orientations against the entry count, the EdgeBreaker seam bits against
+    /// the decoded face count, the start-face and predictive bits against the
+    /// symbol count. Every call site has been audited against this
+    /// requirement; the per-site bounds are recorded under
+    /// `rans-over-read-call-site-bounds` in `hardening_status.yaml`.
     ///
     /// [`DirectBitDecoder::decode_next_bit`]: crate::direct_bit_decoder::DirectBitDecoder::decode_next_bit
     pub fn decode_next_bit(&mut self) -> bool {
