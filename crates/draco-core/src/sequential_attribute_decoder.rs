@@ -49,9 +49,5 @@ impl SequentialAttributeDecoder {
     ) {
     }
 
-    pub fn transform_attribute_to_original_format(
-        &mut self,
-        _point_ids: EntryToPointIdMap<'_>,
-    ) {
-    }
+    pub fn transform_attribute_to_original_format(&mut self, _point_ids: EntryToPointIdMap<'_>) {}
 }

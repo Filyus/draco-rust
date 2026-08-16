@@ -77,7 +77,10 @@ impl SequentialNormalAttributeEncoder {
             .set_parameters(quantization_bits)
     }
 
-    pub fn encode_data_needed_by_portable_transform(&self, out_buffer: &mut EncoderBuffer) -> Status {
+    pub fn encode_data_needed_by_portable_transform(
+        &self,
+        out_buffer: &mut EncoderBuffer,
+    ) -> Status {
         // The one byte AttributeOctahedronTransform::EncodeParameters writes.
         out_buffer.encode(self.attribute_octahedron_transform.quantization_bits() as u8);
         Ok(())

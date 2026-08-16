@@ -13,8 +13,8 @@ use crate::encoder_buffer::EncoderBuffer;
 use crate::encoder_options::EncoderOptions;
 use crate::geometry_indices::PointIndex;
 use crate::point_cloud::PointCloud;
-use crate::status::{DracoError, Status};
 use crate::prediction_scheme::EntryToPointIdMap;
+use crate::status::{DracoError, Status};
 
 pub struct KdTreeAttributesEncoder {
     attribute_ids: Vec<i32>,

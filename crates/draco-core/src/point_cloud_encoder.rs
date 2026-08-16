@@ -454,7 +454,9 @@ impl PointCloudEncoder {
             // Init (Transform attributes to portable format)
             att_encoder
                 .transform_attributes_to_portable_format(pc, &self.options)
-                .map_err(|err| DracoError::general(format!("Failed to transform attributes: {err}")))?;
+                .map_err(|err| {
+                    DracoError::general(format!("Failed to transform attributes: {err}"))
+                })?;
 
             // Note: KD-tree encoding does NOT write an encoder type identifier byte.
             // This is different from sequential encoding where each attribute has a decoder type.
@@ -464,17 +466,23 @@ impl PointCloudEncoder {
             // Encode Attributes Encoder Data (Metadata)
             att_encoder
                 .encode_attributes_encoder_data(pc, out_buffer)
-                .map_err(|err| DracoError::general(format!("Failed to encode attribute metadata: {err}")))?;
+                .map_err(|err| {
+                    DracoError::general(format!("Failed to encode attribute metadata: {err}"))
+                })?;
 
             // Encode Attributes (Portable Data)
             att_encoder
                 .encode_attributes(pc, &self.options, out_buffer)
-                .map_err(|err| DracoError::general(format!("Failed to encode attributes: {err}")))?;
+                .map_err(|err| {
+                    DracoError::general(format!("Failed to encode attributes: {err}"))
+                })?;
 
             // Encode Attributes Transform Data
             att_encoder
                 .encode_data_needed_by_portable_transforms(out_buffer)
-                .map_err(|err| DracoError::general(format!("Failed to encode attribute transform data: {err}")))?;
+                .map_err(|err| {
+                    DracoError::general(format!("Failed to encode attribute transform data: {err}"))
+                })?;
         } else {
             // Sequential Encoding (Draco v1.3)
             //

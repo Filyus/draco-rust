@@ -608,10 +608,8 @@ fn build_artifact() -> PathBuf {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        let is_artifact = name.starts_with("debug_cube_v11")
-            && path
-                .extension()
-                .is_none_or(|e| e == "exe");
+        let is_artifact =
+            name.starts_with("debug_cube_v11") && path.extension().is_none_or(|e| e == "exe");
         if is_artifact && path.is_file() {
             return path;
         }
@@ -664,11 +662,7 @@ fn error_prose_stays_a_small_part_of_the_compiled_code() {
     // Named rather than counted: a fragment can be absent because the optimiser
     // dropped its branch, or because this file mangled it. Only reading them
     // tells the two apart, and the second is a bug here.
-    let sample: Vec<String> = missing
-        .iter()
-        .take(5)
-        .map(|f| format!("{f:?}"))
-        .collect();
+    let sample: Vec<String> = missing.iter().take(5).map(|f| format!("{f:?}")).collect();
 
     let ratio = shipped as f64 / text as f64;
     let report = format!(
@@ -688,7 +682,10 @@ fn error_prose_stays_a_small_part_of_the_compiled_code() {
     eprintln!("{report}");
 
     assert!(shipped > 0, "no message reached the artifact\n{report}");
-    assert!(ratio <= MAX_RATIO, "error prose grew past the ceiling\n{report}");
+    assert!(
+        ratio <= MAX_RATIO,
+        "error prose grew past the ceiling\n{report}"
+    );
 }
 
 /// The two readers are what is most likely to be wrong, so they are pinned on

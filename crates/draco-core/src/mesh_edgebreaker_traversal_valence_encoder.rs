@@ -189,10 +189,9 @@ impl MeshEdgebreakerTraversalValenceEncoder {
                 // We'll use a default compression level (e.g. 7) or pass it in.
                 // Let's assume we can change signature of done later if needed.
                 let options = crate::symbol_encoding::SymbolEncodingOptions { compression_level };
-                crate::symbol_encoding::encode_symbols(symbols, 1, &options, out_buffer)
-                    .map_err(|err| {
-                        DracoError::general(format!("Failed to encode valence symbols: {err}"))
-                    })?;
+                crate::symbol_encoding::encode_symbols(symbols, 1, &options, out_buffer).map_err(
+                    |err| DracoError::general(format!("Failed to encode valence symbols: {err}")),
+                )?;
             }
         }
         Ok(())

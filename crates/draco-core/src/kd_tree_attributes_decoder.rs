@@ -64,9 +64,10 @@ impl KdTreeAttributesDecoder {
         in_buffer: &mut DecoderBuffer,
     ) -> Status {
         self.attribute_ids.clear();
-        let num_attributes = in_buffer.decode_varint().map_err(|_| {
-            DracoError::buffer("Buffer ran out reading the KD-tree attribute count")
-        })? as usize;
+        let num_attributes = in_buffer
+            .decode_varint()
+            .map_err(|_| DracoError::buffer("Buffer ran out reading the KD-tree attribute count"))?
+            as usize;
         // Attribute descriptor minimum is 5 bytes: four one-byte fields
         // (type, data_type, num_components, normalized) plus at least one
         // byte for the unique_id varint, even when the id is zero.
@@ -95,7 +96,9 @@ impl KdTreeAttributesDecoder {
             })?;
 
             let data_type_val = in_buffer.decode_u8().map_err(|_| {
-                DracoError::buffer(format!("Buffer ran out reading attribute {index}'s data type"))
+                DracoError::buffer(format!(
+                    "Buffer ran out reading attribute {index}'s data type"
+                ))
             })?;
             let data_type = DataType::try_from(data_type_val).map_err(|_| {
                 DracoError::general(format!(
@@ -119,7 +122,9 @@ impl KdTreeAttributesDecoder {
                 ))
             })? != 0;
             let unique_id = in_buffer.decode_varint().map_err(|_| {
-                DracoError::buffer(format!("Buffer ran out reading attribute {index}'s unique id"))
+                DracoError::buffer(format!(
+                    "Buffer ran out reading attribute {index}'s unique id"
+                ))
             })? as u32;
 
             // The ratio still refuses the absurd, but the buffer is not taken
@@ -241,9 +246,7 @@ impl KdTreeAttributesDecoder {
         let expected_decoded_len = num_expected_points
             .checked_mul(total_dimensionality)
             .ok_or_else(|| {
-                DracoError::general(
-                    "Point count times dimensionality overflows a usize",
-                )
+                DracoError::general("Point count times dimensionality overflows a usize")
             })?;
         if decoded.len() != expected_decoded_len {
             return Err(DracoError::general(format!(
@@ -264,7 +267,9 @@ impl KdTreeAttributesDecoder {
                 DracoError::general(format!("Attribute {att_id} has a negative byte stride"))
             })?;
             let required = att.size().checked_mul(stride).ok_or_else(|| {
-                DracoError::general(format!("Attribute {att_id}'s buffer size overflows a usize"))
+                DracoError::general(format!(
+                    "Attribute {att_id}'s buffer size overflows a usize"
+                ))
             })?;
             if att.buffer().data_size() < required {
                 att.buffer_mut().try_resize(required).map_err(|_| {
@@ -456,13 +461,14 @@ impl KdTreeAttributesDecoder {
                             cached.decoded.len()
                         ))
                     })?;
-                    let &min_value = self.min_signed_values.get(min_index + c).ok_or_else(|| {
-                        DracoError::general(format!(
-                            "No signed minimum at index {} of {}",
-                            min_index + c,
-                            self.min_signed_values.len()
-                        ))
-                    })?;
+                    let &min_value =
+                        self.min_signed_values.get(min_index + c).ok_or_else(|| {
+                            DracoError::general(format!(
+                                "No signed minimum at index {} of {}",
+                                min_index + c,
+                                self.min_signed_values.len()
+                            ))
+                        })?;
                     let signed = unsigned as i64 + min_value as i64;
                     let component_offset = c
                         .checked_mul(component_size)
@@ -476,7 +482,9 @@ impl KdTreeAttributesDecoder {
                         spec.data_type,
                         signed,
                     )
-                    .map_err(|err| DracoError::general(format!("Point {p} component {c}: {err}")))?;
+                    .map_err(|err| {
+                        DracoError::general(format!("Point {p} component {c}: {err}"))
+                    })?;
                 }
             }
             min_index += spec.num_components;
@@ -623,10 +631,7 @@ mod tests {
             DataType::Uint32,
         )
         .unwrap_err();
-        assert!(
-            err.message().contains("past the attribute buffer"),
-            "{err}"
-        );
+        assert!(err.message().contains("past the attribute buffer"), "{err}");
     }
 
     #[test]

@@ -99,12 +99,7 @@ pub(crate) fn compute_parallelogram_prediction<DataType: ParallelogramDataType>(
         let v_opp = &in_data[v_opp_off..v_opp_off + num_components];
         let v_next = &in_data[v_next_off..v_next_off + num_components];
         let v_prev = &in_data[v_prev_off..v_prev_off + num_components];
-        for (((o, &n), &pr), &op) in out_prediction
-            .iter_mut()
-            .zip(v_next)
-            .zip(v_prev)
-            .zip(v_opp)
-        {
+        for (((o, &n), &pr), &op) in out_prediction.iter_mut().zip(v_next).zip(v_prev).zip(v_opp) {
             *o = DataType::compute_parallelogram_prediction(n, pr, op);
         }
 

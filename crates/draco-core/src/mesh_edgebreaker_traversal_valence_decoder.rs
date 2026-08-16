@@ -201,9 +201,7 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
                     in_buffer,
                     &mut self.context_symbols[i],
                 )
-                .map_err(|err| {
-                    DracoError::general(format!("Valence context {i} of 6: {err}"))
-                })?;
+                .map_err(|err| DracoError::general(format!("Valence context {i} of 6: {err}")))?;
                 // Set counter to read from back
                 self.context_counters[i] = num_symbols as i32;
             }

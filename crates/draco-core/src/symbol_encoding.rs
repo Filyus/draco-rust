@@ -665,7 +665,10 @@ mod tests {
         // The count and the component width both appear: which pair failed to
         // divide is the whole content of the refusal.
         let err = decode_tagged_symbols(5, 2, &mut buffer, &mut symbols).unwrap_err();
-        assert!(err.message().contains('5') && err.message().contains('2'), "{err}");
+        assert!(
+            err.message().contains('5') && err.message().contains('2'),
+            "{err}"
+        );
     }
 }
 

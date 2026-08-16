@@ -8,8 +8,6 @@
 #[cfg(feature = "decoder")]
 use crate::decoder_buffer::DecoderBuffer;
 #[cfg(feature = "decoder")]
-use crate::status::DracoError;
-#[cfg(feature = "decoder")]
 use crate::direct_bit_decoder::DirectBitDecoder;
 #[cfg(feature = "encoder")]
 use crate::direct_bit_encoder::DirectBitEncoder;
@@ -23,6 +21,8 @@ use crate::folded_bit32_coder::FoldedBit32Encoder;
 use crate::rans_bit_decoder::RAnsBitDecoder;
 #[cfg(feature = "encoder")]
 use crate::rans_bit_encoder::RAnsBitEncoder;
+#[cfg(feature = "decoder")]
+use crate::status::DracoError;
 
 fn most_significant_bit(value: u32) -> u32 {
     debug_assert!(value > 0);
