@@ -681,7 +681,8 @@ length isn't a multiple of three:
 const NEXT_LOCAL: [usize; 3] = [1, 2, 0];
 const PREV_LOCAL: [usize; 3] = [2, 0, 1];
 
-for (face, face_base) in self.corner_to_vertex_map
+for (face, face_base) in self
+    .corner_to_vertex_map
     .chunks_exact(3)
     .map(<[VertexIndex; 3]>::try_from)
     .map(|face| face.expect("chunks_exact(3) yields three vertices"))
@@ -1491,12 +1492,20 @@ Bounding the whole row once and taking the destination slice up front lets
 every component write straight into it:
 
 ```rust
-let dst = target_attribute.buffer_mut().data_mut()
+let dst = target_attribute
+    .buffer_mut()
+    .data_mut()
     .get_mut(base..row_end)
-    .ok_or_else(|| DracoError::general(format!("Point {p} writes {base}..{row_end} past the attribute buffer")))?;
+    .ok_or_else(|| {
+        DracoError::general(format!(
+            "Point {p} writes {base}..{row_end} past the attribute buffer"
+        ))
+    })?;
 match target_type {
     DataType::Uint8 => {
-        for (d, &v) in dst.iter_mut().zip(src) { *d = v as u8; }
+        for (d, &v) in dst.iter_mut().zip(src) {
+            *d = v as u8;
+        }
     }
     DataType::Uint16 => {
         for (d, &v) in dst.chunks_exact_mut(2).zip(src) {
