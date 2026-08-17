@@ -21,7 +21,7 @@ fn as_i64(node: &FbxNode, index: usize) -> Option<i64> {
     }
 }
 
-fn as_str<'a>(node: &'a FbxNode, index: usize) -> Option<&'a str> {
+fn as_str(node: &FbxNode, index: usize) -> Option<&str> {
     match node.properties.get(index)? {
         draco_io::fbx_node::FbxProperty::String(v) => Some(v),
         _ => None,
@@ -44,14 +44,14 @@ fn property_numbers(p: &draco_io::fbx_node::FbxProperty) -> Option<Vec<f64>> {
         F32(v) => vec![f64::from(*v)],
         I32(v) => vec![f64::from(*v)],
         I64(v) => vec![*v as f64],
-        F64Array(v) => v.iter().map(|&x| x).collect(),
+        F64Array(v) => v.to_vec(),
         F32Array(v) => v.iter().map(|&x| f64::from(x)).collect(),
         I32Array(v) => v.iter().map(|&x| f64::from(x)).collect(),
         _ => return None,
     })
 }
 
-fn named_properties<'a>(model: &'a FbxNode) -> Vec<(&'a str, Vec<f64>)> {
+fn named_properties(model: &FbxNode) -> Vec<(&str, Vec<f64>)> {
     let mut out = Vec::new();
     for props in model.children.iter().filter(|c| c.name == "Properties70") {
         for p in props.children.iter().filter(|c| c.name == "P") {
