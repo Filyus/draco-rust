@@ -181,6 +181,42 @@ is the sign and the size on both profiles, with the same control. Anyone
 taking it further should measure the memo allocations directly rather than
 inferring them from these two tables.
 
+### The 2026-08-18 Round, Including What Did Not Work
+
+Measured with `dev/profiling/abn.sh` on the Bunny, `2` seconds per run, `24`
+to `40` interleaved runs per binary, and -- for anything claimed as a result --
+two builds per condition, perturbed by a never-called function so their code
+layout differs. That last part is not ceremony: on this workload two builds of
+one condition sat `0.8%` apart, and a single-build reading of the encoder
+change below said `2.6%` where the two-build reading says `1.9%`.
+
+Landed:
+
+- Parallelogram prediction in wrapping `i32` instead of widened `i64`, worth
+  `0.65%` of decode at speed 5.
+- The encoder's split-symbol lookup as a `Vec` indexed by face instead of a
+  `HashMap` hashed by it, worth `1.9%` of encode.
+
+Measured and rejected, so the next attempt can start elsewhere:
+
+- Fetching the opposite face's three vertices in one bounds-checked slice
+  rather than three accessor calls: `1.4%` **slower**.
+- `#[inline]` on the ten hottest corner-table and mesh accessors, on the
+  theory that they were not being inlined across codegen units: `0.2%` on
+  decode and `0.5%` on encode, both inside the build-to-build spread.
+- Rewriting `AnsDecoder::read_normalize` to pop from a prefix slice instead of
+  indexing at an offset: not detectable.
+- Skipping `CornerTable::is_index_consistent` entirely (a probe, not a
+  proposal): not detectable, so the check is not what it costs.
+
+What the profile says is left: on decode, roughly a fifth of self time sits in
+the corner-table accessors and the generic machinery around them -- bounds
+checks, `Option`, range iterators -- and `corner_table.rs` already records that
+removing the bounds check there with `get_unchecked` is worth `2.0%`, which is
+the standing price of the no-`unsafe` promise. Nothing else in either profile
+is both this large and reachable without `unsafe` or a restructuring bigger
+than a micro-optimization.
+
 ## Main C++ vs Rust Benchmarks
 
 ### Decode Through The C++ Bridge
