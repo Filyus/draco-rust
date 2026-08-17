@@ -133,11 +133,28 @@ side agreeing between the binaries to `1.6%`:
 | 9 | `7.43x` | `5.40x` | `5.65x` | `49.76x` | `32.82x` | `35.55x` |
 | 10 | `1.26x` | `1.24x` | `1.29x` | `1.19x` | `1.16x` | `1.37x` |
 
-Most of that gap is now attributed: those figures were taken through `cargo
-test`, which costs the C++ side `25%` for reasons given above. What remains
-after allowing for it is `8%` on encode and `26%` on decode, and that part is
-the machine. The conclusion is unchanged, and the reason it is unchanged is
-that both columns of the pair below were taken the same way, minutes apart.
+Those figures were taken through `cargo test`, so the like-for-like version of
+the comparison is today's revision run the same way, `3` runs, median:
+
+| | C++ then | C++ now | Rust then | Rust now | Speedup then | Speedup now |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| encode sp0 | `1,680` | `1,457` | `660` | `544` | `3.49x` | `3.85x` |
+| encode sp9 | `1,410` | `1,178` | `438` | `386` | `7.43x` | `6.76x` |
+| decode sp0 | `2,662` | `2,145` | `93` | `85` | `28.98x` | `25.66x` |
+| decode sp9 | `2,644` | `2,101` | `59` | `52` | `49.76x` | `44.06x` |
+
+Both sides run faster on this machine than they did on that one -- C++ by
+`13%` to `17%` on encode and `18%` to `21%` on decode, Rust by `10%` to `18%`
+and `7%` to `13%` -- and because the C++ side gains more, the ratio still
+falls: `0.91x` to `0.94x` of the July figure at encode speeds `2` and up,
+`0.88x` to `0.94x` on decode, against `1.10x` at encode speeds `0` and `1` and
+`1.14x` at decode speed `10`, which are the two places the optimization series
+paid the most. The real corpus behaves the same way: `0.85x` to `0.99x` of the
+July encode figures, `0.90x` to `1.09x` on decode.
+
+So the comparison survives being made properly, and it says the same thing as
+the pair below: the code is faster and the ratio is worse, because a ratio is
+not a property of the code alone.
 
 So the whole of the drop is the environment and none of it is the code: the
 July revision measured today is *slower* than today's revision, not faster,
