@@ -2575,6 +2575,10 @@ fn scene_node_to_fbx(input: SceneNodeInput) -> Result<FbxSceneNode, String> {
         transform,
         transform_stack: input.transform_stack.map(Into::into),
         has_complex_transform_stack: false,
+        // A JS-built scene names its joints through skin clusters, so a node
+        // built here has no Model class to preserve; the wasm surface can
+        // grow a kind field if a caller ever needs unweighted joints.
+        kind: None,
         mesh_instances: input
             .meshes
             .iter()
@@ -2992,6 +2996,7 @@ fn flat_meshes_to_scene(meshes: &[MeshInput]) -> Result<FbxScene, String> {
         .enumerate()
         .map(|(index, mesh)| {
             Ok(FbxSceneNode {
+                kind: None,
                 id: FbxNodeId(index as u32),
                 name: mesh.name.clone().or_else(|| Some(format!("mesh_{index}"))),
                 transform: None,
@@ -3024,6 +3029,7 @@ mod reader_tests {
         let scene = FbxScene {
             global_settings: None,
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: FbxNodeId(1),
                 name: Some("Root".to_string()),
                 transform: None,
@@ -3056,6 +3062,7 @@ mod reader_tests {
         let scene = FbxScene {
             global_settings: None,
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: FbxNodeId(1),
                 name: Some("Root".to_string()),
                 transform: None,

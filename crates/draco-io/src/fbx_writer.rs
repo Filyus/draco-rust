@@ -356,17 +356,26 @@ impl FbxWriter {
         let model_id = self.allocate_id();
         // Importers key off the Model's own class, not only off the attribute
         // hanging from it: a camera written as Model::Mesh loads as an empty
-        // mesh in Blender however correct its NodeAttribute is.
+        // mesh in Blender however correct its NodeAttribute is. A joint is
+        // known by the class the source Model carried when it had one, and
+        // by cluster membership otherwise: a rig holds joints no cluster
+        // references — a bone's `*_end` tail helper — and rewriting those as
+        // mesh Models left the chain Blender forms from parented LimbNodes
+        // broken at every tail.
         let class = match &attribute {
             Some(FbxNodeAttribute::Camera(_)) => "Camera",
             Some(FbxNodeAttribute::Light(_)) => "Light",
-            None if scene_node_id
-                .map(|id| self.joint_scene_ids.contains(&id))
-                .unwrap_or(false) =>
-            {
-                "LimbNode"
-            }
-            _ => "Mesh",
+            _ => match source.and_then(|node| node.kind) {
+                Some(crate::fbx_scene::FbxNodeKind::Joint) => "LimbNode",
+                Some(crate::fbx_scene::FbxNodeKind::Null) => "Null",
+                None if scene_node_id
+                    .map(|id| self.joint_scene_ids.contains(&id))
+                    .unwrap_or(false) =>
+                {
+                    "LimbNode"
+                }
+                _ => "Mesh",
+            },
         };
         self.models.push(ModelData {
             name,
@@ -2919,6 +2928,7 @@ mod tests {
         let scene = FbxScene {
             global_settings: None,
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Empty".to_string()),
                 transform: None,
@@ -2980,6 +2990,7 @@ mod tests {
     fn a_camera_is_declared_the_way_importers_expect() {
         let scene = FbxScene {
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Cam".to_string()),
                 attribute: Some(crate::fbx_scene::FbxNodeAttribute::Camera(
@@ -3159,6 +3170,7 @@ mod tests {
         let scene = FbxScene {
             global_settings: None,
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Root".to_string()),
                 transform: None,
@@ -3167,6 +3179,7 @@ mod tests {
                 mesh_instances: Vec::new(),
                 attribute: None,
                 children: vec![FbxSceneNode {
+                    kind: None,
                     id: crate::fbx_scene::FbxNodeId(2),
                     name: Some("Child".to_string()),
                     transform: Some(child_transform),
@@ -3232,6 +3245,7 @@ mod tests {
         let scene = FbxScene {
             global_settings: None,
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("StackedNode".to_string()),
                 transform: Some(FbxTransform {
@@ -3302,6 +3316,7 @@ mod tests {
         let scene = FbxScene {
             global_settings: None,
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Armature".to_string()),
                 transform: None,
@@ -3311,6 +3326,7 @@ mod tests {
                 attribute: None,
                 children: vec![
                     FbxSceneNode {
+                        kind: None,
                         id: crate::fbx_scene::FbxNodeId(2),
                         name: Some("Bone".to_string()),
                         transform: Some(identity),
@@ -3321,6 +3337,7 @@ mod tests {
                         children: Vec::new(),
                     },
                     FbxSceneNode {
+                        kind: None,
                         id: crate::fbx_scene::FbxNodeId(3),
                         name: Some("Mesh".to_string()),
                         transform: Some(identity),
@@ -3382,12 +3399,184 @@ mod tests {
         );
     }
 
+    /// A rig holding a joint no skin cluster references, under a Null root.
+    ///
+    /// This is the shape every rig's tail takes — a `*_end` joint carrying no
+    /// weights — and the armature root object. Both are known only by the
+    /// class their source Model carried, which the scene keeps as `kind`.
+    /// Written as plain mesh Models they import as loose objects, and an
+    /// importer that forms bone chains from parented LimbNodes finds the
+    /// chain broken at every tail.
+    fn rig_scene_with_unweighted_joints() -> FbxScene {
+        use crate::fbx_scene::FbxNodeKind;
+        FbxScene {
+            global_settings: None,
+            root_nodes: vec![FbxSceneNode {
+                id: crate::fbx_scene::FbxNodeId(1),
+                name: Some("Armature".to_string()),
+                kind: Some(FbxNodeKind::Null),
+                transform: None,
+                transform_stack: None,
+                has_complex_transform_stack: false,
+                mesh_instances: Vec::new(),
+                attribute: None,
+                children: vec![FbxSceneNode {
+                    id: crate::fbx_scene::FbxNodeId(2),
+                    name: Some("Bone".to_string()),
+                    kind: Some(FbxNodeKind::Joint),
+                    transform: None,
+                    transform_stack: None,
+                    has_complex_transform_stack: false,
+                    mesh_instances: Vec::new(),
+                    attribute: None,
+                    children: vec![FbxSceneNode {
+                        id: crate::fbx_scene::FbxNodeId(3),
+                        name: Some("Bone_end".to_string()),
+                        kind: Some(FbxNodeKind::Joint),
+                        transform: None,
+                        transform_stack: None,
+                        has_complex_transform_stack: false,
+                        mesh_instances: Vec::new(),
+                        attribute: None,
+                        children: Vec::new(),
+                    }],
+                }],
+            }],
+            materials: Vec::new(),
+            textures: Vec::new(),
+            animations: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_joint_no_cluster_names_is_still_written_as_a_limb_node() {
+        let mut writer = FbxWriter::new();
+        writer
+            .add_scene(&rig_scene_with_unweighted_joints())
+            .unwrap();
+        let document = writer.build_document().unwrap();
+
+        let objects = document
+            .iter()
+            .find(|node| node.name == "Objects")
+            .expect("the document holds an Objects node");
+        let connections = document
+            .iter()
+            .find(|node| node.name == "Connections")
+            .expect("the document holds a Connections node");
+
+        // Model class suffixes, keyed by the object name prefix.
+        let model_classes: Vec<(String, &str)> = objects
+            .children
+            .iter()
+            .filter(|node| node.name == "Model")
+            .filter_map(|node| {
+                let FbxProperty::String(name) = &node.properties[1] else {
+                    return None;
+                };
+                let FbxProperty::String(class) = &node.properties[2] else {
+                    return None;
+                };
+                Some((name.split('\0').next()?.to_string(), class.as_str()))
+            })
+            .collect();
+        assert_eq!(
+            model_classes,
+            vec![
+                ("Armature".to_string(), "Null"),
+                ("Bone".to_string(), "LimbNode"),
+                ("Bone_end".to_string(), "LimbNode"),
+            ]
+        );
+
+        // The joint Models' written ids, which the writer allocates itself.
+        let joint_model_ids: Vec<i64> = objects
+            .children
+            .iter()
+            .filter(|node| node.name == "Model")
+            .filter(|node| {
+                matches!(&node.properties[2],
+                    FbxProperty::String(class) if class == "LimbNode")
+            })
+            .map(|node| match node.properties.first() {
+                Some(FbxProperty::I64(id)) => *id,
+                _ => panic!("a Model names itself with an id"),
+            })
+            .collect();
+        assert_eq!(joint_model_ids.len(), 2);
+
+        // Every joint carries a Skeleton NodeAttribute, connected to its Model.
+        let skeleton_attributes: Vec<i64> = objects
+            .children
+            .iter()
+            .filter(|node| node.name == "NodeAttribute")
+            .filter(|node| {
+                node.children.iter().any(|child| {
+                    child.name == "TypeFlags"
+                        && matches!(&child.properties.first(),
+                            Some(FbxProperty::String(flags)) if flags == "Skeleton")
+                })
+            })
+            .map(|node| match node.properties.first() {
+                Some(FbxProperty::I64(id)) => *id,
+                _ => panic!("a NodeAttribute names itself with an id"),
+            })
+            .collect();
+        assert_eq!(
+            skeleton_attributes.len(),
+            2,
+            "Bone and Bone_end each carry a Skeleton NodeAttribute"
+        );
+        for attribute_id in skeleton_attributes {
+            // OO child->parent for this attribute, with the parent one of the
+            // two joint Models.
+            let connected = connections.children.iter().any(|conn| {
+                if conn.name != "C" {
+                    return false;
+                }
+                let Some(FbxProperty::String(kind)) = conn.properties.first() else {
+                    return false;
+                };
+                if kind != "OO" {
+                    return false;
+                }
+                match (conn.properties.get(1), conn.properties.get(2)) {
+                    (Some(FbxProperty::I64(child)), Some(FbxProperty::I64(parent))) => {
+                        *child == attribute_id && joint_model_ids.contains(parent)
+                    }
+                    _ => false,
+                }
+            });
+            assert!(
+                connected,
+                "Skeleton NodeAttribute {attribute_id} connects to its joint's Model"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "fbx-reader")]
+    fn a_model_class_survives_a_round_trip() {
+        use crate::fbx_scene::FbxNodeKind;
+        let scene = rig_scene_with_unweighted_joints();
+        let output = FbxScene::from_bytes(&scene.to_bytes().unwrap()).unwrap();
+
+        let armature = &output.root_nodes[0];
+        let bone = &armature.children[0];
+        let bone_end = &bone.children[0];
+        assert_eq!(armature.kind, Some(FbxNodeKind::Null));
+        assert_eq!(bone.kind, Some(FbxNodeKind::Joint));
+        assert_eq!(bone_end.kind, Some(FbxNodeKind::Joint));
+    }
+
     #[test]
     #[cfg(feature = "fbx-reader")]
     fn scene_roundtrip_preserves_cubic_tangents() {
         let scene = FbxScene {
             global_settings: None,
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Root".to_string()),
                 transform: None,
@@ -3467,6 +3656,7 @@ mod tests {
         };
         let scene = FbxScene {
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Node".to_string()),
                 transform: None,
@@ -3520,6 +3710,7 @@ mod tests {
         };
         FbxScene {
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Tangential".to_string()),
                 transform: None,
@@ -3629,6 +3820,7 @@ mod tests {
         };
         let scene = FbxScene {
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Node".to_string()),
                 transform: None,
@@ -3666,6 +3858,7 @@ mod tests {
         };
         let scene = FbxScene {
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Node".to_string()),
                 transform: None,
@@ -3740,6 +3933,7 @@ mod tests {
     fn a_colour_only_geometry_lists_its_layer_element() {
         let scene = FbxScene {
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Colored".to_string()),
                 transform: None,
@@ -3817,6 +4011,7 @@ mod tests {
         };
         let scene = FbxScene {
             root_nodes: vec![FbxSceneNode {
+                kind: None,
                 id: crate::fbx_scene::FbxNodeId(1),
                 name: Some("Colored".to_string()),
                 transform: None,

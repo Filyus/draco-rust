@@ -525,6 +525,26 @@ pub struct FbxMorphTarget {
     pub full_weight: f32,
 }
 
+/// What an FBX `Model` record declared its node to be, beyond what the
+/// geometry and attributes attached to it say.
+///
+/// Every exporter writes a joint's class on the Model itself, so that is the
+/// signal this carries; the `Skeleton` `NodeAttribute` a joint usually also
+/// carries adds nothing the scene keeps. It matters exactly where nothing
+/// else says what the node is: a joint no skin cluster names — a bone's
+/// `*_end` tail helper, which holds no weights — and a `Null` grouping node
+/// such as an armature's root object. Without it both rewrite as plain mesh
+/// Models, which is how a round trip turned a rig into joints Blender cannot
+/// form a chain from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FbxNodeKind {
+    /// A `LimbNode` or `Limb` Model: one joint of a skeleton.
+    Joint,
+    /// A `Null` or `Root` Model: a transform-only grouping node, the class an
+    /// armature's root object carries.
+    Null,
+}
+
 /// A node in a hierarchy extracted from or written to FBX Model connections.
 ///
 /// The supported raw Model transform stack is retained for source-provenance
@@ -544,6 +564,9 @@ pub struct FbxSceneNode {
     /// matrix can use the skin bind pose as the baked local basis for these
     /// nodes while preserving raw Model TRS for ordinary nodes.
     pub has_complex_transform_stack: bool,
+    /// The Model's own class, when it declares the node to be something other
+    /// than a mesh; see [`FbxNodeKind`].
+    pub kind: Option<FbxNodeKind>,
     /// Geometry attached directly to this model node.
     pub mesh_instances: Vec<FbxMeshInstance>,
     /// Camera or light attached to this model node, when it carries one.
@@ -561,6 +584,7 @@ impl FbxSceneNode {
             transform: None,
             transform_stack: None,
             has_complex_transform_stack: false,
+            kind: None,
             mesh_instances: Vec::new(),
             attribute: None,
             children: Vec::new(),

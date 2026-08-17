@@ -52,27 +52,15 @@ items:
     summary: "A Model with no OO connection to the root is read as a root node, so objects the source kept out of the scene graph reappear in a rewrite."
     evidence:
       - path: "crates/draco-io/src/fbx_reader.rs"
+        note: "The why is established: build_scene treats every Model whose parent side has no Model-to-Model OO connection as top-level, so a Model connected only by an OP record (MotionBuilder's Producer cameras via CurrentCamera) has no OO parent and is rooted. Blender and ufbx instead keep such objects out of the scene graph entirely."
+      - path: "crates/draco-io/src/fbx_reader.rs"
         note: "MotionBuilder's seven Producer viewport cameras are connected only by OP ... CurrentCamera, never OO ... 0. Blender skips them; this reader roots them, and the writer then emits them as real scene objects. Four corpus files: motionbuilder_cube, _sausage_rrss, _smoothing, _thumbnail each gain seven cameras plus a Camera Switcher."
       - path: "crates/draco-io/tests/fbx_corpus.rs"
         note: "Invisible to the round-trip check, which compares our own read of both files and so agrees with itself. Found by importing before and after into Blender 4.5."
     impact: "Cosmetic today -- the objects were already emitted as empties before cameras were written, so this is not a regression -- but a rewrite of a MotionBuilder file gains eight objects its author excluded."
     next_steps:
-      - "Establish why unconnected Models are rooted: if it is to recover geometry from files with sloppy connections, find one and keep it working before changing anything."
+      - "Find a corpus file whose geometry reaches neither the root nor a rooted parent before changing the rooting rule: if unconnected Models were rooted to recover geometry from files with sloppy connections, that recovery is what would break."
       - "If nothing depends on it, drop Models that reach neither the root nor a rooted parent, and report the count as a warning rather than silently."
-
-  - id: fbx-written-skeleton-is-not-an-armature
-    area: draco-io/fbx
-    priority: low
-    status: open
-    summary: "A rewritten skinned document loses its armature: Blender rebuilds the joints as empties instead of bones."
-    evidence:
-      - path: "crates/draco-io/src/fbx_writer.rs"
-        note: "blender_293_barbarian_7400_binary imports into Blender 5.0's ufbx importer with no empties; the same scene written back yields eleven, named after the joints with an _end suffix, which is what Blender creates when it cannot form a bone chain."
-      - path: "crates/draco-io/examples/fbx_rewrite.rs"
-        note: "Predates the property-template work -- the rewrite produced the same eleven before it -- so it belongs to how the skeleton is written, not to how properties are read."
-    impact: "A skinned FBX survives our own round trip but arrives in Blender without an armature, so it cannot be posed."
-    next_steps:
-      - "Compare the written NodeAttribute/Skeleton and its Model chain against the source: Size, LimbLength and the parent connections are the usual reasons a chain does not form."
 
   - id: pgo-two-pass-build
     area: draco-io

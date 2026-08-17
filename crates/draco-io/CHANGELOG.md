@@ -9,6 +9,22 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Fixed
+
+- A rig's joints are rewritten as joints. The writer learned "this Model is a
+  joint" only from skin-cluster membership, so a joint that carries no weights
+  — a bone's `*_end` tail helper — and a `Null` grouping node such as an
+  armature's root were rewritten as plain `Mesh` Models, and an importer that
+  forms bone chains from parented `LimbNode` Models found the chain broken at
+  every tail: Blender 5 imported the rewrite of a skinned corpus file as
+  eleven loose `_end` empties and no armature. `FbxSceneNode` now carries the
+  Model's own class as `FbxNodeKind` (`Joint` for `LimbNode`/`Limb`, `Null`
+  for `Null`/`Root`), the reader sets it, and the writer classes such Models
+  as `LimbNode` or `Null` and gives every joint a `Skeleton` NodeAttribute
+  whether or not a cluster names it. Skinned files that decoded before are
+  unchanged: cluster membership still marks a joint where the source class
+  did not.
+
 ### Changed
 
 - This crate permits `unsafe` in narrow, audited paths, where `SECURITY.md`

@@ -337,6 +337,26 @@ fn object_name(node: &FbxNode) -> Option<String> {
     }
 }
 
+/// The Model record's own class, when it declares the node to be something
+/// other than a mesh.
+///
+/// A skin cluster names the joints it deforms with, but a rig holds joints no
+/// cluster ever references — a bone's `*_end` tail helper carries no weights —
+/// and an armature's root object is a `Null`. Both are joints or grouping
+/// nodes by their Model class alone, and losing that left the writer nothing
+/// to key on but cluster membership, which is how a round trip rewrote a
+/// rig's tails as plain mesh Models and broke the chain importers form.
+fn model_kind(node_src: &FbxNode) -> Option<crate::fbx_scene::FbxNodeKind> {
+    match node_src.properties.get(2) {
+        Some(FbxProperty::String(class)) => match class.as_str() {
+            "LimbNode" | "Limb" => Some(crate::fbx_scene::FbxNodeKind::Joint),
+            "Null" | "Root" => Some(crate::fbx_scene::FbxNodeKind::Null),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Everything `build_model_node` needs about the document's model graph.
 ///
 /// These six are only ever passed together, and passing them one by one put
@@ -362,6 +382,7 @@ fn build_model_node(id: i64, graph: &ModelGraph<'_, '_>, ancestors: &mut Vec<i64
         node.has_complex_transform_stack = has_complex_transform_stack;
     }
     node.attribute = graph.attributes.get(&id).cloned();
+    node.kind = model_kind(node_src);
     if let Some(mesh_instances) = graph.mesh_instances.get(&id) {
         node.mesh_instances.extend(mesh_instances.clone());
     }

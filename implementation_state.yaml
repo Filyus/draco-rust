@@ -1938,6 +1938,13 @@ files:
       - name: "read_scene"
         progress: "fully implemented"
         note: "Extracts the supported FBX model hierarchy for file and byte-backed readers, via an FbxObjectIndex built once per document. Safe to call more than once: per-document allocation budgets reset per call."
+  - path: "crates/draco-io/src/fbx_scene.rs"
+    structures:
+      - name: "FbxNodeKind"
+        type: "enum"
+        progress: "fully implemented"
+        note: "Joint or Null: what the Model record itself declared the node to be, kept on FbxSceneNode.kind by the reader (LimbNode/Limb -> Joint, Null/Root -> Null) and consumed by the writer when choosing each Model's class. It is the only signal for a joint no skin cluster names - a bone's *_end tail helper carries no weights - and for a Null grouping node such as an armature's root object; before it existed both were rewritten as plain Mesh Models, which left the bone chains an importer forms from parented LimbNodes broken at every tail: Blender 5.0 imported the rewrite of blender_293_barbarian_7400_binary as eleven _end empties and no armature. With it, the rewrite carries all 30 Skeleton NodeAttributes the source does and the armature root is class Null again. Cluster membership still marks a joint where the source class did not, so nothing that decoded before changes."
+
   - path: "crates/draco-io/src/fbx_writer.rs"
     structures:
       - name: "FbxWriter"
