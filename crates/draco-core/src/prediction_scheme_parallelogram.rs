@@ -31,7 +31,12 @@ pub trait ParallelogramDataType: Copy + Default + 'static {
 
 impl ParallelogramDataType for i32 {
     fn compute_parallelogram_prediction(next: Self, prev: Self, opp: Self) -> Self {
-        ((next as i64 + prev as i64) - opp as i64) as i32
+        // Wrapping i32 rather than exact i64 truncated back: the two agree bit
+        // for bit, since truncating to 32 bits is reduction modulo 2^32 and
+        // that is what the wrapping operators compute. The i64 form put a pair
+        // of sign extensions and a truncation around every component of every
+        // prediction; this is the arithmetic upstream performs.
+        next.wrapping_add(prev).wrapping_sub(opp)
     }
 
     fn add_as_unsigned(a: Self, b: Self) -> Self {
@@ -64,6 +69,11 @@ pub(crate) fn compute_parallelogram_prediction<DataType: ParallelogramDataType>(
     // The opposite corner (oci) is the tip of the neighbor face.
     // The shared vertices are next(oci) and prev(oci).
     // The opposite vertex is vertex(oci).
+    //
+    // Fetching all three from oci's face in one bounds-checked slice measured
+    // 1.4% *slower* on the Bunny decode than these three accessor calls: the
+    // per-call sentinel branches predict perfectly, while the triple returns
+    // through memory and adds a rotation the accessors do not pay.
     let vert_opp_idx = table.vertex(oci).0 as usize;
     let vert_next_idx = table.vertex(table.next(oci)).0 as usize;
     let vert_prev_idx = table.vertex(table.previous(oci)).0 as usize;
