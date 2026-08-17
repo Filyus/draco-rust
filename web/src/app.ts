@@ -535,9 +535,16 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
             // A document that merely fails the portability rules still
             // previews, so that stays a warning. Missing companion files are
             // different: nothing can be read at all, and the outer handler is
-            // the one that tells the user which files to select.
-            if (errorMessage(error).includes('External resource denied:')) throw error;
-            log(`Scene details unavailable: ${errorMessage(error)}`, 'warning');
+            // the one that tells the user which files to select. Geometry that
+            // will not decode is the same kind of thing: the container summary
+            // above it comes from the JSON alone and would otherwise report a
+            // successful parse of an asset whose meshes are unreadable, which
+            // is the answer the same corruption gets in a .drc file.
+            const message = errorMessage(error);
+            if (message.includes('External resource denied:') || message.includes('Draco decode error:')) {
+              throw error;
+            }
+            log(`Scene details unavailable: ${message}`, 'warning');
           }
         }
         break;

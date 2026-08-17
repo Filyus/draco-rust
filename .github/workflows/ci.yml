@@ -232,12 +232,12 @@ jobs:
         run: npm run typecheck:tests
         working-directory: web
 
-      - name: Build optimized WASM and enforce size budget
+      - name: Build optimized WASM and report module sizes
         run: bash ./build.sh
         working-directory: web
 
-      # The step above builds the release profile, which is what the size
-      # budget is measured against and therefore has to stay feature-less. The
+      # The step above builds the release profile, which is the artifact
+      # web/wasm-sizes.md records and therefore has to stay feature-less. The
       # front-end calls readAccessor and bufferViewBytes, which only exist in
       # the converter profile, so the gates below need it built first.
       - name: Build converter glTF profile for the Node gates
@@ -275,6 +275,7 @@ jobs:
           npm run test:gltf-draco-corpus
           npm run test:gltf-draco-feature-ids
           npm run test:gltf-draco-references
+          npm run test:gltf-draco-decode-failure
           npm run test:gltf-build-profile
           npm run test:viewer-limit-warnings
           npm run test:viewer-texture-units
@@ -290,7 +291,7 @@ jobs:
       # The transcoder is compared against Binomial's own build of the Basis
       # transcoder, which lives outside this repository. Without it the gate
       # skips and says so, so what this step proves on a runner is that the
-      # module still builds and still fits its size budget. What proves the
+      # module still builds and still reports its size. What proves the
       # bytes on a runner is the `basis-crosscheck` job below.
       - name: Build and smoke the KTX2 transcoder
         run: |
