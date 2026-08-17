@@ -40,7 +40,6 @@ use crate::mesh_edgebreaker_traversal_valence_encoder::MeshEdgebreakerTraversalV
 use crate::rans_bit_encoder::RAnsBitEncoder;
 use crate::status::DracoError;
 use crate::test_event_log;
-use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct EdgebreakerAttributeConnectivity {
@@ -178,7 +177,13 @@ pub struct MeshEdgebreakerEncoder {
     face_to_symbol_id: Vec<u32>,
     symbols: Vec<u32>,
     topology_split_event_data: Vec<TopologySplitEventData>,
-    face_to_split_symbol_map: HashMap<usize, i32>,
+    /// Split symbol id per face, indexed by face id rather than hashed by it.
+    ///
+    /// The keys are dense face indices of a mesh this encoder already holds, so
+    /// a vector answers what the map answered without SipHash on a lookup that
+    /// runs for every neighbour of every traversed face. `-1` is "no split
+    /// symbol for this face".
+    face_to_split_symbol: Vec<i32>,
     last_encoded_symbol_id: i32,
 
     // Traversal order for attribute encoding
@@ -240,7 +245,7 @@ impl MeshEdgebreakerEncoder {
             face_to_symbol_id: vec![u32::MAX; num_faces],
             symbols: Vec::new(),
             topology_split_event_data: Vec::new(),
-            face_to_split_symbol_map: HashMap::new(),
+            face_to_split_symbol: Vec::new(),
             last_encoded_symbol_id: -1,
             processed_connectivity_corners: Vec::new(),
             init_face_connectivity_corners: Vec::new(),
@@ -333,7 +338,8 @@ impl MeshEdgebreakerEncoder {
         self.visited_vertices = vec![false; corner_table.num_vertices()];
         self.symbols.clear();
         self.topology_split_event_data.clear();
-        self.face_to_split_symbol_map.clear();
+        self.face_to_split_symbol.clear();
+        self.face_to_split_symbol.resize(mesh.num_faces(), -1);
         self.last_encoded_symbol_id = -1;
         self.init_face_configurations.clear();
         self.processed_connectivity_corners.clear();
@@ -2190,8 +2196,9 @@ impl MeshEdgebreakerEncoder {
                         }
                     }
 
-                    self.face_to_split_symbol_map
-                        .insert(face_id.0 as usize, self.last_encoded_symbol_id);
+                    if let Some(slot) = self.face_to_split_symbol.get_mut(face_id.0 as usize) {
+                        *slot = self.last_encoded_symbol_id;
+                    }
 
                     // Process right face first (matches C++ - push Left, move to Right)
                     // (Note: C++ uses a recursive call for the right neighbor or similar)
@@ -2249,7 +2256,12 @@ impl MeshEdgebreakerEncoder {
         src_edge: EdgeFaceName,
         neighbor_face_id: usize,
     ) {
-        if let Some(&split_symbol_id) = self.face_to_split_symbol_map.get(&neighbor_face_id) {
+        let split_symbol_id = self
+            .face_to_split_symbol
+            .get(neighbor_face_id)
+            .copied()
+            .unwrap_or(-1);
+        if split_symbol_id >= 0 {
             let event = TopologySplitEventData {
                 split_symbol_id: split_symbol_id as u32,
                 source_symbol_id: self.last_encoded_symbol_id as u32,
