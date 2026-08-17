@@ -217,6 +217,12 @@ change below said `2.6%` where the two-build reading says `1.9%`.
 
 Landed:
 
+- The seed-free depth-first attribute traversal walked once per decode instead
+  of once per attribute decoder, worth `8.7%` of decode at speed 5 and `3.7%`
+  at speed 1 on a mesh with two attributes. A probe timed the walk at `1,153`
+  ms of an `8,007` ms decode budget across two decoders before the change.
+  Meshes with a single attribute decoder have no duplicate to remove and do not
+  move.
 - Parallelogram prediction in wrapping `i32` instead of widened `i64`, worth
   `0.65%` of decode at speed 5.
 - The encoder's split-symbol lookup as a `Vec` indexed by face instead of a
@@ -233,6 +239,13 @@ Measured and rejected, so the next attempt can start elsewhere:
   indexing at an offset: not detectable.
 - Skipping `CornerTable::is_index_consistent` entirely (a probe, not a
   proposal): not detectable, so the check is not what it costs.
+- Reading the quantizer's three floats through one twelve-byte slice instead of
+  twelve indexed byte loads: not detectable, so the compiler was already
+  merging them.
+- Reusing the `data_to_corner_map` that `assign_points_to_corners` already
+  builds, instead of the attribute traversal building its own: the two are
+  different walks, `34,834` entries against `35,924` on the Bunny, so there is
+  nothing to reuse.
 
 What the profile says is left: on decode, roughly a fifth of self time sits in
 the corner-table accessors and the generic machinery around them -- bounds
