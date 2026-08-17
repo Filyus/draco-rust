@@ -9,9 +9,21 @@ printed comparison output. Correctness and parity tests live in
 
 Measured on the seeded and real-corpus profiles below, against the C++
 reference build. Absolute microsecond figures are comparable only within a
-single run -- they track machine state, while the C++ side is unchanged code.
-The speedup columns are the stable quantity: repeat runs of the seeded sweep
-agree to within about `2%`.
+single run -- they track machine state, while the C++ side is unchanged code
+built on 2026-02-05. How much machine state matters is worth stating in
+numbers: between the 2026-07-31 snapshot and this one the C++ side alone got
+`25%` faster on seeded encode and `36%` faster on seeded decode, on the same
+binary and the same seeded workload. Every speedup below is therefore lower
+than the figures it replaces without anything having regressed -- what moved
+is the denominator.
+
+Method for this snapshot: the test binary launched directly with one logical
+core per physical (`0x55`) and `High` priority, `4` interleaved runs of the
+seeded sweep and `5` of the real corpus, each cell the median across runs of
+the harness's own `avg [p10..p90]`. Run-to-run agreement on the seeded
+speedup column is `1.2%` to `5.1%` depending on the speed, so treat a
+difference under `5%` between two snapshots as not measured. Pinning is not
+what moved the numbers: an unpinned run reproduces the C++ side to `0.6%`.
 
 Seeded mesh sweep encode, `avg [p10..p90]` across `12` stratified samples:
 
@@ -23,33 +35,33 @@ Sampled faces: avg `18,641`, p50 `19,327`, p10..p90 `[15,151..21,487]`.
 
 | Speed | C++ raw us | Rust raw us | C++ us/1k faces | Rust us/1k faces | Speedup |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0 | `31,738 [22,468..45,124]` | `11,896 [6,207..24,846]` | `1,680 [1,242..2,086]` | `660 [342..1,495]` | `3.49x [1.39..5.36]` |
-| 1 | `31,514 [21,657..45,565]` | `11,740 [5,728..24,125]` | `1,670 [1,249..2,115]` | `647 [314..1,451]` | `3.47x [1.44..5.01]` |
-| 2 | `26,716 [17,303..39,788]` | `8,153 [2,335..21,990]` | `1,416 [974..1,913]` | `458 [128..1,322]` | `6.24x [1.45..9.14]` |
-| 3 | `26,687 [17,229..39,170]` | `8,107 [2,325..22,156]` | `1,412 [973..1,922]` | `454 [126..1,331]` | `6.32x [1.45..9.45]` |
-| 4 | `26,951 [17,366..40,047]` | `8,216 [2,679..22,950]` | `1,427 [1,003..1,916]` | `461 [138..1,379]` | `6.27x [1.39..9.54]` |
-| 5 | `26,403 [16,779..39,449]` | `7,938 [2,027..22,010]` | `1,399 [925..1,976]` | `446 [111..1,323]` | `6.94x [1.45..10.29]` |
-| 6 | `26,396 [16,968..39,370]` | `7,881 [2,005..21,365]` | `1,399 [939..1,968]` | `445 [109..1,329]` | `7.06x [1.48..10.33]` |
-| 7 | `26,406 [17,031..40,647]` | `7,838 [2,044..22,203]` | `1,395 [949..1,900]` | `440 [112..1,334]` | `7.00x [1.43..10.19]` |
-| 8 | `26,172 [16,964..39,154]` | `7,616 [1,995..21,706]` | `1,385 [950..1,880]` | `429 [104..1,305]` | `7.36x [1.44..11.13]` |
-| 9 | `26,550 [16,388..39,300]` | `7,797 [1,872..22,190]` | `1,410 [930..2,031]` | `438 [101..1,334]` | `7.43x [1.48..11.08]` |
-| 10 | `848 [592..1,314]` | `704 [446..1,227]` | `44 [37..62]` | `36 [28..58]` | `1.26x [1.08..1.36]` |
+| 0 | `23,994 [17,104..35,837]` | `9,759 [4,700..21,893]` | `1,278 [906..1,784]` | `542 [254..1,316]` | `3.33x [1.35..4.98]` |
+| 1 | `23,334 [16,531..35,276]` | `9,483 [4,350..20,928]` | `1,242 [895..1,678]` | `525 [238..1,258]` | `3.31x [1.33..4.62]` |
+| 2 | `19,504 [12,269..29,981]` | `7,296 [2,054..19,830]` | `1,040 [668..1,601]` | `409 [112..1,192]` | `4.84x [1.33..6.95]` |
+| 3 | `19,588 [12,143..29,958]` | `7,267 [2,034..19,786]` | `1,044 [663..1,595]` | `408 [112..1,189]` | `4.90x [1.33..7.07]` |
+| 4 | `19,447 [11,893..30,087]` | `7,233 [2,049..19,753]` | `1,035 [658..1,599]` | `406 [111..1,187]` | `4.92x [1.33..7.28]` |
+| 5 | `19,092 [11,604..29,669]` | `6,982 [1,784..19,604]` | `1,016 [641..1,551]` | `392 [98..1,178]` | `5.38x [1.31..7.78]` |
+| 6 | `19,067 [11,626..29,539]` | `6,951 [1,759..19,526]` | `1,015 [634..1,560]` | `391 [98..1,174]` | `5.34x [1.33..7.79]` |
+| 7 | `19,125 [11,777..29,955]` | `6,950 [1,789..19,562]` | `1,018 [634..1,547]` | `391 [97..1,176]` | `5.39x [1.32..7.88]` |
+| 8 | `18,927 [11,396..29,657]` | `6,837 [1,688..19,506]` | `1,008 [627..1,580]` | `385 [92..1,173]` | `5.63x [1.35..8.19]` |
+| 9 | `18,972 [11,400..29,832]` | `6,852 [1,696..19,506]` | `1,010 [632..1,561]` | `386 [93..1,173]` | `5.57x [1.33..8.23]` |
+| 10 | `777 [552..1,208]` | `621 [395..1,084]` | `41 [34..56]` | `32 [25..50]` | `1.30x [1.14..1.40]` |
 
 Seeded mesh sweep decode, `avg [p10..p90]` across `12` stratified samples:
 
 | Speed | C++ raw us | Rust raw us | C++ us/1k faces | Rust us/1k faces | Speedup |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0 | `50,126 [40,415..67,123]` | `1,762 [1,238..2,288]` | `2,662 [2,402..3,132]` | `93 [76..108]` | `28.98x [23.57..32.68]` |
-| 1 | `49,683 [36,680..68,162]` | `1,631 [877..2,520]` | `2,629 [2,409..3,170]` | `85 [57..117]` | `32.65x [26.01..42.13]` |
-| 2 | `49,363 [37,223..68,809]` | `1,393 [881..2,340]` | `2,611 [2,371..3,192]` | `72 [48..110]` | `38.25x [29.42..49.09]` |
-| 3 | `48,956 [36,509..67,569]` | `1,331 [748..2,330]` | `2,592 [2,380..3,142]` | `68 [48..110]` | `40.96x [29.01..50.32]` |
-| 4 | `49,264 [35,561..67,563]` | `1,357 [716..2,415]` | `2,605 [2,367..3,152]` | `69 [47..113]` | `40.94x [27.98..50.57]` |
-| 5 | `49,053 [35,583..71,245]` | `1,225 [651..2,196]` | `2,590 [2,346..3,122]` | `63 [43..104]` | `44.94x [30.40..54.86]` |
-| 6 | `48,848 [35,685..69,828]` | `1,227 [657..2,261]` | `2,582 [2,337..3,146]` | `63 [43..106]` | `45.27x [29.98..56.31]` |
-| 7 | `49,373 [36,131..67,590]` | `1,269 [674..2,261]` | `2,612 [2,377..3,142]` | `65 [44..106]` | `43.70x [29.90..54.74]` |
-| 8 | `49,175 [35,518..69,149]` | `1,172 [605..2,219]` | `2,597 [2,342..3,219]` | `60 [40..104]` | `48.20x [31.19..59.18]` |
-| 9 | `49,951 [37,041..67,218]` | `1,157 [612..2,118]` | `2,644 [2,388..3,186]` | `59 [40..104]` | `49.76x [30.86..60.96]` |
-| 10 | `317 [208..505]` | `272 [169..447]` | `16 [14..24]` | `14 [11..21]` | `1.19x [1.10..1.27]` |
+| 0 | `32,463 [23,746..44,298]` | `1,598 [1,024..2,083]` | `1,717 [1,564..2,070]` | `84 [68..99]` | `20.75x [16.84..23.16]` |
+| 1 | `32,277 [23,470..44,173]` | `1,514 [787..2,384]` | `1,706 [1,551..2,061]` | `78 [52..112]` | `23.07x [18.27..29.83]` |
+| 2 | `31,801 [23,389..43,434]` | `1,274 [810..2,142]` | `1,681 [1,528..2,036]` | `66 [44..101]` | `27.18x [20.35..35.06]` |
+| 3 | `31,782 [23,862..43,623]` | `1,205 [698..2,129]` | `1,682 [1,528..2,029]` | `62 [44..99]` | `29.21x [20.48..35.83]` |
+| 4 | `31,824 [22,994..44,614]` | `1,226 [707..2,152]` | `1,680 [1,525..2,063]` | `63 [44..101]` | `28.87x [20.33..35.54]` |
+| 5 | `31,510 [22,989..43,951]` | `1,111 [590..2,021]` | `1,667 [1,518..2,029]` | `57 [38..95]` | `32.42x [21.63..40.17]` |
+| 6 | `31,488 [23,029..43,528]` | `1,101 [581..2,001]` | `1,664 [1,518..2,031]` | `56 [38..95]` | `32.55x [21.62..40.62]` |
+| 7 | `31,637 [22,933..43,930]` | `1,102 [590..2,038]` | `1,672 [1,517..2,045]` | `56 [38..95]` | `32.72x [21.56..40.71]` |
+| 8 | `31,254 [22,884..43,542]` | `1,015 [521..1,897]` | `1,652 [1,509..2,026]` | `52 [34..88]` | `35.41x [22.94..45.06]` |
+| 9 | `31,328 [22,959..43,829]` | `1,017 [520..1,923]` | `1,655 [1,513..2,023]` | `52 [35..89]` | `35.31x [22.99..44.26]` |
+| 10 | `295 [196..473]` | `223 [140..380]` | `15 [13..22]` | `12 [9..18]` | `1.35x [1.25..1.43]` |
 
 Real `.drc` corpus normal-distribution sample:
 
@@ -62,28 +74,77 @@ Sampled points: avg `2,096`, p50 `97`, p10..p90 `[9..4,959]`, min..max
 Sampled faces: avg `4,001`, p50 `170`, p10..p90 `[9..8,525]`, min..max
 `[8..69,451]`.
 
-Source `.drc` decode speedup: avg `13.76x`, p50 `13.04x`, p10..p90
-`[4.02..23.58]`, decoded size match `24/24`.
+This sample is mostly small: half its meshes are under `170` faces, so it
+measures per-call cost where the seeded sweep measures throughput. The two
+answer different questions and disagree about the same change below.
+
+Source `.drc` decode speedup: avg `10.51x`, p50 `9.38x`, p10..p90
+`[3.36..17.03]`, decoded size match `24/24`.
 
 Real corpus re-encode/decode speedup:
 
-| Speed | Encode avg | Encode p50 | Encode p10..p90 | Decode avg | Decode p50 | Decode p10..p90 | Decode failures |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0 | `4.81x` | `4.87x` | `[3.20..6.19]` | `14.58x` | `13.08x` | `[8.24..23.41]` | `0/24` |
-| 1 | `4.83x` | `5.34x` | `[3.29..6.27]` | `15.40x` | `14.48x` | `[8.65..25.20]` | `0/24` |
-| 2 | `7.36x` | `8.01x` | `[3.88..9.71]` | `18.63x` | `16.48x` | `[9.47..29.89]` | `0/24` |
-| 3 | `7.16x` | `7.48x` | `[3.87..9.72]` | `18.58x` | `16.84x` | `[8.28..29.25]` | `0/24` |
-| 4 | `7.85x` | `7.83x` | `[4.07..10.98]` | `17.98x` | `16.77x` | `[9.22..28.68]` | `0/24` |
-| 5 | `7.36x` | `8.24x` | `[4.02..9.52]` | `18.18x` | `16.75x` | `[8.58..26.52]` | `0/24` |
-| 6 | `5.32x` | `5.37x` | `[2.98..6.76]` | `24.61x` | `25.02x` | `[8.87..43.17]` | `0/24` |
-| 7 | `5.42x` | `5.70x` | `[3.00..7.38]` | `24.46x` | `25.56x` | `[9.17..43.52]` | `0/24` |
-| 8 | `5.45x` | `5.81x` | `[3.21..7.52]` | `26.03x` | `30.64x` | `[9.83..41.65]` | `0/24` |
-| 9 | `5.40x` | `5.65x` | `[3.30..7.43]` | `25.13x` | `29.04x` | `[9.08..41.19]` | `0/24` |
-| 10 | `1.49x` | `1.50x` | `[1.06..1.90]` | `1.55x` | `1.51x` | `[1.29..1.94]` | `0/24` |
+| Speed | Encode avg | Encode p50 | Encode p10..p90 | Decode avg | Decode p50 | Decode p10..p90 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | `4.26x` | `4.17x` | `[2.73..5.62]` | `11.84x` | `11.70x` | `[6.92..17.39]` |
+| 1 | `4.37x` | `4.28x` | `[2.90..5.92]` | `12.76x` | `12.26x` | `[6.64..19.56]` |
+| 2 | `5.61x` | `5.79x` | `[2.98..7.84]` | `14.84x` | `14.24x` | `[8.00..22.46]` |
+| 3 | `5.75x` | `6.02x` | `[2.85..7.97]` | `14.99x` | `13.60x` | `[7.63..22.38]` |
+| 4 | `5.73x` | `5.85x` | `[3.03..7.90]` | `15.01x` | `13.63x` | `[7.64..24.72]` |
+| 5 | `5.90x` | `6.20x` | `[3.34..8.00]` | `14.90x` | `13.64x` | `[7.54..23.70]` |
+| 6 | `4.26x` | `4.33x` | `[2.53..5.56]` | `19.41x` | `20.72x` | `[7.19..30.90]` |
+| 7 | `4.31x` | `4.40x` | `[2.44..5.55]` | `18.25x` | `21.16x` | `[6.68..29.19]` |
+| 8 | `4.11x` | `4.37x` | `[2.34..5.72]` | `21.16x` | `23.88x` | `[7.80..33.43]` |
+| 9 | `4.08x` | `4.36x` | `[2.49..5.71]` | `20.77x` | `23.54x` | `[8.00..34.75]` |
+| 10 | `1.44x` | `1.44x` | `[1.10..1.83]` | `1.72x` | `1.58x` | `[1.43..2.15]` |
 
-Every speed now decodes the whole sample without failures. Speed `0`
-previously reported `3/24`, which was the separate-connectivity seam ordering
+Every speed decodes the whole sample without failures, in all `5` runs. Speed
+`0` once reported `3/24`, which was the separate-connectivity seam ordering
 defect rather than a timing result.
+
+### What The 2.0 Optimization Series Changed
+
+The series between `7a277ff` and `f18f3e1` -- kd-tree walk, parallelogram
+prediction bounds, corner-table construction, the entropy and normal memos --
+measured as a paired A/B rather than against the snapshot above, since the
+snapshot's own denominator moves. Both revisions were built with the same
+toolchain and profile, and each binary carries its own copy of the unchanged
+C++ side, which is the control: it agrees between the two to within `0.9%` on
+the seeded sweep, so the Rust-side differences are the change.
+
+Seeded sweep, `4` interleaved pairs, `us/1k faces` avg over the 12 samples.
+The newer revision was faster in all `88` comparisons -- `4` pairs times `11`
+speeds times encode and decode -- so the direction is not in question. Speeds
+`3`, `4`, `6` and `7` track their neighbours and are left out of the table:
+
+| Speed | Encode before | Encode after | Gain | Decode before | Decode after | Gain |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | `601` | `542` | `1.11x` | `86.8` | `84.2` | `1.03x` |
+| 1 | `584` | `525` | `1.11x` | `81.2` | `78.3` | `1.04x` |
+| 2 | `416` | `409` | `1.02x` | `68.8` | `65.8` | `1.05x` |
+| 5 | `398` | `392` | `1.01x` | `59.5` | `56.7` | `1.05x` |
+| 8 | `389` | `385` | `1.01x` | `55.5` | `51.8` | `1.07x` |
+| 9 | `390` | `386` | `1.01x` | `55.3` | `51.9` | `1.07x` |
+| 10 | `32.9` | `32.1` | `1.03x` | `13.8` | `11.5` | `1.20x` |
+
+So on meshes of this size the series bought `1%` to `2%` on encode at speeds
+`2` and above, `11%` at speeds `0` and `1`, and `3%` to `7%` on decode, with
+`20%` at speed `10`.
+
+The real corpus disagrees on encode. Over `5` interleaved pairs the newer
+revision was faster in `11/55` encode comparisons against `41/55` decode ones:
+encode is `3%` to `13%` slower across speeds `1` to `9` and unchanged at speed
+`0`, while decode runs from `2%` slower to `5%` faster, most speeds landing
+between `1%` and `3%` faster. Speeds `6` and `10` are left out of both ranges
+because the C++ control moved `8%` between the two binaries' runs there, which
+is larger than the effect being read.
+
+The difference between the two profiles is mesh size, so the reading that fits
+is per-call setup: a memo table earns its keep across thousands of faces and
+is pure overhead on a mesh of eight, and half this corpus is under `170`
+faces. That is a hypothesis this snapshot does not settle -- what it measures
+is the sign and the size on both profiles, with the same control. Anyone
+taking it further should measure the memo allocations directly rather than
+inferring them from these two tables.
 
 ## Main C++ vs Rust Benchmarks
 

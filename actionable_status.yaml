@@ -75,3 +75,18 @@ items:
       - "Measure first: profile what a second decode into an already-populated Mesh would actually skip, since the buffers are sized from each stream and may not be reusable in practice."
       - "If the win is real, add a reuse entry point rather than changing the existing one -- draco-core is published, so this must stay additive."
 
+
+  - id: encode-setup-cost-on-small-meshes
+    area: draco-core
+    priority: medium
+    status: open
+    summary: "The 2.0 optimization series is 1-11% faster encoding an 18k-face mesh and 3-13% slower encoding the real corpus, whose meshes are mostly under 170 faces."
+    evidence:
+      - path: "PERFORMANCE.md"
+        note: "Paired A/B of 7a277ff against f18f3e1, both built with one toolchain, interleaved, each binary carrying the unchanged C++ side as a same-run control that agrees to 0.9%. Seeded sweep: newer faster in all 88 comparisons. Real corpus: newer faster in 11/55 encode comparisons and 41/55 decode ones."
+      - path: "crates/draco-core/src/shannon_entropy.rs"
+        note: "The memoisation commits (f9a331d entropy, c806dcd/c8e1be6 geometric normal positions, e568bb6 which recorded the memo's memory bound) all trade setup for per-element work, which is the shape that inverts when the element count is small. Named as the hypothesis to test first, not as a measured cause."
+    impact: "Decode is unaffected -- it improved on both profiles. This is encode only, and it matters for the caller encoding many small meshes: a glTF with hundreds of tiny primitives pays the setup per primitive."
+    next_steps:
+      - "Measure the memo allocations directly on an 8-face and a 170-face encode rather than inferring them from the two profiles."
+      - "If setup is the cause, gate the memo on a point or face count threshold and re-run both profiles -- the seeded sweep is the control that the gate must not cost anything on."
