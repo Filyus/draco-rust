@@ -55,6 +55,9 @@ export interface ViewerNode {
   bindTrs?: Trs;
   /** FBX only: set for nodes carrying pre/post rotation or pivot terms. */
   hasComplexTransformStack?: boolean;
+  /** FBX only: the Model's own class when it names a non-mesh: "joint" for a
+   * LimbNode, "null" for a grouping node such as an armature root. */
+  kind?: "joint" | "null";
   /** glTF loader only: the node's own index in the source document. */
   index?: number;
 }

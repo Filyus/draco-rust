@@ -487,6 +487,9 @@ pub struct SceneNodeOutput {
     /// The JS FBX adapter uses the skin bind pose as the baked local basis
     /// for these nodes; plain Model TRS remains authored animation data.
     pub has_complex_transform_stack: bool,
+    /// The Model's own class when it names a non-mesh: "joint" for a
+    /// LimbNode, "null" for a grouping node such as an armature root.
+    pub kind: Option<String>,
     pub meshes: Vec<MeshData>,
     pub children: Vec<SceneNodeOutput>,
 }
@@ -961,6 +964,7 @@ fn scene_node_to_js(node: &SceneNodeOutput) -> Object {
         "hasComplexTransformStack",
         node.has_complex_transform_stack,
     );
+    set_opt_string_null(&obj, "kind", &node.kind);
     let meshes = Array::new();
     for mesh in &node.meshes {
         meshes.push(&mesh_data_to_js(mesh).into());
@@ -1227,6 +1231,7 @@ fn scene_node_to_output(node: &FbxSceneNode) -> SceneNodeOutput {
             .map(|transform| transform.matrix.into_iter().flatten().collect()),
         transform_stack: node.transform_stack.as_ref().map(transform_stack_to_output),
         has_complex_transform_stack: node.has_complex_transform_stack,
+        kind: node.kind.map(node_kind_as_str),
         meshes: node
             .mesh_instances
             .iter()
@@ -1840,6 +1845,10 @@ pub struct SceneNodeInput {
     /// Row-major local affine transform, as used by `FbxTransform`.
     pub matrix: Option<Vec<f32>>,
     pub transform_stack: Option<TransformStackInput>,
+    /// Optional Model class: "joint" writes a LimbNode, "null" a grouping
+    /// node. Without it a joint is still written for any node a skin
+    /// cluster names.
+    pub kind: Option<String>,
     pub meshes: Vec<MeshInput>,
     /// Per-mesh material index list, mirroring `FbxMeshInstance::material_indices`.
     pub children: Vec<SceneNodeInput>,
@@ -2415,6 +2424,10 @@ fn scene_node_input_from_js(value: &JsValue) -> Result<SceneNodeInput, String> {
             Some(stack) => Some(transform_stack_input_from_js(&stack)?),
             None => None,
         },
+        kind: match opt_string_from_js(value, "kind") {
+            Some(kind) => Some(node_kind_from_str(&kind)?),
+            None => None,
+        },
         meshes: layers_from_js(value, "meshes", mesh_input_from_js)?,
         children: layers_from_js(value, "children", scene_node_input_from_js)?,
     })
@@ -2575,10 +2588,7 @@ fn scene_node_to_fbx(input: SceneNodeInput) -> Result<FbxSceneNode, String> {
         transform,
         transform_stack: input.transform_stack.map(Into::into),
         has_complex_transform_stack: false,
-        // A JS-built scene names its joints through skin clusters, so a node
-        // built here has no Model class to preserve; the wasm surface can
-        // grow a kind field if a caller ever needs unweighted joints.
-        kind: None,
+        kind: input_kind_from_str(&input.kind),
         mesh_instances: input
             .meshes
             .iter()
@@ -2592,6 +2602,35 @@ fn scene_node_to_fbx(input: SceneNodeInput) -> Result<FbxSceneNode, String> {
             .map(scene_node_to_fbx)
             .collect::<Result<_, _>>()?,
     })
+}
+
+/// The JS spelling of `FbxNodeKind`, validated where it is read so a typo
+/// fails the call instead of silently writing a mesh.
+#[cfg(feature = "write")]
+fn node_kind_from_str(kind: &str) -> Result<String, String> {
+    match kind {
+        "joint" | "null" => Ok(kind.to_string()),
+        _ => Err(format!(
+            "scene node kind must be \"joint\" or \"null\", got {kind:?}"
+        )),
+    }
+}
+
+#[cfg(feature = "write")]
+fn input_kind_from_str(kind: &Option<String>) -> Option<draco_io::FbxNodeKind> {
+    match kind.as_deref() {
+        Some("joint") => Some(draco_io::FbxNodeKind::Joint),
+        Some("null") => Some(draco_io::FbxNodeKind::Null),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "read")]
+fn node_kind_as_str(kind: draco_io::FbxNodeKind) -> String {
+    match kind {
+        draco_io::FbxNodeKind::Joint => "joint".to_string(),
+        draco_io::FbxNodeKind::Null => "null".to_string(),
+    }
 }
 
 /// Converts one JS mesh payload into the shared `draco-io` mesh instance.

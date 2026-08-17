@@ -9,6 +9,13 @@ const fbx = await loadWasm('fbx');
 const { buildSceneFromFbx } = await loadFbxViewerAdapter();
 const parsed = fbx.parse_fbx(await readBytes(sambaFbx));
 if (!parsed?.scene?.rootNodes?.length) throw new Error('Samba Dancing did not produce a semantic FBX scene');
+const kinds = new Set<string>();
+for (const stack = [...parsed.scene.rootNodes]; stack.length;) {
+    const node = stack.pop();
+    if (node?.kind) kinds.add(node.kind);
+    stack.push(...(node?.children ?? []));
+}
+if (!kinds.has('joint')) throw new Error('Samba Dancing rig joints are not exposed with kind="joint"');
 const scene = await buildSceneFromFbx(parsed);
 if (scene.nodes.length === 0 || scene.renderables.length === 0 || scene.skins.length === 0) {
     throw new Error(`Samba Dancing scene adaptation is incomplete: ${JSON.stringify({ nodes: scene.nodes.length, renderables: scene.renderables.length, skins: scene.skins.length })}`);

@@ -131,6 +131,7 @@ function buildNode(
     name: node.name || `node_${index}`,
     matrix,
     ...(source?.transformStack ? { transformStack: structuredClone(source.transformStack) } : {}),
+    ...(source?.kind ? { kind: source.kind } : {}),
     meshes,
     children: (node.children || []).map((child) => buildNode(
       document,

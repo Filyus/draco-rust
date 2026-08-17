@@ -207,6 +207,7 @@ function buildFbxNodes(roots: FbxJson[]) {
       bindTrs,
       animationTrs,
       hasComplexTransformStack: Boolean(source.hasComplexTransformStack),
+      ...(source.kind === 'joint' || source.kind === 'null' ? { kind: source.kind } : {}),
       usesAuthoredModelTrs,
       localMatrix,
       children: [],
