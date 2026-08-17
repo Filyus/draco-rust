@@ -101,6 +101,43 @@ Every speed decodes the whole sample without failures, in all `5` runs. Speed
 `0` once reported `3/24`, which was the separate-connectivity seam ordering
 defect rather than a timing result.
 
+### Against The Recorded July Figures
+
+The 2026-07-31 snapshot read `3.47x` to `7.43x` on seeded encode and `28.98x`
+to `49.76x` on decode, which is higher than anything above. To find out how
+much of that gap is the machine, the July snapshot's own commit (`1228d27`)
+was built and measured here too, interleaved with today's, `3` pairs, the C++
+side agreeing between the binaries to `1.6%`:
+
+| Speed | Encode as recorded | Encode July code, today | Encode today | Decode as recorded | Decode July code, today | Decode today |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | `3.49x` | `2.85x` | `3.36x` | `28.98x` | `19.96x` | `20.78x` |
+| 1 | `3.47x` | `2.75x` | `3.36x` | `32.65x` | `22.23x` | `22.97x` |
+| 2 | `6.24x` | `4.76x` | `4.96x` | `38.25x` | `26.03x` | `27.01x` |
+| 5 | `6.94x` | `5.06x` | `5.40x` | `44.94x` | `30.95x` | `32.93x` |
+| 8 | `7.36x` | `5.37x` | `5.68x` | `48.20x` | `32.81x` | `35.44x` |
+| 9 | `7.43x` | `5.40x` | `5.65x` | `49.76x` | `32.82x` | `35.55x` |
+| 10 | `1.26x` | `1.24x` | `1.29x` | `1.19x` | `1.16x` | `1.37x` |
+
+So the whole of the drop is the environment and none of it is the code: the
+July revision measured today is *slower* than today's revision, not faster,
+on every speed of both operations. What the machine gives the C++ side it does
+not give equally to the Rust side -- C++ gained `1.31x` to `1.40x` on encode
+and `1.54x` to `1.60x` on decode between the two sessions, against `1.10x` and
+`1.07x` for Rust -- and a ratio between two things that scale differently is
+not comparable across sessions at all. That is the reason the tables above are
+stated with a date and a method.
+
+A weaker result is available from the same runs, and it is worth stating with
+its weakness. The July revision and `7a277ff` -- the error-message and
+allocation work of 2.0 sits between them -- were never measured against each
+other, only against today's revision in two separate batches. Bridged through
+that shared condition they differ by `-2.3%` to `+2.1%` with no consistent
+sign, while today's revision alone drifts `1.6%` between the same two batches.
+So the cost of that work is below what this pair of batches can resolve, which
+is not the same as zero: an interleaved A/B of those two revisions is what
+would settle it, and it has not been run.
+
 ### What The 2.0 Optimization Series Changed
 
 The series between `7a277ff` and `f18f3e1` -- kd-tree walk, parallelogram
