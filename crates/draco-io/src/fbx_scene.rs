@@ -36,6 +36,10 @@ pub enum FbxWarningCode {
     /// A node carried a `NodeAttribute` class this crate does not represent,
     /// so the attribute's own properties are absent from the scene.
     DroppedNodeAttribute,
+    /// A Model reached neither the document root nor a parent Model by
+    /// object connection, so it is not part of the decoded scene graph --
+    /// the same objects the source file kept out of its scene.
+    UnconnectedModelDropped,
 }
 
 impl FbxWarningCode {
@@ -54,7 +58,8 @@ impl FbxWarningCode {
             | FbxWarningCode::UnsupportedLayerMapping
             | FbxWarningCode::DroppedLayerElement
             | FbxWarningCode::NameKeyedObjectModel
-            | FbxWarningCode::DroppedNodeAttribute => true,
+            | FbxWarningCode::DroppedNodeAttribute
+            | FbxWarningCode::UnconnectedModelDropped => true,
         }
     }
 
@@ -70,6 +75,7 @@ impl FbxWarningCode {
             FbxWarningCode::DroppedLayerElement => "dropped-layer-element",
             FbxWarningCode::NameKeyedObjectModel => "name-keyed-object-model",
             FbxWarningCode::DroppedNodeAttribute => "dropped-node-attribute",
+            FbxWarningCode::UnconnectedModelDropped => "unconnected-model-dropped",
         }
     }
 }

@@ -45,23 +45,6 @@ items:
       - "Treat Objects/Model as its own geometry source, since pre-7000 has no separate Geometry object."
       - "Add a scalar-property fallback wherever an array property is read: 6100 stores arrays as repeated scalar properties."
 
-  - id: fbx-unconnected-models-become-scene-objects
-    area: draco-io/fbx
-    priority: low
-    status: open
-    summary: "A Model with no OO connection to the root is read as a root node, so objects the source kept out of the scene graph reappear in a rewrite."
-    evidence:
-      - path: "crates/draco-io/src/fbx_reader.rs"
-        note: "The why is established: build_scene treats every Model whose parent side has no Model-to-Model OO connection as top-level, so a Model connected only by an OP record (MotionBuilder's Producer cameras via CurrentCamera) has no OO parent and is rooted. Blender and ufbx instead keep such objects out of the scene graph entirely."
-      - path: "crates/draco-io/src/fbx_reader.rs"
-        note: "MotionBuilder's seven Producer viewport cameras are connected only by OP ... CurrentCamera, never OO ... 0. Blender skips them; this reader roots them, and the writer then emits them as real scene objects. Four corpus files: motionbuilder_cube, _sausage_rrss, _smoothing, _thumbnail each gain seven cameras plus a Camera Switcher."
-      - path: "crates/draco-io/tests/fbx_corpus.rs"
-        note: "Invisible to the round-trip check, which compares our own read of both files and so agrees with itself. Found by importing before and after into Blender 4.5."
-    impact: "Cosmetic today -- the objects were already emitted as empties before cameras were written, so this is not a regression -- but a rewrite of a MotionBuilder file gains eight objects its author excluded."
-    next_steps:
-      - "Find a corpus file whose geometry reaches neither the root nor a rooted parent before changing the rooting rule: if unconnected Models were rooted to recover geometry from files with sloppy connections, that recovery is what would break."
-      - "If nothing depends on it, drop Models that reach neither the root nor a rooted parent, and report the count as a warning rather than silently."
-
   - id: pgo-two-pass-build
     area: draco-io
     priority: low

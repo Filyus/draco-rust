@@ -39,6 +39,15 @@ Not represented at all: FBX pivot settings and inheritance rules, which
 `InnerAngle` or `OuterAngle`; and the viewport decoration around a camera
 (`DisplayTurnTableIcon`, `ShowManipulators`, `BackgroundColor`, `GateFit`).
 
+A `Model` that reaches neither the document root nor a parent `Model` by
+object connection is not part of the scene graph and is dropped with an
+`unconnected-model-dropped` warning, which is what MotionBuilder intends for
+its Producer viewport cameras: they are bound only by `CurrentCamera`
+property records, never by object connections, and Blender's importer skips
+them the same way. No corpus document reaches geometry through such a Model —
+the only two that hold one with any attached at all carry NURBS curves, which
+no scene path keeps.
+
 ## The version floor
 
 The binary container is read for versions 6000 through 8000 and the ASCII one

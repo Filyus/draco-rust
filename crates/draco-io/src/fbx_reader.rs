@@ -289,16 +289,62 @@ impl<R: Read + Seek> FbxReader<R> {
             &morph_animation_targets(geometry_map, deformer_map, connections, model_map),
         );
 
-        // Build root nodes: any model with parent 0 (or with no parent present)
+        // Build root nodes. A Model enters the scene through an object
+        // connection to the document root, or through a parent Model that
+        // did. Rooting by absence -- any Model with no Model-to-Model
+        // connection of any kind -- resurrected objects the source kept out
+        // of the scene graph: MotionBuilder binds its seven Producer
+        // cameras and its Camera Switcher only by OP CurrentCamera records,
+        // and a rewrite emitted them as eight real scene objects per file,
+        // where Blender's importer skips them. Dropping such Models was
+        // checked against the corpus first: thirteen of its 1456 documents
+        // hold any, the only two that carry geometry at all hold NurbsCurve
+        // objects this reader represents no scene data for, and none has a
+        // Model parented under it.
+        let connects_to_root = |id: i64| {
+            connections
+                .iter()
+                .any(|conn| conn.kind == ConnectionKind::Oo && conn.child == id && conn.parent == 0)
+        };
+        let mut in_scene: std::collections::HashSet<i64> = ordered_model_ids
+            .iter()
+            .copied()
+            .filter(|id| connects_to_root(*id))
+            .collect();
+        let mut frontier: Vec<i64> = in_scene.iter().copied().collect();
+        while let Some(id) = frontier.pop() {
+            if let Some(children) = model_children.get(&id) {
+                for &child in children {
+                    if model_map.contains_key(&child) && in_scene.insert(child) {
+                        frontier.push(child);
+                    }
+                }
+            }
+        }
+        let dropped = ordered_model_ids.len() - in_scene.len();
+        if dropped > 0 {
+            push_warning(
+                &mut warnings,
+                FbxWarningCode::UnconnectedModelDropped,
+                format!(
+                    "{dropped} FBX Models reach neither the document root nor a parent Model \
+                     by object connection, so they are not part of the scene graph"
+                ),
+                None,
+            );
+        }
         let mut root_nodes = Vec::new();
-        // find top-level model ids
+        // Roots are the models connected straight to the document root that
+        // no other Model parents -- a model with both kinds of connection
+        // belongs under its parent, as before.
         let top_level: Vec<i64> = ordered_model_ids
             .iter()
             .copied()
             .filter(|id| {
-                !connections
-                    .iter()
-                    .any(|conn| conn.child == *id && model_map.contains_key(&conn.parent))
+                connects_to_root(*id)
+                    && !connections
+                        .iter()
+                        .any(|conn| conn.child == *id && model_map.contains_key(&conn.parent))
             })
             .collect();
 

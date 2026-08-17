@@ -11,6 +11,18 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A `Model` that reaches neither the document root nor a parent `Model` by
+  object connection is no longer rooted by absence. Such a Model is not part
+  of the scene graph the source describes, and rooting it resurrected objects
+  the author kept out of the scene: MotionBuilder binds its seven Producer
+  viewport cameras and its Camera Switcher only by `CurrentCamera` property
+  records, and a rewrite emitted them as eight real scene objects per file,
+  where Blender's importer skips them. They are now dropped with an
+  `unconnected-model-dropped` warning instead. The change was checked against
+  the 1456-document ufbx corpus first: thirteen documents hold such Models,
+  none reaches geometry this reader represents through one, and none parents
+  another Model, so the only reads that changed are the thirteen files' own
+  strays.
 - A rig's joints are rewritten as joints. The writer learned "this Model is a
   joint" only from skin-cluster membership, so a joint that carries no weights
   — a bone's `*_end` tail helper — and a `Null` grouping node such as an

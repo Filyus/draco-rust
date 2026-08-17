@@ -573,7 +573,7 @@ mod shared_path_regressions {
              \t\tVertices: *9 {\n\t\t\ta: 0,0,0,1,0,0,0,1,0\n\t\t}\n\
              \t\tPolygonVertexIndex: *3 {\n\t\t\ta: 0,1,-3\n\t\t}\n\t}\n\
              \tModel: 200, \"Model::Cube\", \"Mesh\" {\n\t}\n}\n\
-             Connections:  {\n\tC: \"OO\",100,200\n}\n",
+             Connections:  {\n\tC: \"OO\",100,200\n\tC: \"OO\",200,0\n}\n",
         );
         assert_eq!(decoded.root_nodes.len(), 1);
         assert_eq!(decoded.root_nodes[0].name.as_deref(), Some("Cube"));
@@ -596,7 +596,7 @@ mod shared_path_regressions {
              \t\tProperties70:  {\n\
              \t\t\tP: \"InheritType\", \"enum\", \"\", \"\",3\n\
              \t\t\tP: \"Lcl Scaling\", \"Lcl Scaling\", \"\", \"A\",2\n\t\t}\n\t}\n}\n\
-             Connections:  {\n}\n",
+             Connections:  {\n\tC: \"OO\",200,0\n}\n",
         );
         assert_eq!(decoded.root_nodes.len(), 1);
     }
@@ -607,8 +607,9 @@ mod shared_path_regressions {
     ///
     /// The cycle has to be reachable from a root to recurse at all: two models
     /// that are only each other's parent are both excluded from the top level,
-    /// so nothing ever descends into them. `Root` is what makes `A -> B -> A`
-    /// reachable, and without it this test passes even with the guard removed.
+    /// so nothing ever descends into them. The Root model's connection to the
+    /// document root is what makes `A -> B -> A` reachable, and without it
+    /// this test passes even with the guard removed.
     #[test]
     fn a_parent_cycle_terminates_instead_of_exhausting_the_stack() {
         let decoded = scene(
@@ -618,6 +619,7 @@ mod shared_path_regressions {
              \tModel: 200, \"Model::A\", \"Null\" {\n\t}\n\
              \tModel: 201, \"Model::B\", \"Null\" {\n\t}\n}\n\
              Connections:  {\n\
+             \tC: \"OO\",199,0\n\
              \tC: \"OO\",200,199\n\
              \tC: \"OO\",201,200\n\
              \tC: \"OO\",200,201\n}\n",
@@ -655,6 +657,7 @@ mod shared_path_regressions {
              \t\tVertices: *3 {\n\t\t\ta: 0,0,1\n\t\t}\n\t}\n}\n\
              Connections:  {\n\
              \tC: \"OO\",100,200\n\
+             \tC: \"OO\",200,0\n\
              \tC: \"OO\",300,100\n\
              \tC: \"OO\",301,300\n\
              \tC: \"OO\",400,301\n}\n",
@@ -665,5 +668,43 @@ mod shared_path_regressions {
             targets[0].default_weight, 100.0,
             "an integer-written DeformPercent must not read as a missing weight"
         );
+    }
+
+    /// A Model that reaches neither the document root nor a parent Model by
+    /// object connection is not part of the scene graph, and is dropped with
+    /// a warning rather than rooted by absence -- which resurrected objects
+    /// the source kept out of the scene, MotionBuilder's Producer cameras
+    /// being the case the corpus carries.
+    #[test]
+    fn a_model_reaching_no_root_is_dropped_with_a_warning() {
+        let decoded = scene(
+            "FBXHeaderExtension:  {\n\tFBXVersion: 7500\n}\n\
+             Objects:  {\n\
+             \tModel: 200, \"Model::kept\", \"Null\" {\n\t}\n\
+             \tModel: 201, \"Model::child\", \"Null\" {\n\t}\n\
+             \tModel: 202, \"Model::orphan\", \"Null\" {\n\t}\n\
+             \tModel: 203, \"Model::orphan child\", \"Null\" {\n\t}\n}\n\
+             Connections:  {\n\
+             \tC: \"OO\",200,0\n\
+             \tC: \"OO\",201,200\n\
+             \tC: \"OO\",203,202\n}\n",
+        );
+        fn names(nodes: &[crate::FbxSceneNode]) -> Vec<&str> {
+            nodes
+                .iter()
+                .flat_map(|node| {
+                    std::iter::once(node.name.as_deref().unwrap_or("?"))
+                        .chain(names(&node.children))
+                })
+                .collect()
+        }
+        assert_eq!(names(&decoded.root_nodes), vec!["kept", "child"]);
+        assert!(
+            !decoded.warnings.is_empty(),
+            "dropping the orphans must be reported"
+        );
+        assert!(decoded.warnings.iter().any(|warning| warning.code
+            == crate::fbx_scene::FbxWarningCode::UnconnectedModelDropped
+            && warning.message.contains("2 FBX Models")));
     }
 }
