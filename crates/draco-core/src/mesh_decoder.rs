@@ -832,6 +832,11 @@ impl MeshDecoder {
 
         // (3) Attribute decoder payloads.
         let mut portable_attributes_by_id: Vec<(i32, PointAttribute)> = Vec::new();
+        // Every edgebreaker attribute decoder asks for the same seed-free depth-first
+        // traversal of the same corner table, and that walk is a seventh of a decode on
+        // a 69k-face mesh. The corner table is fixed once connectivity is decoded, so
+        // the walk happens once here and the later decoders copy its answer.
+        let mut dfs_traversal: Option<AttributeTraversalArrays> = None;
         for dec_i in 0..num_attributes_decoders {
             let att_ids = &att_ids_by_decoder[dec_i];
             let decoder_types = &decoder_types_by_decoder[dec_i];
@@ -942,8 +947,14 @@ impl MeshDecoder {
                         // Speed >= 1: use DFS with sequential faces. The traversal helper
                         // already uses CornerIndex(3 * face_id) when no explicit seeds are
                         // provided, so avoid allocating a temporary seed vector here.
-                        let (ids, map, v_map) =
-                            self.generate_point_ids_and_corners_dfs(mesh, &[])?;
+                        let (ids, map, v_map) = match &dfs_traversal {
+                            Some(cached) => cached.clone(),
+                            None => {
+                                let arrays = self.generate_point_ids_and_corners_dfs(mesh, &[])?;
+                                dfs_traversal = Some(arrays.clone());
+                                arrays
+                            }
+                        };
                         sequenced_point_ids = Some(ids);
                         sequenced_data_to_corner_map = Some(map);
                         sequenced_vertex_to_data_map = Some(v_map); // Use directly from DFS traversal
