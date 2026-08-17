@@ -30,41 +30,56 @@ const WASM_OPT_ARGS: &[&str] = &[
     "--enable-sign-ext",
     "--enable-mutable-globals",
 ];
-/// Gzip ceiling for the default-profile glTF module.
+/// Where `--record-sizes` writes what the build measured, relative to `web/`.
 ///
-/// A ceiling to catch drift, not a target: the module sits a little under it,
-/// and a change that needs more should say why rather than raise this quietly.
+/// This replaced a gzip ceiling per module, checked only by a local
+/// release-profile build: the glTF one sat 1.1 KiB over for nine days and three
+/// dozen commits before anyone ran that build. A recorded number moves in the
+/// diff of the commit that moves it, which is where the question can still be
+/// asked, and what the answer is has not changed with the mechanism.
 ///
-/// Raised from 115 KiB when the decode and encode paths stopped returning
-/// `bool`. Saying why, since the first explanation was wrong: making
-/// `DracoError` pointer-sized bought 2.6 KiB back, and the rest is the
-/// diagnostic text itself and the `format!` that builds it. Blanking every
-/// message in `draco-core` takes this module to 112 KiB, below where it stood
-/// before the conversion — so the messages, not the error type, are what a
-/// smaller build would have to give up, and they are the point of the release.
+/// The glTF module's weight above its machine code is diagnostic text and the
+/// `format!` that builds it. Making `DracoError` pointer-sized bought 2.6 KiB
+/// back; blanking every message in `draco-core` takes the module 16 KiB below
+/// where it stands — so the messages, not the error type, are what a smaller
+/// build would have to give up, and the browser prints them at the point a
+/// malformed asset is refused.
 ///
-/// The headroom is deliberate. Two builds of one commit on the same machine
-/// differ by a byte, but Windows and Linux differ by about 875, and the ceiling
-/// this replaces had 87 bytes of room: it was passing inside its own noise.
-const GLTF_GZIP_BUDGET: usize = 128 * 1024;
-/// Gzip ceiling for the KTX2 transcoder module.
-///
-/// Its own ceiling rather than a share of the glTF one, because it is fetched
-/// only when a file actually carries a KTX2 texture: nothing here is on the
-/// path of a page that opens an ordinary model. Raising it is a decision to
-/// state, the same as the glTF budget.
-///
-/// More than half of this is the baked ETC1S-to-BC1 endpoint tables, and they
-/// are the reason the number went from 48 KiB to 120; BC7 took it to 130. What
-/// they buy is the compressed upload path on every desktop GPU: without them a
-/// KTX2 texture can only be uploaded as RGBA8, at eight times the video memory.
-///
-/// This measures the full module, which carries every hardware family because
-/// a browser can be any machine. A build that knows its audience trims by
-/// family and lands far below, since what the weight is is the baked tables:
-/// BC1 and BC4 for the desktop family, and now a third of the same size for
-/// ETC1S to ASTC, which is what took this from 135 to 175.
-const KTX2_GZIP_BUDGET: usize = 175 * 1024;
+/// More than half of the KTX2 module is the baked ETC1S endpoint tables, which
+/// took it from 48 KiB to 120 for BC1, to 130 with BC7 and to 175 once ETC1S to
+/// ASTC joined them. What they buy is the compressed upload path on every
+/// desktop GPU: without them a KTX2 texture can only be uploaded as RGBA8, at
+/// eight times the video memory. This measures the full module, which carries
+/// every hardware family because a browser can be any machine; a build that
+/// knows its audience trims by family and lands far below.
+const SIZE_RECORD: &str = "wasm-sizes.md";
+
+/// The prose the record carries above its table, rewritten on every recording.
+const SIZE_RECORD_HEADER: &str = "\
+# Optimized WASM module sizes
+
+Written by `cargo run --manifest-path web/build-tool/Cargo.toml -- \
+--record-sizes`, one row per module and feature profile, in bytes. `gzip` is \
+what a browser downloads. Nothing enforces a ceiling: the point of committing \
+these is that a module's weight moves in the diff of the change that moves it.
+
+Sizes are toolchain- and platform-dependent. Two builds of one commit on the \
+same machine differ by a byte, but Windows and Linux differ by about 875, so \
+re-record on one machine before reading a difference smaller than that as a \
+change in the code.
+
+| module | profile | raw | gzip |
+| --- | --- | ---: | ---: |
+";
+
+/// One measured module: what it was built as, and what it weighs.
+#[derive(Clone, Debug)]
+struct SizeRow {
+    module: String,
+    profile: String,
+    raw: usize,
+    gzip: usize,
+}
 
 #[derive(Clone, Debug)]
 struct Config {
@@ -79,6 +94,7 @@ struct Config {
     jobs: usize,
     verbose: bool,
     force: bool,
+    record_sizes: bool,
     web_dir: PathBuf,
     output_dir: PathBuf,
 }
@@ -162,59 +178,41 @@ fn run() -> Result<(), String> {
         }
     }
 
-    // Each budget reports on its own. Gating the checks on `failed` as it grew
-    // let a module over its ceiling suppress the next module's measurement, so
-    // the run that fixed one was the first to measure the other. A failed build
-    // still skips both, because then there is nothing to measure.
-    let measure_sizes = failed.is_empty() && !config.debug && !config.no_optimize;
-
-    if measure_sizes && modules.contains(&"gltf-wasm") {
-        let gltf_wasm = config.output_dir.join("gltf_bg.wasm");
-        let gltf_features = effective_features(&config, "gltf-wasm");
-        if gltf_features.is_empty() {
-            match check_wasm_size(&gltf_wasm, GLTF_GZIP_BUDGET, "glTF") {
-                Ok((raw_size, gzip_size)) => println!(
-                    "glTF size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB / {:.0} KiB budget)",
-                    gzip_size as f64 / 1024.0,
-                    GLTF_GZIP_BUDGET as f64 / 1024.0
-                ),
+    // Every module reports, and none of it fails the build: a size is a fact
+    // about the artifact, not a verdict on it. A debug or unoptimized build
+    // measures nothing, because its number describes neither. A failed build
+    // measures nothing either, because then there is nothing to measure.
+    let mut measured = Vec::new();
+    if failed.is_empty() && !config.debug && !config.no_optimize {
+        for module in &modules {
+            let wasm = config
+                .output_dir
+                .join(format!("{}_bg.wasm", output_name(module)));
+            match measure_wasm_size(&wasm) {
+                Ok((raw, gzip)) => measured.push(SizeRow {
+                    module: (*module).to_string(),
+                    profile: profile_name(&config, module),
+                    raw,
+                    gzip,
+                }),
                 Err(error) => {
                     eprintln!("Error: {error}");
-                    failed.push("gltf-size".to_string());
-                }
-            }
-        } else {
-            match measure_wasm_size(&gltf_wasm) {
-                Ok((raw_size, gzip_size)) => println!(
-                    "glTF ({}) size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB)",
-                    gltf_features.join(","),
-                    gzip_size as f64 / 1024.0
-                ),
-                Err(error) => {
-                    eprintln!("Error: {error}");
-                    failed.push("gltf-size".to_string());
+                    failed.push(format!("{module}-size"));
                 }
             }
         }
-    }
-
-    if measure_sizes && modules.contains(&"ktx2-wasm") {
-        let ktx2_wasm = config.output_dir.join("ktx2_bg.wasm");
-        match check_wasm_size(&ktx2_wasm, KTX2_GZIP_BUDGET, "KTX2") {
-            Ok((raw_size, gzip_size)) => println!(
-                "KTX2 size: {raw_size} raw, {gzip_size} gzip ({:.1} KiB / {:.0} KiB budget)",
-                gzip_size as f64 / 1024.0,
-                KTX2_GZIP_BUDGET as f64 / 1024.0
-            ),
-            Err(error) => {
-                eprintln!("Error: {error}");
-                failed.push("ktx2-size".to_string());
-            }
-        }
+        print_sizes(&measured);
     }
 
     if !failed.is_empty() {
         return Err(format!("build failed for modules: {}", failed.join(", ")));
+    }
+
+    if config.record_sizes {
+        let record = config.web_dir.join(SIZE_RECORD);
+        record_sizes(&record, &measured)?;
+        println!();
+        println!("Recorded sizes in {}", record.display());
     }
 
     println!();
@@ -252,17 +250,87 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn check_wasm_size(path: &Path, budget: usize, label: &str) -> Result<(usize, usize), String> {
-    let (raw_size, gzip_size) = measure_wasm_size(path)?;
-    if gzip_size > budget {
-        return Err(format!(
-            "{} is {gzip_size} bytes ({:.1} KiB) gzip, exceeding the {:.0} KiB {label} budget",
-            path.display(),
-            gzip_size as f64 / 1024.0,
-            budget as f64 / 1024.0
+/// What a module was built as, in the spelling `SIZE_RECORD` keys rows by.
+///
+/// A module's weight is a property of its feature set as much as of its code,
+/// so a row without one compares two different artifacts. `release` is the
+/// name for the empty set, since that is the artifact the release ships.
+fn profile_name(config: &Config, module: &str) -> String {
+    let features = effective_features(config, module);
+    if features.is_empty() {
+        "release".to_string()
+    } else {
+        features.join(",")
+    }
+}
+
+fn print_sizes(measured: &[SizeRow]) {
+    if measured.is_empty() {
+        return;
+    }
+    println!();
+    println!("Optimized sizes (gzip is what a browser downloads):");
+    for row in measured {
+        println!(
+            "  {:<10} {:<12} {:>9} raw {:>9} gzip ({:.1} KiB)",
+            row.module.trim_end_matches("-wasm"),
+            row.profile,
+            row.raw,
+            row.gzip,
+            row.gzip as f64 / 1024.0
+        );
+    }
+}
+
+/// Merges this build's measurements into the recorded table.
+///
+/// Rows are keyed by module and profile, so a `--module gltf-wasm` run updates
+/// the glTF release row and leaves every other row of the file alone: what the
+/// record holds is each artifact's last measured size, not one build's.
+fn record_sizes(path: &Path, measured: &[SizeRow]) -> Result<(), String> {
+    let existing = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
+    };
+    let mut rows: Vec<SizeRow> = existing.lines().filter_map(parse_size_row).collect();
+    for row in measured {
+        match rows
+            .iter_mut()
+            .find(|kept| kept.module == row.module && kept.profile == row.profile)
+        {
+            Some(kept) => *kept = row.clone(),
+            None => rows.push(row.clone()),
+        }
+    }
+    rows.sort_by(|left, right| (&left.module, &left.profile).cmp(&(&right.module, &right.profile)));
+
+    let mut text = String::from(SIZE_RECORD_HEADER);
+    for row in &rows {
+        text.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            row.module, row.profile, row.raw, row.gzip
         ));
     }
-    Ok((raw_size, gzip_size))
+    fs::write(path, text).map_err(|error| format!("failed to write {}: {error}", path.display()))
+}
+
+fn parse_size_row(line: &str) -> Option<SizeRow> {
+    let cells: Vec<&str> = line
+        .strip_prefix('|')?
+        .strip_suffix('|')?
+        .split('|')
+        .map(str::trim)
+        .collect();
+    if cells.len() != 4 {
+        return None;
+    }
+    Some(SizeRow {
+        module: cells[0].to_string(),
+        profile: cells[1].to_string(),
+        raw: cells[2].parse().ok()?,
+        gzip: cells[3].parse().ok()?,
+    })
 }
 
 fn measure_wasm_size(path: &Path) -> Result<(usize, usize), String> {
@@ -290,6 +358,7 @@ fn parse_args() -> Result<Config, String> {
         jobs: 0,
         verbose: false,
         force: false,
+        record_sizes: false,
         web_dir: PathBuf::new(),
         output_dir: PathBuf::new(),
     };
@@ -314,6 +383,7 @@ fn parse_args() -> Result<Config, String> {
             }
             "--verbose-build" => config.verbose = true,
             "--force" => config.force = true,
+            "--record-sizes" => config.record_sizes = true,
             "--port" => {
                 let value = args.next().ok_or("--port requires a value")?;
                 config.port = value
@@ -341,6 +411,13 @@ fn parse_args() -> Result<Config, String> {
         }
     }
 
+    // Refusing rather than recording nothing: a debug or unoptimized module
+    // weighs several times what the artifact does, and a run that quietly
+    // wrote no row would leave the stale one looking freshly measured.
+    if config.record_sizes && (config.debug || config.no_optimize) {
+        return Err("--record-sizes measures the optimized build, so it cannot be combined with --debug or --no-optimize".to_string());
+    }
+
     Ok(config)
 }
 
@@ -359,6 +436,7 @@ fn print_help() {
     println!("  --jobs <n>               Parallel module builds");
     println!("  --verbose-build          Print wasm-pack and wasm-opt output");
     println!("  --force                  Rebuild even when stamps are up to date");
+    println!("  --record-sizes           Merge the measured sizes into web/wasm-sizes.md");
 }
 
 fn executable_web_dir() -> Result<PathBuf, String> {

@@ -8,7 +8,8 @@ param(
     [int]$Port = 8080,
     [int]$Jobs = 0,
     [switch]$VerboseBuild,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$RecordSizes
 )
 
 # Cross-platform wrapper for the Draco Web WASM build tool.
@@ -60,6 +61,9 @@ if ($VerboseBuild) {
 }
 if ($Force) {
     $toolArgs += "--force"
+}
+if ($RecordSizes) {
+    $toolArgs += "--record-sizes"
 }
 
 # The front-end is TypeScript under web/src; www/ holds only its build output

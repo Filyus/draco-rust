@@ -51,18 +51,10 @@ For an application that only needs document inspection and lossless
 serialization, build the same module with `--no-default-features`; this is a
 custom profile rather than a separate public package.
 
-Reference optimized sizes from the 2026-07-19 Windows stable toolchain build:
-
-| glTF build | raw WASM | gzip |
-| --- | ---: | ---: |
-| reader + Draco decode | 251,460 B | 105,075 B |
-| reader + Draco decode + accessors | 255,669 B | 106,631 B |
-| reader + Draco decode + strict validation | 295,370 B | 129,515 B |
-| converter app (`accessors`, `strict-validation`, `draco-encode`, `raw-resources`) | 464,791 B | 194,719 B |
-
-The released reader is 102.7 KiB gzip, within the 112 KiB budget. Optional and
-converter sizes are informational because those features are not included in
-the release asset.
+What each profile weighs is recorded in [wasm-sizes.md](wasm-sizes.md), which a
+build updates with `--record-sizes`. The released reader is the `release` row;
+the converter app carries `accessors`, `strict-validation`, `draco-encode` and
+`raw-resources`, none of which ships in the release asset.
 
 ## STL and standalone Draco
 
@@ -537,7 +529,7 @@ unvalidated beyond the verified fixtures.
 `build.ps1` defaults to the interactive converter profile: the format modules
 use their normal features and `gltf-wasm` additionally enables
 `accessors`, `strict-validation`, `draco-encode`, and `raw-resources`. Use `-ReleaseProfile` when
-reproducing the lightweight glTF release artifact and its size budget.
+reproducing the lightweight glTF release artifact.
 
 ```powershell
 ./build.ps1 -Serve
@@ -560,10 +552,16 @@ npm install --prefix web
 npm run --prefix web test:node
 ```
 
-The gzip budget is enforced only on the release profile, since that is the
-artifact it describes; a build carrying features reports its size instead. So
-`bash ./build.sh` stays the budget gate, and anything that runs the front-end —
-the Node scene gates included — needs `--app` built over it afterwards.
+Anything that runs the front-end — the Node scene gates included — needs `--app`
+built over it afterwards, since the release profile omits what those calls need.
+
+Every optimized build prints what each module weighs, and nothing fails on a
+size: a ceiling checked only by a local release-profile build is a ceiling
+nobody evaluates, which is how the glTF module spent nine days over the one this
+replaced. `--record-sizes` merges the run's measurements into
+[wasm-sizes.md](wasm-sizes.md) by module and profile, so growth arrives in the
+diff of the commit that caused it. Record it from an optimized build on one
+machine: Windows and Linux differ by about 875 bytes on the same commit.
 
 Optimized packages are written to `web/www/pkg/`.
 
