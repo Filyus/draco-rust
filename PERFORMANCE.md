@@ -7,6 +7,31 @@ printed comparison output. Correctness and parity tests live in
 
 ## Speed Snapshot
 
+**The reference these tables measure against is not stock Draco.** The C++
+checkout they link (`DRACO_CPP_BUILD_DIR`) carries a local debug patch:
+`std::getenv("DRACO_VERBOSE")` inside `mesh_edgebreaker_decoder_impl.cc`'s
+per-face loop and inside the traversal observer's per-vertex callback. `getenv`
+scans the environment block, so that side's time scales with the environment --
+which is also the whole of the launch sensitivity described below. Padding the
+environment with a dummy variable takes the C++ decode from `1,690` to `12,355
+us/1k faces` while the Rust side stays at `51.6` to `52.7`.
+
+Against a pristine upstream 1.5.7 build of the same version, the ratios are a
+different story -- `3` runs, medians, `us/1k faces`:
+
+| Speed | Encode C++ / Rust | Encode | Decode C++ / Rust | Decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | `602` / `542` | `1.11x` | `67.3` / `83.5` | `0.81x` |
+| 5 | `353` / `391` | `0.90x` | `36.3` / `55.7` | `0.65x` |
+| 9 | `346` / `385` | `0.90x` | `31.6` / `50.8` | `0.62x` |
+| 10 | `38.8` / `32.0` | `1.21x` | `16.6` / `11.5` | `1.44x` |
+
+So this port is at parity to `10%` behind on edgebreaker encode, `1.2x` to
+`1.6x` behind on edgebreaker decode, and ahead on the sequential path at speed
+`10`. The tables below are kept as they were measured, and are only meaningful
+against the patched reference they name; replacing them needs a decision about
+which C++ build is the reference, which is the maintainer's call.
+
 Measured 2026-08-17 on the seeded and real-corpus profiles below, against the
 C++ reference build, `3` runs each, every cell the median across runs of the
 harness's own `avg [p10..p90]`. Absolute microsecond figures are comparable
