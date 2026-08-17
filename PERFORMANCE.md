@@ -25,6 +25,20 @@ speedup column is `1.2%` to `5.1%` depending on the speed, so treat a
 difference under `5%` between two snapshots as not measured. Pinning is not
 what moved the numbers: an unpinned run reproduces the C++ side to `0.6%`.
 
+**Launch the binary yourself.** The same binary run through `cargo test`, the
+command every section below prints, measures the C++ side `25%` slower than
+the same binary started directly -- `2,092` against `1,671 us/1k faces` on
+decode at speed 9, over `3` interleaved pairs that never overlap -- while the
+Rust side stays within `2%`. A snapshot taken one way therefore cannot be
+compared with one taken the other way, and most of the gap against the
+2026-07-31 figures is exactly this: they were taken through `cargo test`. What
+in the invocation costs the C++ side that quarter is not established. Process
+priority, CPU affinity, working directory, `DRACO_CPP_*`, the libtest thread
+count, stdout being a pipe rather than a file, and the loaded CRT DLLs are all
+ruled out by direct test; a cargo-shaped environment block reproduces about a
+fifth of it. Ask cargo for the path with `--no-run --message-format=json` and
+launch that.
+
 Seeded mesh sweep encode, `avg [p10..p90]` across `12` stratified samples:
 
 Samples: `3` grid, `3` fan, `3` boundary ribbon, `3` torus.
@@ -118,6 +132,12 @@ side agreeing between the binaries to `1.6%`:
 | 8 | `7.36x` | `5.37x` | `5.68x` | `48.20x` | `32.81x` | `35.44x` |
 | 9 | `7.43x` | `5.40x` | `5.65x` | `49.76x` | `32.82x` | `35.55x` |
 | 10 | `1.26x` | `1.24x` | `1.29x` | `1.19x` | `1.16x` | `1.37x` |
+
+Most of that gap is now attributed: those figures were taken through `cargo
+test`, which costs the C++ side `25%` for reasons given above. What remains
+after allowing for it is `8%` on encode and `26%` on decode, and that part is
+the machine. The conclusion is unchanged, and the reason it is unchanged is
+that both columns of the pair below were taken the same way, minutes apart.
 
 So the whole of the drop is the environment and none of it is the code: the
 July revision measured today is *slower* than today's revision, not faster,
