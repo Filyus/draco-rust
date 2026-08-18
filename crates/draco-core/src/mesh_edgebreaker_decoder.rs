@@ -897,20 +897,19 @@ impl MeshEdgebreakerDecoder {
         // Size the mesh from what was decoded rather than from what the header
         // claimed, now that the two are known to agree.
         mesh.try_set_num_faces(ct.num_faces())?;
-        self.corner_table = Some(ct);
         connectivity_decoder.is_vert_hole.truncate(num_vertices);
         self.is_vert_hole = connectivity_decoder.is_vert_hole;
 
-        // Initialize vertex_to_corner_map
-        self.vertex_to_corner_map = vec![u32::MAX; num_vertices];
-        if let Some(ct) = &self.corner_table {
-            for v in 0..num_vertices {
-                let corner = ct.left_most_corner(VertexIndex(v as u32));
-                if corner != crate::geometry_indices::INVALID_CORNER_INDEX {
-                    self.vertex_to_corner_map[v] = corner.0;
-                }
-            }
-        }
+        // Every vertex's left-most corner is exactly `vertex_corners[v]` --
+        // that is `left_most_corner`'s whole definition -- and the table was
+        // just truncated to `num_vertices` above, so every `v` in this range
+        // is in bounds by construction. A transform of the vec already in hand
+        // answers the same question as a per-vertex call into the accessor,
+        // without its bounds check or the sentinel's `u32::MAX` needing a
+        // second encoding here: `CornerIndex`'s is already `u32::MAX`.
+        self.vertex_to_corner_map = ct.vertex_corners.iter().map(|c| c.0).collect();
+
+        self.corner_table = Some(ct);
 
         self.assign_points_to_corners(mesh)?;
 
@@ -1041,13 +1040,24 @@ impl MeshEdgebreakerDecoder {
     }
 
     fn assign_points_to_corners(&mut self, mesh: &mut Mesh) -> Result<(), DracoError> {
-        // Matches C++ MeshEdgebreakerDecoderImpl::AssignPointsToCorners
+        // Matches C++ MeshEdgebreakerDecoderImpl::AssignPointsToCorners for the
+        // `attribute_data_.empty()` branch: without attribute seams, a corner
+        // table vertex index is a point index outright, so the whole mesh can
+        // be read out of the table directly, one face at a time, in whatever
+        // order is convenient -- discovery order plays no part here.
+        //
+        // A discovery-order DFS used to run first and feed two arrays,
+        // `point_ids` and `data_to_corner_map`, that fed nothing: the loop
+        // below has never read them, and the crate has no other reader either
+        // (`take_data_to_corner_map`'s only call site stores the result and
+        // never looks at it again). C++'s own source confirms the shortcut is
+        // exact, not an approximation -- it is the same branch, verbatim.
         let corner_table = self.corner_table.as_ref().ok_or(DracoError::general(
             "Corner table not initialized".to_string(),
         ))?;
 
-        // Reject an inconsistent corner table before the DFS below indexes the
-        // per-vertex / per-face arrays by table-derived ids.
+        // Reject an inconsistent corner table before the loop below indexes
+        // per-face arrays by table-derived ids.
         if !corner_table.is_index_consistent() {
             return Err(DracoError::general(
                 "Inconsistent corner table for attribute traversal".to_string(),
@@ -1056,69 +1066,6 @@ impl MeshEdgebreakerDecoder {
 
         let num_vertices = corner_table.num_vertices();
         let num_faces = corner_table.num_faces();
-
-        // If there are no attribute seams, the vertex indices from corner table
-        // correspond directly to point IDs. However, they must be visited in
-        // discovery order to match the attribute data stream.
-        // Discovery order follows the symbol traversal: {Next, Prev, Corner} for each face.
-
-        let mut point_ids = vec![PointIndex(u32::MAX); num_vertices];
-        let mut data_to_corner_map = Vec::with_capacity(num_vertices);
-        let mut visited_vertices = vec![false; num_vertices];
-        let mut visited_faces = vec![false; num_faces];
-        let mut next_point_id = 0;
-
-        // Records one newly visited vertex. Without attribute seams a corner
-        // table vertex is a point outright, so all this carries is the order in
-        // which the walk found them.
-        let mut on_new_vertex = |vertex: VertexIndex, corner: CornerIndex| {
-            point_ids[vertex.0 as usize] = PointIndex(next_point_id);
-            next_point_id += 1;
-            data_to_corner_map.push(corner.0);
-        };
-
-        // The C++ decoder ALWAYS uses sequential face order for attribute traversal.
-        // The processed_connectivity_corners_ collected during symbol decoding
-        // are only used for connectivity reconstruction, NOT for attribute traversal.
-        // This matches C++ MeshTraversalSequencer::GenerateSequenceInternal which
-        // uses sequential faces when corner_order_ is not set (decoder mode).
-        //
-        // The encoder and decoder have DIFFERENT corner tables - the encoder uses the
-        // original mesh's corner table, while the decoder reconstructs one from symbols.
-        // For roundtrip to work, the attribute data must be encoded/decoded in an order
-        // that can be reconstructed independently by both encoder and decoder.
-        //
-        // The key insight is that both encoder and decoder do DFS traversal, but the
-        // traversal visits corners and maps them to points via the MESH's face data.
-        // Since the decoder's mesh faces are set from its reconstructed corner table,
-        // the point assignments will match when using sequential face order.
-        //
-        // Use sequential face order, matching C++ decoder behavior.
-        for f in 0..num_faces {
-            if !visited_faces[f] {
-                crate::corner_traversal::traverse_from_corner(
-                    corner_table,
-                    CornerIndex((f * 3) as u32),
-                    &mut visited_faces,
-                    &mut visited_vertices,
-                    &mut on_new_vertex,
-                );
-            }
-        }
-
-        // Handle isolated vertices.
-        for v in 0..num_vertices {
-            if !visited_vertices[v] {
-                point_ids[v] = PointIndex(next_point_id);
-                next_point_id += 1;
-                let c = corner_table.left_most_corner(VertexIndex(v as u32));
-                data_to_corner_map.push(if c != crate::geometry_indices::INVALID_CORNER_INDEX {
-                    c.0
-                } else {
-                    0
-                });
-            }
-        }
 
         // Map corner table vertices to mesh face point indices.
         // In C++: face[c] = corner_table_->Vertex(start_corner + c).value()
@@ -1134,7 +1081,6 @@ impl MeshEdgebreakerDecoder {
             mesh.set_face(fid, [PointIndex(v0.0), PointIndex(v1.0), PointIndex(v2.0)]);
         }
         mesh.set_num_points(num_vertices);
-        self.data_to_corner_map = Some(data_to_corner_map);
 
         Ok(())
     }
