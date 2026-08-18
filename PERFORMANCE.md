@@ -246,6 +246,17 @@ Measured and rejected, so the next attempt can start elsewhere:
   builds, instead of the attribute traversal building its own: the two are
   different walks, `34,834` entries against `35,924` on the Bunny, so there is
   nothing to reuse.
+- Reserving the corner table's capacity up front from the symbol count instead
+  of growing it a face at a time: `2.2%` **slower** as capacity-only and `2.5%`
+  slower when the length was grown too. One large allocation takes its pages
+  from the operating system, while incremental growth reuses pages the heap
+  already holds -- and `14.7%` of this decode's time is already kernel-side
+  page work, so adding to it is the wrong direction.
+- Resolving the three corner vertices once in the valence traversal instead of
+  through the per-delta helpers, which re-resolved `next` up to three times:
+  not detectable. It removes real work and is not slower, but two builds per
+  condition disagreed by `1.6%` and `2.1%` in the session that measured it, so
+  it is not landed on evidence this weak.
 
 What the profile says is left: on decode, roughly a fifth of self time sits in
 the corner-table accessors and the generic machinery around them -- bounds
