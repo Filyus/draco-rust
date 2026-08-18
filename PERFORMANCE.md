@@ -477,14 +477,42 @@ an earlier round's probe recorded skipping the check entirely as "not
 detectable" -- that was true on whatever payload diluted a `2%`-ish saving
 below the noise floor, not evidence the check was free.
 
-One session's investigation stopped here without measuring, on a note worth
-keeping: `next_in_face` alone showed `4.26%` self time in that same profile,
-comparable to `slice::get`'s `4.73%` -- suspicious for arithmetic this small,
-though a first read suggested it is inlining attribution from the swing
-composition (two `next_in_face` calls per `swing_left`) rather than a real
-per-call cost, since C++'s `Next`/`LocalIndex` do the same `% 3` by the same
-compiler. Unconfirmed either way; the next round should disassemble before
-trusting the percentage, per the pattern above.
+**Resolved by disassembly.** `next_in_face`'s `4.26%` self time is real work,
+not an attribution artifact, and not a bug. Extracting the `.o` from the
+`codegen-units = 1` build and listing its symbol table found no standalone
+symbol for `next_in_face`, `prev_in_face`, or any of `vertex`, `opposite`,
+`next`, `previous`, `vertex_after`, `vertex_before`, `swing_left`,
+`swing_right`, `left_corner`, `right_corner`, `face`, `first_corner`, or
+`left_most_corner` -- every one of them is inlined at every call site, crate
+wide, with no exception. Samply's `4.26%` is the sum of dozens of inlined
+copies of the same six-instruction wrap (`lea`/`imul 0xaaaaaaab`/`cmp`/branch,
+matching the standard unsigned-`%3` magic multiply) correctly attributed back
+to one source line by the compiler's debug info, not one hot function paying
+call overhead. One instance, read straight out of the disassembly of
+`assign_points_to_corners`'s inlined tail loop:
+
+```
+1c3c: lea  rax, [rdi + 2*rdi]                  ; c0 = f * 3
+1c56: mov  edx, [corner_to_vertex_map + 4*c0]  ; vertex(c0) -- plain load
+1ca2: lea  r8d, [eax + 1]                      ; next_in_face: c+1, then
+1ca6: imul ecx, r8d, 0xaaaaaaab                ;   the %3 test, then the
+1cb5: add  eax, -2                             ;   c-2 branch -> vertex_after
+1cbf: imul ecx, eax, 0xaaaaaaab                ; prev_in_face on the same c0,
+1ccd: dec  eax                                 ;   mirrored              -> vertex_before
+```
+
+Both C++'s `Next`/`Previous` and Rust's `next_in_face`/`prev_in_face` run the
+identical `%3` test the identical number of times for the identical
+compositions (`SwingLeft`/`SwingRight`/`Vertex(Next(c))` and their Rust
+mirrors) -- and round three's call-count instrumentation already put the two
+sides at load parity to `156` calls out of `1.1` million. So this is not extra
+work Rust does that C++ skips, the way the dead traversal and the doubled
+consistency scan were; it is the same work both sides do, made visible here
+only because this build's debug info resolves it down to source lines. There
+is nothing to fix -- the arithmetic-vs-branch form was already decided (branch
+wins by `8.8%`), and the only way to do less of it is fewer swing/vertex_after
+compositions, which is exactly what the load-count parity says is not
+available anymore.
 
 ## Main C++ vs Rust Benchmarks
 
