@@ -320,6 +320,57 @@ the standing price of the no-`unsafe` promise. Nothing else in either profile
 is both this large and reachable without `unsafe` or a restructuring bigger
 than a micro-optimization.
 
+### The Corner-Table Access Refactor
+
+Stage profiling against pristine upstream 1.5.7 attributed `59%` of the
+decode-time gap to corner-table access -- `2.04` ms of self time on
+`draco_core::corner_table` plus the generic bounds-check/`Option` machinery it
+inlines into, against `1.19` ms for the equivalent work in C++. Per-call cost
+had already been measured to a floor (`get_unchecked` worth `2.0%`, the
+standing price of `#![forbid(unsafe_code)]`; the `%3` wrap branch and a
+face-triple slice read both measured slower than what they replaced), so this
+round targeted call *count* and structure instead: fusing compositions of
+total accessors into one bounds-checked lookup, and removing one duplicated
+traversal. Landing was gated on behavioural identity and no regression, not on
+a speed threshold -- the goal was fewer places the access pattern lives, and a
+speedup was a secondary question.
+
+Measured with the same `abn.sh` protocol as above, position-only Bunny at
+speed 5 and the normal-carrying Bunny at speed 1, two builds per condition:
+
+- `vertex_after`/`vertex_before` replacing the `vertex(next(c))` /
+  `vertex(previous(c))` idiom at ~35 call sites (upstream's own long-standing
+  TODO in `mesh_prediction_scheme_parallelogram_shared.h`), plus fusing
+  `swing_left`/`swing_right`/`left_corner`/`right_corner` into one lookup each:
+  within the `~1%` build-to-build spread on the position-only mesh, `4-5%`
+  faster on the normal-carrying mesh at speed 1 (constrained multi-parallelogram,
+  which walks these swings the most).
+- `#[inline]` on the accessors, re-tested this time under a temporary
+  `codegen-units = 16` bench profile (the shipped `crates/Cargo.toml` has no
+  `[profile.release]`, so a consumer's build gets that instead of the `1` this
+  harness normally pins) to rule out the earlier null result being an artifact
+  of the harness: still within the build-to-build spread. **Not applied a
+  second time** -- the earlier rejection stands under the regime it was
+  originally worried about not covering.
+- Caching the previous fan step's `vertex()` answer per attribute table in the
+  seam-detection walk (`assign_edgebreaker_points_to_corners`), replacing a
+  short-circuiting `.any()` that re-asked a question the walk had already
+  answered one step earlier: `0.4%` on the normal-carrying mesh, both builds
+  agreeing to `0.04%`. No effect on position-only meshes, which walk no
+  attribute tables.
+- Unifying the two textually duplicated depth-first traversals (the generic
+  mesh decoder's and EdgeBreaker's point-assignment copy) into one
+  `corner_traversal::traverse_from_corner`, generic over an observer closure so
+  monomorphisation still inlines it rather than a vtable call landing in the
+  middle of a 200k-vertex walk: no measurable change on either payload, as
+  expected -- the point was removing the duplicate, not speed.
+
+Net: a few percent on the payloads that exercise the swing-heavy predictors,
+nothing measurable on the plainest one, and one fewer place a future change to
+traversal or fan-walking has to be made twice. The corner-table access layer
+is now one lookup per composed question instead of a chain of total accessors
+re-checking a sentinel each already answered.
+
 ## Main C++ vs Rust Benchmarks
 
 ### Decode Through The C++ Bridge
