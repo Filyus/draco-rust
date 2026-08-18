@@ -555,6 +555,21 @@ impl CornerTable {
         CornerIndex(next_in_face(opposite.0))
     }
 
+    /// Whether the fan around `v` fails to close: an isolated vertex, or one
+    /// whose left-most corner cannot swing left. Port of C++
+    /// `CornerTable::IsOnBoundary`.
+    ///
+    /// The definition is deliberately the cheap one rather than a walk of the
+    /// whole fan looking for a missing opposite: `vertex_corners` holds the
+    /// left-most corner, so a vertex is interior exactly when there is still a
+    /// face further left. Three copies of this used to live in the decoder and
+    /// the encoder, one of them open-coded inside a traversal; the question is
+    /// about connectivity, so it belongs to the table that holds it.
+    pub fn is_vertex_on_boundary(&self, v: VertexIndex) -> bool {
+        let corner = self.left_most_corner(v);
+        corner == INVALID_CORNER_INDEX || self.swing_left(corner) == INVALID_CORNER_INDEX
+    }
+
     fn break_non_manifold_edges(&mut self) -> bool {
         // This function detects and breaks non-manifold edges that are caused by
         // folds in 1-ring neighborhood around a vertex. Non-manifold edges can occur

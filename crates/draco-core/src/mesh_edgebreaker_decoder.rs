@@ -1068,139 +1068,13 @@ impl MeshEdgebreakerDecoder {
         let mut visited_faces = vec![false; num_faces];
         let mut next_point_id = 0;
 
-        // DFS logic matching C++ DepthFirstTraverser::TraverseFromCorner exactly.
-        let traverse_from_corner = |start_corner: CornerIndex,
-                                    point_ids: &mut [PointIndex],
-                                    data_to_corner_map: &mut Vec<u32>,
-                                    visited_vertices: &mut [bool],
-                                    visited_faces: &mut [bool],
-                                    next_point_id: &mut u32| {
-            let start_face = corner_table.face(start_corner);
-            if start_face == crate::geometry_indices::INVALID_FACE_INDEX
-                || visited_faces[start_face.0 as usize]
-            {
-                return;
-            }
-
-            let mut corner_stack = vec![start_corner];
-
-            // Pre-visit next and prev vertices (matching C++ exactly - NOT the tip vertex)
-            let next_c = corner_table.next(start_corner);
-            let prev_c = corner_table.previous(start_corner);
-            let next_vert = corner_table.vertex(next_c);
-            let prev_vert = corner_table.vertex(prev_c);
-
-            if next_vert == crate::geometry_indices::INVALID_VERTEX_INDEX
-                || prev_vert == crate::geometry_indices::INVALID_VERTEX_INDEX
-            {
-                return;
-            }
-
-            // Visit next vertex
-            if !visited_vertices[next_vert.0 as usize] {
-                visited_vertices[next_vert.0 as usize] = true;
-                point_ids[next_vert.0 as usize] = PointIndex(*next_point_id);
-                *next_point_id += 1;
-                data_to_corner_map.push(next_c.0);
-            }
-            // Visit prev vertex
-            if !visited_vertices[prev_vert.0 as usize] {
-                visited_vertices[prev_vert.0 as usize] = true;
-                point_ids[prev_vert.0 as usize] = PointIndex(*next_point_id);
-                *next_point_id += 1;
-                data_to_corner_map.push(prev_c.0);
-            }
-
-            // Main traversal loop (matching C++ exactly)
-            while let Some(corner_id) = corner_stack.pop() {
-                let mut corner_id = corner_id;
-                let mut face_id = corner_table.face(corner_id);
-
-                // Check if face already visited (C++ does this at loop start)
-                if corner_id == crate::geometry_indices::INVALID_CORNER_INDEX
-                    || visited_faces[face_id.0 as usize]
-                {
-                    continue;
-                }
-
-                loop {
-                    visited_faces[face_id.0 as usize] = true;
-
-                    let vert_id = corner_table.vertex(corner_id);
-                    if vert_id == crate::geometry_indices::INVALID_VERTEX_INDEX {
-                        break;
-                    }
-
-                    if !visited_vertices[vert_id.0 as usize] {
-                        // C++ checks IsOnBoundary: SwingLeft(LeftMostCorner(v)) == kInvalidCornerIndex
-                        let lmc = corner_table.left_most_corner(vert_id);
-                        let on_boundary = lmc == crate::geometry_indices::INVALID_CORNER_INDEX
-                            || corner_table.swing_left(lmc)
-                                == crate::geometry_indices::INVALID_CORNER_INDEX;
-                        visited_vertices[vert_id.0 as usize] = true;
-                        point_ids[vert_id.0 as usize] = PointIndex(*next_point_id);
-                        *next_point_id += 1;
-                        data_to_corner_map.push(corner_id.0);
-
-                        if !on_boundary {
-                            // Move to right corner and continue (C++ GetRightCorner = Opposite(Next))
-                            corner_id = corner_table.right_corner(corner_id);
-                            if corner_id == crate::geometry_indices::INVALID_CORNER_INDEX {
-                                break;
-                            }
-                            face_id = corner_table.face(corner_id);
-                            continue;
-                        }
-                    }
-
-                    // Vertex already visited or on boundary - check neighbors
-                    let right_corner_id = corner_table.right_corner(corner_id);
-                    let left_corner_id = corner_table.left_corner(corner_id);
-
-                    let right_face_id =
-                        if right_corner_id == crate::geometry_indices::INVALID_CORNER_INDEX {
-                            crate::geometry_indices::INVALID_FACE_INDEX
-                        } else {
-                            corner_table.face(right_corner_id)
-                        };
-                    let left_face_id =
-                        if left_corner_id == crate::geometry_indices::INVALID_CORNER_INDEX {
-                            crate::geometry_indices::INVALID_FACE_INDEX
-                        } else {
-                            corner_table.face(left_corner_id)
-                        };
-
-                    let right_visited = right_face_id
-                        == crate::geometry_indices::INVALID_FACE_INDEX
-                        || visited_faces[right_face_id.0 as usize];
-                    let left_visited = left_face_id == crate::geometry_indices::INVALID_FACE_INDEX
-                        || visited_faces[left_face_id.0 as usize];
-
-                    if right_visited {
-                        if left_visited {
-                            // Both visited - break from inner loop
-                            break;
-                        } else {
-                            // Only left unvisited - go to left
-                            corner_id = left_corner_id;
-                            face_id = left_face_id;
-                        }
-                    } else if left_visited {
-                        // Only right unvisited - go to right
-                        corner_id = right_corner_id;
-                        face_id = right_face_id;
-                    } else {
-                        // Both unvisited - split traversal (C++ behavior)
-                        // Replace top of stack with left (processed second)
-                        // Push right (processed first - LIFO)
-                        // Note: we already popped, so modify logic:
-                        // Push left first, then right, then break
-                        corner_stack.push(left_corner_id);
-                        corner_stack.push(right_corner_id);
-                        break;
-                    }
-                }
-            }
+        // Records one newly visited vertex. Without attribute seams a corner
+        // table vertex is a point outright, so all this carries is the order in
+        // which the walk found them.
+        let mut on_new_vertex = |vertex: VertexIndex, corner: CornerIndex| {
+            point_ids[vertex.0 as usize] = PointIndex(next_point_id);
+            next_point_id += 1;
+            data_to_corner_map.push(corner.0);
         };
 
         // The C++ decoder ALWAYS uses sequential face order for attribute traversal.
@@ -1222,13 +1096,12 @@ impl MeshEdgebreakerDecoder {
         // Use sequential face order, matching C++ decoder behavior.
         for f in 0..num_faces {
             if !visited_faces[f] {
-                traverse_from_corner(
+                crate::corner_traversal::traverse_from_corner(
+                    corner_table,
                     CornerIndex((f * 3) as u32),
-                    &mut point_ids,
-                    &mut data_to_corner_map,
-                    &mut visited_vertices,
                     &mut visited_faces,
-                    &mut next_point_id,
+                    &mut visited_vertices,
+                    &mut on_new_vertex,
                 );
             }
         }

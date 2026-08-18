@@ -624,9 +624,7 @@ impl MeshDecoder {
                 .edgebreaker_is_vert_hole
                 .get(v)
                 .copied()
-                .unwrap_or_else(|| {
-                    Self::is_vertex_on_boundary_impl(base_ct, VertexIndex(v as u32))
-                });
+                .unwrap_or_else(|| base_ct.is_vertex_on_boundary(VertexIndex(v as u32)));
             if !is_vert_hole {
                 for (attr_index, attr_ct) in
                     self.edgebreaker_attribute_corner_tables.iter().enumerate()
@@ -1542,198 +1540,42 @@ impl MeshDecoder {
         // This matches C++ MeshAttributeIndicesEncodingObserver::OnNewVertexVisited
         // which gets point_id from mesh_->face(corner / 3)[corner % 3]
 
-        // DFS traversal matching C++ DepthFirstTraverser::TraverseFromCorner exactly
-        let mut traverse_from_corner =
-            |start_corner: CornerIndex,
-             point_ids: &mut Vec<PointIndex>,
-             vertex_to_data_map: &mut Vec<i32>,
-             visited_vertices: &mut Vec<bool>,
-             visited_faces: &mut Vec<bool>| {
-                let start_face = corner_table.face(start_corner);
-                if start_face == crate::geometry_indices::INVALID_FACE_INDEX {
-                    return;
-                }
-                if visited_faces[start_face.0 as usize] {
-                    return; // Already traversed
-                }
-
-                let mut corner_stack: Vec<CornerIndex> = Vec::new();
-                corner_stack.push(start_corner);
-
-                // For the first face, check the remaining corners as they may not be processed yet.
-                // C++ visits Next, then Previous vertices BEFORE the main loop.
-                let next_vert = corner_table.vertex_after(start_corner);
-                let prev_vert = corner_table.vertex_before(start_corner);
-
-                if next_vert == crate::geometry_indices::INVALID_VERTEX_INDEX
-                    || prev_vert == crate::geometry_indices::INVALID_VERTEX_INDEX
-                {
-                    return;
-                }
-
-                // Visit Next vertex
-                if !visited_vertices[next_vert.0 as usize] {
-                    visited_vertices[next_vert.0 as usize] = true;
-                    let next_corner = corner_table.next(start_corner);
-                    let point_id = corner_to_point_id(next_corner);
-                    let data_id = point_ids.len() as i32;
-                    vertex_to_data_map[next_vert.0 as usize] = data_id;
-                    if event_log_enabled {
-                        test_event_log::record_event(format!(
-                            "MAP:{}->v{}",
-                            next_corner.0, next_vert.0
-                        ));
-                        test_event_log::record_event(format!(
-                            "MAP_POINT:{}->p{}",
-                            next_corner.0, point_id.0
-                        ));
-                    }
-                    point_ids.push(point_id);
-                    data_to_corner_map.push(next_corner.0);
-                }
-                // Visit Previous vertex
-                if !visited_vertices[prev_vert.0 as usize] {
-                    visited_vertices[prev_vert.0 as usize] = true;
-                    let prev_corner = corner_table.previous(start_corner);
-                    let point_id = corner_to_point_id(prev_corner);
-                    let data_id = point_ids.len() as i32;
-                    vertex_to_data_map[prev_vert.0 as usize] = data_id;
-                    if event_log_enabled {
-                        test_event_log::record_event(format!(
-                            "MAP:{}->v{}",
-                            prev_corner.0, prev_vert.0
-                        ));
-                        test_event_log::record_event(format!(
-                            "MAP_POINT:{}->p{}",
-                            prev_corner.0, point_id.0
-                        ));
-                    }
-                    point_ids.push(point_id);
-                    data_to_corner_map.push(prev_corner.0);
-                }
-
-                // Start the actual traversal (matching C++ while loop)
-                while let Some(mut corner_id) = corner_stack.pop() {
-                    let mut face_id = corner_table.face(corner_id);
-
-                    // Make sure the face hasn't been visited yet
-                    if corner_id == INVALID_CORNER_INDEX || visited_faces[face_id.0 as usize] {
-                        continue; // This face has been already traversed
-                    }
-
-                    loop {
-                        visited_faces[face_id.0 as usize] = true;
-
-                        let vert_id = corner_table.vertex(corner_id);
-                        if vert_id == crate::geometry_indices::INVALID_VERTEX_INDEX {
-                            break;
-                        }
-
-                        if !visited_vertices[vert_id.0 as usize] {
-                            let on_boundary =
-                                Self::is_vertex_on_boundary_impl(corner_table, vert_id);
-                            visited_vertices[vert_id.0 as usize] = true;
-                            let point_id = corner_to_point_id(corner_id);
-                            let data_id = point_ids.len() as i32;
-                            vertex_to_data_map[vert_id.0 as usize] = data_id;
-                            if event_log_enabled {
-                                test_event_log::record_event(format!(
-                                    "MAP:{}->v{}",
-                                    corner_id.0, vert_id.0
-                                ));
-                                test_event_log::record_event(format!(
-                                    "MAP_POINT:{}->p{}",
-                                    corner_id.0, point_id.0
-                                ));
-                            }
-                            point_ids.push(point_id);
-                            data_to_corner_map.push(corner_id.0);
-
-                            if !on_boundary {
-                                // Continue to right corner (GetRightCorner = Opposite(Next))
-                                corner_id = corner_table.opposite(corner_table.next(corner_id));
-                                if corner_id == INVALID_CORNER_INDEX {
-                                    break;
-                                }
-                                face_id = corner_table.face(corner_id);
-                                continue;
-                            }
-                        }
-
-                        // The current vertex has been already visited or it was on a boundary.
-                        // We need to determine whether we can visit any of its neighboring faces.
-                        let right_corner_id = corner_table.opposite(corner_table.next(corner_id)); // GetRightCorner
-                        let left_corner_id =
-                            corner_table.opposite(corner_table.previous(corner_id)); // GetLeftCorner
-
-                        let right_face_id = if right_corner_id == INVALID_CORNER_INDEX {
-                            crate::geometry_indices::INVALID_FACE_INDEX
-                        } else {
-                            corner_table.face(right_corner_id)
-                        };
-                        let left_face_id = if left_corner_id == INVALID_CORNER_INDEX {
-                            crate::geometry_indices::INVALID_FACE_INDEX
-                        } else {
-                            corner_table.face(left_corner_id)
-                        };
-
-                        let right_visited = right_face_id
-                            == crate::geometry_indices::INVALID_FACE_INDEX
-                            || visited_faces[right_face_id.0 as usize];
-                        let left_visited = left_face_id
-                            == crate::geometry_indices::INVALID_FACE_INDEX
-                            || visited_faces[left_face_id.0 as usize];
-
-                        if right_visited {
-                            if left_visited {
-                                // Both neighboring faces are visited. End reached.
-                                break;
-                            } else {
-                                // Go to the left face
-                                corner_id = left_corner_id;
-                                face_id = left_face_id;
-                            }
-                        } else if left_visited {
-                            // Left face visited, go to the right one
-                            corner_id = right_corner_id;
-                            face_id = right_face_id;
-                        } else {
-                            // Both neighboring faces are unvisited, we need to visit both.
-                            // Split the traversal.
-                            // First make the top of the current corner stack point to the left face
-                            // (this one will be processed second).
-                            // Add a new corner to the top of the stack (right face needs to be
-                            // traversed first).
-                            corner_stack.push(left_corner_id);
-                            corner_stack.push(right_corner_id);
-                            break;
-                        }
-                    }
-                }
-            };
+        // Records one newly visited vertex: the point it maps to, its slot in
+        // the attribute data order, and the corner it was discovered through.
+        // C++ MeshAttributeIndicesEncodingObserver::OnNewVertexVisited.
+        let mut on_new_vertex = |vertex: VertexIndex, corner: CornerIndex| {
+            let point_id = corner_to_point_id(corner);
+            vertex_to_data_map[vertex.0 as usize] = point_ids.len() as i32;
+            if event_log_enabled {
+                test_event_log::record_event(format!("MAP:{}->v{}", corner.0, vertex.0));
+                test_event_log::record_event(format!("MAP_POINT:{}->p{}", corner.0, point_id.0));
+            }
+            point_ids.push(point_id);
+            data_to_corner_map.push(corner.0);
+        };
 
         // Run the traverser in the same way as C++ MeshTraversalSequencer:
         // - If a corner_order is provided, process only those corners.
         // - Otherwise, process sequential CornerIndex(3 * face_id).
         if !processed_connectivity_corners.is_empty() {
             for &c in processed_connectivity_corners {
-                traverse_from_corner(
+                crate::corner_traversal::traverse_from_corner(
+                    corner_table,
                     CornerIndex(c),
-                    &mut point_ids,
-                    &mut vertex_to_data_map,
-                    &mut visited_vertices,
                     &mut visited_faces,
+                    &mut visited_vertices,
+                    &mut on_new_vertex,
                 );
             }
         } else {
             for f in 0..num_faces {
                 if !visited_faces[f] {
-                    traverse_from_corner(
+                    crate::corner_traversal::traverse_from_corner(
+                        corner_table,
                         CornerIndex((f * 3) as u32),
-                        &mut point_ids,
-                        &mut vertex_to_data_map,
-                        &mut visited_vertices,
                         &mut visited_faces,
+                        &mut visited_vertices,
+                        &mut on_new_vertex,
                     );
                 }
             }
@@ -2024,50 +1866,6 @@ impl MeshDecoder {
         }
 
         Ok((point_ids, data_to_corner_map, vertex_to_data_map))
-    }
-
-    #[allow(dead_code)]
-    fn is_vertex_on_boundary(&self, corner_table: &CornerTable, vert_id: VertexIndex) -> bool {
-        let start_c = corner_table.left_most_corner(vert_id);
-        if start_c == INVALID_CORNER_INDEX {
-            return true;
-        }
-        let mut c = start_c;
-        loop {
-            // Edge (c, next(c)) is incident to v.
-            if corner_table.opposite(c) == INVALID_CORNER_INDEX {
-                return true;
-            }
-            // Edge (prev(c), c) is also incident to v.
-            if corner_table.opposite(corner_table.previous(c)) == INVALID_CORNER_INDEX {
-                return true;
-            }
-            c = corner_table.swing_right(c);
-            if c == INVALID_CORNER_INDEX {
-                return true;
-            }
-            if c == start_c {
-                break;
-            }
-        }
-        false
-    }
-
-    /// Helper function to check if a vertex is on the boundary
-    /// Matches C++ CornerTable::IsOnBoundary
-    fn is_vertex_on_boundary_impl(
-        corner_table: &crate::corner_table::CornerTable,
-        v: VertexIndex,
-    ) -> bool {
-        let corner = corner_table.left_most_corner(v);
-        if corner == INVALID_CORNER_INDEX {
-            return true; // Isolated vertex - treat as boundary
-        }
-        // C++ checks: if (SwingLeft(corner) == kInvalidCornerIndex) return true;
-        if corner_table.swing_left(corner) == INVALID_CORNER_INDEX {
-            return true;
-        }
-        false
     }
 }
 

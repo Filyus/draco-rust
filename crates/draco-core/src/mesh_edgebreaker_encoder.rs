@@ -969,7 +969,7 @@ impl MeshEdgebreakerEncoder {
                 }
 
                 if !visited_vertices[vert_id.0 as usize] {
-                    let on_boundary = self.is_vertex_on_boundary(corner_table, vert_id);
+                    let on_boundary = corner_table.is_vertex_on_boundary(vert_id);
 
                     // Debug boundary check for specific vertices
                     if verbose && (vert_id.0 == 10 || vert_id.0 == 15 || vert_id.0 == 20) {
@@ -1812,18 +1812,6 @@ impl MeshEdgebreakerEncoder {
         }
 
         Ok(())
-    }
-
-    fn is_vertex_on_boundary(&self, corner_table: &CornerTable, v: VertexIndex) -> bool {
-        let corner = corner_table.left_most_corner(v);
-        if corner == INVALID_CORNER_INDEX {
-            return true; // Isolated vertex - treat as boundary
-        }
-        // C++ checks: if (SwingLeft(corner) == kInvalidCornerIndex) return true;
-        if corner_table.swing_left(corner) == INVALID_CORNER_INDEX {
-            return true;
-        }
-        false
     }
 
     /// Finds all holes (boundary loops) in the mesh and assigns each boundary vertex

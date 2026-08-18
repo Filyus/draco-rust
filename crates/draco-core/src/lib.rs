@@ -103,6 +103,10 @@ pub mod metadata;
 // exercise ported Draco internals without presenting them as the public API.
 #[doc(hidden)]
 pub mod attribute_quantization_transform;
+/// Depth-first corner-table traversal, shared by the two decode paths that
+/// order attribute values by connectivity.
+#[cfg(feature = "decoder")]
+mod corner_traversal;
 #[doc(hidden)]
 pub mod data_buffer;
 /// What a decode may allocate relative to the stream it is reading. Internal:
