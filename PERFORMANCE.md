@@ -269,7 +269,18 @@ Measured and rejected, so the next attempt can start elsewhere:
   rather than three accessor calls: `1.4%` **slower**.
 - `#[inline]` on the ten hottest corner-table and mesh accessors, on the
   theory that they were not being inlined across codegen units: `0.2%` on
-  decode and `0.5%` on encode, both inside the build-to-build spread.
+  decode and `0.5%` on encode, both inside the build-to-build spread. Retried
+  on the position-only mesh, where those accessors are `17%` of self time
+  rather than a diluted share: `0.35%`, still inside the spread. They are
+  already inlined where it matters.
+- Padding the corner maps with a trailing sentinel so `vertex` and `opposite`
+  could clamp instead of checking: not implemented, because it does not pay.
+  Clamping needs `min(index, len - 1)`, which is a comparison of its own, and
+  the indexed load still carries a bounds check the compiler cannot elide
+  without knowing the map is non-empty. What is left in those accessors after
+  the sentinel test came out is one compare, one conditional move and one load
+  -- about a cycle per call, which is what `get_unchecked` would also cost
+  minus the compare.
 - Rewriting `AnsDecoder::read_normalize` to pop from a prefix slice instead of
   indexing at an offset: not detectable.
 - Skipping `CornerTable::is_index_consistent` entirely (a probe, not a
