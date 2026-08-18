@@ -106,6 +106,16 @@ impl EdgebreakerConnectivityDecoder {
         // decision: it holds the header's face count and the size of what is
         // left in the buffer, and hands over whichever is smaller.
         self.corner_table.try_reserve_faces(input_face_bound)?;
+        // vertex_corners grows by one element per newly discovered vertex
+        // (set_left_most_corner's resize), unlike the other two tables above,
+        // which is why it needs its own reservation rather than falling out of
+        // try_reserve_faces. self.max_num_vertices already comes from a
+        // header count checked against 3 * num_faces, not the stream size --
+        // input_face_bound is what keeps that from being honoured past what
+        // the buffer could actually describe, and the corner table already
+        // trusts that bound for the same reason.
+        self.corner_table
+            .try_reserve_vertices(self.max_num_vertices.min(input_face_bound))?;
         traversal_decoder.reserve_traversal_order(input_face_bound);
 
         for symbol_id in 0..num_symbols {

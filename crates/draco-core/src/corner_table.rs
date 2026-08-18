@@ -156,6 +156,34 @@ impl CornerTable {
         Ok(())
     }
 
+    /// Reserves `vertex_corners` for `vertices`, the same way
+    /// [`try_reserve_faces`](Self::try_reserve_faces) reserves the other two
+    /// tables -- and for the same reason. Nothing did this before: the field
+    /// only ever grew one element at a time, from
+    /// [`set_left_most_corner`](Self::set_left_most_corner)'s `resize`, called
+    /// once per newly discovered vertex from five different symbol arms during
+    /// EdgeBreaker connectivity decode. On the Bunny that is `35k` separate
+    /// reallocations reaching a table 65,536 elements wide before the count
+    /// ever needed that much, each copying what was already there -- found by
+    /// a debugger breakpoint on `__rust_realloc`, since it wasn't traceable
+    /// through source or a static disassembly.
+    ///
+    /// `vertices` must already be bounded against the input the same way
+    /// [`try_reserve_faces`](Self::try_reserve_faces)'s `faces` is -- this
+    /// takes no header count on faith.
+    pub fn try_reserve_vertices(
+        &mut self,
+        vertices: usize,
+    ) -> Result<(), crate::status::DracoError> {
+        let extra = vertices.saturating_sub(self.vertex_corners.len());
+        if extra == 0 {
+            return Ok(());
+        }
+        self.vertex_corners.try_reserve(extra).map_err(|_| {
+            crate::status::DracoError::general("Failed to allocate corner table".to_string())
+        })
+    }
+
     pub fn try_grow_to_face(&mut self, face: usize) -> Result<(), crate::status::DracoError> {
         let num_corners = face
             .checked_add(1)
