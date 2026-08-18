@@ -8,7 +8,7 @@
 use crate::corner_table::CornerTable;
 use crate::draco_types::DataType;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
-use crate::geometry_indices::{CornerIndex, PointIndex, INVALID_CORNER_INDEX};
+use crate::geometry_indices::{CornerIndex, PointIndex, VertexIndex, INVALID_CORNER_INDEX};
 
 #[cfg(feature = "decoder")]
 use crate::geometry_indices::INVALID_ATTRIBUTE_VALUE_INDEX;
@@ -199,7 +199,18 @@ impl<'b> CornerPositions<'b> {
         if corner_id == INVALID_CORNER_INDEX {
             return [0, 0, 0];
         }
-        let v = self.corner_table.vertex(corner_id);
+        self.get_by_vertex(self.corner_table.vertex(corner_id))
+    }
+
+    /// Same cache as [`get`](Self::get), keyed directly by vertex.
+    ///
+    /// A caller that only ever wanted the vertex a corner names -- the fan
+    /// walk in [`compute_predicted_value`] is the case this exists for -- can
+    /// reach it through [`CornerTable::vertex_after`]/`vertex_before`, one
+    /// fused bounds-checked load instead of computing the neighbour corner
+    /// with `next`/`previous` and handing it here to be turned back into a
+    /// vertex a second time.
+    fn get_by_vertex(&mut self, v: VertexIndex) -> [i32; 3] {
         let vi = v.0 as usize;
         if vi >= self.cache.len() {
             // Off the end of the map: the uncached path returns the origin.
@@ -251,19 +262,24 @@ fn compute_predicted_value(
 
     let mut cit = VertexCornersIterator::new(corner_table, corner_id);
     while !cit.end() {
-        let c_next;
-        let c_prev;
-
-        if prediction_mode == NormalPredictionMode::OneTriangle {
-            c_next = corner_table.next(corner_id);
-            c_prev = corner_table.previous(corner_id);
+        // c_next/c_prev were never wanted for themselves, only for the vertex
+        // each names -- vertex_after/vertex_before answer that in one fused
+        // lookup instead of computing the neighbour corner and handing it to
+        // `get`, which would immediately turn it back into a vertex.
+        let (v_next, v_prev) = if prediction_mode == NormalPredictionMode::OneTriangle {
+            (
+                corner_table.vertex_after(corner_id),
+                corner_table.vertex_before(corner_id),
+            )
         } else {
-            c_next = corner_table.next(cit.corner());
-            c_prev = corner_table.previous(cit.corner());
-        }
+            (
+                corner_table.vertex_after(cit.corner()),
+                corner_table.vertex_before(cit.corner()),
+            )
+        };
 
-        let pos_prev = positions.get(c_prev);
-        let pos_next = positions.get(c_next);
+        let pos_prev = positions.get_by_vertex(v_prev);
+        let pos_next = positions.get_by_vertex(v_next);
 
         let v_next = [
             pos_next[0] as i64 - pos_cent[0] as i64,
