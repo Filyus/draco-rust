@@ -514,7 +514,88 @@ wins by `8.8%`), and the only way to do less of it is fewer swing/vertex_after
 compositions, which is exactly what the load-count parity says is not
 available anymore.
 
-## Main C++ vs Rust Benchmarks
+### Round Four: The Allocator, Not The Bytes
+
+The fresh profile that closed round three's open question also surfaced a
+bucket nobody had attributed yet: `memset` (`5.07%`), three separate
+`Vec::push_mut` leaves (`3.51%` combined), `ptr::write` (`3.41%`), and
+`intrinsics::unlikely` (`2.49%`) -- roughly `14%` of self time with no single
+source line to point at. `SAMPLE_ALLOC=1` on `decode_loop` (already built for
+exactly this) gave the concrete shape instead of a guess: one position-only
+decode makes 27 allocations at or above 64 KB, and one size --
+`139,336` bytes, `num_vertices * 4` -- accounts for **twelve** of them. Some
+are genuinely necessary, separate buffers (`vertex_to_data_map` in the
+attribute-traversal generator, two `Vec<CornerIndex>::resize` calls inside
+`SequentialIntegerAttributeDecoder::decode_values`, `vertex_to_corner_map`'s
+own build); at least one is a leftover of round two's own fusion, which
+replaced a per-vertex `left_most_corner()` loop with `.collect()` and removed
+the function calls but not the allocation. A separate three-step growth
+(`65,536` -> `131,072` -> `262,144` bytes) showed an unreserved
+`Vec<PointIndex>` inside `EdgebreakerConnectivityDecoder::decode_connectivity`
+paying for its own capacity doubling mid-decode.
+
+Before restructuring any of that, the cheaper question: is this bucket
+allocator overhead or data-volume bandwidth? Swapping the global allocator to
+`mimalloc` (dev-only, `#[global_allocator]` in the harness binaries, never in
+the library -- allocator choice is the consumer's call, same as PGO) answers
+it without touching a line of `draco-core`. `dev/profiling/abn.sh`, two builds
+per condition:
+
+| payload | speed | system allocator | mimalloc | win |
+| --- | ---: | ---: | ---: | ---: |
+| position only | 1 | `6,530` | `5,067` | `22.4%` |
+| position only | 5 | `4,191` | `2,946` | `29.7%` |
+| position only | 9 | `3,691` | `2,576` | `30.2%` |
+| with normals | 1 | `12,333` | `9,919` | `19.6%` |
+| with normals | 5 | `7,282` | `5,395` | `25.9%` |
+| with normals | 9 | `4,579` | `3,332` | `27.2%` |
+
+(microseconds per decode, median of two builds each side.) Every row's
+build-to-build spread was under `0.3%`; these wins are `60`-`100x` that.
+Correctness checked directly, not assumed: both binaries decode to the
+identical `34,834`-point, `69,451`-face mesh from the identical `58,893`-byte
+stream.
+
+This is by a wide margin the largest single lever this session found -- bigger
+than the dead traversal, the doubled consistency scan, and the accessor fusion
+combined. And it answers its own question: the bucket was allocator overhead,
+not bytes touched, since nothing about the *data volume* changed, only which
+code manages the heap.
+
+Re-run through `decode_loop` itself (not the separate harness, so C++ and
+Rust+mimalloc come from one tool, one build of each, one payload load) against
+pristine 1.5.7:
+
+| payload | speed | C++ | Rust (mimalloc) | ratio |
+| --- | ---: | ---: | ---: | ---: |
+| position only | 1 | `6,688` | `5,536` | `1.21x` |
+| position only | 5 | `3,596` | `3,243` | `1.11x` |
+| position only | 9 | `3,096` | `2,677` | `1.16x` |
+| with normals | 1 | `14,338` | `11,046` | `1.30x` |
+| with normals | 5 | `8,174` | `5,738` | `1.42x` |
+| with normals | 9 | `4,486` | `3,464` | `1.30x` |
+
+Every row is now Rust ahead, several by a wide margin -- a reversal from the
+system-allocator table above (worst case `0.76x`, position only speed 9)
+without a single line of `draco-core` changing. The library itself cannot make
+this choice for its consumer, so it stays out of the `[Speed Snapshot]`
+headline numbers above until this document's maintainer decides whether and
+how to recommend it downstream (a `README` note, a Cargo feature on a
+consuming binary, nothing at all). But for anyone choosing an allocator for a
+binary that links this crate, the number to know is `20-30%` on decode alone.
+
+What is still unmeasured: this session did not verify what allocator the C++
+reference itself effectively uses (plain MSVC `operator new`/Windows heap, by
+everything read of its build so far) -- if it is the same default heap Rust
+was fighting, the fair comparison for *both* sides swapping allocators remains
+open, and the `1.1x`-`1.4x` numbers above should be read as "Rust with a
+better allocator against C++ with the default one," not as a claim about
+which language's default is faster in general. Nor has round two's
+`.collect()` allocation, the unreserved connectivity-decode `Vec`, or the
+other eleven `139,336`-byte sites been addressed at the source level -- with
+the allocator question answered, that source-level work is now optional
+rather than urgent, since mimalloc already recovers most of what it would
+have saved.
 
 ### Decode Through The C++ Bridge
 
