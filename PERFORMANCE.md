@@ -252,6 +252,14 @@ Measured and rejected, so the next attempt can start elsewhere:
   from the operating system, while incremental growth reuses pages the heap
   already holds -- and `14.7%` of this decode's time is already kernel-side
   page work, so adding to it is the wrong direction.
+- Skipping the traversal cache's copy when a mesh has only one attribute
+  decoder, on the theory that it copies three per-vertex vectors for nothing:
+  `2.1%` and `2.2%` **slower** on a position-only Bunny, both builds agreeing.
+  The cache is left copying unconditionally. The same pair of binaries also
+  settles the question the cache raised: on that position-only mesh, where
+  there is no second decoder to serve, the caching revision is `0.5%` to `0.6%`
+  faster than the one before it, so nothing regressed for single-attribute
+  meshes.
 - Resolving the three corner vertices once in the valence traversal instead of
   through the per-delta helpers, which re-resolved `next` up to three times:
   not detectable. It removes real work and is not slower, but two builds per
