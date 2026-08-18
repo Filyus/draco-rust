@@ -333,9 +333,10 @@ impl CornerTable {
     ///   cleverly -- only by removing it, or by a table where the sentinel is
     ///   in range by construction.
     pub fn opposite(&self, corner: CornerIndex) -> CornerIndex {
-        if corner == INVALID_CORNER_INDEX {
-            return corner;
-        }
+        // No sentinel test: the sentinel is `u32::MAX`, so it indexes past any
+        // table this crate can build and `get` answers `None` for it exactly as
+        // it does for a corner past the end. The test that used to stand here
+        // ran on every one of the half-million calls a 69k-face decode makes.
         self.opposite_corners
             .get(corner.0 as usize)
             .copied()
@@ -380,9 +381,9 @@ impl CornerTable {
     /// "corner past the table" costs them nothing and removes a panic that a
     /// header count can reach.
     pub fn vertex(&self, corner: CornerIndex) -> VertexIndex {
-        if corner == INVALID_CORNER_INDEX {
-            return INVALID_VERTEX_INDEX;
-        }
+        // As in `opposite`: the sentinel indexes past the map, so the lookup
+        // already answers with the invalid vertex and the explicit test was
+        // work on every call -- nine hundred thousand of them per decode here.
         self.corner_to_vertex_map
             .get(corner.0 as usize)
             .copied()
