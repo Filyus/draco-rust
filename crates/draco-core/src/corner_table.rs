@@ -277,8 +277,8 @@ impl CornerTable {
         }
         let c0 = self.first_corner(face);
         let v0 = self.vertex(c0);
-        let v1 = self.vertex(self.next(c0));
-        let v2 = self.vertex(self.previous(c0));
+        let v1 = self.vertex_after(c0);
+        let v2 = self.vertex_before(c0);
         v0 == v1 || v0 == v2 || v1 == v2
     }
 
@@ -426,6 +426,40 @@ impl CornerTable {
             .unwrap_or(INVALID_VERTEX_INDEX)
     }
 
+    /// The vertex at the next corner of the same face: `vertex(next(corner))`
+    /// in one lookup.
+    ///
+    /// The pair of this and [`vertex_before`](Self::vertex_before) is the
+    /// commonest idiom in the crate -- the parallelogram predictors, the
+    /// EdgeBreaker symbol arms and the degeneracy test all want two of the three
+    /// vertices of a face given the third corner -- and spelled as a composition
+    /// it costs a sentinel test on the way in that the bounds check on the way
+    /// out already covers. Upstream carries the same consolidation as a standing
+    /// TODO in `mesh_prediction_scheme_parallelogram_shared.h`.
+    ///
+    /// This is not the fusion that was tried and rejected at
+    /// [`prediction_scheme_parallelogram`](crate::prediction_scheme_parallelogram):
+    /// that one read the whole face triple as an array and handed it back
+    /// through memory, and measured 1.4% slower. This stays a scalar load.
+    pub fn vertex_after(&self, corner: CornerIndex) -> VertexIndex {
+        // `next_in_face` in the inner position: the sentinel lands past the map
+        // and `get` answers `None`, exactly as `vertex(next(sentinel))` does.
+        self.corner_to_vertex_map
+            .get(next_in_face(corner.0) as usize)
+            .copied()
+            .unwrap_or(INVALID_VERTEX_INDEX)
+    }
+
+    /// The vertex at the previous corner of the same face:
+    /// `vertex(previous(corner))` in one lookup. Mirror of
+    /// [`vertex_after`](Self::vertex_after).
+    pub fn vertex_before(&self, corner: CornerIndex) -> VertexIndex {
+        self.corner_to_vertex_map
+            .get(prev_in_face(corner.0) as usize)
+            .copied()
+            .unwrap_or(INVALID_VERTEX_INDEX)
+    }
+
     pub fn face(&self, corner: CornerIndex) -> FaceIndex {
         if corner == INVALID_CORNER_INDEX {
             return crate::geometry_indices::INVALID_FACE_INDEX;
@@ -447,10 +481,10 @@ impl CornerTable {
             if opp == INVALID_CORNER_INDEX {
                 continue;
             }
-            let a = self.vertex(self.next(c)).0;
-            let b = self.vertex(self.previous(c)).0;
-            let oa = self.vertex(self.next(opp)).0;
-            let ob = self.vertex(self.previous(opp)).0;
+            let a = self.vertex_after(c).0;
+            let b = self.vertex_before(c).0;
+            let oa = self.vertex_after(opp).0;
+            let ob = self.vertex_before(opp).0;
             if !((a == oa && b == ob) || (a == ob && b == oa)) {
                 return false;
             }
@@ -867,8 +901,8 @@ impl CornerTable {
             }
             let c0 = self.first_corner(face);
             if self.vertex(c0) == INVALID_VERTEX_INDEX
-                || self.vertex(self.next(c0)) == INVALID_VERTEX_INDEX
-                || self.vertex(self.previous(c0)) == INVALID_VERTEX_INDEX
+                || self.vertex_after(c0) == INVALID_VERTEX_INDEX
+                || self.vertex_before(c0) == INVALID_VERTEX_INDEX
             {
                 debug_log!(
                     "CornerTable invariant failed: face {} contains INVALID vertex mapping",

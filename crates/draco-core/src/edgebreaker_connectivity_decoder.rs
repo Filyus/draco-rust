@@ -130,7 +130,7 @@ impl EdgebreakerConnectivityDecoder {
                 }
 
                 let corner_a = self.active_corner("TOPOLOGY_C")?;
-                let vertex_x = self.corner_table.vertex(self.corner_table.next(corner_a));
+                let vertex_x = self.corner_table.vertex_after(corner_a);
                 let corner_b = self
                     .corner_table
                     .next(self.corner_table.left_most_corner(vertex_x));
@@ -152,10 +152,8 @@ impl EdgebreakerConnectivityDecoder {
                 self.set_opposite_corners(corner_a, corner + 1)?;
                 self.set_opposite_corners(corner_b, corner + 2)?;
 
-                let vert_a_prev = self
-                    .corner_table
-                    .vertex(self.corner_table.previous(corner_a));
-                let vert_b_next = self.corner_table.vertex(self.corner_table.next(corner_b));
+                let vert_a_prev = self.corner_table.vertex_before(corner_a);
+                let vert_b_next = self.corner_table.vertex_after(corner_b);
                 if vertex_x == vert_a_prev || vertex_x == vert_b_next {
                     return Err(DracoError::general(
                         "Degenerate face in TOPOLOGY_C".to_string(),
@@ -214,16 +212,12 @@ impl EdgebreakerConnectivityDecoder {
                 self.corner_table
                     .set_left_most_corner(new_vert_index, opp_corner);
 
-                let vertex_r = self
-                    .corner_table
-                    .vertex(self.corner_table.previous(corner_a));
+                let vertex_r = self.corner_table.vertex_before(corner_a);
                 self.corner_table.map_corner_to_vertex(corner_r, vertex_r);
                 self.corner_table.set_left_most_corner(vertex_r, corner_r);
 
-                self.corner_table.map_corner_to_vertex(
-                    corner_l,
-                    self.corner_table.vertex(self.corner_table.next(corner_a)),
-                );
+                self.corner_table
+                    .map_corner_to_vertex(corner_l, self.corner_table.vertex_after(corner_a));
                 self.replace_active_corner(corner, "TOPOLOGY_R/L")?;
                 check_topology_split = true;
             } else if symbol == 1 {
@@ -268,18 +262,12 @@ impl EdgebreakerConnectivityDecoder {
                 self.set_opposite_corners(corner_a, corner + 2)?;
                 self.set_opposite_corners(corner_b, corner + 1)?;
 
-                let vertex_p = self
-                    .corner_table
-                    .vertex(self.corner_table.previous(corner_a));
+                let vertex_p = self.corner_table.vertex_before(corner_a);
                 self.corner_table.map_corner_to_vertex(corner, vertex_p);
-                self.corner_table.map_corner_to_vertex(
-                    corner + 1,
-                    self.corner_table.vertex(self.corner_table.next(corner_a)),
-                );
+                self.corner_table
+                    .map_corner_to_vertex(corner + 1, self.corner_table.vertex_after(corner_a));
 
-                let vert_b_prev = self
-                    .corner_table
-                    .vertex(self.corner_table.previous(corner_b));
+                let vert_b_prev = self.corner_table.vertex_before(corner_b);
                 self.corner_table
                     .map_corner_to_vertex(corner + 2, vert_b_prev);
                 self.corner_table
@@ -394,7 +382,7 @@ impl EdgebreakerConnectivityDecoder {
                     ));
                 }
                 let corner_a = corner;
-                let vert_n = self.corner_table.vertex(self.corner_table.next(corner_a));
+                let vert_n = self.corner_table.vertex_after(corner_a);
                 if self.corner_table.left_most_corner(vert_n) == INVALID_CORNER_INDEX {
                     return Err(DracoError::general(format!(
                         "Invalid left_most_corner for vert_n={}",
@@ -405,7 +393,7 @@ impl EdgebreakerConnectivityDecoder {
                 let corner_b = self
                     .corner_table
                     .next(self.corner_table.left_most_corner(vert_n));
-                let vert_x = self.corner_table.vertex(self.corner_table.next(corner_b));
+                let vert_x = self.corner_table.vertex_after(corner_b);
                 if self.corner_table.left_most_corner(vert_x) == INVALID_CORNER_INDEX {
                     return Err(DracoError::general(
                         "Invalid left_most_corner for vert_x".to_string(),
@@ -415,7 +403,7 @@ impl EdgebreakerConnectivityDecoder {
                 let corner_c = self
                     .corner_table
                     .next(self.corner_table.left_most_corner(vert_x));
-                let vert_p = self.corner_table.vertex(self.corner_table.next(corner_c));
+                let vert_p = self.corner_table.vertex_after(corner_c);
 
                 let face = FaceIndex(num_faces as u32);
                 num_faces += 1;

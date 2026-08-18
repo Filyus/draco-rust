@@ -470,11 +470,11 @@ impl MeshDecoder {
             is_edge_on_seam[c.0 as usize] = true;
             ct.set_opposite(c, INVALID_CORNER_INDEX);
 
-            let next_vertex = base_ct.vertex(base_ct.next(c));
+            let next_vertex = base_ct.vertex_after(c);
             if next_vertex != crate::geometry_indices::INVALID_VERTEX_INDEX {
                 is_vertex_on_seam[next_vertex.0 as usize] = true;
             }
-            let previous_vertex = base_ct.vertex(base_ct.previous(c));
+            let previous_vertex = base_ct.vertex_before(c);
             if previous_vertex != crate::geometry_indices::INVALID_VERTEX_INDEX {
                 is_vertex_on_seam[previous_vertex.0 as usize] = true;
             }
@@ -489,11 +489,11 @@ impl MeshDecoder {
                 is_edge_on_seam[opp.0 as usize] = true;
                 ct.set_opposite(opp, INVALID_CORNER_INDEX);
 
-                let next_vertex = base_ct.vertex(base_ct.next(opp));
+                let next_vertex = base_ct.vertex_after(opp);
                 if next_vertex != crate::geometry_indices::INVALID_VERTEX_INDEX {
                     is_vertex_on_seam[next_vertex.0 as usize] = true;
                 }
-                let previous_vertex = base_ct.vertex(base_ct.previous(opp));
+                let previous_vertex = base_ct.vertex_before(opp);
                 if previous_vertex != crate::geometry_indices::INVALID_VERTEX_INDEX {
                     is_vertex_on_seam[previous_vertex.0 as usize] = true;
                 }
@@ -1534,8 +1534,8 @@ impl MeshDecoder {
 
                 // For the first face, check the remaining corners as they may not be processed yet.
                 // C++ visits Next, then Previous vertices BEFORE the main loop.
-                let next_vert = corner_table.vertex(corner_table.next(start_corner));
-                let prev_vert = corner_table.vertex(corner_table.previous(start_corner));
+                let next_vert = corner_table.vertex_after(start_corner);
+                let prev_vert = corner_table.vertex_before(start_corner);
 
                 if next_vert == crate::geometry_indices::INVALID_VERTEX_INDEX
                     || prev_vert == crate::geometry_indices::INVALID_VERTEX_INDEX

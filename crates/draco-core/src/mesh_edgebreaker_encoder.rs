@@ -405,8 +405,8 @@ impl MeshEdgebreakerEncoder {
             if interior_config {
                 // Mark all vertices of the init face as visited.
                 let v0 = corner_table.vertex(start_corner);
-                let v1 = corner_table.vertex(corner_table.next(start_corner));
-                let v2 = corner_table.vertex(corner_table.previous(start_corner));
+                let v1 = corner_table.vertex_after(start_corner);
+                let v2 = corner_table.vertex_before(start_corner);
                 self.visited_vertices[v0.0 as usize] = true;
                 self.visited_vertices[v1.0 as usize] = true;
                 self.visited_vertices[v2.0 as usize] = true;
@@ -1848,7 +1848,7 @@ impl MeshEdgebreakerEncoder {
                 // No opposite corner means no opposite face, so the opposite edge
                 // of the corner is an open boundary.
                 // Check whether we have already traversed the boundary.
-                let boundary_vert_id = corner_table.vertex(corner_table.next(corner_i));
+                let boundary_vert_id = corner_table.vertex_after(corner_i);
                 if boundary_vert_id == crate::geometry_indices::INVALID_VERTEX_INDEX {
                     continue;
                 }
@@ -1896,7 +1896,7 @@ impl MeshEdgebreakerEncoder {
                     }
 
                     // Get the next vertex on the hole
-                    current_boundary_vert = corner_table.vertex(corner_table.next(corner_id));
+                    current_boundary_vert = corner_table.vertex_after(corner_id);
                     if current_boundary_vert == crate::geometry_indices::INVALID_VERTEX_INDEX {
                         break;
                     }
@@ -1961,10 +1961,10 @@ impl MeshEdgebreakerEncoder {
 
         // corner_id is now opposite to the boundary edge.
         // Get the start vertex of the edge and use it as a reference.
-        let _start_vert_id = corner_table.vertex(corner_table.next(corner_id));
+        let _start_vert_id = corner_table.vertex_after(corner_id);
 
         // Get the end vertex of the edge.
-        let mut act_vertex_id = corner_table.vertex(corner_table.previous(corner_id));
+        let mut act_vertex_id = corner_table.vertex_before(corner_id);
 
         // Safety counter for the main loop
         iter_count = 0;
@@ -1999,7 +1999,7 @@ impl MeshEdgebreakerEncoder {
                 }
             }
 
-            act_vertex_id = corner_table.vertex(corner_table.previous(corner_id));
+            act_vertex_id = corner_table.vertex_before(corner_id);
         }
 
         num_encoded_hole_verts

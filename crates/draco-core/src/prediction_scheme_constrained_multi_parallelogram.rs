@@ -357,8 +357,8 @@ where
                     let opp_v = corner_table.vertex(opp);
                     // Match C++ ComputeParallelogramPrediction(): next/prev must be
                     // taken from the opposite corner (oci), not from |c|.
-                    let next_v = corner_table.vertex(corner_table.next(opp));
-                    let prev_v = corner_table.vertex(corner_table.previous(opp));
+                    let next_v = corner_table.vertex_after(opp);
+                    let prev_v = corner_table.vertex_before(opp);
 
                     let opp_data_id = *vertex_to_data_map.get(opp_v.0 as usize).unwrap_or(&-1);
                     let next_data_id = *vertex_to_data_map.get(next_v.0 as usize).unwrap_or(&-1);
@@ -430,10 +430,8 @@ where
                 let vert_opp = vertex_to_data_map[corner_table.vertex(oci).0 as usize];
                 // BUG FIX: Must use oci (opposite corner), not ci, to get next/prev vertices
                 // This matches C++ ComputeParallelogramPrediction() behavior
-                let vert_next =
-                    vertex_to_data_map[corner_table.vertex(corner_table.next(oci)).0 as usize];
-                let vert_prev =
-                    vertex_to_data_map[corner_table.vertex(corner_table.previous(oci)).0 as usize];
+                let vert_next = vertex_to_data_map[corner_table.vertex_after(oci).0 as usize];
+                let vert_prev = vertex_to_data_map[corner_table.vertex_before(oci).0 as usize];
 
                 let v_opp_off = (vert_opp as usize) * num_components;
                 let v_next_off = (vert_next as usize) * num_components;
@@ -1062,8 +1060,8 @@ where
                     let opp_v = corner_table.vertex(opp);
                     // Match C++ ComputeParallelogramPrediction(): next/prev must be
                     // taken from the opposite corner (oci), not from |c|.
-                    let next_v = corner_table.vertex(corner_table.next(opp));
-                    let prev_v = corner_table.vertex(corner_table.previous(opp));
+                    let next_v = corner_table.vertex_after(opp);
+                    let prev_v = corner_table.vertex_before(opp);
 
                     let opp_data_id = *vertex_to_data_map.get(opp_v.0 as usize).unwrap_or(&-1);
                     let next_data_id = *vertex_to_data_map.get(next_v.0 as usize).unwrap_or(&-1);
@@ -1138,13 +1136,13 @@ where
                         else {
                             return Err(unmapped());
                         };
-                        let Some(&vert_next) = vertex_to_data_map
-                            .get(corner_table.vertex(corner_table.next(oci)).0 as usize)
+                        let Some(&vert_next) =
+                            vertex_to_data_map.get(corner_table.vertex_after(oci).0 as usize)
                         else {
                             return Err(unmapped());
                         };
-                        let Some(&vert_prev) = vertex_to_data_map
-                            .get(corner_table.vertex(corner_table.previous(oci)).0 as usize)
+                        let Some(&vert_prev) =
+                            vertex_to_data_map.get(corner_table.vertex_before(oci).0 as usize)
                         else {
                             return Err(unmapped());
                         };

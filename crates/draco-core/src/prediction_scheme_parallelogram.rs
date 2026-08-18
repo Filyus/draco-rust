@@ -75,8 +75,8 @@ pub(crate) fn compute_parallelogram_prediction<DataType: ParallelogramDataType>(
     // per-call sentinel branches predict perfectly, while the triple returns
     // through memory and adds a rotation the accessors do not pay.
     let vert_opp_idx = table.vertex(oci).0 as usize;
-    let vert_next_idx = table.vertex(table.next(oci)).0 as usize;
-    let vert_prev_idx = table.vertex(table.previous(oci)).0 as usize;
+    let vert_next_idx = table.vertex_after(oci).0 as usize;
+    let vert_prev_idx = table.vertex_before(oci).0 as usize;
 
     if vert_opp_idx >= vertex_to_data_map.len()
         || vert_next_idx >= vertex_to_data_map.len()

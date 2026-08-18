@@ -1254,8 +1254,8 @@ impl MeshEdgebreakerDecoder {
             let fid = FaceIndex(f as u32);
             let c0 = CornerIndex(f as u32 * 3);
             let v0 = corner_table.vertex(c0);
-            let v1 = corner_table.vertex(corner_table.next(c0));
-            let v2 = corner_table.vertex(corner_table.previous(c0));
+            let v1 = corner_table.vertex_after(c0);
+            let v2 = corner_table.vertex_before(c0);
 
             // Use vertex indices directly as point indices (matching C++)
             mesh.set_face(fid, [PointIndex(v0.0), PointIndex(v1.0), PointIndex(v2.0)]);

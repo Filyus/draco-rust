@@ -69,8 +69,8 @@ impl MeshEdgebreakerTraversalPredictiveEncoder {
         corner_table: &CornerTable,
         last_corner: CornerIndex,
     ) {
-        let next_v = corner_table.vertex(corner_table.next(last_corner)).0 as usize;
-        let prev_v = corner_table.vertex(corner_table.previous(last_corner)).0 as usize;
+        let next_v = corner_table.vertex_after(last_corner).0 as usize;
+        let prev_v = corner_table.vertex_before(last_corner).0 as usize;
         let corner_v = corner_table.vertex(last_corner).0 as usize;
 
         let mut predicted_symbol: i32 = -1;
