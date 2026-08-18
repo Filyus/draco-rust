@@ -894,8 +894,10 @@ impl MeshDecoder {
                 // corners after breaking opposites so we can derive the correct number
                 // of entries for this decoder.
                 if let Some(ref ct) = attr_corner_table {
+                    // A fresh seam-broken clone, not the main table this
+                    // decode already validated -- keep the check.
                     let (ids, map, v_map) =
-                        Self::generate_point_ids_and_corners_dfs_for_table(mesh, ct, &[])?;
+                        Self::generate_point_ids_and_corners_dfs_for_table(mesh, ct, &[], false)?;
                     point_ids_for_decoder = Some(ids);
                     data_to_corner_map_for_decoder = Some(map);
                     vertex_to_data_map_for_decoder = Some(v_map);
@@ -1497,21 +1499,33 @@ impl MeshDecoder {
                 "Edgebreaker DFS attribute traversal missing corner table".to_string(),
             )
         })?;
+        // `self.corner_table` was already validated by
+        // `MeshEdgebreakerDecoder::assign_points_to_corners` during connectivity
+        // decode -- the only way this method (`self.method == 1`) reaches this
+        // field is through that call, and it returns before setting the field
+        // if the check fails. Re-scanning it here streams the same 1.67 MB
+        // twice for an answer already known.
         Self::generate_point_ids_and_corners_dfs_for_table(
             mesh,
             corner_table,
             processed_connectivity_corners,
+            true,
         )
     }
 
+    /// `already_validated` -- true when `corner_table` is known consistent from
+    /// an earlier check on this exact table (the main corner table, checked in
+    /// `assign_points_to_corners`); false for a seam-broken clone built fresh
+    /// for one attribute, which has no other check standing in for this one.
     fn generate_point_ids_and_corners_dfs_for_table(
         mesh: &Mesh,
         corner_table: &CornerTable,
         processed_connectivity_corners: &[u32],
+        already_validated: bool,
     ) -> Result<AttributeTraversalArrays, DracoError> {
         // Reject an inconsistent (e.g. seam-modified) corner table before the DFS
         // indexes per-vertex / per-face arrays by table-derived ids.
-        if !corner_table.is_index_consistent() {
+        if !already_validated && !corner_table.is_index_consistent() {
             return Err(DracoError::general(
                 "Inconsistent corner table for attribute traversal".to_string(),
             ));
@@ -1596,13 +1610,11 @@ impl MeshDecoder {
                 "Edgebreaker prediction-degree traversal missing corner table".to_string(),
             )
         })?;
-        // Reject an inconsistent corner table before the traversal indexes
-        // per-vertex / per-face arrays by table-derived ids.
-        if !corner_table.is_index_consistent() {
-            return Err(DracoError::general(
-                "Inconsistent corner table for attribute traversal".to_string(),
-            ));
-        }
+        // No consistency check here: this method only ever runs on
+        // `self.corner_table` (never a caller-supplied table), reachable only
+        // when `self.method == 1`, which is exactly the condition under which
+        // `MeshEdgebreakerDecoder::assign_points_to_corners` already checked
+        // this same table during connectivity decode.
         let num_vertices = corner_table.num_vertices();
         let num_faces = corner_table.num_faces();
 
