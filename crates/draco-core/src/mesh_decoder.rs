@@ -603,6 +603,16 @@ impl MeshDecoder {
         let mut point_to_corner_map: Vec<u32> = Vec::new();
         let mut corner_to_point_map = vec![u32::MAX; num_corners];
 
+        // The vertex each attribute table gave for the previous corner of the
+        // fan. Walking a fan asks every attribute table for two vertices per
+        // step -- the corner's and its predecessor's -- and the predecessor's
+        // was answered one step earlier by this same walk. One slot per
+        // attribute table, allocated here rather than per vertex: the loop
+        // below runs once per vertex, two hundred thousand times on a mesh the
+        // size of the Bunny.
+        let mut prev_attr_vertex =
+            vec![INVALID_VERTEX_INDEX; self.edgebreaker_attribute_corner_tables.len()];
+
         for v in 0..base_ct.num_vertices() {
             let mut c = base_ct.left_most_corner(VertexIndex(v as u32));
             if c == INVALID_CORNER_INDEX {
@@ -664,6 +674,14 @@ impl MeshDecoder {
             corner_to_point_map[c.0 as usize] = point_to_corner_map.len() as u32;
             point_to_corner_map.push(c.0);
 
+            for (attr_ct, slot) in self
+                .edgebreaker_attribute_corner_tables
+                .iter()
+                .zip(prev_attr_vertex.iter_mut())
+            {
+                *slot = attr_ct.vertex(c);
+            }
+
             let mut prev_c = c;
             c = base_ct.swing_right(c);
             let mut swing_steps = 0usize;
@@ -675,10 +693,20 @@ impl MeshDecoder {
                         "Edgebreaker point assignment traversal did not terminate".to_string(),
                     ));
                 }
+                // Every slot is written on every step, so `fold` rather than
+                // `any`: short-circuiting would leave the later tables' slots
+                // holding a vertex from some earlier corner, and the answer
+                // they gave for this step would go missing from the next one.
                 let attribute_seam = self
                     .edgebreaker_attribute_corner_tables
                     .iter()
-                    .any(|attr_ct| attr_ct.vertex(c) != attr_ct.vertex(prev_c));
+                    .zip(prev_attr_vertex.iter_mut())
+                    .fold(false, |seam, (attr_ct, slot)| {
+                        let vertex = attr_ct.vertex(c);
+                        let differs = vertex != *slot;
+                        *slot = vertex;
+                        seam | differs
+                    });
                 if attribute_seam {
                     corner_to_point_map[c.0 as usize] = point_to_corner_map.len() as u32;
                     point_to_corner_map.push(c.0);
