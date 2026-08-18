@@ -608,14 +608,11 @@ checked directly: `active_corner_stack` capacity `16`, `invalid_vertices`
 capacity `2,048`, `processed_connectivity_corners` capacity `69,451` (exactly
 its `reserve()`, no overshoot). None match. A crate-wide grep for
 `Vec<PointIndex>` outside encode-only files turns up nothing reachable from
-decode at all -- the label is almost certainly a debug-info artifact of LLVM
-folding identical-layout generic instances (`PointIndex`, `VertexIndex`,
-`CornerIndex`, and bare `u32` are all 4-byte Copy newtypes with identical
-codegen), and the true type is one of those. Disassembling
-`decode_connectivity` and `reconstruct_mesh` for the actual `realloc`/`grow_one`
-call found neither as a visible callee -- inlined past the point source
-reading or static disassembly can follow. Unresolved; the next tool for it is
-a debugger breakpoint on the allocation, not more reading.
+decode at all -- the label really was a debug-info artifact of LLVM folding
+identical-layout generic instances (`PointIndex`, `VertexIndex`, `CornerIndex`
+and bare `u32` are all 4-byte Copy newtypes with identical codegen). Both
+guesses about *which* field the folded name stood in for were wrong, though --
+resolved in round five below by a debugger, not by more reading.
 
 **The twelve `139,336`-byte sites.** Traced as far as backtraces allow: one is
 round two's `vertex_to_corner_map` build in
@@ -640,6 +637,55 @@ which is a real refactor with its own correctness surface, not a quick
 follow-up to a benchmark. Left undone: the allocator question is answered and
 cheap; this one is neither, so it stays optional rather than becoming the next
 step by default.
+
+### Round Five: The Table Nobody Reserved
+
+Source reading and static disassembly closed round four's growing-`Vec`
+question as far as they could and left it unresolved. A debugger picked up
+where they stopped. `cdbX64.exe` (the classic console engine bundled with
+WinDbg Preview; `kernelbase!HeapReAlloc` never resolved in this environment --
+no route to the public symbol server -- so the breakpoint went on the
+crate-generated `__rust_realloc` shim directly, found by wildcard symbol
+search once `.sympath+` pointed at the harness's own build directory)
+conditioned on the exact byte size (`0x40000` = `262,144`) and read the call
+stack past the one-time encode `decode_loop` also runs before its timed
+decode loop -- the first hits at that exact size were
+`MeshEdgebreakerEncoder::encode_connectivity`, not decode at all, and cost a
+round of confusion before the harness's own `encoded: ...` line printing
+between hits made the boundary obvious. The hit that mattered landed inside
+`EdgebreakerConnectivityDecoder::decode_connectivity`, confirming the
+attribution round four already had, and disassembling the caller found the
+real field: offset `self+0x30`, three `Vec`s in from the start of
+`CornerTable` -- `vertex_corners`. `VertexIndex`, `CornerIndex` and
+`PointIndex` are all 4-byte Copy newtypes with identical codegen, so LLVM had
+folded `vertex_corners: Vec<CornerIndex>`'s `RawVec` instantiation into
+`PointIndex`'s; the debug-info label was accurate about *a* type, just not
+about which field carried it.
+
+`vertex_corners` grows through `set_left_most_corner`'s `resize`, one vertex
+at a time, called from five different symbol arms across the whole
+connectivity decode -- the one table of `CornerTable`'s three that
+`try_reserve_faces` never touched, because it is indexed by vertex rather than
+by face or corner, and nothing had sized it against the vertex count already
+being tracked for exactly this purpose
+(`EdgebreakerConnectivityDecoder::max_num_vertices`). Landed as
+`try_reserve_vertices`, mirroring `try_reserve_faces` down to why it is
+capacity-only, reserved against `max_num_vertices.min(input_face_bound)` --
+not `max_num_vertices` alone, which traces back to a header count checked only
+against `3 * num_faces`, not against the stream size; `input_face_bound` is
+what already keeps that count from being honoured past what the buffer could
+describe, for the other two tables, and this reuses that guarantee rather than
+placing new trust in an unvalidated count.
+
+`dev/profiling/abn.sh`, two builds per condition: `3.0-3.4%` on position-only
+at speed 5, `1.2-1.4%` at speed 9, `1.8-1.9%` on the normal-carrying mesh at
+speed 1 -- several times the `0.0-0.4%` build-to-build spread on these runs.
+`decode_loop`'s own count: `91` to `77` allocations per decode, `7.39` to
+`7.02` MB -- a drop in count and bytes together, the signature of removing a
+reallocation chain rather than changing what gets computed. This is the first
+fix this session found by disassembling a specific live allocation rather than
+by reading source or a static disassembly first; both had already been tried
+on this exact question and both stopped short of the field.
 
 ### Decode Through The C++ Bridge
 
