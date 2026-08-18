@@ -618,6 +618,20 @@ impl MeshEdgebreakerDecoder {
                 symbols.len()
             };
 
+        // How many faces to reserve corner storage for: the header's own count,
+        // which the caller has already checked against the symbol count, capped
+        // by what the remaining bytes could describe at two faces per byte.
+        //
+        // The header count is exact for a well-formed stream, so the table is
+        // allocated once and neither grows nor over-reserves. The cap is what
+        // keeps a claim of billions from being honoured: past it the
+        // reservation falls short and the table grows a face at a time as it
+        // always did. Deriving the figure from the symbol count instead
+        // over-reserved by a third, and a cap of one face per byte fell short
+        // on the Bunny at speed 1 (1.03 faces per byte) -- both cost more than
+        // they saved.
+        let input_face_bound = total_num_faces.min(in_buffer.remaining_size().saturating_mul(2));
+
         if actual_num_symbols == 0 {
             let corner_table = crate::corner_table::CornerTable::new(0);
             self.corner_table = Some(corner_table);
@@ -772,6 +786,7 @@ impl MeshEdgebreakerDecoder {
                     actual_num_symbols as i32,
                     &mut predictive_decoder,
                     remove_invalid_vertices,
+                    input_face_bound,
                 )? as usize;
 
                 has_start_face_bits_flag = predictive_decoder.has_start_face_bits;
@@ -830,6 +845,7 @@ impl MeshEdgebreakerDecoder {
                     actual_num_symbols as i32,
                     &mut valence_decoder,
                     remove_invalid_vertices,
+                    input_face_bound,
                 )? as usize;
 
                 // Don't end seam decoders yet - we need to decode from them after corner table is built
@@ -854,6 +870,7 @@ impl MeshEdgebreakerDecoder {
                 actual_num_symbols as i32,
                 &mut traversal_decoder,
                 remove_invalid_vertices,
+                input_face_bound,
             )? as usize;
 
             has_start_face_bits_flag = traversal_decoder.has_start_face_bits;

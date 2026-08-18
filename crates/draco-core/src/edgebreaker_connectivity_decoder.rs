@@ -86,9 +86,16 @@ impl EdgebreakerConnectivityDecoder {
         num_symbols: i32,
         traversal_decoder: &mut T,
         remove_invalid_vertices: bool,
+        input_face_bound: usize,
     ) -> Result<i32, DracoError> {
         let max_num_vertices = self.max_num_vertices as i32;
         let mut num_faces = 0;
+
+        // One allocation for the table instead of a realloc every time it
+        // doubles. How many faces are worth reserving for is the caller's
+        // decision: it holds the header's face count and the size of what is
+        // left in the buffer, and hands over whichever is smaller.
+        self.corner_table.try_reserve_faces(input_face_bound)?;
 
         for symbol_id in 0..num_symbols {
             let face = FaceIndex(num_faces as u32);
@@ -640,7 +647,7 @@ mod tests {
         let mut decoder = EdgebreakerConnectivityDecoder::new(1, 3);
         let mut traversal_decoder = StaticTraversalDecoder::new(vec![0]); // TOPOLOGY_C
 
-        let status = decoder.decode_connectivity(1, &mut traversal_decoder, true);
+        let status = decoder.decode_connectivity(1, &mut traversal_decoder, true, 0);
 
         assert!(status.is_err());
     }
@@ -650,7 +657,7 @@ mod tests {
         let mut decoder = EdgebreakerConnectivityDecoder::new(1, 3);
         let mut traversal_decoder = StaticTraversalDecoder::new(Vec::new());
 
-        let status = decoder.decode_connectivity(1, &mut traversal_decoder, true);
+        let status = decoder.decode_connectivity(1, &mut traversal_decoder, true, 0);
 
         assert!(status.is_err());
     }

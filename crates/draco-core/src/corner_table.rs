@@ -78,6 +78,40 @@ impl CornerTable {
     /// from the face count the bitstream *claims* instead lets a few hundred
     /// bytes of malformed input ask for gigabytes before any of the checks
     /// that would reject it have run.
+    /// Reserves corner storage for `faces` without changing `num_faces()`.
+    ///
+    /// Growing a face at a time keeps a claimed face count from allocating
+    /// anything, but it also reallocates: decoding a 69k-face mesh moved
+    /// through ten reallocations totalling 3.9 MB to reach a 1.7 MB table, and
+    /// every one of them copied what was already there. Reserving up front
+    /// costs one allocation instead, so this takes a ceiling the caller has
+    /// already bounded against the input rather than the count the header
+    /// claims. Capacity only: a caller that over-reserves still sees the same
+    /// `num_faces()` as it grows.
+    pub fn try_reserve_faces(&mut self, faces: usize) -> Result<(), crate::status::DracoError> {
+        let Some(num_corners) = faces.checked_mul(3) else {
+            return Ok(());
+        };
+        for (vec_len, reserve) in [
+            (self.corner_to_vertex_map.len(), true),
+            (self.opposite_corners.len(), false),
+        ] {
+            let extra = num_corners.saturating_sub(vec_len);
+            if extra == 0 {
+                continue;
+            }
+            let result = if reserve {
+                self.corner_to_vertex_map.try_reserve(extra)
+            } else {
+                self.opposite_corners.try_reserve(extra)
+            };
+            result.map_err(|_| {
+                crate::status::DracoError::general("Failed to allocate corner table".to_string())
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn try_grow_to_face(&mut self, face: usize) -> Result<(), crate::status::DracoError> {
         let num_corners = face
             .checked_add(1)
