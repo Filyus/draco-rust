@@ -371,6 +371,57 @@ traversal or fan-walking has to be made twice. The corner-table access layer
 is now one lookup per composed question instead of a chain of total accessors
 re-checking a sentinel each already answered.
 
+### Round Two: A Traversal Nobody Read
+
+A call-count comparison against pristine C++ (instrumenting every `CornerTable`
+method, one cold decode each side, counts are exact rather than sampled) found
+that despite the round above, Rust still made `25%` more table loads per
+corner than C++ -- and, unlike per-call cost, that gap was concentrated: the
+`opposite`-family calls were `49%` over C++'s count, `left_most_corner` was
+`2.0x` over. That is a call-count anomaly, not a per-call one, so it called for
+reading code next to its C++ counterpart rather than another accessor
+micro-benchmark.
+
+`MeshEdgebreakerDecoder::assign_points_to_corners` ran a full depth-first
+traversal -- `is_vertex_on_boundary`/`swing_*` on every vertex -- to fill
+`point_ids` and `data_to_corner_map`. Grepping every read of both arrays found
+none: the function's actual output, `mesh.set_face`, already built every face
+straight from `corner_table.vertex`/`vertex_after`/`vertex_before`, and
+`data_to_corner_map`'s one external consumer (`take_data_to_corner_map`) wrote
+it to a field nothing ever read again. C++'s own source for the equivalent
+function confirms the shortcut is exact, not an approximation: when there are
+no attribute seams, `AssignPointsToCorners` skips the traversal entirely and
+reads vertex indices straight off the corner table, verbatim the same
+operation Rust's dead-code path was gated behind an unused DFS to reach. This
+also retracts an earlier explanation in this document's history: the
+"mesh assembly" profiling bucket that showed `0.23` ms in Rust against `0.00`
+in C++ was attributed at the time to profiler inlining hiding C++'s work
+elsewhere. It was not an attribution artifact -- it was this traversal, doing
+real, measurable, entirely unread work.
+
+A smaller instance of the same shape sat one function up: `vertex_to_corner_map`
+was built with a per-vertex `left_most_corner()` call, on a table just
+truncated to exactly that length -- so every call was answering a question a
+direct transform of the vec already in hand could answer without a bounds
+check.
+
+Deleting the dead traversal and simplifying the vec build (`dev/profiling/abn.sh`,
+two builds per condition): `11-13%` faster on the position-only Bunny at
+speeds `5` and `9`, `2.7-2.9%` faster on the normal-carrying Bunny at speed
+`1` -- all several times the `~1%` build-to-build spread. A `decode_loop` run
+confirms the mechanism rather than just the direction: `137` to `129`
+allocations per decode, `13.18` to `12.80` MB, matching the four `Vec`s
+(`point_ids`, `data_to_corner_map`, `visited_vertices`, `visited_faces`) the
+deleted traversal no longer allocates.
+
+The lesson for the next round: the accessor-fusion work above was aimed at
+per-call cost, which was already close to its floor, so it found a few
+percent. This found over ten, and it was sitting in plain sight the whole
+time -- a traversal whose output had no reader was never going to show up in
+an accessor-level profile as anything other than "more calls", and the fix was
+proven safe by reading two call graphs side by side, not by guessing and
+measuring.
+
 ## Main C++ vs Rust Benchmarks
 
 ### Decode Through The C++ Bridge
