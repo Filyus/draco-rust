@@ -26,9 +26,33 @@ different story -- `3` runs, medians, `us/1k faces`:
 | 9 | `346` / `385` | `0.90x` | `31.6` / `50.8` | `0.62x` |
 | 10 | `38.8` / `32.0` | `1.21x` | `16.6` / `11.5` | `1.44x` |
 
-So this port is at parity to `10%` behind on edgebreaker encode, `1.2x` to
-`1.6x` behind on edgebreaker decode, and ahead on the sequential path at speed
-`10`. The tables below are kept as they were measured, and are only meaningful
+That sweep is synthetic and position-only. On the Stanford Bunny -- 69k faces,
+one decoder per side, same payload, whole-decode milliseconds -- the same
+comparison after the 2026-08-18 decode work reads:
+
+| Asset | Speed | C++ | Rust | |
+| --- | ---: | ---: | ---: | ---: |
+| with normals | 1 | `14.30` | `12.96` | `1.10x` |
+| with normals | 5 | `8.10` | `8.36` | `0.97x` |
+| with normals | 9 | `4.44` | `5.16` | `0.86x` |
+| position only | 5 | `3.31` | `4.76` | `0.70x` |
+| position only | 9 | `2.98` | `4.30` | `0.69x` |
+
+So the port is ahead on a real mesh at speed 1, at parity at speed 5, and
+`1.2x` to `1.45x` behind where connectivity dominates -- not the `1.6x` the
+synthetic sweep alone suggested. Encode is at parity to `10%` behind, and the
+sequential path at speed `10` is `1.2x` to `1.44x` ahead.
+
+Where the remaining gap is, measured rather than guessed: a stage comparison
+against a `RelWithDebInfo` build of the same upstream source puts this port
+*ahead* on entropy decoding (`0.25` ms against `0.53`) and on prediction
+(`0.20` against `0.41`), and behind on two things -- the corner-table accessors
+with the generic machinery around them (`2.4` ms against `0.38`), and memory
+traffic (about `2` ms against `0.5`). The accessors are asked roughly twelve
+questions per corner: `909,552` calls to `vertex` and `482,165` to `opposite`
+in one 69k-face decode.
+
+The tables below are kept as they were measured, and are only meaningful
 against the patched reference they name; replacing them needs a decision about
 which C++ build is the reference, which is the maintainer's call.
 
@@ -217,6 +241,17 @@ change below said `2.6%` where the two-build reading says `1.9%`.
 
 Landed:
 
+- The corner table reserved once from the header's face count, capped by what
+  the input could describe: `2.2%` at speed 1 with normals, `3.2%` on the
+  position-only mesh at speed 5. A counting allocator found it -- ten
+  reallocations totalling 3.9 MB to reach a 1.7 MB table.
+- The sentinel test dropped from `CornerTable::vertex` and `opposite`, where
+  the sentinel already indexes past the map: `2.3%` and `2.7%` on the
+  position-only mesh.
+- The traversal-order record reserved the same way as the corner table: `0.7%`
+  on the position-only mesh, with both builds of each condition on the same
+  median. Allocation per decode is now `98` calls and `7.8` MB, from `145` and
+  `10.9` MB.
 - The seed-free depth-first attribute traversal walked once per decode instead
   of once per attribute decoder, worth `8.7%` of decode at speed 5 and `3.7%`
   at speed 1 on a mesh with two attributes. A probe timed the walk at `1,153`
