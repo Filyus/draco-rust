@@ -302,7 +302,12 @@ Measured and rejected, so the next attempt can start elsewhere:
 - Rewriting `AnsDecoder::read_normalize` to pop from a prefix slice instead of
   indexing at an offset: not detectable.
 - Skipping `CornerTable::is_index_consistent` entirely (a probe, not a
-  proposal): not detectable, so the check is not what it costs.
+  proposal): not detectable, so the check is not what it costs. **Superseded,
+  see "Round Three" below** -- that probe measured skipping the check on
+  whichever payload diluted it enough to hide in noise; disassembling the
+  function found it genuinely vectorized, and the actual redundant call (the
+  main table scanned twice, not once) measures `1.8-2.1%` on the payload where
+  it is not diluted.
 - Reading the quantizer's three floats through one twelve-byte slice instead of
   twelve indexed byte loads: not detectable, so the compiler was already
   merging them.
@@ -439,6 +444,47 @@ time -- a traversal whose output had no reader was never going to show up in
 an accessor-level profile as anything other than "more calls", and the fix was
 proven safe by reading two call graphs side by side, not by guessing and
 measuring.
+
+### Round Three: The Same Table, Checked Twice
+
+A call-count instrumentation pass confirmed round two's arithmetic exactly:
+table loads on the position-only Bunny went from `1,403,540` to `1,125,237`
+against a pristine-C++ count of `1,125,393` -- parity to `156` loads, and
+`left_most_corner` matched C++'s `72,869` to the call. The load-count lever is
+now fully spent; nothing more is reachable that way.
+
+A fresh samply profile of the resulting build (position-only, speed 5) found
+`Ord::max` and `wrapping_add` sitting at `3.49%` and `2.01%` of self time --
+line-table attribution pointed at `is_index_consistent`'s branchless-max fold.
+Disassembling it settled whether that was a scalar bug before spending a
+single benchmark run on it: it is not -- SSE2, 8 `u32` per iteration, a
+sign-flip trick that keeps the max reduction branch-free. The cost is
+bandwidth, not instructions: the fold streams the full `1.67` MB
+corner-to-vertex and opposite-corner arrays, and `MeshEdgebreakerDecoder::
+assign_points_to_corners` and `MeshDecoder`'s attribute-traversal generators
+each ran it once on the exact same, by-then-unmodified table -- one check
+doing the other's job over again. C++ carries no equivalent check on this path
+at all.
+
+Landed: an `already_validated` flag threaded through the shared DFS helper so
+the main-table callers skip the second scan while the seam-broken clone (a
+different table, checked nowhere else) keeps its own. `1.8-2.1%` on
+position-only at speeds 5 and 9, `1.0-1.2%` at speed 0 (the prediction-degree
+traversal, a second call site with the same shape), no detectable change on
+the normal-carrying mesh at speed 1 where the same absolute saving is a
+smaller share of a larger decode. This also resolves a standing contradiction:
+an earlier round's probe recorded skipping the check entirely as "not
+detectable" -- that was true on whatever payload diluted a `2%`-ish saving
+below the noise floor, not evidence the check was free.
+
+One session's investigation stopped here without measuring, on a note worth
+keeping: `next_in_face` alone showed `4.26%` self time in that same profile,
+comparable to `slice::get`'s `4.73%` -- suspicious for arithmetic this small,
+though a first read suggested it is inlining attribution from the swing
+composition (two `next_in_face` calls per `swing_left`) rather than a real
+per-call cost, since C++'s `Next`/`LocalIndex` do the same `% 3` by the same
+compiler. Unconfirmed either way; the next round should disassemble before
+trusting the percentage, per the pattern above.
 
 ## Main C++ vs Rust Benchmarks
 
