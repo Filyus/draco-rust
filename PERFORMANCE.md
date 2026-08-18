@@ -687,6 +687,37 @@ fix this session found by disassembling a specific live allocation rather than
 by reading source or a static disassembly first; both had already been tried
 on this exact question and both stopped short of the field.
 
+### Round Six: A Corner Nobody Wanted
+
+A fresh profile after round five showed the same shape as before it -- the
+same accessor and entropy machinery at the top, nothing newly hot -- on the
+position-only Bunny, which this session had already spent five rounds on. The
+`SAMPLE_ALLOC` histogram was similarly quiet: no more repeated-size families
+past the twelve already audited and closed. Profiling a payload nobody had
+looked at yet this round -- the normal-carrying Bunny at speed 1, which
+exercises the geometric-normal predictor and constrained multi-parallelogram
+that position-only never touches -- surfaced `CornerPositions::get` at four
+separate source lines, `~3.6%` combined.
+
+Reading it found the same shape as `vertex_after`/`vertex_before` were built
+to fix, one level up: `compute_predicted_value`'s fan walk computed a
+neighbour corner with `next`/`previous` for no reason but to hand it to `get`,
+which immediately turned it back into a vertex to key its cache.
+`vertex_after`/`vertex_before` already fold that round trip into one lookup;
+the fan walk just wasn't using them, because the cache's key was a vertex and
+`get`'s parameter was a corner. `get` now delegates to a new
+`get_by_vertex`, and the fan walk calls that directly, checked to answer the
+same `[0, 0, 0]` for an invalid vertex that the old corner-checked early
+return did -- not by adding an equivalent check, but because
+`position_for_vertex`'s own bounds check already lands there by construction.
+
+`2.5%` on the normal-carrying Bunny at speed 1, two builds per condition, no
+detectable change at speeds 5 or 9 (`0.0-0.4%`, inside the build-to-build
+spread) -- a different normal-prediction mode there runs this loop less. The
+lesson for the next round: the two most recent finds came from switching what
+gets profiled, not from digging deeper into the same payload after its easy
+answers ran out.
+
 ### Decode Through The C++ Bridge
 
 File: `crates/draco-cpp-test-bridge/tests/bench_decode_cpp_vs_rust.rs`
