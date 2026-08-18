@@ -134,6 +134,10 @@ impl<'a> MeshEdgebreakerTraversalPredictiveDecoder<'a> {
 }
 
 impl<'a> EdgebreakerTraversalDecoder for MeshEdgebreakerTraversalPredictiveDecoder<'a> {
+    fn reserve_traversal_order(&mut self, faces: usize) {
+        self.processed_connectivity_corners.reserve(faces);
+    }
+
     fn decode_symbol(&mut self) -> Result<u32, DracoError> {
         // Use the prediction if we have one and the prediction bit confirms it.
         if self.predicted_symbol != -1 && self.prediction_decoder.decode_next_bit() {

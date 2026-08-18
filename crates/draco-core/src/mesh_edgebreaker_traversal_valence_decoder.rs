@@ -245,6 +245,10 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
 }
 
 impl<'a> EdgebreakerTraversalDecoder for MeshEdgebreakerTraversalValenceDecoder<'a> {
+    fn reserve_traversal_order(&mut self, faces: usize) {
+        self.processed_connectivity_corners.reserve(faces);
+    }
+
     fn decode_symbol(&mut self) -> Result<u32, DracoError> {
         if self.active_context != -1 {
             let ctx = self.active_context as usize;

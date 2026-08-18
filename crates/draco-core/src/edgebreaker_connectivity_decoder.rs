@@ -26,6 +26,16 @@ pub trait EdgebreakerTraversalDecoder {
     // Matches C++ traversal_decoder_.NewActiveCornerReached(active_corner_stack.back()).
     // Called after each decoded symbol/face to record the traversal order.
     fn new_active_corner_reached(&mut self, _corner: CornerIndex, _corner_table: &CornerTable) {}
+
+    /// Reserves the traversal-order record for `faces` entries.
+    ///
+    /// One corner is recorded per decoded face, so a decoder that keeps that
+    /// record grows a vector to the face count by doubling: seven allocations
+    /// totalling 1.4 MB to reach 271 KB on a 69k-face mesh, each copying what
+    /// came before. The bound is the caller's -- the same input-capped face
+    /// count the corner table is reserved with -- and a decoder that records
+    /// nothing ignores it.
+    fn reserve_traversal_order(&mut self, _faces: usize) {}
 }
 
 pub struct EdgebreakerConnectivityDecoder {
@@ -96,6 +106,7 @@ impl EdgebreakerConnectivityDecoder {
         // decision: it holds the header's face count and the size of what is
         // left in the buffer, and hands over whichever is smaller.
         self.corner_table.try_reserve_faces(input_face_bound)?;
+        traversal_decoder.reserve_traversal_order(input_face_bound);
 
         for symbol_id in 0..num_symbols {
             let face = FaceIndex(num_faces as u32);

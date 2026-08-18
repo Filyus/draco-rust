@@ -1307,6 +1307,10 @@ impl<'a> InternalTraversalDecoder<'a> {
 }
 
 impl<'a> EdgebreakerTraversalDecoder for InternalTraversalDecoder<'a> {
+    fn reserve_traversal_order(&mut self, faces: usize) {
+        self.processed_connectivity_corners.reserve(faces);
+    }
+
     fn decode_symbol(&mut self) -> Result<u32, DracoError> {
         let val = *self
             .symbols
