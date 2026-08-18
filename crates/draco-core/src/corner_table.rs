@@ -494,28 +494,65 @@ impl CornerTable {
 
     /// Returns the corner on the left-adjacent face.
     /// C++: Opposite(Previous(corner))
+    ///
+    /// Written as one lookup rather than `opposite(previous(c))` for the reason
+    /// [`vertex_after`](Self::vertex_after) is: the sentinel test inside
+    /// `previous` asks a question the bounds check of the lookup answers anyway.
     pub fn left_corner(&self, corner: CornerIndex) -> CornerIndex {
-        self.opposite(self.previous(corner))
+        self.opposite_corners
+            .get(prev_in_face(corner.0) as usize)
+            .copied()
+            .unwrap_or(INVALID_CORNER_INDEX)
     }
 
     /// Returns the corner on the right-adjacent face.
     /// C++: Opposite(Next(corner))
     pub fn right_corner(&self, corner: CornerIndex) -> CornerIndex {
-        self.opposite(self.next(corner))
+        self.opposite_corners
+            .get(next_in_face(corner.0) as usize)
+            .copied()
+            .unwrap_or(INVALID_CORNER_INDEX)
     }
 
     /// Returns the corner on the adjacent face on the right that maps to
     /// the same vertex as the given corner.
     /// C++: Previous(Opposite(Previous(corner)))
+    ///
+    /// Both in-face steps drop their sentinel test here, and this is the one
+    /// swing where that is free on the way out as well as on the way in:
+    /// [`prev_in_face`] preserves the sentinel, so an opposite that came back
+    /// invalid stays invalid through the final step. Three comparisons become
+    /// one lookup, on a walk that runs for as long as a vertex has neighbours.
     pub fn swing_right(&self, corner: CornerIndex) -> CornerIndex {
-        self.previous(self.opposite(self.previous(corner)))
+        let opposite = self
+            .opposite_corners
+            .get(prev_in_face(corner.0) as usize)
+            .copied()
+            .unwrap_or(INVALID_CORNER_INDEX);
+        CornerIndex(prev_in_face(opposite.0))
     }
 
     /// Returns the corner on the left face that maps to the same vertex as the
     /// given corner.
     /// C++: Next(Opposite(Next(corner)))
+    ///
+    /// The mirror of [`swing_right`](Self::swing_right) cannot drop its outer
+    /// test, and the asymmetry is load-bearing rather than an oversight:
+    /// [`next_in_face`] answers `u32::MAX - 2` for the sentinel, which is fine
+    /// as an index -- the lookup rejects it -- but wrong as an answer, because
+    /// every fan walk in this crate ends on `== INVALID_CORNER_INDEX` and
+    /// `u32::MAX - 2` is not that. So the inner step fuses and the outer one
+    /// keeps its branch.
     pub fn swing_left(&self, corner: CornerIndex) -> CornerIndex {
-        self.next(self.opposite(self.next(corner)))
+        let opposite = self
+            .opposite_corners
+            .get(next_in_face(corner.0) as usize)
+            .copied()
+            .unwrap_or(INVALID_CORNER_INDEX);
+        if opposite == INVALID_CORNER_INDEX {
+            return INVALID_CORNER_INDEX;
+        }
+        CornerIndex(next_in_face(opposite.0))
     }
 
     fn break_non_manifold_edges(&mut self) -> bool {
@@ -1000,6 +1037,72 @@ mod tests {
         // bounds check of an inner-position `get` turns back into the sentinel.
         assert_ne!(next_in_face(INVALID_CORNER_INDEX.0), INVALID_CORNER_INDEX.0);
         assert_eq!(next_in_face(INVALID_CORNER_INDEX.0), u32::MAX - 2);
+    }
+
+    /// The six fused accessors answer exactly what the compositions they
+    /// replaced answered, on every input class that reaches them: a corner in
+    /// range, a corner past the end, the sentinel, and -- because a table is
+    /// grown a face at a time and a malformed stream can stop it mid-face -- a
+    /// table whose corner count is not a multiple of three.
+    #[test]
+    fn the_fused_accessors_answer_what_the_compositions_answered() {
+        for corner_count in [3usize, 6, 7, 8] {
+            let table = CornerTable {
+                corner_to_vertex_map: (0..corner_count)
+                    .map(|i| VertexIndex(i as u32 % 5))
+                    .collect(),
+                opposite_corners: (0..corner_count)
+                    .map(|i| {
+                        if i % 3 == 0 {
+                            INVALID_CORNER_INDEX
+                        } else {
+                            CornerIndex((corner_count - i) as u32 - 1)
+                        }
+                    })
+                    .collect(),
+                vertex_corners: vec![CornerIndex(0); 5],
+                ..Default::default()
+            };
+
+            let mut corners: Vec<CornerIndex> =
+                (0..corner_count as u32 + 3).map(CornerIndex).collect();
+            corners.push(INVALID_CORNER_INDEX);
+            corners.push(CornerIndex(u32::MAX - 1));
+
+            for c in corners {
+                let what = format!("corner {c:?} of {corner_count}");
+                assert_eq!(
+                    table.vertex_after(c),
+                    table.vertex(table.next(c)),
+                    "vertex_after, {what}"
+                );
+                assert_eq!(
+                    table.vertex_before(c),
+                    table.vertex(table.previous(c)),
+                    "vertex_before, {what}"
+                );
+                assert_eq!(
+                    table.right_corner(c),
+                    table.opposite(table.next(c)),
+                    "right_corner, {what}"
+                );
+                assert_eq!(
+                    table.left_corner(c),
+                    table.opposite(table.previous(c)),
+                    "left_corner, {what}"
+                );
+                assert_eq!(
+                    table.swing_right(c),
+                    table.previous(table.opposite(table.previous(c))),
+                    "swing_right, {what}"
+                );
+                assert_eq!(
+                    table.swing_left(c),
+                    table.next(table.opposite(table.next(c))),
+                    "swing_left, {what}"
+                );
+            }
+        }
     }
 
     #[test]
