@@ -590,12 +590,56 @@ everything read of its build so far) -- if it is the same default heap Rust
 was fighting, the fair comparison for *both* sides swapping allocators remains
 open, and the `1.1x`-`1.4x` numbers above should be read as "Rust with a
 better allocator against C++ with the default one," not as a claim about
-which language's default is faster in general. Nor has round two's
-`.collect()` allocation, the unreserved connectivity-decode `Vec`, or the
-other eleven `139,336`-byte sites been addressed at the source level -- with
-the allocator question answered, that source-level work is now optional
-rather than urgent, since mimalloc already recovers most of what it would
-have saved.
+which language's default is faster in general.
+
+### Source-Level Follow-Up: Audited, Not A Win
+
+The twelve `139,336`-byte sites and the unreserved connectivity-decode `Vec`
+looked like a natural next step once mimalloc named the shape of the problem
+(call count, not bytes moved) -- reduce the count at the source instead of
+paying it faster. Two lines of follow-up, both closed without a fix:
+
+**The growing `Vec`.** `SAMPLE_ALLOC=1` traced three reallocations
+(`65,536` -> `131,072` -> `262,144` bytes) inside
+`EdgebreakerConnectivityDecoder::decode_connectivity`'s call tree, debug-info
+labelled `RawVec<PointIndex>`. Every `.push()` reachable from that function --
+including through the `EdgebreakerTraversalDecoder` trait methods -- was
+checked directly: `active_corner_stack` capacity `16`, `invalid_vertices`
+capacity `2,048`, `processed_connectivity_corners` capacity `69,451` (exactly
+its `reserve()`, no overshoot). None match. A crate-wide grep for
+`Vec<PointIndex>` outside encode-only files turns up nothing reachable from
+decode at all -- the label is almost certainly a debug-info artifact of LLVM
+folding identical-layout generic instances (`PointIndex`, `VertexIndex`,
+`CornerIndex`, and bare `u32` are all 4-byte Copy newtypes with identical
+codegen), and the true type is one of those. Disassembling
+`decode_connectivity` and `reconstruct_mesh` for the actual `realloc`/`grow_one`
+call found neither as a visible callee -- inlined past the point source
+reading or static disassembly can follow. Unresolved; the next tool for it is
+a debugger breakpoint on the allocation, not more reading.
+
+**The twelve `139,336`-byte sites.** Traced as far as backtraces allow: one is
+round two's `vertex_to_corner_map` build in
+`MeshEdgebreakerDecoder::decode_connectivity`; two are `Vec<CornerIndex>::resize`
+inside `SequentialIntegerAttributeDecoder::decode_values`, sized for the
+parallelogram predictor's own `data_to_corner_map`; the largest identified
+group -- three of the twelve -- are `point_ids`, `data_to_corner_map`, and
+`vertex_to_data_map` inside `generate_point_ids_and_corners_dfs_for_table`.
+Reading that function settles the question a lifetime audit exists to answer:
+all three are written in the same closure on every iteration of the same
+traversal, live simultaneously, and are returned to the caller as
+`AttributeTraversalArrays` -- cached and read again by every later attribute
+decoder. Nothing here is scratch space with a lifetime that ends before the
+next allocation starts; every buffer found is a real, load-bearing, distinct
+output, not a duplicate of work already done (the shape that made the dead
+traversal and the doubled consistency scan free to delete). A shared
+scratch-buffer pool does not apply. The only route left to fewer allocations
+here is a structural one -- folding the three parallel `Vec`s into one `Vec`
+of a small struct, cutting three allocations to one at the cost of touching
+`AttributeTraversalArrays`'s definition and every destructuring call site --
+which is a real refactor with its own correctness surface, not a quick
+follow-up to a benchmark. Left undone: the allocator question is answered and
+cheap; this one is neither, so it stays optional rather than becoming the next
+step by default.
 
 ### Decode Through The C++ Bridge
 
