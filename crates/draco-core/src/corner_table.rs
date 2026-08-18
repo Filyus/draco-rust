@@ -21,6 +21,50 @@ pub struct CornerTable {
     pub num_isolated_vertices: usize,
 }
 
+/// The next corner within the same face, sentinel test omitted.
+///
+/// Total on all of `u32` -- the arithmetic wraps rather than overflowing, so
+/// there is no precondition on the caller and no way to reach a panic. What the
+/// caller does owe is a reading of where the sentinel comes out, and that is
+/// where this differs from [`prev_in_face`]:
+///
+/// This one **absorbs** the sentinel. `u32::MAX + 1` wraps to `0`, which is a
+/// multiple of three, so the other arm answers `u32::MAX - 2` -- past the end of
+/// any table this crate can build (a corner map that long would be sixteen
+/// gigabytes), so the `get` it feeds answers `None` and the sentinel reappears.
+/// That holds only while the result goes straight into a bounds-checked index:
+/// **use it in the inner position only.** Returned to a caller it would be
+/// `u32::MAX - 2`, which is not equal to [`INVALID_CORNER_INDEX`], and every fan
+/// loop in this crate tests for the sentinel by equality.
+#[inline(always)]
+fn next_in_face(corner: u32) -> u32 {
+    if !corner.wrapping_add(1).is_multiple_of(3) {
+        corner.wrapping_add(1)
+    } else {
+        corner.wrapping_sub(2)
+    }
+}
+
+/// The previous corner within the same face, sentinel test omitted.
+///
+/// Mirror of [`next_in_face`], and total for the same reason -- but this one
+/// **preserves** the sentinel, which makes it safe in the outer position too.
+/// `u32::MAX` is a multiple of three (its digits sum to 57), so the `+ 2` arm is
+/// the one taken, and the saturation holds the answer at `u32::MAX`: the
+/// sentinel in, the sentinel out, exactly as [`CornerTable::previous`] answers.
+///
+/// The saturation is the whole of it. Wrapping would answer `1` -- a perfectly
+/// ordinary corner of the first face -- and a fan walk handed that instead of a
+/// termination would keep going through unrelated geometry.
+#[inline(always)]
+fn prev_in_face(corner: u32) -> u32 {
+    if !corner.is_multiple_of(3) {
+        corner - 1
+    } else {
+        corner.saturating_add(2)
+    }
+}
+
 impl CornerTable {
     pub fn new(num_faces: usize) -> Self {
         Self {
@@ -354,11 +398,7 @@ impl CornerTable {
         if corner == INVALID_CORNER_INDEX {
             return corner;
         }
-        if !(corner.0 + 1).is_multiple_of(3) {
-            CornerIndex(corner.0 + 1)
-        } else {
-            CornerIndex(corner.0 - 2)
-        }
+        CornerIndex(next_in_face(corner.0))
     }
 
     /// The previous corner within the same face. Mirror of [`next`](Self::next),
@@ -367,11 +407,7 @@ impl CornerTable {
         if corner == INVALID_CORNER_INDEX {
             return corner;
         }
-        if !corner.0.is_multiple_of(3) {
-            CornerIndex(corner.0 - 1)
-        } else {
-            CornerIndex(corner.0 + 2)
-        }
+        CornerIndex(prev_in_face(corner.0))
     }
 
     /// The vertex at `corner`, or the invalid sentinel.
@@ -909,6 +945,27 @@ mod tests {
             assert_eq!(table.vertex(corner), INVALID_VERTEX_INDEX, "{corner:?}");
             assert_eq!(table.opposite(corner), INVALID_CORNER_INDEX, "{corner:?}");
         }
+    }
+
+    /// The two in-face helpers answer the public accessors on every corner, and
+    /// part on the sentinel in the two different ways their callers rely on.
+    #[test]
+    fn in_face_helpers_agree_with_the_accessors_and_part_on_the_sentinel() {
+        let table = CornerTable::default();
+        for corner in 0..3000u32 {
+            let c = CornerIndex(corner);
+            assert_eq!(next_in_face(corner), table.next(c).0, "next {corner}");
+            assert_eq!(prev_in_face(corner), table.previous(c).0, "prev {corner}");
+        }
+
+        // `previous` preserves the sentinel, so `prev_in_face` may stand in the
+        // outer position of a swing.
+        assert_eq!(prev_in_face(INVALID_CORNER_INDEX.0), INVALID_CORNER_INDEX.0);
+
+        // `next_in_face` does not: it lands past any table instead, which the
+        // bounds check of an inner-position `get` turns back into the sentinel.
+        assert_ne!(next_in_face(INVALID_CORNER_INDEX.0), INVALID_CORNER_INDEX.0);
+        assert_eq!(next_in_face(INVALID_CORNER_INDEX.0), u32::MAX - 2);
     }
 
     #[test]
