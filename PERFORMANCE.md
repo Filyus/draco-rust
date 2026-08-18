@@ -28,29 +28,47 @@ different story -- `3` runs, medians, `us/1k faces`:
 
 That sweep is synthetic and position-only. On the Stanford Bunny -- 69k faces,
 one decoder per side, same payload, whole-decode milliseconds -- the same
-comparison after the 2026-08-18 decode work reads:
+comparison after the corner-table access round (`decode_loop`, 300 iterations,
+pristine 1.5.7) reads:
 
 | Asset | Speed | C++ | Rust | |
 | --- | ---: | ---: | ---: | ---: |
-| with normals | 1 | `14.30` | `12.96` | `1.10x` |
-| with normals | 5 | `8.10` | `8.36` | `0.97x` |
-| with normals | 9 | `4.44` | `5.16` | `0.86x` |
-| position only | 5 | `3.31` | `4.76` | `0.70x` |
-| position only | 9 | `2.98` | `4.30` | `0.69x` |
+| with normals | 1 | `13.94` | `11.80` | `1.18x` |
+| with normals | 5 | `7.76` | `7.66` | `1.01x` |
+| with normals | 9 | `4.46` | `4.80` | `0.93x` |
+| position only | 1 | `5.80` | `6.77` | `0.86x` |
+| position only | 5 | `3.36` | `4.29` | `0.78x` |
+| position only | 9 | `3.01` | `3.97` | `0.76x` |
 
-So the port is ahead on a real mesh at speed 1, at parity at speed 5, and
-`1.2x` to `1.45x` behind where connectivity dominates -- not the `1.6x` the
-synthetic sweep alone suggested. Encode is at parity to `10%` behind, and the
-sequential path at speed `10` is `1.2x` to `1.44x` ahead.
+Against the 2026-08-18 numbers this table replaces: position-only moved from
+`0.70x`/`0.69x` to `0.78x`/`0.76x` at speeds 5 and 9, and the normal-carrying
+mesh from `0.97x`/`0.86x` to `1.01x`/`0.93x` at speeds 5 and 9 -- consistent
+with the `11-13%` and `2.7-2.9%` the two payloads showed in the interleaved
+`abn.sh` measurement of the same round, which is a different tool measuring
+the same change and landing on the same number twice.
 
-Where the remaining gap is, measured rather than guessed: a stage comparison
-against a `RelWithDebInfo` build of the same upstream source puts this port
-*ahead* on entropy decoding (`0.25` ms against `0.53`) and on prediction
-(`0.20` against `0.41`), and behind on two things -- the corner-table accessors
-with the generic machinery around them (`2.4` ms against `0.38`), and memory
-traffic (about `2` ms against `0.5`). The accessors are asked roughly twelve
-questions per corner: `909,552` calls to `vertex` and `482,165` to `opposite`
-in one 69k-face decode.
+So the port is ahead on a real mesh at speed 1, at or past parity at speed 5
+on both payloads now, and `1.3x` behind at worst -- speed 9, position only,
+where connectivity dominates most -- not the `1.6x` the synthetic sweep alone
+suggested, and closer than the earlier snapshot on every row. Encode is
+unaffected by this round (nothing in the corner-table access work touched the
+encode path) and stays at parity to `10%` behind; the sequential path at speed
+`10` is still `1.2x` to `1.44x` ahead.
+
+Where the remaining gap was, measured rather than guessed, before the
+corner-table access round documented below: a stage comparison against a
+`RelWithDebInfo` build of the same upstream source put this port *ahead* on
+entropy decoding (`0.25` ms against `0.53`) and on prediction (`0.20` against
+`0.41`), and behind on two things -- the corner-table accessors with the
+generic machinery around them (`2.4` ms against `0.38`), and memory traffic
+(about `2` ms against `0.5`). The accessors were asked roughly twelve questions
+per corner: `909,552` calls to `vertex` and `482,165` to `opposite` in one
+69k-face decode. **These numbers predate the corner-table access round**
+(accessor fusion, then the removal of a dead depth-first traversal that alone
+accounted for `11-13%` of position-only decode time) and the call counts in
+particular are now smaller by construction -- a fresh stage-by-stage profile
+has not been re-run since, so treat this paragraph as history, not current
+state, until it is.
 
 The tables below are kept as they were measured, and are only meaningful
 against the patched reference they name; replacing them needs a decision about
