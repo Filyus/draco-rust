@@ -718,6 +718,38 @@ lesson for the next round: the two most recent finds came from switching what
 gets profiled, not from digging deeper into the same payload after its easy
 answers ran out.
 
+### A Source-Level Follow-Up, Audited -- Not A Win
+
+The same normal-carrying profile put `compute_original_values` at three
+source lines, `~2-3%` combined, in the constrained multi-parallelogram
+predictor -- the scheme speeds `0` and `1` use. Reading it found a genuine
+redundancy: the pass that decides which of a vertex's fan corners qualify as
+parallelograms already asks the corner table and `vertex_to_data_map` for a
+corner's opposite and that opposite's three neighbour vertices' data ids, to
+check the qualifying condition -- then keeps only the corner index. The
+second pass, for every corner that qualified, asked the exact same four
+questions again to get the exact same three answers. Neither table changes
+between the passes, so the second answer is provably identical to the first,
+not just usually so. Carrying the three already-resolved data ids alongside
+the corner removes the second pass's redundant calls entirely, along with an
+`Option`-unwrapping triple and its error closure that existed for a failure
+which -- given the first pass already succeeded on the same lookup -- could
+not occur.
+
+Landed anyway, but not for a measured win: `dev/profiling/abn.sh` at speeds 0
+and 1, two builds per condition, found `0.0-0.4%`, inside the build-to-build
+spread. Re-reading which lines the profile actually named explains why: `1066`
+and `1070` are the *qualifying* pass's own lookups, run once per swing step
+across the whole fan; `1206` is the tail's averaging division. None of the
+three are the redundant second pass this fix removes, which only runs for the
+up-to-four corners that qualify per entry -- evidently too small a volume to
+clear noise, unlike the profile line count made it look. The fix stands on its
+own terms regardless: `cargo test`'s byte-exact corpus is unchanged, the
+removed code was provably dead work, not a guess that didn't pay off, and this
+session's standing rule is architecture and correctness first -- a clean
+simplification that measures to zero is not a reason to keep the redundant
+version.
+
 ### Decode Through The C++ Bridge
 
 File: `crates/draco-cpp-test-bridge/tests/bench_decode_cpp_vs_rust.rs`
