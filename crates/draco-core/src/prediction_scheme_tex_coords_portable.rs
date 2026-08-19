@@ -101,11 +101,12 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableDecoder<'a> {
             return false;
         };
 
-        let next_corner_id = corner_table.next(corner_id);
-        let prev_corner_id = corner_table.previous(corner_id);
-
-        let next_vert_id = corner_table.vertex(next_corner_id).0 as usize;
-        let prev_vert_id = corner_table.vertex(prev_corner_id).0 as usize;
+        // next_corner_id/prev_corner_id were never wanted for themselves --
+        // only for the vertex each names, so vertex_after/vertex_before
+        // answer this in one fused lookup instead of computing the neighbour
+        // corner and turning it back into a vertex as a second step.
+        let next_vert_id = corner_table.vertex_after(corner_id).0 as usize;
+        let prev_vert_id = corner_table.vertex_before(corner_id).0 as usize;
 
         let Some(&next_data_id) = vertex_to_data_map.get(next_vert_id) else {
             return false;
