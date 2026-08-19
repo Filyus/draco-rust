@@ -1041,6 +1041,12 @@ where
             }
 
             let mut corners = [INVALID_CORNER_INDEX; MAX_NUM_PARALLELOGRAMS];
+            // (opp, next, prev) data ids for `corners[i]`'s opposite corner,
+            // already resolved by the qualifying test below. The second pass
+            // used to ask the corner table and `vertex_to_data_map` for the
+            // same three answers again for every corner it kept; carrying them
+            // here answers it from a stored `i32` instead.
+            let mut corner_data_ids = [(0i32, 0i32, 0i32); MAX_NUM_PARALLELOGRAMS];
             let mut num_parallelograms = 0;
 
             let start_c = corner_id;
@@ -1076,6 +1082,8 @@ where
                         && num_parallelograms < MAX_NUM_PARALLELOGRAMS
                     {
                         corners[num_parallelograms] = c;
+                        corner_data_ids[num_parallelograms] =
+                            (opp_data_id, next_data_id, prev_data_id);
                         num_parallelograms += 1;
                         if num_parallelograms == MAX_NUM_PARALLELOGRAMS {
                             break;
@@ -1122,30 +1130,13 @@ where
                     let is_crease = self.is_crease_edge[context][pos];
 
                     if !is_crease {
-                        // Compute prediction for this parallelogram
-                        let ci = corners[i];
-                        let oci = corner_table.opposite(ci);
-                        let unmapped = || {
-                            DracoError::general(
-                                "Parallelogram corner is outside the vertex-to-data map"
-                                    .to_string(),
-                            )
-                        };
-                        let Some(&vert_opp) =
-                            vertex_to_data_map.get(corner_table.vertex(oci).0 as usize)
-                        else {
-                            return Err(unmapped());
-                        };
-                        let Some(&vert_next) =
-                            vertex_to_data_map.get(corner_table.vertex_after(oci).0 as usize)
-                        else {
-                            return Err(unmapped());
-                        };
-                        let Some(&vert_prev) =
-                            vertex_to_data_map.get(corner_table.vertex_before(oci).0 as usize)
-                        else {
-                            return Err(unmapped());
-                        };
+                        // Compute prediction for this parallelogram. The
+                        // qualifying pass above already asked the corner
+                        // table and vertex_to_data_map for `oci` and its
+                        // three neighbour vertices' data ids -- neither
+                        // changes between the two passes, so the answer here
+                        // is provably the one stored then, not a fresh one.
+                        let (vert_opp, vert_next, vert_prev) = corner_data_ids[i];
                         if vert_opp < 0 || vert_next < 0 || vert_prev < 0 {
                             return Err(DracoError::general(
                                 "Parallelogram corner maps to no decoded entry".to_string(),
