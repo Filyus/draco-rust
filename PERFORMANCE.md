@@ -806,6 +806,38 @@ predictive and valence traversal decoder types, not the Standard type any
 benchmark payload in this session's corpus exercises. Left open rather than
 fixed blind.
 
+### The Traversal Nobody Thought Was The Default
+
+The previous round's "not the Standard type any benchmark exercises" was
+wrong. `select_edgebreaker_traversal` picks the valence traversal for any
+mesh with 1000+ faces below speed 5 -- exactly what this session's own
+speed-1 measurements have been decoding through since round one, on every
+Bunny variant. `vertex_valences` in both `mesh_edgebreaker_traversal_valence_decoder.rs`
+and its type-1 legacy sibling `mesh_edgebreaker_traversal_predictive_decoder.rs`
+grow one vertex at a time from `on_vertex_created`, the same shape as
+`vertex_corners` and `is_vert_hole` before them -- deliberately left unsized
+against the bitstream's own vertex count, since that count is an unvalidated
+header claim.
+
+Fixed with a new trait method rather than another one-off: `EdgebreakerTraversalDecoder::reserve_vertices`,
+a sibling to the existing `reserve_traversal_order`, called once from
+`decode_connectivity` with the same already-validated bound the corner table
+and `is_vert_hole` already trust
+(`max_num_vertices.min(input_face_bound)`) -- honouring it costs nothing a
+hostile stream could not already cost through normal decode. A decoder with
+no such table inherits the trait's no-op default.
+
+`decode_loop`'s allocation count at speed 1: `105` to `91` allocations per
+decode, `7.61` to `7.25` MB -- the same signature as the two fixes before it.
+`dev/profiling/abn.sh`, two builds per condition, speed 1: `~0.5-0.8%` on
+`bunny_pos` and the normal-carrying Bunny, both past the `~0.4%`
+build-to-build spread; no change past the spread on the UV variant. The
+type-1 predictive decoder has no benchmark payload -- it is reachable only
+under `force_predictive_traversal`, a pre-0.10.0 compatibility path -- so it
+is fixed on the strength of being the identical shape as its valence
+sibling, unmeasured; `cargo test`'s legacy round-trip fixtures cover it for
+correctness, not speed.
+
 ### Decode Through The C++ Bridge
 
 File: `crates/draco-cpp-test-bridge/tests/bench_decode_cpp_vs_rust.rs`
