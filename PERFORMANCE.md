@@ -774,6 +774,38 @@ compound it in, the same shape that made the constrained-multi-parallelogram
 fix two commits back measure to zero. Landed for the same reason that one
 was: correct, provably equivalent, `cargo test` unchanged.
 
+### The Same Bug, A Smaller Table
+
+The redirect back to memory allocation -- the session's own earlier finding
+that the dominant remaining gap was allocator-shaped, not per-call accessor
+cost -- prompted a grep for every other `.resize()` call across the crate,
+looking for more of round five's shape: a `Vec` grown one element at a time
+with no upfront reservation. `EdgebreakerConnectivityDecoder::is_vert_hole`
+matched exactly: `mark_vert_not_hole` grows it via `resize(index + 1, true)`,
+called from five symbol arms during connectivity decode, same as
+`vertex_corners` before round five's fix, and for the same reason -- nothing
+had sized it against `max_num_vertices`, already tracked for exactly this
+purpose. Reserved the same way, against `max_num_vertices.min(input_face_bound)`.
+
+`decode_loop`'s allocation count: `77` to `65` allocations per decode, `7.02`
+to `6.95` MB -- the same drop-in-count-and-bytes signature as round five,
+confirming a reallocation chain was removed rather than the amount of work
+changing. `dev/profiling/abn.sh`, two builds per condition, position-only at
+speeds 5 and 9 and the normal-carrying mesh at speed 1: no change past the
+build-to-build spread at any of the three. `is_vert_hole` is `Vec<bool>`,
+one byte per vertex against `vertex_corners`' four, so the reallocation
+chain it was making moved far fewer bytes -- round five's win was mostly
+about what was being copied, not how many times. Landed for the fix itself,
+matching this session's standing rule that a correct, provable simplification
+lands even where it doesn't clear the noise floor.
+
+Two other `.resize()` call sites share the identical shape --
+`vertex_valences` in `mesh_edgebreaker_traversal_predictive_decoder.rs` and
+`mesh_edgebreaker_traversal_valence_decoder.rs` -- but belong to the
+predictive and valence traversal decoder types, not the Standard type any
+benchmark payload in this session's corpus exercises. Left open rather than
+fixed blind.
+
 ### Decode Through The C++ Bridge
 
 File: `crates/draco-cpp-test-bridge/tests/bench_decode_cpp_vs_rust.rs`
