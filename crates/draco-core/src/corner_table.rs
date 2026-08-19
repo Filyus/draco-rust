@@ -158,15 +158,11 @@ impl CornerTable {
 
     /// Reserves `vertex_corners` for `vertices`, the same way
     /// [`try_reserve_faces`](Self::try_reserve_faces) reserves the other two
-    /// tables -- and for the same reason. Nothing did this before: the field
-    /// only ever grew one element at a time, from
-    /// [`set_left_most_corner`](Self::set_left_most_corner)'s `resize`, called
-    /// once per newly discovered vertex from five different symbol arms during
-    /// EdgeBreaker connectivity decode. On the Bunny that is `35k` separate
-    /// reallocations reaching a table 65,536 elements wide before the count
-    /// ever needed that much, each copying what was already there -- found by
-    /// a debugger breakpoint on `__rust_realloc`, since it wasn't traceable
-    /// through source or a static disassembly.
+    /// tables -- and for the same reason: [`set_left_most_corner`](Self::set_left_most_corner)
+    /// grows this one vertex at a time, from five different symbol arms
+    /// during EdgeBreaker connectivity decode, and a claimed vertex count
+    /// left unreserved reallocates every time the table crosses a new power
+    /// of two.
     ///
     /// `vertices` must already be bounded against the input the same way
     /// [`try_reserve_faces`](Self::try_reserve_faces)'s `faces` is -- this

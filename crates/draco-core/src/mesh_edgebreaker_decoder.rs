@@ -1044,14 +1044,15 @@ impl MeshEdgebreakerDecoder {
         // `attribute_data_.empty()` branch: without attribute seams, a corner
         // table vertex index is a point index outright, so the whole mesh can
         // be read out of the table directly, one face at a time, in whatever
-        // order is convenient -- discovery order plays no part here.
+        // order is convenient -- discovery order plays no part here, and no
+        // discovery-order traversal is needed to compute it. C++'s own source
+        // confirms the shortcut is exact, not an approximation -- it is the
+        // same branch, verbatim.
         //
-        // A discovery-order DFS used to run first and feed two arrays,
-        // `point_ids` and `data_to_corner_map`, that fed nothing: the loop
-        // below has never read them, and the crate has no other reader either
-        // (`take_data_to_corner_map`'s only call site stores the result and
-        // never looks at it again). C++'s own source confirms the shortcut is
-        // exact, not an approximation -- it is the same branch, verbatim.
+        // `data_to_corner_map` has no reader in this crate: its only setter,
+        // here, would be the sole thing a discovery-order walk could feed,
+        // and `take_data_to_corner_map`'s one call site stores the result and
+        // never looks at it again.
         let corner_table = self.corner_table.as_ref().ok_or(DracoError::general(
             "Corner table not initialized".to_string(),
         ))?;

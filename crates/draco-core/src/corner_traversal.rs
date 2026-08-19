@@ -2,10 +2,9 @@
 //!
 //! Port of Draco's `DepthFirstTraverser::TraverseFromCorner`. Both decode paths
 //! that order attribute values by connectivity -- the generic mesh decoder and
-//! the EdgeBreaker decoder's point assignment -- walk faces in exactly this
-//! order, and for a long time each carried its own copy of the walk. The copies
-//! were identical apart from what they recorded per newly visited vertex, which
-//! is what the observer argument is for.
+//! the EdgeBreaker decoder's point assignment -- need this exact walk, and
+//! differ only in what they record per newly visited vertex, which is what
+//! the observer argument is for.
 
 use crate::corner_table::CornerTable;
 use crate::geometry_indices::{

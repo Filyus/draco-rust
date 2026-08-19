@@ -1042,10 +1042,9 @@ where
 
             let mut corners = [INVALID_CORNER_INDEX; MAX_NUM_PARALLELOGRAMS];
             // (opp, next, prev) data ids for `corners[i]`'s opposite corner,
-            // already resolved by the qualifying test below. The second pass
-            // used to ask the corner table and `vertex_to_data_map` for the
-            // same three answers again for every corner it kept; carrying them
-            // here answers it from a stored `i32` instead.
+            // resolved once by the qualifying test below and carried forward
+            // so the prediction pass further down can read them back instead
+            // of asking the corner table and `vertex_to_data_map` again.
             let mut corner_data_ids = [(0i32, 0i32, 0i32); MAX_NUM_PARALLELOGRAMS];
             let mut num_parallelograms = 0;
 
