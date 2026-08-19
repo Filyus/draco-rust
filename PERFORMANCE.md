@@ -750,6 +750,30 @@ session's standing rule is architecture and correctness first -- a clean
 simplification that measures to zero is not a reason to keep the redundant
 version.
 
+### The Same Fusion, Two More Predictors
+
+Grepping the rest of `prediction_scheme_*` for `corner_table.next`/`.previous`
+found the geometric-normal predictor's shape twice more: both texture-
+coordinate predictors' `compute_predicted_value` (the current portable one and
+the pre-2.2-bitstream legacy one) computed a neighbour corner for no reason but
+to hand it to `vertex` -- checked in both, same as before, that the corner had
+no other use in the function. Fixed on the decode side of both;
+`legacy_bitstream_decode` is a default feature, so the deprecated file's fix
+runs under the same `cargo test` as everything else. The encode side of each
+carries the identical shape and is left alone, matching every other case of
+this fusion this session.
+
+No tracked asset carries texture coordinates at Bunny scale, so measuring
+needed a synthetic UV-carrying variant built from the normal-carrying mesh.
+`dev/profiling/abn.sh`, two builds per condition: no detectable change at
+speeds 1 and 5, ambiguous at speed 9 where the two baseline builds disagreed
+with each other by more than the apparent head/base gap. The geometric-normal
+fix's `2.5%` came from a call inside a fan walk, repeated once per neighbour
+across every step; this call runs once per data entry with no loop to
+compound it in, the same shape that made the constrained-multi-parallelogram
+fix two commits back measure to zero. Landed for the same reason that one
+was: correct, provably equivalent, `cargo test` unchanged.
+
 ### Decode Through The C++ Bridge
 
 File: `crates/draco-cpp-test-bridge/tests/bench_decode_cpp_vs_rust.rs`
