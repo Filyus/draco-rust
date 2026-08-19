@@ -116,6 +116,15 @@ impl EdgebreakerConnectivityDecoder {
         // trusts that bound for the same reason.
         self.corner_table
             .try_reserve_vertices(self.max_num_vertices.min(input_face_bound))?;
+        // is_vert_hole is indexed by vertex and grows one at a time from
+        // mark_vert_not_hole, the same as vertex_corners above, so it needs
+        // the same upfront reservation for the same reason.
+        let vertex_bound = self.max_num_vertices.min(input_face_bound);
+        self.is_vert_hole
+            .try_reserve(vertex_bound.saturating_sub(self.is_vert_hole.len()))
+            .map_err(|_| {
+                DracoError::general("Failed to allocate vertex-hole table".to_string())
+            })?;
         traversal_decoder.reserve_traversal_order(input_face_bound);
 
         for symbol_id in 0..num_symbols {
