@@ -36,6 +36,18 @@ pub trait EdgebreakerTraversalDecoder {
     /// count the corner table is reserved with -- and a decoder that records
     /// nothing ignores it.
     fn reserve_traversal_order(&mut self, _faces: usize) {}
+
+    /// Reserves per-vertex decoder state for `vertices` entries.
+    ///
+    /// The predictive and valence traversal decoders each grow a per-vertex
+    /// valence table by one element per newly created vertex, deliberately
+    /// left unsized against the bitstream's own vertex count (an unvalidated
+    /// header claim -- see each decoder's `vertex_valences` field for why).
+    /// `vertices` here is the caller's already-validated bound, the same one
+    /// the corner table and `is_vert_hole` are reserved with, so honouring it
+    /// costs nothing a hostile stream could not already cost through normal
+    /// decode. A decoder with no such table ignores it.
+    fn reserve_vertices(&mut self, _vertices: usize) {}
 }
 
 pub struct EdgebreakerConnectivityDecoder {
@@ -126,6 +138,7 @@ impl EdgebreakerConnectivityDecoder {
                 DracoError::general("Failed to allocate vertex-hole table".to_string())
             })?;
         traversal_decoder.reserve_traversal_order(input_face_bound);
+        traversal_decoder.reserve_vertices(vertex_bound);
 
         for symbol_id in 0..num_symbols {
             let face = FaceIndex(num_faces as u32);

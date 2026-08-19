@@ -54,9 +54,11 @@ impl<'a> MeshEdgebreakerTraversalPredictiveDecoder<'a> {
         let split_event_remaining = topology_split_data.len();
         Self {
             num_vertices,
-            // Empty for the same reason as the valence traversal: the count
-            // is the header's claim, and `on_vertex_created` grows this as
-            // vertices are decoded.
+            // Empty for the same reason as the valence traversal: `num_vertices`
+            // above is the header's own claim, not the connectivity decoder's
+            // validated bound. `reserve_vertices` sizes this against that bound
+            // once decode_connectivity starts; `on_vertex_created` grows it as
+            // vertices are decoded either way.
             vertex_valences: Vec::new(),
             last_symbol: -1,
             predicted_symbol: -1,
@@ -136,6 +138,10 @@ impl<'a> MeshEdgebreakerTraversalPredictiveDecoder<'a> {
 impl<'a> EdgebreakerTraversalDecoder for MeshEdgebreakerTraversalPredictiveDecoder<'a> {
     fn reserve_traversal_order(&mut self, faces: usize) {
         self.processed_connectivity_corners.reserve(faces);
+    }
+
+    fn reserve_vertices(&mut self, vertices: usize) {
+        self.vertex_valences.reserve(vertices);
     }
 
     fn decode_symbol(&mut self) -> Result<u32, DracoError> {

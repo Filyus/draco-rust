@@ -154,14 +154,17 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
         #[cfg(not(feature = "legacy_bitstream_decode"))]
         let _ = bitstream_version;
 
-        // Not sized from `num_vertices` here. That count is
+        // Not sized from `num_vertices` directly -- that count is
         // `num_encoded_vertices + num_split_symbols`, and the first term is a
-        // varint the header supplies, so honouring it costs four bytes per
-        // claimed vertex before a single one has been decoded.
-        // `on_vertex_created` grows the table as vertices actually appear, and
-        // every read goes through `get`/`get_mut`, so a vertex that was never
-        // created reads as absent rather than as valence zero -- which is a
-        // refusal the pre-sized table used to swallow.
+        // varint the header supplies on its own, so honouring it here would
+        // cost four bytes per claimed vertex before a single one has been
+        // decoded. `reserve_vertices` (called by the connectivity decoder,
+        // after this) reserves against its own already-validated bound
+        // instead. `on_vertex_created` grows the table as vertices actually
+        // appear either way, and every read goes through `get`/`get_mut`, so a
+        // vertex that was never created reads as absent rather than as
+        // valence zero -- which is a refusal a table pre-sized from the raw
+        // claim would swallow.
         self.vertex_valences.clear();
 
         self.min_valence = 2;
@@ -247,6 +250,10 @@ impl<'a> MeshEdgebreakerTraversalValenceDecoder<'a> {
 impl<'a> EdgebreakerTraversalDecoder for MeshEdgebreakerTraversalValenceDecoder<'a> {
     fn reserve_traversal_order(&mut self, faces: usize) {
         self.processed_connectivity_corners.reserve(faces);
+    }
+
+    fn reserve_vertices(&mut self, vertices: usize) {
+        self.vertex_valences.reserve(vertices);
     }
 
     fn decode_symbol(&mut self) -> Result<u32, DracoError> {
