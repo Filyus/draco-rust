@@ -134,9 +134,7 @@ impl EdgebreakerConnectivityDecoder {
         let vertex_bound = self.max_num_vertices.min(input_face_bound);
         self.is_vert_hole
             .try_reserve(vertex_bound.saturating_sub(self.is_vert_hole.len()))
-            .map_err(|_| {
-                DracoError::general("Failed to allocate vertex-hole table".to_string())
-            })?;
+            .map_err(|_| DracoError::general("Failed to allocate vertex-hole table".to_string()))?;
         traversal_decoder.reserve_traversal_order(input_face_bound);
         traversal_decoder.reserve_vertices(vertex_bound);
 
