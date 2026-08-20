@@ -745,10 +745,15 @@ impl MeshDecoder {
         // For Edgebreaker, traversal sequencing is controlled per attribute decoder.
         // We'll derive the correct (point_ids, data_to_corner_map) later for each decoder payload
         // based on its traversal_method.
+        // Sequential encoding uses the identity mapping. Keep it symbolic: a
+        // point count comes from the bitstream, and materializing [0, 1, ...]
+        // here would spend four bytes per claimed point before the attributes
+        // have provided any data. EdgeBreaker still builds real traversal
+        // arrays below, because those arrays describe a non-identity order.
         let point_ids = if self.method == 0 {
-            make_point_ids(num_points, buffer.size())?
+            EntryToPointIdMap::identity(num_points)
         } else {
-            Vec::new()
+            EntryToPointIdMap::identity(0)
         };
         let data_to_corner_map: Option<Vec<u32>> = None;
 
@@ -952,8 +957,8 @@ impl MeshDecoder {
                     // identity mapping [0, 1, 2, ..., num_points-1] and calls
                     // SetIdentityMapping() for attributes. No corner table or
                     // data_to_corner_map is needed.
-                    // Use the mesh-wide identity sequence allocated above instead
-                    // of rebuilding an identical vector for each decoder.
+                    // Use the mesh-wide symbolic identity sequence instead of
+                    // rebuilding an identical vector for each decoder.
                     // sequenced_data_to_corner_map remains None - not needed for sequential
                 } else {
                     // Edgebreaker decoding: traversal method depends on the per-decoder
@@ -1009,12 +1014,12 @@ impl MeshDecoder {
             // Choose which point sequence to use for decoding values in this decoder.
             // If seams were applied, we derived a per-decoder point id list (possibly
             // containing repeats). Otherwise, fall back to the mesh-wide sequence.
-            let point_ids_for_values: &[PointIndex] = if let Some(ref ids) = point_ids_for_decoder {
-                ids
+            let point_ids_for_values = if let Some(ref ids) = point_ids_for_decoder {
+                EntryToPointIdMap::from_point_indices(ids)
             } else if let Some(ref ids) = sequenced_point_ids {
-                ids
+                EntryToPointIdMap::from_point_indices(ids)
             } else {
-                &point_ids
+                point_ids
             };
             let data_to_corner_map_override_for_values: Option<&[u32]> =
                 if let Some(ref map) = data_to_corner_map_for_decoder {
@@ -1046,11 +1051,7 @@ impl MeshDecoder {
                     0 => {
                         let mut att_decoder = SequentialGenericAttributeDecoder::new();
                         att_decoder.init(&pc_decoder, att_id);
-                        att_decoder.decode_values(
-                            mesh,
-                            EntryToPointIdMap::from_point_indices(point_ids_for_values),
-                            buffer,
-                        )?;
+                        att_decoder.decode_values(mesh, point_ids_for_values, buffer)?;
                     }
                     1 => {
                         let mut att_decoder = SequentialIntegerAttributeDecoder::new();
@@ -1067,7 +1068,7 @@ impl MeshDecoder {
                         };
                         att_decoder.decode_values(
                             mesh,
-                            EntryToPointIdMap::from_point_indices(point_ids_for_values),
+                            point_ids_for_values,
                             buffer,
                             corner_table_for_decoder,
                             data_to_corner_map_override_for_values,
@@ -1168,7 +1169,7 @@ impl MeshDecoder {
                         };
                         att_decoder.decode_values(
                             mesh,
-                            EntryToPointIdMap::from_point_indices(point_ids_for_values),
+                            point_ids_for_values,
                             buffer,
                             corner_table_for_decoder,
                             data_to_corner_map_override_for_values,
@@ -1298,7 +1299,7 @@ impl MeshDecoder {
                         };
                         att_decoder.decode_values(
                             mesh,
-                            EntryToPointIdMap::from_point_indices(point_ids_for_values),
+                            point_ids_for_values,
                             buffer,
                             corner_table_for_decoder,
                             data_to_corner_map_override_for_values,
@@ -1899,22 +1900,6 @@ fn make_zeroed_indices(num_indices: usize, stream_bytes: usize) -> Result<Vec<u3
         .map_err(|_| DracoError::general("Failed to allocate mesh indices".to_string()))?;
     indices.resize(num_indices, 0);
     Ok(indices)
-}
-
-fn make_point_ids(num_points: usize, stream_bytes: usize) -> Result<Vec<PointIndex>, DracoError> {
-    crate::decode_budget::ensure_elements_are_backed(
-        num_points,
-        std::mem::size_of::<PointIndex>(),
-        stream_bytes,
-    )?;
-    let mut point_ids = Vec::new();
-    point_ids
-        .try_reserve_exact(num_points)
-        .map_err(|_| DracoError::general("Failed to allocate point ids".to_string()))?;
-    for i in 0..num_points {
-        point_ids.push(PointIndex(i as u32));
-    }
-    Ok(point_ids)
 }
 
 #[cfg(test)]

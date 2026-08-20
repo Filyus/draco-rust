@@ -430,6 +430,27 @@ fn oversized_sequential_mesh_point_count_fails_before_large_allocation() {
 }
 
 #[test]
+fn sequential_mesh_identity_mapping_does_not_materialize_huge_point_count() {
+    // The identity mapping is implicit in sequential attribute data. Before
+    // the fix, this header made MeshDecoder allocate four bytes per point even
+    // though there are no attributes to decode. Padding reaches the old
+    // input-relative allocation threshold; the decoder must still do no large
+    // allocation because the identity is now represented symbolically.
+    let mut stream = draco_header(2, 2, 1, 0);
+    append_varint(&mut stream, 0); // zero faces, so connectivity is skipped
+    append_varint(&mut stream, 1 << 30); // a hostile but representable point count
+    stream.push(0); // no attribute decoders
+    stream.resize(4096, 0); // 4 GiB / 2^20: inclusive budget boundary
+
+    let mut buffer = DecoderBuffer::new(&stream);
+    let mut mesh = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut buffer, &mut mesh)
+        .expect("symbolic identity mapping should avoid the huge allocation");
+    assert_eq!(mesh.num_points(), 1 << 30);
+}
+
+#[test]
 fn oversized_texcoord_orientations_decode_quickly_without_hang() {
     // libFuzzer reproducer (fuzz target `decode_drc`): a v2.2 EdgeBreaker mesh
     // whose portable-texcoord prediction declared a ~2 billion orientation count
