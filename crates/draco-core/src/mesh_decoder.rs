@@ -836,7 +836,7 @@ impl MeshDecoder {
                 };
 
                 let mut att = PointAttribute::new();
-                att.try_init(att_type, num_components, data_type, normalized, num_points)?;
+                att.init_deferred(att_type, num_components, data_type, normalized, num_points)?;
                 att.set_unique_id(unique_id);
                 let att_id = mesh.add_attribute_preserve_unique_id(att);
                 att_ids.push(att_id);

@@ -49,6 +49,7 @@ impl SequentialGenericAttributeDecoder {
             .checked_mul(num_components)
             .and_then(|size| size.checked_mul(data_type_size))
             .ok_or_else(|| DracoError::general("Generic attribute size overflow".to_string()))?;
+        crate::decode_budget::ensure_allocation_is_backed(total_size, buffer.remaining_size())?;
         attribute
             .buffer_mut()
             .try_resize(total_size)

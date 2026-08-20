@@ -451,6 +451,26 @@ fn sequential_mesh_identity_mapping_does_not_materialize_huge_point_count() {
 }
 
 #[test]
+fn sequential_mesh_attribute_buffer_does_not_materialize_huge_point_count() {
+    // Attribute metadata is read before its payload. The decoder must not
+    // reserve one value per claimed point before checking whether the input
+    // can back that allocation.
+    let mut stream = draco_header(2, 2, 1, 0);
+    append_varint(&mut stream, 0); // zero faces, so connectivity is skipped
+    append_varint(&mut stream, 1 << 30); // a hostile but representable point count
+    append_varint(&mut stream, 1); // one attribute decoder
+    append_varint(&mut stream, 1); // one attribute in the decoder
+    stream.extend_from_slice(&[0, 9, 1, 0]); // position, float32, one component, unnormalized
+    append_varint(&mut stream, 0); // unique id
+    stream.push(0); // generic decoder
+
+    assert!(
+        decode_malformed_without_panic(DecoderKind::Mesh, &stream).is_err(),
+        "huge sequential attribute buffer unexpectedly decoded successfully"
+    );
+}
+
+#[test]
 fn oversized_texcoord_orientations_decode_quickly_without_hang() {
     // libFuzzer reproducer (fuzz target `decode_drc`): a v2.2 EdgeBreaker mesh
     // whose portable-texcoord prediction declared a ~2 billion orientation count
