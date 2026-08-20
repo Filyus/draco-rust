@@ -327,6 +327,28 @@ impl SequentialIntegerAttributeEncoder {
             selected_method = select_prediction_method(att_id, options, encoder);
         }
 
+        // The wrap transform stores `1 + (max - min)` of the raw values in an
+        // i32 (see `PredictionSchemeWrapEncodingTransform::init`), and its
+        // decoder counterpart refuses any stream whose span does not fit --
+        // see the matching check in `decode_transform_data`. An explicit
+        // (unquantized) integer attribute can carry values spanning close to
+        // the full i32 range, which this crate's own decoder would then
+        // reject. Every branch below that predicts with `Difference`,
+        // `MeshPredictionParallelogram`, etc. still measures its correction
+        // against these same raw values, so the span is the same no matter
+        // which wrap-based predictor gets picked -- check it once, up front,
+        // and downgrade to `None` (which copies the values through with no
+        // transform at all) rather than build a predictor whose output the
+        // decoder cannot read back.
+        if self.transform_family == IntPredictionTransformFamily::Wrap {
+            if let (Some(&min_v), Some(&max_v)) = (values.iter().min(), values.iter().max()) {
+                let dif = (max_v as i64) - (min_v as i64);
+                if dif >= i32::MAX as i64 {
+                    selected_method = PredictionSchemeMethod::None;
+                }
+            }
+        }
+
         // 3. Apply Prediction
         let mut corrections = vec![0i32; num_values];
         let mut selected_transform_type = PredictionSchemeTransformType::Wrap;

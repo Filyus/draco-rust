@@ -17,6 +17,7 @@ use draco_core::mesh::Mesh;
 use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::point_cloud::PointCloud;
+use draco_core::point_cloud_decoder::PointCloudDecoder;
 use draco_core::point_cloud_encoder::PointCloudEncoder;
 
 /// A float32 position attribute with `num_values` zeroed values.
@@ -602,6 +603,65 @@ fn a_normal_quantization_bit_count_the_octahedron_cannot_carry_is_refused() {
         assert!(
             error.contains("2..=30"),
             "the refusal should name the range the bit count fell outside, got: {error}"
+        );
+    }
+}
+
+/// The wrap prediction transform stores `1 + (max - min)` of the raw
+/// attribute values in an i32 (see `PredictionSchemeWrapEncodingTransform::init`
+/// in `prediction_scheme_wrap.rs`), and its own decoder refuses any stream
+/// whose span does not fit that i32 -- the matching check in
+/// `decode_transform_data`. An unquantized (explicit) integer attribute can
+/// legitimately carry raw values spanning close to the full i32 range -- an
+/// application-defined `Generic` attribute is under no obligation to look like
+/// a normal or a quantized position -- and that used to reach the wrap
+/// transform anyway: the encoder's `1 + dif` wrapped in i32 arithmetic, wrote
+/// out the (still huge) min/max it started from regardless, and its own
+/// decoder then refused the stream it had just produced -- the "anything the
+/// encoder accepts must decode" oracle broken by the encoder's own output.
+#[test]
+fn an_integer_attribute_spanning_close_to_the_full_i32_range_is_encoded_without_a_wrap_transform() {
+    let mut pc = PointCloud::new();
+    pc.set_num_points(4);
+    let mut attribute = PointAttribute::new();
+    attribute.init(GeometryAttributeType::Generic, 1, DataType::Int32, false, 4);
+    // i32::MIN..=i32::MAX has a span of `u32::MAX` values, one past what
+    // `1 + dif` can hold in an i32 -- the narrowest input that exercises the
+    // overflow.
+    let values: [i32; 4] = [i32::MIN, i32::MAX, 0, -1];
+    for (i, value) in values.iter().enumerate() {
+        attribute.buffer_mut().write(i * 4, &value.to_le_bytes());
+    }
+    pc.add_attribute(attribute);
+
+    // Sequential, asked for. An integer attribute is otherwise eligible for
+    // the KD-tree coder by default, which sorts points by attribute value and
+    // so gives no guarantee that decoded point `i` is encoded point `i` --
+    // the sequential path this test means to exercise is the one that keeps
+    // that identity and is the one `SequentialIntegerAttributeEncoder` (and
+    // the wrap transform inside it) actually belongs to.
+    let mut options = EncoderOptions::new();
+    options.set_encoding_method(0);
+    let stream =
+        encode_point_cloud(pc, &options).expect("a wide-range integer attribute must still encode");
+
+    let mut decoded = PointCloud::new();
+    let status = PointCloudDecoder::new().decode(&mut DecoderBuffer::new(&stream), &mut decoded);
+    assert!(
+        status.is_ok(),
+        "the encoder's own stream must decode: {:?}",
+        status.err()
+    );
+
+    let out_att = decoded.attribute(0);
+    let buffer = out_att.buffer();
+    for (i, expected) in values.iter().enumerate() {
+        let mut bytes = [0u8; 4];
+        buffer.read(i * 4, &mut bytes);
+        assert_eq!(
+            i32::from_le_bytes(bytes),
+            *expected,
+            "value {i} round-tripped incorrectly"
         );
     }
 }
