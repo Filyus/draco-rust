@@ -2724,3 +2724,45 @@ fn profile_decode_sequential_breakdown() {
         }
     );
 }
+
+/// Writes the seeded sweep's meshes out as `.obj`, so the stage-comparison
+/// tools (`corner_table_loop`, `encode_loop`, `ct_bench`) can be pointed at
+/// the payloads the sweep's own ratios came from.
+///
+/// The sweep is where encode reads `0.90x` of C++ at speeds 5-9, while the
+/// Bunny reads `1.19x` the other way -- so it is the payload a decomposition
+/// has to run on. Ignored by default: it writes files.
+#[test]
+#[ignore]
+fn dump_seeded_meshes_as_obj() {
+    let out_dir = std::env::var("SEEDED_OBJ_DIR").expect("set SEEDED_OBJ_DIR");
+    std::fs::create_dir_all(&out_dir).expect("create out dir");
+
+    let seeds_per_family = 3;
+    let base_seed = 0xd1ac_0c0d_ebba_5eed_u64;
+    let seed_step = 0x517c_c1b7_2722_0a95_u64;
+
+    for (family_index, family) in SeededMeshFamily::ALL.iter().copied().enumerate() {
+        for seed_index in 0..seeds_per_family {
+            let sample_index = family_index * seeds_per_family + seed_index;
+            let seed = base_seed.wrapping_add((sample_index as u64).wrapping_mul(seed_step));
+            let (_, positions, faces, _) = create_seeded_mesh(family, seed);
+
+            let mut obj = String::new();
+            for p in positions.chunks_exact(3) {
+                obj.push_str(&format!("v {} {} {}\n", p[0], p[1], p[2]));
+            }
+            for f in faces.chunks_exact(3) {
+                // OBJ indices are 1-based.
+                obj.push_str(&format!("f {} {} {}\n", f[0] + 1, f[1] + 1, f[2] + 1));
+            }
+            let path = format!("{out_dir}/seeded_{}_{seed_index}.obj", family.name());
+            std::fs::write(&path, obj).expect("write obj");
+            println!(
+                "{path}: {} points, {} faces",
+                positions.len() / 3,
+                faces.len() / 3
+            );
+        }
+    }
+}

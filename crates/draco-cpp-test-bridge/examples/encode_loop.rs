@@ -76,14 +76,28 @@ mod counting {
 #[global_allocator]
 static ALLOC: counting::Counting = counting::Counting;
 
-fn rust_encode(mesh: &draco_core::mesh::Mesh, options: &EncoderOptions) -> Vec<u8> {
+/// One encode, with the setup the C++ side also keeps outside its timed region
+/// charged separately.
+///
+/// `set_mesh` takes the mesh by value, so a loop has to hand it a fresh one
+/// each iteration -- but `draco_profile_encode` builds its `draco::Mesh` under
+/// a *separate* timer and times `EncodeMeshToBuffer` alone. Timing the clone
+/// with the encode would compare a Rust encode plus a 1.2 MB copy against a
+/// C++ encode without one. Returns `(bytes, setup_us, encode_us)`.
+fn rust_encode(mesh: &draco_core::mesh::Mesh, options: &EncoderOptions) -> (Vec<u8>, f64, f64) {
+    let setup_start = std::time::Instant::now();
     let mut encoder = MeshEncoder::new();
     encoder.set_mesh(mesh.clone());
     let mut buffer = EncoderBuffer::new();
+    let setup_us = setup_start.elapsed().as_secs_f64() * 1e6;
+
+    let encode_start = std::time::Instant::now();
     encoder
         .encode(options, &mut buffer)
         .expect("rust encode failed");
-    buffer.data().to_vec()
+    let encode_us = encode_start.elapsed().as_secs_f64() * 1e6;
+
+    (buffer.data().to_vec(), setup_us, encode_us)
 }
 
 fn main() {
@@ -130,7 +144,7 @@ fn main() {
                 use std::sync::atomic::Ordering::Relaxed;
                 counting::COUNT.store(0, Relaxed);
                 counting::SAMPLING.store(true, Relaxed);
-                let encoded = rust_encode(&mesh, &options);
+                let (encoded, _, _) = rust_encode(&mesh, &options);
                 counting::SAMPLING.store(false, Relaxed);
                 let samples = counting::SAMPLES.lock().unwrap().clone();
                 eprintln!(
@@ -148,16 +162,23 @@ fn main() {
             counting::COUNT.store(0, Relaxed);
             counting::BYTES.store(0, Relaxed);
             counting::LARGE.store(0, Relaxed);
-            let start = std::time::Instant::now();
             let mut size = 0;
+            let mut total_setup = 0.0;
+            let mut total_encode = 0.0;
             for _ in 0..iters {
-                size = rust_encode(&mesh, &options).len();
+                let (bytes, setup, encode) = rust_encode(&mesh, &options);
+                size = bytes.len();
+                total_setup += setup;
+                total_encode += encode;
             }
-            let us = start.elapsed().as_secs_f64() * 1e6 / f64::from(iters);
+            let us = total_encode / f64::from(iters);
+            let setup_us = total_setup / f64::from(iters);
             let n = counting::COUNT.swap(0, Relaxed) as f64 / f64::from(iters);
             let b = counting::BYTES.swap(0, Relaxed) as f64 / f64::from(iters);
             let l = counting::LARGE.swap(0, Relaxed) as f64 / f64::from(iters);
-            eprintln!("rust: {size} bytes, {us:.1} us/encode");
+            eprintln!(
+                "rust: {size} bytes, {us:.1} us/encode (encode only), {setup_us:.1} us setup"
+            );
             eprintln!(
                 "alloc: {n:.0} allocations/encode, {:.2} MB/encode, {l:.0} of them >= 64 KB",
                 b / (1024.0 * 1024.0)
