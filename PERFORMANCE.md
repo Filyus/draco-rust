@@ -1035,9 +1035,17 @@ the comparison a comparison. **On this asset the encoder is ahead at all three
 speeds**, where the `[Speed Snapshot]` table above -- taken on the synthetic
 seeded sweep -- reads `0.90x` at speeds 5 and 9.
 
-Both are real; they are different assets, and the split is the same one decode
-already showed, where the synthetic sweep said `1.6x` behind and the Bunny said
-`1.3x` at worst. The synthetic position-only meshes are roughly `19k` faces
+Decode, taken the same way in the same session as a check on the pinning
+rather than as news, reproduces the Bunny table above: `5,777` / `3,279` /
+`2,950` us for C++ against `6,575` / `4,252` / `3,785` for Rust at speeds
+`1` / `5` / `9` -- `0.88x`, `0.77x`, `0.78x`, against the `0.86x`, `0.78x`,
+`0.76x` already recorded there. So the decode figures were taken against a
+pristine reference and stand as written; it is the *bridge* tables, and the
+encode half of the warning above, that needed correcting.
+
+Both encode readings are real; they are different assets, and the split is the
+same one decode already showed, where the synthetic sweep said `1.6x` behind
+and the Bunny said `1.3x` at worst. The synthetic position-only meshes are roughly `19k` faces
 against the Bunny's `69k` and cost about twice as much per face on both sides,
 so they weight per-call setup far more heavily. Neither table should be quoted
 as "the" encode ratio without naming its asset; this session's work makes the
