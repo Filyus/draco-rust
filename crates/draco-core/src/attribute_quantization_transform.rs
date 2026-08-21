@@ -73,6 +73,44 @@ impl AttributeQuantizationTransform {
         Ok(())
     }
 
+    /// What `value` on component `component` becomes after a quantize /
+    /// dequantize round trip through these parameters.
+    ///
+    /// Both halves are monotonic non-decreasing in the value -- quantization
+    /// scales by a non-negative `inverse_delta` then floors, dequantization
+    /// scales by a non-negative `delta` -- so the round trip is too. That is
+    /// what lets a caller wanting the bounds of a *quantized* attribute fold
+    /// the original for its min and max and round-trip those two, instead of
+    /// materializing the quantized and dequantized attributes to fold the
+    /// result: the extremes map to the extremes. The arithmetic below mirrors
+    /// `generate_portable_attribute` and `inverse_transform_attribute` term for
+    /// term, and lives here so it cannot drift from them.
+    pub fn round_trip_component(&self, component: usize, value: f32) -> Result<f32, DracoError> {
+        if !VALID_QUANTIZATION_BITS.contains(&self.quantization_bits) {
+            return Err(invalid_quantization_bits(self.quantization_bits));
+        }
+        let Some(&min_value) = self.min_values.get(component) else {
+            return Err(DracoError::invalid_parameter(format!(
+                "Quantization parameters cover {} components, asked for {component}",
+                self.min_values.len()
+            )));
+        };
+        let max_quantized_value: i32 = ((1u64 << (self.quantization_bits as u32)) - 1) as i32;
+
+        let mut quantizer = Quantizer::new();
+        quantizer.init(self.range, max_quantized_value);
+        let quantized = quantizer.quantize_float(value - min_value);
+
+        let mut dequantizer = Dequantizer::new();
+        if !dequantizer.init(self.range, max_quantized_value) {
+            return Err(DracoError::invalid_parameter(format!(
+                "Dequantizer rejects range {} over {max_quantized_value} steps",
+                self.range
+            )));
+        }
+        Ok(dequantizer.dequantize_float(quantized) + min_value)
+    }
+
     pub fn compute_parameters(
         &mut self,
         attribute: &PointAttribute,

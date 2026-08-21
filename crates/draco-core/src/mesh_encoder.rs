@@ -1856,36 +1856,36 @@ impl MeshEncoder {
                     ))
                 })?;
 
-            let mut portable = PointAttribute::default();
-            q_transform
-                .transform_attribute(
-                    att,
-                    EntryToPointIdMap::from_point_indices(point_ids),
-                    &mut portable,
-                )
-                .map_err(|e| {
-                    DracoError::general(format!(
-                        "Failed to quantize position attribute for encoded mesh info: {e}"
-                    ))
-                })?;
-
-            let mut dequantized = PointAttribute::new();
-            dequantized.try_init(
-                GeometryAttributeType::Position,
-                3,
-                DataType::Float32,
-                false,
-                portable.size(),
-            )?;
-            q_transform
-                .inverse_transform_attribute(&portable, &mut dequantized)
-                .map_err(|e| {
-                    DracoError::general(format!(
-                        "Failed to dequantize position attribute for encoded mesh info: {e}"
-                    ))
-                })?;
-
-            return Self::position_bounds_from_attribute(&dequantized, &[]);
+            // These are the bounds of the attribute as the decoder will see it,
+            // so each extreme goes through the same quantize/dequantize round
+            // trip the encoded values do. The round trip is monotonic per
+            // component, so the extremes of the round-tripped values are the
+            // round-tripped extremes -- folding the original and transforming
+            // six scalars gives the same answer as building the portable and
+            // dequantized attributes to fold the result, without two full
+            // passes over every point and the two attributes they allocate.
+            // `quantization_round_trip_monotonic_test` pins that property.
+            let (min, max) = Self::position_bounds_from_attribute(att, point_ids)?;
+            let (Some(min), Some(max)) = (min, max) else {
+                return Ok((None, None));
+            };
+            let round_trip = |bound: Vec<f64>| -> Result<Vec<f64>, DracoError> {
+                bound
+                    .into_iter()
+                    .enumerate()
+                    .map(|(component, value)| {
+                        q_transform
+                            .round_trip_component(component, value as f32)
+                            .map(f64::from)
+                            .map_err(|e| {
+                                DracoError::general(format!(
+                                    "Failed to quantize position bounds for encoded mesh info: {e}"
+                                ))
+                            })
+                    })
+                    .collect()
+            };
+            return Ok((Some(round_trip(min)?), Some(round_trip(max)?)));
         }
 
         Self::position_bounds_from_attribute(att, point_ids)
