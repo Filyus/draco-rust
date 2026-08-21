@@ -119,7 +119,6 @@ pub struct MeshEncoder {
     method: i32,
     /// Maps point indices to vertex indices in the corner table.
     /// Used when position-based deduplication is enabled.
-    point_to_vertex_map: Option<Vec<u32>>,
     /// Whether we're using single connectivity (all attributes share same corner table).
     use_single_connectivity: bool,
     /// Prediction choices made by the attribute encoders, keyed by attribute
@@ -273,7 +272,6 @@ impl MeshEncoder {
             portable_attributes: Vec::new(),
             edgebreaker_encoder: None,
             method: 0,
-            point_to_vertex_map: None,
             use_single_connectivity: false,
             attribute_predictions: Vec::new(),
             encoded_mesh_info: None,
@@ -313,7 +311,6 @@ impl MeshEncoder {
         self.active_vertex_to_data_map = None;
         self.attribute_traversal = None;
         self.method = 0;
-        self.point_to_vertex_map = None;
         self.use_single_connectivity = false;
         self.attribute_predictions.clear();
     }
@@ -677,7 +674,7 @@ impl MeshEncoder {
 
         // Only build corner table if needed (not for sequential encoding)
         if method == MeshEncodingMethod::MeshEdgebreakerEncoding {
-            let (faces, point_to_vertex_map) = if use_single_connectivity {
+            let faces = if use_single_connectivity {
                 // CreateCornerTableFromAllAttributes: use point indices directly
                 let faces: Vec<[crate::geometry_indices::VertexIndex; 3]> = (0..mesh.num_faces())
                     .map(|i| {
@@ -689,9 +686,7 @@ impl MeshEncoder {
                         ]
                     })
                     .collect();
-                // Identity mapping
-                let point_to_vertex: Vec<u32> = (0..mesh.num_points() as u32).collect();
-                (faces, point_to_vertex)
+                faces
             } else {
                 // CreateCornerTableFromPositionAttribute: use position attribute to deduplicate
                 self.create_corner_table_from_position_attribute(mesh)
@@ -716,7 +711,6 @@ impl MeshEncoder {
             }
 
             self.corner_table = Some(corner_table);
-            self.point_to_vertex_map = Some(point_to_vertex_map);
             self.edgebreaker_attribute_connectivity.clear();
             if !use_single_connectivity {
                 if let Some(ref ct) = self.corner_table {
@@ -730,9 +724,7 @@ impl MeshEncoder {
                 }
             }
         } else {
-            // Sequential encoding: no corner table needed, use identity mapping
-            let point_to_vertex: Vec<u32> = (0..mesh.num_points() as u32).collect();
-            self.point_to_vertex_map = Some(point_to_vertex);
+            // Sequential encoding: no corner table needed.
             self.edgebreaker_attribute_connectivity.clear();
         }
         self.use_single_connectivity = use_single_connectivity;
@@ -801,15 +793,13 @@ impl MeshEncoder {
         Ok(())
     }
 
-    /// Creates faces array using position attribute to deduplicate vertices.
-    /// This mimics C++ CreateCornerTableFromPositionAttribute.
-    /// Returns (faces, point_to_vertex_map) where:
-    /// - faces: vertex indices (deduplicated based on position values)
-    /// - point_to_vertex_map: maps each point index to its vertex index in the corner table
+    /// Creates the faces array using the position attribute to deduplicate
+    /// vertices, mimicking C++ CreateCornerTableFromPositionAttribute: each
+    /// face carries the attribute value indices its points map to.
     fn create_corner_table_from_position_attribute(
         &self,
         mesh: &Mesh,
-    ) -> (Vec<[crate::geometry_indices::VertexIndex; 3]>, Vec<u32>) {
+    ) -> Vec<[crate::geometry_indices::VertexIndex; 3]> {
         use crate::geometry_attribute::GeometryAttributeType;
 
         let pos_att_id = mesh.named_attribute_id(GeometryAttributeType::Position);
@@ -825,8 +815,7 @@ impl MeshEncoder {
                     ]
                 })
                 .collect();
-            let point_to_vertex: Vec<u32> = (0..mesh.num_points() as u32).collect();
-            return (faces, point_to_vertex);
+            return faces;
         }
 
         let pos_att = mesh.attribute(pos_att_id);
@@ -886,7 +875,7 @@ impl MeshEncoder {
                 point_to_vertex.iter().take(25).cloned().collect::<Vec<_>>()
             );
         }
-        (faces, point_to_vertex)
+        faces
     }
 
     fn encode_sequential_connectivity(&mut self, out_buffer: &mut EncoderBuffer) -> Status {
