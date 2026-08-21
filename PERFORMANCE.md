@@ -1017,6 +1017,27 @@ compares one function against one function on a manifold mesh with no
 degenerate faces and no attribute seams. It says nothing about how the two
 sides behave on the inputs where their non-manifold handling diverges.
 
+### The Sweep For What The Lint Cannot See
+
+`encoded_faces` was the second write-only structure found by hand (the
+decoder's dead traversal was the first), which raised the right question:
+why does nothing catch these? Because nothing can -- rustc's `dead_code`
+lint counts a write as a use (`.push()` is a method call on the field), so
+state that is written and never read is outside its reach by construction,
+and in a profile a dead write is indistinguishable from a live one. The only
+detector is grepping for readers.
+
+So that grep ran as a sweep: every struct field in `draco-core` with writes
+and no reads anywhere in the crate. Three candidates; one
+(`attribute_predictions`) was a false positive, read across a line break the
+single-line pattern missed. The two real ones are gone: `point_to_vertex_map`
+on `MeshEncoder`, which on the sequential path allocated an identity
+`(0..num_points).collect()` -- `139` KB on the Bunny -- solely to fill a field
+nothing read; and `init_face_input_indices`, whose own comment said "for our
+own debugging". Output byte-identical, no speed claim made or needed. The
+sweep is cheap to re-run and worth re-running after any porting burst, since
+ported-but-unread state is exactly what a behaviour-first port produces.
+
 ### And The Whole Encode, Against A Reference Pinned On Purpose
 
 Pinning `DRACO_CPP_BUILD_DIR` for the stage comparison also made the
