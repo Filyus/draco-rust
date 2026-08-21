@@ -248,6 +248,16 @@ mod ffi {
             result: *mut DracoDecodeProfileResult,
         ) -> c_int;
 
+        /// Time `CornerTable::Create` alone on a prebuilt face array.
+        pub fn draco_profile_corner_table(
+            num_faces: u32,
+            faces: *const u32,
+            iterations: u32,
+            out_us: *mut i64,
+            out_num_vertices: *mut u32,
+            out_num_degenerated: *mut u32,
+        ) -> c_int;
+
         /// Decode a mesh once and return stable structural/data fingerprints.
         pub fn draco_decode_attribute_values(
             encoded_data: *const u8,
@@ -782,6 +792,39 @@ pub struct CppDecodeFingerprint {
     pub face_hash: u64,
     pub attribute_hash: u64,
     pub canonical_corner_hash: u64,
+}
+
+/// C++ corner-table construction time, in microseconds per `CornerTable::Create`.
+///
+/// `faces` is one `u32` vertex index per corner, three per face -- the same
+/// flat run `CornerTable::init` takes on the Rust side, so the two are timed
+/// on identical input. Returns `(us, num_vertices, num_degenerated_faces)`;
+/// the two counts are there to check both sides built the same table.
+#[cfg(not(cpp_test_bridge_disabled))]
+pub fn profile_cpp_corner_table(faces: &[u32], iterations: u32) -> Option<(i64, u32, u32)> {
+    let num_faces = (faces.len() / 3) as u32;
+    let mut us = 0i64;
+    let mut num_vertices = 0u32;
+    let mut num_degenerated = 0u32;
+    let status = unsafe {
+        ffi::draco_profile_corner_table(
+            num_faces,
+            faces.as_ptr(),
+            iterations,
+            &mut us,
+            &mut num_vertices,
+            &mut num_degenerated,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    Some((us, num_vertices, num_degenerated))
+}
+
+#[cfg(cpp_test_bridge_disabled)]
+pub fn profile_cpp_corner_table(_faces: &[u32], _iterations: u32) -> Option<(i64, u32, u32)> {
+    None
 }
 
 /// Profile C++ decoding

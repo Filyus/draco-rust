@@ -14,6 +14,7 @@
 #include "draco/point_cloud/point_cloud.h"
 #include "draco/core/encoder_buffer.h"
 #include "draco/core/decoder_buffer.h"
+#include "draco/mesh/corner_table.h"
 
 extern "C" {
 
@@ -1258,3 +1259,52 @@ size_t draco_encode_generic(
     return encoded_size;
 }
 } // extern "C"
+
+// Time CornerTable::Create alone, the C++ side of `ct_bench`.
+//
+// Corner-table construction is about 45% of a position-only Rust encode, and
+// nothing had ever compared it against the C++ it was ported from -- a whole
+// encode compares the stage together with everything around it. The face array
+// is built once, outside the timed loop, matching what `ct_bench` does and what
+// both encoders do before they reach the table.
+extern "C" int draco_profile_corner_table(
+    uint32_t num_faces,
+    const uint32_t* faces,
+    uint32_t iterations,
+    int64_t* out_us,
+    uint32_t* out_num_vertices,
+    uint32_t* out_num_degenerated
+) {
+    if (iterations == 0 || num_faces == 0 || faces == nullptr) {
+        return -1;
+    }
+
+    draco::IndexTypeVector<draco::FaceIndex, draco::CornerTable::FaceType> face_vec(num_faces);
+    for (uint32_t f = 0; f < num_faces; ++f) {
+        for (int i = 0; i < 3; ++i) {
+            face_vec[draco::FaceIndex(f)][i] = draco::VertexIndex(faces[3 * f + i]);
+        }
+    }
+
+    // Warm up: the first build faults in the pages every later one reuses.
+    for (int i = 0; i < 3; ++i) {
+        if (draco::CornerTable::Create(face_vec) == nullptr) {
+            return -1;
+        }
+    }
+
+    int64_t total_ns = 0;
+    for (uint32_t iter = 0; iter < iterations; ++iter) {
+        auto start = std::chrono::steady_clock::now();
+        auto ct = draco::CornerTable::Create(face_vec);
+        auto end = std::chrono::steady_clock::now();
+        if (ct == nullptr) {
+            return -1;
+        }
+        total_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+        *out_num_vertices = static_cast<uint32_t>(ct->num_vertices());
+        *out_num_degenerated = static_cast<uint32_t>(ct->NumDegeneratedFaces());
+    }
+    *out_us = (total_ns / iterations + 500) / 1000;
+    return 0;
+}

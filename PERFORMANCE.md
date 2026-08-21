@@ -959,13 +959,49 @@ larger, and the floor a library change actually has to clear. Every figure in
 the previous round is well above `1.4%` and stands; the point is that the
 floor quoted beside them was measured on the wrong binary.
 
-What this leaves for the next round, and it is a bigger question than any
-micro-optimization: `45%` of encode is one algorithm that C++ runs too, at
-per-corner costs already measured to their floor. Whether the port is behind
-*there* is unmeasured -- the C++ bridge exposes no corner-table entry point,
-so nobody has timed `CornerTable::Create` against `CornerTable::init` on the
-same faces. That comparison, not another accessor pass, is what would say
-whether the remaining encode gap is in this stage at all.
+### The Biggest Stage Is Not The Gap
+
+That left the question worth asking: `45%` of encode is one algorithm C++ runs
+too, at per-corner costs already measured to their floor -- is the port behind
+*there*? Nothing had ever compared the stage on its own, because the bridge
+exposed no corner-table entry point and a whole-encode benchmark times this
+stage together with everything around it.
+
+Added: `draco_profile_corner_table` in the bridge, and a
+`corner_table_loop` example that runs both sides on the identical flat face
+array, each building it once outside its own timed loop. It prints the vertex
+and degenerated-face counts from both so a run that built two different tables
+is visible rather than quietly comparable.
+
+Stanford Bunny, `69,451` faces, position only, against the pristine 1.5.7
+`Release` build pinned explicitly through `DRACO_CPP_BUILD_DIR` -- three runs
+of `120` iterations each:
+
+| side | us per build |
+| --- | ---: |
+| C++ `CornerTable::Create` | `6,462` / `6,555` / `6,805` |
+| Rust `CornerTable::init` | `5,390` / `5,393` / `5,453` |
+
+Both sides build the same table (`34,834` vertices, `0` degenerated faces).
+**The port is `1.2x` ahead on the stage that is `45%` of its encode**, and the
+gap is a fifth of the measurement, far above anything a floor could explain.
+The unpinned run -- which had picked up the other locally available optimized
+build -- gave the same answer, so the direction is not an artifact of which
+reference was linked.
+
+That is a redirect, not a result to celebrate. If the port is ahead on `45%`
+of encode and still behind overall at speeds 5-9, then the entire remaining
+gap lives in the other `55%` -- the traversal, the predictors, the entropy
+stage -- and every round that has gone into the corner-table complex has been
+spending effort on the half that was already winning. The next round should
+start by splitting *that* half the same way this one split the table: a
+per-stage comparison against C++ on identical input, before any profile gets
+read for hot lines.
+
+The caveat on this number, stated so it is not read as more than it is: it
+compares one function against one function on a manifold mesh with no
+degenerate faces and no attribute seams. It says nothing about how the two
+sides behave on the inputs where their non-manifold handling diverges.
 
 ### Decode Through The C++ Bridge
 
