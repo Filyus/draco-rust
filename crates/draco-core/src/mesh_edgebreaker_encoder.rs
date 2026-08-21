@@ -197,7 +197,6 @@ pub struct MeshEdgebreakerEncoder {
 
     // Boundary tracking
     init_face_configurations: Vec<bool>,
-    encoded_faces: Vec<(FaceIndex, CornerIndex)>,
 
     // Hole tracking (for boundary vertices)
     // Maps vertex index to hole id (-1 if not on a hole)
@@ -252,7 +251,6 @@ impl MeshEdgebreakerEncoder {
             init_face_input_indices: Vec::new(),
             symbol_to_encoder_corner: Vec::new(),
             init_face_configurations: Vec::new(),
-            encoded_faces: Vec::new(),
             vertex_hole_id: vec![-1; num_vertices],
             visited_holes: Vec::new(),
             encoding_speed: 5, // Default
@@ -343,10 +341,16 @@ impl MeshEdgebreakerEncoder {
         self.last_encoded_symbol_id = -1;
         self.init_face_configurations.clear();
         self.processed_connectivity_corners.clear();
+        // One entry per encoded face in each of these; sized once so the
+        // per-face pushes below never reallocate mid-traversal.
+        self.processed_connectivity_corners
+            .reserve(corner_table.num_faces());
+        self.symbols.reserve(corner_table.num_faces());
+        self.symbol_to_encoder_corner
+            .reserve(corner_table.num_faces());
         self.init_face_connectivity_corners.clear();
         self.init_face_input_indices.clear();
         self.symbol_to_encoder_corner.clear();
-        self.encoded_faces.clear();
         self.encoding_speed = speed;
         self.single_connectivity_multi_attribute = single_connectivity && mesh.num_attributes() > 1;
         // The attribute traversal method is a byte that arrived in 1.2; before
@@ -668,17 +672,13 @@ impl MeshEdgebreakerEncoder {
 
         // C++ encoder uses processed_connectivity_corners (reversed) + init_face_connectivity_corners.
         // This matches C++ MeshTraversalSequencer::SetCornerOrder behavior exactly.
-        let mut corner_order: Vec<CornerIndex> = self
-            .processed_connectivity_corners
-            .iter()
-            .rev() // Reverse to get decode order (matches C++ std::reverse)
-            .cloned()
-            .collect();
-
-        // Append init face corners (matches C++ insert at end)
-        for &c in &self.init_face_connectivity_corners {
-            corner_order.push(c);
-        }
+        let mut corner_order: Vec<CornerIndex> = Vec::with_capacity(
+            self.processed_connectivity_corners.len() + self.init_face_connectivity_corners.len(),
+        );
+        // Reverse to get decode order (matches C++ std::reverse), then append
+        // the init face corners (matches C++ insert at end).
+        corner_order.extend(self.processed_connectivity_corners.iter().rev().copied());
+        corner_order.extend_from_slice(&self.init_face_connectivity_corners);
 
         #[cfg(feature = "debug_logs")]
         let debug_cmp = crate::debug_env_enabled("DRACO_DEBUG_CMP");
@@ -2024,7 +2024,6 @@ impl MeshEdgebreakerEncoder {
 
                 // Mark current face as visited.
                 self.visited_faces[fi] = true;
-                self.encoded_faces.push((face_id, corner_id));
                 // Standard Draco: Record the entry corner for every face reached.
                 // This will be used (after reversal) as the seeds for attribute traversal.
                 self.processed_connectivity_corners.push(corner_id);

@@ -263,12 +263,8 @@ impl CornerTable {
             return false;
         }
 
-        self.num_degenerated_faces = 0;
-        for f in 0..self.num_faces() {
-            if self.is_degenerated(FaceIndex(f as u32)) {
-                self.num_degenerated_faces += 1;
-            }
-        }
+        // num_degenerated_faces is counted inside compute_opposite_corners,
+        // against the pre-split vertex map, matching where C++ counts it.
 
         self.num_isolated_vertices = 0;
         for v in 0..self.num_vertices() {
@@ -720,6 +716,7 @@ impl CornerTable {
     }
 
     fn compute_opposite_corners(&mut self, num_vertices: &mut usize) -> bool {
+        self.num_degenerated_faces = 0;
         self.opposite_corners
             .resize(self.num_corners(), INVALID_CORNER_INDEX);
 
@@ -783,16 +780,22 @@ impl CornerTable {
             .map(|face| face.expect("chunks_exact(3) yields three vertices"))
             .zip((0..).step_by(3))
         {
+            // A face with any repeated vertex is degenerated, and the condition
+            // is symmetric in the three vertices, so one check covers all three
+            // corners. Counted here, while the map still holds the vertices the
+            // faces were built with -- compute_vertex_corners can split
+            // non-manifold vertices afterwards, and the count written to the
+            // stream header must be the pre-split one.
+            if face[0] == face[1] || face[1] == face[2] || face[2] == face[0] {
+                self.num_degenerated_faces += 1;
+                continue;
+            }
             for local in 0..3 {
                 let c = face_base + local;
                 let c_idx = CornerIndex(c as u32);
                 let tip_v = face[local];
                 let source_v = face[NEXT_LOCAL[local]];
                 let sink_v = face[PREV_LOCAL[local]];
-
-                if tip_v == source_v || source_v == sink_v || sink_v == tip_v {
-                    continue;
-                }
 
                 let mut opposite_c = INVALID_CORNER_INDEX;
                 let num_corners_on_vert = num_corners_on_vertices[sink_v.0 as usize];
@@ -826,14 +829,21 @@ impl CornerTable {
                     let count = num_corners_on_vertices[sink_v.0 as usize];
                     opposite_c = vertex_edges[match_pos].edge_corner;
 
-                    // Shift elements left to remove the matched entry
-                    if match_pos + 1 < start + count {
-                        vertex_edges.copy_within(match_pos + 1..start + count, match_pos);
+                    // Shift the entries after the match one slot down, stopping
+                    // at the first unused one -- everything past it is already
+                    // unused, so shifting it would move invalid over invalid.
+                    // The trip count is a vertex valence, so the loop stays a
+                    // few inlined moves rather than a memmove call per match.
+                    let mut last = match_pos;
+                    for j in match_pos + 1..start + count {
+                        if vertex_edges[j].sink_vert == INVALID_VERTEX_INDEX {
+                            break;
+                        }
+                        vertex_edges[last] = vertex_edges[j];
+                        last = j;
                     }
-                    if count > 0 {
-                        vertex_edges[start + count - 1].sink_vert = INVALID_VERTEX_INDEX;
-                        vertex_edges[start + count - 1].edge_corner = INVALID_CORNER_INDEX;
-                    }
+                    vertex_edges[last].sink_vert = INVALID_VERTEX_INDEX;
+                    vertex_edges[last].edge_corner = INVALID_CORNER_INDEX;
                     found_match = true;
                 }
 

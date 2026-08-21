@@ -1,0 +1,167 @@
+//! One encoder, one payload, one loop -- and a count of what it allocates.
+//!
+//! The encode-side sibling of `decode_loop`: exactly one side per process, so
+//! a profiler or the counting allocator attributes to it alone. The Rust side
+//! reports allocations and bytes per encode; `SAMPLE_ALLOC=1` prints a
+//! backtrace for every allocation of 64 KB or more from a single encode. The
+//! C++ side goes through `profile_cpp_encode`, which is position-only -- pass
+//! a position-only mesh when comparing sides.
+//!
+//! ```text
+//! cargo run --release --example encode_loop -- <mesh.obj> cpp|rust <speed> <iters>
+//! SAMPLE_ALLOC=1 cargo run --release --example encode_loop -- <mesh.obj> rust 5 1
+//! ```
+use draco_core::encoder_buffer::EncoderBuffer;
+use draco_core::mesh_encoder::MeshEncoder;
+use draco_core::EncoderOptions;
+
+/// Counting allocator: how many allocations an encode makes, and how many
+/// bytes. Dev tooling only -- it lives in this example, never in the library.
+mod counting {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    pub static COUNT: AtomicU64 = AtomicU64::new(0);
+    pub static BYTES: AtomicU64 = AtomicU64::new(0);
+    pub static LARGE: AtomicU64 = AtomicU64::new(0);
+    pub static SAMPLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    pub static SAMPLES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    thread_local! {
+        static IN_ALLOC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    fn maybe_sample(size: usize) {
+        if !SAMPLING.load(Relaxed) || size < 64 * 1024 {
+            return;
+        }
+        IN_ALLOC.with(|flag| {
+            if flag.get() {
+                return;
+            }
+            flag.set(true);
+            let trace = std::backtrace::Backtrace::force_capture().to_string();
+            if let Ok(mut samples) = SAMPLES.lock() {
+                samples.push(format!("size={size}\n{trace}"));
+            }
+            flag.set(false);
+        });
+    }
+
+    pub struct Counting;
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            COUNT.fetch_add(1, Relaxed);
+            BYTES.fetch_add(layout.size() as u64, Relaxed);
+            if layout.size() >= 64 * 1024 {
+                LARGE.fetch_add(1, Relaxed);
+            }
+            maybe_sample(layout.size());
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            COUNT.fetch_add(1, Relaxed);
+            BYTES.fetch_add(new_size as u64, Relaxed);
+            if new_size >= 64 * 1024 {
+                LARGE.fetch_add(1, Relaxed);
+            }
+            maybe_sample(new_size);
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+}
+
+#[global_allocator]
+static ALLOC: counting::Counting = counting::Counting;
+
+fn rust_encode(mesh: &draco_core::mesh::Mesh, options: &EncoderOptions) -> Vec<u8> {
+    let mut encoder = MeshEncoder::new();
+    encoder.set_mesh(mesh.clone());
+    let mut buffer = EncoderBuffer::new();
+    encoder
+        .encode(options, &mut buffer)
+        .expect("rust encode failed");
+    buffer.data().to_vec()
+}
+
+fn main() {
+    let mut args = std::env::args().skip(1);
+    let path = args.next().expect("mesh path");
+    let side = args.next().unwrap_or_else(|| "rust".to_string());
+    let speed: i32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(5);
+    let iters: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(200);
+
+    let bytes = std::fs::read(&path).expect("read mesh");
+    let mesh = draco_io::obj_reader::ObjReader::read_from_bytes(&bytes).expect("parse obj");
+    let mut options = EncoderOptions::new();
+    options.set_global_int("encoding_speed", speed);
+    options.set_global_int("decoding_speed", speed);
+    options.set_attribute_int(0, "quantization_bits", 11);
+    if mesh.num_attributes() > 1 {
+        options.set_attribute_int(1, "quantization_bits", 8);
+    }
+    eprintln!(
+        "payload: {} faces, side={side}, speed={speed}, iters={iters}",
+        mesh.num_faces()
+    );
+
+    match side.as_str() {
+        "cpp" => {
+            let positions: Vec<f32> = mesh.attribute(0).read_f32s(mesh.num_points(), 3);
+            let faces: Vec<u32> = (0..mesh.num_faces())
+                .flat_map(|f| {
+                    let face = mesh.face(draco_core::geometry_indices::FaceIndex(f as u32));
+                    [face[0].0, face[1].0, face[2].0]
+                })
+                .collect();
+            let result = draco_cpp_test_bridge::profile_cpp_encode(
+                &positions, &faces, speed, speed, 11, iters,
+            )
+            .expect("C++ encode failed");
+            eprintln!(
+                "cpp: {} bytes, {} us/encode (encode only), {} us total",
+                result.output_size, result.encode_time_us, result.total_time_us
+            );
+        }
+        _ => {
+            if std::env::var("SAMPLE_ALLOC").is_ok() {
+                use std::sync::atomic::Ordering::Relaxed;
+                counting::COUNT.store(0, Relaxed);
+                counting::SAMPLING.store(true, Relaxed);
+                let encoded = rust_encode(&mesh, &options);
+                counting::SAMPLING.store(false, Relaxed);
+                let samples = counting::SAMPLES.lock().unwrap().clone();
+                eprintln!(
+                    "SAMPLED {} stacks of {} allocations, {} bytes encoded",
+                    samples.len(),
+                    counting::COUNT.load(Relaxed),
+                    encoded.len()
+                );
+                for sample in samples {
+                    println!("=== {sample}");
+                }
+                return;
+            }
+            use std::sync::atomic::Ordering::Relaxed;
+            counting::COUNT.store(0, Relaxed);
+            counting::BYTES.store(0, Relaxed);
+            counting::LARGE.store(0, Relaxed);
+            let start = std::time::Instant::now();
+            let mut size = 0;
+            for _ in 0..iters {
+                size = rust_encode(&mesh, &options).len();
+            }
+            let us = start.elapsed().as_secs_f64() * 1e6 / f64::from(iters);
+            let n = counting::COUNT.swap(0, Relaxed) as f64 / f64::from(iters);
+            let b = counting::BYTES.swap(0, Relaxed) as f64 / f64::from(iters);
+            let l = counting::LARGE.swap(0, Relaxed) as f64 / f64::from(iters);
+            eprintln!("rust: {size} bytes, {us:.1} us/encode");
+            eprintln!(
+                "alloc: {n:.0} allocations/encode, {:.2} MB/encode, {l:.0} of them >= 64 KB",
+                b / (1024.0 * 1024.0)
+            );
+        }
+    }
+}
