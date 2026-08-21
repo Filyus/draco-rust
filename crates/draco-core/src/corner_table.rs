@@ -237,7 +237,6 @@ impl CornerTable {
     }
 
     pub fn set_opposite(&mut self, corner: CornerIndex, opposite: CornerIndex) {
-        // Debug logging removed to avoid noisy output during tests.
         self.opposite_corners[corner.0 as usize] = opposite;
     }
 

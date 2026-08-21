@@ -257,18 +257,11 @@ where
         let mut entropy_symbols = vec![0u32; num_components];
         let mut predicted_val = vec![DataType::default(); num_components];
         let mut corr_val = vec![CorrType::default(); num_components];
-        let mut tmp_entropy_symbols = vec![0u32; num_components];
-        let mut tmp_pred_vals = vec![DataType::default(); num_components];
 
         // Track total parallelograms and used parallelograms for overhead calculation
         let mut total_parallelograms: [i64; MAX_NUM_PARALLELOGRAMS] = [0; MAX_NUM_PARALLELOGRAMS];
         let mut total_used_parallelograms: [i64; MAX_NUM_PARALLELOGRAMS] =
             [0; MAX_NUM_PARALLELOGRAMS];
-        #[cfg(feature = "debug_logs")]
-        let debug_cmp = crate::debug_env_enabled("DRACO_DEBUG_CMP");
-        #[cfg(not(feature = "debug_logs"))]
-        let debug_cmp = false;
-
         // C++ encoder processes vertices from the end because this prediction uses
         // data from previous entries that could be overwritten when an entry is processed.
         // We iterate BACKWARD from (num_entries - 1) down to 1, matching C++.
@@ -570,82 +563,6 @@ where
 
                     if !next_permutation(&mut excluded) {
                         break;
-                    }
-                }
-            }
-
-            // Diagnostic logging: compare cumulative vs marginal cost choices if requested
-            if debug_cmp {
-                use std::sync::atomic::AtomicUsize;
-                static _CMP_DIV_COUNT: AtomicUsize = AtomicUsize::new(0);
-                const _MAX_CMP_DIV_PRINT: usize = 200;
-
-                // Compute marginal-choice simulation (old bug style): per-vertex overhead as local cost
-                let mut marginal_best_error = Error::new();
-                marginal_best_error.num_bits = i64::MAX;
-                let mut _marginal_best_config: u8 = 0;
-                for config in 0..(1 << num_parallelograms) {
-                    let mut num_used = 0;
-                    for i in 0..num_parallelograms {
-                        if (config & (1 << i)) != 0 {
-                            num_used += 1;
-                        }
-                    }
-                    // compute residual/rans bits same as above
-                    tmp_entropy_symbols.fill(0);
-                    tmp_pred_vals.fill(DataType::default());
-                    if num_used == 0 {
-                        if data_id > 0 {
-                            let prev_offset = (data_id - 1) * num_components;
-                            for c in 0..num_components {
-                                tmp_pred_vals[c] = in_data[prev_offset + c];
-                            }
-                        }
-                    } else {
-                        for k in 0..num_components {
-                            let mut sum: i32 = 0;
-                            for i in 0..num_parallelograms {
-                                if (config & (1 << i)) != 0 {
-                                    let pred_val: i64 = pred_vals[i][k].into();
-                                    sum = (sum as u32).wrapping_add(pred_val as u32) as i32;
-                                }
-                            }
-                            let val = sum / num_used;
-                            tmp_pred_vals[k] = DataType::from(val);
-                        }
-                    }
-                    let mut tmp_err = Error::new();
-                    for c in 0..num_components {
-                        let val = in_data[data_offset + c].into();
-                        let pred = tmp_pred_vals[c].into();
-                        let dif = val - pred;
-                        tmp_err.residual_error += dif.abs();
-                        tmp_entropy_symbols[c] = Self::convert_signed_int_to_symbol(dif);
-                    }
-                    let entropy_data = self.entropy_tracker.peek(&tmp_entropy_symbols);
-                    tmp_err.num_bits =
-                        ShannonEntropyTracker::get_number_of_data_bits_static(&entropy_data)
-                            + ShannonEntropyTracker::get_number_of_r_ans_table_bits_static(
-                                &entropy_data,
-                            );
-                    // marginal overhead bits (local) as previously implemented: compute binary entropy with historical p
-                    let p = if total_parallelograms[context] == 0 {
-                        0.0
-                    } else {
-                        total_used_parallelograms[context] as f64
-                            / total_parallelograms[context] as f64
-                    };
-                    let p = p.clamp(0.001, 0.999);
-                    let num_bits_local = num_parallelograms as i64;
-                    let num_ones = num_used as i64;
-                    let num_zeros = num_bits_local - num_ones;
-                    let local_cost =
-                        -(num_ones as f64) * p.log2() - (num_zeros as f64) * (1.0 - p).log2();
-                    let local_cost_bits = local_cost.ceil() as i64;
-                    tmp_err.num_bits += local_cost_bits;
-                    if tmp_err < marginal_best_error {
-                        marginal_best_error = tmp_err;
-                        _marginal_best_config = config as u8;
                     }
                 }
             }
