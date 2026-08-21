@@ -902,6 +902,71 @@ floor decode reached, with the same `2.0%`-with-`unsafe` standing price. The
 kd-tree encoder's six-copies-per-node pattern (the decode side's `edaba23`)
 remains open and unmeasured; nothing here benchmarks a kd-tree encode.
 
+### What The Encoder Actually Spends Its Time On
+
+The round above left "the corner-table complex, `~23%` self time" as the
+encoder's remaining lead, read off a whole-encode profile. That reading was
+wrong by a factor of two, and finding out changed what the next round should
+be.
+
+`log2` looked like the obvious next target -- `8.3%` self time at speed 1 on
+the normal-carrying Bunny, with `shannon_entropy` another `7.0%` beside it.
+It is not a target at all: upstream computes `frequency * log2(frequency)`
+for the old and new frequency of every symbol on every peek, with no memo,
+and this port has memoised it since `f9a331d`. On that axis the port is ahead
+of C++ by construction, and the remaining calls are the cost model itself,
+which byte parity pins. A new `dev/profiling/callers.py` (which call sites
+put time in a hot leaf, as opposed to `resolve.py`'s "where does time go")
+settled that in one command instead of a benchmark round.
+
+The real shape came from a harness the tooling did not have: `ct_bench`,
+which loops `CornerTable::init` alone. **Corner-table construction is `5.4`
+ms of an `11.4` ms position-only speed-5 encode -- about `45%`.** The
+whole-encode profile had attributed `10%` to `CornerTable::init`, because
+inlining splits the function across source lines and an inclusive-by-name
+rollup counts only the frames that survive as symbols. One source line's
+inclusive share is not a stage's cost, and this document had been reading it
+as one.
+
+Two changes went in on the strength of that, both provably identical and
+neither a speedup:
+
+- `init` filled `corner_to_vertex_map` with a bounds-checked store per corner
+  over a `resize` fill that every one of those stores overwrote. Corner
+  `3f + i` is face `f`'s vertex `i`, so the map is the face array read as one
+  flat run -- `clear` plus `extend_from_slice`, one copy, no fill.
+- `compute_opposite_corners` indexed `vertex_edges` per entry while searching
+  a vertex's half-edge bucket and again while inserting into it, re-reading
+  `vertex_offset` inside the search loop. A vertex's half-edges are one
+  contiguous run, so both now slice that run once and iterate it.
+
+Measured on the changed path rather than through the encode that dilutes it:
+two builds per condition, 14 interleaved rounds each, `5373.5` to `5375.9`
+us/init -- **`+0.05%`**, with the two head builds straddling the two base
+builds. Real work came off and no time did. That is the third independent
+bounds-check null in this codebase (the rANS LUT elisions cost `+0.7%` and
+`+1.4%`, the face-triple slice read `1.4%` slower), and the reason is the one
+the earlier nulls also had: a predicted bounds check off the dependency path
+is absorbed by an out-of-order core. Treat the class as unpaid here until a
+profile says otherwise.
+
+The same session also corrects the previous round's control reading. A
+`black_box`-guarded pad in `real_bench.rs` perturbs the *harness* binary's
+layout and leaves the `draco-core` rlib's alone, which is why two "builds per
+condition" agreed to `0.1-0.4%` there. Putting the pad inside `draco-core`
+instead puts the floor at `~1.4%` on this workload -- an order of magnitude
+larger, and the floor a library change actually has to clear. Every figure in
+the previous round is well above `1.4%` and stands; the point is that the
+floor quoted beside them was measured on the wrong binary.
+
+What this leaves for the next round, and it is a bigger question than any
+micro-optimization: `45%` of encode is one algorithm that C++ runs too, at
+per-corner costs already measured to their floor. Whether the port is behind
+*there* is unmeasured -- the C++ bridge exposes no corner-table entry point,
+so nobody has timed `CornerTable::Create` against `CornerTable::init` on the
+same faces. That comparison, not another accessor pass, is what would say
+whether the remaining encode gap is in this stage at all.
+
 ### Decode Through The C++ Bridge
 
 File: `crates/draco-cpp-test-bridge/tests/bench_decode_cpp_vs_rust.rs`
