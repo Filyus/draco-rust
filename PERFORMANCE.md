@@ -1145,11 +1145,130 @@ Method notes worth carrying, both of which cost time this round:
   its effort on the corner table, which was ahead on every family. Split a
   composite benchmark before optimizing against it.
 
-What is left, and it is a smaller list than it was: after this, the port is
-ahead or at parity on every seeded family and every Bunny speed measured.
-`fan` is the closest of the three that are ahead (`1.05-1.09x`) and is also
-by far the slowest family in absolute terms (`16` ms against `2-4`), so it is
-the one with room left in it; nothing has profiled it yet.
+After this, the port is ahead or at parity on every seeded family and every
+Bunny speed measured. The open leads it leaves are listed under
+[Unexplored](#unexplored), of which the `fan` family is by far the largest:
+splitting it the same way found `15,679` us of its `16,465` us encode inside
+`CornerTable::init` -- `95%`, against `802-818` us for the ribbon and grid
+tables at comparable face counts.
+
+## Unexplored
+
+Leads this document has evidence for and has not followed, roughly by size of
+what is known to be behind them. Each says what was measured, what was not,
+and the smallest next step -- a fresh session should be able to start from any
+one line.
+
+### The fan topology's quadratic corner table
+
+By a wide margin the largest measured lead in the encoder. `corner_table_loop`
+at comparable face counts:
+
+| family | faces | C++ table | Rust table | Rust whole encode |
+| --- | ---: | ---: | ---: | ---: |
+| grid | `18,050` | `1,097` | `818` | `1,917` |
+| ribbon | `19,458` | `1,048` | `802` | `3,289` |
+| **fan** | `16,802` | `18,139` | `15,679` | `16,465` |
+
+So on a fan the table is `95%` of the encode and costs `19x` more per face
+than the same table on a grid. Both implementations pay it -- C++ is `1.16x`
+worse -- so it is the algorithm, not the port.
+
+The mechanism, stated as a hypothesis with its arithmetic rather than as a
+finding: a fan has a hub vertex of enormous valence, and
+`compute_opposite_corners` searches that vertex's half-edge bucket linearly
+for every corner incident to it, which is `O(valence^2)` for the hub alone.
+Nothing has confirmed this against a valence histogram yet, and that is the
+first step -- it is cheap and it either kills the hypothesis or sizes the
+prize.
+
+If it holds, the fix is an index over each bucket rather than a linear walk,
+and the hard constraint is that the search must keep taking the **first**
+match in bucket order, including the mirrored-face skip: byte parity depends
+on which opposite corner is chosen, not merely that one is. Upstream's own
+`TODO(ostava)` nearby is about the *removal* shift, not this search, so there
+is no upstream answer to copy.
+
+### Not yet split, though the tools now exist
+
+- **The seeded families at speeds other than 5.** Speed 5 is the only one
+  decomposed per family. Speeds 0-1 run constrained multi-parallelogram over
+  the valence traversal and speeds 8-10 run difference prediction over single
+  connectivity -- different code, and the per-family ratios there are
+  unknown. `dump_seeded_meshes_as_obj` plus `encode_loop` covers it in one
+  pass.
+- **Decode, stage by stage.** The stage attribution in the opening section is
+  explicitly marked history: it predates the corner-table access round, round
+  two's dead traversal and round three's doubled scan, and has not been
+  re-run. Decode now has the same tooling encode just used.
+- **An encode-side call-count comparison against C++.** Instrumenting every
+  `CornerTable` method and comparing exact counts is what produced decode's
+  rounds two and three -- the two largest decode wins of the campaign. It has
+  never been run on the encoder.
+
+### Known shapes, unmeasured
+
+- **`position_bounds_from_attribute`'s own fold.** This round removed the two
+  extra passes around it; the fold itself still does a `mapped_index`, a
+  `checked_mul`, three `checked_add` pairs and three bounds-checked four-byte
+  reads *per point* -- the call-per-scalar shape. Re-profile before touching
+  it: its share after the fix is unmeasured.
+- **Allocation inside `MeshEdgebreakerEncoder::encode_connectivity`.**
+  Memory-shaped leaves were `7.9%` of the ribbon encode there, never chased.
+  Hole tracking is the suspect on a topology where every vertex is on a
+  boundary.
+- **The kd-tree encoder still carries the six-copies-per-node pattern** that
+  `edaba23` removed from the kd-tree *decoder* for `-23.4%`. Unchanged since,
+  and still unmeasured, because nothing benchmarks a kd-tree encode -- that
+  harness has to exist first.
+- **The three parallel `Vec`s in
+  `generate_point_ids_and_corners_dfs_for_table`.** Audited in round four and
+  left deliberately: folding them into one `Vec` of a small struct is a real
+  refactor across `AttributeTraversalArrays` and every destructuring call
+  site, not a follow-up to a benchmark.
+
+### Decisions, not measurements
+
+- **`build_encoded_mesh_info` runs on every encode.** `EncodeMeshToBuffer`
+  produces nothing equivalent, so part of any encode comparison is work only
+  one side does. Whether it should become opt-in the way
+  `store_number_of_encoded_faces` already is, is an API call for this
+  document's maintainer, not a performance fix.
+- **The allocator comparison is one-sided.** mimalloc puts decode `1.11x` to
+  `1.42x` ahead, but nobody has established what allocator the C++ reference
+  effectively uses. The fair version -- both sides swapping -- is open, and
+  until it is run those numbers mean "this port with a good allocator against
+  that build with its default", nothing more.
+
+### Owed to the document itself
+
+- **Every bridge-measured C++ figure carries the `4.8x` patched-reference
+  factor** described at the top: the seeded sweep, the real corpus, encode and
+  decode alike. They need re-taking with `DRACO_CPP_BUILD_DIR` pinned to
+  pristine 1.5.7. Until then those tables are internally consistent and
+  externally meaningless.
+- **The `[Speed Snapshot]` headline is an average over the seeded sweep**,
+  which this session showed is a composite whose members disagree in sign. It
+  should be re-taken per family, or stop being quoted as one ratio.
+
+### Sweeps worth widening
+
+- The write-only-field sweep that found `point_to_vertex_map` and
+  `init_face_input_indices` was a single-line regex over `self.<field>` in
+  `draco-core` alone; it produced one false positive from a read that spanned
+  a line break. A multi-line-aware version, run over the other crates and over
+  locals rather than only fields, has not been run.
+- The dead diagnostic block in the constrained multi-parallelogram encoder was
+  found by grepping debug *comments*, not systematically. "Computation whose
+  result is never observed" has the same blind spot as write-only state --
+  neither the `dead_code` lint nor a profile can see it -- and no general
+  detector for it exists here.
+
+## Benchmarks
+
+Where each measurement in this document comes from. Point the C++ side at a
+reference build with `DRACO_CPP_BUILD_DIR`/`DRACO_CPP_SOURCE_DIR` and pin it
+explicitly -- see the warning at the top for what an unpinned one costs.
 
 ### Decode Through The C++ Bridge
 
