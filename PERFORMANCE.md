@@ -838,6 +838,70 @@ is fixed on the strength of being the identical shape as its valence
 sibling, unmeasured; `cargo test`'s legacy round-trip fixtures cover it for
 correctness, not speed.
 
+### The Encoder's Turn: Dead State And Unreserved Symbols
+
+Every allocation round so far had audited decode; the encoder -- the side the
+synthetic sweep puts at `0.90x` of C++ at speeds 5-9 -- had never had the same
+treatment. A new `encode_loop` example (the encode-side sibling of
+`decode_loop`: one side per process, counting allocator, `SAMPLE_ALLOC`
+backtraces) gave the encoder its first allocation histogram, and it held the
+same shapes decode's five rounds had already named:
+
+- `encoded_faces`, a `Vec<(FaceIndex, CornerIndex)>` pushed once per face and
+  read by nothing -- the decoder's dead-traversal shape again, paying a
+  65 KB -> 1 MB reallocation chain per encode. Deleted.
+- The per-symbol vectors (`symbols`, `symbol_to_encoder_corner`,
+  `processed_connectivity_corners`) growing unreserved through capacity
+  doubling. Upstream reserves `processed_connectivity_corners_` against
+  `num_faces` (`mesh_edgebreaker_encoder_impl.cc`); all three are now
+  reserved the same way.
+- `generate_attribute_traversal`'s `corner_order` collected to exact capacity
+  and then pushed the init-face corners past it, doubling a 278 KB buffer to
+  add a handful of entries. Sized for both parts up front.
+
+Two source-reading finds against upstream `ComputeOppositeCorners` landed in
+the same commit: the half-edge removal shifted the whole remaining bucket
+with `copy_within` (a `memmove` call per matched half-edge, ~100k per Bunny
+encode) where C++ shifts one entry at a time and stops at the first unused
+slot -- now the same early-stopping loop; and the degenerated-face count ran
+as a separate whole-table pass after `compute_vertex_corners`, where C++
+counts it inside the half-edge loop against the pre-split vertex map -- now
+counted there, which also pins the count to the same table state C++ reads
+(the late pass could in principle disagree after non-manifold vertex
+splitting).
+
+`encode_loop` on the position-only Bunny at speed 5: `163` to `101`
+allocations per encode, `17.2` to `12.5` MB, output byte-identical
+(`58,893` bytes; `83,754` at speed 9, also matching the C++ bridge's output
+exactly). `dev/profiling/abn.sh`, two builds per condition:
+
+| payload | speed | encode |
+| --- | ---: | ---: |
+| position only | 5 | `6.1-6.5%` |
+| position only | 9 | `4.2-4.9%` |
+| position only | 1 | `1.9-2.5%` |
+| with normals | 5 | `3.6-4.3%` |
+
+Decode as the control: the `real_bench` pair read the head `3-5%` slower on
+decode, which none of the changed functions can reach (`CornerTable::init`
+and everything under it is encoder-only). Cross-checked in a different
+binary: `decode_loop` built at both commits shows mixed-sign differences
+under `1%` and identical allocation counts (`65` allocations, `6.95` MB both
+sides), so the `real_bench` decode delta is that binary's link layout, not a
+regression -- and a reminder that the harness-side `black_box` pad perturbs
+the harness binary's own code, not the layout of the `draco_core` rlib it
+links, so two "independent" builds of one condition share more layout than
+the protocol assumes.
+
+Against the standing `0.90x` encode gap at speeds 5-9, this round closes
+roughly half to two-thirds of it on the payloads measured. What the fresh
+profile says is left on encode: the corner-table complex (`~23%` self time,
+the same half-edge search C++ runs), `geometry_indices::eq` inside those
+linear searches, and the generic bounds-check/`Option` machinery -- the same
+floor decode reached, with the same `2.0%`-with-`unsafe` standing price. The
+kd-tree encoder's six-copies-per-node pattern (the decode side's `edaba23`)
+remains open and unmeasured; nothing here benchmarks a kd-tree encode.
+
 ### Decode Through The C++ Bridge
 
 File: `crates/draco-cpp-test-bridge/tests/bench_decode_cpp_vs_rust.rs`
