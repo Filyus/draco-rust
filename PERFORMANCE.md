@@ -16,6 +16,20 @@ which is also the whole of the launch sensitivity described below. Padding the
 environment with a dummy variable takes the C++ decode from `1,690` to `12,355
 us/1k faces` while the Rust side stays at `51.6` to `52.7`.
 
+**This affects the encode tables too, which earlier readings of this warning
+missed.** `mesh_attribute_indices_encoding_observer.h` is not a decoder file:
+it is the traversal observer the *encoder's* `MeshTraversalSequencer` drives
+once per vertex, so the patch sits on both paths. Measured directly -- one
+Rust binary, one payload, one timed region, the linked C++ library the only
+variable: the Bunny at speed 5 encodes in `60,950 us` against the patched
+checkout and `12,621 us` against pristine 1.5.7, a factor of `4.8`. Both
+builds carry identical Release flags (`/MD /O2 /Ob2 /DNDEBUG`) and libraries
+within `3%` of each other in size, so this is the source patch, not an
+optimization setting. Every bridge-measured C++ figure below -- seeded sweep
+and real corpus, encode as well as decode -- carries that factor.
+`corner_table_loop` and `encode_loop` pin `DRACO_CPP_BUILD_DIR` explicitly for
+this reason, and anything else comparing against C++ should.
+
 Against a pristine upstream 1.5.7 build of the same version, the ratios are a
 different story -- `3` runs, medians, `us/1k faces`:
 
@@ -1002,6 +1016,33 @@ The caveat on this number, stated so it is not read as more than it is: it
 compares one function against one function on a manifold mesh with no
 degenerate faces and no attribute seams. It says nothing about how the two
 sides behave on the inputs where their non-manifold handling diverges.
+
+### And The Whole Encode, Against A Reference Pinned On Purpose
+
+Pinning `DRACO_CPP_BUILD_DIR` for the stage comparison also made the
+denominator cheap to take, and it does not say what this document's headline
+says. `encode_loop`, Bunny, position only, `40` iterations a side, timed
+region matched, pristine 1.5.7:
+
+| Speed | C++ | Rust | | bytes |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | `32,843` | `23,807` | `1.38x` | `45,135` |
+| 5 | `12,621` | `11,259` | `1.12x` | `58,893` |
+| 9 | `11,961` | `11,369` | `1.05x` | `83,754` |
+
+Both sides emit byte-identical payloads at every speed, which is what makes
+the comparison a comparison. **On this asset the encoder is ahead at all three
+speeds**, where the `[Speed Snapshot]` table above -- taken on the synthetic
+seeded sweep -- reads `0.90x` at speeds 5 and 9.
+
+Both are real; they are different assets, and the split is the same one decode
+already showed, where the synthetic sweep said `1.6x` behind and the Bunny said
+`1.3x` at worst. The synthetic position-only meshes are roughly `19k` faces
+against the Bunny's `69k` and cost about twice as much per face on both sides,
+so they weight per-call setup far more heavily. Neither table should be quoted
+as "the" encode ratio without naming its asset; this session's work makes the
+Bunny row move and leaves the question of which asset a consumer resembles
+exactly where it was.
 
 ### Decode Through The C++ Bridge
 
