@@ -1073,6 +1073,84 @@ as "the" encode ratio without naming its asset; this session's work makes the
 Bunny row move and leaves the question of which asset a consumer resembles
 exactly where it was.
 
+### Splitting The Other Half, And Where The Sweep's Gap Actually Was
+
+The previous round ended by saying the remaining encode gap must live outside
+the corner table, and that the next step was to split that half the same way.
+Doing it moved the question twice before it produced an answer.
+
+**First: the harness was comparing unequal regions.** `draco_profile_encode`
+builds its `draco::Mesh` under a separate timer and times `EncodeMeshToBuffer`
+alone; `encode_loop`'s Rust side timed `set_mesh(mesh.clone())` together with
+the encode. Every figure it had produced compared a Rust encode plus a 1.2 MB
+mesh copy against a C++ encode without one. Charged separately, the clone is
+`~160` us on the Bunny and speed 5 reads `10,590` us where the mixed region
+read `11,259` -- so the Bunny table above understates the port by about `6%`.
+
+**Second: the gap is not spread across the sweep, it is one family.** The
+sweep's twelve meshes are four families, and its aggregate `0.90x` hid the
+fact that three of them were already ahead. Dumped to `.obj` (via
+`dump_seeded_meshes_as_obj`) and run through the pinned tools at speed 5,
+before this round's fix:
+
+| family | C++ | Rust | |
+| --- | ---: | ---: | ---: |
+| grid | `2,638` | `2,077` | `1.27x` |
+| torus | `2,630` | `2,279` | `1.15x` |
+| fan | `17,631` | `16,242` | `1.09x` |
+| **boundary ribbon** | `3,152` | `3,516` | **`0.90x`** |
+
+All three ribbon seeds were behind (`0.90x`, `0.96x`, `0.85x`); nothing else
+was. So "the encoder is `10%` behind at speeds 5-9" was never a property of
+the encoder -- it was one topology, averaged into a sweep.
+
+**Third: splitting the ribbon.** `corner_table_loop` puts its table at C++
+`1,031` against Rust `794` -- `1.30x` ahead, the same direction as the Bunny.
+Subtracting leaves everything-else at C++ `2,121` against Rust `2,722`, so the
+whole `364` us deficit and more sat outside the table, exactly where the last
+round predicted.
+
+**What was there.** Attributing every sample to its nearest `draco_core`
+caller rather than reading a self-time table found `position_bounds` at
+`10.9%` of the ribbon encode and `5.6%` of the Bunny's -- larger, on the
+ribbon, than the entire gap. `build_encoded_mesh_info` runs unconditionally on
+every encode, and on the quantized position path it built the portable
+attribute, built the dequantized attribute from that, and folded the result,
+to report six numbers. `EncodeMeshToBuffer` does none of this, so part of the
+"gap" was work the two sides were never both doing.
+
+The fix is not to skip the reporting but to stop paying three passes for it:
+the quantize/dequantize round trip is monotonic non-decreasing per component,
+so the extremes map to the extremes and folding the *original* attribute then
+round-tripping two scalars is the same answer. One pass, six scalar
+operations, no attributes materialized.
+`quantization_round_trip_monotonic_test` pins the monotonicity itself, and
+fails when the round trip is deliberately broken.
+
+`dev/profiling/abn.sh`, two builds per condition perturbed inside
+`draco-core`, 24 interleaved rounds: **`12.2-12.8%` on the ribbon, `6.0-6.4%`
+on the Bunny**, paired builds agreeing to `0.6%`. Against C++ at speed 5,
+medians of three rounds, the ribbon family goes from `0.85-0.96x` to
+`0.98-0.99x` -- parity, within the C++ side's own `10%` run-to-run drift on
+this payload, against the Rust side's `1.7%`.
+
+Method notes worth carrying, both of which cost time this round:
+
+- **Quote the C++ side as a median of several runs, or not at all.** On the
+  ribbon it moved `3,236` to `3,632` between runs of one binary on one
+  payload -- `10%`, enough on its own to invent or erase a gap this size. The
+  Rust side held to `1.7%` across the same runs.
+- **A sweep's average is not a workload.** Four families were averaged into
+  one ratio that described none of them, and the round that chased it spent
+  its effort on the corner table, which was ahead on every family. Split a
+  composite benchmark before optimizing against it.
+
+What is left, and it is a smaller list than it was: after this, the port is
+ahead or at parity on every seeded family and every Bunny speed measured.
+`fan` is the closest of the three that are ahead (`1.05-1.09x`) and is also
+by far the slowest family in absolute terms (`16` ms against `2-4`), so it is
+the one with room left in it; nothing has profiled it yet.
+
 ### Decode Through The C++ Bridge
 
 File: `crates/draco-cpp-test-bridge/tests/bench_decode_cpp_vs_rust.rs`
