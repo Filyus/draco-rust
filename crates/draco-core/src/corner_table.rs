@@ -242,13 +242,13 @@ impl CornerTable {
     }
 
     pub fn init(&mut self, faces: &[[VertexIndex; 3]]) -> bool {
+        // Corner `3f + i` is face `f`'s vertex `i`, which is exactly the face
+        // array read as one flat run -- so the map is that run, copied once,
+        // rather than a bounds-checked store per corner over a fill that every
+        // one of those stores would overwrite.
+        self.corner_to_vertex_map.clear();
         self.corner_to_vertex_map
-            .resize(faces.len() * 3, INVALID_VERTEX_INDEX);
-        for (fi, face) in faces.iter().enumerate() {
-            for i in 0..3 {
-                self.corner_to_vertex_map[fi * 3 + i] = face[i];
-            }
-        }
+            .extend_from_slice(faces.as_flattened());
 
         let mut num_vertices = 0;
         if !self.compute_opposite_corners(&mut num_vertices) {
@@ -797,73 +797,64 @@ impl CornerTable {
                 let source_v = face[NEXT_LOCAL[local]];
                 let sink_v = face[PREV_LOCAL[local]];
 
-                let mut opposite_c = INVALID_CORNER_INDEX;
-                let num_corners_on_vert = num_corners_on_vertices[sink_v.0 as usize];
-                let mut offset = vertex_offset[sink_v.0 as usize];
+                // A vertex's half-edges occupy one contiguous run, so the search
+                // and the removal below both work on that run sliced once
+                // rather than indexing `vertex_edges` per entry.
+                let sink_start = vertex_offset[sink_v.0 as usize];
+                let sink_end = sink_start + num_corners_on_vertices[sink_v.0 as usize];
 
-                let mut found_match = false;
-                let mut match_pos_found: Option<usize> = None;
-
-                // Search for matching half-edge on sink vertex.
-                // Match C++ behavior: take the first match we find (early break).
-                for i in 0..num_corners_on_vert {
-                    let other_v = vertex_edges[offset].sink_vert;
-                    if other_v == INVALID_VERTEX_INDEX {
+                // Search for the matching half-edge on the sink vertex, taking
+                // the first match, as C++ does.
+                let mut match_pos = None;
+                for (i, entry) in vertex_edges[sink_start..sink_end].iter().enumerate() {
+                    if entry.sink_vert == INVALID_VERTEX_INDEX {
+                        break; // No matching half-edge on the sink vertex.
+                    }
+                    if entry.sink_vert == source_v {
+                        if tip_v == self.vertex(entry.edge_corner) {
+                            continue; // Don't connect mirrored faces.
+                        }
+                        match_pos = Some(sink_start + i);
                         break;
                     }
-                    if other_v == source_v {
-                        // Check for mirrored faces
-                        if tip_v == self.vertex(vertex_edges[offset].edge_corner) {
-                            offset += 1;
-                            continue;
-                        }
-                        // Take first match (matches C++ behavior)
-                        match_pos_found = Some(vertex_offset[sink_v.0 as usize] + i);
-                        break;
-                    }
-                    offset += 1;
                 }
 
-                if let Some(match_pos) = match_pos_found {
-                    let start = vertex_offset[sink_v.0 as usize];
-                    let count = num_corners_on_vertices[sink_v.0 as usize];
-                    opposite_c = vertex_edges[match_pos].edge_corner;
-
-                    // Shift the entries after the match one slot down, stopping
-                    // at the first unused one -- everything past it is already
-                    // unused, so shifting it would move invalid over invalid.
-                    // The trip count is a vertex valence, so the loop stays a
-                    // few inlined moves rather than a memmove call per match.
-                    let mut last = match_pos;
-                    for j in match_pos + 1..start + count {
-                        if vertex_edges[j].sink_vert == INVALID_VERTEX_INDEX {
-                            break;
-                        }
-                        vertex_edges[last] = vertex_edges[j];
-                        last = j;
-                    }
-                    vertex_edges[last].sink_vert = INVALID_VERTEX_INDEX;
-                    vertex_edges[last].edge_corner = INVALID_CORNER_INDEX;
-                    found_match = true;
-                }
-
-                // Debug logging removed to avoid noisy output during tests.
-
-                if !found_match {
-                    // No opposite found, add to source vertex list
-                    let num_corners_on_source = num_corners_on_vertices[source_v.0 as usize];
-                    let base = vertex_offset[source_v.0 as usize];
-                    for offset in base..base + num_corners_on_source {
-                        if vertex_edges[offset].sink_vert == INVALID_VERTEX_INDEX {
-                            vertex_edges[offset].sink_vert = sink_v;
-                            vertex_edges[offset].edge_corner = c_idx;
+                let Some(match_pos) = match_pos else {
+                    // No opposite corner found; insert this half-edge into the
+                    // first free slot on the source vertex.
+                    let source_start = vertex_offset[source_v.0 as usize];
+                    let source_end = source_start + num_corners_on_vertices[source_v.0 as usize];
+                    for entry in vertex_edges[source_start..source_end].iter_mut() {
+                        if entry.sink_vert == INVALID_VERTEX_INDEX {
+                            entry.sink_vert = sink_v;
+                            entry.edge_corner = c_idx;
                             break;
                         }
                     }
-                } else {
-                    self.opposite_corners[c] = opposite_c;
-                    self.opposite_corners[opposite_c.0 as usize] = c_idx;
+                    continue;
+                };
+
+                let opposite_c = vertex_edges[match_pos].edge_corner;
+
+                // Remove the matched half-edge by shifting the entries after it
+                // one slot down, stopping at the first unused one -- everything
+                // past that is already unused, so shifting it would move
+                // invalid over invalid. The trip count is a vertex valence, so
+                // this stays a few inlined moves rather than a memmove call.
+                let tail = &mut vertex_edges[match_pos..sink_end];
+                let mut last = 0;
+                for j in 1..tail.len() {
+                    if tail[j].sink_vert == INVALID_VERTEX_INDEX {
+                        break;
+                    }
+                    tail[last] = tail[j];
+                    last = j;
                 }
+                tail[last].sink_vert = INVALID_VERTEX_INDEX;
+                tail[last].edge_corner = INVALID_CORNER_INDEX;
+
+                self.opposite_corners[c] = opposite_c;
+                self.opposite_corners[opposite_c.0 as usize] = c_idx;
             }
         }
 
