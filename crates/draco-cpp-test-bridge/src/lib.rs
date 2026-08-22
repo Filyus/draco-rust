@@ -242,6 +242,10 @@ mod ffi {
             out_num_faces: *mut u32,
         ) -> i64;
 
+        /// C++-side allocation counters; zeros unless the bridge was built
+        /// with `DRACO_BRIDGE_COUNT_ALLOCS` set.
+        pub fn draco_alloc_counters(count: *mut u64, bytes: *mut u64);
+
         /// Profile decoding with detailed timing
         pub fn draco_profile_decode(
             encoded_data: *const u8,
@@ -427,6 +431,25 @@ pub unsafe fn draco_benchmark_encode_mesh(
     _output_size: *mut usize,
 ) -> i64 {
     -1
+}
+
+/// C++-side allocation counters since process start: `(count, bytes)`.
+///
+/// Zeros unless the bridge was built with `DRACO_BRIDGE_COUNT_ALLOCS` set --
+/// a counting build pays an atomic per new/delete, so it exists for counting
+/// runs only, never timing.
+#[cfg(not(cpp_test_bridge_disabled))]
+pub fn cpp_alloc_counters() -> (u64, u64) {
+    let mut count = 0u64;
+    let mut bytes = 0u64;
+    unsafe { ffi::draco_alloc_counters(&mut count, &mut bytes) };
+    (count, bytes)
+}
+
+/// Stub for builds without the C++ Draco library.
+#[cfg(cpp_test_bridge_disabled)]
+pub fn cpp_alloc_counters() -> (u64, u64) {
+    (0, 0)
 }
 
 /// Encode a mesh using C++ Draco and return the encoded bytes

@@ -16,7 +16,48 @@
 #include "draco/core/decoder_buffer.h"
 #include "draco/mesh/corner_table.h"
 
+// Opt-in global allocation counting for the C++ side (BRIDGE_COUNT_ALLOCS,
+// set through the build script's DRACO_BRIDGE_COUNT_ALLOCS env var). The
+// override costs an atomic per new/delete, so a binary built with it is for
+// counting only, never timing.
+#ifdef BRIDGE_COUNT_ALLOCS
+#include <atomic>
+#include <cstdlib>
+#include <new>
+
+static std::atomic<uint64_t> g_bridge_alloc_count{0};
+static std::atomic<uint64_t> g_bridge_alloc_bytes{0};
+
+static void* bridge_counted_alloc(std::size_t size) {
+    g_bridge_alloc_count.fetch_add(1, std::memory_order_relaxed);
+    g_bridge_alloc_bytes.fetch_add(size, std::memory_order_relaxed);
+    if (void* p = std::malloc(size)) {
+        return p;
+    }
+    throw std::bad_alloc{};
+}
+
+void* operator new(std::size_t size) { return bridge_counted_alloc(size); }
+void* operator new[](std::size_t size) { return bridge_counted_alloc(size); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+#endif
+
 extern "C" {
+
+// Allocation counters for the C++ side. Zeros unless the binary was built
+// with BRIDGE_COUNT_ALLOCS.
+void draco_alloc_counters(uint64_t* count, uint64_t* bytes) {
+#ifdef BRIDGE_COUNT_ALLOCS
+    *count = g_bridge_alloc_count.load(std::memory_order_relaxed);
+    *bytes = g_bridge_alloc_bytes.load(std::memory_order_relaxed);
+#else
+    *count = 0;
+    *bytes = 0;
+#endif
+}
 
 static int64_t rounded_ns_to_us(int64_t ns) {
     return (ns + 500) / 1000;

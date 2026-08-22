@@ -64,6 +64,14 @@ fn main() {
         build.flag("/EHsc");
     }
 
+    // Opt-in allocation counting for the C++ side. Compiled in only when the
+    // env var is set at build time: the override costs an atomic per
+    // new/delete, so timing binaries must be built without it.
+    println!("cargo:rerun-if-env-changed=DRACO_BRIDGE_COUNT_ALLOCS");
+    if env::var_os("DRACO_BRIDGE_COUNT_ALLOCS").is_some() {
+        build.define("BRIDGE_COUNT_ALLOCS", None);
+    }
+
     build.compile("cpp_test_bridge_wrapper");
     // Ensure the compiled wrapper is linked into all test binaries
     println!("cargo:rustc-link-lib=static=cpp_test_bridge_wrapper");

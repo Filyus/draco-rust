@@ -120,9 +120,24 @@ fn main() {
             let _ = payload;
             for s in 0..speeds.len() {
                 let bytes = &encoded[p][s];
+                let (cpp_allocs_before, cpp_bytes_before) =
+                    draco_cpp_test_bridge::cpp_alloc_counters();
                 let result = draco_cpp_test_bridge::profile_cpp_decode(bytes, iters)
                     .expect("C++ decode failed");
                 cpp[p][s].push(result.decode_time_us as f64);
+                let (cpp_allocs_after, cpp_bytes_after) =
+                    draco_cpp_test_bridge::cpp_alloc_counters();
+                // Nonzero only in a DRACO_BRIDGE_COUNT_ALLOCS build; a
+                // counting binary is for counting, so the print rides on it.
+                if cpp_allocs_after > cpp_allocs_before {
+                    eprintln!(
+                        "CPP_ALLOC {} speed {}: {:.0} allocs, {:.0} KB per decode",
+                        paths[p],
+                        speeds[s],
+                        (cpp_allocs_after - cpp_allocs_before) as f64 / iters as f64,
+                        (cpp_bytes_after - cpp_bytes_before) as f64 / iters as f64 / 1024.0
+                    );
+                }
 
                 let (us, shape, count, alloc_bytes) = rust_decode_us(bytes, iters);
                 rust[p][s].push(us);
