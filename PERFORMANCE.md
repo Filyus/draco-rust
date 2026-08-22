@@ -1441,6 +1441,60 @@ counts and `swing_left` at parity, all three of which are artifacts of fusing
 sides regardless of how many function calls wrap it -- is what makes "exact
 parity on the traversal" a statement about work rather than about spelling.
 
+### One Allocation Per Vertex, On The One Family That Was Behind
+
+The diagnostic pass put the boundary ribbon at `19,541` allocations per encode
+against a grid's `87`, at every EdgeBreaker speed and none at speed 10. Three
+instruments in sequence turned that into a call site, and the order matters
+because the first one was the wrong tool:
+
+- **Backtraces first, and they were useless.** `SAMPLE_ALLOC` captures a stack
+  per allocation, so a budget of 64 stacks is spent on whatever the encode
+  allocates first -- buffers, attribute clones, the corner table -- none of
+  which is the thing repeating twenty thousand times.
+- **A size histogram named it in one run.** `19,460` allocations of exactly
+  `16` bytes, against a `19,460`-vertex mesh: one per vertex, and `16` bytes is
+  what a `Vec` of a four-byte element asks for on its first growth.
+- **Narrowing the sampler to that one size** then gave 64 stacks that all say
+  the same thing.
+
+`dfs_visit_from_corner_cpp` opened with `let mut corner_stack = Vec::new()`,
+and it is called once per seed corner. On a mesh where every vertex sits on a
+boundary, that is once per vertex -- a fresh four-element allocation for a
+stack that never holds much, twenty thousand times, thrown away each time.
+The stack now lives in the caller and is cleared rather than allocated. Same
+traversal, same order, same bytes out.
+
+`encode_matrix`, five rounds of 80 iterations, pinned 1.5.7:
+
+| payload | speed | allocations | Rust before | Rust after | ratio before | ratio after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ribbon | 3 | `19,582` -> `125` | `2,913` | `2,471` | `0.98x` | `1.14x` |
+| ribbon | 5 | `19,541` -> `84` | `2,577` | `2,156` | `1.03x` | `1.22x` |
+| ribbon | 8 | `19,531` -> `74` | `2,411` | `2,032` | `1.04x` | `1.23x` |
+
+`-14%` to `-16%` on the ribbon, against a `2.4-6.3%` spread, with grid, torus
+and fan measured in the same run as controls and unmoved (`1.31-1.32x` at
+speeds 3-8, within their own spread of before). Every cell's two output sizes
+still match.
+
+This closes the last cell in the matrix that was not clearly ahead: **no
+family is at or below parity at any speed now.** It also retires the `7.9%`
+"memory-shaped leaves on the ribbon" entry that had been carried unexplained
+since the encoder's first profile -- it was one `Vec::new`.
+
+What it does not close: **speed 0 still allocates `8,600-19,600` times on
+every family**, unchanged by this and untouched. That is the constrained
+multi-parallelogram predictor, allocating about one per vertex of its own, and
+it is now the largest allocation count left.
+
+Method note: **match the instrument to the shape of the count, not to the
+question.** "Where does this allocation come from" reads like a job for a
+backtrace, and a backtrace budget is exactly the wrong shape for a count that
+scales with the input -- every stack it can afford is spent before the
+repeating one starts. The histogram costs one counter per size and answered it
+outright.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -1495,10 +1549,11 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   `checked_mul`, three `checked_add` pairs and three bounds-checked four-byte
   reads *per point* -- the call-per-scalar shape. Re-profile before touching
   it: its share after the fix is unmeasured.
-- **Allocation inside `MeshEdgebreakerEncoder::encode_connectivity`.**
-  Memory-shaped leaves were `7.9%` of the ribbon encode there, never chased.
-  Hole tracking is the suspect on a topology where every vertex is on a
-  boundary.
+- **Speed 0 allocates `8,600-19,600` times per encode on every family**,
+  against under `200` at every other EdgeBreaker speed. That is the
+  constrained multi-parallelogram predictor, at roughly one allocation per
+  vertex, and it is the largest allocation count left. `ALLOC=1` on
+  `encode_matrix` sizes it; the size histogram names the buffer.
 - **The kd-tree encoder still carries the six-copies-per-node pattern** that
   `edaba23` removed from the kd-tree *decoder* for `-23.4%`. Unchanged since,
   and still unmeasured, because nothing benchmarks a kd-tree encode -- that
