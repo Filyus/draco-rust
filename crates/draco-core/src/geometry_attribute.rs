@@ -459,6 +459,18 @@ impl PointAttribute {
             .resize(num_points, INVALID_ATTRIBUTE_VALUE_INDEX);
     }
 
+    /// Replaces the whole point-to-attribute-value map in one copy.
+    ///
+    /// The bulk form of [`set_explicit_mapping`](Self::set_explicit_mapping)
+    /// followed by one [`try_set_point_map_entry`](Self::try_set_point_map_entry)
+    /// per point: a caller that has already assembled the full map hands it
+    /// over as a slice copy instead of a fallible call per entry.
+    pub fn set_explicit_mapping_from(&mut self, entries: &[AttributeValueIndex]) {
+        self.identity_mapping = false;
+        self.indices_map.clear();
+        self.indices_map.extend_from_slice(entries);
+    }
+
     /// Sets one point-to-attribute-value map entry.
     pub fn set_point_map_entry(
         &mut self,

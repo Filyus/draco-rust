@@ -1402,8 +1402,12 @@ impl MeshDecoder {
                     .or(sequenced_vertex_to_data_map.as_deref());
                 if let Some(v_map) = mapping_v_map {
                     let num_points = mesh.num_points();
-                    let mut point_to_value: Vec<Option<AttributeValueIndex>> =
-                        vec![None; num_points];
+                    // The finished map, assembled once and copied into each
+                    // attribute whole. Entries no corner reaches stay INVALID,
+                    // exactly what set_explicit_mapping leaves for a point no
+                    // try_set_point_map_entry call touches.
+                    let mut point_to_value: Vec<AttributeValueIndex> =
+                        vec![crate::geometry_indices::INVALID_ATTRIBUTE_VALUE_INDEX; num_points];
                     if let Some(ct) = corner_table_for_decoder {
                         for face_id in 0..mesh.num_faces() {
                             let face = mesh.face(FaceIndex(face_id as u32));
@@ -1417,26 +1421,21 @@ impl MeshDecoder {
                                     && v_map[vertex.0 as usize] >= 0
                                 {
                                     point_to_value[point] =
-                                        Some(AttributeValueIndex(v_map[vertex.0 as usize] as u32));
+                                        AttributeValueIndex(v_map[vertex.0 as usize] as u32);
                                 }
                             }
                         }
                     } else {
                         for p in 0..num_points {
                             if p < v_map.len() && v_map[p] >= 0 {
-                                point_to_value[p] = Some(AttributeValueIndex(v_map[p] as u32));
+                                point_to_value[p] = AttributeValueIndex(v_map[p] as u32);
                             }
                         }
                     }
 
                     for &att_id in att_ids {
                         let att = mesh.try_attribute_mut(att_id)?;
-                        att.set_explicit_mapping(num_points);
-                        for (point, value) in point_to_value.iter().enumerate() {
-                            if let Some(value) = value {
-                                att.try_set_point_map_entry(PointIndex(point as u32), *value)?;
-                            }
-                        }
+                        att.set_explicit_mapping_from(&point_to_value);
                     }
                 }
             }
