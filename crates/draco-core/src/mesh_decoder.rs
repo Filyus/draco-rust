@@ -877,9 +877,13 @@ impl MeshDecoder {
             let att_ids = &att_ids_by_decoder[dec_i];
             let decoder_types = &decoder_types_by_decoder[dec_i];
 
-            // For edgebreaker, build an attribute-specific corner table (seams) if needed.
-            // Corner indices remain stable because we only break opposite links.
-            let mut attr_corner_table: Option<CornerTable> = None;
+            // For edgebreaker, pick the attribute-specific corner table
+            // (seams) if one applies. Corner indices remain stable because
+            // seam-breaking only removes opposite links, and the table is
+            // read-only from here on -- borrowed, not cloned: a clone is a
+            // whole corner table per decoder (three arrays the size of the
+            // corner and vertex counts) for data nothing writes to.
+            let mut attr_corner_table: Option<&CornerTable> = None;
             if self.method == 1 {
                 let att_data_id = att_data_id_by_decoder[dec_i] as usize;
                 let uses_attribute_connectivity =
@@ -888,7 +892,7 @@ impl MeshDecoder {
                     && att_data_id < self.edgebreaker_attribute_seam_corners.len()
                 {
                     if let Some(ct) = self.edgebreaker_attribute_corner_tables.get(att_data_id) {
-                        attr_corner_table = Some(ct.clone());
+                        attr_corner_table = Some(ct);
                     }
                 }
             }
@@ -903,9 +907,9 @@ impl MeshDecoder {
                 // If we have an attribute-specific seam corner table, recompute vertex
                 // corners after breaking opposites so we can derive the correct number
                 // of entries for this decoder.
-                if let Some(ref ct) = attr_corner_table {
-                    // A fresh seam-broken clone, not the main table this
-                    // decode already validated -- keep the check.
+                if let Some(ct) = attr_corner_table {
+                    // A seam-broken table, not the main table this decode
+                    // already validated -- keep the check.
                     let (ids, map, v_map) =
                         Self::generate_point_ids_and_corners_dfs_for_table(mesh, ct, &[], false)?;
                     point_ids_for_decoder = Some(ids);
@@ -923,11 +927,7 @@ impl MeshDecoder {
             }
 
             let corner_table_for_decoder: Option<&CornerTable> =
-                if let Some(ref ct) = attr_corner_table {
-                    Some(ct)
-                } else {
-                    self.corner_table.as_deref()
-                };
+                attr_corner_table.or(self.corner_table.as_deref());
 
             // Optional vertex_to_data_map derived from the chosen data_to_corner_map.
             // (Needed by mesh prediction schemes to map corner-table vertices -> data ids.)
