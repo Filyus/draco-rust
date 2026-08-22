@@ -1247,6 +1247,49 @@ before any code was changed. Stage timings inside a function that is already
 known to be the hot one cost almost nothing and would have pointed straight at
 the answer.
 
+### The Restart Upstream's TODO Points At, Tried And Rejected
+
+`break_non_manifold_edges` has a second quadratic shape, and it is the one
+upstream marked: `TODO(ostava): This can be optimized as we don't really need
+to iterate over all corners.` Breaking an edge sets `mesh_connectivity_updated`
+and the whole corner sweep runs again from zero. The bound is real -- a sweep
+that updates connectivity does at least one break, breaks are bounded by
+edges, so the worst case is `O(corners * edges)`.
+
+**The bound is not the behaviour.** A sweep does not stop at the first break;
+it continues, breaking everything it meets, and only the corners a broken walk
+left unvisited need another sweep. Counting sweeps over 140 random triangle
+soups -- 50 to 7,000 faces over 4 to 60 vertices, the densest folding this
+document has been able to construct -- the count saturates at **three**, and
+does not grow with size:
+
+| soups | sweeps |
+| ---: | ---: |
+| 6 | `1` |
+| 16 | `2` |
+| 58 | `3` |
+
+A clean manifold mesh does one sweep, so the restart costs nothing at all
+there. Two deliberately constructed shapes -- a cluster of folded 1-rings
+placed ahead of a large clean grid, and a 200,000-face soup -- both did one
+sweep and never triggered it.
+
+The optimization was written anyway: corners never become unvisited, so a
+repeated sweep can start at a cursor advanced past the visited prefix instead
+of at zero. It is four lines, preserves the visit order exactly, and it was
+**not kept**. What it saves is bounded by construction at two linear scans of a
+`bool` array over `num_corners` -- about `0.3%` of a table build on the only
+inputs where it happens at all -- and the A/B says so: `34,064` to `36,361` us
+on the worst soup, `5,120` to `4,408` on another, which is a change reading as
+noise in both directions. The function's subtlety is what made the previous
+round misdiagnose it; adding state to it for an effect below the measurement
+floor is the wrong trade.
+
+Worth carrying: **a complexity bound and a measured trip count are different
+claims.** This loop's worst case is quadratic and its observed cost is a
+constant three sweeps, and only one of those two facts tells you whether to
+spend code on it.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -1268,6 +1311,10 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   that closes the 1-ring and a later one is the real non-manifold edge.
   Either a construction for it exists and should become a test, or the case is
   unreachable and the code can say so -- neither has been established.
+- **Whether the sweep count can be forced past three.** Bounded above by the
+  number of breaks, observed at three across every soup tried, and the gap
+  between those two is the whole question of whether the restart is ever worth
+  code. A mesh that forces a fourth sweep would settle it; none was found.
 - **`compute_opposite_corners` and `compute_vertex_corners` are now the whole
   of `init`,** at roughly `800` and `210` us on a 18k-face mesh, and neither
   has been split further. The table is `45%` of a position-only encode, so
