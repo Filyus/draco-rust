@@ -340,9 +340,32 @@ impl CornerTable {
             .ok_or_else(|| {
                 crate::status::DracoError::general("Corner table size overflow".to_string())
             })?;
-        if num_corners <= self.corner_to_vertex_map.len() {
+        let len = self.corner_to_vertex_map.len();
+        if num_corners <= len {
             return Ok(());
         }
+
+        // The step the symbol loop actually takes: one face on, with the
+        // capacity for it already reserved before the loop. `resize` reaches
+        // that through `extend_with`'s element-at-a-time loop and its
+        // set-length-on-drop guard, which together cost far more than the
+        // twelve bytes being written -- 130 instructions per face, 13.8% of a
+        // grid decode, against upstream, which fills both tables once from
+        // the declared count and pays nothing per face. Extending from a
+        // fixed-size array is one copy and one length update instead. The
+        // general path below still handles any other step.
+        if num_corners == len + 3
+            && self.opposite_corners.len() == len
+            && self.corner_to_vertex_map.capacity() >= num_corners
+            && self.opposite_corners.capacity() >= num_corners
+        {
+            self.corner_to_vertex_map
+                .extend_from_slice(&[INVALID_VERTEX_INDEX; 3]);
+            self.opposite_corners
+                .extend_from_slice(&[INVALID_CORNER_INDEX; 3]);
+            return Ok(());
+        }
+
         let declared_corners = declared_faces.saturating_mul(3);
 
         fn grow<T: Clone>(
