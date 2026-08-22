@@ -725,6 +725,20 @@ impl CornerTable {
 
                         // Because of the updated connectivity, not all corners connected to
                         // this vertex have been processed and we need to go over them again.
+                        //
+                        // The sweep restarts from corner zero, which bounds the
+                        // function at O(corners * breaks) -- but the bound is
+                        // not what it costs. A sweep does not stop at the first
+                        // break, it goes on breaking everything it meets, so
+                        // only the corners an aborted walk left unvisited need
+                        // another sweep. `visited_corners` outlives the sweep,
+                        // so those restarts skip rather than redo. A manifold
+                        // mesh takes one sweep; the densest folded input this
+                        // has been run against takes three, and the count does
+                        // not grow with the mesh. Starting a repeated sweep past
+                        // the visited prefix is therefore worth two scans of a
+                        // bool array, which is below what a table build can
+                        // measure.
                         mesh_connectivity_updated = true;
                         break;
                     }
