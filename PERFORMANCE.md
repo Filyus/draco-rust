@@ -2810,6 +2810,85 @@ memset and memcpy (`+0.55M`), the corner table and connectivity together
 thing worth doing on the encoder is splitting `encode_geometry_data`, because
 until that blob has names the `+1.0M` in it cannot be attributed to anything.
 
+### The Step That Was Rederived Every Face
+
+With the encoder at parity the decoder is where located waste was left, so its
+stage split was re-taken under the current profile, both sides, one decode,
+`iters=1` minus `iters=0` -- the same subtraction the encode drivers use, which
+removes the file read and the dynamic linker exactly rather than approximately.
+
+Grid at speed 5: C++ `9,715,274` instructions, Rust `12,943,983`, `1.33x` --
+down from `1.39x` before this session's raw-symbol round and the release
+profile. Grouped by work rather than by symbol:
+
+| group | C++ | Rust | |
+| --- | ---: | ---: | --- |
+| connectivity | `3.73M` | `5.59M` | **`1.50x`** |
+| attributes | `5.66M` | `5.87M` | `1.04x` |
+| memset / memcpy | `0.29M` | `0.67M` | `2.3x` |
+
+A fourth row read `decode_drc::main`, `790K` against nothing on the C++ side,
+and it is not the driver: under full LTO the decoder inlines into `main`, and
+the per-file breakdown shows `354K` of it in `decoder_buffer.rs` and `209K` in
+`mesh_edgebreaker_decoder.rs`. **Symbol names are not stages** -- the third
+time this session that a promising row turned out to be a naming artifact, and
+the second time in the same direction as `compute_vertex_corners`.
+
+**Inside connectivity, the largest single excess was the corner table's
+growth**: `try_grow_to_face`, `1,064,950` instructions against
+`CornerTable::Reset`'s `270,869`. That gap is structural and was documented as
+such -- upstream fills both tables once from the declared face count, which
+this crate's allocation rule forbids, so growth happens a face at a time and
+the table's length is what bounds the writes into it. An earlier round had
+already taken this from `130` instructions a face to `59` with a fast path.
+
+The remaining `59` split, per face, as: `7` for the checked multiply that turns
+a face index into a corner count, `6` for the two comparisons that recognise
+the fast path, `10` for the length-and-capacity checks, and the rest for the
+`24` bytes actually written. **The first `13` are a step being rederived.** The
+symbol loop takes one step and always the same one -- one face onto the end of
+a table it is the only grower of, starting empty -- so the face index it passes
+is information the table already has.
+
+`try_push_face` makes the step the signature instead of an argument. What
+remains is what genuinely cannot be assumed: that the two tables are in step,
+and that both have room. `try_grow_to_face` stays for any caller whose step is
+something else, and both now share one growth policy.
+
+The measured effect is four times the `13` instructions removed, because the
+function became small enough to inline into the symbol loop and the length
+reads then folded across it:
+
+| payload | before | after | | C++ counterpart |
+| --- | ---: | ---: | ---: | ---: |
+| grid, growth alone | `1,064,950` | `~316,000` | **`-70%`** | `270,869` |
+| grid, whole decode | `12,943,983` | `12,194,811` | **`-5.8%`** | `9,715,274` |
+| ribbon | `19,338,380` | `18,521,144` | **`-4.2%`** | `16,067,493` |
+| torus | `12,944,706` | `12,204,032` | **`-5.7%`** | `9,742,853` |
+| fan | `12,405,437` | `11,708,148` | **`-5.6%`** | `9,491,347` |
+
+Growth is now `17.5` instructions a face against upstream's `15` -- a stage
+that was `3.9x` behind is at parity, without touching the rule that put it
+there. The `~316,000` is read as an increase in `reconstruct_mesh`, which is
+where it went when it inlined; `try_push_face` has no symbol of its own.
+
+**Clocked, and this one the clock resolves.** Decode matrix, `ITERS=120`, five
+rounds, System allocator, against the run taken after the raw-symbol round:
+
+| payload | speed 0 | speed 5 | speed 8 |
+| --- | --- | --- | --- |
+| grid | `0.99x -> 1.01x` | `1.07x -> 1.17x` | `1.06x -> 1.16x` |
+| ribbon | `0.98x -> 1.00x` | `1.16x -> 1.21x` | `1.17x -> 1.22x` |
+| torus | `1.07x -> 1.08x` | `0.98x -> 1.04x` | `1.01x -> 1.08x` |
+| fan | `1.03x -> 1.06x` | `1.16x -> 1.22x` | `1.16x -> 1.23x` |
+
+All twelve cells moved up and **all twelve are now at or above `1.00x`**, which
+has not been true before. The port's own microseconds fell `3-8%` on the eight
+resolved cells while the reference's column moved under `1%`; the four speed-0
+cells carry `20-28%` spreads and are direction only. Point and face counts are
+compared against the C++ decode in every cell, which is what says the faster
+table is still the same table.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -2879,14 +2958,14 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   never been run on the encoder. The callgrind stand now makes this cheap:
   an `encode_drc` driver beside the two decode ones, and the same
   align-by-stage read.
-- **The connectivity excesses still standing.** See "Callgrind, Both
-  Sides" above, which closed two of them and left four: the symbol loop
-  (`3.19M` against `2.25M`), `decode_raw_symbols` (`2.0x`),
-  `try_grow_to_face`'s residual `60` instructions a face for a
-  twelve-byte extend, and `mark_vert_not_hole`. This is where the
-  remaining decode gap lives, it is located rather than suspected, and
-  the instrument is committed. Read the conversion caution first:
-  instructions here are worth about half their face value in time.
+- **The connectivity excesses still standing.** Of the four "Callgrind, Both
+  Sides" left, two are closed -- `decode_raw_symbols` and the corner table's
+  per-face growth -- and two are not: the symbol loop itself (`3.19M` against
+  `2.25M`) and `mark_vert_not_hole` (`390K`, no separable C++ counterpart).
+  Connectivity as a group is still the whole of the decode gap, and after this
+  session it is `1.50x` on the grid where the attribute half is `1.04x`. Read
+  the conversion caution first: instructions here are worth about half their
+  face value in time.
 
 ### Known shapes, unmeasured
 
