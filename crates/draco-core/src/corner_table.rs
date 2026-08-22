@@ -558,27 +558,42 @@ impl CornerTable {
         // "sentinel, or below the bound" is one comparison, not two: adding one
         // wraps the sentinel (u32::MAX) to 0, which is below every bound, and
         // shifts every real value so that `>` catches exactly those at or past
-        // the bound. Reducing with max instead of short-circuiting on `any`
-        // keeps the loop branch-free -- this walks both maps of a 200k-corner
-        // table on the way into each attribute traversal.
+        // the bound. This walks both maps of a 200k-corner table on the way
+        // into each attribute traversal, so it wants to vectorise.
         //
-        // Branch-free does not make it vectorise, whatever an earlier version
-        // of this comment claimed. Unsigned 32-bit max is `pmaxud`, which
-        // arrives with SSE4.1, and the baseline `x86-64` target has SSE2 --
-        // so on a stock build this reduction stays scalar at 3.1 instructions
-        // per element (338,620 for the two passes over an 18k-face grid,
-        // 2.1% of a whole decode, measured by outlining the call under
-        // callgrind). Rebuilt for `x86-64-v2` the identical source falls to
-        // 210,103, so the shape is already right and the ISA is the whole
-        // difference; target selection belongs to whoever builds this, the
-        // same as the allocator. Two rewrites -- eight accumulators to break
-        // the reduction chain, then constant indices to keep them in
-        // registers -- each measured within 30 instructions of this loop.
-        // Reach for a different target, not a different loop.
+        // It did not, for eleven months, and the reason is the operator
+        // rather than the loop. The reduction used to be a running `max`;
+        // unsigned 32-bit max is `pmaxud`, which arrives with SSE4.1, and the
+        // baseline `x86-64` target has SSE2, so the whole reduction stayed
+        // scalar at 3.1 instructions per element -- 338,594 for the two
+        // passes over an 18k-face grid, 2.1% of a decode.
+        //
+        // The max was never wanted, though: the answer is a boolean, and an
+        // OR of comparisons reduces just as well and *does* have an SSE2
+        // form. Unsigned compare is reached through signed `pcmpgtd` by
+        // biasing both sides by 2^31, and the bias costs nothing here because
+        // it folds into the increment already being applied -- toggling the
+        // top bit is adding 2^31 modulo 2^32, so `(v + 1) ^ 2^31` is
+        // `v + 0x8000_0001` in the same instruction. Measured at baseline:
+        // 216,785, a 36% cut, which is what rebuilding the *max* version for
+        // `x86-64-v2` had bought (210,103) -- so the ISA gap is closed
+        // without asking anything of whoever builds this crate.
+        //
+        // Two earlier rewrites aimed at the loop's *shape* -- eight
+        // accumulators to break the reduction's dependency chain, then
+        // constant indices to hold them in registers -- each measured within
+        // 30 instructions of the original, and the note recording that
+        // concluded no loop change could help. That generalisation was
+        // wrong: it was entitled only to "these two shapes do not help",
+        // and the operator was never on trial. The boundary test below is
+        // what makes the bias safe to keep.
         fn exceeds(values: impl Iterator<Item = u32>, bound: usize) -> bool {
             // A bound past u32 cannot be exceeded by a u32 value anyway.
             let bound = u32::try_from(bound).unwrap_or(u32::MAX);
-            values.fold(0u32, |worst, v| worst.max(v.wrapping_add(1))) > bound
+            let biased_bound = bound ^ 0x8000_0000;
+            values.fold(0u32, |hit, v| {
+                hit | ((v.wrapping_add(0x8000_0001) as i32 > biased_bound as i32) as u32)
+            }) != 0
         }
 
         if exceeds(self.corner_to_vertex_map.iter().map(|v| v.0), num_vertices) {
@@ -1654,5 +1669,51 @@ mod tests {
         let mut bad_len = ct.clone();
         bad_len.opposite_corners.pop();
         assert!(!bad_len.is_index_consistent());
+    }
+
+    /// The scan compares unsigned values through a signed instruction, by
+    /// biasing both sides by 2^31. Every existing case above lives in the
+    /// first few integers, where a sign-blind implementation agrees with a
+    /// correct one; these are the values that tell them apart -- either side
+    /// of 2^31, and the sentinel, which must keep passing because wrapping
+    /// past it is how "no vertex" is spelled.
+    #[test]
+    fn is_index_consistent_separates_high_indices_from_the_sentinel() {
+        let ct = CornerTable {
+            corner_to_vertex_map: vec![VertexIndex(0), VertexIndex(1), VertexIndex(2)],
+            opposite_corners: vec![INVALID_CORNER_INDEX; 3],
+            vertex_corners: vec![CornerIndex(0), CornerIndex(1), CornerIndex(2)],
+            ..Default::default()
+        };
+
+        // A signed reading of these is negative, so a scan that forgot to
+        // bias would rank them below a three-vertex bound and accept them.
+        for high in [0x8000_0000, 0x8000_0001, 0xFFFF_FFFE, u32::MAX - 1] {
+            let mut bad = ct.clone();
+            bad.corner_to_vertex_map[1] = VertexIndex(high);
+            assert!(
+                !bad.is_index_consistent(),
+                "vertex {high:#x} is past a three-vertex bound"
+            );
+
+            let mut bad_opp = ct.clone();
+            bad_opp.opposite_corners[1] = CornerIndex(high);
+            assert!(
+                !bad_opp.is_index_consistent(),
+                "opposite corner {high:#x} is past a three-corner bound"
+            );
+        }
+
+        // And the sentinel itself still passes at both extremes of the bound.
+        let mut sentinel = ct.clone();
+        sentinel.corner_to_vertex_map = vec![INVALID_VERTEX_INDEX; 3];
+        assert!(sentinel.is_index_consistent());
+
+        // The bound's own edge: the last valid index passes, the next fails.
+        let mut edge = ct.clone();
+        edge.corner_to_vertex_map[0] = VertexIndex(2);
+        assert!(edge.is_index_consistent());
+        edge.corner_to_vertex_map[0] = VertexIndex(3);
+        assert!(!edge.is_index_consistent());
     }
 }
