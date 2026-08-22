@@ -2570,15 +2570,64 @@ after both changes leans up on the speed-8 cells (grid `1.42x -> 1.47x`, ribbon
 `1.30x -> 1.35x`, torus `1.38x -> 1.41x`) while speed 0 and 5 scatter -- read
 as counted, not clocked.
 
-**What this retargets.** Two of the quantization block's three excesses are
-closed and the third is not: with the floor folded in, `transform_attribute`
-costs `2,322,620` against `GeneratePortableAttribute`'s `977K` for the same
-values, and that `1.35M` is now the largest located excess in the encoder.
-Nobody has read it line by line yet, and the arithmetic says to: the fast path
-it takes reads three floats, subtracts, quantizes and writes three `u32`s per
-point, and it is spending `252` instructions a point doing it. After that,
-`compute_vertex_corners`
-at `3.86M` against `2.71M` is the only other named function above `1.4x`.
+**And then the third excess, which was the fast path not being taken at all.**
+With the floor folded in, `transform_attribute` still cost `2,322,620` against
+`GeneratePortableAttribute`'s `977K` -- `252` instructions per point to read
+three floats, subtract, quantize and write three `u32`s. The arithmetic said
+that could not be the loop's own work, and it was not: the fast path next to
+the generic one requires an identity point map, which **a mesh encode never
+has**, so every mesh takes the generic path. That path re-derived both byte
+offsets and re-proved both bounds for every component, after a check that had
+already covered the whole entry.
+
+A point's components are contiguous on both sides. Taking one slice per side
+and walking them in step leaves the loop with no offset arithmetic and no bound
+inside it: `2,322,620 -> 857,263`, **`-63%`**, which puts the port *under* the
+reference on this stage. (`as_chunks::<4>` and `chunks_exact(4)` compile to the
+same `857,263` -- the clippy-preferred form was taken for the lint, not the
+count.)
+
+A line-attribution caution worth carrying, because it nearly sent this
+elsewhere: `callgrind_annotate` blamed `1.29M` of the loop on
+`core/src/num/uint_macros.rs`, which reads as "checked arithmetic is the
+problem". It is an inline-line-table artifact -- the same `1.29M` appears with
+LTO off, on two lines that are `unchecked_add` and `checked_sub` bodies, at
+`80` and `54` instructions per point. No integer helper costs that. When a
+per-line figure implies a helper is doing dozens of instructions, it is the
+loop body wearing the helper's line number, and the file-level self counts
+(`165K` here) are the ones to trust.
+
+**This one the clock resolves.** Encode matrix, `ITERS=120`, five rounds,
+against the run taken before these three changes and with the C++ column as the
+control (it moved `+1%` across the pair, in the opposite direction to the
+effect):
+
+| payload | speed | before | after | Rust us |
+| --- | ---: | ---: | ---: | --- |
+| grid | 5 | `1.48x` | `1.55x` | `1337 -> 1292` |
+| grid | 8 | `1.42x` | `1.55x` | `1298 -> 1196` |
+| ribbon | 5 | `1.33x` | `1.41x` | `2021 -> 1918` |
+| ribbon | 8 | `1.30x` | `1.44x` | `1951 -> 1787` |
+| torus | 5 | `1.39x` | `1.43x` | `1645 -> 1606` |
+| torus | 8 | `1.38x` | `1.46x` | `1556 -> 1481` |
+
+All nine cells including speed 0 moved up; the three speed-0 cells by `0.01-0.03x`,
+which is inside their spread and is reported as direction only.
+
+Where the encode stands after the round, one encode at speed 5:
+
+| payload | before | after | | C++ |
+| --- | ---: | ---: | ---: | ---: |
+| grid | `35,515,390` | `32,640,828` | **`-8.1%`** | `31,807,826` |
+| ribbon | `54,108,205` | `48,266,454` | **`-10.8%`** | `43,987,188` |
+| torus | `35,091,691` | `32,217,960` | **`-8.2%`** | `31,492,536` |
+| fan | `32,999,785` | `30,421,442` | **`-7.8%`** | `382,563,230` |
+
+The grid's instruction ratio is `1.026x` and the torus's `1.023x`, from
+`1.12x`. The ribbon is the one still carrying a real excess at `1.10x`.
+
+**What this retargets.** `compute_vertex_corners`
+at `3.86M` against `2.71M` is now the largest named excess left, at `1.42x`.
 
 The corner table is the largest thing in the encoder on both sides, and the
 port's version of it is inlined into a single `14.66M` symbol against C++'s
