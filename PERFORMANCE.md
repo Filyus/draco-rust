@@ -2352,7 +2352,8 @@ the work there, not either sweep alone.
 **`-17%`**, against C++'s `~10.24M` of decode -- the instruction ratio
 down from `1.53x` to `1.39x`. Still open, by size of the excess: the
 symbol loop itself (`3.19M` now that two helpers inline into it, against
-C++'s `2.25M`), `decode_raw_symbols` (`1.26M` against `620K`),
+C++'s `2.25M`), `decode_raw_symbols` (`1.26M` against `620K` -- closed by
+the round after next),
 `try_grow_to_face` even after its fix (`1.08M` against `Reset`'s `271K`,
 still `60` instructions a face for a twelve-byte extend), and
 `mark_vert_not_hole` (`390K` against nothing separable on the C++ side).
@@ -2424,6 +2425,65 @@ profile, so this is what our binaries and benchmarks get, nothing more. And it
 retroactively lowers every absolute Rust figure recorded above by a few
 percent; the C++ ratios in those older tables were taken against the default
 profile and are correspondingly conservative rather than wrong.
+
+
+### The Raw Symbol Run, Decoded Against Hoisted Tables
+
+`decode_raw_symbols` was the largest single-function gap the callgrind round
+left located and unopened: `1,259,407` instructions against
+`DecodeRawSymbolsInternal<RAnsSymbolDecoder<3>>`'s `620,403` on the same input
+for the same output. Reading the two loops side by side, the algorithm is the
+same one and the difference is entirely what surrounds it.
+
+C++'s `rans_read` (`ans.h:462`) is nine operations with no branch outside the
+renormalisation loop. Ours called a per-symbol `try_decode_symbol` that, every
+symbol, reloaded `self.lut`, `self.probability_table`, the input slice and the
+coder state, and then re-proved what the probability table had proved once when
+it was built: `lut.get(rem)`, `probability_table.get(id)`, and
+`checked_mul` / `checked_sub` / `checked_add`. Five branches a symbol against
+none, plus a `num_symbols <= 1` test that cannot change inside a run.
+
+`RAnsSymbolDecoder::decode_run` decodes a whole chunk in one call. The tables,
+the input and the state become locals for the length of the run, and the two
+indices are made in-bounds by construction rather than by check:
+
+- the LUT is sliced to `rans_precision`, so the masked remainder -- `state &
+  (precision - 1)` -- cannot leave it;
+- the probability table is padded to a power of two at build time and the
+  symbol id masked with `len - 1`. The padding entries carry zero probability
+  and cover no LUT slot, so reaching one would mean the LUT came from
+  somewhere other than the loop that builds it.
+
+No `unsafe`, and no check removed on the strength of an argument about input --
+both bounds now follow from the shape of the collection being indexed, which is
+the form this document has preferred since the corner-table rounds. The
+arithmetic wraps under a bound `decode_table`'s own acceptance criteria
+establish: `state` stays below `l_rans_base * 256`, so `quo * prob` is under
+`2^30`, and `rem` always lands inside the slot owned by its own symbol, so
+`rem - cum_prob` is an offset within that symbol's range.
+
+Counted, one decode per payload at speed 5, callgrind, base and head built in
+separate trees and the base reproducing its own earlier figure to `18`
+instructions in `13.5M`:
+
+| payload | `decode_symbols` | | whole decode | |
+| --- | ---: | ---: | ---: | ---: |
+| grid | `1,194,962 -> 746,546` | **`-37.5%`** | `13,564,620 -> 13,244,173` | `-2.4%` |
+| ribbon | `2,337,508 -> 1,400,303` | **`-40.1%`** | `20,341,992 -> 19,638,418` | `-3.5%` |
+| torus | `1,293,422 -> 852,533` | **`-34.1%`** | `13,561,229 -> 13,244,740` | `-2.3%` |
+| fan | `1,411,700 -> 996,839` | **`-29.4%`** | `13,025,272 -> 12,705,591` | `-2.5%` |
+
+Against C++'s `620,403` the grid's stage goes from `2.03x` to `1.20x`, and it
+stops being the decoder's largest located excess.
+
+**The clock was consulted and did not resolve it, which was the prediction.**
+At this document's measured conversion rate -- the port runs `~1.4x` the
+reference's instructions at `~1.1x` its time, so instructions are worth about
+half their face value here -- `-2.4%` of instructions is `~1.2%` of time,
+under the `2-25%` spread the decode matrix carries. The full matrix after the
+change scatters in sign against the run before it. Reported on the counted
+rung: the work came off, and whether it was costing time is not something this
+bench can say.
 
 
 ## Unexplored
