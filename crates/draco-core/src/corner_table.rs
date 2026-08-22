@@ -10,6 +10,100 @@ use crate::geometry_indices::{
     CornerIndex, FaceIndex, VertexIndex, INVALID_CORNER_INDEX, INVALID_VERTEX_INDEX,
 };
 
+/// Exact counts of the corner table's array loads, per accessor, for comparing
+/// this port against the C++ it was ported from.
+///
+/// Loads rather than calls, because the two sides do not agree on what a call
+/// is: this port fuses `Opposite(Next(c))` into one bounds-checked lookup
+/// where C++ makes three calls, so a per-method comparison of `next` or
+/// `opposite` would report a difference the fusion created rather than work
+/// either side does or skips. Every accessor here performs exactly one load,
+/// and a load is the same event on both sides -- the metric round three of the
+/// decode campaign used to put the two within 156 of each other.
+///
+/// Only loads made through the accessors are counted, on both sides; the
+/// table's own build also indexes these arrays directly and is excluded.
+///
+/// Behind the off-by-default `count_table_loads` feature: the counters sit in
+/// the hottest accessors in the crate, so a build carrying them is for counts
+/// and never for timing.
+#[cfg(feature = "count_table_loads")]
+pub mod table_loads {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    /// Which array an accessor reads.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum Array {
+        Opposite,
+        CornerToVertex,
+        VertexCorners,
+    }
+
+    macro_rules! accessors {
+        ($($variant:ident => ($name:literal, $array:ident),)+) => {
+            /// One counted accessor.
+            #[derive(Clone, Copy)]
+            pub enum Accessor { $($variant,)+ }
+
+            impl Accessor {
+                pub const ALL: &'static [Accessor] = &[$(Accessor::$variant,)+];
+
+                pub fn name(self) -> &'static str {
+                    match self { $(Accessor::$variant => $name,)+ }
+                }
+
+                pub fn array(self) -> Array {
+                    match self { $(Accessor::$variant => Array::$array,)+ }
+                }
+            }
+
+            pub static COUNTS: [AtomicU64; Accessor::ALL.len()] =
+                [$({ let _ = stringify!($variant); AtomicU64::new(0) },)+];
+        };
+    }
+
+    accessors! {
+        Opposite => ("opposite", Opposite),
+        LeftCorner => ("left_corner", Opposite),
+        RightCorner => ("right_corner", Opposite),
+        SwingLeft => ("swing_left", Opposite),
+        SwingRight => ("swing_right", Opposite),
+        Vertex => ("vertex", CornerToVertex),
+        VertexAfter => ("vertex_after", CornerToVertex),
+        VertexBefore => ("vertex_before", CornerToVertex),
+        LeftMostCorner => ("left_most_corner", VertexCorners),
+    }
+
+    pub fn reset() {
+        for counter in COUNTS.iter() {
+            counter.store(0, Relaxed);
+        }
+    }
+
+    pub fn count(accessor: Accessor) -> u64 {
+        COUNTS[accessor as usize].load(Relaxed)
+    }
+
+    /// Loads of one array, summed over the accessors that read it.
+    pub fn array_total(array: Array) -> u64 {
+        Accessor::ALL
+            .iter()
+            .filter(|a| a.array() == array)
+            .map(|a| count(*a))
+            .sum()
+    }
+}
+
+macro_rules! count_load {
+    ($which:ident) => {
+        #[cfg(feature = "count_table_loads")]
+        {
+            table_loads::COUNTS[table_loads::Accessor::$which as usize]
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    };
+}
+
 /// The stages [`CornerTable::init_with_stage_timings`] reports, in the order
 /// it reports them.
 #[derive(Clone, Copy, Debug)]
@@ -435,6 +529,7 @@ impl CornerTable {
     }
 
     pub fn left_most_corner(&self, v: VertexIndex) -> CornerIndex {
+        count_load!(LeftMostCorner);
         if v.0 < self.vertex_corners.len() as u32 {
             self.vertex_corners[v.0 as usize]
         } else {
@@ -479,6 +574,7 @@ impl CornerTable {
     ///   cleverly -- only by removing it, or by a table where the sentinel is
     ///   in range by construction.
     pub fn opposite(&self, corner: CornerIndex) -> CornerIndex {
+        count_load!(Opposite);
         // No sentinel test: the sentinel is `u32::MAX`, so it indexes past any
         // table this crate can build and `get` answers `None` for it exactly as
         // it does for a corner past the end. The test that used to stand here
@@ -519,6 +615,7 @@ impl CornerTable {
     /// "corner past the table" costs them nothing and removes a panic that a
     /// header count can reach.
     pub fn vertex(&self, corner: CornerIndex) -> VertexIndex {
+        count_load!(Vertex);
         // As in `opposite`: the sentinel indexes past the map, so the lookup
         // already answers with the invalid vertex and the explicit test was
         // work on every call -- nine hundred thousand of them per decode here.
@@ -544,6 +641,7 @@ impl CornerTable {
     /// that one read the whole face triple as an array and handed it back
     /// through memory, and measured 1.4% slower. This stays a scalar load.
     pub fn vertex_after(&self, corner: CornerIndex) -> VertexIndex {
+        count_load!(VertexAfter);
         // `next_in_face` in the inner position: the sentinel lands past the map
         // and `get` answers `None`, exactly as `vertex(next(sentinel))` does.
         self.corner_to_vertex_map
@@ -556,6 +654,7 @@ impl CornerTable {
     /// `vertex(previous(corner))` in one lookup. Mirror of
     /// [`vertex_after`](Self::vertex_after).
     pub fn vertex_before(&self, corner: CornerIndex) -> VertexIndex {
+        count_load!(VertexBefore);
         self.corner_to_vertex_map
             .get(prev_in_face(corner.0) as usize)
             .copied()
@@ -601,6 +700,7 @@ impl CornerTable {
     /// [`vertex_after`](Self::vertex_after) is: the sentinel test inside
     /// `previous` asks a question the bounds check of the lookup answers anyway.
     pub fn left_corner(&self, corner: CornerIndex) -> CornerIndex {
+        count_load!(LeftCorner);
         self.opposite_corners
             .get(prev_in_face(corner.0) as usize)
             .copied()
@@ -610,6 +710,7 @@ impl CornerTable {
     /// Returns the corner on the right-adjacent face.
     /// C++: Opposite(Next(corner))
     pub fn right_corner(&self, corner: CornerIndex) -> CornerIndex {
+        count_load!(RightCorner);
         self.opposite_corners
             .get(next_in_face(corner.0) as usize)
             .copied()
@@ -626,6 +727,7 @@ impl CornerTable {
     /// invalid stays invalid through the final step. Three comparisons become
     /// one lookup, on a walk that runs for as long as a vertex has neighbours.
     pub fn swing_right(&self, corner: CornerIndex) -> CornerIndex {
+        count_load!(SwingRight);
         let opposite = self
             .opposite_corners
             .get(prev_in_face(corner.0) as usize)
@@ -646,6 +748,7 @@ impl CornerTable {
     /// `u32::MAX - 2` is not that. So the inner step fuses and the outer one
     /// keeps its branch.
     pub fn swing_left(&self, corner: CornerIndex) -> CornerIndex {
+        count_load!(SwingLeft);
         let opposite = self
             .opposite_corners
             .get(next_in_face(corner.0) as usize)

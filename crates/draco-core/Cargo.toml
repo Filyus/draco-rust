@@ -43,6 +43,7 @@ edgebreaker_valence_encode = ["encoder"]
 edgebreaker_valence_decode = ["decoder"]
 legacy_bitstream_encode = ["encoder"]
 legacy_bitstream_decode = ["decoder"]
+count_table_loads = []
 debug_logs = []
 force_sequential_seeds = []
 
