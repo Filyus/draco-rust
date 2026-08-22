@@ -1821,6 +1821,59 @@ hypothesis of the form "the port does more work here" -- which is where the
 previous decode rounds all landed, and which would otherwise have been the
 obvious place to spend the next week.
 
+### Allocation Pressure In The Core, Independent Of Who Wins The Allocator
+
+The allocator question above decides how to *read* the decode ratio; it does
+not decide whether the core should allocate less. Less pressure wins under
+either allocator and for every consumer, so it is worth doing while that
+comparison stays open. What follows is the first pass, and it is reported with
+its result rather than its intent.
+
+**A dead traversal was looked for and is not there.** Twelve allocations of
+`num_vertices * 4` per decode had the shape of round two's finding -- two
+traversal generators both running -- so the generators were counted directly:
+one per decode, `generate_point_ids_and_corners_dfs` into
+`..._dfs_for_table`, with `per_decoder_traversal = 0`. The prediction-degree
+generator does not run at speed 5 at all. Hypothesis closed for the cost of
+one probe, before any code moved.
+
+**What was there was six copies of one block.** Each attribute predictor's
+setup did
+
+```rust
+data_to_corner_map.resize(num_points, 0);
+...
+data_to_corner_map.copy_from_slice(map);
+vertex_to_data_map.resize(map.len(), 0);
+vertex_to_data_map.copy_from_slice(map);
+```
+
+on arrays the mesh decoder's own traversal had already built and handed down
+as overrides, and which nothing writes to afterwards -- so two allocations the
+size of the point and vertex counts, plus two `memcpy`s, per attribute, to own
+a copy of something read-only. The same block stood **six times**, once per
+predictor method, differing only in comments. It is now one helper that
+borrows the overrides and fills the owned vectors only when there is nothing
+to borrow.
+
+`decode_matrix`, grid at speed 5: `57` allocations and `2,419` KB per decode
+become `54` and `2,347` -- exactly the two `36,864`-byte buffers, gone. The
+file loses `158` lines net.
+
+**The clock did not move.** `0.85x` to `0.88x` on the grid and `0.84x` to
+`0.85x` on the torus, both inside their spread. That is the honest result and
+it is worth stating plainly rather than quoting the allocation count as though
+it were a speedup: three allocations out of fifty-seven is not where a
+`10-15%` gap lives. The change stands on the code it deletes and the pressure
+it removes, not on a measurement it did not produce.
+
+Worth carrying: **"fewer allocations" and "faster" are separate claims, and a
+round that delivers the first should not be written up as the second.** The
+three per-element allocations earlier in this document each moved the clock by
+`12-42%` because they scaled with the mesh; this one is a constant two per
+attribute, and constants do not show up next to a per-vertex loop no matter how
+satisfying the diff is.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -1865,10 +1918,12 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   same allocator the Rust side is measured with -- the fair version of the
   comparison this document has carried one-sided since round four. Until that
   runs, both readings fit every number here.
-- **Twelve allocations of `num_vertices * 4` per decode**, unchanged since
-  round four named them. `2.4` MB allocated for a `330` KB decoded mesh on the
-  grid. Worth attacking only if the allocator comparison above comes back
-  saying the volume is the port's problem.
+- **Ten allocations of `num_vertices * 4` per decode**, down from twelve.
+  `2.3` MB allocated for a `330` KB decoded mesh on the grid, across `54`
+  allocations. The remaining large sizes on that payload are `110,592` (four
+  of them), `299,568` and `149,784` (two each) -- none identified, and the
+  backtrace sampler resolves them all to an inlined `MeshDecoder::decode`, so
+  naming them needs labelled probes rather than the sampler.
 - **An encode-side call-count comparison against C++.** Instrumenting every
   `CornerTable` method and comparing exact counts is what produced decode's
   rounds two and three -- the two largest decode wins of the campaign. It has
