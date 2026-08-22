@@ -1651,6 +1651,53 @@ Two things worth carrying:
   table build carried all of it, which named the function, the line, and the
   round that introduced it.
 
+### The Fold, Sized First And Rewritten Twice
+
+The backlog carried `position_bounds_from_attribute`'s inner fold as a
+call-per-scalar shape worth revisiting, with the note that its share after the
+previous round's fix was unmeasured. Sizing it first was the whole point of
+that note, and it changed what the round was worth doing:
+
+| payload | fold | `build_encoded_mesh_info`, whole | share of encode |
+| --- | ---: | ---: | ---: |
+| grid | `20-22` | `56-67` | `1.4%` |
+| ribbon | `43-44` | `106-112` | `2.0%` |
+
+So the fold is `1.4-2.0%` of an encode, not the `10.9%` the ribbon showed
+before the round that removed the two extra passes around it. Anything found
+here is worth a fifth of a percent of an encode, and that is the number the
+round has to be read against.
+
+**The first rewrite made it `65%` slower.** Hoisting the per-point work into a
+closure -- one that captures `min` and `max` mutably and is called from two
+loops split on `point_ids.is_empty()` -- took the grid from `20` to `33` us and
+the ribbon from `43` to `70`. The intended savings were real and the
+restructuring around them cost more than they were worth; the accumulators no
+longer stay where the compiler wants them once a closure owns them.
+
+**The second kept only the part that was actually the idea.** A point's three
+components are twelve contiguous bytes, so one fixed-size slice replaces three
+offset computations and three bounds checks per point. Same loop shape as
+before, same `is_empty` test per iteration, nothing restructured:
+
+| payload | before | after | |
+| --- | ---: | ---: | ---: |
+| grid | `22`, `20` | `18`, `18` | `-12%` |
+| ribbon | `44`, `43` | `38`, `38` | `-12%` |
+
+Two runs per condition, same probe placement on both sides, and the numbers
+repeat exactly. `-12%` of `1.4-2.0%` is about `0.2%` of an encode, which no
+whole-encode run here will ever show; the function-level probe is the
+measurement, and the honest claim is that **the function got cheaper and the
+encode did not measurably.**
+
+Worth carrying: **sizing first is what keeps a rewrite proportionate.** The
+`65%` regression came from treating a `1.4%` line as worth restructuring
+around, which is how a loop acquires a closure it did not need. Knowing the
+share beforehand would not have prevented writing it, but it does say
+immediately that the answer to a `65%` regression is to take the
+restructuring back out rather than to tune it.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -1700,11 +1747,10 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
 
 ### Known shapes, unmeasured
 
-- **`position_bounds_from_attribute`'s own fold.** This round removed the two
-  extra passes around it; the fold itself still does a `mapped_index`, a
-  `checked_mul`, three `checked_add` pairs and three bounds-checked four-byte
-  reads *per point* -- the call-per-scalar shape. Re-profile before touching
-  it: its share after the fix is unmeasured.
+- **`build_encoded_mesh_info` is `4-5%` of an encode**, of which the position
+  fold is now `1.2-1.8%`. The rest has never been split. This is work the C++
+  side does not do at all, which makes it a question about the API surface
+  before it is one about speed -- see the entry under Decisions below.
 - **What is left of speed 0's allocations.** The exclusion mask is gone, but
   speed 0 still allocates `177-312` times per encode against `74-89` at speeds
   5-8. Smaller than what was just removed and no longer one size repeated, so
