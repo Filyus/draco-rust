@@ -64,6 +64,7 @@ pub mod table_loads {
 
     accessors! {
         Opposite => ("opposite", Opposite),
+        OppositeInternal => ("opposite (table build)", Opposite),
         LeftCorner => ("left_corner", Opposite),
         RightCorner => ("right_corner", Opposite),
         SwingLeft => ("swing_left", Opposite),
@@ -573,6 +574,14 @@ impl CornerTable {
     ///   on this path, and it is not recoverable by writing the check more
     ///   cleverly -- only by removing it, or by a table where the sentinel is
     ///   in range by construction.
+    fn opposite_internal(&self, corner: CornerIndex) -> CornerIndex {
+        count_load!(OppositeInternal);
+        self.opposite_corners
+            .get(corner.0 as usize)
+            .copied()
+            .unwrap_or(INVALID_CORNER_INDEX)
+    }
+
     pub fn opposite(&self, corner: CornerIndex) -> CornerIndex {
         count_load!(Opposite);
         // No sentinel test: the sentinel is `u32::MAX`, so it indexes past any
@@ -678,7 +687,7 @@ impl CornerTable {
     pub fn validate_opposite_edge_consistency(&self) -> bool {
         for c_idx in 0..self.num_corners() {
             let c = CornerIndex(c_idx as u32);
-            let opp = self.opposite(c);
+            let opp = self.opposite_internal(c);
             if opp == INVALID_CORNER_INDEX {
                 continue;
             }
@@ -888,17 +897,27 @@ impl CornerTable {
                     // change, so an entry whose corner is `opp_edge_corner` is
                     // skipped and the next one with that sink vertex is taken.
                     let slot = &sink_slots[slot_of(sink_v)];
-                    let opp_edge_corner = self.opposite(edge_corner);
-                    let other_edge_corner = match slot.stamp == walk {
-                        false => None,
-                        true if slot.corners[0] != opp_edge_corner => Some(slot.corners[0]),
-                        true if slot.len > 1 => Some(slot.corners[1]),
-                        true => None,
+                    // The opposite lookup stays inside this branch, as it is in
+                    // the list form: hoisting it out costs one load of
+                    // `opposite_corners` per corner of the mesh, and the branch
+                    // is taken only when a sink vertex repeats around the pivot.
+                    let mut opp_edge_corner = INVALID_CORNER_INDEX;
+                    let other_edge_corner = if slot.stamp == walk {
+                        opp_edge_corner = self.opposite_internal(edge_corner);
+                        if slot.corners[0] != opp_edge_corner {
+                            Some(slot.corners[0])
+                        } else if slot.len > 1 {
+                            Some(slot.corners[1])
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
                     };
 
                     if let Some(other_edge_corner) = other_edge_corner {
                         // A non-manifold edge: break the connectivity on it.
-                        let opp_other_edge_corner = self.opposite(other_edge_corner);
+                        let opp_other_edge_corner = self.opposite_internal(other_edge_corner);
                         if opp_edge_corner != INVALID_CORNER_INDEX {
                             self.opposite_corners[opp_edge_corner.0 as usize] =
                                 INVALID_CORNER_INDEX;
@@ -1153,11 +1172,11 @@ impl CornerTable {
                     for attached_sink_vertex in &sink_vertices {
                         if attached_sink_vertex.0 == sink_v {
                             let other_edge_corner = attached_sink_vertex.1;
-                            let opp_edge_corner = self.opposite(edge_corner);
+                            let opp_edge_corner = self.opposite_internal(edge_corner);
                             if opp_edge_corner == other_edge_corner {
                                 continue;
                             }
-                            let opp_other_edge_corner = self.opposite(other_edge_corner);
+                            let opp_other_edge_corner = self.opposite_internal(other_edge_corner);
                             if opp_edge_corner != INVALID_CORNER_INDEX {
                                 self.opposite_corners[opp_edge_corner.0 as usize] =
                                     INVALID_CORNER_INDEX;
@@ -1293,13 +1312,13 @@ impl CornerTable {
         // Opposite corner symmetry: opposite(opposite(c)) == c or INVALID
         for c in 0..self.num_corners() {
             let ci = CornerIndex(c as u32);
-            let o = self.opposite(ci);
-            if o != INVALID_CORNER_INDEX && self.opposite(o) != ci {
+            let o = self.opposite_internal(ci);
+            if o != INVALID_CORNER_INDEX && self.opposite_internal(o) != ci {
                 debug_log!(
                     "CornerTable invariant failed: opposite(opposite({})) != {} (got {})",
                     c,
                     c,
-                    self.opposite(o).0
+                    self.opposite_internal(o).0
                 );
                 return false;
             }
