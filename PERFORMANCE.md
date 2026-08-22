@@ -2889,6 +2889,56 @@ cells carry `20-28%` spreads and are direction only. Point and face counts are
 compared against the C++ decode in every cell, which is what says the faster
 table is still the same table.
 
+### One Table That Wanted A Push, And Three That Did Not
+
+`mark_vert_not_hole` was the last named decode excess with no separable C++
+counterpart: `390K` instructions, `8,836` calls, **`42` instructions a call**
+for what reads as two comparisons and a write. Two comparisons and a write are
+not `42`, so the first move was the obvious one -- reach the entry through
+`get_mut` so the common path has one bounds check rather than a length test
+with the indexing's own check standing behind it.
+
+**That was worth `17,765` instructions, `0.15%` of a decode.** Nearly nothing,
+and the reason is in the per-file split of the function: `133K` of its `372K`
+sat in `raw_vec`, `vec` and `ptr` -- the growth path, not the write. The arm
+that reads as cold is taken constantly, because a vertex is discovered *here*
+before it is anywhere else, so the table reaches its end once per vertex.
+`resize(index + 1, true)` reaches that end through `extend_with`'s
+element-at-a-time loop and its set-length-on-drop guard, to fill a `true` that
+the next line overwrites with `false`.
+
+Resizing to the gap and pushing the vertex -- the gap is what `resize` is for,
+the vertex is a push -- takes the function from `371,935` to `292,605`,
+**`-21%`**. Whole decode: grid `-0.8%` including the bounds check, torus
+`-0.8%`, fan `-0.2%`. The ribbon never reaches this arm and does not move by a
+single instruction, which is a useful reminder that a payload can be blind to a
+change entirely.
+
+**And then the same rewrite lost on the three other one-at-a-time growers.**
+`CornerTable::set_left_most_corner` -- documented as growing one vertex at a
+time from five symbol arms, so the obvious next candidate -- and
+`on_vertex_created` in both traversal decoders take the identical
+`resize(idx + 1, fill)` shape. Applied to all three:
+
+| payload | before | after |
+| --- | ---: | ---: |
+| grid | `12,096,135` | `12,105,162` |
+| ribbon | `18,521,144` | `18,540,603` |
+| torus | `12,108,651` | `12,116,496` |
+| fan | `11,682,901` | `11,691,302` |
+
+Eight to nineteen thousand instructions **worse**, on every payload, in the
+same direction. Reverted.
+
+The pair is the finding, not either half. `resize(n + 1)` versus `resize(n)`
+plus `push` is not a rule about `Vec`; on the one site it won it won by `21%`
+and on three others it lost, and nothing in the source distinguishes them --
+the sites differ only in what the surrounding code already proved about the
+index, which is a property of the caller and the optimizer, not of the shape.
+A shape that measured well once is a hypothesis at the next site, and the
+measurement is cheaper than the argument: four payloads, six minutes, one
+answer.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
