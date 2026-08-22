@@ -665,6 +665,8 @@ impl MeshEdgebreakerEncoder {
 
         // C++ encoder uses processed_connectivity_corners (reversed) + init_face_connectivity_corners.
         // This matches C++ MeshTraversalSequencer::SetCornerOrder behavior exactly.
+        // Scratch for the depth-first walk, reused across seeds.
+        let mut corner_stack: Vec<CornerIndex> = Vec::new();
         let mut corner_order: Vec<CornerIndex> = Vec::with_capacity(
             self.processed_connectivity_corners.len() + self.init_face_connectivity_corners.len(),
         );
@@ -758,6 +760,7 @@ impl MeshEdgebreakerEncoder {
 
                 self.dfs_visit_from_corner_cpp(
                     corner,
+                    &mut corner_stack,
                     mesh,
                     corner_table,
                     &mut point_ids,
@@ -816,9 +819,15 @@ impl MeshEdgebreakerEncoder {
     // and 4 mutable output vectors (point_ids, corners, vertex_map, visited flags).
     // This is a performance-critical inner loop that matches C++ DepthFirstTraverser.
     #[allow(clippy::too_many_arguments)]
+    /// `corner_stack` is the caller's scratch, cleared here rather than
+    /// allocated: this runs once per seed corner, and on a mesh where every
+    /// vertex is on a boundary that is once per vertex, so a `Vec::new` here
+    /// is an allocation per vertex for a stack that never holds much.
+    #[allow(clippy::too_many_arguments)]
     fn dfs_visit_from_corner_cpp(
         &self,
         start_corner: CornerIndex,
+        corner_stack: &mut Vec<CornerIndex>,
         mesh: &Mesh,
         corner_table: &CornerTable,
         point_ids: &mut Vec<PointIndex>,
@@ -866,7 +875,7 @@ impl MeshEdgebreakerEncoder {
             }
         }
 
-        let mut corner_stack: Vec<CornerIndex> = Vec::new();
+        corner_stack.clear();
         corner_stack.push(start_corner);
 
         // C++ visits Next, then Previous vertices BEFORE the main loop
