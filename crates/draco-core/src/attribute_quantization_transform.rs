@@ -365,12 +365,23 @@ impl AttributeQuantizationTransform {
                     ));
                 }
 
-                for c in 0..num_components {
+                // The point's components are contiguous on both sides, and the
+                // check above already covers the whole span. Taking it as one
+                // slice per side leaves the loop with no offset to re-derive
+                // and no bound to re-prove per component.
+                let src_entry = &src_data[src_offset..src_offset + num_components * 4];
+                let dst_entry = &mut dst_data[dst_offset..dst_offset + num_components * 4];
+                let mins = &self.min_values[..num_components];
+                for (c, (src_component, dst_component)) in src_entry
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(dst_entry.as_chunks_mut::<4>().0.iter_mut())
+                    .enumerate()
+                {
                     // Read raw component then subtract min to match C++ ordering
-                    let raw_val = bytemuck::pod_read_unaligned::<f32>(
-                        &src_data[src_offset + c * 4..src_offset + c * 4 + 4],
-                    );
-                    let val = raw_val - self.min_values[c];
+                    let raw_val = f32::from_le_bytes(*src_component);
+                    let val = raw_val - mins[c];
                     let q_val = quantizer.quantize_float(val);
 
                     #[cfg(feature = "debug_logs")]
@@ -378,9 +389,7 @@ impl AttributeQuantizationTransform {
                         qvals[c] = q_val;
                     }
 
-                    let q_val_u32 = q_val as u32;
-                    let bytes = bytemuck::bytes_of(&q_val_u32);
-                    dst_data[dst_offset + c * 4..dst_offset + c * 4 + 4].copy_from_slice(bytes);
+                    *dst_component = (q_val as u32).to_le_bytes();
                 }
 
                 // Allow limiting how many points are printed via env var.
