@@ -383,9 +383,10 @@ speed 5 and the normal-carrying Bunny at speed 1, two builds per condition:
   faster on the normal-carrying mesh at speed 1 (constrained multi-parallelogram,
   which walks these swings the most).
 - `#[inline]` on the accessors, re-tested this time under a temporary
-  `codegen-units = 16` bench profile (the shipped `crates/Cargo.toml` has no
-  `[profile.release]`, so a consumer's build gets that instead of the `1` this
-  harness normally pins) to rule out the earlier null result being an artifact
+  `codegen-units = 16` bench profile (at the time the shipped
+  `crates/Cargo.toml` had no `[profile.release]`, so a consumer's build got
+  that instead of the `1` this harness normally pinned -- see "The Release
+  Profile Nobody Had Set") to rule out the earlier null result being an artifact
   of the harness: still within the build-to-build spread. **Not applied a
   second time** -- the earlier rejection stands under the regime it was
   originally worried about not covering.
@@ -2355,6 +2356,75 @@ C++'s `2.25M`), `decode_raw_symbols` (`1.26M` against `620K`),
 `try_grow_to_face` even after its fix (`1.08M` against `Reset`'s `271K`,
 still `60` instructions a face for a twelve-byte extend), and
 `mark_vert_not_hole` (`390K` against nothing separable on the C++ side).
+
+### The Release Profile Nobody Had Set
+
+Twenty rounds of loop work ran on cargo's release defaults. `crates/Cargo.toml`
+carried per-package `dev`/`test` overrides and **no `[profile.release]` section
+at all**, so every figure in every table above was taken at `codegen-units =
+16` with LTO off -- sixteen units inside `draco-core` itself, inlining
+inhibited across the boundaries between them.
+
+Four configurations, each the full matrix at `ITERS=120`, five rounds, System
+allocator, C++ and Rust interleaved in one process. The C++ column is the
+control and it is a real one here: the reference is a prebuilt library that no
+rustc dial can touch. It moved `3-4%` between the default and `cu=1` runs --
+machine drift over the afternoon, which is exactly why only the same-run ratios
+below are quoted.
+
+Decode, C++/Rust, above `1.00x` is the port ahead:
+
+| payload | speed | default | `cu=1` | `cu=1` + thin | `cu=1` + fat |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| grid | 0 | `0.97x` | `1.00x` | `0.99x` | `0.97x` |
+| grid | 5 | `1.04x` | `1.06x` | `1.06x` | **`1.10x`** |
+| grid | 8 | `1.04x` | `1.05x` | `1.07x` | **`1.08x`** |
+| ribbon | 0 | `0.95x` | `0.95x` | `0.98x` | **`1.03x`** |
+| ribbon | 5 | `1.10x` | `1.16x` | `1.16x` | `1.16x` |
+| ribbon | 8 | `1.11x` | `1.15x` | `1.18x` | `1.18x` |
+| torus | 0 | `1.05x` | `1.08x` | `1.07x` | `1.07x` |
+| torus | 5 | `0.97x` | `0.97x` | `0.98x` | `0.98x` |
+| torus | 8 | `1.01x` | `1.01x` | `1.02x` | `1.02x` |
+| fan | 0 | `0.99x` | `1.00x` | `1.01x` | `1.03x` |
+| fan | 5 | `1.14x` | `1.16x` | `1.18x` | `1.17x` |
+| fan | 8 | `1.15x` | `1.14x` | `1.16x` | `1.15x` |
+
+Eleven of twelve cells move up from the default and the twelfth is grid speed 0,
+whose spread is `18-21%` in every run and which resolves nothing either way.
+Individually most of these cells sit inside their own spread; what makes the
+direction evidence is that they all lean the same way while the control's own
+movement is scattered in sign across them.
+
+**The encode side is where the two dials stop being interchangeable.** Same
+matrix, encode:
+
+| payload | speed | default | `cu=1` | `cu=1` + thin | `cu=1` + fat |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| grid | 0 | `1.67x` | `1.59x` | `1.57x` | `1.61x` |
+| grid | 5 | `1.40x` | `1.38x` | `1.43x` | **`1.48x`** |
+| grid | 8 | `1.39x` | `1.35x` | `1.41x` | **`1.42x`** |
+| ribbon | 0 | `1.58x` | `1.44x` | `1.44x` | `1.54x` |
+| ribbon | 5 | `1.24x` | `1.24x` | `1.27x` | **`1.33x`** |
+| ribbon | 8 | `1.29x` | `1.23x` | `1.29x` | **`1.30x`** |
+| torus | 0 | `1.63x` | `1.55x` | `1.53x` | `1.58x` |
+| torus | 5 | `1.36x` | `1.36x` | `1.37x` | **`1.39x`** |
+| torus | 8 | `1.35x` | `1.33x` | `1.37x` | **`1.38x`** |
+
+`codegen-units = 1` on its own **costs `5-7%` on the speed-0 encode path** --
+Rust's own microseconds, not the ratio: grid `3743 -> 3926`, ribbon
+`4767 -> 5124`, torus `4483 -> 4705`, one direction on all three. Thin LTO
+leaves that standing (`3926 / 5079 / 4711`); full LTO pays most of it back
+(`3878 / 4717 / 4635`) while being the best configuration of the four on
+every other cell in both tables. So the pair lands together and neither dial
+is separable from the other -- the comment in `crates/Cargo.toml` says so, and
+anything measured under this profile has to be re-measured if either moves.
+
+**What this does not say.** For a shipped library the consumer picks their own
+profile, so this is what our binaries and benchmarks get, nothing more. And it
+retroactively lowers every absolute Rust figure recorded above by a few
+percent; the C++ ratios in those older tables were taken against the default
+profile and are correspondingly conservative rather than wrong.
+
 
 ## Unexplored
 
