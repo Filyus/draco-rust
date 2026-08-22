@@ -1925,6 +1925,74 @@ repository, could not be re-run, and compared against a differently-built C++.
 This one is a feature flag on a committed harness, runs against the pinned
 reference in the same process, and carries its own control column.
 
+### Where Decode's Time Actually Is, And Two Symbols That Lie
+
+The allocator took `5%` and most of the variance; the rest needed a profile
+rather than another ratio. Phase timings first, grid at speed 5 under
+mimalloc, so the shares below are of something known:
+
+| phase | grid | torus |
+| --- | ---: | ---: |
+| connectivity | `250` | `310` |
+| attributes | `350` | `430` |
+| -- of which the DFS traversal generation | `68` | `102` |
+| -- of which `decode_values` | `182` | `243` |
+| ---- of which entropy symbols | `92` | `127` |
+| -- unaccounted setup | `~100` | `~85` |
+
+Then `samply` on `decode_loop`, 3,000 decodes, self time:
+
+| % | function |
+| ---: | --- |
+| `14.6` | `EdgebreakerConnectivityDecoder::decode_connectivity` |
+| `10.0` | `symbol_encoding::decode_raw_symbols` |
+| `9.4` | drop glue (two merged symbols) |
+| `5.6` | `InternalTraversalDecoder::decode_symbol` |
+| `5.3` | `MeshPredictionSchemeParallelogramDecoder::compute_original_values` |
+| `5.1` | `corner_traversal::traverse_from_corner` |
+| `3.6` | `CornerTable::try_grow_to_face` |
+| `3.4` | `memset` |
+| `2.9` | `AttributeQuantizationTransform::inverse_transform_attribute` |
+
+**About `15%` of a decode is memory management** -- drop glue, `memset` and
+`RtlCopyMemory` together -- against `54` allocations and `2.29` MB. That is
+the concrete form of the pressure argument, and it is larger than the whole
+remaining gap against C++.
+
+**Two of the entries above are lies, and the reason generalises.** This build
+merges identical LLVM functions, so a merged symbol carries *one*
+instantiation's name for code reached from many places:
+
+- `quicksort::<..., RAnsSymbolEncoder::create::{closure#0}>` at `2.2%` reads
+  as an encoder building a symbol table during a decode. There is no such
+  call. `callers.py` puts the samples under `traverse_from_corner`, and
+  neither that function nor the generator it serves contains a sort at all --
+  the name belongs to some other `sort_by::<[usize]>` the linker folded it
+  into.
+- `drop_glue::<[Vec<bool>; 4]>` at `4.7%` reads as the constrained
+  multi-parallelogram predictor's crease state being freed, which cannot
+  happen at speed 5 where the parallelogram predictor runs. Same cause.
+
+So in this build a symbol *name* is evidence of a type's layout, not of a call
+site. Both were chased to the source before being dropped, at two greps each --
+cheaper than the alternative, which is optimizing a function that never runs.
+
+**One change tried and rejected.** `try_grow_to_face` runs once per face and
+calls `Vec::try_reserve` on both tables, though `decode_connectivity` reserves
+the whole table up front from a bound it already trusts, so the reserve is
+redundant in the common case. Guarding it behind a capacity check measured
+`584` -> `593` us on the grid and `723` -> `735` on the torus, paired in one
+session: no gain, possibly a small loss, and that round's spreads were `9-29%`
+so neither reading is resolved. `try_reserve` against sufficient capacity
+already compiles to the comparison the guard adds. Not kept.
+
+Worth recording about the measurement itself: **the `1%` spreads mimalloc gave
+one session did not reproduce the next.** Same command, same payloads, and the
+C++ side came back at `50%` spread with the Rust side at `9-29%`. Whatever
+quietened the machine earlier was not the allocator alone, and a change worth
+`2%` needs a session that can show `2%` -- checked at the time, not inherited
+from a previous run.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -1963,11 +2031,16 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   connectivity -- different code, and the per-family ratios there are
   unknown. `dump_seeded_meshes_as_obj` plus `encode_loop` covers it in one
   pass.
-- **`6-10%` of decode is unexplained.** Load counts are at parity, and the
-  allocator accounts for `4.3-7.1%` of the rest; what remains is not work
-  done and not the allocator. Per-call cost, cache behaviour and the
-  attribute decoding path are all untested. Run the profiler under
-  `--features mimalloc`, where the spread is `1%` rather than `47%`.
+- **`6-10%` of decode is unexplained**, and the profile says it is spread
+  across the real decoders rather than pooled anywhere: connectivity `14.6%`,
+  raw symbols `10.0%`, traversal `5.1%`, parallelogram prediction `5.3%`.
+  Nothing in that list does work C++ does not -- the load counts already said
+  so. The one bucket that is not decode work is memory management at `~15%`,
+  which is where an attack should go.
+- **`~100` us of the grid's `350` us attribute phase is setup nobody has
+  split** -- not the traversal generation (`68`), not `decode_values` (`182`).
+  Per-attribute decoder construction, map plumbing and the seam-table path all
+  live there.
 - **Ten allocations of `num_vertices * 4` per decode**, down from twelve.
   `2.3` MB allocated for a `330` KB decoded mesh on the grid, across `54`
   allocations. The remaining large sizes on that payload are `110,592` (four
