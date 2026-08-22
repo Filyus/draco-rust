@@ -2486,6 +2486,105 @@ rung: the work came off, and whether it was costing time is not something this
 bench can say.
 
 
+### Encode, Split By Stage At Last -- And The Gap Is Quantization
+
+The decode side has had a callgrind driver per platform since the round above;
+the encode side never did, so no stage of it had ever been compared against the
+reference's. `examples/encode_drc.rs` and `cpp/encode_drc.cpp` are that pair,
+built to the same shape as the decode ones: parse outside the loop, encode
+inside, no harness on either side.
+
+Encode has no encoded input to share, so each side reads the same `.obj`
+through its own parser. **The byte count each driver prints is what makes the
+comparison legitimate** -- all four seeded payloads agree to the byte at
+speed 5 (`10826`, `10564`, `17943`, `31363`), which is only possible if both
+sides were handed the same mesh under the same options. Run that check before
+reading any figure below. Two mechanics worth keeping: a statically linked
+Draco registers no file reader, so `DecodeFromFile` fails with "Unable to read
+input file" on a perfectly good `.obj` and the C++ driver reads the bytes
+itself; and the parse is charged to whichever side ran it, so **totals are
+taken as the difference between an `iters=1` and an `iters=0` run** rather than
+from the program total. That subtraction also removes the dynamic linker, and
+it is exact -- callgrind counts.
+
+**The headline is that encode is not where the port is behind.** One encode of
+the seeded grid at speed 5: C++ `31,807,826` instructions, Rust `35,515,390` --
+`1.12x`, against decode's `1.4x` before this session's rounds. And the excess
+was not spread across the encoder. Differencing the per-function annotations
+between the two runs:
+
+| stage | C++ | Rust |
+| --- | ---: | ---: |
+| corner table (`BreakNonManifoldEdges`, `ComputeOppositeCorners`, `ComputeVertexCorners`, `IsDegenerated`, `Init`) | `16.27M` | mostly inlined into one `14.66M` blob |
+| attribute quantization (parameters, portable attribute, bounds) | `1.47M` | **`4.92M`** |
+| symbol encoding | `1.18M` | `1.52M` |
+
+The corner table is the largest block on both sides and the two are within
+reach of each other. The quantization block is `3.3x`, and its `3.45M` of
+excess is **93% of the whole `3.71M` encode gap**. Everything else nets out.
+
+Per-line attribution said what the excess was, and it was not arithmetic:
+
+- **`compute_parameters` ran twice per encode.** `build_encoded_mesh_info`
+  reports a position attribute's bounds as the decoder will see them, and to
+  get the quantization parameters for that round trip it built a second
+  `AttributeQuantizationTransform` from scratch -- a full min/max sweep of
+  every value, for parameters the encode had computed and dropped minutes of
+  instructions earlier. The encoder now records them beside the prediction
+  choices, for exactly the reason those are recorded, and reuses them; the
+  recompute stays as the fallback for an attribute quantized by a path that
+  did not record one. `valence_edgebreaker_encoded_mesh_info_matches_decoded_mesh`
+  pins the reuse: feeding it a transform built at the wrong bit depth fails it,
+  and forcing the fallback does not, which is the pair of probes that says the
+  test covers the branch rather than the outcome.
+- **`floorf` cost `606,736` instructions and the reference pays none.**
+  `f32::floor` is a call into libm on a baseline x86-64 target -- the
+  instruction that would inline it is SSE4.1, which the default target does not
+  assume -- and `quantize_float` runs it once per component of every value. The
+  cast to `i32` truncates toward zero, which already is the floor for the
+  non-negative values quantization produces, and one comparison covers the
+  rest. `quantize_float_matches_floor` pins it against `f32::floor` across the
+  range, past `2^24` where an `f32` is integral, and at both saturating ends;
+  dropping the correction fails it on `-0.50000006`.
+
+Counted, one encode per payload at speed 5, `iters=1` minus `iters=0`:
+
+| payload | before | reuse | + open-coded floor | | C++ |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| grid | `35,515,390` | `34,937,677` | `34,096,251` | **`-4.0%`** | `31,807,826` |
+| ribbon | `54,108,205` | `52,786,922` | `51,375,397` | **`-5.0%`** | `43,987,188` |
+| torus | `35,091,691` | `34,475,513` | `33,659,445` | **`-4.1%`** | `31,492,536` |
+| fan | `32,999,785` | `32,458,951` | `31,765,698` | **`-3.7%`** | `382,563,230` |
+
+The grid's instruction ratio goes from `1.12x` to `1.07x`. The fan's C++ column
+is the `O(valence^2)` corner-table stage this document has warned about since
+the fan round -- `382M` against our `32M` -- and is quoted only to show it is
+still there.
+
+Two build-identity notes, because both are floors on this comparison. The base
+figures for ribbon, torus and fan were taken from a worktree build; the same
+source built in the main tree read `35,515,390` against the worktree's
+`35,574,919` on the grid, so **`0.17%` is this comparison's cross-tree term**
+and the deltas above clear it by an order of magnitude. And the encode matrix
+after both changes leans up on the speed-8 cells (grid `1.42x -> 1.47x`, ribbon
+`1.30x -> 1.35x`, torus `1.38x -> 1.41x`) while speed 0 and 5 scatter -- read
+as counted, not clocked.
+
+**What this retargets.** Two of the quantization block's three excesses are
+closed and the third is not: with the floor folded in, `transform_attribute`
+costs `2,322,620` against `GeneratePortableAttribute`'s `977K` for the same
+values, and that `1.35M` is now the largest located excess in the encoder.
+Nobody has read it line by line yet, and the arithmetic says to: the fast path
+it takes reads three floats, subtracts, quantizes and writes three `u32`s per
+point, and it is spending `252` instructions a point doing it. After that,
+`compute_vertex_corners`
+at `3.86M` against `2.71M` is the only other named function above `1.4x`.
+
+The corner table is the largest thing in the encoder on both sides, and the
+port's version of it is inlined into a single `14.66M` symbol against C++'s
+five named functions. Splitting that blob is a prerequisite for comparing them
+at all.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
