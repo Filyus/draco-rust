@@ -524,13 +524,35 @@ pub fn decode_raw_symbols(
             "Failed to start rANS decoding of the raw symbols",
         ));
     }
-    for index in 0..num_values {
-        let Some(symbol) = decoder.try_decode_symbol() else {
-            return Err(DracoError::general(format!(
-                "Raw symbol stream ended after {index} of {num_values} symbols"
-            )));
-        };
-        symbols.push(symbol);
+    // Growth is capped at `num_values` the same way the corner table caps at
+    // the declared face count: the target is only reached after decoding a
+    // capacity's worth of real symbols, so it never exceeds doubling of
+    // proven content, and a truthful count lands the buffer exactly at its
+    // final size instead of overshooting by up to 2x -- on a mesh whose
+    // symbols outgrow the initial input-bounded reserve, the doubling copies
+    // alone moved 700 KB per decode.
+    let mut index = 0;
+    while index < num_values {
+        if symbols.len() == symbols.capacity() {
+            let doubled = symbols.capacity().saturating_mul(2).max(symbols.len() + 1);
+            let target = doubled.min(num_values.max(symbols.len() + 1));
+            symbols
+                .try_reserve_exact(target - symbols.len())
+                .map_err(|_| {
+                    DracoError::general(format!("Failed to allocate {target} raw symbols"))
+                })?;
+        }
+        let chunk_end = num_values.min(index + (symbols.capacity() - symbols.len()));
+        for _ in index..chunk_end {
+            let Some(symbol) = decoder.try_decode_symbol() else {
+                return Err(DracoError::general(format!(
+                    "Raw symbol stream ended after {} of {num_values} symbols",
+                    symbols.len()
+                )));
+            };
+            symbols.push(symbol);
+        }
+        index = chunk_end;
     }
     Ok(())
 }
