@@ -261,6 +261,37 @@ fn main() {
         }
     }
 
+    #[cfg(feature = "count_table_loads")]
+    {
+        use draco_core::corner_table::table_loads::{self, Accessor};
+
+        // Loads, not calls: this port fuses `Opposite(Next(c))` into one
+        // lookup where C++ makes three calls, so only the load is the same
+        // event on both sides. One cold encode per payload at the first speed
+        // given -- the counts are exact, so repeating adds nothing.
+        println!(
+            "
+CornerTable array loads, one encode at speed {}
+",
+            speeds[0]
+        );
+        print!("{:<20}", "payload");
+        for accessor in Accessor::ALL {
+            print!("{:>17}", accessor.name());
+        }
+        println!();
+        for payload in &payloads {
+            let options = options_for(&payload.mesh, speeds[0]);
+            table_loads::reset();
+            rust_encode_us(&payload.mesh, &options, 1);
+            print!("{:<20}", payload.name);
+            for accessor in Accessor::ALL {
+                print!("{:>17}", table_loads::count(*accessor));
+            }
+            println!();
+        }
+    }
+
     if std::env::var("SAMPLE_ALLOC").is_ok() {
         // Outside the timed rounds: a backtrace per large allocation costs far
         // more than the encode it describes.

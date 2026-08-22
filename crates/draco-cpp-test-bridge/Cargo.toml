@@ -7,6 +7,12 @@ publish = false
 
 [dependencies]
 
+[features]
+# Count the corner table's array loads on the Rust side, for the comparison
+# against the instrumented C++ described in PERFORMANCE.md. Counts only --
+# a build carrying these counters is never a build to time.
+count_table_loads = ["draco-core/count_table_loads"]
+
 [build-dependencies]
 cc = "1.0"
 
