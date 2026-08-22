@@ -2626,8 +2626,13 @@ Where the encode stands after the round, one encode at speed 5:
 The grid's instruction ratio is `1.026x` and the torus's `1.023x`, from
 `1.12x`. The ribbon is the one still carrying a real excess at `1.10x`.
 
-**What this retargets.** `compute_vertex_corners`
-at `3.86M` against `2.71M` is now the largest named excess left, at `1.42x`.
+**What this retargets -- after a denominator that was wrong.** The obvious
+next target read as `compute_vertex_corners`, `3.86M` against
+`ComputeVertexCorners`'s `2.71M`, `1.42x`. It is not a target: C++ keeps
+`IsDegenerated` as a separate function and the port inlines it, so the
+comparable figures are `3.86M` against `2.71M + 2.45M = 5.16M` on the grid and
+`4.65M` against `5.70M` on the ribbon. **The port is `25-35%` ahead there.**
+Group by what each side does, not by what each side named.
 
 The corner table is the largest thing in the encoder on both sides, and the
 port's version of it is inlined into a single `14.66M` symbol against C++'s
