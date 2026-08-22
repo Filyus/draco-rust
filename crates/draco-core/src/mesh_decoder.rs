@@ -841,16 +841,12 @@ impl MeshDecoder {
                 let att_id = mesh.add_attribute_preserve_unique_id(att);
                 att_ids.push(att_id);
 
-                if self.method == 1 {
-                    let att_mut = mesh.try_attribute_mut(att_id)?;
-                    att_mut.set_explicit_mapping(num_points);
-                    for i in 0..num_points {
-                        att_mut.try_set_point_map_entry(
-                            PointIndex(i as u32),
-                            AttributeValueIndex(i as u32),
-                        )?;
-                    }
-                }
+                // No mapping is written here for EdgeBreaker: upstream leaves
+                // it untouched until the traversal sequencer sets the explicit
+                // point-to-value map (the loop over `point_to_value` below),
+                // which overwrites every entry. An identity fill at this point
+                // is one fallible call per point per attribute that the
+                // sequencer then discards.
             }
 
             for _ in 0..num_attributes_in_decoder {
