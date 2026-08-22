@@ -2285,12 +2285,38 @@ harness resolves. The bias got the boundary test it needs -- values
 either side of 2^31, where every prior case sat far below -- checked to
 fail against a bias-less implementation before being trusted.
 
-**Still open in connectivity, by size of the excess:** the symbol loop
-itself with its un-inlined helpers (`4.13M` against `2.25M`),
-`assign_points_to_corners` (`921K` against `415K`, `41` instructions per
-face against `23` for the same three-vertex read),
-`decode_raw_symbols` (`1.26M` against `620K`), and `try_grow_to_face`
-even after the fix (`1.08M` against `Reset`'s `271K`).
+**Then the located excesses, worked in order.** Two more landed against
+the same profile:
+
+- `a2a1117` -- **the face fill was a copy written as lookups.** Without
+  attribute seams a corner-table vertex index *is* a point index, and the
+  map lays face `f`'s corners at `3f..3f + 3` in the order a face stores
+  them, so `assign_points_to_corners` was reading a straight copy back
+  through `vertex`/`vertex_after`/`vertex_before`: three bounds-checked
+  `Option` lookups and two modular corner computations per face, for
+  indices already known consecutive and already proved in range by the
+  consistency scan two lines above. `51` instructions per face against
+  upstream's `23`; as a zipped bulk copy it is **`6`**, a quarter of
+  upstream's. Grid `15.67M -> 14.86M` (`-5.2%`); clocked grid s5 `-5.3%`
+  and ribbon s5 `-7.4%`, both 4/4 pairs against a control inside `1%`.
+- `fd717d6` -- **the opposite-corner write was bounded twice.**
+  `set_opposite_corners` compared each corner against `num_corners()` and
+  then indexed `opposite_corners`, which adds its own panic check: the
+  count is the *other* map's length, equal by invariant but not visibly
+  so, so nothing folds the pair. Bounding the write on the map it indexes
+  leaves one check. Grid `14.86M -> 14.30M` (`-3.7%`), the whole function
+  inlining into the symbol loop. All eight cells negative on the clock
+  (`-0.4%` to `-3.3%`) but the control moved up to `4.8%` that run, so
+  counted, not clocked.
+
+**Where the round leaves the grid:** `17.24M -> 14.30M` instructions,
+**`-17%`**, against C++'s `~10.24M` of decode -- the instruction ratio
+down from `1.53x` to `1.39x`. Still open, by size of the excess: the
+symbol loop itself (`3.19M` now that two helpers inline into it, against
+C++'s `2.25M`), `decode_raw_symbols` (`1.26M` against `620K`),
+`try_grow_to_face` even after its fix (`1.08M` against `Reset`'s `271K`,
+still `60` instructions a face for a twelve-byte extend), and
+`mark_vert_not_hole` (`390K` against nothing separable on the C++ side).
 
 ## Unexplored
 
@@ -2361,14 +2387,14 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   never been run on the encoder. The callgrind stand now makes this cheap:
   an `encode_drc` driver beside the two decode ones, and the same
   align-by-stage read.
-- **The four named connectivity excesses.** See "Callgrind, Both Sides"
-  above -- the symbol loop with its un-inlined helpers,
-  `assign_points_to_corners` at `41` instructions per face against C++'s
-  `23`, `decode_raw_symbols` at `2.0x`, and what is left of
-  `try_grow_to_face`. This is where the remaining decode gap lives, it is
-  now located rather than suspected, and the instrument to work against
-  it is committed. Read the conversion caution first: instructions here
-  are worth about half their face value in time.
+- **The connectivity excesses still standing.** See "Callgrind, Both
+  Sides" above, which closed two of them and left four: the symbol loop
+  (`3.19M` against `2.25M`), `decode_raw_symbols` (`2.0x`),
+  `try_grow_to_face`'s residual `60` instructions a face for a
+  twelve-byte extend, and `mark_vert_not_hole`. This is where the
+  remaining decode gap lives, it is located rather than suspected, and
+  the instrument is committed. Read the conversion caution first:
+  instructions here are worth about half their face value in time.
 
 ### Known shapes, unmeasured
 
