@@ -243,10 +243,16 @@ premise holds, and the encoder reports the choices it makes for itself.
   bounds for every component of every point, after a check that already covered
   the whole entry. Measured as instruction counts under callgrind against
   upstream 1.5.7 on the same meshes, one encode at speed 5 fell `10-14%`,
-  putting two of the four seeded payloads at parity with the reference. The
-  decoder's raw symbol run was rewritten against hoisted tables in the same
-  pass, for `-29%` to `-40%` of `decode_symbols` and `2.3-3.5%` of a whole
-  decode.
+  putting two of the four seeded payloads at parity with the reference.
+
+  The decoder lost `10.8%` of its instructions over the same rounds. The raw
+  symbol run now decodes against hoisted tables instead of re-proving the
+  probability table's invariants once per symbol; the corner table appends a
+  face rather than rederiving, every face, which face it is being asked to grow
+  to; and the vertex-hole table reaches its end by pushing rather than by a
+  resize that fills an entry the next line overwrites. On the seeded matrix the
+  decode is now at or above the reference on all twelve payload-and-speed
+  cells, which has not been true before.
 
   Nothing about the encoded bytes changes; every one of these is the same
   output computed with less work, and the byte-for-byte parity tests against
