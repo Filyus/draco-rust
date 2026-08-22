@@ -321,7 +321,19 @@ impl CornerTable {
         })
     }
 
-    pub fn try_grow_to_face(&mut self, face: usize) -> Result<(), crate::status::DracoError> {
+    /// `declared_faces` is the face count the bitstream claims. It is only a
+    /// growth target, never an allocation: when growth past the current
+    /// capacity is needed, the new capacity is the smaller of doubling and the
+    /// declared total (but never less than what this face needs). A truthful
+    /// header therefore lands the table exactly at its final size instead of
+    /// overshooting by up to 2x, while a header that lies large cannot reserve
+    /// more than doubling already would, and one that lies small degrades to
+    /// plain doubling once the table passes it -- amortized growth either way.
+    pub fn try_grow_to_face(
+        &mut self,
+        face: usize,
+        declared_faces: usize,
+    ) -> Result<(), crate::status::DracoError> {
         let num_corners = face
             .checked_add(1)
             .and_then(|faces| faces.checked_mul(3))
@@ -331,21 +343,43 @@ impl CornerTable {
         if num_corners <= self.corner_to_vertex_map.len() {
             return Ok(());
         }
+        let declared_corners = declared_faces.saturating_mul(3);
 
-        let extra = num_corners - self.corner_to_vertex_map.len();
-        self.corner_to_vertex_map.try_reserve(extra).map_err(|_| {
-            crate::status::DracoError::general("Failed to allocate corner table".to_string())
-        })?;
-        self.corner_to_vertex_map
-            .resize(num_corners, INVALID_VERTEX_INDEX);
+        fn grow<T: Clone>(
+            vec: &mut Vec<T>,
+            num_corners: usize,
+            declared_corners: usize,
+            fill: T,
+        ) -> Result<(), crate::status::DracoError> {
+            if num_corners > vec.capacity() {
+                let doubled = vec.capacity().saturating_mul(2).max(num_corners);
+                let target = if vec.capacity() < declared_corners {
+                    doubled.min(declared_corners).max(num_corners)
+                } else {
+                    doubled
+                };
+                vec.try_reserve_exact(target - vec.len()).map_err(|_| {
+                    crate::status::DracoError::general(
+                        "Failed to allocate corner table".to_string(),
+                    )
+                })?;
+            }
+            vec.resize(num_corners, fill);
+            Ok(())
+        }
 
-        let extra = num_corners - self.opposite_corners.len();
-        self.opposite_corners.try_reserve(extra).map_err(|_| {
-            crate::status::DracoError::general("Failed to allocate corner table".to_string())
-        })?;
-        self.opposite_corners
-            .resize(num_corners, INVALID_CORNER_INDEX);
-        Ok(())
+        grow(
+            &mut self.corner_to_vertex_map,
+            num_corners,
+            declared_corners,
+            INVALID_VERTEX_INDEX,
+        )?;
+        grow(
+            &mut self.opposite_corners,
+            num_corners,
+            declared_corners,
+            INVALID_CORNER_INDEX,
+        )
     }
 
     pub fn map_corner_to_vertex(&mut self, corner: CornerIndex, vertex: VertexIndex) {
