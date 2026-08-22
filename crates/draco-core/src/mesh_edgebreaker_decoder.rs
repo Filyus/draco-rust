@@ -11,7 +11,7 @@ use crate::decoder_buffer::DecoderBuffer;
 use crate::edgebreaker_connectivity_decoder::{
     EdgebreakerConnectivityDecoder, EdgebreakerTraversalDecoder,
 };
-use crate::geometry_indices::{CornerIndex, FaceIndex, PointIndex, VertexIndex};
+use crate::geometry_indices::{CornerIndex, VertexIndex};
 use crate::mesh::Mesh;
 use crate::mesh_edgebreaker_shared::{EdgeFaceName, EdgebreakerSymbol, TopologySplitEventData};
 use crate::rans_bit_decoder::RAnsBitDecoder;
@@ -1075,21 +1075,16 @@ impl MeshEdgebreakerDecoder {
         }
 
         let num_vertices = corner_table.num_vertices();
-        let num_faces = corner_table.num_faces();
 
         // Map corner table vertices to mesh face point indices.
         // In C++: face[c] = corner_table_->Vertex(start_corner + c).value()
         // Mesh point index == corner table vertex index (not data_id!).
-        for f in 0..num_faces {
-            let fid = FaceIndex(f as u32);
-            let c0 = CornerIndex(f as u32 * 3);
-            let v0 = corner_table.vertex(c0);
-            let v1 = corner_table.vertex_after(c0);
-            let v2 = corner_table.vertex_before(c0);
-
-            // Use vertex indices directly as point indices (matching C++)
-            mesh.set_face(fid, [PointIndex(v0.0), PointIndex(v1.0), PointIndex(v2.0)]);
-        }
+        //
+        // `vertex(c0)`, `vertex_after(c0)` and `vertex_before(c0)` for a
+        // first corner are the map's entries `3f`, `3f + 1` and `3f + 2` in
+        // that order, so the whole loop is one copy -- see
+        // `Mesh::set_faces_from_corner_vertices`.
+        mesh.set_faces_from_corner_vertices(&corner_table.corner_to_vertex_map);
         mesh.set_num_points(num_vertices);
 
         Ok(())
