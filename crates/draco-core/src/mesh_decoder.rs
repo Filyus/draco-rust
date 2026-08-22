@@ -300,8 +300,8 @@ impl MeshDecoder {
             self.edgebreaker_data_to_corner_map = eb_decoder.take_data_to_corner_map();
             self.edgebreaker_attribute_seam_corners = eb_decoder.take_attribute_seam_corners();
             self.edgebreaker_processed_connectivity_corners =
-                eb_decoder.get_processed_connectivity_corners().to_vec();
-            self.edgebreaker_vertex_to_corner_map = eb_decoder.get_vertex_to_corner_map().to_vec();
+                eb_decoder.take_processed_connectivity_corners();
+            self.edgebreaker_vertex_to_corner_map = eb_decoder.take_vertex_to_corner_map();
             self.edgebreaker_is_vert_hole = eb_decoder.take_is_vert_hole();
             self.traversal_method = eb_decoder.get_traversal_decoder_type();
 

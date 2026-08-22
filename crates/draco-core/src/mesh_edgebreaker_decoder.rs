@@ -68,12 +68,12 @@ impl MeshEdgebreakerDecoder {
         self.attribute_seam_corners.get(attribute_index)
     }
 
-    pub fn get_processed_connectivity_corners(&self) -> &[u32] {
-        &self.processed_connectivity_corners
+    pub fn take_processed_connectivity_corners(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.processed_connectivity_corners)
     }
 
-    pub fn get_vertex_to_corner_map(&self) -> &[u32] {
-        &self.vertex_to_corner_map
+    pub fn take_vertex_to_corner_map(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.vertex_to_corner_map)
     }
 
     pub fn take_is_vert_hole(&mut self) -> Vec<bool> {
