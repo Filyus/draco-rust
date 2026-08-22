@@ -821,16 +821,13 @@ fn compute_encoder_predicted_value(
     let mut normal = [0i64; 3];
 
     while !cit.end() {
-        let c_next;
-        let c_prev;
-
-        if prediction_mode == NormalPredictionMode::OneTriangle {
-            c_next = corner_table.next(corner_id);
-            c_prev = corner_table.previous(corner_id);
+        let base = if prediction_mode == NormalPredictionMode::OneTriangle {
+            corner_id
         } else {
-            c_next = corner_table.next(cit.corner());
-            c_prev = corner_table.previous(cit.corner());
-        }
+            cit.corner()
+        };
+        let c_next = corner_table.next(base);
+        let c_prev = corner_table.previous(base);
 
         let pos_next = positions.get(c_next);
         let pos_prev = positions.get(c_prev);

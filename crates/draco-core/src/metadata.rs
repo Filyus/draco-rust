@@ -420,7 +420,7 @@ fn decode_le_array<const N: usize, T>(
     }
 
     let mut values = Vec::with_capacity(bytes.len() / N);
-    for chunk in bytes.chunks_exact(N) {
+    for chunk in bytes.as_chunks::<N>().0 {
         let mut item = [0u8; N];
         item.copy_from_slice(chunk);
         values.push(decode(item));

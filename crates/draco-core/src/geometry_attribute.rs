@@ -350,8 +350,8 @@ impl PointAttribute {
             && data.len() >= num_points * stride
         {
             let packed = &data[..num_points * stride];
-            for (out, bytes) in values.iter_mut().zip(packed.chunks_exact(4)) {
-                *out = f32::from_le_bytes(bytes.try_into().unwrap());
+            for (out, bytes) in values.iter_mut().zip(packed.as_chunks::<4>().0) {
+                *out = f32::from_le_bytes(*bytes);
             }
             return values;
         }

@@ -2749,10 +2749,10 @@ fn dump_seeded_meshes_as_obj() {
             let (_, positions, faces, _) = create_seeded_mesh(family, seed);
 
             let mut obj = String::new();
-            for p in positions.chunks_exact(3) {
+            for p in positions.as_chunks::<3>().0 {
                 obj.push_str(&format!("v {} {} {}\n", p[0], p[1], p[2]));
             }
-            for f in faces.chunks_exact(3) {
+            for f in faces.as_chunks::<3>().0 {
                 // OBJ indices are 1-based.
                 obj.push_str(&format!("f {} {} {}\n", f[0] + 1, f[1] + 1, f[2] + 1));
             }

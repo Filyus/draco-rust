@@ -505,7 +505,7 @@ impl Etc1sDecoder {
             // Filled after the colour pass rather than before it: the buffer
             // grows with that pass now, so before it there is nothing to fill.
             // The two halves are disjoint, so the order does not matter.
-            for block in blocks.chunks_exact_mut(16) {
+            for block in blocks.as_chunks_mut::<16>().0 {
                 block[0] = 255;
                 block[1] = (1 << 4) | 13;
                 block[2..8].copy_from_slice(&[0x92, 0x49, 0x24, 0x92, 0x49, 0x24]);
@@ -577,7 +577,7 @@ impl Etc1sDecoder {
             // 255 at both endpoints and every selector zero reads as opaque.
             // After the colour pass for the same reason as the ETC2 path: the
             // buffer only exists once that pass has grown it.
-            for block in blocks.chunks_exact_mut(16) {
+            for block in blocks.as_chunks_mut::<16>().0 {
                 block[0] = 255;
                 block[1] = 255;
             }

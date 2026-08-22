@@ -723,7 +723,9 @@ fn parse_morph_targets_for_geometry(
                     continue;
                 }
                 let position_deltas = vertices
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .map(|values| [values[0] as f32, values[1] as f32, values[2] as f32])
                     .collect();
                 let full_weight = child_f64_array(channel, "FullWeights")
@@ -1467,7 +1469,9 @@ fn geometry_to_mesh(
     };
 
     let control_points = vertices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|value| [value[0] as f32, value[1] as f32, value[2] as f32])
         .collect::<Vec<_>>();
 
@@ -1569,7 +1573,9 @@ fn parse_geometry_layers(
                 chunk_layer_values(&floats)
             } else {
                 floats
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .map(|value| [value[0], value[1], value[2], 1.0])
                     .collect()
             };
@@ -1962,7 +1968,7 @@ fn parse_curve(node: &FbxNode) -> Option<FbxAnimCurveData> {
         (key_attr_flags, key_attr_data, key_attr_ref_count)
     {
         if flags.len() == refs.len() && data.len() == refs.len() * 4 {
-            for ((flag, count), attrs) in flags.into_iter().zip(refs).zip(data.chunks_exact(4)) {
+            for ((flag, count), attrs) in flags.into_iter().zip(refs).zip(data.as_chunks::<4>().0) {
                 for _ in 0..count.max(0) {
                     expanded_flags.push(flag);
                     expanded_attrs.push([attrs[0], attrs[1]]);
@@ -2312,7 +2318,9 @@ fn layer_set<const N: usize>(
 /// Groups a flat float payload into `N`-component values, dropping a trailing
 /// partial value.
 fn chunk_layer_values<const N: usize>(raw: &[f32]) -> Vec<[f32; N]> {
-    raw.chunks_exact(N)
+    raw.as_chunks::<N>()
+        .0
+        .iter()
         .map(|value| std::array::from_fn(|i| value[i]))
         .collect()
 }

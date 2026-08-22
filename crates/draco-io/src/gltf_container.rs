@@ -999,7 +999,7 @@ fn decode_base64(input: &str, limit: Option<usize>) -> Result<Vec<u8>> {
     output
         .try_reserve_exact(decoded_len)
         .map_err(|_| GltfError::ResourceLimitExceeded("base64 allocation failed".into()))?;
-    for chunk in input.as_bytes().chunks_exact(4) {
+    for chunk in input.as_bytes().as_chunks::<4>().0 {
         let a = base64_value(chunk[0])? as u32;
         let b = base64_value(chunk[1])? as u32;
         let c = if chunk[2] == b'=' {

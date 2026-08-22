@@ -186,8 +186,10 @@ fn assert_pairings_are_from_the_input(decoded: &Mesh) {
     let uvs = read(GeometryAttributeType::TexCoord, 2);
 
     for (point, (p, u)) in positions
-        .chunks_exact(3)
-        .zip(uvs.chunks_exact(2))
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(uvs.as_chunks::<2>().0)
         .enumerate()
     {
         let known = SEAM_PAIRINGS.iter().any(|(want_p, want_u)| {

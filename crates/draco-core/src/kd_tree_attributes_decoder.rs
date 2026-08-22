@@ -561,12 +561,12 @@ fn write_u32_components_from_decoded(
                 }
             }
             DataType::Uint16 => {
-                for (d, &v) in dst.chunks_exact_mut(2).zip(src) {
+                for (d, &v) in dst.as_chunks_mut::<2>().0.iter_mut().zip(src) {
                     d.copy_from_slice(&(v as u16).to_le_bytes());
                 }
             }
             DataType::Uint32 => {
-                for (d, &v) in dst.chunks_exact_mut(4).zip(src) {
+                for (d, &v) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src) {
                     d.copy_from_slice(&v.to_le_bytes());
                 }
             }

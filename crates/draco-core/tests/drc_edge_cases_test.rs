@@ -1119,7 +1119,9 @@ fn legacy_091_octahedron_normals_match_historical_decoder() {
     )
     .expect("read golden normals");
     let expected: Vec<[u32; 3]> = golden
-        .chunks_exact(12)
+        .as_chunks::<12>()
+        .0
+        .iter()
         .map(|c| {
             [
                 u32::from_le_bytes(c[0..4].try_into().unwrap()),

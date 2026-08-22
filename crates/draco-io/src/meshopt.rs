@@ -1043,7 +1043,9 @@ mod tests {
         }
         apply_filter(&mut wide, MeshoptFilter::Color, 4, 8).unwrap();
         let decoded: Vec<u16> = wide
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
             .collect();
         assert_eq!(
@@ -1078,7 +1080,9 @@ mod tests {
         apply_filter(&mut data, MeshoptFilter::Quaternion, 1, 8).unwrap();
 
         let components: Vec<i16> = data
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
             .collect();
         assert_eq!(components, [0, 0, 0, 32767]);
@@ -1093,7 +1097,9 @@ mod tests {
         apply_filter(&mut data, MeshoptFilter::Exponential, 2, 4).unwrap();
 
         let decoded: Vec<f32> = data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
             .collect();
         assert_eq!(decoded, [1.0, -6.0]);

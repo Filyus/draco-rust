@@ -296,7 +296,7 @@ pub(crate) fn decode_base64(text: &str) -> Option<Vec<u8>> {
         return None;
     }
     let mut out = Vec::with_capacity(body.len() / 4 * 3);
-    for chunk in body.chunks_exact(4) {
+    for chunk in body.as_chunks::<4>().0 {
         let padding = chunk.iter().filter(|byte| **byte == b'=').count();
         if padding > 2 {
             return None;

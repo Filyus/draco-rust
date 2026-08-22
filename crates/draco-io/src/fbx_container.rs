@@ -743,7 +743,9 @@ impl<R: Read + Seek> FbxReader<R> {
         let (len, encoding, compressed_len) = self.read_array_header()?;
         let data = self.read_array_data(len, encoding, compressed_len, 4)?;
         Ok(data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect())
     }
@@ -752,7 +754,9 @@ impl<R: Read + Seek> FbxReader<R> {
         let (len, encoding, compressed_len) = self.read_array_header()?;
         let data = self.read_array_data(len, encoding, compressed_len, 8)?;
         Ok(data
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
             .collect())
     }
@@ -761,7 +765,9 @@ impl<R: Read + Seek> FbxReader<R> {
         let (len, encoding, compressed_len) = self.read_array_header()?;
         let data = self.read_array_data(len, encoding, compressed_len, 4)?;
         Ok(data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect())
     }
@@ -770,7 +776,9 @@ impl<R: Read + Seek> FbxReader<R> {
         let (len, encoding, compressed_len) = self.read_array_header()?;
         let data = self.read_array_data(len, encoding, compressed_len, 8)?;
         Ok(data
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
             .collect())
     }

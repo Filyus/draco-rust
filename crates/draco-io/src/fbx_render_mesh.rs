@@ -419,7 +419,7 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
     }
 
     mesh.set_num_faces(remapped.len() / 3);
-    for (face, triangle) in remapped.chunks_exact(3).enumerate() {
+    for (face, triangle) in remapped.as_chunks::<3>().0.iter().enumerate() {
         mesh.set_face(
             FaceIndex(face as u32),
             [

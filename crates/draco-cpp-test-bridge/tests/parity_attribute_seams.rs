@@ -156,7 +156,7 @@ fn build_rust_mesh(sample: &SeamSample) -> Mesh {
     }
     mesh.add_attribute(texcoords);
 
-    for face in sample.faces.chunks_exact(3) {
+    for face in sample.faces.as_chunks::<3>().0 {
         mesh.add_face([
             PointIndex(face[0]),
             PointIndex(face[1]),
@@ -300,9 +300,11 @@ fn cpp_decoder_reads_rust_seamed_uvs() {
             // (position, uv) pairings. A wrong traversal keeps both sets intact
             // and only mispairs them, so checking either alone sees nothing.
             let wrong = positions
-                .chunks_exact(3)
-                .zip(uvs.chunks_exact(2))
-                .filter(|(p, u)| !is_input_pairing(sample, p, u))
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip(uvs.as_chunks::<2>().0)
+                .filter(|(p, u)| !is_input_pairing(sample, *p, *u))
                 .count();
             if wrong > 0 {
                 mismatches.push(format!(

@@ -252,7 +252,7 @@ pub fn decode_geometry<S: AccessorSource>(
             let num_faces = indices.len() / 3;
             mesh.try_set_num_faces(num_faces)
                 .map_err(GltfError::DracoEncode)?;
-            for (face_id, face) in indices.chunks_exact(3).enumerate() {
+            for (face_id, face) in indices.as_chunks::<3>().0.iter().enumerate() {
                 mesh.set_face_from_indices(face_id, [face[0], face[1], face[2]]);
             }
         } else {

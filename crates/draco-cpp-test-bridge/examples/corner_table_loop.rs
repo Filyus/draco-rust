@@ -40,7 +40,9 @@ fn main() {
         })
         .collect();
     let faces: Vec<[VertexIndex; 3]> = flat
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| [VertexIndex(c[0]), VertexIndex(c[1]), VertexIndex(c[2])])
         .collect();
 

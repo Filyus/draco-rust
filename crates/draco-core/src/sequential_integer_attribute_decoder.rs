@@ -710,7 +710,7 @@ impl SequentialIntegerAttributeDecoder {
                         "Stream holds fewer than the {byte_len} bytes of raw corrections it declares"
                     ))
                 })?;
-                for chunk in bytes.chunks_exact(4) {
+                for chunk in bytes.as_chunks::<4>().0 {
                     let symbol = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                     raw_corrections.push(symbol_to_correction(symbol, needs_zigzag_conversion));
                 }

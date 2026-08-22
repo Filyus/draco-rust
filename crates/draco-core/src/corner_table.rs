@@ -1077,9 +1077,10 @@ impl CornerTable {
         // per-corner form would have walked into.
         for (face, face_base) in self
             .corner_to_vertex_map
-            .chunks_exact(3)
-            .map(<[VertexIndex; 3]>::try_from)
-            .map(|face| face.expect("chunks_exact(3) yields three vertices"))
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .copied()
             .zip((0..).step_by(3))
         {
             // A face with any repeated vertex is degenerated, and the condition

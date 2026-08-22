@@ -423,8 +423,10 @@ fn decoders_agree_on_the_same_payload() {
                     "{} speed {speed}: point {} differs in position by up to {worst_position:.6}",
                     label(sample),
                     rust_positions
-                        .chunks_exact(3)
-                        .zip(cpp_positions.chunks_exact(3))
+                        .as_chunks::<3>()
+                        .0
+                        .iter()
+                        .zip(cpp_positions.as_chunks::<3>().0)
                         .position(|(a, b)| (0..3).any(|c| (a[c] - b[c]).abs() > 1e-6))
                         .unwrap_or(0)
                 ));
@@ -546,7 +548,12 @@ fn cpp_decoder_reads_rust_normals() {
             // Points come back renumbered, so pair them by position against the
             // input, which the samples build on a lattice we can look up.
             let mut worst = 0.0f32;
-            for (p, n) in positions.chunks_exact(3).zip(decoded.chunks_exact(3)) {
+            for (p, n) in positions
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip(decoded.as_chunks::<3>().0)
+            {
                 let Some(want) = nearest_input_normal(sample, p) else {
                     continue;
                 };
@@ -577,7 +584,7 @@ fn nearest_input_normal(sample: &Sample, position: &[f32]) -> Option<[f32; 3]> {
     let normals = sample.normals.as_ref()?;
     let mut best = None;
     let mut best_distance = f32::MAX;
-    for (i, p) in sample.positions.chunks_exact(3).enumerate() {
+    for (i, p) in sample.positions.as_chunks::<3>().0.iter().enumerate() {
         let d = (0..3).map(|c| (p[c] - position[c]).powi(2)).sum::<f32>();
         if d < best_distance {
             best_distance = d;

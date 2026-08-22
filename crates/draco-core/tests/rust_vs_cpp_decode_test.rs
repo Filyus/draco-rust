@@ -271,7 +271,7 @@ fn build_multi_attribute_mesh() -> (Mesh, Vec<VertexRecord>, usize) {
     write_u8s(&mut color_attribute, &colors);
     mesh.add_attribute(color_attribute);
 
-    for triangle in indices.chunks_exact(3) {
+    for triangle in indices.as_chunks::<3>().0 {
         mesh.add_face([
             PointIndex(triangle[0]),
             PointIndex(triangle[1]),
