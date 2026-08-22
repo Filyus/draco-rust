@@ -2390,8 +2390,8 @@ Decode, C++/Rust, above `1.00x` is the port ahead:
 | fan | 5 | `1.14x` | `1.16x` | `1.18x` | `1.17x` |
 | fan | 8 | `1.15x` | `1.14x` | `1.16x` | `1.15x` |
 
-Eleven of twelve cells move up from the default and the twelfth is grid speed 0,
-whose spread is `18-21%` in every run and which resolves nothing either way.
+Eleven of twelve cells move up from the default and the twelfth is grid speed
+0, whose spread is `18-21%` in every run and which resolves nothing either way.
 Individually most of these cells sit inside their own spread; what makes the
 direction evidence is that they all lean the same way while the control's own
 movement is scattered in sign across them.
@@ -2533,10 +2533,11 @@ Per-line attribution said what the excess was, and it was not arithmetic:
   instructions earlier. The encoder now records them beside the prediction
   choices, for exactly the reason those are recorded, and reuses them; the
   recompute stays as the fallback for an attribute quantized by a path that
-  did not record one. `valence_edgebreaker_encoded_mesh_info_matches_decoded_mesh`
-  pins the reuse: feeding it a transform built at the wrong bit depth fails it,
-  and forcing the fallback does not, which is the pair of probes that says the
-  test covers the branch rather than the outcome.
+  did not record one. The reuse is pinned by
+  `valence_edgebreaker_encoded_mesh_info_matches_decoded_mesh`: feeding it a
+  transform built at the wrong bit depth fails it, and forcing the fallback
+  does not, which is the pair of probes that says the test covers the branch
+  rather than the outcome.
 - **`floorf` cost `606,736` instructions and the reference pays none.**
   `f32::floor` is a call into libm on a baseline x86-64 target -- the
   instruction that would inline it is SSE4.1, which the default target does not
@@ -2611,8 +2612,8 @@ effect):
 | torus | 5 | `1.39x` | `1.43x` | `1645 -> 1606` |
 | torus | 8 | `1.38x` | `1.46x` | `1556 -> 1481` |
 
-All nine cells including speed 0 moved up; the three speed-0 cells by `0.01-0.03x`,
-which is inside their spread and is reported as direction only.
+All nine cells including speed 0 moved up; the three speed-0 cells by
+`0.01-0.03x`, which is inside their spread and is reported as direction only.
 
 Where the encode stands after the round, one encode at speed 5:
 
@@ -2801,13 +2802,13 @@ Speed 0 moved `+0.01` to `+0.06x` and is inside its spread on two of three
 payloads.
 
 The grid and the torus are at instruction parity with the reference -- the grid
-by a margin (`15,769` instructions in `31.8M`) too thin to call a lead; the ribbon
-is the one still carrying a gap, and after this round it is `2.59M` rather than
-`4.28M`, spread across attribute values and symbols (`+1.0M`), memset and
-memcpy (`+0.55M`), the corner table and connectivity together (`+1.0M`), and
-the driver (`+0.23M`). Nothing in that list is a block; the next thing worth
-doing on the encoder is splitting `encode_geometry_data`, because until that
-blob has names the `+1.0M` in it cannot be attributed to anything.
+by a margin too thin to call a lead, `15,769` instructions in `31.8M`. The
+ribbon is the one still carrying a gap, and after this round it is `2.59M`
+rather than `4.28M`, spread across attribute values and symbols (`+1.0M`),
+memset and memcpy (`+0.55M`), the corner table and connectivity together
+(`+1.0M`), and the driver (`+0.23M`). Nothing in that list is a block; the next
+thing worth doing on the encoder is splitting `encode_geometry_data`, because
+until that blob has names the `+1.0M` in it cannot be attributed to anything.
 
 ## Unexplored
 

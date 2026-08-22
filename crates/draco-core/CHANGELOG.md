@@ -216,7 +216,6 @@ premise holds, and the encoder reports the choices it makes for itself.
   mirror of upstream's two branches: below 2.0 the parent is the attribute
   itself, dequantized in place as soon as its own turn ends, and from 2.0 it is
   the portable copy.
-
 - **Breaking.** `MeshEncoder::encoded_mesh_info` is gone; `encode_with_info`
   takes its place, encoding and returning the `EncodedMeshInfo` by value in one
   call. `encode` itself now produces the bitstream and nothing else.
@@ -236,7 +235,6 @@ premise holds, and the encoder reports the choices it makes for itself.
   A point cloud's report really is a byproduct — it is assembled from what the
   encode already produced, without a second pass over anything — so there is
   nothing there for a caller to opt out of.
-
 - The encode paths do less work for the same output. Attribute quantization
   computed its parameters twice per encode, once for the encode and once to
   describe it; `f32::floor` in `quantize_float` was a call into libm on a
@@ -253,7 +251,6 @@ premise holds, and the encoder reports the choices it makes for itself.
   Nothing about the encoded bytes changes; every one of these is the same
   output computed with less work, and the byte-for-byte parity tests against
   C++ Draco are what says so.
-
 - The workspace builds release with `codegen-units = 1` and full LTO. This
   affects the binaries and benchmarks built *from this repository* and nothing
   a consumer gets: a dependency is built under the consuming workspace's own
