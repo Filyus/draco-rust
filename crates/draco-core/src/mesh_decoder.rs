@@ -237,9 +237,17 @@ impl MeshDecoder {
         }
 
         // 3. Decode Connectivity
-        self.decode_connectivity(in_buffer, out_mesh)?;
+        {
+            let _phase = crate::decode_phase_probe::PhaseTimer::start(
+                crate::decode_phase_probe::Phase::Connectivity,
+            );
+            self.decode_connectivity(in_buffer, out_mesh)?;
+        }
 
         // 4. Decode Attributes
+        let _phase = crate::decode_phase_probe::PhaseTimer::start(
+            crate::decode_phase_probe::Phase::Attributes,
+        );
         self.decode_attributes(in_buffer, out_mesh)
     }
 
@@ -1062,7 +1070,12 @@ impl MeshDecoder {
                     0 => {
                         let mut att_decoder = SequentialGenericAttributeDecoder::new();
                         att_decoder.init(&pc_decoder, att_id);
-                        att_decoder.decode_values(mesh, point_ids_for_values, buffer)?;
+                        {
+                            let _phase = crate::decode_phase_probe::PhaseTimer::start(
+                                crate::decode_phase_probe::Phase::Values,
+                            );
+                            att_decoder.decode_values(mesh, point_ids_for_values, buffer)?;
+                        }
                     }
                     1 => {
                         let mut att_decoder = SequentialIntegerAttributeDecoder::new();
@@ -1077,17 +1090,22 @@ impl MeshDecoder {
                         } else {
                             None
                         };
-                        att_decoder.decode_values(
-                            mesh,
-                            point_ids_for_values,
-                            buffer,
-                            corner_table_for_decoder,
-                            data_to_corner_map_override_for_values,
-                            vertex_to_data_map_override_for_values,
-                            None,
-                            portable_parent_attribute,
-                            None,
-                        )?;
+                        {
+                            let _phase = crate::decode_phase_probe::PhaseTimer::start(
+                                crate::decode_phase_probe::Phase::Values,
+                            );
+                            att_decoder.decode_values(
+                                mesh,
+                                point_ids_for_values,
+                                buffer,
+                                corner_table_for_decoder,
+                                data_to_corner_map_override_for_values,
+                                vertex_to_data_map_override_for_values,
+                                None,
+                                portable_parent_attribute,
+                                None,
+                            )?;
+                        }
                     }
                     2 => {
                         let mut portable = PointAttribute::default();
@@ -1178,17 +1196,22 @@ impl MeshDecoder {
                         } else {
                             None
                         };
-                        att_decoder.decode_values(
-                            mesh,
-                            point_ids_for_values,
-                            buffer,
-                            corner_table_for_decoder,
-                            data_to_corner_map_override_for_values,
-                            vertex_to_data_map_override_for_values,
-                            Some(&mut portable),
-                            portable_parent_attribute,
-                            pre_hook_opt,
-                        )?;
+                        {
+                            let _phase = crate::decode_phase_probe::PhaseTimer::start(
+                                crate::decode_phase_probe::Phase::Values,
+                            );
+                            att_decoder.decode_values(
+                                mesh,
+                                point_ids_for_values,
+                                buffer,
+                                corner_table_for_decoder,
+                                data_to_corner_map_override_for_values,
+                                vertex_to_data_map_override_for_values,
+                                Some(&mut portable),
+                                portable_parent_attribute,
+                                pre_hook_opt,
+                            )?;
+                        }
                         // Below 2.0, upstream has no separate "portable" concept
                         // at all: an attribute's own decode dequantizes it in
                         // place immediately, so a later attribute in this same
@@ -1308,17 +1331,22 @@ impl MeshDecoder {
                         } else {
                             None
                         };
-                        att_decoder.decode_values(
-                            mesh,
-                            point_ids_for_values,
-                            buffer,
-                            corner_table_for_decoder,
-                            data_to_corner_map_override_for_values,
-                            vertex_to_data_map_override_for_values,
-                            Some(&mut portable),
-                            portable_parent_attribute,
-                            normal_hook,
-                        )?;
+                        {
+                            let _phase = crate::decode_phase_probe::PhaseTimer::start(
+                                crate::decode_phase_probe::Phase::Values,
+                            );
+                            att_decoder.decode_values(
+                                mesh,
+                                point_ids_for_values,
+                                buffer,
+                                corner_table_for_decoder,
+                                data_to_corner_map_override_for_values,
+                                vertex_to_data_map_override_for_values,
+                                Some(&mut portable),
+                                portable_parent_attribute,
+                                normal_hook,
+                            )?;
+                        }
                         pending_normals.push(PendingNormal {
                             att_id,
                             portable,
@@ -1403,6 +1431,9 @@ impl MeshDecoder {
                 .map_err(|e| DracoError::general(format!("Failed to decode normals: {e}")))?;
             }
 
+            let _phase = crate::decode_phase_probe::PhaseTimer::start(
+                crate::decode_phase_probe::Phase::MapFix,
+            );
             // Apply UpdatePointToAttributeIndexMapping for Edgebreaker (method 1)
             // This creates the final mapping from mesh points to attribute values,
             // matching C++ MeshTraversalSequencer::UpdatePointToAttributeIndexMapping.
@@ -1534,6 +1565,8 @@ impl MeshDecoder {
         processed_connectivity_corners: &[u32],
         already_validated: bool,
     ) -> Result<AttributeTraversalArrays, DracoError> {
+        let _phase =
+            crate::decode_phase_probe::PhaseTimer::start(crate::decode_phase_probe::Phase::Setup);
         // Reject an inconsistent (e.g. seam-modified) corner table before the DFS
         // indexes per-vertex / per-face arrays by table-derived ids.
         if !already_validated && !corner_table.is_index_consistent() {
@@ -1620,6 +1653,8 @@ impl MeshDecoder {
         mesh: &Mesh,
         _processed_connectivity_corners: &[u32],
     ) -> Result<AttributeTraversalArrays, DracoError> {
+        let _phase =
+            crate::decode_phase_probe::PhaseTimer::start(crate::decode_phase_probe::Phase::Setup);
         // Matches C++ MaxPredictionDegreeTraverser (MESH_TRAVERSAL_PREDICTION_DEGREE).
         let corner_table = self.corner_table.as_ref().ok_or_else(|| {
             DracoError::general(

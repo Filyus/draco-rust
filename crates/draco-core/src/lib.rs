@@ -113,6 +113,10 @@ pub mod data_buffer;
 /// the ratio is an implementation detail, not a knob.
 #[cfg(feature = "decoder")]
 mod decode_budget;
+/// Coarse decode phase timing for the performance harness (`DECODE_PHASES=1`).
+#[doc(hidden)]
+#[cfg(feature = "decoder")]
+pub mod decode_phase_probe;
 #[doc(hidden)]
 #[cfg(any(feature = "encoder", feature = "decoder"))]
 pub mod dynamic_integer_points_kd_tree;

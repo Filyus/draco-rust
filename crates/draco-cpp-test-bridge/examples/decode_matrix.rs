@@ -84,6 +84,25 @@ fn rust_decode_us(encoded: &[u8], iters: u32) -> (f64, (usize, usize), f64, f64)
     )
 }
 
+/// Prints the per-decode phase split when `DECODE_PHASES=1` -- see
+/// `draco_core::decode_phase_probe`. `setup`/`values`/`mapfix` are subsets of
+/// `attrs`, not siblings.
+fn report_phases(label: &str, speed: i32, iters: u32) {
+    if !draco_core::decode_phase_probe::enabled() {
+        return;
+    }
+    let nanos = draco_core::decode_phase_probe::take();
+    let line: Vec<String> = draco_core::decode_phase_probe::PHASE_NAMES
+        .iter()
+        .zip(nanos)
+        .map(|(name, n)| format!("{name} {:.0}", n as f64 / 1000.0 / iters as f64))
+        .collect();
+    eprintln!(
+        "PHASES {label} speed {speed}: {} us/decode",
+        line.join(", ")
+    );
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let rounds: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(3);
@@ -140,6 +159,7 @@ fn main() {
                 }
 
                 let (us, shape, count, alloc_bytes) = rust_decode_us(bytes, iters);
+                report_phases(&paths[p], speeds[s], iters);
                 rust[p][s].push(us);
                 shapes[p][s] = ((result.num_points, result.num_faces), shape);
                 allocs[p][s] = (count, alloc_bytes);
