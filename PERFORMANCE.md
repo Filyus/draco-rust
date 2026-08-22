@@ -2257,17 +2257,33 @@ rounds, **all eight seeded cells negative** against a flat C++ control:
 grid s5 `-4.8%`, fan s5 `-6.8%`, fan s0 `-5.5%`, the rest `-1.1` to
 `-3.4%`.
 
-**What did not** (`c2f2178`): the corner table's consistency scan carried
-a comment claiming its branch-free max reduction vectorises. Outlining
-the call under callgrind priced it at `338,620` instructions -- `3.1` per
-element, which is scalar. Unsigned 32-bit max is `pmaxud`, SSE4.1, and
-the baseline `x86-64` target has SSE2; rebuilt for `x86-64-v2` the
-identical source costs `210,103`. So the loop shape was never the
-problem, and two rewrites aimed at the shape (eight accumulators to break
-the reduction chain, then constant indices to keep them in registers)
-each measured within `30` instructions of the original. Both reverted;
-the comment now records the measurement and points at the target flag,
-which belongs to whoever builds the crate, as the allocator does.
+**What the same scan then taught twice** (`c2f2178`, then `1a7dbb9`): the
+corner table's consistency scan carried a comment claiming its
+branch-free max reduction vectorises. Outlining the call under callgrind
+priced it at `338,594` instructions -- `3.1` per element, which is
+scalar. Unsigned 32-bit max is `pmaxud`, SSE4.1, and the baseline
+`x86-64` target has SSE2; rebuilt for `x86-64-v2` the identical source
+costs `210,103`. Two rewrites aimed at the loop's *shape* -- eight
+accumulators to break the reduction's dependency chain, then constant
+indices to hold them in registers -- each measured within `30`
+instructions of the original, and the note recording that concluded the
+ISA was the only lever left.
+
+**That conclusion was wrong within the hour**, and how it was wrong is
+the transferable part: two shape rewrites failing licensed only "these
+two shapes do not help", never "no loop change helps" -- the *operator*
+had not been on trial. The max was never wanted, because the answer is a
+boolean, and an OR of comparisons reduces just as well while having an
+SSE2 form: unsigned compare through signed `pcmpgtd`, both sides biased
+by 2^31, and the bias free because toggling the top bit is adding 2^31
+modulo 2^32, so it folds into the increment already applied -- `(v + 1)
+^ 2^31` is `v + 0x8000_0001` in one instruction. Baseline cost falls to
+`216,785` (`-36%`), which is what the SSE4.1 rebuild had bought, now had
+without asking anything of whoever builds the crate. Counted, not
+clocked: `0.8%` of a decode's instructions is below what the paired
+harness resolves. The bias got the boundary test it needs -- values
+either side of 2^31, where every prior case sat far below -- checked to
+fail against a bias-less implementation before being trusted.
 
 **Still open in connectivity, by size of the excess:** the symbol loop
 itself with its un-inlined helpers (`4.13M` against `2.25M`),
