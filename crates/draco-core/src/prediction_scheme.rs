@@ -175,14 +175,14 @@ pub trait PredictionSchemeEncodingTransform<DataType, CorrType> {
 }
 
 #[cfg(feature = "decoder")]
-pub trait PredictionSchemeDecodingTransform<DataType, CorrType> {
+pub trait PredictionSchemeDecodingTransform<DataType> {
     fn init(&mut self, num_components: usize);
-    fn compute_original_value(
-        &self,
-        predicted_vals: &[DataType],
-        corr_vals: &[CorrType],
-        out_original_vals: &mut [DataType],
-    );
+    /// Reconstructs one entry in place: `data` holds the correction on entry
+    /// and the original value on return. The single-buffer contract mirrors
+    /// upstream, whose decoders pass the same pointer as both `in_corr` and
+    /// `out_data`; it is what lets the sequential decoder run prediction on
+    /// the correction buffer itself instead of allocating a second one.
+    fn compute_original_value(&self, predicted_vals: &[DataType], data: &mut [DataType]);
     fn decode_transform_data(
         &mut self,
         buffer: &mut crate::decoder_buffer::DecoderBuffer,
@@ -209,11 +209,14 @@ pub trait PredictionSchemeEncoder<'a, DataType, CorrType>: PredictionScheme<'a> 
 }
 
 #[cfg(feature = "decoder")]
-pub trait PredictionSchemeDecoder<'a, DataType, CorrType>: PredictionScheme<'a> {
+pub trait PredictionSchemeDecoder<'a, DataType>: PredictionScheme<'a> {
+    /// Reconstructs all values in place: `data` holds the decoded corrections
+    /// on entry and the original values on return. Safe for every scheme
+    /// because each entry reads its correction only at the offset it is about
+    /// to write, and predictions come from entries already reconstructed.
     fn compute_original_values(
         &mut self,
-        in_corr: &[CorrType],
-        out_data: &mut [DataType],
+        data: &mut [DataType],
         size: usize,
         num_components: usize,
         entry_to_point_id_map: Option<EntryToPointIdMap<'_>>,

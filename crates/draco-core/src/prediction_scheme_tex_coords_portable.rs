@@ -289,9 +289,7 @@ impl<'a> PredictionScheme<'a> for MeshPredictionSchemeTexCoordsPortableDecoder<'
 }
 
 #[cfg(feature = "decoder")]
-impl<'a> PredictionSchemeDecoder<'a, i32, i32>
-    for MeshPredictionSchemeTexCoordsPortableDecoder<'a>
-{
+impl<'a> PredictionSchemeDecoder<'a, i32> for MeshPredictionSchemeTexCoordsPortableDecoder<'a> {
     fn decode_prediction_data(&mut self, buffer: &mut DecoderBuffer) -> Status {
         let num_orientations: i32 = buffer.decode::<i32>().map_err(|_| {
             DracoError::buffer(
@@ -362,8 +360,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
 
     fn compute_original_values(
         &mut self,
-        in_corr: &[i32],
-        out_data: &mut [i32],
+        data: &mut [i32],
         _size: usize,
         num_components: usize,
         entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
@@ -407,11 +404,10 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
                 "Portable texture-coordinate prediction value count overflow".to_string(),
             ));
         };
-        if in_corr.len() < required_values || out_data.len() < required_values {
+        if data.len() < required_values {
             return Err(DracoError::general(format!(
-                "Portable texture-coordinate prediction needs {required_values} values, has {} corrections and {} outputs",
-                in_corr.len(),
-                out_data.len()
+                "Portable texture-coordinate prediction needs {required_values} values, has {}",
+                data.len()
             )));
         }
 
@@ -419,10 +415,10 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
         for p in 0..corner_map_size {
             let corner_id = CornerIndex(data_to_corner_map[p]);
 
-            // We pass `out_data` as `data` because it contains the values decoded so far.
+            // The buffer itself is the source of the values decoded so far.
             if !self.compute_predicted_value(
                 corner_id,
-                out_data,
+                data,
                 p as i32,
                 entry_map,
                 &mut predicted_value,
@@ -433,11 +429,8 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32>
             }
 
             let dst_offset = p * num_components;
-            self.transform.compute_original_value(
-                &predicted_value,
-                &in_corr[dst_offset..dst_offset + 2],
-                &mut out_data[dst_offset..dst_offset + 2],
-            );
+            self.transform
+                .compute_original_value(&predicted_value, &mut data[dst_offset..dst_offset + 2]);
         }
         Ok(())
     }

@@ -50,7 +50,7 @@ impl PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform {
     }
 }
 
-impl PredictionSchemeDecodingTransform<i32, i32>
+impl PredictionSchemeDecodingTransform<i32>
     for PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform
 {
     fn init(&mut self, num_components: usize) {
@@ -90,16 +90,11 @@ impl PredictionSchemeDecodingTransform<i32, i32>
         Ok(())
     }
 
-    fn compute_original_value(
-        &self,
-        pred_vals: &[i32],
-        corr_vals: &[i32],
-        out_orig_vals: &mut [i32],
-    ) {
+    fn compute_original_value(&self, pred_vals: &[i32], data: &mut [i32]) {
         let center = self.base.base().center_value();
 
         let mut pred = [pred_vals[0] - center, pred_vals[1] - center];
-        let corr = [corr_vals[0], corr_vals[1]];
+        let corr = [data[0], data[1]];
 
         let pred_is_in_diamond = self.base.base().is_in_diamond(pred[0], pred[1]);
         if !pred_is_in_diamond {
@@ -136,8 +131,8 @@ impl PredictionSchemeDecodingTransform<i32, i32>
             self.base.base().invert_diamond(&mut s[0], &mut t[0]);
         }
 
-        out_orig_vals[0] = orig[0] + center;
-        out_orig_vals[1] = orig[1] + center;
+        data[0] = orig[0] + center;
+        data[1] = orig[1] + center;
     }
 
     fn get_type(&self) -> PredictionSchemeTransformType {

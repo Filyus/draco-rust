@@ -200,15 +200,15 @@ where
 }
 
 #[cfg(feature = "decoder")]
-pub struct MeshPredictionSchemeMultiParallelogramDecoder<'a, DataType, CorrType, Transform> {
+pub struct MeshPredictionSchemeMultiParallelogramDecoder<'a, DataType, Transform> {
     transform: Transform,
     mesh_data: MeshPredictionSchemeData<'a>,
-    _marker: PhantomData<(DataType, CorrType)>,
+    _marker: PhantomData<DataType>,
 }
 
 #[cfg(feature = "decoder")]
-impl<'a, DataType, CorrType, Transform>
-    MeshPredictionSchemeMultiParallelogramDecoder<'a, DataType, CorrType, Transform>
+impl<'a, DataType, Transform>
+    MeshPredictionSchemeMultiParallelogramDecoder<'a, DataType, Transform>
 {
     pub fn new(transform: Transform, mesh_data: MeshPredictionSchemeData<'a>) -> Self {
         Self {
@@ -220,10 +220,10 @@ impl<'a, DataType, CorrType, Transform>
 }
 
 #[cfg(feature = "decoder")]
-impl<'a, DataType, CorrType, Transform> PredictionScheme<'a>
-    for MeshPredictionSchemeMultiParallelogramDecoder<'a, DataType, CorrType, Transform>
+impl<'a, DataType, Transform> PredictionScheme<'a>
+    for MeshPredictionSchemeMultiParallelogramDecoder<'a, DataType, Transform>
 where
-    Transform: PredictionSchemeDecodingTransform<DataType, CorrType>,
+    Transform: PredictionSchemeDecodingTransform<DataType>,
 {
     fn get_prediction_method(&self) -> PredictionSchemeMethod {
         PredictionSchemeMethod::MeshPredictionMultiParallelogram
@@ -253,12 +253,11 @@ where
 }
 
 #[cfg(feature = "decoder")]
-impl<'a, DataType, CorrType, Transform> PredictionSchemeDecoder<'a, DataType, CorrType>
-    for MeshPredictionSchemeMultiParallelogramDecoder<'a, DataType, CorrType, Transform>
+impl<'a, DataType, Transform> PredictionSchemeDecoder<'a, DataType>
+    for MeshPredictionSchemeMultiParallelogramDecoder<'a, DataType, Transform>
 where
     DataType: ParallelogramDataType + Copy + Default + From<i32> + Into<i64> + std::fmt::Debug,
-    CorrType: Copy + Default + std::fmt::Debug,
-    Transform: PredictionSchemeDecodingTransform<DataType, CorrType>,
+    Transform: PredictionSchemeDecodingTransform<DataType>,
 {
     fn decode_prediction_data(&mut self, buffer: &mut DecoderBuffer) -> Status {
         self.transform.decode_transform_data(buffer)
@@ -266,8 +265,7 @@ where
 
     fn compute_original_values(
         &mut self,
-        in_corr: &[CorrType],
-        out_data: &mut [DataType],
+        data: &mut [DataType],
         _size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
@@ -295,11 +293,10 @@ where
                 "Multi-parallelogram prediction value count overflow".to_string(),
             ));
         };
-        if in_corr.len() < required_values || out_data.len() < required_values {
+        if data.len() < required_values {
             return Err(DracoError::general(format!(
-                "Multi-parallelogram prediction needs {required_values} values, has {} corrections and {} outputs",
-                in_corr.len(),
-                out_data.len()
+                "Multi-parallelogram prediction needs {required_values} values, has {}",
+                data.len()
             )));
         }
 
@@ -308,23 +305,18 @@ where
         let mut pred_vals = vec![DataType::default(); num_components];
         let mut parallelogram_pred_vals = vec![DataType::default(); num_components];
 
-        self.transform.compute_original_value(
-            &pred_vals,
-            &in_corr[0..num_components],
-            &mut out_data[0..num_components],
-        );
+        self.transform
+            .compute_original_value(&pred_vals, &mut data[0..num_components]);
 
         for p in 1..data_to_corner_map.len() {
             let start_corner_id = CornerIndex(data_to_corner_map[p]);
             if start_corner_id == INVALID_CORNER_INDEX {
                 let src_offset = (p - 1) * num_components;
                 let dst_offset = p * num_components;
-                pred_vals.copy_from_slice(&out_data[src_offset..src_offset + num_components]);
-                self.transform.compute_original_value(
-                    &pred_vals,
-                    &in_corr[dst_offset..dst_offset + num_components],
-                    &mut out_data[dst_offset..dst_offset + num_components],
-                );
+                let (decoded, rest) = data.split_at_mut(dst_offset);
+                pred_vals.copy_from_slice(&decoded[src_offset..src_offset + num_components]);
+                self.transform
+                    .compute_original_value(&pred_vals, &mut rest[..num_components]);
                 continue;
             }
 
@@ -338,7 +330,7 @@ where
                     corner_id,
                     table,
                     vertex_to_data_map,
-                    out_data,
+                    data,
                     num_components,
                     &mut parallelogram_pred_vals,
                 ) {
@@ -358,7 +350,8 @@ where
             let dst_offset = p * num_components;
             if num_parallelograms == 0 {
                 let src_offset = (p - 1) * num_components;
-                pred_vals.copy_from_slice(&out_data[src_offset..src_offset + num_components]);
+                let (head, _) = data.split_at(dst_offset);
+                pred_vals.copy_from_slice(&head[src_offset..src_offset + num_components]);
             } else {
                 for value in &mut pred_vals {
                     *value = DataType::from(((*value).into() / num_parallelograms as i64) as i32);
@@ -367,8 +360,7 @@ where
 
             self.transform.compute_original_value(
                 &pred_vals,
-                &in_corr[dst_offset..dst_offset + num_components],
-                &mut out_data[dst_offset..dst_offset + num_components],
+                &mut data[dst_offset..dst_offset + num_components],
             );
         }
 
@@ -412,17 +404,12 @@ mod tests {
         }
     }
 
-    impl PredictionSchemeDecodingTransform<i32, i32> for IdentityTransform {
+    impl PredictionSchemeDecodingTransform<i32> for IdentityTransform {
         fn init(&mut self, _num_components: usize) {}
 
-        fn compute_original_value(
-            &self,
-            predicted_vals: &[i32],
-            corr_vals: &[i32],
-            out_original_vals: &mut [i32],
-        ) {
-            for i in 0..out_original_vals.len() {
-                out_original_vals[i] = predicted_vals[i] + corr_vals[i];
+        fn compute_original_value(&self, predicted_vals: &[i32], data: &mut [i32]) {
+            for i in 0..data.len() {
+                data[i] += predicted_vals[i];
             }
         }
 
@@ -445,16 +432,16 @@ mod tests {
         let mut mesh_data = MeshPredictionSchemeData::new();
         mesh_data.set(&table, &data_to_corner_map, &vertex_to_data_map);
 
-        let mut decoder = MeshPredictionSchemeMultiParallelogramDecoder::<
-            i32,
-            i32,
-            IdentityTransform,
-        >::new(IdentityTransform, mesh_data);
+        let mut decoder =
+            MeshPredictionSchemeMultiParallelogramDecoder::<i32, IdentityTransform>::new(
+                IdentityTransform,
+                mesh_data,
+            );
 
         let in_corr = [10, 2, 3];
-        let mut out = [0; 3];
+        let mut out = in_corr;
         assert!(decoder
-            .compute_original_values(&in_corr, &mut out, 3, 1, None)
+            .compute_original_values(&mut out, 3, 1, None)
             .is_ok());
         assert_eq!(out, [10, 12, 15]);
     }
@@ -492,16 +479,15 @@ mod tests {
         let mut mesh_data = MeshPredictionSchemeData::new();
         mesh_data.set(&table, &data_to_corner_map, &vertex_to_data_map);
 
-        let mut decoder = MeshPredictionSchemeMultiParallelogramDecoder::<
-            i32,
-            i32,
-            IdentityTransform,
-        >::new(IdentityTransform, mesh_data);
+        let mut decoder =
+            MeshPredictionSchemeMultiParallelogramDecoder::<i32, IdentityTransform>::new(
+                IdentityTransform,
+                mesh_data,
+            );
 
-        let in_corr = [10, 20, 20, 5];
-        let mut out = [0; 4];
+        let mut out = [10, 20, 20, 5];
         assert!(decoder
-            .compute_original_values(&in_corr, &mut out, 4, 1, None)
+            .compute_original_values(&mut out, 4, 1, None)
             .is_ok());
         assert_eq!(out, [10, 30, 50, 55]);
     }
@@ -550,14 +536,14 @@ mod tests {
             .compute_correction_values(&values, &mut corrections, 4, 1, None)
             .is_ok());
 
-        let mut decoder = MeshPredictionSchemeMultiParallelogramDecoder::<
-            i32,
-            i32,
-            IdentityTransform,
-        >::new(IdentityTransform, mesh_data);
-        let mut decoded = [0; 4];
+        let mut decoder =
+            MeshPredictionSchemeMultiParallelogramDecoder::<i32, IdentityTransform>::new(
+                IdentityTransform,
+                mesh_data,
+            );
+        let mut decoded = corrections;
         assert!(decoder
-            .compute_original_values(&corrections, &mut decoded, 4, 1, None)
+            .compute_original_values(&mut decoded, 4, 1, None)
             .is_ok());
         assert_eq!(decoded, values);
     }

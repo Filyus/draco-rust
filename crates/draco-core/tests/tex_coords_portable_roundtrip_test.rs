@@ -126,11 +126,11 @@ fn test_tex_coords_portable_roundtrip() {
 
     assert!(decoder.decode_prediction_data(&mut decoder_buffer).is_ok());
 
-    let mut out_values = vec![0i32; 8];
+    // The decoder reconstructs in place: corrections in, values out.
+    let mut out_values = out_corr.clone();
 
     assert!(decoder
         .compute_original_values(
-            &out_corr,
             &mut out_values,
             4,
             2,

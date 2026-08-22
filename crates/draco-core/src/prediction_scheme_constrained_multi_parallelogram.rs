@@ -733,23 +733,18 @@ impl<'a, DataType, CorrType, Transform>
 }
 
 #[cfg(feature = "decoder")]
-pub struct MeshPredictionSchemeConstrainedMultiParallelogramDecoder<
-    'a,
-    DataType,
-    CorrType,
-    Transform,
-> {
+pub struct MeshPredictionSchemeConstrainedMultiParallelogramDecoder<'a, DataType, Transform> {
     mesh_data: MeshPredictionSchemeData<'a>,
     transform: Transform,
     is_crease_edge: [Vec<bool>; MAX_NUM_PARALLELOGRAMS],
-    _marker: PhantomData<(DataType, CorrType)>,
+    _marker: PhantomData<DataType>,
 }
 
 #[cfg(feature = "decoder")]
-impl<'a, DataType, CorrType, Transform>
-    MeshPredictionSchemeConstrainedMultiParallelogramDecoder<'a, DataType, CorrType, Transform>
+impl<'a, DataType, Transform>
+    MeshPredictionSchemeConstrainedMultiParallelogramDecoder<'a, DataType, Transform>
 where
-    Transform: PredictionSchemeDecodingTransform<DataType, CorrType>,
+    Transform: PredictionSchemeDecodingTransform<DataType>,
 {
     pub fn new(transform: Transform, mesh_data: MeshPredictionSchemeData<'a>) -> Self {
         Self {
@@ -762,10 +757,10 @@ where
 }
 
 #[cfg(feature = "decoder")]
-impl<'a, DataType, CorrType, Transform> PredictionScheme<'a>
-    for MeshPredictionSchemeConstrainedMultiParallelogramDecoder<'a, DataType, CorrType, Transform>
+impl<'a, DataType, Transform> PredictionScheme<'a>
+    for MeshPredictionSchemeConstrainedMultiParallelogramDecoder<'a, DataType, Transform>
 where
-    Transform: PredictionSchemeDecodingTransform<DataType, CorrType>,
+    Transform: PredictionSchemeDecodingTransform<DataType>,
 {
     fn get_prediction_method(&self) -> PredictionSchemeMethod {
         PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram
@@ -799,12 +794,11 @@ where
 }
 
 #[cfg(feature = "decoder")]
-impl<'a, DataType, CorrType, Transform> PredictionSchemeDecoder<'a, DataType, CorrType>
-    for MeshPredictionSchemeConstrainedMultiParallelogramDecoder<'a, DataType, CorrType, Transform>
+impl<'a, DataType, Transform> PredictionSchemeDecoder<'a, DataType>
+    for MeshPredictionSchemeConstrainedMultiParallelogramDecoder<'a, DataType, Transform>
 where
     DataType: ParallelogramDataType + Into<i64> + Copy + Default + From<i32>,
-    CorrType: Copy + Default + From<DataType> + std::ops::Sub<Output = CorrType> + From<i32>,
-    Transform: PredictionSchemeDecodingTransform<DataType, CorrType>,
+    Transform: PredictionSchemeDecodingTransform<DataType>,
     i64: From<DataType>,
 {
     fn decode_prediction_data(&mut self, buffer: &mut DecoderBuffer) -> Status {
@@ -879,8 +873,7 @@ where
 
     fn compute_original_values(
         &mut self,
-        in_corr: &[CorrType],
-        out_data: &mut [DataType],
+        data: &mut [DataType],
         size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
@@ -908,11 +901,10 @@ where
         let Some(vertex_to_data_map) = self.mesh_data.vertex_to_data_map() else {
             return Err(missing("vertex-to-data map"));
         };
-        if in_corr.len() < size || out_data.len() < size {
+        if data.len() < size {
             return Err(DracoError::general(format!(
-                "Constrained multi-parallelogram prediction needs {size} values, has {} corrections and {} outputs",
-                in_corr.len(),
-                out_data.len()
+                "Constrained multi-parallelogram prediction needs {size} values, has {}",
+                data.len()
             )));
         }
 
@@ -925,11 +917,8 @@ where
 
         // First value
         if size > 0 {
-            self.transform.compute_original_value(
-                &zero_vals,
-                &in_corr[0..num_components],
-                &mut out_data[0..num_components],
-            );
+            self.transform
+                .compute_original_value(&zero_vals, &mut data[0..num_components]);
         }
 
         for data_id in 1..num_entries {
@@ -951,12 +940,11 @@ where
                 let prev_offset = (data_id - 1) * num_components;
                 predicted_val.fill(DataType::default());
                 for c in 0..num_components {
-                    predicted_val[c] = out_data[prev_offset + c];
+                    predicted_val[c] = data[prev_offset + c];
                 }
                 self.transform.compute_original_value(
                     &predicted_val,
-                    &in_corr[data_offset..data_offset + num_components],
-                    &mut out_data[data_offset..data_offset + num_components],
+                    &mut data[data_offset..data_offset + num_components],
                 );
                 continue;
             }
@@ -1066,9 +1054,9 @@ where
                         let v_opp_off = (vert_opp as usize) * num_components;
                         let v_next_off = (vert_next as usize) * num_components;
                         let v_prev_off = (vert_prev as usize) * num_components;
-                        if v_opp_off + num_components > out_data.len()
-                            || v_next_off + num_components > out_data.len()
-                            || v_prev_off + num_components > out_data.len()
+                        if v_opp_off + num_components > data.len()
+                            || v_next_off + num_components > data.len()
+                            || v_prev_off + num_components > data.len()
                         {
                             return Err(DracoError::general(
                                 "Parallelogram corner reads past the decoded values".to_string(),
@@ -1078,11 +1066,11 @@ where
                         // Slice each neighbour region to exactly num_components so the
                         // inner loop is bounds-check-free: the guard above proves the
                         // subslices are in range, and zipping equal-length slices indexes
-                        // via iterators rather than `[k]`. `out_data` is only read here,
+                        // via iterators rather than `[k]`. `data` is only read here,
                         // so the three shared immutable reborrows coexist.
-                        let v_opp = &out_data[v_opp_off..v_opp_off + num_components];
-                        let v_next = &out_data[v_next_off..v_next_off + num_components];
-                        let v_prev = &out_data[v_prev_off..v_prev_off + num_components];
+                        let v_opp = &data[v_opp_off..v_opp_off + num_components];
+                        let v_next = &data[v_next_off..v_next_off + num_components];
+                        let v_prev = &data[v_prev_off..v_prev_off + num_components];
                         for (((pv, &n), &pr), &op) in multi_pred_vals
                             .iter_mut()
                             .zip(v_next)
@@ -1102,12 +1090,11 @@ where
                 let prev_offset = (data_id - 1) * num_components;
                 predicted_val.fill(DataType::default());
                 for c in 0..num_components {
-                    predicted_val[c] = out_data[prev_offset + c];
+                    predicted_val[c] = data[prev_offset + c];
                 }
                 self.transform.compute_original_value(
                     &predicted_val,
-                    &in_corr[data_offset..data_offset + num_components],
-                    &mut out_data[data_offset..data_offset + num_components],
+                    &mut data[data_offset..data_offset + num_components],
                 );
             } else {
                 // C++ decoder uses truncating integer division (not rounding)
@@ -1118,8 +1105,7 @@ where
                 }
                 self.transform.compute_original_value(
                     &multi_pred_vals,
-                    &in_corr[data_offset..data_offset + num_components],
-                    &mut out_data[data_offset..data_offset + num_components],
+                    &mut data[data_offset..data_offset + num_components],
                 );
             }
         }
@@ -1152,7 +1138,6 @@ mod tests {
         buffer.set_version(2, 2);
 
         let mut decoder = MeshPredictionSchemeConstrainedMultiParallelogramDecoder::<
-            i32,
             i32,
             PredictionSchemeWrapDecodingTransform<i32>,
         >::new(PredictionSchemeWrapDecodingTransform::new(), mesh_data);

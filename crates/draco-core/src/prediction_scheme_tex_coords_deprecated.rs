@@ -575,7 +575,7 @@ impl<'a, Transform> MeshPredictionSchemeTexCoordsDeprecatedDecoder<'a, Transform
 impl<'a, Transform> PredictionScheme<'a>
     for MeshPredictionSchemeTexCoordsDeprecatedDecoder<'a, Transform>
 where
-    Transform: PredictionSchemeDecodingTransform<i32, i32>,
+    Transform: PredictionSchemeDecodingTransform<i32>,
 {
     fn get_prediction_method(&self) -> PredictionSchemeMethod {
         PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated
@@ -611,10 +611,10 @@ where
 }
 
 #[cfg(feature = "decoder")]
-impl<'a, Transform> PredictionSchemeDecoder<'a, i32, i32>
+impl<'a, Transform> PredictionSchemeDecoder<'a, i32>
     for MeshPredictionSchemeTexCoordsDeprecatedDecoder<'a, Transform>
 where
-    Transform: PredictionSchemeDecodingTransform<i32, i32>,
+    Transform: PredictionSchemeDecodingTransform<i32>,
 {
     fn decode_prediction_data(&mut self, buffer: &mut DecoderBuffer) -> Status {
         let bitstream_version = buffer.bitstream_version();
@@ -673,8 +673,7 @@ where
 
     fn compute_original_values(
         &mut self,
-        in_corr: &[i32],
-        out_data: &mut [i32],
+        data: &mut [i32],
         _size: usize,
         num_components: usize,
         entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
@@ -711,11 +710,10 @@ where
                 "Texture-coordinate prediction value count overflow".to_string(),
             ));
         };
-        if in_corr.len() < required_values || out_data.len() < required_values {
+        if data.len() < required_values {
             return Err(DracoError::general(format!(
-                "Texture-coordinate prediction needs {required_values} values, has {} corrections and {} outputs",
-                in_corr.len(),
-                out_data.len()
+                "Texture-coordinate prediction needs {required_values} values, has {}",
+                data.len()
             )));
         }
 
@@ -724,7 +722,7 @@ where
         for (p, &corner) in data_to_corner_map.iter().enumerate() {
             if !self.compute_predicted_value(
                 CornerIndex(corner),
-                out_data,
+                data,
                 p as i32,
                 entry_map,
                 &mut predicted_value,
@@ -736,8 +734,7 @@ where
             let dst_offset = p * num_components;
             self.transform.compute_original_value(
                 &predicted_value,
-                &in_corr[dst_offset..dst_offset + num_components],
-                &mut out_data[dst_offset..dst_offset + num_components],
+                &mut data[dst_offset..dst_offset + num_components],
             );
         }
 
@@ -880,11 +877,9 @@ mod tests {
         assert!(decoder.set_parent_attribute(&pos).is_ok());
         assert!(decoder.decode_prediction_data(&mut buffer).is_ok());
 
-        let in_corr = [0, 0, 10, 0, 0, 0];
-        let mut out = [0; 6];
+        let mut out = [0, 0, 10, 0, 0, 0];
         assert!(decoder
             .compute_original_values(
-                &in_corr,
                 &mut out,
                 6,
                 2,
@@ -977,10 +972,9 @@ mod tests {
         buffer.set_version(2, 2);
         assert!(decoder.decode_prediction_data(&mut buffer).is_ok());
 
-        let mut decoded = [0; 6];
+        let mut decoded = corrections;
         assert!(decoder
             .compute_original_values(
-                &corrections,
                 &mut decoded,
                 values.len(),
                 2,

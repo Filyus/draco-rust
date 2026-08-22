@@ -81,8 +81,8 @@ fn test_normal_octahedron_transform_decoding() {
     // Decode point 0: pred=(0,0), corr=(511, 511)
     let pred0 = [0, 0];
     let corr0 = [511, 511];
-    let mut out0 = [0i32; 2];
-    transform.compute_original_value(&pred0, &corr0, &mut out0);
+    let mut out0 = corr0;
+    transform.compute_original_value(&pred0, &mut out0);
     println!(
         "Decoded Point 0: pred={:?}, corr={:?}, out={:?}",
         pred0, corr0, out0
@@ -91,8 +91,8 @@ fn test_normal_octahedron_transform_decoding() {
     // Decode point 1: pred=(decoded point 0), corr=(511, 511)
     let pred1 = out0;
     let corr1 = [511, 511];
-    let mut out1 = [0i32; 2];
-    transform.compute_original_value(&pred1, &corr1, &mut out1);
+    let mut out1 = corr1;
+    transform.compute_original_value(&pred1, &mut out1);
     println!(
         "Decoded Point 1: pred={:?}, corr={:?}, out={:?}",
         pred1, corr1, out1
@@ -101,8 +101,8 @@ fn test_normal_octahedron_transform_decoding() {
     // Decode point 2: pred=(decoded point 1), corr=(511, 0)
     let pred2 = out1;
     let corr2 = [511, 0];
-    let mut out2 = [0i32; 2];
-    transform.compute_original_value(&pred2, &corr2, &mut out2);
+    let mut out2 = corr2;
+    transform.compute_original_value(&pred2, &mut out2);
     println!(
         "Decoded Point 2: pred={:?}, corr={:?}, out={:?}",
         pred2, corr2, out2

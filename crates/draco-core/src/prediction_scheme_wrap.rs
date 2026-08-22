@@ -169,7 +169,7 @@ where
 }
 
 #[cfg(feature = "decoder")]
-impl PredictionSchemeDecodingTransform<i32, i32> for PredictionSchemeWrapDecodingTransform<i32> {
+impl PredictionSchemeDecodingTransform<i32> for PredictionSchemeWrapDecodingTransform<i32> {
     fn get_type(&self) -> PredictionSchemeTransformType {
         PredictionSchemeTransformType::Wrap
     }
@@ -180,12 +180,7 @@ impl PredictionSchemeDecodingTransform<i32, i32> for PredictionSchemeWrapDecodin
     }
 
     #[inline(always)]
-    fn compute_original_value(
-        &self,
-        predicted_vals: &[i32],
-        corr_vals: &[i32],
-        out_original_vals: &mut [i32],
-    ) {
+    fn compute_original_value(&self, predicted_vals: &[i32], data: &mut [i32]) {
         // Left branching on purpose. Both tests are thresholds on decoded data
         // rather than on a pattern, which is the shape where folding a branch
         // into arithmetic usually pays -- but there is no branch here to fold:
@@ -206,7 +201,7 @@ impl PredictionSchemeDecodingTransform<i32, i32> for PredictionSchemeWrapDecodin
                 pred = self.max_value;
             }
 
-            let mut val = pred.wrapping_add(corr_vals[i]);
+            let mut val = pred.wrapping_add(data[i]);
 
             if val < self.min_value {
                 val = val.wrapping_add(self.max_dif);
@@ -214,7 +209,7 @@ impl PredictionSchemeDecodingTransform<i32, i32> for PredictionSchemeWrapDecodin
                 val = val.wrapping_sub(self.max_dif);
             }
 
-            out_original_vals[i] = val;
+            data[i] = val;
         }
     }
 
@@ -343,8 +338,8 @@ mod tests {
 
             for pred in [i32::MIN, -7, -1, 0, 1, 7, i32::MAX] {
                 for corr in [i32::MIN, -8, -1, 0, 1, 8, i32::MAX] {
-                    let mut out = [0i32];
-                    transform.compute_original_value(&[pred], &[corr], &mut out);
+                    let mut out = [corr];
+                    transform.compute_original_value(&[pred], &mut out);
                     assert_eq!(
                         out[0],
                         branching(pred, corr, min_value, max_value, max_dif),

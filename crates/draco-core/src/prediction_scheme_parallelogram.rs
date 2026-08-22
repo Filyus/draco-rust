@@ -217,17 +217,10 @@ impl<DataType, CorrType> PredictionSchemeParallelogramDecodingTransform<DataType
 }
 
 #[cfg(feature = "decoder")]
-impl<DataType, CorrType> PredictionSchemeDecodingTransform<DataType, CorrType>
+impl<DataType, CorrType> PredictionSchemeDecodingTransform<DataType>
     for PredictionSchemeParallelogramDecodingTransform<DataType, CorrType>
 where
-    DataType: ParallelogramDataType
-        + std::ops::Add<Output = DataType>
-        + From<CorrType>
-        + From<i32>
-        + Into<i64>,
-    CorrType: Copy + Default + Into<i32>,
-    i64: From<DataType>,
-    i32: From<CorrType>,
+    DataType: ParallelogramDataType + From<i32> + Into<i64>,
 {
     fn get_type(&self) -> PredictionSchemeTransformType {
         PredictionSchemeTransformType::Parallelogram
@@ -237,17 +230,11 @@ where
         // No init needed
     }
 
-    fn compute_original_value(
-        &self,
-        predicted_vals: &[DataType],
-        corr_vals: &[CorrType],
-        out_original_vals: &mut [DataType],
-    ) {
+    fn compute_original_value(&self, predicted_vals: &[DataType], data: &mut [DataType]) {
         for i in 0..predicted_vals.len() {
             let p: i64 = predicted_vals[i].into();
-            let c: i32 = corr_vals[i].into();
-            let o = p + c as i64;
-            out_original_vals[i] = (o as i32).into(); // Assuming i32
+            let c: i64 = data[i].into();
+            data[i] = ((p + c) as i32).into();
         }
     }
 
@@ -406,18 +393,16 @@ where
 }
 
 #[cfg(feature = "decoder")]
-pub struct MeshPredictionSchemeParallelogramDecoder<'a, DataType, CorrType, Transform> {
+pub struct MeshPredictionSchemeParallelogramDecoder<'a, DataType, Transform> {
     #[allow(dead_code)]
     attribute: &'a PointAttribute,
     transform: Transform,
     mesh_data: MeshPredictionSchemeData<'a>,
-    _marker: PhantomData<(DataType, CorrType)>,
+    _marker: PhantomData<DataType>,
 }
 
 #[cfg(feature = "decoder")]
-impl<'a, DataType, CorrType, Transform>
-    MeshPredictionSchemeParallelogramDecoder<'a, DataType, CorrType, Transform>
-{
+impl<'a, DataType, Transform> MeshPredictionSchemeParallelogramDecoder<'a, DataType, Transform> {
     pub fn new(
         attribute: &'a PointAttribute,
         transform: Transform,
@@ -433,10 +418,10 @@ impl<'a, DataType, CorrType, Transform>
 }
 
 #[cfg(feature = "decoder")]
-impl<'a, DataType, CorrType, Transform> PredictionScheme<'a>
-    for MeshPredictionSchemeParallelogramDecoder<'a, DataType, CorrType, Transform>
+impl<'a, DataType, Transform> PredictionScheme<'a>
+    for MeshPredictionSchemeParallelogramDecoder<'a, DataType, Transform>
 where
-    Transform: PredictionSchemeDecodingTransform<DataType, CorrType>,
+    Transform: PredictionSchemeDecodingTransform<DataType>,
 {
     fn get_prediction_method(&self) -> PredictionSchemeMethod {
         PredictionSchemeMethod::MeshPredictionParallelogram
@@ -466,17 +451,15 @@ where
 }
 
 #[cfg(feature = "decoder")]
-impl<'a, DataType, CorrType, Transform> PredictionSchemeDecoder<'a, DataType, CorrType>
-    for MeshPredictionSchemeParallelogramDecoder<'a, DataType, CorrType, Transform>
+impl<'a, DataType, Transform> PredictionSchemeDecoder<'a, DataType>
+    for MeshPredictionSchemeParallelogramDecoder<'a, DataType, Transform>
 where
     DataType: ParallelogramDataType + std::fmt::Debug,
-    CorrType: Copy + Default + std::fmt::Debug,
-    Transform: PredictionSchemeDecodingTransform<DataType, CorrType>,
+    Transform: PredictionSchemeDecodingTransform<DataType>,
 {
     fn compute_original_values(
         &mut self,
-        in_corr: &[CorrType],
-        out_data: &mut [DataType],
+        data: &mut [DataType],
         _size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
@@ -505,14 +488,10 @@ where
                 "Parallelogram prediction value count overflow".to_string(),
             ));
         };
-        if required_values == 0
-            || in_corr.len() < required_values
-            || out_data.len() < required_values
-        {
+        if required_values == 0 || data.len() < required_values {
             return Err(DracoError::general(format!(
-                "Parallelogram prediction needs {required_values} values, has {} corrections and {} outputs",
-                in_corr.len(),
-                out_data.len()
+                "Parallelogram prediction needs {required_values} values, has {}",
+                data.len()
             )));
         }
 
@@ -520,16 +499,15 @@ where
 
         // Restore the first value.
         let zero_vals = vec![DataType::default(); num_components];
-        let corr = &in_corr[0..num_components];
-        let out = &mut out_data[0..num_components];
-        self.transform.compute_original_value(&zero_vals, corr, out);
+        self.transform
+            .compute_original_value(&zero_vals, &mut data[0..num_components]);
 
         for p in 1..data_to_corner_map.len() {
             let corner_id = CornerIndex(data_to_corner_map[p]);
             let dst_offset = p * num_components;
 
-            let (decoded_data, remaining_data) = out_data.split_at_mut(dst_offset);
-            let current_out = &mut remaining_data[0..num_components];
+            let (decoded_data, remaining_data) = data.split_at_mut(dst_offset);
+            let current = &mut remaining_data[0..num_components];
 
             let is_parallelogram = compute_parallelogram_prediction(
                 p as i32,
@@ -546,15 +524,8 @@ where
                 let src_offset = (p - 1) * num_components;
                 let predicted = &decoded_data[src_offset..src_offset + num_components];
                 pred_vals.copy_from_slice(predicted);
-
-                let corr = &in_corr[dst_offset..dst_offset + num_components];
-                self.transform
-                    .compute_original_value(&pred_vals, corr, current_out);
-            } else {
-                let corr = &in_corr[dst_offset..dst_offset + num_components];
-                self.transform
-                    .compute_original_value(&pred_vals, corr, current_out);
             }
+            self.transform.compute_original_value(&pred_vals, current);
         }
 
         Ok(())

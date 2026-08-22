@@ -34,7 +34,7 @@ use crate::symbol_encoding::{decode_symbols, SymbolEncodingOptions};
 
 pub struct SequentialIntegerAttributeDecoder {
     attribute: i32,
-    prediction_scheme: Option<Box<dyn PredictionSchemeDecoder<'static, i32, i32>>>,
+    prediction_scheme: Option<Box<dyn PredictionSchemeDecoder<'static, i32>>>,
 }
 
 fn build_vertex_to_data_map_from_data_to_corner_map(
@@ -126,7 +126,7 @@ fn prediction_maps<'a>(
 /// extract-and-check boilerplate that the apply matches repeat per method.
 /// `?Sized` lets it accept both the concrete locally-built predictors and the
 /// `dyn`-typed `self.prediction_scheme`.
-fn run_decode_prediction_data<'a, P: PredictionSchemeDecoder<'a, i32, i32> + ?Sized>(
+fn run_decode_prediction_data<'a, P: PredictionSchemeDecoder<'a, i32> + ?Sized>(
     predictor: Option<&mut P>,
     buffer: &mut DecoderBuffer,
 ) -> Status {
@@ -140,9 +140,10 @@ fn run_decode_prediction_data<'a, P: PredictionSchemeDecoder<'a, i32, i32> + ?Si
 
 /// Runs `compute_original_values` on the selected predictor, with the same
 /// empty-slot / failure handling as [`run_decode_prediction_data`].
-fn run_compute_original_values<'a, P: PredictionSchemeDecoder<'a, i32, i32> + ?Sized>(
+/// `values` holds the decoded corrections on entry and the reconstructed
+/// values on return -- prediction runs in place on the one buffer.
+fn run_compute_original_values<'a, P: PredictionSchemeDecoder<'a, i32> + ?Sized>(
     predictor: Option<&mut P>,
-    corrections: &[i32],
     values: &mut [i32],
     num_values: usize,
     num_components: usize,
@@ -153,13 +154,7 @@ fn run_compute_original_values<'a, P: PredictionSchemeDecoder<'a, i32, i32> + ?S
             "Predictor was selected but not initialized".to_string(),
         ));
     };
-    predictor.compute_original_values(
-        corrections,
-        values,
-        num_values,
-        num_components,
-        entry_to_point_id_map,
-    )
+    predictor.compute_original_values(values, num_values, num_components, entry_to_point_id_map)
 }
 
 impl Default for SequentialIntegerAttributeDecoder {
@@ -186,7 +181,7 @@ impl SequentialIntegerAttributeDecoder {
 
     pub fn set_prediction_scheme(
         &mut self,
-        scheme: Box<dyn PredictionSchemeDecoder<'static, i32, i32>>,
+        scheme: Box<dyn PredictionSchemeDecoder<'static, i32>>,
     ) {
         self.prediction_scheme = Some(scheme);
     }
@@ -289,18 +284,16 @@ impl SequentialIntegerAttributeDecoder {
         }
 
         let mut predictor_opt: Option<
-            PredictionSchemeDeltaDecoder<i32, i32, PredictionSchemeWrapDecodingTransform<i32>>,
+            PredictionSchemeDeltaDecoder<i32, PredictionSchemeWrapDecodingTransform<i32>>,
         > = None;
         let mut predictor_normal_octa_diff_opt: Option<
             PredictionSchemeDeltaDecoder<
-                i32,
                 i32,
                 PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform,
             >,
         > = None;
         let mut predictor_parallelogram_opt: Option<
             MeshPredictionSchemeParallelogramDecoder<
-                i32,
                 i32,
                 PredictionSchemeWrapDecodingTransform<i32>,
             >,
@@ -310,14 +303,12 @@ impl SequentialIntegerAttributeDecoder {
             MeshPredictionSchemeMultiParallelogramDecoder<
                 '_,
                 i32,
-                i32,
                 PredictionSchemeWrapDecodingTransform<i32>,
             >,
         > = None;
         let mut predictor_constrained_multi_parallelogram_opt: Option<
             MeshPredictionSchemeConstrainedMultiParallelogramDecoder<
                 '_,
-                i32,
                 i32,
                 PredictionSchemeWrapDecodingTransform<i32>,
             >,
@@ -657,7 +648,13 @@ impl SequentialIntegerAttributeDecoder {
         };
 
         let needs_zigzag_conversion = !are_corrections_positive;
-        let corrections: Vec<i32> = if compressed > 0 {
+        // One buffer for the whole pipeline: it holds the decoded corrections
+        // first, and the prediction pass below reconstructs the original
+        // values over them in place. Upstream's sequential decoder does the
+        // same (its `in_corr` and `out_data` are one pointer); a separate
+        // zeroed `values` vector cost an allocation plus a memset per
+        // attribute for data the prediction pass immediately overwrote.
+        let mut values: Vec<i32> = if compressed > 0 {
             // Entropy-coded symbols are zigzag encoded UNLESS the prediction scheme
             // guarantees positive corrections (e.g., normal octahedron transform)
             // Empty on purpose. `num_values` comes from the header, and the
@@ -730,20 +727,6 @@ impl SequentialIntegerAttributeDecoder {
                 }
             }
             raw_corrections
-        };
-
-        // Initialize values array only when a prediction scheme needs to write
-        // reconstructed values. With no prediction, corrections already are
-        // the decoded values and can be stored directly.
-        let mut values = if selected_method == PredictionSchemeMethod::None {
-            Vec::new()
-        } else {
-            let Some(values) = try_zeroed::<i32>(num_values) else {
-                return Err(DracoError::general(format!(
-                    "Failed to allocate {num_values} decoded values"
-                )));
-            };
-            values
         };
 
         // 3. Decode prediction scheme data (if any).
@@ -819,7 +802,6 @@ impl SequentialIntegerAttributeDecoder {
                 };
                 run_compute_original_values(
                     self.prediction_scheme.as_deref_mut(),
-                    &corrections,
                     &mut values,
                     num_values,
                     num_components,
@@ -830,7 +812,6 @@ impl SequentialIntegerAttributeDecoder {
                 let ok = if predictor_normal_octa_diff_opt.is_some() {
                     run_compute_original_values(
                         predictor_normal_octa_diff_opt.as_mut(),
-                        &corrections,
                         &mut values,
                         num_values,
                         num_components,
@@ -839,7 +820,6 @@ impl SequentialIntegerAttributeDecoder {
                 } else {
                     run_compute_original_values(
                         predictor_opt.as_mut(),
-                        &corrections,
                         &mut values,
                         num_values,
                         num_components,
@@ -851,7 +831,6 @@ impl SequentialIntegerAttributeDecoder {
             PredictionSchemeMethod::MeshPredictionParallelogram => {
                 run_compute_original_values(
                     predictor_parallelogram_opt.as_mut(),
-                    &corrections,
                     &mut values,
                     num_values,
                     num_components,
@@ -862,7 +841,6 @@ impl SequentialIntegerAttributeDecoder {
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
                 run_compute_original_values(
                     predictor_multi_parallelogram_opt.as_mut(),
-                    &corrections,
                     &mut values,
                     num_values,
                     num_components,
@@ -878,7 +856,6 @@ impl SequentialIntegerAttributeDecoder {
             PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
                 run_compute_original_values(
                     predictor_constrained_multi_parallelogram_opt.as_mut(),
-                    &corrections,
                     &mut values,
                     num_values,
                     num_components,
@@ -890,7 +867,6 @@ impl SequentialIntegerAttributeDecoder {
                 let map = Some(point_ids);
                 run_compute_original_values(
                     predictor_tex_coords_deprecated_opt.as_mut(),
-                    &corrections,
                     &mut values,
                     num_values,
                     num_components,
@@ -907,7 +883,6 @@ impl SequentialIntegerAttributeDecoder {
                 let map = Some(point_ids);
                 run_compute_original_values(
                     predictor_tex_coords_opt.as_mut(),
-                    &corrections,
                     &mut values,
                     num_values,
                     num_components,
@@ -918,16 +893,13 @@ impl SequentialIntegerAttributeDecoder {
                 let map = Some(point_ids);
                 run_compute_original_values(
                     predictor_geometric_normal_opt.as_mut(),
-                    &corrections,
                     &mut values,
                     num_values,
                     num_components,
                     map,
                 )?;
             }
-            PredictionSchemeMethod::None => {
-                values = corrections;
-            }
+            PredictionSchemeMethod::None => {}
             _ => {
                 return Err(DracoError::unsupported_feature(format!(
                     "Prediction method {selected_method:?}"
@@ -997,13 +969,6 @@ impl SequentialIntegerAttributeDecoder {
 fn try_reserved<T>(len: usize) -> Option<Vec<T>> {
     let mut values = Vec::new();
     values.try_reserve_exact(len).ok()?;
-    Some(values)
-}
-
-/// The same, filled with `T::default()`.
-fn try_zeroed<T: Clone + Default>(len: usize) -> Option<Vec<T>> {
-    let mut values = try_reserved::<T>(len)?;
-    values.resize(len, T::default());
     Some(values)
 }
 

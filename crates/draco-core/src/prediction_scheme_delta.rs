@@ -102,11 +102,10 @@ impl<DataType, CorrType> PredictionSchemeDeltaDecodingTransform<DataType, CorrTy
 }
 
 #[cfg(feature = "decoder")]
-impl<DataType, CorrType> PredictionSchemeDecodingTransform<DataType, CorrType>
+impl<DataType, CorrType> PredictionSchemeDecodingTransform<DataType>
     for PredictionSchemeDeltaDecodingTransform<DataType, CorrType>
 where
-    DataType: Copy + Add<CorrType, Output = DataType>,
-    CorrType: Copy,
+    DataType: Copy + Add<DataType, Output = DataType>,
 {
     #[inline]
     fn init(&mut self, num_components: usize) {
@@ -114,14 +113,9 @@ where
     }
 
     #[inline]
-    fn compute_original_value(
-        &self,
-        predicted_vals: &[DataType],
-        corr_vals: &[CorrType],
-        out_original_vals: &mut [DataType],
-    ) {
+    fn compute_original_value(&self, predicted_vals: &[DataType], data: &mut [DataType]) {
         for i in 0..self.num_components {
-            out_original_vals[i] = predicted_vals[i] + corr_vals[i];
+            data[i] = predicted_vals[i] + data[i];
         }
     }
 
@@ -255,17 +249,16 @@ where
 }
 
 #[cfg(feature = "decoder")]
-pub struct PredictionSchemeDeltaDecoder<DataType, CorrType, Transform> {
+pub struct PredictionSchemeDeltaDecoder<DataType, Transform> {
     transform: Transform,
-    _marker: PhantomData<(DataType, CorrType)>,
+    _marker: PhantomData<DataType>,
 }
 
 #[cfg(feature = "decoder")]
-impl<DataType, CorrType, Transform> PredictionSchemeDeltaDecoder<DataType, CorrType, Transform>
+impl<DataType, Transform> PredictionSchemeDeltaDecoder<DataType, Transform>
 where
     DataType: Copy + Default,
-    CorrType: Copy + Default,
-    Transform: PredictionSchemeDecodingTransform<DataType, CorrType>,
+    Transform: PredictionSchemeDecodingTransform<DataType>,
 {
     pub fn new(transform: Transform) -> Self {
         Self {
@@ -276,10 +269,10 @@ where
 }
 
 #[cfg(feature = "decoder")]
-impl<DataType, CorrType, Transform> PredictionScheme<'static>
-    for PredictionSchemeDeltaDecoder<DataType, CorrType, Transform>
+impl<DataType, Transform> PredictionScheme<'static>
+    for PredictionSchemeDeltaDecoder<DataType, Transform>
 where
-    Transform: PredictionSchemeDecodingTransform<DataType, CorrType>,
+    Transform: PredictionSchemeDecodingTransform<DataType>,
 {
     fn get_prediction_method(&self) -> PredictionSchemeMethod {
         PredictionSchemeMethod::Difference
@@ -313,17 +306,15 @@ where
 }
 
 #[cfg(feature = "decoder")]
-impl<DataType, CorrType, Transform> PredictionSchemeDecoder<'static, DataType, CorrType>
-    for PredictionSchemeDeltaDecoder<DataType, CorrType, Transform>
+impl<DataType, Transform> PredictionSchemeDecoder<'static, DataType>
+    for PredictionSchemeDeltaDecoder<DataType, Transform>
 where
     DataType: Copy + Default,
-    CorrType: Copy + Default,
-    Transform: PredictionSchemeDecodingTransform<DataType, CorrType>,
+    Transform: PredictionSchemeDecodingTransform<DataType>,
 {
     fn compute_original_values(
         &mut self,
-        in_corr: &[CorrType],
-        out_data: &mut [DataType],
+        data: &mut [DataType],
         size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
@@ -332,23 +323,21 @@ where
 
         // The first element has no predecessor, so it predicts from zeros.
         let zeros = vec![DataType::default(); num_components];
-        let corr = &in_corr[0..num_components];
-        let out = &mut out_data[0..num_components];
-        self.transform.compute_original_value(&zeros, corr, out);
+        self.transform
+            .compute_original_value(&zeros, &mut data[0..num_components]);
 
         // Decode data from the front using D(i) = D(i) + D(i - 1).
         //
         // The previous entry is the prediction, and it is already sitting in
-        // `out_data` -- splitting the slice hands it over directly, where
+        // `data` -- splitting the slice hands it over directly, where
         // copying it into a scratch buffer first cost a memcpy per entry (8% of
         // decode on a point cloud, where this path carries every value).
         for i in (num_components..size).step_by(num_components) {
-            let (decoded, rest) = out_data.split_at_mut(i);
+            let (decoded, rest) = data.split_at_mut(i);
             let predicted = &decoded[i - num_components..];
-            let corr = &in_corr[i..i + num_components];
-            let out = &mut rest[..num_components];
 
-            self.transform.compute_original_value(predicted, corr, out);
+            self.transform
+                .compute_original_value(predicted, &mut rest[..num_components]);
         }
 
         Ok(())

@@ -372,11 +372,10 @@ impl<'a> PredictionScheme<'a> for MeshPredictionSchemeGeometricNormalDecoder<'a>
 }
 
 #[cfg(feature = "decoder")]
-impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometricNormalDecoder<'a> {
+impl<'a> PredictionSchemeDecoder<'a, i32> for MeshPredictionSchemeGeometricNormalDecoder<'a> {
     fn compute_original_values(
         &mut self,
-        in_corr: &[i32],
-        out_data: &mut [i32],
+        data: &mut [i32],
         _size: usize,
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
@@ -397,14 +396,11 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
             return Err(missing("data-to-corner map"));
         };
         let corner_map_size = data_to_corner_map.len();
-        if corner_map_size * num_components > in_corr.len()
-            || corner_map_size * num_components > out_data.len()
-        {
+        if corner_map_size * num_components > data.len() {
             return Err(DracoError::general(format!(
-                "Geometric normal prediction needs {} values, has {} corrections and {} outputs",
+                "Geometric normal prediction needs {} values, has {}",
                 corner_map_size * num_components,
-                in_corr.len(),
-                out_data.len()
+                data.len()
             )));
         }
 
@@ -467,11 +463,8 @@ impl<'a> PredictionSchemeDecoder<'a, i32, i32> for MeshPredictionSchemeGeometric
             let prediction = [s, t];
 
             let offset = i * num_components;
-            self.transform.compute_original_value(
-                &prediction,
-                &in_corr[offset..offset + num_components],
-                &mut out_data[offset..offset + num_components],
-            );
+            self.transform
+                .compute_original_value(&prediction, &mut data[offset..offset + num_components]);
         }
         Ok(())
     }
