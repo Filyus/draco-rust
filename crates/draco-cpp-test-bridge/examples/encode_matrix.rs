@@ -39,39 +39,12 @@ use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::EncoderOptions;
 use draco_cpp_test_bridge::counting;
 
+#[path = "common/mod.rs"]
+mod common;
+use common::{load, median_and_spread, options_for, Payload};
+
 #[global_allocator]
 static ALLOC: counting::Counting = counting::Counting;
-
-/// One payload, parsed once and held in both sides' input forms so neither
-/// pays a conversion the other does not.
-struct Payload {
-    name: String,
-    mesh: Mesh,
-    positions: Vec<f32>,
-    faces: Vec<u32>,
-}
-
-fn load(path: &str) -> Payload {
-    let bytes = std::fs::read(path).expect("read mesh");
-    let mesh = draco_io::obj_reader::ObjReader::read_from_bytes(&bytes).expect("parse obj");
-    let positions: Vec<f32> = mesh.attribute(0).read_f32s(mesh.num_points(), 3);
-    let faces: Vec<u32> = (0..mesh.num_faces())
-        .flat_map(|f| {
-            let face = mesh.face(FaceIndex(f as u32));
-            [face[0].0, face[1].0, face[2].0]
-        })
-        .collect();
-    let name = std::path::Path::new(path)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string());
-    Payload {
-        name,
-        mesh,
-        positions,
-        faces,
-    }
-}
 
 /// The `init` stage split for one payload, medianed over `iters` builds.
 ///
@@ -104,17 +77,6 @@ fn stage_split(payload: &Payload, iters: u32) -> [f64; InitStage::COUNT] {
     out
 }
 
-fn options_for(mesh: &Mesh, speed: i32) -> EncoderOptions {
-    let mut options = EncoderOptions::new();
-    options.set_global_int("encoding_speed", speed);
-    options.set_global_int("decoding_speed", speed);
-    options.set_attribute_int(0, "quantization_bits", 11);
-    if mesh.num_attributes() > 1 {
-        options.set_attribute_int(1, "quantization_bits", 8);
-    }
-    options
-}
-
 /// One cell's Rust side: mean encode time, output size, and allocations per
 /// encode.
 fn rust_encode_us(mesh: &Mesh, options: &EncoderOptions, iters: u32) -> (f64, usize, f64, f64) {
@@ -142,19 +104,6 @@ fn rust_encode_us(mesh: &Mesh, options: &EncoderOptions, iters: u32) -> (f64, us
         count as f64 / iters as f64,
         bytes as f64 / iters as f64,
     )
-}
-
-/// Median, and the spread as a percentage of it -- the number that says
-/// whether the median means anything.
-fn median_and_spread(samples: &mut [f64]) -> (f64, f64) {
-    samples.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
-    let median = samples[samples.len() / 2];
-    let spread = if median > 0.0 {
-        (samples[samples.len() - 1] - samples[0]) / median * 100.0
-    } else {
-        0.0
-    };
-    (median, spread)
 }
 
 fn main() {
