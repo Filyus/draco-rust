@@ -34,6 +34,13 @@ pub static LARGE: AtomicU64 = AtomicU64::new(0);
 pub static SAMPLING: AtomicBool = AtomicBool::new(false);
 /// Backtraces captured while `SAMPLING` was on.
 pub static SAMPLES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// How many allocations of each size were made while `SAMPLING` was on.
+///
+/// The first instrument to reach for when a count scales with the mesh:
+/// thousands of allocations of one size name the buffer immediately, where a
+/// backtrace budget gets spent on whatever the encode allocated first.
+pub static SIZES: std::sync::Mutex<std::collections::BTreeMap<usize, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 /// What counts as a large allocation -- the size above which one buffer is
 /// worth naming rather than lumping into a total.
@@ -44,6 +51,11 @@ pub const LARGE_THRESHOLD: usize = 64 * 1024;
 /// but a count that scales with the mesh points at a small allocation made
 /// per element instead, and that one is invisible until this comes down.
 pub static SAMPLE_MIN: AtomicUsize = AtomicUsize::new(LARGE_THRESHOLD);
+
+/// The size above which `SAMPLING` stops capturing. With [`SAMPLE_MIN`] this
+/// narrows the backtraces to one size, which is what turns a size histogram's
+/// answer ("19,460 allocations of 16 bytes") into a call site.
+pub static SAMPLE_MAX: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// How many backtraces to keep. A per-element allocation would otherwise
 /// capture one per element, which is neither readable nor affordable.
@@ -61,6 +73,17 @@ pub fn reset() {
     if let Ok(mut samples) = SAMPLES.lock() {
         samples.clear();
     }
+    if let Ok(mut sizes) = SIZES.lock() {
+        sizes.clear();
+    }
+}
+
+/// The size histogram, most frequent size first.
+pub fn sizes_by_count() -> Vec<(usize, u64)> {
+    let sizes = SIZES.lock().expect("sizes");
+    let mut out: Vec<(usize, u64)> = sizes.iter().map(|(k, v)| (*k, *v)).collect();
+    out.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    out
 }
 
 /// `(allocations, bytes, allocations at or above [`LARGE_THRESHOLD`])`.
@@ -73,7 +96,8 @@ pub fn totals() -> (u64, u64, u64) {
 }
 
 fn maybe_sample(size: usize) {
-    if !SAMPLING.load(Relaxed) || size < SAMPLE_MIN.load(Relaxed) {
+    if !SAMPLING.load(Relaxed) || size < SAMPLE_MIN.load(Relaxed) || size > SAMPLE_MAX.load(Relaxed)
+    {
         return;
     }
     // Capturing a backtrace allocates, so a re-entering capture would recurse
@@ -83,9 +107,16 @@ fn maybe_sample(size: usize) {
             return;
         }
         flag.set(true);
-        let trace = std::backtrace::Backtrace::force_capture().to_string();
+        if let Ok(mut sizes) = SIZES.lock() {
+            *sizes.entry(size).or_insert(0) += 1;
+        }
         if let Ok(mut samples) = SAMPLES.lock() {
-            samples.push(format!("size={size}\n{trace}"));
+            // A per-element allocation would otherwise capture one backtrace
+            // per element, which is neither readable nor affordable.
+            if samples.len() < SAMPLE_LIMIT.load(Relaxed) {
+                let trace = std::backtrace::Backtrace::force_capture().to_string();
+                samples.push(format!("size={size}\n{trace}"));
+            }
         }
         flag.set(false);
     });

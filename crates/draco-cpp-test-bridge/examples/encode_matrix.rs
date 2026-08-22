@@ -301,18 +301,28 @@ CornerTable array loads, one encode at speed {}
         if let Ok(min) = std::env::var("SAMPLE_ALLOC_MIN") {
             counting::SAMPLE_MIN.store(min.parse().expect("SAMPLE_ALLOC_MIN"), Relaxed);
         }
+        if let Ok(max) = std::env::var("SAMPLE_ALLOC_MAX") {
+            counting::SAMPLE_MAX.store(max.parse().expect("SAMPLE_ALLOC_MAX"), Relaxed);
+        }
         counting::reset();
         counting::SAMPLING.store(true, Relaxed);
         rust_encode_us(&payload.mesh, &options, 1);
         counting::SAMPLING.store(false, Relaxed);
         let samples = counting::SAMPLES.lock().expect("samples").clone();
+        let (total, _, _) = counting::totals();
         println!(
-            "\n{} allocations of {} KB or more, one encode of {} at speed {}\n",
+            "\n{} of {total} allocations of {} bytes or more sampled, \
+             one encode of {} at speed {}\n",
             samples.len(),
-            counting::LARGE_THRESHOLD / 1024,
+            counting::SAMPLE_MIN.load(Relaxed),
             payload.name,
             speeds[0]
         );
+        println!("{:>12}  {:>10}", "size", "count");
+        for (size, count) in counting::sizes_by_count().into_iter().take(12) {
+            println!("{size:>12}  {count:>10}");
+        }
+        println!();
         for sample in samples {
             println!("=== {sample}");
         }
