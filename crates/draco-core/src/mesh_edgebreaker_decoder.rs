@@ -620,17 +620,20 @@ impl MeshEdgebreakerDecoder {
 
         // How many faces to reserve corner storage for: the header's own count,
         // which the caller has already checked against the symbol count, capped
-        // by what the remaining bytes could describe at two faces per byte.
+        // by what the remaining bytes could describe at four faces per byte.
         //
         // The header count is exact for a well-formed stream, so the table is
-        // allocated once and neither grows nor over-reserves. The cap is what
-        // keeps a claim of billions from being honoured: past it the
-        // reservation falls short and the table grows a face at a time as it
-        // always did. Deriving the figure from the symbol count instead
-        // over-reserved by a third, and a cap of one face per byte fell short
-        // on the Bunny at speed 1 (1.03 faces per byte) -- both cost more than
-        // they saved.
-        let input_face_bound = total_num_faces.min(in_buffer.remaining_size().saturating_mul(2));
+        // allocated once and neither grows nor over-reserves -- the `min`
+        // means the ratio can never inflate a truthful file's reservation,
+        // only bound a lying one's, so the ratio's only cost is the
+        // hostile-input allocation budget it permits. The cap is what keeps a
+        // claim of billions from being honoured: past it the reservation
+        // falls short and the table grows (in declared-count-capped steps)
+        // as it always did. One face per byte fell short on the Bunny at
+        // speed 1 (1.03 faces per byte), and two fell short on the seeded
+        // grid at speed 5 (2.89), each costing a reallocation of the whole
+        // table; four covers every corpus payload measured so far.
+        let input_face_bound = total_num_faces.min(in_buffer.remaining_size().saturating_mul(4));
 
         if actual_num_symbols == 0 {
             let corner_table = crate::corner_table::CornerTable::new(0);
