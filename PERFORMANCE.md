@@ -1495,6 +1495,55 @@ scales with the input -- every stack it can afford is spent before the
 repeating one starts. The histogram costs one counter per size and answered it
 outright.
 
+### Four Bools On The Heap, Once Per Vertex
+
+The previous round left speed 0 allocating `8,600-19,600` times per encode on
+every family, against under `200` everywhere else, and named the method that
+had just worked: histogram first, then narrow the sampler to the size the
+histogram reports. Run on the grid at speed 0 it took two commands.
+
+**`8,836` allocations of exactly `2` bytes**, plus `378` of `1` byte -- against
+`9,216` vertices. Narrowing the sampler to two bytes put all of them in
+`MeshPredictionSchemeConstrainedMultiParallelogramEncoder`, at
+
+```rust
+let mut excluded = vec![true; num_parallelograms];
+```
+
+`num_parallelograms` is bounded by `MAX_NUM_PARALLELOGRAMS`, which is `4`, and
+the line runs once per vertex. So the encoder was going to the heap for at
+most four bools, per vertex, and the two sizes in the histogram are simply how
+many parallelograms that vertex had. It is now a fixed array sliced to length,
+and `next_permutation` takes the slice.
+
+`encode_matrix`, five rounds of 80 iterations, pinned 1.5.7:
+
+| payload | speed | allocations | Rust before | Rust after | spread | ratio before | ratio after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| grid | 0 | `9,460` -> `247` | `4,046` | `3,716` | `9.8%` | `1.51x` | `1.64x` |
+| ribbon | 0 | `19,634` -> `177` | `5,422` | `4,674` | `6.2%` | `1.32x` | `1.53x` |
+| torus | 0 | `9,236` -> `312` | `4,728` | `4,415` | `2.1%` | `1.51x` | `1.62x` |
+| fan | 0 | `8,612` -> `212` | `3,459` | `3,186` | `1.2%` | `5.96x` | `6.66x` |
+
+`-6.6%` to `-13.8%`, with speeds 3 and 5 measured in the same run as controls
+and unmoved. Read the spread column honestly: torus, fan and ribbon are
+resolved several times over, **grid's `8.2%` is not** -- its own spread that
+round was `9.8%`, so the grid row is consistent with the others rather than
+independent evidence. The allocation counts are exact, and they are the same
+number on all four.
+
+Speed 1 gains the same way (`1.66x`, `1.57x`, `1.69x`, `8.06x`), which is the
+expected shape: 0 and 1 are the only speeds running this predictor.
+
+Taken with the ribbon's `Vec::new` one round earlier, the pattern is worth
+naming: **both were a container allocated inside a per-element loop for a
+payload that never grows** -- a four-element stack and a four-bool mask. Neither
+is visible in a profile, which reports them as `memset` and `RawVec::grow_one`
+with no source line, and neither is visible in a total allocation figure until
+something else on the same run allocates two orders of magnitude less. The
+size histogram finds both in one command because a per-element allocation is
+one size repeated, and that is a shape nothing else in an encode has.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -1549,11 +1598,11 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   `checked_mul`, three `checked_add` pairs and three bounds-checked four-byte
   reads *per point* -- the call-per-scalar shape. Re-profile before touching
   it: its share after the fix is unmeasured.
-- **Speed 0 allocates `8,600-19,600` times per encode on every family**,
-  against under `200` at every other EdgeBreaker speed. That is the
-  constrained multi-parallelogram predictor, at roughly one allocation per
-  vertex, and it is the largest allocation count left. `ALLOC=1` on
-  `encode_matrix` sizes it; the size histogram names the buffer.
+- **What is left of speed 0's allocations.** The exclusion mask is gone, but
+  speed 0 still allocates `177-312` times per encode against `74-89` at speeds
+  5-8. Smaller than what was just removed and no longer one size repeated, so
+  the histogram will not answer it as cleanly; the remaining sizes are `32`,
+  `16` and `36,864` bytes, at 21, 18 and 16 allocations each on the grid.
 - **The kd-tree encoder still carries the six-copies-per-node pattern** that
   `edaba23` removed from the kd-tree *decoder* for `-23.4%`. Unchanged since,
   and still unmeasured, because nothing benchmarks a kd-tree encode -- that
