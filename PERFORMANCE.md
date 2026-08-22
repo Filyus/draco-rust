@@ -2939,6 +2939,107 @@ A shape that measured well once is a hypothesis at the next site, and the
 measurement is cheaper than the argument: four payloads, six minutes, one
 answer.
 
+### Reading The Decode By File, Which Inlining Cannot Merge Away
+
+Three targets this session turned out to be naming artifacts, so the next
+reading was taken a different way: **self cost per source file** rather than
+per function. A function name says which symbol swallowed a callee -- under
+full LTO a whole decoder appears inside `main` -- but the file an instruction
+came from is recorded per line and cannot be merged.
+`tools/callgrind_by_file.py` is that view, and `tools/callgrind_by_function.py`
+splits one file back out by the functions it was inlined into.
+
+The grid at speed 5, `12,096,135` instructions against upstream's `9,715,274`:
+
+| file | | |
+| --- | ---: | --- |
+| `src/corner_table.rs` | `1,504,248` | table access |
+| `src/mesh_decoder.rs` | `1,217,964` | |
+| **`slice/index.rs`** | **`1,094,101`** | bounds checks |
+| libc (`memset`, `memcpy`) | `1,045,192` | against C++'s `285,642` |
+| `src/edgebreaker_connectivity_decoder.rs` | `678,274` | |
+| **`vec/mod.rs` + `raw_vec/mod.rs`** | **`985,172`** | growth |
+| `src/rans_symbol_decoder.rs` | `573,834` | |
+| **`num/uint_macros.rs`** | **`446,352`** | integer helpers |
+| `src/option.rs` + `iter/range.rs` + `src/cmp.rs` + `adapters/zip.rs` | `1,213,036` | |
+
+**A quarter of the decode is standard-library glue**, and none of it has a name
+in this crate. That is the shape of the remaining gap, and it is worth knowing
+before spending another round looking for a slow algorithm.
+
+Three readings came out of it, in descending order of what they were worth.
+
+**Dequantization, `-49%`.** `num/uint_macros.rs` concentrated `387,086`
+instructions inside `inverse_transform_attribute`, which was `811,179` against
+`InverseTransformAttribute`'s `640,594`. The cause was the same one the encoder
+had two rounds earlier: a tightly-packed fast path written as four
+hand-unrolled arms, one per component count, each reading the source a byte at
+a time -- twelve indexed reads and three range-checked writes for a
+three-component point, on top of an offset multiplied out per entry. Both sides
+are tight by the guard above and the two length checks already cover every
+access, so an entry is a chunk and a component is four bytes of it. One loop
+replaces the four arms, and it widens the fast path, which stopped at four
+components for no reason the arms explained.
+
+`811,179 -> 414,911`, which puts the stage at `0.65x` of the reference from
+`1.27x`. Whole decode: grid `-3.3%`, ribbon `-4.5%`, torus `-3.2%`, fan
+`-3.1%`.
+
+**The bounds checks are not removable by hand, which is the round's real
+finding.** `slice/index.rs` at `1,094,101` is `9%` of the decode against a
+reference that pays none, and its largest concentration -- `470,592` inside
+`reconstruct_mesh` -- looked like the biggest single structural difference
+left. The mapping loop underneath it tested a length and then indexed, three
+times per corner, and read the same `v_map` entry twice: seven questions where
+two are needed. Reaching each entry through `get` instead was worth **`18,050`
+instructions, one per face, `0.15%`.**
+
+LLVM had already folded the duplicate checks. What `slice/index.rs` costs is
+not a tax waiting to be removed by rewriting test-then-index into `get`; it is
+address computation plus the checks the optimizer kept because it could not
+prove them redundant. The three earlier nulls on bounds-check elision recorded
+in this document were not bad luck. **The productive form is the one the two
+wins above took: restructure so the check is unnecessary by construction --
+slice once, walk chunks, let the iterator carry the bound -- not remove the
+check by hand.**
+
+**And `next_in_face` is not a target.** The single most expensive line in
+`corner_table.rs` is `if !corner.wrapping_add(1).is_multiple_of(3)` at
+`315,776`, with its mirror at `111,122` -- a modulo by three on the hottest
+path in the decoder, which reads like an obvious win. Upstream's `Next` is
+`LocalIndex(++corner) ? corner : corner - 3` and `LocalIndex` is
+`corner.value() % 3`. It is the same arithmetic. The line is expensive because
+it is executed constantly, not because it is doing anything the reference
+avoids, and C++'s copy of it is inlined into callers where no line shows it.
+
+Where the decode stands, one decode at speed 5:
+
+| payload | before this session | now | | C++ |
+| --- | ---: | ---: | ---: | ---: |
+| grid | `13,564,638` | `11,681,817` | **`-13.9%`** | `9,715,274` |
+| ribbon | -- | `17,664,926` | | `16,067,493` |
+| torus | -- | `11,706,956` | | `9,742,853` |
+| fan | -- | `11,304,790` | | `9,491,347` |
+
+Clocked, `ITERS=120`, five rounds, against the run before the dequantization
+change, C++ column steady:
+
+| payload | speed 0 | speed 5 | speed 8 |
+| --- | --- | --- | --- |
+| grid | `1.01x -> 1.03x` | `1.17x -> 1.19x` | `1.16x -> 1.20x` |
+| ribbon | `1.00x -> 1.03x` | `1.21x -> 1.24x` | `1.22x -> 1.27x` |
+| torus | `1.08x -> 1.10x` | `1.04x -> 1.06x` | `1.08x -> 1.10x` |
+| fan | `1.06x` | `1.22x -> 1.24x` | `1.23x -> 1.22x` |
+
+**The two metrics disagree in direction and both are right.** The port executes
+`1.20x` the reference's instructions and takes `0.83x` its time at speed 5,
+which is an IPC difference of about `1.45x`, not a contradiction: a bounds
+check that the branch predictor gets right and that issues in a spare slot
+costs instructions and no time. This document's standing conversion -- an
+instruction here is worth about half its face value in time -- is the same
+observation, and it is why the instruction gap should be read as a budget for
+*work removed*, not as a deficit in speed.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
