@@ -837,7 +837,7 @@ fn create_drc_internal(input: &MeshInput, options: &ExportOptions) -> ExportResu
             // Which method it settled on is a decision, not an echo of the
             // request: with no explicit choice the encoder takes sequential at
             // speed 10 and edgebreaker below it.
-            let info = encoder.encoded_mesh_info();
+            let info = encoder.encoded_mesh_info().ok();
             let method = info.map(|info| match info.encoding_method {
                 1 => "edgebreaker".to_string(),
                 0 => "sequential".to_string(),

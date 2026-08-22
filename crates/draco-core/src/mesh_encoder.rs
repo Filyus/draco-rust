@@ -131,6 +131,9 @@ pub struct MeshEncoder {
     /// would otherwise recompute these, and recomputing means a second full
     /// min/max sweep of the attribute -- a pass the reference never makes.
     attribute_quantization: Vec<(i32, AttributeQuantizationTransform)>,
+    /// Whether an encode ran to completion, so `encoded_mesh_info` knows there
+    /// is something to describe rather than describing a half-built state.
+    encode_completed: bool,
     encoded_mesh_info: Option<EncodedMeshInfo>,
 }
 
@@ -281,6 +284,7 @@ impl MeshEncoder {
             use_single_connectivity: false,
             attribute_predictions: Vec::new(),
             attribute_quantization: Vec::new(),
+            encode_completed: false,
             encoded_mesh_info: None,
         }
     }
@@ -304,6 +308,7 @@ impl MeshEncoder {
     /// rejects. Resetting in one place is the fix that does not depend on
     /// every future path remembering to.
     fn reset_derived_state(&mut self) {
+        self.encode_completed = false;
         self.encoded_mesh_info = None;
         self.portable_attributes.clear();
         self.edgebreaker_encoder = None;
@@ -338,16 +343,39 @@ impl MeshEncoder {
         self.corner_table.as_ref()
     }
 
-    /// Returns information captured during the last successful mesh encode.
-    pub fn encoded_mesh_info(&self) -> Option<&EncodedMeshInfo> {
-        self.encoded_mesh_info.as_ref()
+    /// Information describing the last successful mesh encode.
+    ///
+    /// Derived, not encoded: nothing in the bitstream depends on it, and
+    /// building it costs a sweep of every position for its bounds plus a copy
+    /// of the encoded point order per attribute. So it is built on the first
+    /// call and cached, rather than on every encode whether or not anyone
+    /// asks -- which is why this takes `&mut self`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no encode has completed, or if the information
+    /// cannot be derived from what that encode left behind. The bitstream is
+    /// unaffected either way; a failure here used to fail the encode itself.
+    pub fn encoded_mesh_info(&mut self) -> Result<&EncodedMeshInfo, DracoError> {
+        if !self.encode_completed {
+            return Err(DracoError::general(
+                "No completed encode to describe".to_string(),
+            ));
+        }
+        if self.encoded_mesh_info.is_none() {
+            self.build_encoded_mesh_info()?;
+        }
+        self.encoded_mesh_info
+            .as_ref()
+            .ok_or_else(|| DracoError::general("Encoded mesh info was not built".to_string()))
     }
 
     /// Encodes the assigned mesh into an output buffer.
     ///
     /// A mesh must have been provided with [`set_mesh`](MeshEncoder::set_mesh)
-    /// first. On success the bitstream is appended to `out_buffer` and
-    /// [`encoded_mesh_info`](MeshEncoder::encoded_mesh_info) is populated.
+    /// first. On success the bitstream is appended to `out_buffer`;
+    /// [`encoded_mesh_info`](MeshEncoder::encoded_mesh_info) describes it and
+    /// is derived on demand rather than here.
     ///
     /// # Errors
     ///
@@ -380,6 +408,7 @@ impl MeshEncoder {
         // 2. Encode geometry data (connectivity + attributes)
         self.encode_geometry_data(out_buffer)?;
 
+        self.encode_completed = true;
         Ok(())
     }
 
@@ -639,7 +668,6 @@ impl MeshEncoder {
 
         // Then encode attributes
         self.encode_attributes(out_buffer)?;
-        self.build_encoded_mesh_info()?;
 
         Ok(())
     }

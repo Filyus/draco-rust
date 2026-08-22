@@ -901,7 +901,7 @@ impl Import {
         let info = encoder
             .encoded_mesh_info()
             .cloned()
-            .ok_or_else(|| Error::Extension("Draco encoder did not return mesh info".into()))?;
+            .map_err(|error| Error::Extension(error.to_string()))?;
         Ok((output.data().to_vec(), info))
     }
 

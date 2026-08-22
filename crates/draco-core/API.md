@@ -276,7 +276,8 @@ let mut buffer = EncoderBuffer::new();
 encoder.encode(&options, &mut buffer)?;
 
 let compressed_data = buffer.data();
-let encoded_info = encoder.encoded_mesh_info();
+// Derived on demand, not during the encode, which is why it needs `&mut`.
+let encoded_info = encoder.encoded_mesh_info()?;
 ```
 
 **API Surface:**
@@ -284,13 +285,17 @@ let encoded_info = encoder.encoded_mesh_info();
 Construction and input: `new`, `set_mesh`, and `mesh`.
 
 Encoding and results: `encode`, `num_encoded_faces`, `corner_table`, and
-`encoded_mesh_info`.
+`encoded_mesh_info`. The last takes `&mut self` and returns a `Result`: the
+information is derived from what the encode left behind rather than produced
+by it, so it is built on the first call and cached. A failure to derive it no
+longer fails the encode, whose bitstream does not depend on any of it.
 
 ---
 
 ### EncodedMeshInfo
 
-Summary produced by `MeshEncoder` after a successful `encode()`. This describes
+Summary `MeshEncoder` derives from a successful `encode()`, on the first call
+to `encoded_mesh_info()`. This describes
 the encoded mesh shape and attribute metadata without requiring a decoder pass.
 It is primarily useful for container writers such as glTF
 `KHR_draco_mesh_compression`.
