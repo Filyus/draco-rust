@@ -895,12 +895,10 @@ impl Import {
         let mut encoder = MeshEncoder::new();
         encoder.set_mesh(mesh);
         let mut output = EncoderBuffer::new();
-        encoder
-            .encode(&settings, &mut output)
-            .map_err(|error| Error::Extension(error.to_string()))?;
+        // The extension needs the description, so this is the entry point that
+        // derives it; plain `encode` would leave it uncomputed.
         let info = encoder
-            .encoded_mesh_info()
-            .cloned()
+            .encode_with_info(&settings, &mut output)
             .map_err(|error| Error::Extension(error.to_string()))?;
         Ok((output.data().to_vec(), info))
     }

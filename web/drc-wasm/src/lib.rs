@@ -831,13 +831,15 @@ fn create_drc_internal(input: &MeshInput, options: &ExportOptions) -> ExportResu
     let mut encoder = MeshEncoder::new();
     encoder.set_mesh(mesh);
     let mut output = EncoderBuffer::new();
-    match encoder.encode(&settings, &mut output) {
-        Ok(()) => {
+    // The stats below report what the encoder settled on, so this asks for the
+    // description; plain `encode` would not derive it.
+    match encoder.encode_with_info(&settings, &mut output) {
+        Ok(encoded_info) => {
             let bytes = output.data().to_vec();
             // Which method it settled on is a decision, not an echo of the
             // request: with no explicit choice the encoder takes sequential at
             // speed 10 and edgebreaker below it.
-            let info = encoder.encoded_mesh_info().ok();
+            let info = Some(&encoded_info);
             let method = info.map(|info| match info.encoding_method {
                 1 => "edgebreaker".to_string(),
                 0 => "sequential".to_string(),

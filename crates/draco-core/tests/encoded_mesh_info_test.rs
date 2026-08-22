@@ -179,13 +179,9 @@ fn encode_decode_bytes_with_info(
     let mut encoder = MeshEncoder::new();
     encoder.set_mesh(mesh);
     let mut bytes = EncoderBuffer::new();
-    encoder
-        .encode(&options, &mut bytes)
-        .expect("encode should succeed");
     let info = encoder
-        .encoded_mesh_info()
-        .cloned()
-        .expect("successful encode should expose mesh info");
+        .encode_with_info(&options, &mut bytes)
+        .expect("encode should succeed and describe itself");
 
     let mut decoder = MeshDecoder::new();
     let mut decoded = Mesh::new();

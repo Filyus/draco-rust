@@ -56,9 +56,11 @@ type PositionBounds = (Option<Vec<f64>>, Option<Vec<f64>>);
 /// sequential), prediction schemes, and quantization are selected from the
 /// options, mirroring the C++ `MeshEncoder`/`ExpertEncoder` configuration.
 ///
-/// After a successful [`encode`](MeshEncoder::encode), per-attribute and
-/// per-face details are available via
-/// [`encoded_mesh_info`](MeshEncoder::encoded_mesh_info).
+/// [`encode`](MeshEncoder::encode) produces the bitstream and nothing else.
+/// A caller who also wants per-attribute and per-face details of what the
+/// encode did uses [`encode_with_info`](MeshEncoder::encode_with_info), which
+/// derives them; they are not a byproduct of encoding and are not computed
+/// for callers who do not ask.
 ///
 /// # Examples
 ///
@@ -131,10 +133,6 @@ pub struct MeshEncoder {
     /// would otherwise recompute these, and recomputing means a second full
     /// min/max sweep of the attribute -- a pass the reference never makes.
     attribute_quantization: Vec<(i32, AttributeQuantizationTransform)>,
-    /// Whether an encode ran to completion, so `encoded_mesh_info` knows there
-    /// is something to describe rather than describing a half-built state.
-    encode_completed: bool,
-    encoded_mesh_info: Option<EncodedMeshInfo>,
 }
 
 /// Geometry shape, encoder choices and attribute metadata produced by a
@@ -284,8 +282,6 @@ impl MeshEncoder {
             use_single_connectivity: false,
             attribute_predictions: Vec::new(),
             attribute_quantization: Vec::new(),
-            encode_completed: false,
-            encoded_mesh_info: None,
         }
     }
 
@@ -308,8 +304,6 @@ impl MeshEncoder {
     /// rejects. Resetting in one place is the fix that does not depend on
     /// every future path remembering to.
     fn reset_derived_state(&mut self) {
-        self.encode_completed = false;
-        self.encoded_mesh_info = None;
         self.portable_attributes.clear();
         self.edgebreaker_encoder = None;
         self.num_encoded_faces = 0;
@@ -343,39 +337,13 @@ impl MeshEncoder {
         self.corner_table.as_ref()
     }
 
-    /// Information describing the last successful mesh encode.
-    ///
-    /// Derived, not encoded: nothing in the bitstream depends on it, and
-    /// building it costs a sweep of every position for its bounds plus a copy
-    /// of the encoded point order per attribute. So it is built on the first
-    /// call and cached, rather than on every encode whether or not anyone
-    /// asks -- which is why this takes `&mut self`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no encode has completed, or if the information
-    /// cannot be derived from what that encode left behind. The bitstream is
-    /// unaffected either way; a failure here used to fail the encode itself.
-    pub fn encoded_mesh_info(&mut self) -> Result<&EncodedMeshInfo, DracoError> {
-        if !self.encode_completed {
-            return Err(DracoError::general(
-                "No completed encode to describe".to_string(),
-            ));
-        }
-        if self.encoded_mesh_info.is_none() {
-            self.build_encoded_mesh_info()?;
-        }
-        self.encoded_mesh_info
-            .as_ref()
-            .ok_or_else(|| DracoError::general("Encoded mesh info was not built".to_string()))
-    }
-
     /// Encodes the assigned mesh into an output buffer.
     ///
     /// A mesh must have been provided with [`set_mesh`](MeshEncoder::set_mesh)
-    /// first. On success the bitstream is appended to `out_buffer`;
-    /// [`encoded_mesh_info`](MeshEncoder::encoded_mesh_info) describes it and
-    /// is derived on demand rather than here.
+    /// first. On success the bitstream is appended to `out_buffer` and nothing
+    /// else is computed; use
+    /// [`encode_with_info`](MeshEncoder::encode_with_info) to also get a
+    /// description of the encode.
     ///
     /// # Errors
     ///
@@ -408,8 +376,29 @@ impl MeshEncoder {
         // 2. Encode geometry data (connectivity + attributes)
         self.encode_geometry_data(out_buffer)?;
 
-        self.encode_completed = true;
         Ok(())
+    }
+
+    /// Encodes the assigned mesh and describes what the encode did.
+    ///
+    /// The description is derived from the encode rather than produced by it,
+    /// and deriving it costs a sweep of every position for its bounds plus a
+    /// copy of the encoded point order per attribute. So it is the caller who
+    /// decides whether that work happens: [`encode`](MeshEncoder::encode) never
+    /// does it, and this does it exactly once, here, where it was asked for.
+    ///
+    /// # Errors
+    ///
+    /// The same errors as [`encode`](MeshEncoder::encode), plus a failure to
+    /// derive the description. The bitstream in `out_buffer` is complete and
+    /// valid in that last case; only the description is missing.
+    pub fn encode_with_info(
+        &mut self,
+        options: &EncoderOptions,
+        out_buffer: &mut EncoderBuffer,
+    ) -> Result<EncodedMeshInfo, DracoError> {
+        self.encode(options, out_buffer)?;
+        self.build_encoded_mesh_info()
     }
 
     fn encode_metadata(&self, buffer: &mut EncoderBuffer) -> Status {
@@ -1735,7 +1724,7 @@ impl MeshEncoder {
         }
     }
 
-    fn build_encoded_mesh_info(&mut self) -> Status {
+    fn build_encoded_mesh_info(&mut self) -> Result<EncodedMeshInfo, DracoError> {
         let num_attributes = self
             .mesh
             .as_ref()
@@ -1817,7 +1806,7 @@ impl MeshEncoder {
                 self.options.get_global_int("force_predictive_traversal", 0) == 1,
             )
         });
-        self.encoded_mesh_info = Some(EncodedMeshInfo {
+        Ok(EncodedMeshInfo {
             encoding_method: self.method,
             bitstream_version: (major, minor),
             traversal,
@@ -1826,8 +1815,7 @@ impl MeshEncoder {
             num_encoded_faces: num_faces,
             num_encoded_points: encoded_num_points,
             attributes,
-        });
-        Ok(())
+        })
     }
 
     fn encoded_point_ids_for_attribute(

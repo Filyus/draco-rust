@@ -276,26 +276,36 @@ let mut buffer = EncoderBuffer::new();
 encoder.encode(&options, &mut buffer)?;
 
 let compressed_data = buffer.data();
-// Derived on demand, not during the encode, which is why it needs `&mut`.
-let encoded_info = encoder.encoded_mesh_info()?;
+```
+
+`encode` produces the bitstream and nothing else. To also get a description of
+what the encode did, ask for it in the same call:
+
+```rust
+let info = encoder.encode_with_info(&options, &mut buffer)?;
 ```
 
 **API Surface:**
 
 Construction and input: `new`, `set_mesh`, and `mesh`.
 
-Encoding and results: `encode`, `num_encoded_faces`, `corner_table`, and
-`encoded_mesh_info`. The last takes `&mut self` and returns a `Result`: the
-information is derived from what the encode left behind rather than produced
-by it, so it is built on the first call and cached. A failure to derive it no
-longer fails the encode, whose bitstream does not depend on any of it.
+Encoding and results: `encode`, `encode_with_info`, `num_encoded_faces`, and
+`corner_table`.
+
+`EncodedMeshInfo` is derived from an encode rather than produced by it -- the
+bitstream does not depend on any of it -- and deriving it costs a sweep of
+every position for its bounds plus a copy of the encoded point order per
+attribute. So the caller decides: `encode` never does that work and
+`encode_with_info` does it exactly once, in the call that asked. There is no
+accessor to retrieve it afterwards; a caller who needs the description asks
+for it when encoding.
 
 ---
 
 ### EncodedMeshInfo
 
-Summary `MeshEncoder` derives from a successful `encode()`, on the first call
-to `encoded_mesh_info()`. This describes
+Summary `MeshEncoder` derives from a successful encode, returned by
+`encode_with_info()`. This describes
 the encoded mesh shape and attribute metadata without requiring a decoder pass.
 It is primarily useful for container writers such as glTF
 `KHR_draco_mesh_compression`.
