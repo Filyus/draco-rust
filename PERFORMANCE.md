@@ -1544,6 +1544,59 @@ something else on the same run allocates two orders of magnitude less. The
 size histogram finds both in one command because a per-element allocation is
 one size repeated, and that is a shape nothing else in an encode has.
 
+### The Ring Walked Twice, And A Ceiling Estimated Wrong
+
+The diagnostic pass put `break_non_manifold_edges` at `43-49%` of the table
+build on **every** family, including three with no non-manifold edge at all.
+The mechanism was visible in which family was cheapest: the ribbon, whose
+vertices have valence 3 and hit the boundary on the first step, was the
+cheapest of the four despite having the most corners, while grid, torus and
+fan -- full interior rings -- were the expensive ones. So the cost was the
+walk, and each pivot's ring is walked about twice: once swinging left to find
+the leftmost corner, once swinging right to record.
+
+**The two passes visit the same corners in opposite orders**, so the first can
+be recorded and replayed instead of swung back. That is exact rather than
+approximate: `swing_right(swing_left(x)) == x` because `previous(next(o))` is
+`o`, `previous(next(x))` is `x`, and `opposite` is an involution --
+established by `compute_opposite_corners` and preserved here, which only ever
+clears **both** directions of an edge. The recording order the "first match
+wins" rule depends on is untouched, because the replay produces the same
+corners in the same order the right-swinging pass would have.
+
+Stage timings, medians of 200 builds, two runs per condition:
+
+| stage | before | after | |
+| --- | ---: | ---: | ---: |
+| grid `break_non_manifold` | `318`, `317` | `275`, `276` | `-13.2%` |
+| torus `break_non_manifold` | `359`, `359` | `323`, `324` | `-9.8%` |
+| grid `init`, whole | `656`, `653` | `602`, `603` | `-8.0%` |
+| torus `init`, whole | `830`, `824` | `787`, `786` | `-5.2%` |
+
+The other two stages sat still across the same runs (`compute_opposite_corners`
+`145`->`141`, `compute_vertex_corners` `193`->`186` on the grid), which is the
+control this measurement needed and got for free from the split.
+
+**The ceiling was estimated at `2x` and came in at `1.13x`, and the reason is
+worth keeping.** Halving the walks does not halve the function, because the two
+passes are not the same price: the left pass does one swing per corner and
+nothing else, while the right pass does a swing *plus* a `next`, a
+`corner_to_vertex_map` read, a `previous`, a sink-slot lookup and a slot
+write. Removing the cheap pass removes about a sixth of the per-corner work,
+which is what `-13%` is. The estimate came from counting *passes* when the
+thing that costs is *work per corner* -- a mistake with the same shape as
+counting method calls when the thing that costs is array loads, two rounds
+earlier.
+
+At `~45%` of `init` and `init` at `~45%` of a position-only encode, this is
+`2-3%` of an encode, which the whole-encode harness cannot resolve -- its
+spread on these payloads that round was `7-22%`. The stage split is the
+measurement here, and it is the reason the change is reported at all rather
+than lost in a whole-encode run that would have said nothing either way.
+`break_non_manifold_edges_matches_the_list_form` covers the traversal change
+too, since the list form it compares against keeps the original double swing;
+breaking the replay's index deliberately makes it fail.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
