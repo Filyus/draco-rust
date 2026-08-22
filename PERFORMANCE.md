@@ -2049,6 +2049,51 @@ settled. The Rust-side absolutes are the numbers to compare next session:
 grid `584`/`524` us at speeds 5/8, torus `730`/`625`, ribbon `899`/`810`,
 fan `526`/`481`.
 
+### Bytes, Not Count: What The C++ Allocator Actually Pays For
+
+The mimalloc harness collapses spread, and it also *masks the cost under
+study*: the same two copy removals that read `0-2%` under mimalloc read
+`3-4.6%` under the System allocator. So this round measured under System
+(spreads `2-15%` on the quiet payloads; the grid stayed noisy) and used the
+allocation counters -- which are deterministic -- as the primary metric.
+Five changes landed (`64680ea`, `5fcf9e4`, `6d2a2cf`, `e4e0063`, `ac7ca7f`),
+one instrument (`d7225e1`).
+
+**The decisive number came from instrumenting the C++ side.** The bridge now
+counts C++ allocations behind `DRACO_BRIDGE_COUNT_ALLOCS=1` (a counting build
+is never a timing build): C++ 1.5.7 makes **more** allocations than the port
+-- grid `78` vs `46`, torus `85` vs `50` -- and moves **fewer bytes**: grid
+`1261` vs `1566` KB, torus `1241` vs `1536`, ribbon `1779` vs `3208`. The
+"fewer allocations" direction is exhausted; the open question is bytes, and
+on the ribbon the surplus is `1.4` MB.
+
+What landed, System-allocator paired A/Bs, sign-consistent unless noted:
+
+- `64680ea` -- the DFS traversal cache was cloned even when no later decoder
+  would read it (three point-sized arrays per single-attribute decode), and
+  `copy_point_mapping` rebuilt the portable map per point instead of one
+  slice copy. Grid `897 -> 860` us (`-4.6%`), torus `-4%`, 11/12 pairs.
+- `5fcf9e4` -- the edgebreaker processed-corner list and vertex-to-corner map
+  were `to_vec()`d out of a decoder that was dropped on the next line;
+  `mem::take` instead. Torus `-4%`, grid `-3%`, 11/12 pairs.
+- `6d2a2cf` -- `decode_raw_symbols` grew past its input-bounded reserve one
+  push at a time; growth now capped at the declared count (reached only
+  after a capacity of real symbols, so a lie buys nothing beyond doubling).
+  Ribbon `-2.5%`; torus untouched, as its symbols fit the reserve.
+- `e4e0063` -- the corner-table reserve ratio went `2 -> 4` faces per byte:
+  the `min` against the declared count means the ratio never inflates a
+  truthful file's reservation, and at `2` the grid (2.89 faces/byte) paid a
+  whole-table reallocation. Grid traffic `1935 -> 1566` KB, allocations
+  `49 -> 46`; clock unresolved that session.
+- `ac7ca7f` -- the seam corner table is borrowed, not cloned, per decoder.
+  No seeded payload exercises the path; landed on the borrow checker's
+  evidence alone, no number claimed.
+
+Standing after the round, System allocator, seven rounds
+(`grid`/`ribbon`/`torus`/`fan`): `0.92/0.98/0.87/1.00x` at speed 5,
+`0.91/0.95/0.90/0.94x` at speed 8, `0.92/0.88/1.00/0.90x` at speed 0 --
+from `0.85/0.75/0.81/0.93x` (speed 5) at the start of the session.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -2102,6 +2147,22 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   `~2.1` MB across `~52` allocations for a `330` KB mesh, now all accounted
   for as either upstream-equivalent work buffers or the four legitimate
   value-pipeline buffers.
+- **The port moves more bytes than C++ and the largest identified piece is
+  the separate `values` buffer.** C++'s sequential integer decoder runs
+  prediction in place on one buffer; the port allocates `corrections` and a
+  zeroed `values` and has every `compute_original_values` write across
+  (`sequential_integer_attribute_decoder.rs:738`). Folding them means an
+  in-place contract for every prediction scheme decoder -- a real refactor
+  with a wide parity surface, worth `110-233` KB and one memset per
+  attribute. The ribbon's remaining `~1.4` MB surplus over C++ is the
+  motivating payload; per-site byte totals for the rest of it are one
+  `dhat`-style run away (the counting allocator gives sizes, not totals per
+  site).
+- **The mimalloc matrix must not be the only decode reading.** The same two
+  copy removals read `0-2%` under mimalloc and `3-4.6%` under System -- the
+  allocator swap masks exactly the cost the memory rounds are removing.
+  Take decode clocks under System (accepting its spread), and treat the
+  allocation counters as the primary metric for memory changes.
 - **An encode-side call-count comparison against C++.** Instrumenting every
   `CornerTable` method and comparing exact counts is what produced decode's
   rounds two and three -- the two largest decode wins of the campaign. It has
