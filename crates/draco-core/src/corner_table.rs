@@ -559,8 +559,22 @@ impl CornerTable {
         // wraps the sentinel (u32::MAX) to 0, which is below every bound, and
         // shifts every real value so that `>` catches exactly those at or past
         // the bound. Reducing with max instead of short-circuiting on `any`
-        // keeps the loop branch-free, so it vectorises -- this walks both maps
-        // of a 200k-corner table on the way into each attribute traversal.
+        // keeps the loop branch-free -- this walks both maps of a 200k-corner
+        // table on the way into each attribute traversal.
+        //
+        // Branch-free does not make it vectorise, whatever an earlier version
+        // of this comment claimed. Unsigned 32-bit max is `pmaxud`, which
+        // arrives with SSE4.1, and the baseline `x86-64` target has SSE2 --
+        // so on a stock build this reduction stays scalar at 3.1 instructions
+        // per element (338,620 for the two passes over an 18k-face grid,
+        // 2.1% of a whole decode, measured by outlining the call under
+        // callgrind). Rebuilt for `x86-64-v2` the identical source falls to
+        // 210,103, so the shape is already right and the ISA is the whole
+        // difference; target selection belongs to whoever builds this, the
+        // same as the allocator. Two rewrites -- eight accumulators to break
+        // the reduction chain, then constant indices to keep them in
+        // registers -- each measured within 30 instructions of this loop.
+        // Reach for a different target, not a different loop.
         fn exceeds(values: impl Iterator<Item = u32>, bound: usize) -> bool {
             // A bound past u32 cannot be exceeded by a u32 value anyway.
             let bound = u32::try_from(bound).unwrap_or(u32::MAX);
