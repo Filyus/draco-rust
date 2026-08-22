@@ -2251,9 +2251,14 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   harness has to exist first.
 - **The three parallel `Vec`s in
   `generate_point_ids_and_corners_dfs_for_table`.** Audited in round four and
-  left deliberately: folding them into one `Vec` of a small struct is a real
-  refactor across `AttributeTraversalArrays` and every destructuring call
-  site, not a follow-up to a benchmark.
+  left deliberately; demoted further by the allocator round's decisive fact.
+  Folding them cuts three allocations to one and moves not a single byte --
+  the data is the same size either way -- and "fewer allocations" is the
+  direction the C++ counter comparison closed (the port already allocates
+  fewer times than C++; the open cost is bytes). Two of the three are also
+  different index spaces (`vertex_to_data_map` is per-vertex, the others
+  per-entry), so the fold is smaller than the catalogue entry assumed. Do
+  not spend the refactor without a measurement naming these allocations.
 
 ### Decisions, not measurements
 
