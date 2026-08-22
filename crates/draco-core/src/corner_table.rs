@@ -10,6 +10,26 @@ use crate::geometry_indices::{
     CornerIndex, FaceIndex, VertexIndex, INVALID_CORNER_INDEX, INVALID_VERTEX_INDEX,
 };
 
+/// One sink-vertex key's edges within a single pivot walk of
+/// [`CornerTable::break_non_manifold_edges`]: the first two corners recorded
+/// for it, and the walk they belong to.
+#[derive(Clone, Copy)]
+struct SinkSlot {
+    stamp: u64,
+    corners: [CornerIndex; 2],
+    len: u8,
+}
+
+impl Default for SinkSlot {
+    fn default() -> Self {
+        Self {
+            stamp: 0,
+            corners: [INVALID_CORNER_INDEX; 2],
+            len: 0,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct CornerTable {
     pub corner_to_vertex_map: Vec<VertexIndex>,
@@ -254,7 +274,7 @@ impl CornerTable {
             return false;
         }
 
-        if !self.break_non_manifold_edges() {
+        if !self.break_non_manifold_edges(num_vertices) {
             return false;
         }
 
@@ -589,7 +609,7 @@ impl CornerTable {
         corner == INVALID_CORNER_INDEX || self.swing_left(corner) == INVALID_CORNER_INDEX
     }
 
-    fn break_non_manifold_edges(&mut self) -> bool {
+    fn break_non_manifold_edges(&mut self, num_vertices: usize) -> bool {
         // This function detects and breaks non-manifold edges that are caused by
         // folds in 1-ring neighborhood around a vertex. Non-manifold edges can occur
         // when the 1-ring surface around a vertex self-intersects in a common edge.
@@ -605,7 +625,32 @@ impl CornerTable {
         // on disjoint 1-ring surface patches.
 
         let mut visited_corners = vec![false; self.num_corners()];
-        let mut sink_vertices: Vec<(VertexIndex, CornerIndex)> = Vec::new();
+
+        // The edges seen so far around the current pivot, keyed by sink vertex
+        // rather than held as a list scanned per edge: the scan below is linear
+        // in the edges already seen, so on a mesh with a high-valence hub --
+        // a fan, a cone, a stitched pole -- it is quadratic in that vertex's
+        // valence, which dominates the whole table build.
+        //
+        // Only the first two entries per key are ever needed. The scan takes
+        // the first entry whose corner differs from `opp_edge_corner`, and the
+        // stored corners are distinct (one per corner visited around the
+        // pivot), so at most the first can be the one that gets skipped.
+        //
+        // `stamp` scopes the table to one pivot walk without clearing it: an
+        // entry belongs to the current walk only if its stamp matches. The
+        // extra slot past `num_vertices` holds the invalid vertex, which the
+        // list form compared like any other key.
+        let invalid_slot = num_vertices;
+        let mut sink_slots = vec![SinkSlot::default(); num_vertices + 1];
+        let mut walk = 0_u64;
+        let slot_of = |v: VertexIndex| {
+            if v == INVALID_VERTEX_INDEX {
+                invalid_slot
+            } else {
+                v.0 as usize
+            }
+        };
 
         loop {
             let mut mesh_connectivity_updated = false;
@@ -615,7 +660,7 @@ impl CornerTable {
                     continue;
                 }
 
-                sink_vertices.clear();
+                walk += 1;
 
                 // First swing all the way to find the left-most corner connected to the
                 // corner's vertex.
@@ -649,43 +694,35 @@ impl CornerTable {
 
                     // Corner that defines the edge on the face.
                     let edge_corner = self.previous(current_c);
-                    let mut vertex_connectivity_updated = false;
 
-                    // Go over all processed edges (sink vertices). If the current sink
-                    // vertex has been already encountered before it may indicate a
-                    // non-manifold edge that needs to be broken.
-                    for attached_sink_vertex in &sink_vertices {
-                        if attached_sink_vertex.0 == sink_v {
-                            // Sink vertex has been already processed.
-                            let other_edge_corner = attached_sink_vertex.1;
-                            let opp_edge_corner = self.opposite(edge_corner);
+                    // Look up the edges already seen around this pivot with the
+                    // same sink vertex. Closing the loop needs no connectivity
+                    // change, so an entry whose corner is `opp_edge_corner` is
+                    // skipped and the next one with that sink vertex is taken.
+                    let slot = &sink_slots[slot_of(sink_v)];
+                    let opp_edge_corner = self.opposite(edge_corner);
+                    let other_edge_corner = match slot.stamp == walk {
+                        false => None,
+                        true if slot.corners[0] != opp_edge_corner => Some(slot.corners[0]),
+                        true if slot.len > 1 => Some(slot.corners[1]),
+                        true => None,
+                    };
 
-                            if opp_edge_corner == other_edge_corner {
-                                // We are closing the loop so no need to change the connectivity.
-                                continue;
-                            }
-
-                            // Break the connectivity on the non-manifold edge.
-                            let opp_other_edge_corner = self.opposite(other_edge_corner);
-                            if opp_edge_corner != INVALID_CORNER_INDEX {
-                                self.opposite_corners[opp_edge_corner.0 as usize] =
-                                    INVALID_CORNER_INDEX;
-                            }
-                            if opp_other_edge_corner != INVALID_CORNER_INDEX {
-                                self.opposite_corners[opp_other_edge_corner.0 as usize] =
-                                    INVALID_CORNER_INDEX;
-                            }
-
-                            self.opposite_corners[edge_corner.0 as usize] = INVALID_CORNER_INDEX;
-                            self.opposite_corners[other_edge_corner.0 as usize] =
+                    if let Some(other_edge_corner) = other_edge_corner {
+                        // A non-manifold edge: break the connectivity on it.
+                        let opp_other_edge_corner = self.opposite(other_edge_corner);
+                        if opp_edge_corner != INVALID_CORNER_INDEX {
+                            self.opposite_corners[opp_edge_corner.0 as usize] =
                                 INVALID_CORNER_INDEX;
-
-                            vertex_connectivity_updated = true;
-                            break;
                         }
-                    }
+                        if opp_other_edge_corner != INVALID_CORNER_INDEX {
+                            self.opposite_corners[opp_other_edge_corner.0 as usize] =
+                                INVALID_CORNER_INDEX;
+                        }
 
-                    if vertex_connectivity_updated {
+                        self.opposite_corners[edge_corner.0 as usize] = INVALID_CORNER_INDEX;
+                        self.opposite_corners[other_edge_corner.0 as usize] = INVALID_CORNER_INDEX;
+
                         // Because of the updated connectivity, not all corners connected to
                         // this vertex have been processed and we need to go over them again.
                         mesh_connectivity_updated = true;
@@ -693,11 +730,16 @@ impl CornerTable {
                     }
 
                     // Insert new sink vertex information <sink vertex index, edge corner>.
-                    let new_sink_vert = (
-                        self.corner_to_vertex_map[self.previous(current_c).0 as usize],
-                        sink_c,
-                    );
-                    sink_vertices.push(new_sink_vert);
+                    let key = self.corner_to_vertex_map[self.previous(current_c).0 as usize];
+                    let slot = &mut sink_slots[slot_of(key)];
+                    if slot.stamp != walk {
+                        slot.stamp = walk;
+                        slot.len = 0;
+                    }
+                    if slot.len < 2 {
+                        slot.corners[slot.len as usize] = sink_c;
+                        slot.len += 1;
+                    }
 
                     current_c = self.swing_right(current_c);
                     if current_c == first_c || current_c == INVALID_CORNER_INDEX {
@@ -859,6 +901,92 @@ impl CornerTable {
 
         *num_vertices = num_corners_on_vertices.len();
         true
+    }
+
+    /// The list-scanning form of [`CornerTable::break_non_manifold_edges`],
+    /// kept as the differential oracle for the indexed one: it is upstream's
+    /// shape, quadratic in vertex valence, and the two must agree on every
+    /// opposite corner.
+    #[cfg(test)]
+    fn break_non_manifold_edges_by_list(&mut self) {
+        let mut visited_corners = vec![false; self.num_corners()];
+        let mut sink_vertices: Vec<(VertexIndex, CornerIndex)> = Vec::new();
+
+        loop {
+            let mut mesh_connectivity_updated = false;
+            for c in 0..self.num_corners() {
+                let c_idx = CornerIndex(c as u32);
+                if visited_corners[c] {
+                    continue;
+                }
+                sink_vertices.clear();
+
+                let mut first_c = c_idx;
+                let mut current_c = c_idx;
+                loop {
+                    let next_c = self.swing_left(current_c);
+                    if next_c == first_c
+                        || next_c == INVALID_CORNER_INDEX
+                        || visited_corners[next_c.0 as usize]
+                    {
+                        break;
+                    }
+                    current_c = next_c;
+                }
+                first_c = current_c;
+
+                loop {
+                    visited_corners[current_c.0 as usize] = true;
+                    let sink_c = self.next(current_c);
+                    let sink_v = self.corner_to_vertex_map[sink_c.0 as usize];
+                    let edge_corner = self.previous(current_c);
+                    let mut vertex_connectivity_updated = false;
+
+                    for attached_sink_vertex in &sink_vertices {
+                        if attached_sink_vertex.0 == sink_v {
+                            let other_edge_corner = attached_sink_vertex.1;
+                            let opp_edge_corner = self.opposite(edge_corner);
+                            if opp_edge_corner == other_edge_corner {
+                                continue;
+                            }
+                            let opp_other_edge_corner = self.opposite(other_edge_corner);
+                            if opp_edge_corner != INVALID_CORNER_INDEX {
+                                self.opposite_corners[opp_edge_corner.0 as usize] =
+                                    INVALID_CORNER_INDEX;
+                            }
+                            if opp_other_edge_corner != INVALID_CORNER_INDEX {
+                                self.opposite_corners[opp_other_edge_corner.0 as usize] =
+                                    INVALID_CORNER_INDEX;
+                            }
+                            self.opposite_corners[edge_corner.0 as usize] = INVALID_CORNER_INDEX;
+                            self.opposite_corners[other_edge_corner.0 as usize] =
+                                INVALID_CORNER_INDEX;
+                            vertex_connectivity_updated = true;
+                            break;
+                        }
+                    }
+
+                    if vertex_connectivity_updated {
+                        mesh_connectivity_updated = true;
+                        break;
+                    }
+
+                    sink_vertices.push((
+                        self.corner_to_vertex_map[self.previous(current_c).0 as usize],
+                        sink_c,
+                    ));
+
+                    current_c = self.swing_right(current_c);
+                    if current_c == first_c || current_c == INVALID_CORNER_INDEX {
+                        break;
+                    }
+                }
+            }
+
+            if !mesh_connectivity_updated {
+                break;
+            }
+        }
     }
 
     pub fn compute_vertex_corners(&mut self, mut num_vertices: usize) -> bool {
@@ -1027,6 +1155,59 @@ impl CornerTable {
 
 #[cfg(test)]
 mod tests {
+
+    /// Random triangle soups over a handful of vertices produce exactly the
+    /// folded 1-rings `break_non_manifold_edges` exists for, so the indexed
+    /// form and upstream's list form are compared on every one of them.
+    #[test]
+    fn break_non_manifold_edges_matches_the_list_form() {
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        let mut cases_that_broke_an_edge = 0;
+        for num_vertices in [4_u32, 5, 6, 8] {
+            for _ in 0..250 {
+                let faces: Vec<[VertexIndex; 3]> = (0..40)
+                    .map(|_| {
+                        [
+                            VertexIndex((next() % num_vertices as u64) as u32),
+                            VertexIndex((next() % num_vertices as u64) as u32),
+                            VertexIndex((next() % num_vertices as u64) as u32),
+                        ]
+                    })
+                    .collect();
+
+                let mut indexed = CornerTable::new(faces.len());
+                indexed
+                    .corner_to_vertex_map
+                    .extend_from_slice(faces.as_flattened());
+                let mut num_vertices_seen = 0;
+                assert!(indexed.compute_opposite_corners(&mut num_vertices_seen));
+
+                let mut by_list = indexed.clone();
+                let before = indexed.opposite_corners.clone();
+
+                assert!(indexed.break_non_manifold_edges(num_vertices_seen));
+                by_list.break_non_manifold_edges_by_list();
+
+                assert_eq!(indexed.opposite_corners, by_list.opposite_corners);
+                if indexed.opposite_corners != before {
+                    cases_that_broke_an_edge += 1;
+                }
+            }
+        }
+
+        assert!(
+            cases_that_broke_an_edge > 100,
+            "the soups exercised the breaking path only {cases_that_broke_an_edge} times"
+        );
+    }
+
     use super::*;
 
     /// A corner past the end of the table answers with the invalid sentinel
