@@ -494,7 +494,11 @@ where
             // next_permutation order C++ visits them in -- see next_permutation's
             // doc comment for why the order itself, not just the set of configs
             // it covers, has to match.
-            let mut excluded = vec![true; num_parallelograms];
+            // Bounded by MAX_NUM_PARALLELOGRAMS, and this runs once per
+            // vertex: a `Vec` here is an allocation per vertex for at most
+            // four bools.
+            let mut excluded_storage = [true; MAX_NUM_PARALLELOGRAMS];
+            let excluded = &mut excluded_storage[..num_parallelograms];
             for num_used in 1..=num_parallelograms {
                 for slot in excluded.iter_mut().take(num_used) {
                     *slot = false;
@@ -561,7 +565,7 @@ where
                         best_num_used = num_used as i32;
                     }
 
-                    if !next_permutation(&mut excluded) {
+                    if !next_permutation(excluded) {
                         break;
                     }
                 }
