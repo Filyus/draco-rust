@@ -1874,6 +1874,57 @@ three per-element allocations earlier in this document each moved the clock by
 attribute, and constants do not show up next to a per-vertex loop no matter how
 satisfying the diff is.
 
+### How Much Of Decode's Gap Is The Allocator: About Half, And All Of The Variance
+
+With the load counts at parity, memory behaviour was the remaining candidate,
+and the way to test it without touching `draco-core` is to swap the allocator
+under the harness. `Counting` is now generic over what it wraps, so the
+example decides -- `--features mimalloc` against the same pinned C++ in the
+same process, which is what the older one-sided figure could not do.
+
+`decode_matrix`, five rounds of 200 iterations:
+
+| payload | speed | C++ | Rust, platform | Rust, mimalloc | ratio, platform | ratio, mimalloc |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| grid | 5 | `540` | `614` | `580` | `0.88x` | `0.93x` |
+| grid | 8 | `489` | `561` | `521` | `0.87x` | `0.94x` |
+| torus | 5 | `630` | `748` | `716` | `0.85x` | `0.88x` |
+| torus | 8 | `556` | `641` | `612` | `0.87x` | `0.90x` |
+| fan | 5 | `537` | `555` | `528` | `0.97x` | `1.02x` |
+| fan | 8 | `467` | `508` | `479` | `0.92x` | `0.98x` |
+
+The C++ column is the control and it does not move -- same binary, same
+allocator, both runs.
+
+**Two findings, and the second is the more useful one.**
+
+`4.3%` to `7.1%` of the Rust decode is the platform allocator, which closes
+roughly half of a `13%` gap and leaves the rest somewhere else. So the answer
+to "is decode behind because of the allocator" is *partly*, and the honest
+form of the earlier open question is now: `6-10%` remains after the allocator
+is taken out of the picture.
+
+And **the run-to-run spread collapses**: the grid's Rust side goes from
+`47.5%` to `1.1%` at speed 5, `7.0%` to `1.7%` at speed 8, the torus from
+`6.8%` to `0.6%`. Every wide spread this document has reported on the decode
+side was the platform allocator's variance, not the decoder's. That is worth
+more than the `5%`: it means a decode measurement taken under mimalloc can
+resolve changes an order of magnitude smaller than one taken without it.
+
+**This also retires a number.** Round four measured the same swap at `19.6%`
+to `30.2%`. It is not reproducible now and should not be quoted: since then
+this document removed a per-vertex allocation from the decoder's traversal and
+two per-attribute copies from the predictors' setup, taking a position-only
+decode from `137` allocations to `54`. The allocator's leverage fell because
+there is less for it to do -- which is the intended outcome of those rounds,
+stated as a number for once rather than as a hope.
+
+Method note: **a swap that isolates one variable is worth building properly
+once.** The earlier figure came from an ad-hoc binary that is not in the
+repository, could not be re-run, and compared against a differently-built C++.
+This one is a feature flag on a committed harness, runs against the pinned
+reference in the same process, and carries its own control column.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -1912,12 +1963,11 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   connectivity -- different code, and the per-family ratios there are
   unknown. `dump_seeded_meshes_as_obj` plus `encode_loop` covers it in one
   pass.
-- **Decode is uniformly `0.84x` to `0.94x` against pinned 1.5.7**, and the
-  load counts say it is not work. What separates "the reference has a better
-  allocator" from "the port allocates too much" is a C++ build linking the
-  same allocator the Rust side is measured with -- the fair version of the
-  comparison this document has carried one-sided since round four. Until that
-  runs, both readings fit every number here.
+- **`6-10%` of decode is unexplained.** Load counts are at parity, and the
+  allocator accounts for `4.3-7.1%` of the rest; what remains is not work
+  done and not the allocator. Per-call cost, cache behaviour and the
+  attribute decoding path are all untested. Run the profiler under
+  `--features mimalloc`, where the spread is `1%` rather than `47%`.
 - **Ten allocations of `num_vertices * 4` per decode**, down from twelve.
   `2.3` MB allocated for a `330` KB decoded mesh on the grid, across `54`
   allocations. The remaining large sizes on that payload are `110,592` (four
@@ -1957,11 +2007,13 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   one side does. Whether it should become opt-in the way
   `store_number_of_encoded_faces` already is, is an API call for this
   document's maintainer, not a performance fix.
-- **The allocator comparison is one-sided.** mimalloc puts decode `1.11x` to
-  `1.42x` ahead, but nobody has established what allocator the C++ reference
-  effectively uses. The fair version -- both sides swapping -- is open, and
-  until it is run those numbers mean "this port with a good allocator against
-  that build with its default", nothing more.
+- **The allocator comparison is still one-sided, but the question is
+  smaller.** `decode_matrix --features mimalloc` now measures the swap against
+  the pinned reference in one process, with a control column: it is worth
+  `4.3-7.1%` and most of the variance. What is still unrun is the C++ side
+  swapping too, which would say whether the reference's own allocator is
+  better than the platform's -- interesting, but no longer load-bearing for
+  any decision here.
 
 ### Owed to the document itself
 
