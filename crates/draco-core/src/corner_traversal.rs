@@ -23,9 +23,14 @@ use crate::geometry_indices::{
 /// per vertex -- two hundred thousand times on a mesh the size of the Stanford
 /// Bunny -- and a monomorphised closure inlines into the walk where a vtable
 /// would put an indirect call in the middle of it.
+/// `corner_stack` is the caller's scratch, cleared here rather than
+/// allocated: this runs once per seed corner, and on a mesh where every vertex
+/// is on a boundary that is once per vertex, so a `vec![start_corner]` here is
+/// an allocation per vertex for a stack that never holds much.
 pub(crate) fn traverse_from_corner(
     corner_table: &CornerTable,
     start_corner: CornerIndex,
+    corner_stack: &mut Vec<CornerIndex>,
     visited_faces: &mut [bool],
     visited_vertices: &mut [bool],
     on_new_vertex: &mut impl FnMut(VertexIndex, CornerIndex),
@@ -35,7 +40,8 @@ pub(crate) fn traverse_from_corner(
         return;
     }
 
-    let mut corner_stack = vec![start_corner];
+    corner_stack.clear();
+    corner_stack.push(start_corner);
 
     // The first face's other two corners may never be reached by the walk
     // itself, so C++ visits Next and then Previous before the main loop -- and

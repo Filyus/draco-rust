@@ -1569,6 +1569,9 @@ impl MeshDecoder {
             data_to_corner_map.push(corner.0);
         };
 
+        // Scratch for the depth-first walk, reused across seeds.
+        let mut corner_stack: Vec<CornerIndex> = Vec::new();
+
         // Run the traverser in the same way as C++ MeshTraversalSequencer:
         // - If a corner_order is provided, process only those corners.
         // - Otherwise, process sequential CornerIndex(3 * face_id).
@@ -1577,6 +1580,7 @@ impl MeshDecoder {
                 crate::corner_traversal::traverse_from_corner(
                     corner_table,
                     CornerIndex(c),
+                    &mut corner_stack,
                     &mut visited_faces,
                     &mut visited_vertices,
                     &mut on_new_vertex,
@@ -1588,6 +1592,7 @@ impl MeshDecoder {
                     crate::corner_traversal::traverse_from_corner(
                         corner_table,
                         CornerIndex((f * 3) as u32),
+                        &mut corner_stack,
                         &mut visited_faces,
                         &mut visited_vertices,
                         &mut on_new_vertex,
