@@ -1455,19 +1455,28 @@ impl MeshDecoder {
                     let mut point_to_value: Vec<AttributeValueIndex> =
                         vec![crate::geometry_indices::INVALID_ATTRIBUTE_VALUE_INDEX; num_points];
                     if let Some(ct) = corner_table_for_decoder {
+                        // Two checks a corner, not seven. Testing a length and
+                        // then indexing asks the same question twice, and this
+                        // ran three of those pairs plus a repeated read of the
+                        // same `v_map` entry, on every corner of every face.
+                        // Reaching each entry through `get` answers the
+                        // question once and yields the value with it.
                         for face_id in 0..mesh.num_faces() {
                             let face = mesh.face(FaceIndex(face_id as u32));
-                            for corner_offset in 0..3 {
+                            for (corner_offset, point) in face.iter().enumerate() {
                                 let corner = CornerIndex((face_id * 3 + corner_offset) as u32);
                                 let vertex = ct.vertex(corner);
-                                let point = face[corner_offset].0 as usize;
-                                if point < point_to_value.len()
-                                    && vertex != INVALID_VERTEX_INDEX
-                                    && (vertex.0 as usize) < v_map.len()
-                                    && v_map[vertex.0 as usize] >= 0
-                                {
-                                    point_to_value[point] =
-                                        AttributeValueIndex(v_map[vertex.0 as usize] as u32);
+                                if vertex == INVALID_VERTEX_INDEX {
+                                    continue;
+                                }
+                                let Some(&data_id) = v_map.get(vertex.0 as usize) else {
+                                    continue;
+                                };
+                                if data_id < 0 {
+                                    continue;
+                                }
+                                if let Some(slot) = point_to_value.get_mut(point.0 as usize) {
+                                    *slot = AttributeValueIndex(data_id as u32);
                                 }
                             }
                         }
