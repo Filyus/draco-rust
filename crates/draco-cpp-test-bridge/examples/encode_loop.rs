@@ -15,63 +15,7 @@ use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::EncoderOptions;
 
-/// Counting allocator: how many allocations an encode makes, and how many
-/// bytes. Dev tooling only -- it lives in this example, never in the library.
-mod counting {
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-
-    pub static COUNT: AtomicU64 = AtomicU64::new(0);
-    pub static BYTES: AtomicU64 = AtomicU64::new(0);
-    pub static LARGE: AtomicU64 = AtomicU64::new(0);
-    pub static SAMPLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    pub static SAMPLES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-    thread_local! {
-        static IN_ALLOC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    }
-
-    fn maybe_sample(size: usize) {
-        if !SAMPLING.load(Relaxed) || size < 64 * 1024 {
-            return;
-        }
-        IN_ALLOC.with(|flag| {
-            if flag.get() {
-                return;
-            }
-            flag.set(true);
-            let trace = std::backtrace::Backtrace::force_capture().to_string();
-            if let Ok(mut samples) = SAMPLES.lock() {
-                samples.push(format!("size={size}\n{trace}"));
-            }
-            flag.set(false);
-        });
-    }
-
-    pub struct Counting;
-    unsafe impl GlobalAlloc for Counting {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            COUNT.fetch_add(1, Relaxed);
-            BYTES.fetch_add(layout.size() as u64, Relaxed);
-            if layout.size() >= 64 * 1024 {
-                LARGE.fetch_add(1, Relaxed);
-            }
-            maybe_sample(layout.size());
-            unsafe { System.alloc(layout) }
-        }
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            unsafe { System.dealloc(ptr, layout) }
-        }
-        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            COUNT.fetch_add(1, Relaxed);
-            BYTES.fetch_add(new_size as u64, Relaxed);
-            if new_size >= 64 * 1024 {
-                LARGE.fetch_add(1, Relaxed);
-            }
-            maybe_sample(new_size);
-            unsafe { System.realloc(ptr, layout, new_size) }
-        }
-    }
-}
+use draco_cpp_test_bridge::counting;
 
 #[global_allocator]
 static ALLOC: counting::Counting = counting::Counting;
@@ -142,7 +86,7 @@ fn main() {
         _ => {
             if std::env::var("SAMPLE_ALLOC").is_ok() {
                 use std::sync::atomic::Ordering::Relaxed;
-                counting::COUNT.store(0, Relaxed);
+                counting::reset();
                 counting::SAMPLING.store(true, Relaxed);
                 let (encoded, _, _) = rust_encode(&mesh, &options);
                 counting::SAMPLING.store(false, Relaxed);
@@ -159,9 +103,7 @@ fn main() {
                 return;
             }
             use std::sync::atomic::Ordering::Relaxed;
-            counting::COUNT.store(0, Relaxed);
-            counting::BYTES.store(0, Relaxed);
-            counting::LARGE.store(0, Relaxed);
+            counting::reset();
             let mut size = 0;
             let mut total_setup = 0.0;
             let mut total_encode = 0.0;

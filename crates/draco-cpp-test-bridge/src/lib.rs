@@ -3,6 +3,8 @@
 //! This crate is not a public C API surface. It provides a private bridge to
 //! the original C++ Draco encoder/decoder for Rust parity and performance tests.
 
+pub mod counting;
+
 #[cfg(not(cpp_test_bridge_disabled))]
 mod ffi {
     use std::os::raw::c_int;
