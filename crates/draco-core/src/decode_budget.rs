@@ -96,12 +96,18 @@ pub(crate) fn ensure_elements_are_backed(
 /// of 24 — so a file this accepts and upstream refuses still decodes here,
 /// which is the direction this crate errs in deliberately.
 ///
-/// In theory a degenerate rANS distribution can carry a symbol in less than a
-/// bit, so this is a bound on the plausible rather than the possible. What
-/// makes that trade acceptable is the alternative: without it a nine-byte
-/// header names a multi-gigabyte reservation, which is the thing this module
-/// exists to prevent, and upstream has shipped a bound 24 times stricter for
-/// years without an interoperability complaint.
+/// Sub-bit symbols are not just theoretically possible, they are measured:
+/// the seeded ribbon's attribute corrections entropy-code at 2.7 symbols per
+/// bit of their own stream (PERFORMANCE.md, the dhat round). This gate
+/// survives that fact only because of its denominator -- it is applied once,
+/// on the sequential-connectivity path, against the *whole* stream, which
+/// also carries every attribute. Do not reuse it against the narrow
+/// `remaining_size` of a single symbol stream: a real file would be refused,
+/// which is exactly the interoperability bug this module replaced. What makes
+/// the trade acceptable where it stands is the alternative: without it a
+/// nine-byte header names a multi-gigabyte reservation, which is the thing
+/// this module exists to prevent, and upstream has shipped a bound 24 times
+/// stricter for years without an interoperability complaint.
 pub(crate) fn ensure_symbols_are_backed(count: usize, stream_bytes: usize) -> Status {
     if count > stream_bytes.saturating_mul(8) {
         return Err(DracoError::new(
