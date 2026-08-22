@@ -37,6 +37,7 @@ fn invalid_quantization_bits(bits: i32) -> DracoError {
     ))
 }
 
+#[derive(Clone)]
 pub struct AttributeQuantizationTransform {
     quantization_bits: i32,
     min_values: Vec<f32>,

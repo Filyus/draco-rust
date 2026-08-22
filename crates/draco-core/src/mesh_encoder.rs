@@ -125,6 +125,12 @@ pub struct MeshEncoder {
     /// id. Collected as encoding runs because the encoders are built at their
     /// use site and dropped there, and only they know what they settled on.
     attribute_predictions: Vec<(i32, PredictionSchemeMethod, PredictionSchemeTransformType)>,
+    /// The quantization parameters each attribute was encoded with, keyed by
+    /// attribute id. Kept for the same reason as `attribute_predictions`: the
+    /// encoded-mesh-info pass runs after the attribute encoders are gone and
+    /// would otherwise recompute these, and recomputing means a second full
+    /// min/max sweep of the attribute -- a pass the reference never makes.
+    attribute_quantization: Vec<(i32, AttributeQuantizationTransform)>,
     encoded_mesh_info: Option<EncodedMeshInfo>,
 }
 
@@ -274,6 +280,7 @@ impl MeshEncoder {
             method: 0,
             use_single_connectivity: false,
             attribute_predictions: Vec::new(),
+            attribute_quantization: Vec::new(),
             encoded_mesh_info: None,
         }
     }
@@ -313,6 +320,7 @@ impl MeshEncoder {
         self.method = 0;
         self.use_single_connectivity = false;
         self.attribute_predictions.clear();
+        self.attribute_quantization.clear();
     }
 
     /// Returns the assigned mesh, if any.
@@ -1136,6 +1144,7 @@ impl MeshEncoder {
                         predictions.push((i, method, transform));
                     }
 
+                    self.attribute_quantization.push((i, q_transform.clone()));
                     quantization_transforms.push(Some(q_transform));
                     portable_attributes.push(Some(portable));
                     normal_encoders.push(None);
@@ -1458,6 +1467,9 @@ impl MeshEncoder {
                 .as_ref()
                 .expect("mesh must be set before encoding");
             let mut portables: Vec<(i32, PointAttribute)> = Vec::new();
+            // Collected rather than written straight to `self`, which is
+            // borrowed as the mesh for as long as this loop runs.
+            let mut quantized: Vec<(i32, AttributeQuantizationTransform)> = Vec::new();
             for (local_i, &att_id) in attr_ids.iter().enumerate() {
                 if decoder_types[local_i] != 2 {
                     quantization_transforms.push(None);
@@ -1526,12 +1538,14 @@ impl MeshEncoder {
                 }
 
                 portables.push((att_id, portable));
+                quantized.push((att_id, q_transform.clone()));
                 quantization_transforms.push(Some(q_transform));
             }
             // Accumulated across groups, not replaced: attributes are encoded one
             // group at a time and the position lives in its own, so replacing
             // here would take the position's portable values away from every
             // later group's predictors.
+            self.attribute_quantization.extend(quantized);
             for (att_id, portable) in portables {
                 match self
                     .portable_attributes
@@ -1847,14 +1861,30 @@ impl MeshEncoder {
             let quantization_bits = self
                 .options
                 .get_attribute_int(att_id, "quantization_bits", -1);
-            let mut q_transform = AttributeQuantizationTransform::new();
-            q_transform
-                .compute_parameters(att, quantization_bits)
-                .map_err(|e| {
-                    DracoError::general(format!(
-                        "Failed to compute position quantization parameters: {e}"
-                    ))
-                })?;
+            // The encode has already computed these for this attribute, and
+            // computing them again means sweeping every value for its minimum
+            // a second time. Recompute only if the attribute was quantized by
+            // some path that did not record it, so this reports the same
+            // bounds either way.
+            let recorded = self
+                .attribute_quantization
+                .iter()
+                .find(|(id, _)| *id == att_id)
+                .map(|(_, transform)| transform.clone());
+            let q_transform = match recorded {
+                Some(transform) => transform,
+                None => {
+                    let mut transform = AttributeQuantizationTransform::new();
+                    transform
+                        .compute_parameters(att, quantization_bits)
+                        .map_err(|e| {
+                            DracoError::general(format!(
+                                "Failed to compute position quantization parameters: {e}"
+                            ))
+                        })?;
+                    transform
+                }
+            };
 
             // These are the bounds of the attribute as the decoder will see it,
             // so each extreme goes through the same quantize/dequantize round
