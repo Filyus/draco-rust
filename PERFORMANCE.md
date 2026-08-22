@@ -2732,20 +2732,44 @@ for its bounds, copies the encoded point order once per attribute, and walks
 each attribute's connectivity, all to describe an encode that has already
 happened. `encoded_mesh_info` is now derived on the first call and cached.
 
-The API cost is stated rather than hidden. The accessor takes `&mut self`,
-which is a getter demanding exclusive access, and it returns a `Result` instead
-of an `Option` so the failure that used to come back from `encode()` still has
-somewhere to go -- an encode whose *description* cannot be derived is
-nonetheless a valid encode, and that is a real change in when such a failure is
-noticed. The variant that keeps `&self` is a `OnceLock` plus a build that
-borrows immutably, which the active-connectivity caches the build writes would
-have to give up first.
+**Whose cost this removes, exactly.** Both in-repo consumers --
+`draco-gltf`'s compression path and the wasm exporter -- want the description
+and ask for it immediately, so for them the total work is unchanged and only
+its location moved. What the round removes is the cost for callers who never
+ask: a plain compress, a CLI, and the encode benchmark. That last one is why
+the figures below move at all, and it is legitimate for the comparison
+precisely because `EncodeMeshToBuffer` produces no equivalent -- the two sides
+are now doing the same job.
+
+**The architecture, and the three that lost.** Four shapes were weighed:
+lazily on a `&mut self` accessor (built first, and landed briefly); lazily
+behind `&self` and a `OnceLock`; eagerly behind an encoder option the way
+`store_number_of_encoded_faces` already is; and a second entry point,
+`encode_with_info`, that derives the description in the call that wants it and
+returns it by value.
+
+The last one won, and the reason is that the other three each keep the work
+hidden behind something that does not look like work. A lazy accessor puts
+three costs on what reads as a query: it needs `&mut self`, so it cannot be
+called through a shared reference or from two threads; the encoder must keep
+every piece of derived state alive until someone asks; and the failure
+surfaces away from the call that caused it, or never. `OnceLock` fixes the
+first and needs the active-connectivity caches -- which the build writes and
+never reads -- extracted into a pure function first, while keeping the other
+two. The option flag keeps the API but forces a default that is either the old
+cost for everyone or a silently absent description for anyone who did not know
+about the flag.
+
+`encode_with_info` has one real loss against the lazy forms: a caller who
+decides afterwards that it wants the description has to encode again. No such
+caller exists here, and the shape says what it costs at the point where the
+cost is incurred.
 
 Counted, one encode at speed 5:
 
 | payload | before | after | | C++ |
 | --- | ---: | ---: | ---: | ---: |
-| grid | `32,447,174` | `31,865,712` | `-1.8%` | `31,807,826` |
+| grid | `32,447,174` | `31,792,057` | `-2.0%` | `31,807,826` |
 | ribbon | `47,818,380` | `46,577,566` | `-2.6%` | `43,987,188` |
 | torus | `32,061,093` | `31,473,845` | `-1.8%` | `31,492,536` |
 | fan | `30,224,392` | `29,674,037` | `-1.8%` | `382,563,230` |
@@ -2758,7 +2782,7 @@ profile and the four quantization rounds:
 
 | payload | session start | now | | vs C++ |
 | --- | ---: | ---: | ---: | ---: |
-| grid | `35,515,390` | `31,865,712` | **`-10.3%`** | `1.002x` |
+| grid | `35,515,390` | `31,792,057` | **`-10.5%`** | **`0.9995x`** |
 | ribbon | `54,108,205` | `46,577,566` | **`-13.9%`** | `1.059x` |
 | torus | `35,091,691` | `31,473,845` | **`-10.3%`** | **`0.999x`** |
 | fan | `32,999,785` | `29,674,037` | **`-10.1%`** | -- |
@@ -2776,7 +2800,8 @@ moved under `1%` across the pair:
 Speed 0 moved `+0.01` to `+0.06x` and is inside its spread on two of three
 payloads.
 
-The grid and the torus are at instruction parity with the reference; the ribbon
+The grid and the torus are at instruction parity with the reference -- the grid
+by a margin (`15,769` instructions in `31.8M`) too thin to call a lead; the ribbon
 is the one still carrying a gap, and after this round it is `2.59M` rather than
 `4.28M`, spread across attribute values and symbols (`+1.0M`), memset and
 memcpy (`+0.55M`), the corner table and connectivity together (`+1.0M`), and
