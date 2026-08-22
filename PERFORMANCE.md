@@ -1356,6 +1356,91 @@ What it changes:
   factor. Ratios within one harness are comparable; absolute figures across
   the two are not, and the tables above were taken with the older one.
 
+### The Diagnostic Pass, Run Once For Everything
+
+Four of the open encode leads needed a number before they could be ordered,
+and run separately each would have cost its own sweep. `encode_matrix` gained
+three opt-in emitters instead -- `STAGES`, `ALLOC`, `SAMPLE_ALLOC` -- and
+`draco-core` an off-by-default `count_table_loads` feature, so one run answers
+all of them. Installing the counting allocator did not move the timings: grid
+speed 5 reads `1,447` us against `1,446` in the run before it.
+
+**`CornerTable::init` is no longer one stage's problem.** Medians over 80
+builds per payload:
+
+| payload | total | opposite_corners | break_non_manifold | vertex_corners |
+| --- | ---: | ---: | ---: | ---: |
+| grid | `648` | `144` `22%` | `318` `49%` | `187` `29%` |
+| ribbon | `565` | `154` `27%` | `245` `43%` | `165` `29%` |
+| torus | `821` | `174` `21%` | `360` `44%` | `287` `35%` |
+| fan | `621` | `131` `21%` | `302` `49%` | `188` `30%` |
+
+`break_non_manifold_edges` is `43-49%` of the build on **every** family,
+including three that have no non-manifold edge at all. On those it walks every
+corner's 1-ring, twice -- once swinging left to the boundary, once swinging
+right recording sink vertices -- and concludes nothing. That walk is the same
+one `compute_vertex_corners` makes immediately afterwards. Nothing has been
+tried here yet; it is the largest thing this pass found.
+
+**The ribbon allocates 19,541 times per encode.** Allocations per encode, from
+the same run:
+
+| payload | speed 0 | speed 3 | speed 5 | speed 8 | speed 10 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| grid | `9,460` | `162` | `87` | `78` | `50` |
+| ribbon | `19,634` | `19,582` | `19,541` | `19,531` | `49` |
+| torus | `9,236` | `189` | `89` | `81` | `51` |
+| fan | `8,612` | `143` | `85` | `76` | `51` |
+
+Two shapes, both new. The ribbon's is roughly one allocation per vertex
+(`19,460` of them) at every EdgeBreaker speed and gone at speed 10 -- so it is
+in the EdgeBreaker connectivity path on a mesh where every vertex is on a
+boundary, which is where the `7.9%` memory-shaped leaf was seen and never
+chased. The other is speed 0's `8,600-9,500` on the families that otherwise
+allocate under 200: the constrained multi-parallelogram predictor, allocating
+about one per vertex of its own.
+
+**The load counts put the two sides at exact parity on the traversal.**
+Instrumented C++ (a *copy* of the reference, never the pinned build) against
+the Rust feature, one encode of the grid at speed 5:
+
+| accessor | C++ | Rust |
+| --- | ---: | ---: |
+| `swing_left` | `116,760` | `116,760` |
+| `swing_right` | `54,908` | `54,908` |
+| `left_corner` / `right_corner` | `27,266` | `0` |
+| `opposite`, called directly | `121,670` | `175,822` |
+| **`opposite_corners` loads, total** | **`320,604`** | **`347,490`** |
+| `corner_to_vertex_map` loads | `543,028` | `308,378` |
+| `vertex_corners` loads | `9,214` | `9,214` |
+
+The swing counts match **to the call**, and so does `vertex_corners`. What
+does not: the port makes `26,886` more `opposite_corners` loads -- `8.4%`, and
+`8-9%` on all four families -- and `43%` *fewer* `corner_to_vertex_map` loads.
+
+The first explanation to go was the obvious one. This port answers the
+sentinel with the lookup's own bounds check where C++ branches first, so the
+surplus should have been loads at out-of-range indices; a counter for exactly
+those reported **zero** on all four payloads. The surplus is real loads at
+valid indices, about `1.5` per face, and the port reaches them through
+`opposite` directly where C++ routes `27,266` of its own through
+`GetLeftCorner`/`GetRightCorner` -- accessors this port has and its encoder
+never calls. Since both forms are one load, that routing is not the surplus
+either; it only accounts for where the calls are spelled.
+
+So the encoder has a call-count anomaly of the same kind as decode's round
+two, an order of magnitude smaller: `8-9%`, uniform across topologies, not
+explained by any fusion or sentinel difference, and not yet localized to a
+call site. Reading the two call graphs side by side is what localized decode's,
+and it is what this needs.
+
+Method note: **the metric has to survive the port's own optimizations.** A
+per-method comparison would have shown `next` and `previous` far below C++'s
+counts and `swing_left` at parity, all three of which are artifacts of fusing
+`Opposite(Next(c))` into one lookup. Counting loads -- the same event on both
+sides regardless of how many function calls wrap it -- is what makes "exact
+parity on the traversal" a statement about work rather than about spelling.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
