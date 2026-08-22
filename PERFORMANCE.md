@@ -1104,6 +1104,12 @@ All three ribbon seeds were behind (`0.90x`, `0.96x`, `0.85x`); nothing else
 was. So "the encoder is `10%` behind at speeds 5-9" was never a property of
 the encoder -- it was one topology, averaged into a sweep.
 
+(The deficit itself did not survive a better harness: see [One Run For The
+Whole Matrix](#one-run-for-the-whole-matrix), where the ribbon interleaved in
+a single process reads `0.98-1.04x` rather than `0.90x`. What this round found
+inside it -- three passes over the positions where one does -- was measured
+against paired Rust builds and stands on its own.)
+
 **Third: splitting the ribbon.** `corner_table_loop` puts its table at C++
 `1,031` against Rust `794` -- `1.30x` ahead, the same direction as the Bunny.
 Subtracting leaves everything-else at C++ `2,121` against Rust `2,722`, so the
@@ -1290,6 +1296,66 @@ claims.** This loop's worst case is quadratic and its observed cost is a
 constant three sweeps, and only one of those two facts tells you whether to
 spend code on it.
 
+### One Run For The Whole Matrix
+
+Every per-family figure above cost a process per cell: `encode_loop` takes one
+mesh, one side and one speed, so a four-family table at five speeds is forty
+processes, the two sides never see the same machine conditions, and the rounds
+needed to beat the C++ side's drift multiply all of it. `encode_matrix` runs
+the matrix in one process, interleaving the sides within each round, and
+prints the median with **the spread beside it** -- a cell whose spread is wider
+than the gap it claims resolved nothing, and that should be visible rather
+than assumed.
+
+Five rounds, 80 iterations per cell, pinned 1.5.7:
+
+| payload | speed | C++ | spread | Rust | spread | |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| grid | 0 | `6,138` | `11.3%` | `3,997` | `9.4%` | `1.54x` |
+| grid | 3 | `2,240` | `12.9%` | `1,692` | `3.5%` | `1.32x` |
+| grid | 5 | `1,935` | `2.9%` | `1,446` | `2.6%` | `1.34x` |
+| grid | 8 | `1,802` | `2.8%` | `1,358` | `2.3%` | `1.33x` |
+| grid | 10 | `584` | `3.4%` | `379` | `3.8%` | `1.54x` |
+| ribbon | 0 | `7,142` | `2.8%` | `5,084` | `7.3%` | `1.40x` |
+| ribbon | 3 | `2,863` | `7.4%` | `2,913` | `7.4%` | `0.98x` |
+| ribbon | 5 | `2,652` | `2.5%` | `2,577` | `2.0%` | `1.03x` |
+| ribbon | 8 | `2,510` | `2.5%` | `2,411` | `2.0%` | `1.04x` |
+| ribbon | 10 | `1,082` | `1.0%` | `824` | `3.7%` | `1.31x` |
+| torus | 0 | `7,165` | `1.9%` | `4,737` | `1.2%` | `1.51x` |
+| torus | 3 | `2,750` | `3.8%` | `2,073` | `3.8%` | `1.33x` |
+| torus | 5 | `2,260` | `3.7%` | `1,752` | `3.0%` | `1.29x` |
+| torus | 8 | `2,096` | `4.9%` | `1,626` | `3.4%` | `1.29x` |
+| torus | 10 | `593` | `3.4%` | `398` | `6.2%` | `1.49x` |
+| fan | 0 | `21,248` | `2.8%` | `3,421` | `1.6%` | `6.21x` |
+| fan | 3 | `18,067` | `6.1%` | `1,523` | `3.3%` | `11.86x` |
+| fan | 5 | `17,810` | `5.4%` | `1,299` | `2.9%` | `13.71x` |
+| fan | 8 | `17,957` | `3.9%` | `1,232` | `1.9%` | `14.58x` |
+| fan | 10 | `583` | `2.7%` | `366` | `1.3%` | `1.59x` |
+
+Every cell's two output sizes matched, which the harness checks and flags, so
+this is a correctness sweep as well as a timing one.
+
+What it changes:
+
+- **The ribbon was never behind.** The per-process runs put it at `0.90-0.96x`
+  and this document has carried that as the one family the port had not won.
+  Interleaved in one process it is `0.98x` to `1.04x` at speeds 3-8 and
+  `1.31-1.40x` at the ends, with the only sub-parity cell carrying a `7.4%`
+  spread on both sides -- unresolved, not lost. What the earlier figure
+  measured was two processes, not two encoders.
+- **Speed 10 is a different encoder.** It drops both sides by roughly `25x` on
+  every family and puts the fan back at `1.59x`: the sequential encoder builds
+  no corner table, so the topology that dominates every other speed does not
+  exist there. Any figure quoted as "the encoder" that averages speed 10 with
+  the rest is averaging two different programs.
+- **Speed 0 is the widest margin on the manifold families** -- `1.40-1.54x`,
+  against `1.29-1.34x` in the middle -- and it is the only speed range this
+  document had never split per family.
+- **The absolute numbers are lower than the per-process ones** (grid speed 5
+  reads `1,446` here against `2,050` there), on both sides by a similar
+  factor. Ratios within one harness are comparable; absolute figures across
+  the two are not, and the tables above were taken with the older one.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -1400,6 +1466,22 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
 Where each measurement in this document comes from. Point the C++ side at a
 reference build with `DRACO_CPP_BUILD_DIR`/`DRACO_CPP_SOURCE_DIR` and pin it
 explicitly -- see the warning at the top for what an unpinned one costs.
+
+### Encode Matrix, One Process
+
+File: `crates/draco-cpp-test-bridge/examples/encode_matrix.rs`
+
+Package: `draco-cpp-test-bridge`
+
+Purpose: every payload against every speed, both sides interleaved in one
+process, reported as medians with their spread and with the two output sizes
+compared per cell. The harness to reach for when a table is wanted rather than
+a single number -- it costs one build and one run instead of a process per
+cell, and the spread column says which cells resolved anything.
+
+```sh
+ITERS=80 cargo run --release --manifest-path crates/Cargo.toml   -p draco-cpp-test-bridge --example encode_matrix -- 5 0,3,5,8,10 <mesh.obj>...
+```
 
 ### Decode Through The C++ Bridge
 
