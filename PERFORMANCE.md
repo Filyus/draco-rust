@@ -3031,14 +3031,48 @@ change, C++ column steady:
 | torus | `1.08x -> 1.10x` | `1.04x -> 1.06x` | `1.08x -> 1.10x` |
 | fan | `1.06x` | `1.22x -> 1.24x` | `1.23x -> 1.22x` |
 
-**The two metrics disagree in direction and both are right.** The port executes
-`1.20x` the reference's instructions and takes `0.83x` its time at speed 5,
-which is an IPC difference of about `1.45x`, not a contradiction: a bounds
-check that the branch predictor gets right and that issues in a spare slot
-costs instructions and no time. This document's standing conversion -- an
-instruction here is worth about half its face value in time -- is the same
-observation, and it is why the instruction gap should be read as a budget for
-*work removed*, not as a deficit in speed.
+**The two metrics disagree in direction, and dividing one by the other is a
+mistake this document made and is retracting.** The instruction counts come
+from WSL, where the reference is a `gcc -O2` build; the matrix's clock comes
+from Windows, where it is an MSVC build. They are two different references, so
+`1.20x` instructions over `0.83x` time is not an IPC ratio of anything -- it is
+two comparisons divided by each other.
+
+Measured properly, on one platform, with the same two binaries the instruction
+counts were taken from -- `300` decodes a run, eleven interleaved rounds after
+a warm-up, spreads `5.5%` and `2.5%`:
+
+| | min | median | max |
+| --- | ---: | ---: | ---: |
+| Rust | `581` us | `592` us | `613` us |
+| C++ (gcc `-O2`) | `642` us | `651` us | `658` us |
+
+**`1.10x` in time while executing `1.20x` the instructions**, both ways of
+measuring it agreeing to `0.005`. So the effect is real and it is about `1.3x`
+in instructions per cycle -- not `1.45x`, and against a gcc reference rather
+than the MSVC one the matrix rows are quoted against. **A ratio in this
+document is a ratio against a particular build of upstream; say which.**
+
+And the mechanism is not that our instructions are cheaper. Callgrind's cache
+and branch simulation on the same pair says we execute more of everything:
+
+| | Rust | C++ | |
+| --- | ---: | ---: | ---: |
+| instructions | `11,681,819` | `9,715,274` | `1.20x` |
+| data reads | `3,334,563` | `2,145,417` | `1.55x` |
+| data writes | `1,707,441` | `1,340,150` | `1.27x` |
+| branches | `2,663,523` | `1,643,779` | `1.62x` |
+| mispredicts | `28,421` | `14,816` | `1.92x` |
+| D1 read misses | `54,674` | `39,697` | `1.38x` |
+
+Nothing there says our work is cheaper per unit; there is simply more of it,
+and we still finish first. What sets the time is the critical path, not the
+count: a decoder is a chain of dependent loads -- a corner index fetched to
+fetch another corner -- and the independent work around it, index arithmetic
+and bounds checks included, issues in slots the chain leaves idle. Two
+implementations of the same algorithm can differ in how much of their work is
+on that chain, and these two do. The counters available here cannot decompose
+it further, and the honest statement stops there.
 
 ## Unexplored
 
