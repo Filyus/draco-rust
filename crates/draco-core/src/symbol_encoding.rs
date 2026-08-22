@@ -551,15 +551,13 @@ pub fn decode_raw_symbols(
                 })?;
         }
         let chunk_end = num_values.min(index + (symbols.capacity() - symbols.len()));
-        for _ in index..chunk_end {
-            let Some(symbol) = decoder.try_decode_symbol() else {
-                return Err(DracoError::general(format!(
-                    "Raw symbol stream ended after {} of {num_values} symbols",
-                    symbols.len()
-                )));
-            };
-            symbols.push(symbol);
-        }
+        // One call per chunk rather than per symbol: the run loop hoists both
+        // tables, the input and the coder state out of the loop, which it can
+        // only do over a span it owns. The chunk is already sized to the spare
+        // capacity, so this fills without reallocating.
+        let filled = symbols.len();
+        symbols.resize(filled + (chunk_end - index), 0);
+        decoder.decode_run(&mut symbols[filled..]);
         index = chunk_end;
     }
     Ok(())

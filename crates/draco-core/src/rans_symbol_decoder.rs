@@ -18,6 +18,12 @@ pub struct RAnsSymbolDecoder<'a> {
     probability_table: Vec<RAnsSymbol>,
     lut: Vec<u32>,
     num_symbols: usize,
+    /// `probability_table.len() - 1`, the table having been padded to a power
+    /// of two. Masking a symbol id with it makes the lookup provably in
+    /// bounds, so the run loop indexes the table without a check and without
+    /// `unsafe`; the padding entries are unreachable through a LUT this
+    /// decoder built.
+    table_mask: u32,
     rans_precision_bits: u32, // Store bits for shift operations
     rans_precision_mask: u32, // (1 << bits) - 1 for fast modulo
     rans_precision: u32,
@@ -33,6 +39,7 @@ impl<'a> RAnsSymbolDecoder<'a> {
             probability_table: Vec::new(),
             lut: Vec::new(),
             num_symbols: 0,
+            table_mask: 0,
             rans_precision_bits,
             rans_precision_mask: rans_precision - 1,
             rans_precision,
@@ -140,6 +147,14 @@ impl<'a> RAnsSymbolDecoder<'a> {
         if cum_prob != self.rans_precision {
             return false;
         }
+
+        // Pad the table to a power of two so `decode_run` can mask instead of
+        // check. The entries added here carry a zero probability and cover no
+        // LUT slot, so reaching one would already mean the LUT was built by
+        // something other than the loop above.
+        let padded = num_symbols.next_power_of_two();
+        self.probability_table.resize(padded, RAnsSymbol::default());
+        self.table_mask = (padded - 1) as u32;
         true
     }
 
@@ -187,6 +202,65 @@ impl<'a> RAnsSymbolDecoder<'a> {
             return false;
         }
         true
+    }
+
+    /// Decodes one symbol into every slot of `out`.
+    ///
+    /// The per-symbol form below is what the tagged scheme needs, where each
+    /// symbol is interleaved with reads from a second bit stream. The raw
+    /// scheme decodes a run of them against nothing else, and this is that
+    /// run: the two tables, the input and the coder state all become locals,
+    /// so the loop carries no reload and no check the tables have not already
+    /// proved.
+    ///
+    /// The arithmetic wraps by construction rather than by hope. `state` stays
+    /// below `l_rans_base * 256`, so `quo` is under `256 * 4` and `quo * prob`
+    /// under `2^30`; `rem` lands inside the LUT slot owned by its own symbol,
+    /// so `rem - cum_prob` is the offset within that symbol's range and cannot
+    /// go negative. Both hold for any table `decode_table` accepted, which is
+    /// the only way one is built.
+    pub fn decode_run(&mut self, out: &mut [u32]) {
+        // A single-symbol alphabet carries no rANS state at all -- the encoder
+        // wrote nothing and `start_decoding` initialized nothing -- so the run
+        // is that symbol repeated.
+        if self.num_symbols <= 1 {
+            out.fill(0);
+            return;
+        }
+        let precision = self.rans_precision as usize;
+        if self.lut.len() < precision || self.probability_table.is_empty() {
+            out.fill(0);
+            return;
+        }
+        let lut = &self.lut[..precision];
+        let table = &self.probability_table[..];
+        let table_mask = self.table_mask;
+        let mask = self.rans_precision_mask;
+        let bits = self.rans_precision_bits;
+        let l_base = self.ans.l_base;
+        let buf = self.ans.buf;
+        let mut offset = self.ans.buf_offset.min(buf.len());
+        let mut state = self.ans.state;
+
+        for slot in out.iter_mut() {
+            while state < l_base && offset > 0 {
+                offset -= 1;
+                state = (state << 8) | buf[offset] as u32;
+            }
+            let quo = state >> bits;
+            let rem = state & mask;
+            // `rem <= mask` and `lut.len() == mask + 1`, so this indexes in
+            // bounds; the masked table index below does the same for the id.
+            let symbol_id = lut[rem as usize];
+            let sym = table[(symbol_id & table_mask) as usize];
+            state = quo
+                .wrapping_mul(sym.prob)
+                .wrapping_add(rem.wrapping_sub(sym.cum_prob));
+            *slot = symbol_id;
+        }
+
+        self.ans.buf_offset = offset;
+        self.ans.state = state;
     }
 
     #[inline(always)]
