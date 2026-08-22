@@ -1993,6 +1993,62 @@ quietened the machine earlier was not the allocator alone, and a change worth
 `2%` needs a session that can show `2%` -- checked at the time, not inherited
 from a previous run.
 
+### The Setup Nobody Had Split, Split
+
+Three questions the previous round left open, closed in one session
+(`68eb30b`, `e53cee6`, `5fded47`). Rust-side spreads under mimalloc were
+`0.3-4%` throughout; every paired A/B below is two binaries interleaved
+`A B A B` in one session with the pinned C++ as control.
+
+**The unidentified large buffers all have names now.** One
+`SAMPLE_ALLOC_MIN=100000` run resolved every size the last round listed:
+`149,784` x2 is the corner table's two arrays at their input-bounded initial
+reservation (`try_reserve_faces`), `299,568` x2 is the same two arrays after
+Vec doubling grew them past it mid-decode, `216,600` is the mesh's face array,
+and the four `110,592`s are the symbol buffer, the integer values, the
+portable attribute and the dequantized target -- all legitimate. The
+`36,864`-class ten are the traversal work arrays plus the mapping
+intermediate; backtraces there resolve to inlined mush, but the sizes match
+the known `num_vertices * 4` locals line by line.
+
+**The doubling overshoot is gone** (`68eb30b`): when growth passes the
+reservation, `try_grow_to_face` now targets the smaller of doubling and the
+header's declared face count -- exact for a truthful header, no worse than
+doubling for a lying one. Grid alloc traffic `2290 -> 2185` KB per decode
+(counted). The clock could not resolve it: the paired A/B read `+1%` with the
+control steady, which is inside this project's measured `1.4-3.1%`
+two-binary layout term, and a near-identical micro-change in the same
+function was already measured unresolvable last round. Kept for the memory
+shape, claimed for nothing else.
+
+**The `~100` us of unattributed attribute-phase setup is attributed.** A
+five-block phase probe (grid+torus average, speed 5, mimalloc): parse `0.3`,
+per-decoder setup `90` (which is the DFS traversal generation itself, already
+in the table above), `decode_values` `238`, the sequencer's mapping fix `42`,
+portable-pending copies `4`. So the "unaccounted" block was two things
+hiding in plain sight: the traversal was being counted twice under different
+names, and the mapping fix was real and unlisted.
+
+Two changes came out of that split:
+
+- `e53cee6` removes the identity map fill EdgeBreaker setup wrote one
+  fallible call per point per attribute, which the sequencer's mapping fix
+  then overwrote entirely -- work upstream never does. Torus `-0.7%`, grid
+  noise, same sign in most pairs.
+- `5fded47` rebuilds the mapping fix itself: the map is assembled once as
+  the attribute's own representation (a `Vec<AttributeValueIndex>` with
+  INVALID for unreached points, half the size of the old
+  `Vec<Option<...>>` intermediate) and handed to each attribute as one slice
+  copy, instead of one fallible call per point per attribute. Torus
+  `744 -> 729` us, `-1.9%`, same sign in all four pairs; grid `-0.8%`.
+
+After the round, the mimalloc matrix reads grid `0.91-0.92x`, torus
+`0.86-0.88x`, ribbon `0.97-0.99x`, fan `0.96-1.01x` -- but the C++ side's
+spread was `13-49%` in that run, so those ratios are directional, not
+settled. The Rust-side absolutes are the numbers to compare next session:
+grid `584`/`524` us at speeds 5/8, torus `730`/`625`, ribbon `899`/`810`,
+fan `526`/`481`.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -2037,16 +2093,15 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   Nothing in that list does work C++ does not -- the load counts already said
   so. The one bucket that is not decode work is memory management at `~15%`,
   which is where an attack should go.
-- **`~100` us of the grid's `350` us attribute phase is setup nobody has
-  split** -- not the traversal generation (`68`), not `decode_values` (`182`).
-  Per-attribute decoder construction, map plumbing and the seam-table path all
-  live there.
-- **Ten allocations of `num_vertices * 4` per decode**, down from twelve.
-  `2.3` MB allocated for a `330` KB decoded mesh on the grid, across `54`
-  allocations. The remaining large sizes on that payload are `110,592` (four
-  of them), `299,568` and `149,784` (two each) -- none identified, and the
-  backtrace sampler resolves them all to an inlined `MeshDecoder::decode`, so
-  naming them needs labelled probes rather than the sampler.
+- ~~The `~100` us of unattributed attribute-phase setup~~ -- split and largely
+  spent; see "The Setup Nobody Had Split, Split" above. What remains of the
+  mapping fix is the corner walk itself, which upstream's
+  `UpdatePointToAttributeIndexMapping` also pays.
+- ~~The unidentified large decode buffers~~ -- all named in the same section;
+  the doubling overshoot among them is fixed (`68eb30b`). What remains is
+  `~2.1` MB across `~52` allocations for a `330` KB mesh, now all accounted
+  for as either upstream-equivalent work buffers or the four legitimate
+  value-pipeline buffers.
 - **An encode-side call-count comparison against C++.** Instrumenting every
   `CornerTable` method and comparing exact counts is what produced decode's
   rounds two and three -- the two largest decode wins of the campaign. It has
