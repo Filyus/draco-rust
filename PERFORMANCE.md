@@ -2639,6 +2639,85 @@ port's version of it is inlined into a single `14.66M` symbol against C++'s
 five named functions. Splitting that blob is a prerequisite for comparing them
 at all.
 
+### The Ribbon's Encode Excess, Accounted For -- Including Two Nulls
+
+After the quantization round three of the four payloads sat within `2.6%` of
+C++ on instructions and the ribbon did not, at `1.10x` (`48.27M` against
+`43.99M`). Grouping both sides' full function lists by *what the work is*
+rather than by what each side named it accounts for the whole `4.28M`:
+
+| group | C++ | Rust | |
+| --- | ---: | ---: | --- |
+| corner table + connectivity encode | `24.92M` | `25.96M` | `1.04x` |
+| attribute traversal | `4.73M` | `5.00M` | `1.06x` |
+| attribute values + symbols | `8.75M` | `9.76M` | `1.12x` |
+| quantization | `3.10M` | `2.73M` | **`0.88x`** |
+| `position_bounds_from_attribute` | **`0`** | `1.13M` | no counterpart |
+| memset / memcpy | `2.32M` | `2.87M` | `1.24x` |
+| driver | `0.12M` | `0.35M` | |
+
+The two rows had to be merged at the top because the port inlines its
+corner-table construction into `encode_geometry_data` along with the
+connectivity encode, where C++ names nine functions across the two. Summed,
+they are `1.04x` apart and neither is the ribbon's problem.
+
+**The corner-table row is where a target evaporated.** `compute_vertex_corners`
+at `4.65M` against `ComputeVertexCorners`'s `3.06M` reads as `1.52x` behind and
+was written down that way. It is wrong: C++ keeps `IsDegenerated` as its own
+function and the port inlines it, so the comparison is `4.65M` against
+`3.06M + 2.65M = 5.70M` -- the port is `18%` **ahead**. On the grid it is
+`3.86M` against `5.16M`, `25%` ahead. The lesson is the one this document keeps
+relearning: a ratio between two symbols is only a ratio between two *stages* if
+both sides drew the boundary in the same place.
+
+**What did land: `compute_parameters`, `-31%`.** The min/max sweep checked an
+offset and re-sliced the buffer once per component. The entry is contiguous, so
+one check covers it and the four-byte chunks walk in step with the accumulators
+-- the same rewrite that took `transform_attribute` down `63%` in the round
+above. Ribbon `1,333,140 -> 914,826`, which puts it under the reference's
+`1,041,293`. Whole encode: ribbon `-0.9%`, grid `-0.6%`, torus `-0.5%`, fan
+`-0.6%`.
+
+**And two nulls on `position_bounds_from_attribute`, which is the largest
+single item the reference does not pay at all.** It costs `1.13M` on the
+ribbon -- `58` instructions per point to read three floats and fold six
+extremes -- and `build_encoded_mesh_info` exists to report metadata the encoded
+bytes do not depend on. Per-line attribution put `681K` of that `1.13M` in
+`core/src/num/f32.rs`, which is `f32::min` and `f32::max`: they carry IEEE NaN
+semantics and do not compile to one instruction.
+
+Both obvious readings of that were wrong:
+
+- **Replacing the folds with `if value < min[c]`** -- same result, since a NaN
+  loses to the accumulator either way -- measured **`1,128,742 -> 1,235,704`,
+  `+9%`**, and the whole encode with it. The branch form is worse than the
+  NaN-correct fold, not better.
+- **Hoisting the accumulators out of the arrays into named locals**, on the
+  theory that the subscript made them memory, measured `1,128,742` -- *the same
+  number to the instruction*. They were already in registers.
+
+The same rewrite that worked twice next door -- slicing the entry once instead
+of indexing per component -- also measured exactly zero here, `1,128,742`
+before and after. Three attempts, three refusals, one function: the cost is
+the fold itself, and it is only removable by not doing the work.
+
+So the remaining lever on this function is structural, not local: **do not
+compute it.** `encoded_mesh_info` is derived, not encoded, and one of its two
+sweeps is already gone (the round above). Making the rest lazy needs an API
+decision -- `encoded_mesh_info()` takes `&self` today and the computation needs
+`&mut self` -- which is a design question, not a performance one.
+
+Where the encode stands, one encode at speed 5, against the session's start:
+
+| payload | session start | now | | C++ |
+| --- | ---: | ---: | ---: | ---: |
+| grid | `35,515,390` | `32,447,174` | **`-8.6%`** | `31,807,826` |
+| ribbon | `54,108,205` | `47,818,380` | **`-11.6%`** | `43,987,188` |
+| torus | `35,091,691` | `32,061,093` | **`-8.6%`** | `31,492,536` |
+| fan | `32,999,785` | `30,224,392` | **`-8.4%`** | `382,563,230` |
+
+Grid `1.020x`, torus `1.018x`, ribbon `1.087x`.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
