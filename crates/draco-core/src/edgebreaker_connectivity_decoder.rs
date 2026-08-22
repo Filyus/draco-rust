@@ -94,12 +94,28 @@ impl EdgebreakerConnectivityDecoder {
     ///
     /// Entries are `true` until written, which is what sizing the table up
     /// front from the declared vertex count used to give for free.
+    /// One bounds check on the common path, not two: reaching the entry
+    /// through `get_mut` both proves the table already covers the vertex and
+    /// yields the slot, where testing the length and then indexing left the
+    /// indexing's own check standing behind the test. Growth is the cold arm.
+    #[inline]
     fn mark_vert_not_hole(&mut self, vertex: VertexIndex, context: &str) -> Result<(), DracoError> {
         let index = self.vertex_index(vertex, context)?;
-        if index >= self.is_vert_hole.len() {
-            self.is_vert_hole.resize(index + 1, true);
+        match self.is_vert_hole.get_mut(index) {
+            Some(slot) => *slot = false,
+            None => {
+                // Growth is not the cold arm it looks like: a vertex is
+                // discovered here before it is anywhere else, so the table
+                // reaches its end once per vertex, and `resize(index + 1)`
+                // reached that through `extend_with`'s element-at-a-time loop
+                // and its set-length-on-drop guard -- to fill a `true` this
+                // line then overwrites. The gap before this vertex, if there
+                // is one, is what `resize` is for; the vertex itself is a
+                // push. Capacity is already reserved by the caller.
+                self.is_vert_hole.resize(index, true);
+                self.is_vert_hole.push(false);
+            }
         }
-        self.is_vert_hole[index] = false;
         Ok(())
     }
 
