@@ -23,7 +23,9 @@ premise holds, and the encoder reports the choices it makes for itself.
 - `PointCloudEncoder::encoded_point_cloud_info` and `EncodedPointCloudInfo`
   report what a point-cloud encode decided, so the KD-tree-versus-sequential
   choice — which the encoder makes on its own whenever every attribute is
-  eligible — is visible. `EncodedMeshInfo` gains the resolved bitstream version,
+  eligible — is visible. `EncodedMeshInfo`, which a mesh encode now returns
+  through `MeshEncoder::encode_with_info` rather than an accessor (see
+  **Changed**), gains the resolved bitstream version,
   EdgeBreaker traversal, speed and split-connectivity flag; `EncodedAttributeInfo`
   gains the prediction scheme, prediction transform and the quantization bits a
   transform actually applied. The values are the resolved ones, not the requested
@@ -214,6 +216,49 @@ premise holds, and the encoder reports the choices it makes for itself.
   mirror of upstream's two branches: below 2.0 the parent is the attribute
   itself, dequantized in place as soon as its own turn ends, and from 2.0 it is
   the portable copy.
+
+- **Breaking.** `MeshEncoder::encoded_mesh_info` is gone; `encode_with_info`
+  takes its place, encoding and returning the `EncodedMeshInfo` by value in one
+  call. `encode` itself now produces the bitstream and nothing else.
+
+  The description was never a byproduct of encoding — deriving it costs a sweep
+  of every position for its bounds and a copy of the encoded point order per
+  attribute, work no part of the bitstream depends on — and every caller paid
+  for it whether or not it ever asked. Making the accessor lazy was tried first
+  and rejected: it puts three costs on what reads as a query, needing
+  `&mut self` (so it cannot be reached through a shared reference or from two
+  threads), keeping every piece of derived state alive until someone asks, and
+  surfacing a failure away from the call that caused it, or never. Asking for
+  the description where it is wanted has none of those, and hands back an owned
+  value rather than a borrow.
+
+  `PointCloudEncoder::encoded_point_cloud_info` deliberately stays an accessor.
+  A point cloud's report really is a byproduct — it is assembled from what the
+  encode already produced, without a second pass over anything — so there is
+  nothing there for a caller to opt out of.
+
+- The encode paths do less work for the same output. Attribute quantization
+  computed its parameters twice per encode, once for the encode and once to
+  describe it; `f32::floor` in `quantize_float` was a call into libm on a
+  baseline x86-64 target, run once per component of every value; and the path a
+  mesh encode actually takes re-derived both byte offsets and re-proved both
+  bounds for every component of every point, after a check that already covered
+  the whole entry. Measured as instruction counts under callgrind against
+  upstream 1.5.7 on the same meshes, one encode at speed 5 fell `10-14%`,
+  putting two of the four seeded payloads at parity with the reference. The
+  decoder's raw symbol run was rewritten against hoisted tables in the same
+  pass, for `-29%` to `-40%` of `decode_symbols` and `2.3-3.5%` of a whole
+  decode.
+
+  Nothing about the encoded bytes changes; every one of these is the same
+  output computed with less work, and the byte-for-byte parity tests against
+  C++ Draco are what says so.
+
+- The workspace builds release with `codegen-units = 1` and full LTO. This
+  affects the binaries and benchmarks built *from this repository* and nothing
+  a consumer gets: a dependency is built under the consuming workspace's own
+  profile. It is recorded because every performance figure in `PERFORMANCE.md`
+  is now taken under it.
 
 ### Fixed
 
