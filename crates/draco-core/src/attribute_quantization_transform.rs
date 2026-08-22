@@ -177,22 +177,35 @@ impl AttributeQuantizationTransform {
                     "Attribute byte offset overflow".to_string(),
                 ));
             };
-            // Read num_components floats
-            for c in 0..num_components {
-                let Some(val) = offset.checked_add(c * 4).and_then(read_component) else {
-                    return Err(truncated());
-                };
+            // One check for the entry, then the components walked in step with
+            // the accumulators. The span is what the loop below reads and
+            // nothing more, so the entry's own bound is the only one there is.
+            let Some(end) = offset.checked_add(num_components * 4) else {
+                return Err(DracoError::general(
+                    "Attribute byte offset overflow".to_string(),
+                ));
+            };
+            let Some(entry) = data.get(offset..end) else {
+                return Err(truncated());
+            };
+            for (raw, (component_min, component_max)) in entry
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(self.min_values.iter_mut().zip(max_values.iter_mut()))
+            {
+                let val = f32::from_le_bytes(*raw);
 
                 if val.is_nan() {
                     return Err(DracoError::invalid_parameter(
                         "Attribute value is NaN and cannot be quantized".to_string(),
                     ));
                 }
-                if self.min_values[c] > val {
-                    self.min_values[c] = val;
+                if *component_min > val {
+                    *component_min = val;
                 }
-                if max_values[c] < val {
-                    max_values[c] = val;
+                if *component_max < val {
+                    *component_max = val;
                 }
             }
         }
