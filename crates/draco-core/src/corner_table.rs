@@ -10,6 +10,32 @@ use crate::geometry_indices::{
     CornerIndex, FaceIndex, VertexIndex, INVALID_CORNER_INDEX, INVALID_VERTEX_INDEX,
 };
 
+/// The stages [`CornerTable::init_with_stage_timings`] reports, in the order
+/// it reports them.
+#[derive(Clone, Copy, Debug)]
+pub enum InitStage {
+    OppositeCorners = 0,
+    BreakNonManifoldEdges = 1,
+    VertexCorners = 2,
+}
+
+impl InitStage {
+    pub const COUNT: usize = 3;
+    pub const ALL: [InitStage; Self::COUNT] = [
+        InitStage::OppositeCorners,
+        InitStage::BreakNonManifoldEdges,
+        InitStage::VertexCorners,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            InitStage::OppositeCorners => "opposite_corners",
+            InitStage::BreakNonManifoldEdges => "break_non_manifold",
+            InitStage::VertexCorners => "vertex_corners",
+        }
+    }
+}
+
 /// One sink-vertex key's edges within a single pivot walk of
 /// [`CornerTable::break_non_manifold_edges`]: the first two corners recorded
 /// for it, and the walk they belong to.
@@ -261,6 +287,29 @@ impl CornerTable {
     }
 
     pub fn init(&mut self, faces: &[[VertexIndex; 3]]) -> bool {
+        self.init_inner(faces, None)
+    }
+
+    /// [`CornerTable::init`], with each stage's wall time written to `stages`
+    /// in the order [`InitStage`] gives.
+    ///
+    /// Profiling tooling only, and deliberately the same body as `init` rather
+    /// than a copy of it: a split that drifts from the path it claims to
+    /// describe is worse than no split, and this stage division has already
+    /// overturned one hypothesis about where the table's time goes.
+    pub fn init_with_stage_timings(
+        &mut self,
+        faces: &[[VertexIndex; 3]],
+        stages: &mut [f64; InitStage::COUNT],
+    ) -> bool {
+        self.init_inner(faces, Some(stages))
+    }
+
+    fn init_inner(
+        &mut self,
+        faces: &[[VertexIndex; 3]],
+        mut stages: Option<&mut [f64; InitStage::COUNT]>,
+    ) -> bool {
         // Corner `3f + i` is face `f`'s vertex `i`, which is exactly the face
         // array read as one flat run -- so the map is that run, copied once,
         // rather than a bounds-checked store per corner over a fill that every
@@ -269,18 +318,32 @@ impl CornerTable {
         self.corner_to_vertex_map
             .extend_from_slice(faces.as_flattened());
 
+        // Reading the clock costs nothing here: `stages` is `None` on every
+        // path but the profiler's, and `init` runs once per encode.
+        let mut started = std::time::Instant::now();
+        let mut mark = |stages: &mut Option<&mut [f64; InitStage::COUNT]>, stage: InitStage| {
+            if let Some(stages) = stages.as_deref_mut() {
+                let now = std::time::Instant::now();
+                stages[stage as usize] = now.duration_since(started).as_secs_f64() * 1e6;
+                started = now;
+            }
+        };
+
         let mut num_vertices = 0;
         if !self.compute_opposite_corners(&mut num_vertices) {
             return false;
         }
+        mark(&mut stages, InitStage::OppositeCorners);
 
         if !self.break_non_manifold_edges(num_vertices) {
             return false;
         }
+        mark(&mut stages, InitStage::BreakNonManifoldEdges);
 
         if !self.compute_vertex_corners(num_vertices) {
             return false;
         }
+        mark(&mut stages, InitStage::VertexCorners);
 
         // num_degenerated_faces is counted inside compute_opposite_corners,
         // against the pre-split vertex map, matching where C++ counts it.
