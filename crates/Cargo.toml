@@ -42,3 +42,19 @@ opt-level = 2
 # Note: LTO is intentionally NOT enabled for tests. `lto = "thin"` disables
 # Rust incremental compilation, causing full rebuilds on every run (~3 minutes).
 # Without LTO, incremental builds complete in ~15 seconds after the first build.
+
+# Release builds one codegen unit per crate and links them with full LTO. The
+# defaults (16 units, no LTO) split draco-core's own hot code across units and
+# inhibit inlining inside it; both dials together are worth 2-5% of the decode
+# and 3-7% of the encode against the C++ reference in the same run.
+#
+# The two are a pair and neither is optional. `codegen-units = 1` on its own
+# costs ~5% on the speed-0 encode path, and full LTO is what pays that back --
+# `lto = "thin"` leaves the regression standing. Anything measured under this
+# profile has to be re-measured if either dial moves.
+#
+# This is the profile our binaries and benchmarks get; a consumer of the
+# library picks their own.
+[profile.release]
+codegen-units = 1
+lto = "fat"
