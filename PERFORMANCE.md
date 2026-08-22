@@ -2718,6 +2718,72 @@ Where the encode stands, one encode at speed 5, against the session's start:
 
 Grid `1.020x`, torus `1.018x`, ribbon `1.087x`.
 
+### The Work Only One Side Did
+
+The round above found `position_bounds_from_attribute` -- `1.13M` instructions
+on the ribbon, `58` per point, against a reference that computes no such thing
+-- and refuted three local rewrites of it. The remaining lever was structural
+and it was blocked on an API question this document had been carrying under
+"Decisions, not measurements" for several rounds: whether
+`build_encoded_mesh_info` should keep running on every encode.
+
+It should not. Nothing in the bitstream depends on it: it sweeps every position
+for its bounds, copies the encoded point order once per attribute, and walks
+each attribute's connectivity, all to describe an encode that has already
+happened. `encoded_mesh_info` is now derived on the first call and cached.
+
+The API cost is stated rather than hidden. The accessor takes `&mut self`,
+which is a getter demanding exclusive access, and it returns a `Result` instead
+of an `Option` so the failure that used to come back from `encode()` still has
+somewhere to go -- an encode whose *description* cannot be derived is
+nonetheless a valid encode, and that is a real change in when such a failure is
+noticed. The variant that keeps `&self` is a `OnceLock` plus a build that
+borrows immutably, which the active-connectivity caches the build writes would
+have to give up first.
+
+Counted, one encode at speed 5:
+
+| payload | before | after | | C++ |
+| --- | ---: | ---: | ---: | ---: |
+| grid | `32,447,174` | `31,865,712` | `-1.8%` | `31,807,826` |
+| ribbon | `47,818,380` | `46,577,566` | `-2.6%` | `43,987,188` |
+| torus | `32,061,093` | `31,473,845` | `-1.8%` | `31,492,536` |
+| fan | `30,224,392` | `29,674,037` | `-1.8%` | `382,563,230` |
+
+More than the fold alone, as expected -- the point-order copies and the
+per-attribute connectivity walks went with it.
+
+**Where the encode ends up.** Against the session's start, before the release
+profile and the four quantization rounds:
+
+| payload | session start | now | | vs C++ |
+| --- | ---: | ---: | ---: | ---: |
+| grid | `35,515,390` | `31,865,712` | **`-10.3%`** | `1.002x` |
+| ribbon | `54,108,205` | `46,577,566` | **`-13.9%`** | `1.059x` |
+| torus | `35,091,691` | `31,473,845` | **`-10.3%`** | **`0.999x`** |
+| fan | `32,999,785` | `29,674,037` | **`-10.1%`** | -- |
+
+**Clocked too**, encode matrix, `ITERS=120`, five rounds, against the run taken
+before the release profile and all four quantization rounds -- the C++ column
+moved under `1%` across the pair:
+
+| payload | speed 5 | speed 8 |
+| --- | --- | --- |
+| grid | `1.48x -> 1.55x` | `1.42x -> 1.58x` |
+| ribbon | `1.33x -> 1.45x` | `1.30x -> 1.48x` |
+| torus | `1.39x -> 1.48x` | `1.38x -> 1.50x` |
+
+Speed 0 moved `+0.01` to `+0.06x` and is inside its spread on two of three
+payloads.
+
+The grid and the torus are at instruction parity with the reference; the ribbon
+is the one still carrying a gap, and after this round it is `2.59M` rather than
+`4.28M`, spread across attribute values and symbols (`+1.0M`), memset and
+memcpy (`+0.55M`), the corner table and connectivity together (`+1.0M`), and
+the driver (`+0.23M`). Nothing in that list is a block; the next thing worth
+doing on the encoder is splitting `encode_geometry_data`, because until that
+blob has names the `+1.0M` in it cannot be attributed to anything.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -2798,10 +2864,10 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
 
 ### Known shapes, unmeasured
 
-- **`build_encoded_mesh_info` is `4-5%` of an encode**, of which the position
-  fold is now `1.2-1.8%`. The rest has never been split. This is work the C++
-  side does not do at all, which makes it a question about the API surface
-  before it is one about speed -- see the entry under Decisions below.
+- ~~**`build_encoded_mesh_info` is `4-5%` of an encode**~~ -- settled. It was
+  `1.8-2.6%` by the time it was removed, the two rounds above having taken the
+  duplicate `compute_parameters` out of it first, and it is now built on demand
+  rather than on every encode.
 - **What is left of speed 0's allocations.** The exclusion mask is gone, but
   speed 0 still allocates `177-312` times per encode against `74-89` at speeds
   5-8. Smaller than what was just removed and no longer one size repeated, so
@@ -2824,11 +2890,13 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
 
 ### Decisions, not measurements
 
-- **`build_encoded_mesh_info` runs on every encode.** `EncodeMeshToBuffer`
-  produces nothing equivalent, so part of any encode comparison is work only
-  one side does. Whether it should become opt-in the way
-  `store_number_of_encoded_faces` already is, is an API call for this
-  document's maintainer, not a performance fix.
+- ~~**`build_encoded_mesh_info` runs on every encode.**~~ Decided: it is
+  derived on demand. `encoded_mesh_info()` takes `&mut self` and returns a
+  `Result`, and the encode no longer fails when the *description* of it cannot
+  be built. The cost of the `&mut` is that a getter now needs exclusive access;
+  the alternative that keeps `&self` is a `OnceLock` plus making the build
+  borrow immutably, which the active-connectivity caches it writes would have
+  to give up first.
 - **The allocator comparison is still one-sided, but the question is
   smaller.** `decode_matrix --features mimalloc` now measures the swap against
   the pinned reference in one process, with a control column: it is worth
