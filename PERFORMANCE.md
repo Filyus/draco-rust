@@ -1152,6 +1152,101 @@ splitting it the same way found `15,679` us of its `16,465` us encode inside
 `CornerTable::init` -- `95%`, against `802-818` us for the ribbon and grid
 tables at comparable face counts.
 
+### The Fan's Quadratic Stage Was Not The One Predicted
+
+The previous round handed this one the largest measured lead in the encoder:
+`15,679` us of the fan family's `16,465` us encode inside `CornerTable::init`,
+`19x` per face what the same table costs on a grid, with the hypothesis that
+`compute_opposite_corners` searches a high-valence vertex's half-edge bucket
+linearly and is therefore `O(valence^2)` on the hub.
+
+**The hypothesis was wrong, and the counter that killed it is the cheapest
+thing in this round.** A valence histogram confirmed the shape of the input --
+the bipyramid fan has two hub vertices of valence `8,401` against a median of
+`4`, where grid and ribbon peak at `6` and `3`. But counting the actual trip
+counts of the bucket search, the insertion scan and the removal shift found
+all three linear, and the fan doing *fewer* search steps than the grid at
+comparable face count:
+
+| family | faces | max valence | search steps | insert | shift | `init` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| grid | `18,050` | `6` | `72,294` | `45,220` | `44,839` | `938` |
+| ribbon | `19,458` | `3` | `87,560` | `48,646` | `29,185` | `1,022` |
+| fan | `16,802` | `8,401` | `67,207` | `33,603` | `33,603` | `24,866` |
+
+`compute_opposite_corners` searches the *sink* vertex's bucket, and on a fan
+the sink of a hub-incident corner is a ring vertex of valence four. The hub's
+own bucket is written, not searched.
+
+**Timing the three stages of `init` separately put `18,847` us of the fan's
+`19,827` in `break_non_manifold_edges`** -- `95%` of the build, against
+`237-355` us for the same stage on grid and ribbon. That function walks the
+1-ring around each pivot and, for every edge, scans the list of edges already
+seen around that pivot looking for a repeated sink vertex. The list is the
+pivot's valence, so the walk is `O(valence^2)` -- on the hub, `8,401^2` per
+hub, twice.
+
+**The fix is an index over that list, and it needs only two entries per key.**
+The scan takes the first entry whose corner differs from `opp_edge_corner`,
+skipping the one that merely closes the 1-ring; the corners stored are
+distinct, one per corner visited around the pivot, so at most the first
+candidate can ever be the skipped one. A per-sink-vertex slot holding the
+first two corners answers the scan in `O(1)`, and a generation stamp scopes
+the table to one pivot walk without clearing it.
+
+Rust matches upstream here line for line, including the asymmetry where the
+pushed key is `vertex(Previous(current_c))` while the lookup key is
+`vertex(Next(current_c))`. That oddity is preserved -- the index is keyed on
+what is stored, not on what the comment says is stored.
+
+`corner_table_loop`, pinned 1.5.7, 100 iterations:
+
+| family | C++ table | Rust table before | Rust table after |
+| --- | ---: | ---: | ---: |
+| grid | `1,082` | `818` | `926` |
+| ribbon | `1,059` | `802` | `925` |
+| **fan** | `16,968` | `15,679` | **`886`** |
+
+Whole encode at speed 5, `encode_loop`, three interleaved rounds per side,
+medians:
+
+| seed | C++ | Rust before | Rust after | |
+| --- | ---: | ---: | ---: | ---: |
+| fan 0 | `18,340` | `16,242` | `1,783` | `10.3x` |
+| fan 1 | `23,776` | -- | `2,070` | `11.5x` |
+| fan 2 | `14,838` | -- | `1,588` | `9.3x` |
+
+Grid, ribbon and torus were run in the same session as controls and did not
+move: `2,050`, `3,370` and `2,290` us against C++ `2,330`, `3,240` and
+`2,690`.
+
+So the fan family goes from `1.09x` to `9-11x` ahead, and the cost that made
+it the largest lead in the document is gone from the Rust side while C++ still
+pays it in full. This is the first place the port beats the reference by an
+order of magnitude, and it does so because upstream's `TODO(ostava)` on this
+loop was never taken up.
+
+**`break_non_manifold_edges_matches_the_list_form`** pins the change: random
+triangle soups over four to eight vertices produce the folded 1-rings the
+function exists for, and every one is built twice -- once through the index,
+once through upstream's list scan kept as `break_non_manifold_edges_by_list`
+-- with the two `opposite_corners` arrays compared. The test asserts that the
+breaking path fired on more than a hundred of the thousand soups, so it cannot
+pass by never exercising what it covers, and disabling the index's lookup
+makes it fail.
+
+One thing the test does *not* cover: across those thousand soups the list form
+never once skipped a match and then took a later one, so the second-slot
+fallback is unexercised. It is kept because it is what upstream's loop does,
+not because a case for it was found.
+
+Method note: **a hypothesis with arithmetic behind it is still a hypothesis.**
+The `O(valence^2)` reasoning was right about the shape of the cost and wrong
+about which loop paid it, and the twenty-line counter that settled it ran
+before any code was changed. Stage timings inside a function that is already
+known to be the hot one cost almost nothing and would have pointed straight at
+the answer.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -1159,35 +1254,24 @@ what is known to be behind them. Each says what was measured, what was not,
 and the smallest next step -- a fresh session should be able to start from any
 one line.
 
-### The fan topology's quadratic corner table
+### What the fan round left behind
 
-By a wide margin the largest measured lead in the encoder. `corner_table_loop`
-at comparable face counts:
+The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
 
-| family | faces | C++ table | Rust table | Rust whole encode |
-| --- | ---: | ---: | ---: | ---: |
-| grid | `18,050` | `1,097` | `818` | `1,917` |
-| ribbon | `19,458` | `1,048` | `802` | `3,289` |
-| **fan** | `16,802` | `18,139` | `15,679` | `16,465` |
-
-So on a fan the table is `95%` of the encode and costs `19x` more per face
-than the same table on a grid. Both implementations pay it -- C++ is `1.16x`
-worse -- so it is the algorithm, not the port.
-
-The mechanism, stated as a hypothesis with its arithmetic rather than as a
-finding: a fan has a hub vertex of enormous valence, and
-`compute_opposite_corners` searches that vertex's half-edge bucket linearly
-for every corner incident to it, which is `O(valence^2)` for the hub alone.
-Nothing has confirmed this against a valence histogram yet, and that is the
-first step -- it is cheap and it either kills the hypothesis or sizes the
-prize.
-
-If it holds, the fix is an index over each bucket rather than a linear walk,
-and the hard constraint is that the search must keep taking the **first**
-match in bucket order, including the mirrored-face skip: byte parity depends
-on which opposite corner is chosen, not merely that one is. Upstream's own
-`TODO(ostava)` nearby is about the *removal* shift, not this search, so there
-is no upstream answer to copy.
+- **C++ still pays `16,968` us for the fan table against Rust's `886`.** That
+  is upstream's cost, not the port's, and it means every fan-family ratio in
+  this document is now measuring how slow the reference is on this topology
+  rather than how fast the port is. A comparison that says something about the
+  port needs a payload where both sides are linear.
+- **The second-slot fallback in the sink index is unexercised.** A thousand
+  random soups never produced a walk where the first matching entry is the one
+  that closes the 1-ring and a later one is the real non-manifold edge.
+  Either a construction for it exists and should become a test, or the case is
+  unreachable and the code can say so -- neither has been established.
+- **`compute_opposite_corners` and `compute_vertex_corners` are now the whole
+  of `init`,** at roughly `800` and `210` us on a 18k-face mesh, and neither
+  has been split further. The table is `45%` of a position-only encode, so
+  they are the next-largest known block in the encoder.
 
 ### Not yet split, though the tools now exist
 
