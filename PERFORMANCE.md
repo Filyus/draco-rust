@@ -2309,6 +2309,29 @@ the same profile:
   (`-0.4%` to `-3.3%`) but the control moved up to `4.8%` that run, so
   counted, not clocked.
 
+**Where the round leaves the decode matrix.** Full sweep, System
+allocator, five rounds of 120 iterations, medians with per-cell spread;
+two independent sweeps (30 and 120 iterations) agreed on every cell to
+within `0.02x`, which is what makes the noisier cells readable at all.
+Ratios are C++/Rust, so **above `1.00x` is the port ahead**:
+
+| payload | speed 0 | speed 5 | speed 8 |
+| --- | ---: | ---: | ---: |
+| grid | `0.98x` | `1.06x` | `1.05x` |
+| ribbon | `0.97x` | `1.08x` | `1.08x` |
+| torus | `1.06x` | `0.98x` | `1.00x` |
+| fan | `1.00x` | `1.14x` | `1.14x` |
+
+Against the same twelve cells at the start of these sessions --
+`0.92/0.98/0.87/1.00` at speed 5, `0.91/0.95/0.90/0.94` at speed 8,
+`0.92/0.88/1.00/0.90` at speed 0 -- **every cell improved**, and ten of
+twelve now sit at or above parity. The two below (`grid` and `ribbon` at
+speed 0, both `0.97-0.98x`) are within their own spread of `1.00x`.
+Spreads were `2-5%` on the torus and fan cells and `13-25%` on grid and
+ribbon speed 0/5, so the fan and torus rows are resolved and the grid and
+ribbon rows are indicative; the agreement between the two sweeps is doing
+the work there, not either sweep alone.
+
 **Where the round leaves the grid:** `17.24M -> 14.30M` instructions,
 **`-17%`**, against C++'s `~10.24M` of decode -- the instruction ratio
 down from `1.53x` to `1.39x`. Still open, by size of the excess: the
