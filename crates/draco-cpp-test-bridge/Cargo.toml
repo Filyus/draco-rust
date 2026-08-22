@@ -25,5 +25,9 @@ cc = "1.0"
 # Not optional, because Cargo forbids optional dev-dependencies; the feature
 # only decides whether the examples install it as the global allocator.
 mimalloc = "0.1"
+# Per-site heap totals for the decode_dhat example. Profiling only -- a dhat
+# build is never a timing build; its allocator wrapper records a backtrace
+# per allocation.
+dhat = "0.3"
 draco-core = { path = "../draco-core" }
 draco-io = { path = "../draco-io" }

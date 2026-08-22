@@ -630,10 +630,14 @@ impl MeshEdgebreakerDecoder {
         // claim of billions from being honoured: past it the reservation
         // falls short and the table grows (in declared-count-capped steps)
         // as it always did. One face per byte fell short on the Bunny at
-        // speed 1 (1.03 faces per byte), and two fell short on the seeded
-        // grid at speed 5 (2.89), each costing a reallocation of the whole
-        // table; four covers every corpus payload measured so far.
-        let input_face_bound = total_num_faces.min(in_buffer.remaining_size().saturating_mul(4));
+        // speed 1 (1.03 faces per byte), two fell short on the seeded grid
+        // at speed 5 (2.89), and four fell short on the seeded ribbon at
+        // speed 5 (6.0 -- a near-pure strip entropy-codes to about a bit
+        // per face), each costing a reallocation of the whole table. Eight
+        // covers every corpus payload measured so far; no ratio can cover
+        // every stream, because a degenerate symbol distribution makes
+        // faces-per-byte unbounded, so this stays a measured dial.
+        let input_face_bound = total_num_faces.min(in_buffer.remaining_size().saturating_mul(8));
 
         if actual_num_symbols == 0 {
             let corner_table = crate::corner_table::CornerTable::new(0);

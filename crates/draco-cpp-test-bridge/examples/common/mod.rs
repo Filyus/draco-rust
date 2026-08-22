@@ -55,6 +55,7 @@ pub fn load(path: &str) -> Payload {
 /// Printed beside every figure on purpose: a cell whose spread is wider than
 /// the gap it claims resolved nothing, and that should be visible rather than
 /// assumed.
+#[allow(dead_code)] // decode_dhat profiles a single decode and has no rounds to summarize
 pub fn median_and_spread(samples: &mut [f64]) -> (f64, f64) {
     samples.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
     let median = samples[samples.len() / 2];
