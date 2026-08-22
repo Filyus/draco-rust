@@ -66,6 +66,61 @@ fn build_vertex_to_data_map_from_data_to_corner_map(
     Ok(())
 }
 
+/// The corner and vertex maps a mesh predictor reads, borrowed from the mesh
+/// decoder's own traversal when it has already built them.
+///
+/// Both maps are read-only from here on, and on the EdgeBreaker path the
+/// decoder hands down arrays it built itself. Copying those into owned
+/// buffers costs two allocations the size of the point and vertex counts,
+/// plus two `memcpy`s, per attribute -- for data nothing writes to. The owned
+/// vectors are filled only for the cases with no override to borrow.
+fn prediction_maps<'a>(
+    corner_table: &CornerTable,
+    num_points: usize,
+    data_to_corner_map_override: Option<&'a [u32]>,
+    vertex_to_data_map_override: Option<&'a [i32]>,
+    data_to_corner_map: &'a mut Vec<u32>,
+    vertex_to_data_map: &'a mut Vec<i32>,
+) -> Result<(&'a [u32], &'a [i32]), DracoError> {
+    let data_to_corner: &[u32] = match data_to_corner_map_override {
+        Some(map) if map.len() == num_points => map,
+        Some(_) => {
+            return Err(DracoError::general(
+                "Invalid data_to_corner_map_override length".to_string(),
+            ))
+        }
+        // No override: the map stays empty of meaning, as it was when this
+        // was a `resize(num_points, 0)` -- the vertex map below is what the
+        // predictor actually reads in that case.
+        None => {
+            data_to_corner_map.clear();
+            data_to_corner_map.resize(num_points, 0);
+            data_to_corner_map
+        }
+    };
+
+    let vertex_to_data: &[i32] = match vertex_to_data_map_override {
+        Some(map) if map.len() == corner_table.num_vertices() => map,
+        Some(_) => {
+            return Err(DracoError::general(
+                "Invalid vertex_to_data_map_override length".to_string(),
+            ))
+        }
+        // The corner table may carry seam-split vertices with ids outside the
+        // original point range, so this is derived rather than assumed.
+        None => {
+            build_vertex_to_data_map_from_data_to_corner_map(
+                corner_table,
+                data_to_corner,
+                vertex_to_data_map,
+            )?;
+            vertex_to_data_map
+        }
+    };
+
+    Ok((data_to_corner, vertex_to_data))
+}
+
 /// Runs `decode_prediction_data` on the selected predictor, logging and failing
 /// when the slot is empty or the call fails. Collapses the identical
 /// extract-and-check boilerplate that the apply matches repeat per method.
@@ -312,57 +367,17 @@ impl SequentialIntegerAttributeDecoder {
             PredictionSchemeMethod::MeshPredictionParallelogram => {
                 if let Some(corner_table) = corner_table {
                     // Generate maps
-                    data_to_corner_map.resize(num_points, 0);
-
-                    // vertex_to_data_map_override takes priority when available
-                    // (it's built by the decoder's own DFS traversal)
-                    if let Some(map) = vertex_to_data_map_override {
-                        // Use the pre-built vertex_to_data_map from mesh decoder
-                        if map.len() != corner_table.num_vertices() {
-                            return Err(DracoError::general(
-                                "Invalid vertex_to_data_map_override length".to_string(),
-                            ));
-                        }
-                        vertex_to_data_map.resize(map.len(), 0);
-                        vertex_to_data_map.copy_from_slice(map);
-
-                        // Also set data_to_corner_map if override is available
-                        if let Some(dcm) = data_to_corner_map_override {
-                            if dcm.len() != num_points {
-                                return Err(DracoError::general(
-                                    "Invalid data_to_corner_map_override length".to_string(),
-                                ));
-                            }
-                            data_to_corner_map.copy_from_slice(dcm);
-                        }
-                    } else if let Some(map) = data_to_corner_map_override {
-                        if map.len() != num_points {
-                            return Err(DracoError::general(
-                                "Invalid data_to_corner_map_override length".to_string(),
-                            ));
-                        }
-                        data_to_corner_map.copy_from_slice(map);
-
-                        // When using an override, the corner table may contain seam-split
-                        // vertices with ids outside the original point range. Build the
-                        // vertex->data map from the data->corner map.
-                        build_vertex_to_data_map_from_data_to_corner_map(
-                            corner_table,
-                            &data_to_corner_map,
-                            &mut vertex_to_data_map,
-                        )?;
-                    } else {
-                        // Build vertex_to_data_map from data_to_corner_map using corner table vertex IDs
-                        // This is the same logic as the 'if' branch above
-                        build_vertex_to_data_map_from_data_to_corner_map(
-                            corner_table,
-                            &data_to_corner_map,
-                            &mut vertex_to_data_map,
-                        )?;
-                    }
+                    let (dcm, vdm) = prediction_maps(
+                        corner_table,
+                        num_points,
+                        data_to_corner_map_override,
+                        vertex_to_data_map_override,
+                        &mut data_to_corner_map,
+                        &mut vertex_to_data_map,
+                    )?;
 
                     let mut mesh_data = MeshPredictionSchemeData::new();
-                    mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+                    mesh_data.set(corner_table, dcm, vdm);
 
                     let transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
                     let predictor = MeshPredictionSchemeParallelogramDecoder::new(
@@ -378,48 +393,17 @@ impl SequentialIntegerAttributeDecoder {
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionMultiParallelogram => {
                 if let Some(corner_table) = corner_table {
-                    data_to_corner_map.resize(num_points, 0);
-
-                    if let Some(map) = vertex_to_data_map_override {
-                        if map.len() != corner_table.num_vertices() {
-                            return Err(DracoError::general(
-                                "Invalid vertex_to_data_map_override length".to_string(),
-                            ));
-                        }
-                        vertex_to_data_map.resize(map.len(), 0);
-                        vertex_to_data_map.copy_from_slice(map);
-
-                        if let Some(dcm) = data_to_corner_map_override {
-                            if dcm.len() != num_points {
-                                return Err(DracoError::general(
-                                    "Invalid data_to_corner_map_override length".to_string(),
-                                ));
-                            }
-                            data_to_corner_map.copy_from_slice(dcm);
-                        }
-                    } else if let Some(map) = data_to_corner_map_override {
-                        if map.len() != num_points {
-                            return Err(DracoError::general(
-                                "Invalid data_to_corner_map_override length".to_string(),
-                            ));
-                        }
-                        data_to_corner_map.copy_from_slice(map);
-
-                        build_vertex_to_data_map_from_data_to_corner_map(
-                            corner_table,
-                            &data_to_corner_map,
-                            &mut vertex_to_data_map,
-                        )?;
-                    } else {
-                        build_vertex_to_data_map_from_data_to_corner_map(
-                            corner_table,
-                            &data_to_corner_map,
-                            &mut vertex_to_data_map,
-                        )?;
-                    }
+                    let (dcm, vdm) = prediction_maps(
+                        corner_table,
+                        num_points,
+                        data_to_corner_map_override,
+                        vertex_to_data_map_override,
+                        &mut data_to_corner_map,
+                        &mut vertex_to_data_map,
+                    )?;
 
                     let mut mesh_data = MeshPredictionSchemeData::new();
-                    mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+                    mesh_data.set(corner_table, dcm, vdm);
 
                     let transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
                     let predictor =
@@ -440,54 +424,17 @@ impl SequentialIntegerAttributeDecoder {
             PredictionSchemeMethod::MeshPredictionConstrainedMultiParallelogram => {
                 if let Some(corner_table) = corner_table {
                     // Generate maps
-                    data_to_corner_map.resize(num_points, 0);
-
-                    // vertex_to_data_map_override takes priority when available
-                    // (it's built by the decoder's own DFS traversal)
-                    if let Some(map) = vertex_to_data_map_override {
-                        // Use the pre-built vertex_to_data_map from mesh decoder
-                        if map.len() != corner_table.num_vertices() {
-                            return Err(DracoError::general(
-                                "Invalid vertex_to_data_map_override length".to_string(),
-                            ));
-                        }
-                        vertex_to_data_map.resize(map.len(), 0);
-                        vertex_to_data_map.copy_from_slice(map);
-
-                        // Also set data_to_corner_map if override is available
-                        if let Some(dcm) = data_to_corner_map_override {
-                            if dcm.len() != num_points {
-                                return Err(DracoError::general(
-                                    "Invalid data_to_corner_map_override length".to_string(),
-                                ));
-                            }
-                            data_to_corner_map.copy_from_slice(dcm);
-                        }
-                    } else if let Some(map) = data_to_corner_map_override {
-                        if map.len() != num_points {
-                            return Err(DracoError::general(
-                                "Invalid data_to_corner_map_override length".to_string(),
-                            ));
-                        }
-                        data_to_corner_map.copy_from_slice(map);
-
-                        build_vertex_to_data_map_from_data_to_corner_map(
-                            corner_table,
-                            &data_to_corner_map,
-                            &mut vertex_to_data_map,
-                        )?;
-                    } else {
-                        // Build vertex_to_data_map from data_to_corner_map using corner table vertex IDs
-                        // This is the same logic as the 'if' branch above
-                        build_vertex_to_data_map_from_data_to_corner_map(
-                            corner_table,
-                            &data_to_corner_map,
-                            &mut vertex_to_data_map,
-                        )?;
-                    }
+                    let (dcm, vdm) = prediction_maps(
+                        corner_table,
+                        num_points,
+                        data_to_corner_map_override,
+                        vertex_to_data_map_override,
+                        &mut data_to_corner_map,
+                        &mut vertex_to_data_map,
+                    )?;
 
                     let mut mesh_data = MeshPredictionSchemeData::new();
-                    mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+                    mesh_data.set(corner_table, dcm, vdm);
 
                     let transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
                     let predictor = MeshPredictionSchemeConstrainedMultiParallelogramDecoder::new(
@@ -504,48 +451,17 @@ impl SequentialIntegerAttributeDecoder {
             #[cfg(feature = "legacy_bitstream_decode")]
             PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated => {
                 if let Some(corner_table) = corner_table {
-                    data_to_corner_map.resize(num_points, 0);
-
-                    if let Some(map) = vertex_to_data_map_override {
-                        if map.len() != corner_table.num_vertices() {
-                            return Err(DracoError::general(
-                                "Invalid vertex_to_data_map_override length".to_string(),
-                            ));
-                        }
-                        vertex_to_data_map.resize(map.len(), 0);
-                        vertex_to_data_map.copy_from_slice(map);
-
-                        if let Some(dcm) = data_to_corner_map_override {
-                            if dcm.len() != num_points {
-                                return Err(DracoError::general(
-                                    "Invalid data_to_corner_map_override length".to_string(),
-                                ));
-                            }
-                            data_to_corner_map.copy_from_slice(dcm);
-                        }
-                    } else if let Some(map) = data_to_corner_map_override {
-                        if map.len() != num_points {
-                            return Err(DracoError::general(
-                                "Invalid data_to_corner_map_override length".to_string(),
-                            ));
-                        }
-                        data_to_corner_map.copy_from_slice(map);
-
-                        build_vertex_to_data_map_from_data_to_corner_map(
-                            corner_table,
-                            &data_to_corner_map,
-                            &mut vertex_to_data_map,
-                        )?;
-                    } else {
-                        build_vertex_to_data_map_from_data_to_corner_map(
-                            corner_table,
-                            &data_to_corner_map,
-                            &mut vertex_to_data_map,
-                        )?;
-                    }
+                    let (dcm, vdm) = prediction_maps(
+                        corner_table,
+                        num_points,
+                        data_to_corner_map_override,
+                        vertex_to_data_map_override,
+                        &mut data_to_corner_map,
+                        &mut vertex_to_data_map,
+                    )?;
 
                     let mut mesh_data = MeshPredictionSchemeData::new();
-                    mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+                    mesh_data.set(corner_table, dcm, vdm);
 
                     let transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
                     let mut predictor =
@@ -589,54 +505,17 @@ impl SequentialIntegerAttributeDecoder {
             }
             PredictionSchemeMethod::MeshPredictionTexCoordsPortable => {
                 if let Some(corner_table) = corner_table {
-                    data_to_corner_map.resize(num_points, 0);
-
-                    // vertex_to_data_map_override takes priority when available
-                    // (it's built by the decoder's own DFS traversal)
-                    if let Some(map) = vertex_to_data_map_override {
-                        // Use the pre-built vertex_to_data_map from mesh decoder
-                        if map.len() != corner_table.num_vertices() {
-                            return Err(DracoError::general(
-                                "Invalid vertex_to_data_map_override length".to_string(),
-                            ));
-                        }
-                        vertex_to_data_map.resize(map.len(), 0);
-                        vertex_to_data_map.copy_from_slice(map);
-
-                        // Also set data_to_corner_map if override is available
-                        if let Some(dcm) = data_to_corner_map_override {
-                            if dcm.len() != num_points {
-                                return Err(DracoError::general(
-                                    "Invalid data_to_corner_map_override length".to_string(),
-                                ));
-                            }
-                            data_to_corner_map.copy_from_slice(dcm);
-                        }
-                    } else if let Some(map) = data_to_corner_map_override {
-                        if map.len() != num_points {
-                            return Err(DracoError::general(
-                                "Invalid data_to_corner_map_override length".to_string(),
-                            ));
-                        }
-                        data_to_corner_map.copy_from_slice(map);
-
-                        build_vertex_to_data_map_from_data_to_corner_map(
-                            corner_table,
-                            &data_to_corner_map,
-                            &mut vertex_to_data_map,
-                        )?;
-                    } else {
-                        // Build vertex_to_data_map from data_to_corner_map using corner table vertex IDs
-                        // This is the same logic as the 'if' branch above
-                        build_vertex_to_data_map_from_data_to_corner_map(
-                            corner_table,
-                            &data_to_corner_map,
-                            &mut vertex_to_data_map,
-                        )?;
-                    }
+                    let (dcm, vdm) = prediction_maps(
+                        corner_table,
+                        num_points,
+                        data_to_corner_map_override,
+                        vertex_to_data_map_override,
+                        &mut data_to_corner_map,
+                        &mut vertex_to_data_map,
+                    )?;
 
                     let mut mesh_data = MeshPredictionSchemeData::new();
-                    mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+                    mesh_data.set(corner_table, dcm, vdm);
 
                     let transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
                     let mut predictor =
@@ -674,54 +553,17 @@ impl SequentialIntegerAttributeDecoder {
             }
             PredictionSchemeMethod::MeshPredictionGeometricNormal => {
                 if let Some(corner_table) = corner_table {
-                    data_to_corner_map.resize(num_points, 0);
-
-                    // vertex_to_data_map_override takes priority when available
-                    // (it's built by the decoder's own DFS traversal)
-                    if let Some(map) = vertex_to_data_map_override {
-                        // Use the pre-built vertex_to_data_map from mesh decoder
-                        if map.len() != corner_table.num_vertices() {
-                            return Err(DracoError::general(
-                                "Invalid vertex_to_data_map_override length".to_string(),
-                            ));
-                        }
-                        vertex_to_data_map.resize(map.len(), 0);
-                        vertex_to_data_map.copy_from_slice(map);
-
-                        // Also set data_to_corner_map if override is available
-                        if let Some(dcm) = data_to_corner_map_override {
-                            if dcm.len() != num_points {
-                                return Err(DracoError::general(
-                                    "Invalid data_to_corner_map_override length".to_string(),
-                                ));
-                            }
-                            data_to_corner_map.copy_from_slice(dcm);
-                        }
-                    } else if let Some(map) = data_to_corner_map_override {
-                        if map.len() != num_points {
-                            return Err(DracoError::general(
-                                "Invalid data_to_corner_map_override length".to_string(),
-                            ));
-                        }
-                        data_to_corner_map.copy_from_slice(map);
-
-                        build_vertex_to_data_map_from_data_to_corner_map(
-                            corner_table,
-                            &data_to_corner_map,
-                            &mut vertex_to_data_map,
-                        )?;
-                    } else {
-                        // Build vertex_to_data_map from data_to_corner_map using corner table vertex IDs
-                        // This is the same logic as the 'if' branch above
-                        build_vertex_to_data_map_from_data_to_corner_map(
-                            corner_table,
-                            &data_to_corner_map,
-                            &mut vertex_to_data_map,
-                        )?;
-                    }
+                    let (dcm, vdm) = prediction_maps(
+                        corner_table,
+                        num_points,
+                        data_to_corner_map_override,
+                        vertex_to_data_map_override,
+                        &mut data_to_corner_map,
+                        &mut vertex_to_data_map,
+                    )?;
 
                     let mut mesh_data = MeshPredictionSchemeData::new();
-                    mesh_data.set(corner_table, &data_to_corner_map, &vertex_to_data_map);
+                    mesh_data.set(corner_table, dcm, vdm);
 
                     let mut transform =
                         PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new();
