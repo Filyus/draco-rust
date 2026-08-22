@@ -629,15 +629,17 @@ impl MeshEdgebreakerDecoder {
         // hostile-input allocation budget it permits. The cap is what keeps a
         // claim of billions from being honoured: past it the reservation
         // falls short and the table grows (in declared-count-capped steps)
-        // as it always did. One face per byte fell short on the Bunny at
-        // speed 1 (1.03 faces per byte), two fell short on the seeded grid
-        // at speed 5 (2.89), and four fell short on the seeded ribbon at
-        // speed 5 (6.0 -- a near-pure strip entropy-codes to about a bit
-        // per face), each costing a reallocation of the whole table. Eight
-        // covers every corpus payload measured so far; no ratio can cover
-        // every stream, because a degenerate symbol distribution makes
-        // faces-per-byte unbounded, so this stays a measured dial.
-        let input_face_bound = total_num_faces.min(in_buffer.remaining_size().saturating_mul(8));
+        // as it always did. The measured ladder: one face per byte fell
+        // short on the Bunny at speed 1 (1.03 faces per byte), two on the
+        // seeded grid at speed 5 (2.89), four on the seeded ribbon at speed
+        // 5 (6.0), and eight on the same ribbon at speed 0, where the
+        // valence coder reaches 11.4 faces per byte -- each undershoot
+        // costing one whole-table reallocation. Sixteen covers every corpus
+        // payload at every speed, with speed 0 the densest coding a Draco
+        // encoder produces; no ratio can cover every stream, because a
+        // degenerate symbol distribution makes faces-per-byte unbounded,
+        // so this stays a measured dial.
+        let input_face_bound = total_num_faces.min(in_buffer.remaining_size().saturating_mul(16));
 
         if actual_num_symbols == 0 {
             let corner_table = crate::corner_table::CornerTable::new(0);

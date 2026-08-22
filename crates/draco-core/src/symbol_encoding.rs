@@ -481,20 +481,23 @@ pub fn decode_symbols(
 /// past that arrives through `push`, whose growth is backed by symbols that
 /// were actually decoded.
 ///
-/// Thirty-two per byte rather than one per byte because the byte was both
+/// Sixty-four per byte rather than one per byte because the byte was both
 /// wrong and slow: entropy coding beats one symbol per byte routinely, so real
 /// streams reserved a fraction of what they needed and paid for the
 /// reallocations -- 598 to 698 us on a 10,000-point decode. Eight per byte (a
-/// bit per symbol) still fell short on the seeded ribbon, whose strip-regular
-/// corrections code at 2.7 symbols per *bit*. At thirty-two per byte every
-/// corpus payload reserves once, a 9 KB stream claiming two billion symbols
-/// still reserves 1.2 MB rather than 8 GB, and the hostile budget (128 bytes
-/// of u32 per input byte) stays below the corner table's accepted 288. No
-/// ratio covers every stream -- a degenerate symbol distribution makes
-/// symbols-per-byte unbounded -- so this stays a measured dial.
+/// bit per symbol) fell short on the seeded ribbon at speed 5, whose
+/// strip-regular corrections code at 2.7 symbols per *bit*; thirty-two fell
+/// short on the same ribbon at speed 0, which reaches 4.4 per bit. At
+/// sixty-four per byte every corpus payload at every speed reserves once
+/// (speed 0 is the densest coding a Draco encoder produces), a 9 KB stream
+/// claiming two billion symbols still reserves 2.4 MB rather than 8 GB, and
+/// the hostile budget (256 bytes of u32 per input byte) stays under the
+/// corner table's accepted 576. No ratio covers every stream -- a degenerate
+/// symbol distribution makes symbols-per-byte unbounded -- so this stays a
+/// measured dial.
 #[cfg(feature = "decoder")]
 fn reserve_within_input(symbols: &mut Vec<u32>, num_values: usize, in_buffer: &DecoderBuffer) {
-    symbols.reserve(num_values.min(in_buffer.remaining_size().saturating_mul(32)));
+    symbols.reserve(num_values.min(in_buffer.remaining_size().saturating_mul(64)));
 }
 
 #[cfg(feature = "decoder")]
