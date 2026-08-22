@@ -2309,6 +2309,21 @@ the same profile:
   (`-0.4%` to `-3.3%`) but the control moved up to `4.8%` that run, so
   counted, not clocked.
 
+**Encode was not worked on, and was checked rather than assumed.** One
+change in these sessions reached an encode path: the Rust 1.98 lint
+cleanup (`076f513`) rewrote a `chunks_exact(3)` inside
+`compute_opposite_corners`, which is `45%` of a position-only encode, and
+it was landed on the reasoning that the two forms are equivalent rather
+than on a measurement. Isolated afterwards -- `28a5632` against HEAD is
+exactly that one commit as far as encode is concerned -- four interleaved
+rounds put it inside the noise: ribbon `-2.6%`/`-3.2%` at speeds 5 and 8
+(3/4 pairs), grid and torus between `-1.3%` and `+0.7%`, against a
+control moving `+-1.2%`. No regression on the corner-table path, no win
+claimed. The standing encode matrix (five rounds, 60 iterations) is
+`1.28-1.67x` ahead across grid, ribbon and torus at speeds 0/5/8; the
+fan row reads `6.6-14.4x` and still measures upstream's `O(valence^2)`
+fan table rather than anything about the port.
+
 **Where the round leaves the decode matrix.** Full sweep, System
 allocator, five rounds of 120 iterations, medians with per-cell spread;
 two independent sweeps (30 and 120 iterations) agreed on every cell to
