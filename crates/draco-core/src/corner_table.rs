@@ -438,6 +438,26 @@ impl CornerTable {
         self.opposite_corners[corner.0 as usize] = opposite;
     }
 
+    /// Writes `opposite` at `corner`, answering whether the corner was on the
+    /// table rather than panicking.
+    ///
+    /// A caller that has already compared the corner against `num_corners()`
+    /// still pays the indexing's own panic check on top, because that count
+    /// is the *other* map's length -- equal by invariant, but nothing the
+    /// compiler can see. Bounding the write on the map it actually indexes
+    /// collapses the pair into one check, on the connectivity decoder's
+    /// three-calls-a-face path.
+    #[inline]
+    pub fn try_set_opposite(&mut self, corner: CornerIndex, opposite: CornerIndex) -> bool {
+        match self.opposite_corners.get_mut(corner.0 as usize) {
+            Some(slot) => {
+                *slot = opposite;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn init(&mut self, faces: &[[VertexIndex; 3]]) -> bool {
         self.init_inner(faces, None)
     }

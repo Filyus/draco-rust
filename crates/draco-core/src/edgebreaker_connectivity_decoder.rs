@@ -599,25 +599,23 @@ impl EdgebreakerConnectivityDecoder {
         Ok(vertex.0 as usize)
     }
 
+    /// Pairs two corners as each other's opposite, refusing either that is
+    /// past the table.
+    ///
+    /// Each write is bounded by `try_set_opposite` on the map it indexes,
+    /// rather than compared here against `num_corners()` and then indexed:
+    /// the two maps are the same length by invariant, but not visibly so, so
+    /// the comparison here used to leave the indexing's own panic check
+    /// standing behind it -- twice per call, three calls a face.
     fn set_opposite_corners(&mut self, c1: CornerIndex, c2: CornerIndex) -> Result<(), DracoError> {
-        let num_corners = self.corner_table.num_corners();
-        if c1 != INVALID_CORNER_INDEX {
-            if c1.0 as usize >= num_corners {
-                return Err(DracoError::general(format!(
-                    "Invalid opposite corner {}",
-                    c1.0
-                )));
-            }
-            self.corner_table.set_opposite(c1, c2);
+        let invalid = |corner: CornerIndex| {
+            DracoError::general(format!("Invalid opposite corner {}", corner.0))
+        };
+        if c1 != INVALID_CORNER_INDEX && !self.corner_table.try_set_opposite(c1, c2) {
+            return Err(invalid(c1));
         }
-        if c2 != INVALID_CORNER_INDEX {
-            if c2.0 as usize >= num_corners {
-                return Err(DracoError::general(format!(
-                    "Invalid opposite corner {}",
-                    c2.0
-                )));
-            }
-            self.corner_table.set_opposite(c2, c1);
+        if c2 != INVALID_CORNER_INDEX && !self.corner_table.try_set_opposite(c2, c1) {
+            return Err(invalid(c2));
         }
         Ok(())
     }
