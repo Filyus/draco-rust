@@ -2125,6 +2125,40 @@ Standing after the round (System, spot check): speed 5
 `0.95/1.01/0.93/1.01x` (`grid`/`ribbon`/`torus`/`fan`), speed 0 unchanged
 within noise.
 
+### The dhat Round: Reserves Undershooting The Entropy Floor
+
+The `decode_dhat` example (dhat as the global allocator, one decode inside
+the profiled region -- never a timing build) gave the ribbon's surplus
+per-site names. Every remaining removable byte was the same shape: an
+input-derived initial reserve undershooting, then a whole-buffer
+reallocation whose copy dhat counts and C++ never pays. The ribbon is the
+worst case by construction: a near-pure strip entropy-codes its
+connectivity at `6.0` faces per byte (the corner-table ratio sat at `4`)
+and its corrections at `2.7` symbols per *bit* (the symbol reserve sat at
+one per bit).
+
+`77d2c4c` raises both dials: corner table `4 -> 8` faces per byte, symbol
+reserve `8 -> 32` per byte. The `min` against the declared count still
+means a truthful file never over-reserves; the hostile budgets are `288`
+and `128` bytes per input byte, linear in the input. No ratio covers every
+stream -- a degenerate symbol distribution makes both densities unbounded
+-- so these stay measured dials, moved only when a payload shows the
+undershoot.
+
+Counters (`ALLOC=1`, per decode): ribbon speed 5 `2980 -> 2393` KB and
+`45 -> 40` allocations (surplus over C++ `~1.2 -> ~0.6` MB), ribbon speed
+0 `3587 -> 3206`, fan speed 0 `2129 -> 1621`. Clocks (System, 4
+interleaved pairs, C++ column as control): ribbon speed 5 negative in all
+four pairs (`-17..-101` us, `~-4%`), fan speed 0 `~-4%`, grid and torus
+speed 0 sign-consistent small wins against a control drifting the other
+way; grid/torus speed 5 null, as their reserves never undershot.
+
+What dhat says is left on the ribbon after the round: one two-block site
+in the edgebreaker connectivity decoder (a single reallocation, `~78` KB
+of copy) and the three parallel `77.8` KB traversal vectors -- the
+already-catalogued B5. The per-site map is one `decode_dhat` run away at
+any time.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -2179,10 +2213,10 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   for as either upstream-equivalent work buffers or the four legitimate
   value-pipeline buffers.
 - ~~The separate `values` buffer~~ -- folded into the corrections in
-  `bbbe34e`; see "In-Place Prediction" above. The ribbon still holds
-  `~1.2` MB surplus over C++ after the fold; per-site byte totals for the
-  rest of it are one `dhat`-style run away (the counting allocator gives
-  sizes, not totals per site).
+  `bbbe34e`; see "In-Place Prediction" above.
+- ~~Per-site byte totals for the ribbon surplus~~ -- taken; see "The dhat
+  Round" above. Surplus now `~0.6` MB: one connectivity-decoder
+  reallocation and the B5 traversal vectors are what remains named.
 - **The mimalloc matrix must not be the only decode reading.** The same two
   copy removals read `0-2%` under mimalloc and `3-4.6%` under System -- the
   allocator swap masks exactly the cost the memory rounds are removing.
