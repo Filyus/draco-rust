@@ -59,6 +59,15 @@ fn copy_point_mapping(
     target: &mut PointAttribute,
     num_points: usize,
 ) -> Result<(), DracoError> {
+    // One slice copy when the source's map is already the exact shape asked
+    // for; the per-point loop remains for identity sources and length
+    // mismatches, where mapped_index supplies the per-point answer.
+    if let Some(map) = source.explicit_mapping() {
+        if map.len() == num_points {
+            target.set_explicit_mapping_from(map);
+            return Ok(());
+        }
+    }
     target.set_explicit_mapping(num_points);
     for point in 0..num_points {
         let point_id = PointIndex(point as u32);
@@ -980,7 +989,13 @@ impl MeshDecoder {
                             Some(cached) => cached.clone(),
                             None => {
                                 let arrays = self.generate_point_ids_and_corners_dfs(mesh, &[])?;
-                                dfs_traversal = Some(arrays.clone());
+                                // The cache exists for later decoders; with
+                                // none left to read it (a single-decoder
+                                // decode, the common case), storing it would
+                                // clone three point-sized arrays for nobody.
+                                if dec_i + 1 < num_attributes_decoders {
+                                    dfs_traversal = Some(arrays.clone());
+                                }
                                 arrays
                             }
                         };

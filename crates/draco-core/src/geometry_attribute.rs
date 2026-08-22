@@ -459,6 +459,19 @@ impl PointAttribute {
             .resize(num_points, INVALID_ATTRIBUTE_VALUE_INDEX);
     }
 
+    /// The explicit point-to-attribute-value map, if one is set.
+    ///
+    /// `None` under identity mapping. The bulk counterpart of calling
+    /// [`mapped_index`](Self::mapped_index) per point, for callers that copy
+    /// the map somewhere whole.
+    pub fn explicit_mapping(&self) -> Option<&[AttributeValueIndex]> {
+        if self.identity_mapping {
+            None
+        } else {
+            Some(&self.indices_map)
+        }
+    }
+
     /// Replaces the whole point-to-attribute-value map in one copy.
     ///
     /// The bulk form of [`set_explicit_mapping`](Self::set_explicit_mapping)
