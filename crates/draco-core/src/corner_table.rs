@@ -340,24 +340,32 @@ impl CornerTable {
             .ok_or_else(|| {
                 crate::status::DracoError::general("Corner table size overflow".to_string())
             })?;
-        let len = self.corner_to_vertex_map.len();
-        if num_corners <= len {
+        if num_corners <= self.corner_to_vertex_map.len() {
             return Ok(());
         }
+        self.try_grow_to_corners(num_corners, declared_faces)
+    }
 
-        // The step the symbol loop actually takes: one face on, with the
-        // capacity for it already reserved before the loop. `resize` reaches
-        // that through `extend_with`'s element-at-a-time loop and its
-        // set-length-on-drop guard, which together cost far more than the
-        // twelve bytes being written -- 130 instructions per face, 13.8% of a
-        // grid decode, against upstream, which fills both tables once from
-        // the declared count and pays nothing per face. Extending from a
-        // fixed-size array is one copy and one length update instead. The
-        // general path below still handles any other step.
-        if num_corners == len + 3
-            && self.opposite_corners.len() == len
-            && self.corner_to_vertex_map.capacity() >= num_corners
-            && self.opposite_corners.capacity() >= num_corners
+    /// Appends one face, for a caller that builds them strictly in order.
+    ///
+    /// The step the EdgeBreaker symbol loop takes is always the same one --
+    /// one face on the end, with the capacity for it reserved before the loop
+    /// -- and [`try_grow_to_face`](Self::try_grow_to_face) rederives that step
+    /// every time: a checked multiply from the face index, a comparison
+    /// against the current length, and another against that length plus three.
+    /// Those are `13` instructions a face on top of the `24` bytes actually
+    /// being written. Here the step is the signature, so what remains is the
+    /// part that cannot be assumed -- that the two tables are in step, and
+    /// that both have room -- and the general path below still handles a
+    /// caller whose step is anything else.
+    pub fn try_push_face(
+        &mut self,
+        declared_faces: usize,
+    ) -> Result<(), crate::status::DracoError> {
+        let len = self.corner_to_vertex_map.len();
+        if self.opposite_corners.len() == len
+            && self.corner_to_vertex_map.capacity() - len >= 3
+            && self.opposite_corners.capacity() - len >= 3
         {
             self.corner_to_vertex_map
                 .extend_from_slice(&[INVALID_VERTEX_INDEX; 3]);
@@ -365,7 +373,19 @@ impl CornerTable {
                 .extend_from_slice(&[INVALID_CORNER_INDEX; 3]);
             return Ok(());
         }
+        let num_corners = len.checked_add(3).ok_or_else(|| {
+            crate::status::DracoError::general("Corner table size overflow".to_string())
+        })?;
+        self.try_grow_to_corners(num_corners, declared_faces)
+    }
 
+    /// The growth policy both entry points share: reserve by doubling capped
+    /// at the declared total, then fill the new corners.
+    fn try_grow_to_corners(
+        &mut self,
+        num_corners: usize,
+        declared_faces: usize,
+    ) -> Result<(), crate::status::DracoError> {
         let declared_corners = declared_faces.saturating_mul(3);
 
         fn grow<T: Clone>(

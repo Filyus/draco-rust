@@ -147,9 +147,12 @@ impl EdgebreakerConnectivityDecoder {
             num_faces += 1;
             // Faces are created strictly in order, and every corner written
             // below belongs either to this face or to one already built, so
-            // growing a face at a time always suffices.
+            // growing a face at a time always suffices. The table starts
+            // empty and these are the only two places its length grows, so
+            // its end is always this face's first corner -- which is what
+            // lets the push form skip rederiving that from the face index.
             self.corner_table
-                .try_grow_to_face(face.0 as usize, self.declared_num_faces.max(0) as usize)?;
+                .try_push_face(self.declared_num_faces.max(0) as usize)?;
 
             let mut check_topology_split = false;
             let symbol = traversal_decoder.decode_symbol()?;
@@ -443,7 +446,7 @@ impl EdgebreakerConnectivityDecoder {
                 let face = FaceIndex(num_faces as u32);
                 num_faces += 1;
                 self.corner_table
-                    .try_grow_to_face(face.0 as usize, self.declared_num_faces.max(0) as usize)?;
+                    .try_push_face(self.declared_num_faces.max(0) as usize)?;
                 let new_corner = CornerIndex(3 * face.0);
                 self.set_opposite_corners(new_corner, corner_a)?;
                 self.set_opposite_corners(new_corner + 1, corner_b)?;
