@@ -298,6 +298,9 @@ CornerTable array loads, one encode at speed {}
         use std::sync::atomic::Ordering::Relaxed;
         let payload = &payloads[0];
         let options = options_for(&payload.mesh, speeds[0]);
+        if let Ok(min) = std::env::var("SAMPLE_ALLOC_MIN") {
+            counting::SAMPLE_MIN.store(min.parse().expect("SAMPLE_ALLOC_MIN"), Relaxed);
+        }
         counting::reset();
         counting::SAMPLING.store(true, Relaxed);
         rust_encode_us(&payload.mesh, &options, 1);

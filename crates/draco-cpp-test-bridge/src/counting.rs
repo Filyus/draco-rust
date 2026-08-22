@@ -22,7 +22,7 @@
 //! backtraces is not -- keep `SAMPLING` off while timing anything.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
 
 /// Allocations since the counters were last reset.
 pub static COUNT: AtomicU64 = AtomicU64::new(0);
@@ -38,6 +38,16 @@ pub static SAMPLES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::n
 /// What counts as a large allocation -- the size above which one buffer is
 /// worth naming rather than lumping into a total.
 pub const LARGE_THRESHOLD: usize = 64 * 1024;
+
+/// The size at or above which `SAMPLING` captures a backtrace. Defaults to
+/// [`LARGE_THRESHOLD`], because a big buffer is usually the interesting one --
+/// but a count that scales with the mesh points at a small allocation made
+/// per element instead, and that one is invisible until this comes down.
+pub static SAMPLE_MIN: AtomicUsize = AtomicUsize::new(LARGE_THRESHOLD);
+
+/// How many backtraces to keep. A per-element allocation would otherwise
+/// capture one per element, which is neither readable nor affordable.
+pub static SAMPLE_LIMIT: AtomicUsize = AtomicUsize::new(64);
 
 thread_local! {
     static IN_ALLOC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -63,7 +73,7 @@ pub fn totals() -> (u64, u64, u64) {
 }
 
 fn maybe_sample(size: usize) {
-    if !SAMPLING.load(Relaxed) || size < LARGE_THRESHOLD {
+    if !SAMPLING.load(Relaxed) || size < SAMPLE_MIN.load(Relaxed) {
         return;
     }
     // Capturing a backtrace allocates, so a re-entering capture would recurse
