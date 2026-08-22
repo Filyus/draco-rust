@@ -1597,6 +1597,60 @@ than lost in a whole-encode run that would have said nothing either way.
 too, since the list form it compares against keeps the original double swing;
 breaking the replay's index deliberately makes it fail.
 
+### The Surplus Was Mine, And Splitting The Counter Found It
+
+The diagnostic pass left the port making `26,886` more `opposite_corners`
+loads than C++ on the grid -- `8-9%` on all four families -- with the swing
+counts at exact parity and no explanation. Two candidate mechanisms had
+already been ruled out by measurement. What found it was one more counter:
+splitting `opposite` into loads made **inside the table build** and loads made
+**by the encoder**.
+
+| grid, speed 5 | C++ | Rust |
+| --- | ---: | ---: |
+| `opposite`, from the encoder | `121,670` | `121,672` |
+| `opposite`, building the table | -- | `54,150` |
+
+The encoder halves agree **to two calls out of 121,670**. The entire surplus
+was in `break_non_manifold_edges`, at exactly one load per corner of the mesh
+-- `18,050` faces, `54,150` corners -- and it was introduced by this document's
+own fan round: moving the sink-vertex scan to an index hoisted
+
+```rust
+let opp_edge_corner = self.opposite(edge_corner);
+```
+
+out of the branch C++ computes it in. Upstream evaluates it only after a
+matching sink vertex is found; the index version evaluated it before deciding
+whether there was one. Restored to its branch, the count goes from `54,150` to
+`8,836` -- the number of interior vertices, where the ring closes and the sink
+vertex genuinely repeats.
+
+With this and the replay one round earlier, the port now makes **fewer**
+`opposite_corners` loads than C++ on every family: `257,619` against `320,604`
+on the grid, where the pass started at `347,490`.
+
+Stage timings, medians of 200 builds, two runs per condition: grid
+`break_non_manifold` `275`,`276` -> `263`,`263`, torus `323`,`324` ->
+`311`,`311`. Read that against the noise floor the same runs show -- the
+untouched `compute_vertex_corners` moved `186`->`191` across them, `2.7%` --
+and the honest statement is that the `-4%` is consistent and reproducible but
+only modestly clear of it. **The load count is the evidence here**: `45,314`
+loads removed per encode is exact and does not have a spread.
+
+Two things worth carrying:
+
+- **A call-count anomaly can be the port's own last change.** This one was
+  eight rounds old, uniform across topologies, and looked like a structural
+  difference between two encoders. It was a lookup that moved three lines.
+  Nothing about `8-9%, uniform` distinguished "upstream does less" from "we
+  regressed"; only splitting the counter did.
+- **Where a counter is read matters as much as what it counts.** One number
+  for `opposite` said the port did `8%` more work and pointed nowhere. The same
+  number split by caller said the encoder was at parity to two calls and the
+  table build carried all of it, which named the function, the line, and the
+  round that introduced it.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
