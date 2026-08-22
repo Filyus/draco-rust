@@ -2094,6 +2094,37 @@ Standing after the round, System allocator, seven rounds
 `0.91/0.95/0.90/0.94x` at speed 8, `0.92/0.88/1.00/0.90x` at speed 0 --
 from `0.85/0.75/0.81/0.93x` (speed 5) at the start of the session.
 
+### In-Place Prediction: The Values Buffer Folds Into The Corrections
+
+The largest byte surplus the counting round named was the separate `values`
+vector: C++'s sequential integer decoder runs inverse prediction on one
+buffer (its `in_corr` and `out_data` are the same pointer), while the port
+allocated `corrections`, then a zeroed `values`, and wrote across. `bbbe34e`
+changes the decode contract to single-buffer: `compute_original_values(data,
+..)` takes the corrections and leaves the values, and every scheme qualifies
+because each entry reads its correction only at the offset it is about to
+write, with predictions drawn from entries already reconstructed -- the same
+invariant C++'s aliasing already relied on. The vestigial `CorrType`
+parameter left the decode traits with it (breaking change to `draco-core`'s
+public trait surface; the workspace is ~150 commits unpushed ahead anyway).
+
+Counters (deterministic, `ALLOC=1`, per decode at speed 5): grid `1566 ->
+1458` KB, ribbon `3208 -> 2980`, torus `1536 -> 1431`; allocation counts
+`46 -> 44` / `45` / `50 -> 48`. Exactly the predicted one allocation plus
+one memset per predicted attribute.
+
+Clocks (System allocator, 4 interleaved pairs, paired per-round differences,
+C++ column as control): ribbon speed 5 `-99/-82/-111` us in the three pairs
+after warm-up (about `-8%`, control moved < 2%) -- the ribbon cell reads
+`1.01x` after the change. Torus speed 5 `-1/-19/-16/-44` us, small but
+sign-consistent. Grid speed 5 mixed-sign, lean win inside the spread. All
+speed-0 cells and the fan: null, as expected -- the fold removes setup
+cost, not per-value work, and speed 0's time is dominated elsewhere.
+
+Standing after the round (System, spot check): speed 5
+`0.95/1.01/0.93/1.01x` (`grid`/`ribbon`/`torus`/`fan`), speed 0 unchanged
+within noise.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -2147,17 +2178,11 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   `~2.1` MB across `~52` allocations for a `330` KB mesh, now all accounted
   for as either upstream-equivalent work buffers or the four legitimate
   value-pipeline buffers.
-- **The port moves more bytes than C++ and the largest identified piece is
-  the separate `values` buffer.** C++'s sequential integer decoder runs
-  prediction in place on one buffer; the port allocates `corrections` and a
-  zeroed `values` and has every `compute_original_values` write across
-  (`sequential_integer_attribute_decoder.rs:738`). Folding them means an
-  in-place contract for every prediction scheme decoder -- a real refactor
-  with a wide parity surface, worth `110-233` KB and one memset per
-  attribute. The ribbon's remaining `~1.4` MB surplus over C++ is the
-  motivating payload; per-site byte totals for the rest of it are one
-  `dhat`-style run away (the counting allocator gives sizes, not totals per
-  site).
+- ~~The separate `values` buffer~~ -- folded into the corrections in
+  `bbbe34e`; see "In-Place Prediction" above. The ribbon still holds
+  `~1.2` MB surplus over C++ after the fold; per-site byte totals for the
+  rest of it are one `dhat`-style run away (the counting allocator gives
+  sizes, not totals per site).
 - **The mimalloc matrix must not be the only decode reading.** The same two
   copy removals read `0-2%` under mimalloc and `3-4.6%` under System -- the
   allocator swap masks exactly the cost the memory rounds are removing.
