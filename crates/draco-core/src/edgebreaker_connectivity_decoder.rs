@@ -123,15 +123,19 @@ impl EdgebreakerConnectivityDecoder {
         // which is why it needs its own reservation rather than falling out of
         // try_reserve_faces. self.max_num_vertices already comes from a
         // header count checked against 3 * num_faces, not the stream size --
-        // input_face_bound is what keeps that from being honoured past what
+        // the face bound is what keeps that from being honoured past what
         // the buffer could actually describe, and the corner table already
-        // trusts that bound for the same reason.
-        self.corner_table
-            .try_reserve_vertices(self.max_num_vertices.min(input_face_bound))?;
+        // trusts that bound for the same reason. Three vertices per face is
+        // the geometric ceiling, not a dial: capping at the face bound alone
+        // clipped a strip's V = F + 2 by two vertices and paid a doubling
+        // reallocation of the whole vertex table for them.
+        let vertex_bound = self
+            .max_num_vertices
+            .min(input_face_bound.saturating_mul(3));
+        self.corner_table.try_reserve_vertices(vertex_bound)?;
         // is_vert_hole is indexed by vertex and grows one at a time from
         // mark_vert_not_hole, the same as vertex_corners above, so it needs
         // the same upfront reservation for the same reason.
-        let vertex_bound = self.max_num_vertices.min(input_face_bound);
         self.is_vert_hole
             .try_reserve(vertex_bound.saturating_sub(self.is_vert_hole.len()))
             .map_err(|_| DracoError::general("Failed to allocate vertex-hole table".to_string()))?;
