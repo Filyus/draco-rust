@@ -1698,6 +1698,65 @@ share beforehand would not have prevented writing it, but it does say
 immediately that the answer to a `65%` regression is to take the
 restructuring back out rather than to tune it.
 
+### Decode, Re-Taken Against A Pinned Reference -- And It Is Behind
+
+`decode_matrix` is the decode side of `encode_matrix`, sharing its payload
+loader, its median-and-spread reporting and its encoder options. Each cell
+encodes once with the Rust encoder, then decodes the same bytes on both sides
+interleaved, and compares the point and face counts per cell. It exists
+because decode's stage attribution has been marked history in this document
+since three rounds landed on it, and re-taking it used to mean a process per
+cell.
+
+The first run corrects the record in a direction this document has not had to
+report before. Five rounds of 40 iterations, pinned 1.5.7:
+
+| payload | speed 0 | speed 3 | speed 5 | speed 8 | speed 10 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| grid | `0.92x` | `0.92x` | `0.85x` | `0.89x` | `1.55x` |
+| ribbon | `0.78x` | `0.58x` | `0.55x` | `0.54x` | `1.32x` |
+| torus | `1.00x` | `0.95x` | `0.84x` | `0.85x` | `1.57x` |
+| fan | `0.91x` | `0.95x` | `0.97x` | `0.91x` | `1.53x` |
+
+**Decode is behind C++ on every EdgeBreaker cell of this matrix**, and ahead
+only at speed 10, where the sequential decoder runs. That is not what the
+opening section of this document says, and the reason is the warning at the
+top of it: every decode figure predating the pinning warning was taken against
+the patched reference that is `4.8x` slower. Those numbers were never
+retracted for decode the way they were for encode, because nothing had
+re-taken them. This does.
+
+**The ribbon's cell was the worst in either matrix, and it was the same bug the
+encoder had.** `19,515` allocations per decode against a torus's `57`, at
+`0.55x`. The size histogram said `19,459` allocations of `4` bytes, and
+narrowing to that size named
+`corner_traversal::traverse_from_corner`, which opened with
+`let mut corner_stack = vec![start_corner];` and is called once per seed
+corner. On a mesh where every vertex is on a boundary, that is once per
+vertex.
+
+This is the third instance of one shape -- the encoder's depth-first walk, the
+constrained predictor's exclusion mask, and now the decoder's traversal -- and
+all three were a container allocated inside a per-element loop for a payload
+that never grows. The stack moved to the caller:
+
+| payload | speed | allocations | Rust before | Rust after | ratio before | ratio after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ribbon | 5 | `19,515` -> `58` | `1,662` | `971` | `0.55x` | `0.94x` |
+| ribbon | 8 | `19,517` -> `60` | `1,501` | `871` | `0.54x` | `0.93x` |
+
+`-42%`, with torus and grid measured in the same runs as controls and unmoved
+(`0.84x`->`0.85x`, `0.85x`->`0.89x`, both within their spread). The ribbon's
+own spread stays wide -- `44-55%` even at 200 iterations, which is worth
+noting rather than smoothing over -- but the move is an order of magnitude
+larger than that, and the allocation count is exact.
+
+What this leaves is the real finding: **decode is `0.84x` to `0.94x` on every
+EdgeBreaker cell**, uniformly, after the one outlier is fixed. Uniform is a
+different problem from one topology being slow, and none of the encode-side
+work applies to it. That is now the largest open item in this document, and
+it is stated here as measured rather than as explained.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -1736,10 +1795,14 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   connectivity -- different code, and the per-family ratios there are
   unknown. `dump_seeded_meshes_as_obj` plus `encode_loop` covers it in one
   pass.
-- **Decode, stage by stage.** The stage attribution in the opening section is
-  explicitly marked history: it predates the corner-table access round, round
-  two's dead traversal and round three's doubled scan, and has not been
-  re-run. Decode now has the same tooling encode just used.
+- **Decode is uniformly `0.84x` to `0.94x` against pinned 1.5.7** on every
+  EdgeBreaker cell of `decode_matrix`, on all four families and every speed
+  from 0 to 8. Uniform across topologies means it is not one stage or one
+  payload, which is what makes it hard: nothing in the encode-side campaign
+  points at it. The next step is the one that produced decode's earlier
+  rounds -- a load-count comparison against the instrumented C++ copy, which
+  `count_table_loads` already supports and which has never been run on decode
+  against a pinned reference.
 - **An encode-side call-count comparison against C++.** Instrumenting every
   `CornerTable` method and comparing exact counts is what produced decode's
   rounds two and three -- the two largest decode wins of the campaign. It has
