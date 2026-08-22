@@ -2153,11 +2153,18 @@ four pairs (`-17..-101` us, `~-4%`), fan speed 0 `~-4%`, grid and torus
 speed 0 sign-consistent small wins against a control drifting the other
 way; grid/torus speed 5 null, as their reserves never undershot.
 
-What dhat says is left on the ribbon after the round: one two-block site
-in the edgebreaker connectivity decoder (a single reallocation, `~78` KB
-of copy) and the three parallel `77.8` KB traversal vectors -- the
-already-catalogued B5. The per-site map is one `decode_dhat` run away at
-any time.
+The two-block site dhat left in the connectivity decoder turned out to be
+the vertex-table reserve capping the declared vertex count at the face
+bound directly: a strip has `V = F + 2`, the clip cost a doubling
+reallocation of the whole vertex table for two vertices. `984ec8a` bounds
+it by `min(declared, 3 * face_bound)` -- three vertices per face is the
+geometric ceiling, proven rather than a dial. Ribbon speed 5 `2393 ->
+2203` KB, allocations `40 -> 38`.
+
+What dhat says is left on the ribbon after all three fixes (`~420` KB
+over C++): the three parallel `77.8` KB traversal vectors -- the
+already-catalogued B5 -- and buffers with C++ equivalents. The per-site
+map is one `decode_dhat` run away at any time.
 
 ## Unexplored
 
