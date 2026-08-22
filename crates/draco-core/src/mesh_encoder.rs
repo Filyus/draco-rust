@@ -1924,32 +1924,30 @@ impl MeshEncoder {
                 ));
             }
 
+            // A point's three components are twelve contiguous bytes, so one
+            // slice of a fixed size answers what three offset computations and
+            // three bounds checks answered per point before.
+            const POSITION_BYTES: usize = 3 * 4;
             let value_offset = (value_index.0 as usize)
                 .checked_mul(stride)
                 .ok_or_else(|| {
                     DracoError::general("Position attribute offset overflow".to_string())
                 })?;
+            let end = value_offset.checked_add(POSITION_BYTES).ok_or_else(|| {
+                DracoError::general("Position attribute offset overflow".to_string())
+            })?;
+            let Some(point_bytes) = bytes.get(value_offset..end) else {
+                return Err(DracoError::general(
+                    "Position attribute buffer is shorter than metadata".to_string(),
+                ));
+            };
             for component in 0..3 {
-                let offset = value_offset
-                    .checked_add(component * DataType::Float32.byte_length())
-                    .ok_or_else(|| {
-                        DracoError::general("Position attribute offset overflow".to_string())
-                    })?;
-                let end = offset
-                    .checked_add(DataType::Float32.byte_length())
-                    .ok_or_else(|| {
-                        DracoError::general("Position attribute offset overflow".to_string())
-                    })?;
-                let Some(component_bytes) = bytes.get(offset..end) else {
-                    return Err(DracoError::general(
-                        "Position attribute buffer is shorter than metadata".to_string(),
-                    ));
-                };
+                let at = component * 4;
                 let value = f32::from_le_bytes([
-                    component_bytes[0],
-                    component_bytes[1],
-                    component_bytes[2],
-                    component_bytes[3],
+                    point_bytes[at],
+                    point_bytes[at + 1],
+                    point_bytes[at + 2],
+                    point_bytes[at + 3],
                 ]);
                 min[component] = min[component].min(value);
                 max[component] = max[component].max(value);
