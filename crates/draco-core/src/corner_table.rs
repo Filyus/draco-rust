@@ -807,6 +807,8 @@ impl CornerTable {
         // entry belongs to the current walk only if its stamp matches. The
         // extra slot past `num_vertices` holds the invalid vertex, which the
         // list form compared like any other key.
+        // Scratch for the left-swinging pass, reused across pivots.
+        let mut left_walk: Vec<CornerIndex> = Vec::new();
         let invalid_slot = num_vertices;
         let mut sink_slots = vec![SinkSlot::default(); num_vertices + 1];
         let mut walk = 0_u64;
@@ -830,8 +832,23 @@ impl CornerTable {
 
                 // First swing all the way to find the left-most corner connected to the
                 // corner's vertex.
+                //
+                // The corners this pass walks are exactly the ones the pass
+                // below re-walks in the opposite direction, so they are
+                // recorded here and replayed there rather than swung twice.
+                // `swing_right` is the exact inverse of `swing_left`:
+                // `previous(next(o))` is `o`, `opposite` is an involution --
+                // established by `compute_opposite_corners` and preserved
+                // here, which only ever clears both directions of an edge --
+                // and `previous(next(x))` is `x`. On a closed 1-ring the left
+                // pass covers the whole ring, so this halves the swings; on a
+                // boundary one it stops at the boundary and the replay is
+                // short, which is why a ribbon was already the cheapest family
+                // in this function.
                 let mut first_c = c_idx;
                 let mut current_c = c_idx;
+                left_walk.clear();
+                left_walk.push(c_idx);
 
                 loop {
                     let next_c = self.swing_left(current_c);
@@ -842,9 +859,14 @@ impl CornerTable {
                         break;
                     }
                     current_c = next_c;
+                    left_walk.push(next_c);
                 }
 
                 first_c = current_c;
+                // Consumed from the end: `left_walk` holds the ring from the
+                // pivot corner outwards to `first_c`, which is the order the
+                // right-swinging pass visits it in, reversed.
+                let mut replay = left_walk.len();
 
                 // Swing right from the first corner and check if all visited edges
                 // are unique.
@@ -921,9 +943,15 @@ impl CornerTable {
                         slot.len += 1;
                     }
 
-                    current_c = self.swing_right(current_c);
-                    if current_c == first_c || current_c == INVALID_CORNER_INDEX {
-                        break;
+                    if replay > 1 {
+                        replay -= 1;
+                        current_c = left_walk[replay - 1];
+                    } else {
+                        replay = 0;
+                        current_c = self.swing_right(current_c);
+                        if current_c == first_c || current_c == INVALID_CORNER_INDEX {
+                            break;
+                        }
                     }
                 }
             }
