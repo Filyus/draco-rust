@@ -159,6 +159,35 @@ fn main() {
         }
     }
 
+    #[cfg(feature = "count_table_loads")]
+    {
+        use draco_core::corner_table::table_loads::{self, Accessor};
+
+        // Loads, not calls: this port fuses `Opposite(Next(c))` into one
+        // lookup where C++ makes three calls. One cold decode per payload at
+        // the first speed given -- the counts are exact.
+        println!(
+            "
+CornerTable array loads, one decode at speed {}
+",
+            speeds[0]
+        );
+        print!("{:<20}", "payload");
+        for accessor in Accessor::ALL {
+            print!("{:>17}", accessor.name());
+        }
+        println!();
+        for (p, payload) in payloads.iter().enumerate() {
+            table_loads::reset();
+            rust_decode_us(&encoded[p][0], 1);
+            print!("{:<20}", payload.name);
+            for accessor in Accessor::ALL {
+                print!("{:>17}", table_loads::count(*accessor));
+            }
+            println!();
+        }
+    }
+
     if std::env::var("SAMPLE_ALLOC").is_ok() {
         // Outside the timed rounds: a backtrace per allocation costs far more
         // than the decode it describes.
