@@ -580,7 +580,7 @@ impl AttributeTransform for AttributeQuantizationTransform {
             return Err(overflow());
         };
         if attribute.data_type() == DataType::Uint32
-            && (1..=4).contains(&num_components)
+            && num_components > 0
             && src_stride == tight_stride
             && dst_stride == tight_stride
         {
@@ -594,118 +594,31 @@ impl AttributeTransform for AttributeQuantizationTransform {
                 return Err(truncated());
             }
 
-            match num_components {
-                1 => {
-                    for i in 0..num_values {
-                        let offset = i * tight_stride;
-                        let q_x = i32::from_le_bytes([
-                            src_data[offset],
-                            src_data[offset + 1],
-                            src_data[offset + 2],
-                            src_data[offset + 3],
-                        ]);
-
-                        let x = dequantizer.dequantize_float(q_x) + self.min_values[0];
-                        dst_data[offset..offset + COMPONENT_SIZE].copy_from_slice(&x.to_le_bytes());
-                    }
-                }
-                2 => {
-                    for i in 0..num_values {
-                        let offset = i * tight_stride;
-                        let q_x = i32::from_le_bytes([
-                            src_data[offset],
-                            src_data[offset + 1],
-                            src_data[offset + 2],
-                            src_data[offset + 3],
-                        ]);
-                        let q_y = i32::from_le_bytes([
-                            src_data[offset + 4],
-                            src_data[offset + 5],
-                            src_data[offset + 6],
-                            src_data[offset + 7],
-                        ]);
-
-                        let x = dequantizer.dequantize_float(q_x) + self.min_values[0];
-                        let y = dequantizer.dequantize_float(q_y) + self.min_values[1];
-
-                        dst_data[offset..offset + COMPONENT_SIZE].copy_from_slice(&x.to_le_bytes());
-                        dst_data[offset + 4..offset + 8].copy_from_slice(&y.to_le_bytes());
-                    }
-                }
-                3 => {
-                    for i in 0..num_values {
-                        let offset = i * tight_stride;
-                        let q_x = i32::from_le_bytes([
-                            src_data[offset],
-                            src_data[offset + 1],
-                            src_data[offset + 2],
-                            src_data[offset + 3],
-                        ]);
-                        let q_y = i32::from_le_bytes([
-                            src_data[offset + 4],
-                            src_data[offset + 5],
-                            src_data[offset + 6],
-                            src_data[offset + 7],
-                        ]);
-                        let q_z = i32::from_le_bytes([
-                            src_data[offset + 8],
-                            src_data[offset + 9],
-                            src_data[offset + 10],
-                            src_data[offset + 11],
-                        ]);
-
-                        let x = dequantizer.dequantize_float(q_x) + self.min_values[0];
-                        let y = dequantizer.dequantize_float(q_y) + self.min_values[1];
-                        let z = dequantizer.dequantize_float(q_z) + self.min_values[2];
-
-                        dst_data[offset..offset + COMPONENT_SIZE].copy_from_slice(&x.to_le_bytes());
-                        dst_data[offset + 4..offset + 8].copy_from_slice(&y.to_le_bytes());
-                        dst_data[offset + 8..offset + 12].copy_from_slice(&z.to_le_bytes());
-                    }
-                }
-                4 => {
-                    for i in 0..num_values {
-                        let offset = i * tight_stride;
-                        let q_x = i32::from_le_bytes([
-                            src_data[offset],
-                            src_data[offset + 1],
-                            src_data[offset + 2],
-                            src_data[offset + 3],
-                        ]);
-                        let q_y = i32::from_le_bytes([
-                            src_data[offset + 4],
-                            src_data[offset + 5],
-                            src_data[offset + 6],
-                            src_data[offset + 7],
-                        ]);
-                        let q_z = i32::from_le_bytes([
-                            src_data[offset + 8],
-                            src_data[offset + 9],
-                            src_data[offset + 10],
-                            src_data[offset + 11],
-                        ]);
-                        let q_w = i32::from_le_bytes([
-                            src_data[offset + 12],
-                            src_data[offset + 13],
-                            src_data[offset + 14],
-                            src_data[offset + 15],
-                        ]);
-
-                        let x = dequantizer.dequantize_float(q_x) + self.min_values[0];
-                        let y = dequantizer.dequantize_float(q_y) + self.min_values[1];
-                        let z = dequantizer.dequantize_float(q_z) + self.min_values[2];
-                        let w = dequantizer.dequantize_float(q_w) + self.min_values[3];
-
-                        dst_data[offset..offset + COMPONENT_SIZE].copy_from_slice(&x.to_le_bytes());
-                        dst_data[offset + 4..offset + 8].copy_from_slice(&y.to_le_bytes());
-                        dst_data[offset + 8..offset + 12].copy_from_slice(&z.to_le_bytes());
-                        dst_data[offset + 12..offset + 16].copy_from_slice(&w.to_le_bytes());
-                    }
-                }
-                _ => {
-                    return Err(DracoError::invalid_parameter(format!(
-                        "Dequantization does not support {num_components} components"
-                    )))
+            // Both sides are tightly packed, so an entry is `tight_stride`
+            // contiguous bytes on each and a component is four of those. Walking
+            // them as chunks leaves the loop with no offset to compute and no
+            // bound to re-prove: the two length checks above cover every read
+            // and write below, and a four-byte chunk is an array, so reading
+            // and writing one carries no check of its own.
+            //
+            // This replaces an unrolled arm per component count, each indexing
+            // the source a byte at a time. It also widens the fast path, which
+            // stopped at four components for no reason the arms explained.
+            let mins = &self.min_values[..num_components];
+            for (src_entry, dst_entry) in src_data[..required_src]
+                .chunks_exact(tight_stride)
+                .zip(dst_data[..required_dst].chunks_exact_mut(tight_stride))
+            {
+                for ((src_component, dst_component), &min_value) in src_entry
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(dst_entry.as_chunks_mut::<4>().0.iter_mut())
+                    .zip(mins.iter())
+                {
+                    let quantized = i32::from_le_bytes(*src_component);
+                    *dst_component =
+                        (dequantizer.dequantize_float(quantized) + min_value).to_le_bytes();
                 }
             }
 
