@@ -12,10 +12,18 @@ publish = false
 # against the instrumented C++ described in PERFORMANCE.md. Counts only --
 # a build carrying these counters is never a build to time.
 count_table_loads = ["draco-core/count_table_loads"]
+# Run the matrices against mimalloc instead of the platform allocator. The
+# decode gap is load-identical against C++, which leaves memory behaviour as
+# the candidate; this is how that is tested without touching draco-core.
+# Never a library dependency -- allocator choice is the consumer's, as PGO is.
+mimalloc = []
 
 [build-dependencies]
 cc = "1.0"
 
 [dev-dependencies]
+# Not optional, because Cargo forbids optional dev-dependencies; the feature
+# only decides whether the examples install it as the global allocator.
+mimalloc = "0.1"
 draco-core = { path = "../draco-core" }
 draco-io = { path = "../draco-io" }

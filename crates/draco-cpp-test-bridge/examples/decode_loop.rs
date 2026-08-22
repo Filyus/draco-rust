@@ -29,7 +29,7 @@ use draco_core::EncoderOptions;
 use draco_cpp_test_bridge::counting;
 
 #[global_allocator]
-static ALLOC: counting::Counting = counting::Counting;
+static ALLOC: counting::Counting<std::alloc::System> = counting::Counting(std::alloc::System);
 
 fn main() {
     let mut args = std::env::args().skip(1);

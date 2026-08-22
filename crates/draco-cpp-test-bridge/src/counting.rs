@@ -13,15 +13,15 @@
 //!
 //! ```ignore
 //! #[global_allocator]
-//! static ALLOC: draco_cpp_test_bridge::counting::Counting =
-//!     draco_cpp_test_bridge::counting::Counting;
+//! static ALLOC: draco_cpp_test_bridge::counting::Counting<std::alloc::System> =
+//!     draco_cpp_test_bridge::counting::Counting(std::alloc::System);
 //! ```
 //!
 //! The counters cost one relaxed atomic per allocation, which on an encode
 //! making tens of allocations is far below the run-to-run spread. Capturing
 //! backtraces is not -- keep `SAMPLING` off while timing anything.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
 
 /// Allocations since the counters were last reset.
@@ -122,10 +122,15 @@ fn maybe_sample(size: usize) {
     });
 }
 
-/// The system allocator, counted.
-pub struct Counting;
+/// Any allocator, counted.
+///
+/// Generic over what it wraps so the example decides: `Counting(System)` for
+/// the platform allocator, `Counting(MiMalloc)` to ask whether a gap is the
+/// allocator's. Allocator choice belongs to the consumer, as PGO does, so it
+/// is made in the binary and never in `draco-core`.
+pub struct Counting<A>(pub A);
 
-unsafe impl GlobalAlloc for Counting {
+unsafe impl<A: GlobalAlloc> GlobalAlloc for Counting<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         COUNT.fetch_add(1, Relaxed);
         BYTES.fetch_add(layout.size() as u64, Relaxed);
@@ -133,11 +138,11 @@ unsafe impl GlobalAlloc for Counting {
             LARGE.fetch_add(1, Relaxed);
         }
         maybe_sample(layout.size());
-        unsafe { System.alloc(layout) }
+        unsafe { self.0.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
+        unsafe { self.0.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
@@ -147,6 +152,6 @@ unsafe impl GlobalAlloc for Counting {
             LARGE.fetch_add(1, Relaxed);
         }
         maybe_sample(new_size);
-        unsafe { System.realloc(ptr, layout, new_size) }
+        unsafe { self.0.realloc(ptr, layout, new_size) }
     }
 }

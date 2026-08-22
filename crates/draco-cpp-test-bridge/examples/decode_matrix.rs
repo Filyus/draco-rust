@@ -33,8 +33,17 @@ use draco_cpp_test_bridge::counting;
 mod common;
 use common::{load, median_and_spread, options_for, Payload};
 
+// The counting allocator wraps whichever allocator the build selected, so a
+// mimalloc run still reports allocation counts. `--features mimalloc` is how
+// the "is the gap the allocator" question gets asked without touching
+// `draco-core`.
+#[cfg(not(feature = "mimalloc"))]
 #[global_allocator]
-static ALLOC: counting::Counting = counting::Counting;
+static ALLOC: counting::Counting<std::alloc::System> = counting::Counting(std::alloc::System);
+
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOC: counting::Counting<mimalloc::MiMalloc> = counting::Counting(mimalloc::MiMalloc);
 
 /// The bytes both sides decode, produced by the Rust encoder at `speed`.
 fn encode(payload: &Payload, speed: i32) -> Vec<u8> {

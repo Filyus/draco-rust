@@ -18,7 +18,7 @@ use draco_core::EncoderOptions;
 use draco_cpp_test_bridge::counting;
 
 #[global_allocator]
-static ALLOC: counting::Counting = counting::Counting;
+static ALLOC: counting::Counting<std::alloc::System> = counting::Counting(std::alloc::System);
 
 /// One encode, with the setup the C++ side also keeps outside its timed region
 /// charged separately.
