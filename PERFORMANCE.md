@@ -2202,6 +2202,80 @@ speed 5, and the instrument for what remains is per-stage comparison
 against instrumented C++ or callgrind under WSL -- the same next step
 the torus cell already waits on.
 
+### Callgrind, Both Sides: The Gap Is Connectivity, Not Attributes
+
+Every previous decode round measured a total and guessed at its parts.
+This one lays the two decoders side by side per stage, and the answer
+reverses a working assumption: **the attribute path is at parity or
+better, and the whole instruction gap is in connectivity.**
+
+**The instrument, and why it exists here.** `valgrind` has no Windows
+port, so this ran under WSL2 Ubuntu (callgrind 3.26, rustc 1.98 -- the
+same compiler as the Windows side). Callgrind attributes instructions to
+functions by symbol, so no source patching is needed on either side: the
+C++ stage names and the Rust stage names are simply read off. Draco 1.5.7
+builds there in five minutes (`cmake -DCMAKE_BUILD_TYPE=Release
+-DDRACO_TESTS=OFF`, `make`), and both drivers are committed --
+`examples/dump_drc.rs` writes the exact bytes the matrices decode,
+`examples/decode_drc.rs` and `cpp/decode_drc.cpp` each decode that file
+and nothing else. Both were checked to decode to identical point and face
+counts before a single number was read, and the wall-clock gap reproduces
+under Linux (torus `0.85x`, grid `0.90x`, fan `0.86x`), so the phenomenon
+being profiled is the one the Windows tables measure.
+
+**The decomposition** (seeded grid, speed 5, one decode, C++ totals with
+its ~1.6 MB of dynamic-linker startup removed):
+
+| stage | C++ | Rust | |
+| --- | ---: | ---: | --- |
+| symbol loop, table sizing, points↔corners, raw symbols | `3.55M` | `8.53M` | **`2.4x`** |
+| DFS traversal, mapping fix, prediction, dequantisation | `5.54M` | `6.22M` | `1.12x` |
+
+Inside the attribute half the port is *ahead* on the traversal itself
+(`1.93M` against C++'s `2.36M`) and behind on prediction (`2.11M` against
+`1.72M`) and dequantisation (`811K` against `641K`). Multiplying the
+instruction split by the phase probe's wall clock puts C++'s connectivity
+near `289` us against the port's `439`, and C++'s attributes near `451`
+against the port's `390` -- a net `+89` us, which is exactly the measured
+grid gap. Two independent instruments agreeing to the microsecond is the
+strongest attribution this campaign has produced.
+
+**A caution that came with it.** The port executes about `1.5x` C++'s
+instructions while running only `1.1x` slower, so instruction counts here
+convert to time at roughly half their face value -- the landed fix below
+measured `-8.4%` instructions and `-4.8%` clock. Quote both.
+
+**What landed** (`2b94943`): `try_grow_to_face` grew the corner table
+three corners at a time through `Vec::resize`, whose `extend_with` walks
+the fill element-at-a-time behind a set-length-on-drop guard: `130`
+instructions per face, `13.8%` of a grid decode, where upstream's
+`CornerTable::Reset` fills both tables once and pays nothing per face.
+The capacity is already reserved before the symbol loop, so the one-face
+step became a fixed-size `extend_from_slice`. Callgrind: grid `17.24M ->
+15.79M` (`-8.4%`), torus `-8.3%`. Paired System clocks, four interleaved
+rounds, **all eight seeded cells negative** against a flat C++ control:
+grid s5 `-4.8%`, fan s5 `-6.8%`, fan s0 `-5.5%`, the rest `-1.1` to
+`-3.4%`.
+
+**What did not** (`c2f2178`): the corner table's consistency scan carried
+a comment claiming its branch-free max reduction vectorises. Outlining
+the call under callgrind priced it at `338,620` instructions -- `3.1` per
+element, which is scalar. Unsigned 32-bit max is `pmaxud`, SSE4.1, and
+the baseline `x86-64` target has SSE2; rebuilt for `x86-64-v2` the
+identical source costs `210,103`. So the loop shape was never the
+problem, and two rewrites aimed at the shape (eight accumulators to break
+the reduction chain, then constant indices to keep them in registers)
+each measured within `30` instructions of the original. Both reverted;
+the comment now records the measurement and points at the target flag,
+which belongs to whoever builds the crate, as the allocator does.
+
+**Still open in connectivity, by size of the excess:** the symbol loop
+itself with its un-inlined helpers (`4.13M` against `2.25M`),
+`assign_points_to_corners` (`921K` against `415K`, `41` instructions per
+face against `23` for the same three-vertex read),
+`decode_raw_symbols` (`1.26M` against `620K`), and `try_grow_to_face`
+even after the fix (`1.08M` against `Reset`'s `271K`).
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -2268,7 +2342,17 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
 - **An encode-side call-count comparison against C++.** Instrumenting every
   `CornerTable` method and comparing exact counts is what produced decode's
   rounds two and three -- the two largest decode wins of the campaign. It has
-  never been run on the encoder.
+  never been run on the encoder. The callgrind stand now makes this cheap:
+  an `encode_drc` driver beside the two decode ones, and the same
+  align-by-stage read.
+- **The four named connectivity excesses.** See "Callgrind, Both Sides"
+  above -- the symbol loop with its un-inlined helpers,
+  `assign_points_to_corners` at `41` instructions per face against C++'s
+  `23`, `decode_raw_symbols` at `2.0x`, and what is left of
+  `try_grow_to_face`. This is where the remaining decode gap lives, it is
+  now located rather than suspected, and the instrument to work against
+  it is committed. Read the conversion caution first: instructions here
+  are worth about half their face value in time.
 
 ### Known shapes, unmeasured
 
