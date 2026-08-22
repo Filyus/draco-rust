@@ -2166,6 +2166,19 @@ over C++): the three parallel `77.8` KB traversal vectors -- the
 already-catalogued B5 -- and buffers with C++ equivalents. The per-site
 map is one `decode_dhat` run away at any time.
 
+Speed 0 then repeated the whole shape one rung denser (`bb6159b`): the
+valence coder pushes the ribbon's connectivity to `11.4` faces per byte
+and its corrections to `4.4` symbols per bit, so the freshly raised dials
+undershot again. Now `16` faces per byte and `64` symbols per byte --
+speed 0 is the densest coding a Draco encoder produces, so this raise
+should be the last the corpus can force; hostile budgets `576`/`256`
+bytes per input byte. Ribbon speed 0 `3017 -> 2406` KB and `54 -> 50`
+allocations (surplus over C++ `~360` KB), clocks 4/4 pairs negative
+(`-14..-142` us, `~-6%`) with a flat control. The C++ counters at speed 0
+put the other three families within `110-120` KB of C++, so their
+remaining speed-0 gap (`0.89-0.92x`) is not memory -- the next instrument
+there is the phase probe, not the allocator.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
