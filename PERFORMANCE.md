@@ -2179,6 +2179,29 @@ put the other three families within `110-120` KB of C++, so their
 remaining speed-0 gap (`0.89-0.92x`) is not memory -- the next instrument
 there is the phase probe, not the allocator.
 
+### Speed 0, Decomposed At Last
+
+The phase probe is committed now (`19fd437`, `DECODE_PHASES=1` -- its
+third insertion, so it stays), with the prediction-degree traverser under
+the `setup` phase alongside the DFS. First speed-0 split (System, one
+process, us/decode): grid `conn 522 / setup 301 / values 561 / mapfix
+52`, ribbon `612/266/653/79`, fan `488/314/447/39` -- against speed 5's
+grid `439/82/206/53`. Speed 0's own costs are the valence connectivity
+(`+80..100` us), the constrained multi-parallelogram values pass
+(`~2.7x` the parallelogram's) and the prediction-degree traversal
+(`3.7-4.8x` the DFS).
+
+But the C++ column pays those same algorithms, and the delta-of-deltas
+says how much of the speed-0 gap is speed-0's own: C++ grid goes
+`740 -> 1376` us from speed 5 to 0 (`+636`) while Rust goes `829 ->
+1497` (`+668`), so grid's speed-0-specific shortfall is `~30` us -- the
+rest is the same gap the speed-5 cell already carries. Fan's is `~70`,
+ribbon's `~120` (before this session's dial fixes, which took ribbon's
+back down). Closing the rest of speed 0 therefore mostly means closing
+speed 5, and the instrument for what remains is per-stage comparison
+against instrumented C++ or callgrind under WSL -- the same next step
+the torus cell already waits on.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
