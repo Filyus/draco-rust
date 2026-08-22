@@ -1757,6 +1757,70 @@ different problem from one topology being slow, and none of the encode-side
 work applies to it. That is now the largest open item in this document, and
 it is stated here as measured rather than as explained.
 
+### Decode's Gap Is Not Work: The Load Counts Are At Parity
+
+The decode matrix left `0.84-0.94x` on every EdgeBreaker cell, uniform across
+four topologies, with nothing from the encode campaign pointing at it. The
+first step was the metric that produced decode's two largest historical wins:
+exact load counts against the instrumented C++ copy, split by caller the way
+the encoder's surplus needed.
+
+One decode of the grid at speed 5:
+
+| accessor | C++ | Rust |
+| --- | ---: | ---: |
+| `opposite`, called directly | `36,100` | `36,100` |
+| `opposite`, building the table | -- | `0` |
+| `left_corner` | `9,216` | `9,216` |
+| `right_corner` | `18,050` | `18,050` |
+| `swing_right` | `280` | `280` |
+| `swing_left` | `9,402` | `9,308` |
+| `left_most_corner` | `18,426` | `18,426` |
+| **`corner_to_vertex_map` loads** | **`199,211`** | **`199,211`** |
+| **`opposite_corners` loads, total** | **`73,048`** | **`72,954`** |
+
+Five of the eight are exact. The vertex map is exact to the load out of
+`199,211`. The one difference is `swing_left`, at `94` calls out of `9,402`,
+and the port comes out `94` loads **under** C++ overall.
+
+**So the two decoders do the same table work, and the gap is not work done.**
+That rules out the entire class of explanation that produced rounds two and
+three -- a traversal nobody read, a scan done twice -- and it rules it out by
+measurement rather than by inspection. Whatever the `10-15%` is, it is per-call
+cost, memory behaviour, or something outside the corner table.
+
+The allocation figures point at the second of those, and this document already
+sized it. A grid decode allocates `2.4` MB for a mesh whose decoded form is
+about `330` KB, and the size histogram shows the shape round four described:
+twelve allocations of `num_vertices * 4` (`36,864` bytes here), four of
+`num_vertices * 12`, and a handful of face-sized buffers. Round four then
+measured what that costs by swapping the global allocator in the harness:
+`19.6%` to `30.2%` on decode, at `60-100x` the build-to-build spread.
+
+That is the same order as the gap, from the same side of it, which makes the
+one-sided allocator comparison this document has carried as an open decision
+the thing that now blocks the answer:
+
+- If the C++ reference's CRT allocator is materially better than Rust's
+  default on Windows, `0.84-0.94x` on loads-identical code is what that looks
+  like, and the port's answer is an allocator choice its consumers make -- not
+  a code change.
+- If it is not, then `19.6-30.2%` of the Rust decode is recoverable by
+  allocating less, and the twelve `num_vertices * 4` buffers are where to
+  start.
+
+Nothing here distinguishes those, and no amount of Rust-side profiling will:
+the measurement that separates them is **both sides swapping allocators**,
+which needs the C++ build to link one too. That is the next step, and it is a
+build question rather than a code one.
+
+Method note, and it is the same one twice now: **a metric that comes back at
+parity is a result, not a failed measurement.** The load comparison cost one
+patched header and two runs, and what it bought was the elimination of every
+hypothesis of the form "the port does more work here" -- which is where the
+previous decode rounds all landed, and which would otherwise have been the
+obvious place to spend the next week.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -1795,14 +1859,16 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   connectivity -- different code, and the per-family ratios there are
   unknown. `dump_seeded_meshes_as_obj` plus `encode_loop` covers it in one
   pass.
-- **Decode is uniformly `0.84x` to `0.94x` against pinned 1.5.7** on every
-  EdgeBreaker cell of `decode_matrix`, on all four families and every speed
-  from 0 to 8. Uniform across topologies means it is not one stage or one
-  payload, which is what makes it hard: nothing in the encode-side campaign
-  points at it. The next step is the one that produced decode's earlier
-  rounds -- a load-count comparison against the instrumented C++ copy, which
-  `count_table_loads` already supports and which has never been run on decode
-  against a pinned reference.
+- **Decode is uniformly `0.84x` to `0.94x` against pinned 1.5.7**, and the
+  load counts say it is not work. What separates "the reference has a better
+  allocator" from "the port allocates too much" is a C++ build linking the
+  same allocator the Rust side is measured with -- the fair version of the
+  comparison this document has carried one-sided since round four. Until that
+  runs, both readings fit every number here.
+- **Twelve allocations of `num_vertices * 4` per decode**, unchanged since
+  round four named them. `2.4` MB allocated for a `330` KB decoded mesh on the
+  grid. Worth attacking only if the allocator comparison above comes back
+  saying the volume is the port's problem.
 - **An encode-side call-count comparison against C++.** Instrumenting every
   `CornerTable` method and comparing exact counts is what produced decode's
   rounds two and three -- the two largest decode wins of the campaign. It has
