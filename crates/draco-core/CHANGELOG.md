@@ -262,19 +262,22 @@ premise holds, and the encoder reports the choices it makes for itself.
   Nothing about the encoded bytes changes; every one of these is the same
   output computed with less work, and the byte-for-byte parity tests against
   C++ Draco are what says so.
-- Four more rounds of the same, over the mesh encoder, the mesh decoder and the
+- Five more rounds of the same, over the mesh encoder, the mesh decoder and the
   KD-tree point-cloud encoder. A face's degeneracy is read as one chunk of the
   vertex map instead of through three accessors, and asked once per face rather
   than once per corner; the pass that sizes the half-edge counters drops the
-  branch that kept it from vectorizing; the decoder's point-to-value mapping
-  walks the corner table and the face list as two slices instead of deriving a
-  corner index it already had; and the KD-tree encoder's `partition` reaches
-  the axis column directly and swaps two points at once rather than one
-  component at a time. One operation at speed 5, instructions: mesh encode
-  `-4.9%` to `-7.1%` across the seeded grid, ribbon and torus, mesh decode
-  `-2.4%` to `-3.4%` across those and the fan, and a KD-tree point-cloud encode
-  `-22.8%`. On a same-platform interleaved clock the encode's `-6.9%` in
-  instructions is `-7.0%` in time.
+  branch that kept it from vectorizing; four walks that asked the corner table
+  for the same neighbour twice in a row now ask once; the decoder's
+  point-to-value mapping walks the corner table and the face list as two slices
+  instead of deriving a corner index it already had; and the KD-tree encoder's
+  `partition` reaches the axis column directly and swaps two points at once
+  rather than one component at a time. One operation at speed 5, instructions:
+  mesh encode `-5.8%` to `-8.3%` across the seeded grid, ribbon and torus, mesh
+  decode `-2.4%` to `-3.4%` across those and the fan, and a KD-tree point-cloud
+  encode `-22.8%`. On a same-platform interleaved clock the encode's `-6.9%` in
+  instructions was `-7.0%` in time. The mesh encode is now ahead of a
+  same-platform build of upstream 1.5.7 on every seeded payload, which was not
+  true of the ribbon before.
 
   Byte-for-byte output again, and on the KD-tree path that is load-bearing
   rather than reassuring: the permutation `partition` leaves decides the order

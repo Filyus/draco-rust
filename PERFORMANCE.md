@@ -3212,8 +3212,8 @@ one vectorized pass.
 One encode at speed 5: grid `-394,287` (`-1.3%`), ribbon `-412,542` (`-0.9%`),
 torus `-469,455` (`-1.6%`).
 
-Where the encode stands, one encode at speed 5, against the same-platform
-`gcc -O3` build:
+Where the encode stood at that point, one encode at speed 5, against the
+same-platform `gcc -O3` build:
 
 | payload | Rust | C++ | |
 | --- | ---: | ---: | ---: |
@@ -3224,7 +3224,7 @@ Where the encode stands, one encode at speed 5, against the same-platform
 
 The fan row is upstream's `O(valence^2)` corner table, restated on the encode
 side and in instructions rather than microseconds. It says nothing about the
-port.
+port. One more round moved all four again -- see below.
 
 ### The KD-Tree Encode, Counted For The First Time
 
@@ -3275,6 +3275,52 @@ attempts to shrink it further both regressed and are recorded below.
   vectorized form; the maximum in the round above vectorized because removing
   the *branch* made it vectorizable, not because it became an iterator.
 
+### The Corner Asked For Twice
+
+With `find_holes` fixed and the counter sizing vectorized, the probe's remaining
+ribbon stages read `break_non_manifold_edges` `1.19x`, `compute_vertex_corners`
+`1.39x`, and `compute_opposite_corners` at `5,037,395` against `5,044,626` --
+**parity, closed by the round above**. The first two are both dominated by
+`corner_table.rs` and `slice/index.rs` with no `raw_vec`/`ptr::non_null` row
+worth naming, which rules out the `Vec`-pointer-reload story that the decode's
+growth rows tell and sends the search back to the source.
+
+Four walks asked the table the same question twice in a row.
+
+The non-manifold sweep computes `previous(current_c)` as `edge_corner`, and
+then computes it *again* to key the sink slot. Nothing between the two
+reassigns the corner and nothing writes the vertex map at all, so the second is
+the first -- but LLVM does not fold it, because the `opposite_corners` stores on
+the arm that leaves the loop sit in the way and it cannot prove they do not
+alias. The three hole walks -- one in `find_holes` and two in `encode_hole` --
+each test `opposite(corner)` against the sentinel and then ask for it again to
+step onto it, which is a load and a bounds check per iteration of a loop whose
+trip count is a vertex valence.
+
+One encode at speed 5: grid `-442,310` (`-1.5%`), ribbon `-448,048` (`-1.0%`),
+torus `-390,942` (`-1.3%`), fan `-370,749` (`-1.3%`).
+
+**That closes the encode.** Against the same-platform `gcc -O3` build, one
+encode at speed 5:
+
+| payload | session start | now | | C++ | |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| grid | `31,779,263` | `29,139,804` | `-8.3%` | `31,807,856` | **`1.09x`** ahead |
+| ribbon | `46,431,431` | `43,721,540` | `-5.8%` | `43,987,191` | **`1.01x`** ahead |
+| torus | `31,363,522` | `28,757,748` | `-8.3%` | `31,492,561` | **`1.10x`** ahead |
+| fan | -- | `27,156,278` | | `382,563,233` | `14.1x`, meaningless |
+
+The ribbon was the last payload behind on encode, and had been since the stage
+split found it. It is not any more.
+
+**And this is a general lesson about what the optimizer will and will not do
+for you.** Three of this session's five landed rounds were the same shape --
+a question asked more times than it has answers: a degeneracy per corner
+instead of per face, an `opposite` to test and again to step, a `previous`
+computed twice. None of them was folded by LLVM, and each was invisible in a
+profile that stops at the function. They show up in a *per-line* reading of the
+file, which is why `callgrind_by_line.py` is now committed beside the other
+two.
 ### What The Clock Said About All Of It
 
 Same platform, same protocol, base and head interleaved after a warm-up, so a
@@ -3284,11 +3330,13 @@ drift that hits one hits the other. `us` per operation, eleven rounds:
 | --- | ---: | ---: | ---: |
 | decode grid s5, `300` a run | `596` / `614` | `597` / `606` | `-1.3%` median |
 | encode grid s5, `100` a run | `1322` / `1351` | `1237` / `1256` | **`-7.0%` median** |
+| encode again, after the last round | `1328` / `1345` | `1231` / `1261` | **`-6.2%` median** |
 
-**The encode's `-6.9%` in instructions is `-7.0%` in time; the decode's `-3.4%`
-is not resolvable at all**, with spreads of `2.8-3.2%` on the encode pair and
-about `4%` on the decode pair. That is the sharpest evidence yet for what the
-round before this one could only assert: the decode's independent work -- index
+**The encode's `-6.9%` in instructions was `-7.0%` in time, and `-8.3%` was
+`-6.2%` on a noisier pair; the decode's `-3.4%` is not resolvable at all**,
+with spreads of `2.8-3.2%` on the first encode pair, `4.6-5.0%` on the second,
+and about `4%` on the decode pair. That is the sharpest evidence yet for what
+the round before this one could only assert: the decode's independent work -- index
 arithmetic, bounds checks -- issues in slots its dependent-load chain leaves
 idle, so removing it moves the count and not the clock. The encode has no such
 chain across its scans, and its instructions convert one for one.
@@ -3303,13 +3351,15 @@ allocator, above `1.00x` is the port ahead:
 
 | payload | decode 0 | decode 5 | decode 8 | encode 0 | encode 5 | encode 8 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| grid | `1.06x` | `1.24x` | `1.27x` | `1.65x` | `1.68x` | `1.67x` |
-| ribbon | `1.05x` | `1.21x` | `1.29x` | `1.61x` | `1.50x` | `1.54x` |
-| torus | `1.11x` | `1.10x` | `1.15x` | `1.63x` | `1.53x` | `1.54x` |
+| grid | `1.06x` | `1.24x` | `1.27x` | `1.67x` | `1.70x` | `1.70x` |
+| ribbon | `1.05x` | `1.21x` | `1.29x` | `1.53x` | `1.52x` | `1.57x` |
+| torus | `1.11x` | `1.10x` | `1.15x` | `1.61x` | `1.56x` | `1.58x` |
 | fan | `1.08x` | `1.29x` | `1.31x` | `6.78x` | `17.29x` | `17.77x` |
 
 Speed-0 decode cells carry `18-27%` spreads and are direction only; the fan
-encode column is the reference's quadratic table, not the port.
+encode column is the reference's quadratic table, not the port, and is the one
+row not re-taken after the last round. Encode spreads are `0.6-7.4%` and byte
+counts match the reference in every cell.
 
 ## Unexplored
 
@@ -3374,17 +3424,25 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   allocator swap masks exactly the cost the memory rounds are removing.
   Take decode clocks under System (accepting its spread), and treat the
   allocation counters as the primary metric for memory changes.
-- **The encoder's three big table-build stages, now that they have names.**
-  The `#[inline(never)]` probe split `encode_geometry_data`, and after
-  `find_holes` was fixed the ribbon leaves three: `compute_opposite_corners`
-  `1.25x`, `break_non_manifold_edges` `1.19x` and `compute_vertex_corners`
-  `1.39x`, together `+3.4M` on `44.5M`. On the encode an instruction is a
+- **The encoder's two remaining table-build stages.** The `#[inline(never)]`
+  probe split `encode_geometry_data`; of the four stages it named,
+  `compute_opposite_corners` and `find_holes` are now at parity or better, and
+  two are not: `break_non_manifold_edges` `1.19x` and `compute_vertex_corners`
+  `1.39x`, together `+2.2M` on `43.7M`. On the encode an instruction is a
   microsecond, so this is the best-paying target left anywhere. What is
-  underneath, per file: `slice/index.rs` `1.58M` in
-  `break_non_manifold_edges` alone, and `next_in_face`/`prev_in_face` at
-  `1.1M` across the two -- which the "not a target" entry below covers, so
-  the checks are the part worth attacking. Re-apply the probe to split them
-  further; it is eleven lines and reverts clean.
+  underneath, per file: `slice/index.rs` `1.58M` in `break_non_manifold_edges`
+  alone, `671K` in `compute_vertex_corners`, and `next_in_face`/`prev_in_face`
+  at `1.1M` across the two -- which the "not a target" entry below covers, so
+  the checks are the part worth attacking. Neither stage shows a `raw_vec` or
+  `ptr::non_null` row worth naming, so the `Vec`-pointer-reload story the
+  decode's growth rows tell does not apply here and a split-borrow refactor
+  would buy nothing. Re-apply the probe to split them further; it is five
+  lines and reverts clean.
+  `compute_vertex_corners` reads each face's three vertices twice -- once
+  through `is_degenerated` and once in its per-corner loop -- and the second
+  read can be dropped, because any corner whose map entry an earlier walk
+  rewrote was also marked visited and is skipped before the read. Analysed,
+  worth about `200K`, not taken.
 - **An encode-side call-count comparison against C++.** Instrumenting every
   `CornerTable` method and comparing exact counts is what produced decode's
   rounds two and three -- the two largest decode wins of the campaign. It has
