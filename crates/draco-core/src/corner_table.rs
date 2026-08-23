@@ -565,14 +565,23 @@ impl CornerTable {
         self.num_degenerated_faces
     }
 
+    /// Whether a face has two corners on the same vertex.
+    ///
+    /// A face's three corners are three consecutive entries of the map, so the
+    /// triple is one chunk: one bound to prove where the three accessors proved
+    /// three, and none of the in-face arithmetic they each carry. Both answers
+    /// a caller can get out of a face past the end are the same one the
+    /// composition gave -- an out-of-range chunk here, three invalid vertices
+    /// there -- and the invalid face lands past the end by being `u32::MAX`.
     pub fn is_degenerated(&self, face: FaceIndex) -> bool {
-        if face == crate::geometry_indices::INVALID_FACE_INDEX {
+        let Some(&[v0, v1, v2]) = self
+            .corner_to_vertex_map
+            .as_chunks::<3>()
+            .0
+            .get(face.0 as usize)
+        else {
             return true;
-        }
-        let c0 = self.first_corner(face);
-        let v0 = self.vertex(c0);
-        let v1 = self.vertex_after(c0);
-        let v2 = self.vertex_before(c0);
+        };
         v0 == v1 || v0 == v2 || v1 == v2
     }
 

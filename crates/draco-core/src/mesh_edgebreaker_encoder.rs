@@ -1821,77 +1821,79 @@ impl MeshEdgebreakerEncoder {
     fn find_holes(&mut self, corner_table: &CornerTable) {
         let num_corners = corner_table.num_corners();
 
-        // Go over all corners and detect non-visited open boundaries
-        for i in 0..num_corners {
-            let corner_i = CornerIndex(i as u32);
-
-            // Skip degenerated faces
-            let face = corner_table.face(corner_i);
-            if face == crate::geometry_indices::INVALID_FACE_INDEX
-                || corner_table.is_degenerated(face)
-            {
+        // Go over all corners and detect non-visited open boundaries.
+        //
+        // Grouped by face rather than walking corners flat: the degeneracy
+        // question is a property of the face, and asked per corner it was
+        // asked three times for the same answer -- each time recovering the
+        // face from the corner and reading all three of its vertices. The
+        // corners are still visited in index order, which is what the
+        // traversal below depends on.
+        for face_id in 0..num_corners / 3 {
+            if corner_table.is_degenerated(FaceIndex(face_id as u32)) {
                 continue;
             }
-
-            // Check if this corner is opposite to a boundary edge
-            if corner_table.opposite(corner_i) == INVALID_CORNER_INDEX {
-                // No opposite corner means no opposite face, so the opposite edge
-                // of the corner is an open boundary.
-                // Check whether we have already traversed the boundary.
-                let boundary_vert_id = corner_table.vertex_after(corner_i);
-                if boundary_vert_id == crate::geometry_indices::INVALID_VERTEX_INDEX {
-                    continue;
-                }
-                let bv = boundary_vert_id.0 as usize;
-                if bv >= self.vertex_hole_id.len() {
-                    continue;
-                }
-                if self.vertex_hole_id[bv] != -1 {
-                    // Already assigned to a hole
-                    continue;
-                }
-
-                // New open boundary found - traverse along it and mark all vertices
-                let boundary_id = self.visited_holes.len() as i32;
-                self.visited_holes.push(false);
-
-                let mut corner_id = corner_i;
-                let mut current_boundary_vert = boundary_vert_id;
-
-                // Safety limit for boundary traversal
-                let max_verts = corner_table.num_vertices();
-                let mut vert_count = 0;
-
-                while self.vertex_hole_id[current_boundary_vert.0 as usize] == -1 {
-                    vert_count += 1;
-                    if vert_count > max_verts {
-                        break; // Safety exit
+            for corner_i in (face_id as u32 * 3..).take(3).map(CornerIndex) {
+                // Check if this corner is opposite to a boundary edge
+                if corner_table.opposite(corner_i) == INVALID_CORNER_INDEX {
+                    // No opposite corner means no opposite face, so the opposite edge
+                    // of the corner is an open boundary.
+                    // Check whether we have already traversed the boundary.
+                    let boundary_vert_id = corner_table.vertex_after(corner_i);
+                    if boundary_vert_id == crate::geometry_indices::INVALID_VERTEX_INDEX {
+                        continue;
+                    }
+                    let bv = boundary_vert_id.0 as usize;
+                    if bv >= self.vertex_hole_id.len() {
+                        continue;
+                    }
+                    if self.vertex_hole_id[bv] != -1 {
+                        // Already assigned to a hole
+                        continue;
                     }
 
-                    // Mark the vertex on the open boundary
-                    self.vertex_hole_id[current_boundary_vert.0 as usize] = boundary_id;
+                    // New open boundary found - traverse along it and mark all vertices
+                    let boundary_id = self.visited_holes.len() as i32;
+                    self.visited_holes.push(false);
 
-                    // Move to next corner on the boundary
-                    corner_id = corner_table.next(corner_id);
+                    let mut corner_id = corner_i;
+                    let mut current_boundary_vert = boundary_vert_id;
 
-                    // Look for the next attached open boundary edge (with safety limit)
-                    let mut inner_iter = 0;
-                    while corner_table.opposite(corner_id) != INVALID_CORNER_INDEX {
-                        corner_id = corner_table.opposite(corner_id);
+                    // Safety limit for boundary traversal
+                    let max_verts = corner_table.num_vertices();
+                    let mut vert_count = 0;
+
+                    while self.vertex_hole_id[current_boundary_vert.0 as usize] == -1 {
+                        vert_count += 1;
+                        if vert_count > max_verts {
+                            break; // Safety exit
+                        }
+
+                        // Mark the vertex on the open boundary
+                        self.vertex_hole_id[current_boundary_vert.0 as usize] = boundary_id;
+
+                        // Move to next corner on the boundary
                         corner_id = corner_table.next(corner_id);
-                        inner_iter += 1;
-                        if inner_iter > max_verts {
+
+                        // Look for the next attached open boundary edge (with safety limit)
+                        let mut inner_iter = 0;
+                        while corner_table.opposite(corner_id) != INVALID_CORNER_INDEX {
+                            corner_id = corner_table.opposite(corner_id);
+                            corner_id = corner_table.next(corner_id);
+                            inner_iter += 1;
+                            if inner_iter > max_verts {
+                                break;
+                            }
+                        }
+
+                        // Get the next vertex on the hole
+                        current_boundary_vert = corner_table.vertex_after(corner_id);
+                        if current_boundary_vert == crate::geometry_indices::INVALID_VERTEX_INDEX {
                             break;
                         }
-                    }
-
-                    // Get the next vertex on the hole
-                    current_boundary_vert = corner_table.vertex_after(corner_id);
-                    if current_boundary_vert == crate::geometry_indices::INVALID_VERTEX_INDEX {
-                        break;
-                    }
-                    if (current_boundary_vert.0 as usize) >= self.vertex_hole_id.len() {
-                        break;
+                        if (current_boundary_vert.0 as usize) >= self.vertex_hole_id.len() {
+                            break;
+                        }
                     }
                 }
             }
