@@ -3074,6 +3074,243 @@ implementations of the same algorithm can differ in how much of their work is
 on that chain, and these two do. The counters available here cannot decompose
 it further, and the honest statement stops there.
 
+### Both Sides Read By File, And The libc Row Retires
+
+The by-file view only existed for one side: the pinned WSL reference was built
+without debug info, so `callgrind_by_file.py` answered `?` for all of it. A
+second build directory with `-O3 -DNDEBUG -g` fixes that and changes nothing
+else -- one decode of the grid at speed 5 costs `9,715,278` instructions
+against the stripped build's `9,715,274`, four apart on nine million, so the
+debug info is provably not an optimization difference. **Both sides can now be
+read by file, which is the reading that survives inlining, and it should be the
+first thing a comparison reaches for.**
+
+The first thing it retires is the largest of the standing decode leads.
+
+**libc `memset`/`memcpy` at `1,045,192` against C++'s `285,642` is not a gap,
+in two independent ways.**
+
+First, the unit. Each of the four largest calls costs almost exactly one
+instruction per byte: `110,610` for a `110,616`-byte fill, `36,879` for a
+`36,872`-byte one. That is `rep stosb`/`rep movsb`, which valgrind counts once
+per iteration -- per *byte* -- while the hardware retires it at tens of bytes a
+cycle. **A byte moved by a `rep` string instruction reads as a whole
+instruction here and costs about a thirtieth of one.** Every `memset` and
+`memcpy` figure in this document is inflated by roughly that factor, and no
+other row is.
+
+Second, the comparison was against the wrong denominator. C++ reaches the same
+work through code that is not libc and does not carry a libc name:
+`bits/stl_uninitialized.h` at `245,010`, `bits/stl_construct.h` at `162,878`
+and `bits/string_fortified.h` at `161,466` -- inlined fill, construct and
+`memcpy_chk`. Counted properly the two sides are:
+
+| | Rust | C++ |
+| --- | ---: | ---: |
+| `memset` | `465,619` | `285,642` |
+| `memcpy` | `200,656` | `434` |
+| inlined fill / construct / copy | -- | `569,354` |
+| **total** | **`666,275`** | **`855,430`** |
+
+**The port already moves fewer bytes than the reference.** The three largest
+fills on our side are each a buffer zeroed and then written in full -- the
+portable attribute's `try_init`, the dequantized target's `try_resize`, and
+`decode_raw_symbols`' chunk `resize` -- and each is worth about `4` instructions
+per element in this metric and about an eighth of one in time. They are not
+worth a round.
+
+This settles the `vec`/`raw_vec` sibling lead in the sense that mattered: what
+those rows hold is not byte movement but per-push capacity checks and `Vec`
+pointer reloads, `271,594` of the `985,172` being one line --
+`RawVecInner::non_null` -- reloading the data pointer.
+
+**`num/uint_macros.rs` at `446,352` is the naming artifact the round before this
+one warned it would be.** Split by inlining parent and then by line: `110,605`
+inside `decode_symbols` is `wrapping_add`, `wrapping_sub` and `wrapping_mul` at
+one execution each per symbol -- the rANS state update, which upstream spells
+the same way -- and `108,908` inside `main` is a single `checked_sub`. There is
+no helper overhead here to remove; there is a loop body wearing a helper's file
+name.
+
+### The Mapping Loop That Derived A Corner It Was Already Holding
+
+With the file view aimed at the decode's own groups rather than at the standard
+library, the largest single concentration of bounds checks turned out not to be
+in the connectivity decoder at all: `451,265` of `slice/index.rs` sat inside
+`decode_attributes`, in the loop that builds the point-to-attribute-value map.
+
+The loop walked faces, and from each face index and corner offset derived a
+corner index -- `144,400` instructions of multiply-and-add, `2.67` a corner --
+then asked three separately bounds-checked questions with it. But corner `c` of
+the mesh **is** entry `c` of the corner table and entry `c` of the flattened
+face list; the derivation was recovering an index the walk already had. Zipping
+the two slices removes the arithmetic and lets the iterator carry the bound that
+each of the three lookups was re-establishing. It also ends at the shorter of
+the two, which is where the derived form stopped anyway -- a corner past the
+table read as the invalid vertex and was skipped.
+
+The stage goes `1,318,602 -> 921,508`. One decode at speed 5:
+
+| payload | before | after | |
+| --- | ---: | ---: | ---: |
+| grid | `11,726,006` | `11,328,910` | `-3.4%` |
+| ribbon | `17,762,200` | `17,334,128` | `-2.4%` |
+| torus | `11,753,809` | `11,361,025` | `-3.3%` |
+| fan | `11,346,788` | `10,977,148` | `-3.3%` |
+
+This is the form the bounds-check nulls kept pointing at: not `get` in place of
+test-then-index, which four rounds have now measured at nothing, but a walk
+whose shape makes the question unnecessary.
+
+### A Face's Degeneracy, Asked Once Instead Of Nine Times
+
+`encode_geometry_data` was a `16.8M` blob where upstream names nine functions,
+and the way in was the one the last handoff predicted: `#[inline(never)]` on
+eleven helpers, for the profile run only. It costs `5.2%` in probe overhead and
+splits the encoder cleanly. The ribbon at speed 5, against the same stages on
+the C++ side:
+
+| stage | Rust | C++ | |
+| --- | ---: | ---: | ---: |
+| `compute_opposite_corners` | `6,289,930` | `5,044,626` | `1.25x` |
+| `break_non_manifold_edges` | `6,163,474` | `5,195,488` | `1.19x` |
+| `compute_vertex_corners` | `4,650,685` | `3,055,125` | `1.52x` |
+| `find_holes` | `3,930,658` | `2,179,402` | **`1.80x`** |
+| `dfs_visit_from_corner_cpp` | `3,590,072` | (inside `EncodeConnectivity`) | |
+
+`find_holes` was the outlier, and its cause was one question asked the wrong
+number of times. `is_degenerated(face)` recovered the three vertices of a face
+through `vertex`, `vertex_after` and `vertex_before` -- three bounds checks and
+two in-face modulos to read three *consecutive* entries of one map -- and
+`find_holes` asked it once per corner, three times per face, for an answer that
+is a property of the face. The triple is a chunk, so one `get` answers it; the
+walk groups by face, which keeps the corner visit order the traversal depends on
+and asks once.
+
+One encode at speed 5:
+
+| payload | before | after | | C++ |
+| --- | ---: | ---: | ---: | ---: |
+| grid | `31,779,263` | `29,940,935` | `-5.8%` | `31,807,856` |
+| ribbon | `46,431,431` | `44,524,718` | `-4.1%` | `43,987,191` |
+| torus | `31,363,522` | `29,610,003` | `-5.6%` | `31,492,561` |
+
+`find_holes` itself goes `3,930,658 -> 2,374,028`, which is `1.09x` of
+upstream's from `1.80x`. Output sizes are unchanged and equal to the
+reference's on all four payloads, which is the check that says two encoders were
+given the same work.
+
+### The Vertex Map's Reach, Without The Branch
+
+`compute_opposite_corners` sizes its half-edge counters from how far the
+corner-to-vertex map reaches, and took that maximum with a test that skipped the
+invalid vertex. The test is what kept the fold scalar. The invalid vertex is
+`u32::MAX`, so `wrapping_add(1)` sends it to zero -- which cannot win a maximum
+unless every entry is invalid, and zero is the answer then as well. Same result,
+one vectorized pass.
+
+One encode at speed 5: grid `-394,287` (`-1.3%`), ribbon `-412,542` (`-0.9%`),
+torus `-469,455` (`-1.6%`).
+
+Where the encode stands, one encode at speed 5, against the same-platform
+`gcc -O3` build:
+
+| payload | Rust | C++ | |
+| --- | ---: | ---: | ---: |
+| grid | `29,582,114` | `31,807,856` | `1.08x` ahead |
+| ribbon | `44,169,588` | `43,987,191` | `1.00x` |
+| torus | `29,148,690` | `31,492,561` | `1.08x` ahead |
+| fan | `27,527,027` | `382,563,233` | `13.9x`, and meaningless |
+
+The fan row is upstream's `O(valence^2)` corner table, restated on the encode
+side and in instructions rather than microseconds. It says nothing about the
+port.
+
+### The KD-Tree Encode, Counted For The First Time
+
+Nothing benchmarked a KD-tree encode, so `pointcloud_drc` is the point-cloud
+shape of `encode_drc`/`decode_drc` -- generated cloud, one operation, an
+iteration count to subtract against -- on both sides, generator included. The
+two agree on the output to the byte, `232,629` for the KD-tree path and `73,244`
+for the sequential one on a `50,000`-point cloud, which is what says they were
+given the same work.
+
+What it found is **not** the six-copies-per-node pattern that gave `-23.4%` on
+the KD-tree *decoder* and which this document has carried as the KD-tree
+encoder's known shape ever since. Those rows cost under `2M` of `102M`. It is
+`partition`, whose two-ended scan reached the axis through a whole point -- a
+range slice, then an index into it -- and whose swap exchanged one component at
+a time, re-proving both ends of the array on every one. The scan reads one
+column, so it indexes the column; the swap exchanges two points, so it splits
+once and swaps the two runs.
+
+`101,615,894 -> 78,446,547`, **`-22.8%`**, output byte-identical -- which is the
+check that counts here, because the permutation `partition` leaves is part of
+the bitstream.
+
+Where the point-cloud paths stand, `50,000` points, one operation:
+
+| | Rust | C++ | |
+| --- | ---: | ---: | ---: |
+| KD-tree encode | `78,446,547` | `69,310,371` | `0.88x` |
+| KD-tree decode | `41,243,515` | `43,113,031` | `1.05x` ahead |
+| sequential encode | `48,403,831` | `53,141,840` | `1.10x` ahead |
+
+The KD-tree encode is the one point-cloud path still behind, by `9.1M`, and
+`slice/index.rs` on our side is `9.34M` against a reference that pays none. Two
+attempts to shrink it further both regressed and are recorded below.
+
+### Three Nulls From The Same Session
+
+- **Hoisting a leaf node's per-axis bit widths out of its point loop:
+  `+4,318,638` on the KD-tree encode (`+5.5%`).** A leaf holds at most two
+  points, so precomputing three widths to use them at most six times costs more
+  than the two lookups it replaces. The shape that wins on a long loop loses on
+  a loop of two.
+- **`zip` plus `mem::swap` in place of `swap_with_slice`: `+3,316,439`
+  (`+4.2%`).** `swap_with_slice` on a run of three `u32` is already better than
+  an element-at-a-time exchange the optimizer has to re-derive.
+- **`filter().count()` in place of two indexed counting loops: `+23,793` to
+  `+99,705` on the encode.** An iterator fold is not automatically the
+  vectorized form; the maximum in the round above vectorized because removing
+  the *branch* made it vectorizable, not because it became an iterator.
+
+### What The Clock Said About All Of It
+
+Same platform, same protocol, base and head interleaved after a warm-up, so a
+drift that hits one hits the other. `us` per operation, eleven rounds:
+
+| | base min / median | head min / median | |
+| --- | ---: | ---: | ---: |
+| decode grid s5, `300` a run | `596` / `614` | `597` / `606` | `-1.3%` median |
+| encode grid s5, `100` a run | `1322` / `1351` | `1237` / `1256` | **`-7.0%` median** |
+
+**The encode's `-6.9%` in instructions is `-7.0%` in time; the decode's `-3.4%`
+is not resolvable at all**, with spreads of `2.8-3.2%` on the encode pair and
+about `4%` on the decode pair. That is the sharpest evidence yet for what the
+round before this one could only assert: the decode's independent work -- index
+arithmetic, bounds checks -- issues in slots its dependent-load chain leaves
+idle, so removing it moves the count and not the clock. The encode has no such
+chain across its scans, and its instructions convert one for one.
+
+**So the two halves need different metrics.** On the encode an instruction count
+is a time estimate. On the decode it is an upper bound on what a change could be
+worth, and a decode round that only moves off-chain work should not be quoted as
+a speedup.
+
+Through the pinned MSVC reference on Windows, `ITERS=120`, five rounds, System
+allocator, above `1.00x` is the port ahead:
+
+| payload | decode 0 | decode 5 | decode 8 | encode 0 | encode 5 | encode 8 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| grid | `1.06x` | `1.24x` | `1.27x` | `1.65x` | `1.68x` | `1.67x` |
+| ribbon | `1.05x` | `1.21x` | `1.29x` | `1.61x` | `1.50x` | `1.54x` |
+| torus | `1.11x` | `1.10x` | `1.15x` | `1.63x` | `1.53x` | `1.54x` |
+| fan | `1.08x` | `1.29x` | `1.31x` | `6.78x` | `17.29x` | `17.77x` |
+
+Speed-0 decode cells carry `18-27%` spreads and are direction only; the fan
+encode column is the reference's quadratic table, not the port.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -3137,20 +3374,44 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   allocator swap masks exactly the cost the memory rounds are removing.
   Take decode clocks under System (accepting its spread), and treat the
   allocation counters as the primary metric for memory changes.
+- **The encoder's three big table-build stages, now that they have names.**
+  The `#[inline(never)]` probe split `encode_geometry_data`, and after
+  `find_holes` was fixed the ribbon leaves three: `compute_opposite_corners`
+  `1.25x`, `break_non_manifold_edges` `1.19x` and `compute_vertex_corners`
+  `1.39x`, together `+3.4M` on `44.5M`. On the encode an instruction is a
+  microsecond, so this is the best-paying target left anywhere. What is
+  underneath, per file: `slice/index.rs` `1.58M` in
+  `break_non_manifold_edges` alone, and `next_in_face`/`prev_in_face` at
+  `1.1M` across the two -- which the "not a target" entry below covers, so
+  the checks are the part worth attacking. Re-apply the probe to split them
+  further; it is eleven lines and reverts clean.
 - **An encode-side call-count comparison against C++.** Instrumenting every
   `CornerTable` method and comparing exact counts is what produced decode's
   rounds two and three -- the two largest decode wins of the campaign. It has
-  never been run on the encoder. The callgrind stand now makes this cheap:
-  an `encode_drc` driver beside the two decode ones, and the same
-  align-by-stage read.
+  never been run on the encoder. The stage split above is the coarse version
+  of it; the per-method counts are still unrun.
 - **The connectivity excesses still standing.** Of the four "Callgrind, Both
   Sides" left, two are closed -- `decode_raw_symbols` and the corner table's
   per-face growth -- and two are not: the symbol loop itself (`3.19M` against
-  `2.25M`) and `mark_vert_not_hole` (`390K`, no separable C++ counterpart).
-  Connectivity as a group is still the whole of the decode gap, and after this
-  session it is `1.50x` on the grid where the attribute half is `1.04x`. Read
-  the conversion caution first: instructions here are worth about half their
-  face value in time.
+  `2.25M`) and `mark_vert_not_hole` (`292K`, and C++ pays `526K` in
+  `stl_bvector.h` for the same table, so this one is the port ahead rather than
+  behind). Connectivity as a group is still the whole of the decode gap. Read
+  the conversion caution first, which is now measured rather than estimated:
+  see "What The Clock Said About All Of It" -- a decode change that only moves
+  off-chain work moved the clock by nothing.
+- **The corner table's per-face append, which is growth rather than bytes.**
+  `try_push_face` extends two vectors by three sentinels a face, and
+  `corner_to_vertex_map`'s three are always overwritten -- every symbol arm
+  writes all three corners of its new face. `opposite_corners`' three are not.
+  Appending the real vertices instead would drop one `extend_from_slice` and
+  three bounds-checked writes a face, about `160K` on the grid; the cost is
+  that the two tables would be deliberately out of step between the push and
+  the arm, and `try_push_face`'s fast path is guarded on exactly that
+  invariant. Analysed, not taken. The pre-sizing alternative -- resize both
+  tables to the already-reserved bound once -- was rejected for a different
+  reason: it trades real instructions for a `rep`-string fill, which is a win
+  in time and a loss in the count, and it makes an input-capped *reservation*
+  resident where today it is only mapped.
 
 ### Known shapes, unmeasured
 
@@ -3163,10 +3424,17 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   5-8. Smaller than what was just removed and no longer one size repeated, so
   the histogram will not answer it as cleanly; the remaining sizes are `32`,
   `16` and `36,864` bytes, at 21, 18 and 16 allocations each on the grid.
-- **The kd-tree encoder still carries the six-copies-per-node pattern** that
-  `edaba23` removed from the kd-tree *decoder* for `-23.4%`. Unchanged since,
-  and still unmeasured, because nothing benchmarks a kd-tree encode -- that
-  harness has to exist first.
+- ~~**The kd-tree encoder still carries the six-copies-per-node pattern**~~ --
+  measured, and the prediction was wrong. `pointcloud_drc` exists on both sides
+  now; those rows cost under `2M` of `102M`, and the encode's cost was
+  `partition`. See "The KD-Tree Encode, Counted For The First Time". What is
+  still open is where it remains behind: **`9.1M` on a `50,000`-point cloud,
+  and `slice/index.rs` on our side is `9.34M` against a reference that pays
+  none.** Two attempts to shrink it further regressed; the untried one is a
+  `dimension == 3` specialization of `partition` and `swap_points`, where the
+  point becomes `[u32; 3]` and the axis index is checked against a constant the
+  loop can hoist. That doubles the code for a case that is almost every case,
+  which is why it was not taken blind.
 - **The three parallel `Vec`s in
   `generate_point_ids_and_corners_dfs_for_table`.** Audited in round four and
   left deliberately; demoted further by the allocator round's decisive fact.
@@ -3315,6 +3583,23 @@ Purpose: point cloud encode/decode performance smoke test.
 
 ```sh
 cargo test --manifest-path crates/Cargo.toml -p draco-core --test bench_point_cloud --release -- --nocapture
+```
+
+### One Point-Cloud Operation, Either Side
+
+Files: `crates/draco-cpp-test-bridge/examples/pointcloud_drc.rs` and
+`crates/draco-cpp-test-bridge/cpp/pointcloud_drc.cpp`
+
+Purpose: the point-cloud shape of `encode_drc`/`decode_drc` -- one operation,
+an iteration count to subtract against under callgrind, and the only harness
+that reaches the KD-tree encoder at all. The cloud is generated rather than
+read (there is no point-cloud corpus here), deterministically from the point
+count, by the same generator on both sides; generation happens outside the
+loop, so the subtraction cancels it. Check the printed byte count matches
+across the two before reading any figure.
+
+```sh
+./pointcloud_drc <encode|decode> <sequential|kdtree> <points> [iters]
 ```
 
 ## Profiling And Micro-Benchmarks

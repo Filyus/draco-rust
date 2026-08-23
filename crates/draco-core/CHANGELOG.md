@@ -20,6 +20,11 @@ premise holds, and the encoder reports the choices it makes for itself.
 
 ### Added
 
+- `Mesh::faces` hands back every face at once, where `Mesh::face` answers for
+  one. For a caller that walks all of them, `as_flattened()` on the result is
+  the mesh's corners in the corner table's own order, so a walk over both can
+  zip two slices instead of deriving a corner index from a face index and
+  re-proving the bound at each of them.
 - `PointCloudEncoder::encoded_point_cloud_info` and `EncodedPointCloudInfo`
   report what a point-cloud encode decided, so the KD-tree-versus-sequential
   choice — which the encoder makes on its own whenever every attribute is
@@ -257,6 +262,25 @@ premise holds, and the encoder reports the choices it makes for itself.
   Nothing about the encoded bytes changes; every one of these is the same
   output computed with less work, and the byte-for-byte parity tests against
   C++ Draco are what says so.
+- Four more rounds of the same, over the mesh encoder, the mesh decoder and the
+  KD-tree point-cloud encoder. A face's degeneracy is read as one chunk of the
+  vertex map instead of through three accessors, and asked once per face rather
+  than once per corner; the pass that sizes the half-edge counters drops the
+  branch that kept it from vectorizing; the decoder's point-to-value mapping
+  walks the corner table and the face list as two slices instead of deriving a
+  corner index it already had; and the KD-tree encoder's `partition` reaches
+  the axis column directly and swaps two points at once rather than one
+  component at a time. One operation at speed 5, instructions: mesh encode
+  `-4.9%` to `-7.1%` across the seeded grid, ribbon and torus, mesh decode
+  `-2.4%` to `-3.4%` across those and the fan, and a KD-tree point-cloud encode
+  `-22.8%`. On a same-platform interleaved clock the encode's `-6.9%` in
+  instructions is `-7.0%` in time.
+
+  Byte-for-byte output again, and on the KD-tree path that is load-bearing
+  rather than reassuring: the permutation `partition` leaves decides the order
+  a leaf writes its remaining bits in, so two partitions agreeing on the split
+  index and not on the order would produce different files carrying the same
+  points.
 - The workspace builds release with `codegen-units = 1` and full LTO. This
   affects the binaries and benchmarks built *from this repository* and nothing
   a consumer gets: a dependency is built under the consuming workspace's own
