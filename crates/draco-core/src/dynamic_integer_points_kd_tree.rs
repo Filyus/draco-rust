@@ -147,6 +147,7 @@ impl PointDVector {
     /// the same classic two-ended scan, reproduced here: skip the leading
     /// elements that already belong, skip the trailing ones that do not, swap
     /// that pair, repeat.
+    ///
     /// Only one column of the point array is ever read here, so the scans reach
     /// it directly rather than through [`point`](Self::point): slicing a whole
     /// point out and then indexing the axis asks two questions where the
