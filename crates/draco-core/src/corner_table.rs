@@ -1124,13 +1124,19 @@ impl CornerTable {
             .resize(self.num_corners(), INVALID_CORNER_INDEX);
 
         // 1. Count outgoing half-edges per vertex.
-        let mut num_vertices_seen = 0;
-        for &v1 in &self.corner_to_vertex_map {
-            if v1 == INVALID_VERTEX_INDEX {
-                continue;
-            }
-            num_vertices_seen = num_vertices_seen.max(v1.0 as usize + 1);
-        }
+        //
+        // How far the map reaches, as a branchless maximum so the pass
+        // vectorizes. The invalid vertex is `u32::MAX`, so `+ 1` wraps it to
+        // zero -- which never wins a maximum unless every entry is invalid,
+        // and zero is the answer then too. That is exactly what skipping the
+        // invalid entries said, without the test that stopped the fold from
+        // being one.
+        let num_vertices_seen = self
+            .corner_to_vertex_map
+            .iter()
+            .map(|v| v.0.wrapping_add(1))
+            .max()
+            .unwrap_or(0) as usize;
 
         let mut num_corners_on_vertices = vec![0; num_vertices_seen];
         for &v1 in &self.corner_to_vertex_map {
