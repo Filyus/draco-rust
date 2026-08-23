@@ -119,14 +119,20 @@ impl PointDVector {
         &mut self.data
     }
 
+    /// Exchanges two points, all components at once.
+    ///
+    /// One split proves the two runs disjoint and both in range; the
+    /// component-at-a-time form re-proved both ends on every component, which
+    /// on the partition below is the single most executed thing in a KD-tree
+    /// encode.
     pub fn swap_points(&mut self, a: usize, b: usize) {
         if a == b {
             return;
         }
         let dim = self.dimension;
-        for i in 0..dim {
-            self.data.swap(a * dim + i, b * dim + i);
-        }
+        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+        let (head, tail) = self.data.split_at_mut(hi * dim);
+        head[lo * dim..][..dim].swap_with_slice(&mut tail[..dim]);
     }
 
     /// Partitions points in `[begin, end)` by `point[axis] < value`.
@@ -141,7 +147,13 @@ impl PointDVector {
     /// the same classic two-ended scan, reproduced here: skip the leading
     /// elements that already belong, skip the trailing ones that do not, swap
     /// that pair, repeat.
+    /// Only one column of the point array is ever read here, so the scans reach
+    /// it directly rather than through [`point`](Self::point): slicing a whole
+    /// point out and then indexing the axis asks two questions where the
+    /// column entry is one, on the comparison this loop executes more often
+    /// than anything else in a KD-tree encode.
     pub fn partition(&mut self, begin: usize, end: usize, axis: usize, value: u32) -> usize {
+        let stride = self.dimension;
         let mut first = begin;
         let mut last = end;
         loop {
@@ -149,7 +161,7 @@ impl PointDVector {
                 if first == last {
                     return first;
                 }
-                if self.point(first)[axis] >= value {
+                if self.data[first * stride + axis] >= value {
                     break;
                 }
                 first += 1;
@@ -160,7 +172,7 @@ impl PointDVector {
                 if first == last {
                     return first;
                 }
-                if self.point(last)[axis] < value {
+                if self.data[last * stride + axis] < value {
                     break;
                 }
             }
