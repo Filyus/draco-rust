@@ -140,6 +140,16 @@ impl Mesh {
         self.faces[face_id.0 as usize]
     }
 
+    /// Every face's point indices, in face order.
+    ///
+    /// For a caller that walks all of them: `as_flattened()` on the result is
+    /// the mesh's corners in the corner table's own order, which lets a walk
+    /// over both zip two slices instead of deriving a corner index from a face
+    /// index and re-proving the bound at each of them.
+    pub fn faces(&self) -> &[Face] {
+        &self.faces
+    }
+
     /// Returns the number of triangle faces.
     pub fn num_faces(&self) -> usize {
         self.faces.len()

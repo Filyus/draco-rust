@@ -1455,29 +1455,32 @@ impl MeshDecoder {
                     let mut point_to_value: Vec<AttributeValueIndex> =
                         vec![crate::geometry_indices::INVALID_ATTRIBUTE_VALUE_INDEX; num_points];
                     if let Some(ct) = corner_table_for_decoder {
-                        // Two checks a corner, not seven. Testing a length and
-                        // then indexing asks the same question twice, and this
-                        // ran three of those pairs plus a repeated read of the
-                        // same `v_map` entry, on every corner of every face.
-                        // Reaching each entry through `get` answers the
-                        // question once and yields the value with it.
-                        for face_id in 0..mesh.num_faces() {
-                            let face = mesh.face(FaceIndex(face_id as u32));
-                            for (corner_offset, point) in face.iter().enumerate() {
-                                let corner = CornerIndex((face_id * 3 + corner_offset) as u32);
-                                let vertex = ct.vertex(corner);
-                                if vertex == INVALID_VERTEX_INDEX {
-                                    continue;
-                                }
-                                let Some(&data_id) = v_map.get(vertex.0 as usize) else {
-                                    continue;
-                                };
-                                if data_id < 0 {
-                                    continue;
-                                }
-                                if let Some(slot) = point_to_value.get_mut(point.0 as usize) {
-                                    *slot = AttributeValueIndex(data_id as u32);
-                                }
+                        // Corner `c` of the mesh is entry `c` of the corner
+                        // table and entry `c` of the flattened face list, so
+                        // the walk is over two slices side by side rather than
+                        // over faces with a corner index derived from each --
+                        // that derivation was a multiply and an add per corner
+                        // and every read behind it re-proved a bound the
+                        // iterator now carries. Zipping also ends at the
+                        // shorter of the two, which is where the derived form
+                        // stopped anyway: a corner past the table read as the
+                        // invalid vertex and was skipped.
+                        for (&vertex, &point) in ct
+                            .corner_to_vertex_map
+                            .iter()
+                            .zip(mesh.faces().as_flattened())
+                        {
+                            if vertex == INVALID_VERTEX_INDEX {
+                                continue;
+                            }
+                            let Some(&data_id) = v_map.get(vertex.0 as usize) else {
+                                continue;
+                            };
+                            if data_id < 0 {
+                                continue;
+                            }
+                            if let Some(slot) = point_to_value.get_mut(point.0 as usize) {
+                                *slot = AttributeValueIndex(data_id as u32);
                             }
                         }
                     } else {
