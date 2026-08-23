@@ -1875,11 +1875,16 @@ impl MeshEdgebreakerEncoder {
                         // Move to next corner on the boundary
                         corner_id = corner_table.next(corner_id);
 
-                        // Look for the next attached open boundary edge (with safety limit)
+                        // Look for the next attached open boundary edge (with safety limit).
+                        // The opposite is asked for once and then used, rather
+                        // than asked for to test and asked for again to step.
                         let mut inner_iter = 0;
-                        while corner_table.opposite(corner_id) != INVALID_CORNER_INDEX {
-                            corner_id = corner_table.opposite(corner_id);
-                            corner_id = corner_table.next(corner_id);
+                        loop {
+                            let opposite = corner_table.opposite(corner_id);
+                            if opposite == INVALID_CORNER_INDEX {
+                                break;
+                            }
+                            corner_id = corner_table.next(opposite);
                             inner_iter += 1;
                             if inner_iter > max_verts {
                                 break;
@@ -1918,9 +1923,14 @@ impl MeshEdgebreakerEncoder {
         // Add safety limit to prevent infinite loops
         let max_iters = corner_table.num_corners();
         let mut iter_count = 0;
-        while corner_table.opposite(corner_id) != INVALID_CORNER_INDEX {
-            corner_id = corner_table.opposite(corner_id);
-            corner_id = corner_table.next(corner_id);
+        // Asked for once and then used, rather than asked for to test and
+        // asked for again to step.
+        loop {
+            let opposite = corner_table.opposite(corner_id);
+            if opposite == INVALID_CORNER_INDEX {
+                break;
+            }
+            corner_id = corner_table.next(opposite);
             iter_count += 1;
             if iter_count > max_iters {
                 // Safety exit - we're stuck in a loop
@@ -1982,9 +1992,12 @@ impl MeshEdgebreakerEncoder {
 
             // Look for the next attached open boundary edge (with safety limit)
             let mut inner_iter = 0;
-            while corner_table.opposite(corner_id) != INVALID_CORNER_INDEX {
-                corner_id = corner_table.opposite(corner_id);
-                corner_id = corner_table.next(corner_id);
+            loop {
+                let opposite = corner_table.opposite(corner_id);
+                if opposite == INVALID_CORNER_INDEX {
+                    break;
+                }
+                corner_id = corner_table.next(opposite);
                 inner_iter += 1;
                 if inner_iter > max_iters {
                     break;

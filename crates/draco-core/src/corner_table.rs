@@ -1086,7 +1086,11 @@ impl CornerTable {
                     }
 
                     // Insert new sink vertex information <sink vertex index, edge corner>.
-                    let key = self.corner_to_vertex_map[self.previous(current_c).0 as usize];
+                    // `edge_corner` is `previous(current_c)`, computed above and
+                    // unchanged since: nothing between the two reassigns the
+                    // corner, and the only writes in between are on the arm that
+                    // leaves the loop.
+                    let key = self.corner_to_vertex_map[edge_corner.0 as usize];
                     let slot = &mut sink_slots[slot_of(key)];
                     if slot.stamp != walk {
                         slot.stamp = walk;
