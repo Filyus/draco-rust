@@ -3361,6 +3361,169 @@ encode column is the reference's quadratic table, not the port, and is the one
 row not re-taken after the last round. Encode spreads are `0.6-7.4%` and byte
 counts match the reference in every cell.
 
+### The Decode's Turn: Five Calls The Inliner Was Pricing Wrong
+
+The reference is pinned on the machine that measures it this time: upstream
+1.5.7 built from source beside the port, `gcc -O3 -DNDEBUG -g`, both drivers
+built against it, both checked to decode to the same point and face counts
+before a number was read. Ratios below are against that build; nothing here is
+against the MSVC one, and the two are not interchangeable.
+
+Where decode stood at the start, one decode of the seeded grid at speed 5:
+`11,378,868` instructions against `9,850,737`, `1.15x`. At speed 0:
+`26,126,917` against `21,024,211`, `1.24x`. On the clock the port was already
+ahead everywhere -- `1.16-1.30x` at speeds 5 and 8 -- but speed 0 sat at
+`1.03-1.05x` on grid, torus and fan, which is where a decode round should
+start and where the counter agreed something was wrong.
+
+**Four of the five rounds are the same finding: a small function the inliner
+declined because of prose it would never execute.** Rust builds the message at
+the call site -- `format!` is an argument struct and a formatting call, and
+`"literal".to_string()` is an allocation and a copy -- so a function whose live
+body is three stores is priced as though it were forty. `DracoError::new` has
+been `#[cold] #[inline(never)]` for some time and that is not enough on its
+own: what needs outlining is the *construction of the message*, one layer up.
+
+- **The traversal observers** (`c2f1477`). Both attribute traversals record a
+  visited vertex through a closure, and both were emitted as real calls: `17`
+  instructions of prologue and epilogue per vertex on a closure taking six or
+  seven arguments. One `#[cold] #[inline(never)]` helper for the test-log arm
+  they share, and the prediction-degree one inlines. Speed 0 `-6.0` to
+  `-8.3%`; speed 5 `-0.5%`.
+- **The depth-first observer** (`6e95bff`) needed one thing more, because its
+  two `Vec::push`es carry the reallocation path whether or not the capacity is
+  there. `visited_vertices` gates the observer to one call per vertex and is
+  the vertex count long, so both arrays are sized to it and written by index,
+  with a `truncate` at the end for the walk that reaches fewer. Speed 5 `-1.8`
+  to `-2.6%`, and speed 0 -- which runs the other traverser -- moved by `11`
+  instructions, which is the control.
+- **`mark_vert_not_hole`** (`8d78890`): a sentinel test, a bounds test and a
+  store, called `8,836` times a decode and emitted as a call at `33`
+  instructions each. Its `format!` sat two layers down, inside `vertex_index`.
+  Speed 0 `-1.1` to `-1.4%`, speed 5 `-1.8%` on three payloads and `+3` on the
+  ribbon, which never reaches the call: a boundary ribbon leaves every vertex a
+  hole vertex, and a call-count profile of that payload lists no callee at all
+  above fifty calls.
+- **The active-corner stack's three accessors** (`f49a852`), each a `last`/`pop`
+  behind an `ok_or_else` with its own `format!`. One shared cold constructor.
+  All eight cells negative, `-0.24` to `-0.50%`.
+
+The fifth round is the constrained multi-parallelogram predictor (`e8e5da8`),
+which is `40%` of a speed-0 decode -- `9,524,649` against the reference's
+`7,755,480` -- and where the excess was the shape of its questions:
+
+- **Six data-dependent branches asking one question.** Are all three
+  neighbours of the opposite corner decoded, and decoded before this entry:
+  three tests against `-1` and three against `data_id`. `-1` is the only value
+  the map holds for "not decoded", and read as a `u32` it is past every data
+  id, so `x >= 0 && x < data_id` is exactly `(x as u32) < data_id as u32` and
+  the largest of the three answers for all three. Two maxima and a comparison,
+  all `cmov`, where six branches on decoded data had no pattern to learn. The
+  reading needs `data_id` to fit in a `u32`, which is now checked once above
+  the loop.
+- Three ids the qualifying pass proved non-negative and the prediction pass
+  re-tested: held as `u32` now, so the test is gone by typing.
+- Three range tests where the widest offset decides: one `max`.
+- The crease-edge context is the parallelogram count, fixed for an entry, so
+  the flag row and the position in it are read once rather than re-indexed per
+  parallelogram.
+- Two fills that a copy immediately overwrote, replaced by `copy_from_slice`.
+
+Speed 0 `-4.1` to `-6.0%`; speed 5 unchanged, which is the control -- that
+predictor is speed 0's, and speed 5 runs the plain parallelogram.
+
+**Where the five rounds land.** One decode, callgrind, against the
+same-platform `gcc -O3` build:
+
+| payload | speed 0 start | now | | speed 5 start | now | |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| grid | `26,126,917` | `22,587,690` | `-13.5%` | `11,378,868` | `10,856,829` | `-4.6%` |
+| ribbon | `28,292,777` | `24,673,626` | `-12.8%` | `17,394,656` | `16,772,010` | `-3.6%` |
+| torus | `26,290,727` | `22,804,596` | `-13.3%` | `11,411,610` | `10,898,729` | `-4.5%` |
+| fan | `23,657,640` | `20,175,463` | `-14.7%` | `11,022,277` | `10,534,991` | `-4.4%` |
+
+The grid's instruction ratio goes `1.24x -> 1.07x` at speed 0 and
+`1.15x -> 1.10x` at speed 5.
+
+**And this time the counted win converts, which is the round's other finding.**
+Base and head interleaved, four rounds of `150` decodes each, minima:
+
+| payload | speed 0 counted | clocked | speed 5 counted | clocked |
+| --- | ---: | ---: | ---: | ---: |
+| grid | `-13.5%` | `-10.4%` | `-4.6%` | `-2.8%` |
+| ribbon | `-12.8%` | `-12.2%` | `-3.6%` | `-0.1%` |
+| torus | `-13.3%` | `-10.0%` | `-4.5%` | `-2.4%` |
+| fan | `-14.7%` | `-14.5%` | `-4.4%` | `-2.3%` |
+
+All sixteen speed-0 per-round differences are negative and fourteen of sixteen
+at speed 5. **That does not overturn the standing lesson that a decode's
+instruction count is an upper bound on time -- it says which instructions.**
+What came off here is call prologue and epilogue: argument marshalling, stack
+traffic, a return through memory. That is on the critical path in a way a
+predicted bounds check off the dependent-load chain is not, and the two convert
+at completely different rates. A decode round that removes calls can be quoted
+as a speedup; one that removes index arithmetic still cannot.
+
+Against the same reference on the clock, minima of three runs of `150`
+decodes, above `1.00x` is the port ahead:
+
+| payload | speed 0 | speed 5 | speed 8 |
+| --- | ---: | ---: | ---: |
+| grid | `1.16x` | `1.24x` | `1.27x` |
+| ribbon | `1.36x` | `1.30x` | `1.38x` |
+| torus | `1.20x` | `1.10x` | `1.22x` |
+| fan | `1.22x` | `1.29x` | `1.31x` |
+
+Every cell is ahead, and the speed-0 column -- `1.03-1.05x` on three of four
+payloads when the session started -- is the one that moved.
+
+Decoded output was checked byte-for-byte after every round, not just
+`cargo test`: `examples/dump_decoded.rs` writes every face and every attribute
+value in decode order, and each round's twelve seeded payloads and 33
+`testdata` `.drc` files were `cmp`-ed against the same dump from its parent
+commit.
+
+#### Two nulls and a retraction from the same session
+
+- **Pre-sizing the prediction-degree traverser's output arrays** the way the
+  depth-first one was pre-sized: `+79,949` on the grid, `+134,255` on the
+  torus, `+121,878` on the fan, `-72,560` on the ribbon. The grid figure is
+  `9,216` vertices times the eight bytes of the two arrays -- exactly the fill.
+  That observer already inlines after the cold-arm round, so there was no
+  inlining to buy and only the fill to pay. **A `push` into capacity that is
+  already there costs about what the indexed write replacing it costs; what is
+  worth removing is an inlining barrier, not the bookkeeping.**
+- **Filling the corner table once instead of per face**, the standing lead
+  against upstream's `CornerTable::Reset`, is on branch
+  `reject/corner-table-prefill` with its measurements. It does what it was
+  designed to do -- `reconstruct_mesh` goes `3,282,659 -> 2,840,727`, the
+  per-face capacity tests and `Vec` bookkeeping gone -- and the whole-decode
+  count does not move, because `memset` goes up by `433,226`, which is `18,050`
+  faces times the `24` bytes of the two tables to the byte. Callgrind counts a
+  `rep stosb` once per byte; in time that fill is about `13.5K` cycles against
+  a decode of some three million, so the work genuinely came off. The clock
+  cannot see it either: five of eight rounds negative at speed 5 with the
+  base-to-base floor moving as much. A real reduction in work, no measurable
+  benefit, and it buys a window in which `num_corners()` reports the filled
+  bound rather than the faces built -- an argument that has to be made
+  carefully, on the malformed-input path. Not worth it for nothing.
+- **Retracted: "our decode mispredicts branches `1.89x` as often as the
+  reference".** It does not. That ratio came from a plain release build of the
+  port against the reference's `-g` build; taken on two builds carrying debug
+  info it is `18,617` against `19,539`, `0.95x`, and the port is ahead.
+  **Callgrind's branch predictor is indexed by branch address, so `Bcm` is
+  layout-sensitive in a way `Ir` is not** -- two builds of identical source
+  read `36,876` and `18,617` on the same input. Compare `Bcm` only between
+  builds made the same way, and prefer `Ir`, which does not move.
+
+On the same matched pair the counters that do compare are, per decode of the
+grid at speed 5 and before the last two rounds: instructions `1.13x`, data
+reads `1.35x`, data writes `1.22x`, D1 read misses `1.36x`, last-level misses
+`1.05x`. A third of all our data reads are `raw_vec`, `vec` and `slice/index`
+-- `Vec` header reloads and the length loads bounds checks make -- against a
+reference whose `IndexTypeVector` does the same thing through
+`stl_vector.h`. That is the shape of what is left.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -3503,6 +3666,21 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   different index spaces (`vertex_to_data_map` is per-vertex, the others
   per-entry), so the fold is smaller than the catalogue entry assumed. Do
   not spend the refactor without a measurement naming these allocations.
+- **A third of the decode's data reads are `Vec` headers and bounds-check
+  lengths.** Per decode of the seeded grid at speed 5, on the matched debug
+  pair: `raw_vec/mod.rs` `353,508` reads, `slice/index.rs` `308,952`,
+  `vec/mod.rs` `272,203` -- against a reference reaching the same tables
+  through `stl_vector.h`. The concentration is `reconstruct_mesh`, at `965,033`
+  reads against `DecodeConnectivity`'s `517,473`, and the cause is that every
+  corner-table accessor reloads the map's data pointer and length from
+  `self.corner_table` because the loop writes through the table in between.
+  The read-only walks -- the traversals and the predictors -- could hold the
+  two maps as local slices for their duration and are already ahead of the
+  reference, so the win is in the mutating loop, where a local slice cannot be
+  held. The shape that would work there is `mem::take`-ing the maps out of
+  `self` for the loop and passing them as slices to free functions, which is a
+  rewrite of a 350-line loop; price it against the fact that the last two
+  structural rounds on this loop both measured to nothing on the clock.
 
 ### Decisions, not measurements
 
@@ -3658,6 +3836,25 @@ across the two before reading any figure.
 
 ```sh
 ./pointcloud_drc <encode|decode> <sequential|kdtree> <points> [iters]
+```
+
+### What A Decode Actually Produced
+
+File: `crates/draco-cpp-test-bridge/examples/dump_decoded.rs`
+
+Package: `draco-cpp-test-bridge`
+
+Purpose: decode a `.drc` and write every face and every attribute value, in
+decode order, as bytes -- so "the output did not change" is one `cmp` between
+two builds rather than an argument about which tests would have caught it. The
+counterpart of `decode_drc.rs`, which reports only a point and face count, and a
+count is not the output: a prediction round that got the arithmetic wrong on
+one component of one entry still decodes the same number of points. Every
+optimization round should run it over the seeded payloads and `testdata/*.drc`
+against its parent commit.
+
+```sh
+cargo run --release --manifest-path crates/Cargo.toml   -p draco-cpp-test-bridge --example dump_decoded -- grid_s5.drc out.bin
 ```
 
 ## Profiling And Micro-Benchmarks

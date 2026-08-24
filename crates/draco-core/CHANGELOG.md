@@ -284,6 +284,40 @@ premise holds, and the encoder reports the choices it makes for itself.
   a leaf writes its remaining bits in, so two partitions agreeing on the split
   index and not on the order would produce different files carrying the same
   points.
+- The mesh decoder's turn, and five rounds of it. Four are the same finding:
+  a small function an inliner declined because of prose it would never run.
+  Rust builds an error message at the call site -- `format!` is an argument
+  struct and a formatting call -- so a function whose live body is three stores
+  was priced as though it were forty and emitted as a real call. Both attribute
+  traversals' per-vertex observers, `mark_vert_not_hole` at `8,836` calls a
+  decode, and the three active-corner-stack accessors now build their messages
+  through `#[cold] #[inline(never)]` constructors and inline into the walks
+  that use them; the depth-first observer also writes its two output arrays by
+  index instead of pushing, since a `push` carries a reallocation path an
+  inliner prices whether or not the capacity is there. The fifth round is the
+  constrained multi-parallelogram predictor, `40%` of a speed-0 decode, where
+  the qualifying test's six data-dependent branches collapse into two unsigned
+  maxima and one comparison, three range tests into one, and two fills that a
+  copy overwrote into `copy_from_slice`.
+
+  One decode, instructions under callgrind against a same-platform `gcc -O3`
+  build of upstream 1.5.7: `-12.8%` to `-14.7%` at speed 0 and `-3.6%` to
+  `-4.6%` at speed 5, across the seeded grid, ribbon, torus and fan. **This
+  one converts** -- base and head interleaved, four rounds of `150` decodes,
+  minima: `-10.0%` to `-14.5%` at speed 0 and `-2.3%` to `-2.8%` at speed 5,
+  with every speed-0 per-round difference negative. Removing a call takes
+  argument marshalling and stack traffic off the critical path, where removing
+  index arithmetic from a chain of dependent loads takes nothing off it; the
+  decode had only ever measured the second kind before. Against the same
+  reference on the clock the decode is now `1.10x` to `1.38x` ahead on all
+  twelve payload-and-speed cells, with the speed-0 column -- three of four
+  payloads within `5%` of the reference before these rounds -- the one that
+  moved.
+
+  Decoded output is byte-identical, checked per round rather than inferred from
+  the test suite: every seeded payload at speeds 0, 5 and 8 and all 33 `.drc`
+  files in `testdata`, dumped face-by-face and value-by-value and compared
+  against the same dump from the parent commit.
 - The workspace builds release with `codegen-units = 1` and full LTO. This
   affects the binaries and benchmarks built *from this repository* and nothing
   a consumer gets: a dependency is built under the consuming workspace's own
