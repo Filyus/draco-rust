@@ -272,6 +272,7 @@ impl PointAttribute {
     ///
     /// Used by decoder paths where the count comes from the bitstream and the
     /// value payload has not been validated yet.
+    #[cfg(feature = "decoder")]
     pub(crate) fn init_deferred(
         &mut self,
         attribute_type: GeometryAttributeType,

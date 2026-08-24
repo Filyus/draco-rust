@@ -8,10 +8,10 @@
 use crate::corner_table::CornerTable;
 use crate::draco_types::DataType;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
-use crate::geometry_indices::{CornerIndex, PointIndex, VertexIndex, INVALID_CORNER_INDEX};
+use crate::geometry_indices::{CornerIndex, PointIndex, INVALID_CORNER_INDEX};
 
 #[cfg(feature = "decoder")]
-use crate::geometry_indices::INVALID_ATTRIBUTE_VALUE_INDEX;
+use crate::geometry_indices::{VertexIndex, INVALID_ATTRIBUTE_VALUE_INDEX};
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;
 use crate::normal_compression_utils::OctahedronToolBox;
 use crate::prediction_scheme::{
