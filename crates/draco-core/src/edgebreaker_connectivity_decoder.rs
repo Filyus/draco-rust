@@ -130,10 +130,21 @@ impl EdgebreakerConnectivityDecoder {
         let mut num_faces = 0;
 
         // One allocation for the table instead of a realloc every time it
-        // doubles. How many faces are worth reserving for is the caller's
-        // decision: it holds the header's face count and the size of what is
-        // left in the buffer, and hands over whichever is smaller.
-        self.corner_table.try_reserve_faces(input_face_bound)?;
+        // doubles, and one fill instead of one per face. How many faces are
+        // worth this is the caller's decision: it holds the header's face count
+        // and the size of what is left in the buffer, and hands over whichever
+        // is smaller. Filling that bound writes no entry the face-at-a-time
+        // append would not have written -- the loop below builds exactly
+        // `declared_num_faces` faces or fails -- and it leaves the appends'
+        // per-face capacity test, pointer reload and length update out.
+        //
+        // Past this point the table is longer than the faces built so far, and
+        // the one thing that reads differently is `num_corners()`: every
+        // accessor answers the invalid sentinel for a corner of an unbuilt
+        // face, which is what it answered when that corner was past the end.
+        // The truncation after the loop puts the count back.
+        self.corner_table.try_fill_faces(input_face_bound)?;
+        let filled_faces = input_face_bound;
         // vertex_corners grows by one element per newly discovered vertex
         // (set_left_most_corner's resize), unlike the other two tables above,
         // which is why it needs its own reservation rather than falling out of
@@ -163,12 +174,14 @@ impl EdgebreakerConnectivityDecoder {
             num_faces += 1;
             // Faces are created strictly in order, and every corner written
             // below belongs either to this face or to one already built, so
-            // growing a face at a time always suffices. The table starts
-            // empty and these are the only two places its length grows, so
-            // its end is always this face's first corner -- which is what
-            // lets the push form skip rederiving that from the face index.
-            self.corner_table
-                .try_push_face(self.declared_num_faces.max(0) as usize)?;
+            // growing a face at a time always suffices -- and the fill above
+            // has already covered every face the buffer could describe, so
+            // this arm is what a face count capped by the stream size leaves
+            // over, not the common path.
+            if num_faces as usize > filled_faces {
+                self.corner_table
+                    .try_push_face(self.declared_num_faces.max(0) as usize)?;
+            }
 
             let mut check_topology_split = false;
             let symbol = traversal_decoder.decode_symbol()?;
@@ -461,8 +474,12 @@ impl EdgebreakerConnectivityDecoder {
 
                 let face = FaceIndex(num_faces as u32);
                 num_faces += 1;
-                self.corner_table
-                    .try_push_face(self.declared_num_faces.max(0) as usize)?;
+                // As in the symbol loop: the fill covers this face unless the
+                // stream-size cap fell short of the declared count.
+                if num_faces as usize > filled_faces {
+                    self.corner_table
+                        .try_push_face(self.declared_num_faces.max(0) as usize)?;
+                }
                 let new_corner = CornerIndex(3 * face.0);
                 self.set_opposite_corners(new_corner, corner_a)?;
                 self.set_opposite_corners(new_corner + 1, corner_b)?;
@@ -491,6 +508,14 @@ impl EdgebreakerConnectivityDecoder {
                 "Unexpected number of faces at end".to_string(),
             ));
         }
+
+        // The fill above ran to a bound that can exceed what was built, so put
+        // `num_corners()` back to the faces that exist before anything outside
+        // this decode reads the table. In the ordinary case the two are equal
+        // and this does nothing: the bound is the declared count capped by the
+        // stream size, and the loop just checked that exactly the declared
+        // count was built.
+        self.corner_table.truncate_to_faces(num_faces.max(0) as usize);
 
         // Give the table its full extent now that the real vertex count is
         // known. Callers index it by vertex and treat a missing entry as a

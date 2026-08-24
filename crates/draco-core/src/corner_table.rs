@@ -321,6 +321,50 @@ impl CornerTable {
         })
     }
 
+    /// Makes `faces` faces addressable in one step, filled with the sentinels
+    /// a face carries before anything is written into it.
+    ///
+    /// The step-at-a-time entry points below are what a caller wants when it
+    /// does not know how many faces are coming. EdgeBreaker connectivity decode
+    /// does: the header's face count, already capped by the caller against what
+    /// the remaining bytes could describe. Taking it in one step is what
+    /// upstream's `CornerTable::Reset` does, and the difference is not the bytes
+    /// -- the same entries are written either way -- but the `47` instructions a
+    /// face that two `Vec` appends cost around them: a capacity test each, a
+    /// reload of each `Vec`'s data pointer, and a length update each, `18,050`
+    /// times on a grid where one `resize` covers the lot.
+    ///
+    /// **What it changes for a caller is [`num_corners`](Self::num_corners),
+    /// and nothing else.** Every accessor reads a corner past the built region
+    /// as the invalid sentinel, which is exactly what it read when that corner
+    /// was past the end of the table -- `get` answering `None` and the sentinel
+    /// being stored are the same answer. So a caller that fills in order sees
+    /// unchanged behaviour from every accessor, and a larger count from
+    /// `num_corners()` until it calls [`truncate_to_faces`](Self::truncate_to_faces).
+    pub fn try_fill_faces(&mut self, faces: usize) -> Result<(), crate::status::DracoError> {
+        let Some(num_corners) = faces.checked_mul(3) else {
+            return Ok(());
+        };
+        if num_corners <= self.corner_to_vertex_map.len() {
+            return Ok(());
+        }
+        self.try_grow_to_corners(num_corners, faces)
+    }
+
+    /// Cuts the corner storage back to `faces`, the counterpart of
+    /// [`try_fill_faces`](Self::try_fill_faces).
+    ///
+    /// A caller that pre-filled ends here, so that `num_corners()` and the two
+    /// maps describe the faces that were actually built and nothing else. It
+    /// never grows: a table already shorter than `faces` is left alone.
+    pub fn truncate_to_faces(&mut self, faces: usize) {
+        let Some(num_corners) = faces.checked_mul(3) else {
+            return;
+        };
+        self.corner_to_vertex_map.truncate(num_corners);
+        self.opposite_corners.truncate(num_corners);
+    }
+
     /// `declared_faces` is the face count the bitstream claims. It is only a
     /// growth target, never an allocation: when growth past the current
     /// capacity is needed, the new capacity is the smaller of doubling and the
