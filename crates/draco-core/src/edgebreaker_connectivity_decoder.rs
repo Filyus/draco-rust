@@ -608,12 +608,27 @@ impl EdgebreakerConnectivityDecoder {
             .ok_or_else(|| DracoError::general(format!("active_corner_stack empty in {context}")))
     }
 
+    /// The refusal [`vertex_index`](Self::vertex_index) hands back, out of
+    /// line.
+    ///
+    /// `DracoError::new` is already cold, but the `format!` that feeds it is
+    /// not: the argument struct and the formatting call are built at the call
+    /// site. That put them inside `vertex_index`, inside `mark_vert_not_hole`,
+    /// which is a bounds test and a store called `8,836` times a decode -- and
+    /// large enough, so priced, that it was emitted as a real call at `33`
+    /// instructions each where the work is about ten.
+    #[cold]
+    #[inline(never)]
+    fn invalid_vertex(vertex: VertexIndex, context: &str) -> DracoError {
+        DracoError::general(format!(
+            "Invalid vertex {} while decoding {context}",
+            vertex.0
+        ))
+    }
+
     fn vertex_index(&self, vertex: VertexIndex, context: &str) -> Result<usize, DracoError> {
         if vertex == INVALID_VERTEX_INDEX || vertex.0 as usize >= self.max_num_vertices {
-            return Err(DracoError::general(format!(
-                "Invalid vertex {} while decoding {context}",
-                vertex.0
-            )));
+            return Err(Self::invalid_vertex(vertex, context));
         }
         Ok(vertex.0 as usize)
     }
