@@ -365,7 +365,7 @@ fn mesh_input_to_core_mesh(input: &MeshInput) -> Result<Mesh, String> {
     mesh.add_attribute(positions);
 
     mesh.set_num_faces(input.indices.len() / 3);
-    for (index, chunk) in input.indices.chunks_exact(3).enumerate() {
+    for (index, chunk) in input.indices.as_chunks::<3>().0.iter().enumerate() {
         mesh.set_face(
             FaceIndex(index as u32),
             [
@@ -422,7 +422,12 @@ mod tests {
             assert_eq!(&mesh.positions[..3], &[0.0, 0.0, 0.0], "{format}");
             // Both triangles face +Z, and the normal reaches every corner.
             assert_eq!(mesh.normals.len(), 18, "{format}");
-            assert!(mesh.normals.chunks_exact(3).all(|n| n == [0.0, 0.0, 1.0]));
+            assert!(mesh
+                .normals
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .all(|n| *n == [0.0, 0.0, 1.0]));
         }
     }
 

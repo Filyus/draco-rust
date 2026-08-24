@@ -145,7 +145,7 @@ impl Ktx2File {
             let Ok(data) = file.level_bytes(level) else {
                 continue;
             };
-            for block in data.chunks_exact(16) {
+            for block in data.as_chunks::<16>().0 {
                 counts[draco_texture::uastc::mode_of(block) as usize] += 1;
             }
         }

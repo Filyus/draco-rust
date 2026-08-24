@@ -783,7 +783,7 @@ fn mesh_input_to_core_mesh(input: &MeshInput, options: &ExportOptions) -> Result
     }
 
     mesh.set_num_faces(input.indices.len() / 3);
-    for (i, chunk) in input.indices.chunks_exact(3).enumerate() {
+    for (i, chunk) in input.indices.as_chunks::<3>().0.iter().enumerate() {
         mesh.set_face(
             FaceIndex(i as u32),
             [

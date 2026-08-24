@@ -1002,7 +1002,7 @@ fn mesh_input_to_core_mesh(
     }
 
     mesh.set_num_faces(input.indices.len() / 3);
-    for (index, chunk) in input.indices.chunks_exact(3).enumerate() {
+    for (index, chunk) in input.indices.as_chunks::<3>().0.iter().enumerate() {
         mesh.set_face(
             FaceIndex(index as u32),
             [
@@ -1171,10 +1171,7 @@ mod tests {
         let colors = &parsed.meshes[0].colors;
         assert_eq!(colors.len(), 16);
         // Draco renumbers the points, so the colours come back as a set.
-        let mut seen: Vec<[u8; 4]> = colors
-            .chunks_exact(4)
-            .map(|c| [c[0], c[1], c[2], c[3]])
-            .collect();
+        let mut seen: Vec<[u8; 4]> = colors.as_chunks::<4>().0.to_vec();
         seen.sort_unstable();
         assert_eq!(
             seen,

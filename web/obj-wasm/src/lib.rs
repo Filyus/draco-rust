@@ -511,7 +511,7 @@ fn create_obj_multi_internal(meshes: &[MeshInput], options: &ExportOptions) -> E
 
         // Write vertices
         let vertex_count = mesh.positions.len() / 3;
-        for position in mesh.positions.chunks_exact(3).take(vertex_count) {
+        for position in mesh.positions.as_chunks::<3>().0.iter().take(vertex_count) {
             let _ = writeln!(
                 output,
                 "v {:.*} {:.*} {:.*}",
@@ -525,7 +525,7 @@ fn create_obj_multi_internal(meshes: &[MeshInput], options: &ExportOptions) -> E
             if let Some(ref normals) = mesh.normals {
                 if !normals.is_empty() {
                     has_normals = true;
-                    for normal in normals.chunks_exact(3) {
+                    for normal in normals.as_chunks::<3>().0 {
                         let _ = writeln!(
                             output,
                             "vn {:.*} {:.*} {:.*}",
@@ -542,7 +542,7 @@ fn create_obj_multi_internal(meshes: &[MeshInput], options: &ExportOptions) -> E
             if let Some(ref uvs) = mesh.uvs {
                 if !uvs.is_empty() {
                     has_uvs = true;
-                    for uv in uvs.chunks_exact(2) {
+                    for uv in uvs.as_chunks::<2>().0 {
                         let _ =
                             writeln!(output, "vt {:.*} {:.*}", precision, uv[0], precision, uv[1]);
                     }
@@ -551,8 +551,8 @@ fn create_obj_multi_internal(meshes: &[MeshInput], options: &ExportOptions) -> E
         }
 
         // Write faces
-        for face in mesh.indices.chunks_exact(3) {
-            let [a, b, c] = [face[0], face[1], face[2]];
+        for face in mesh.indices.as_chunks::<3>().0 {
+            let [a, b, c] = *face;
             let (i0, i1, i2) = (
                 a + vertex_offset + 1,
                 b + vertex_offset + 1,

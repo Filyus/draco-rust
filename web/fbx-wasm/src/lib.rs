@@ -2644,11 +2644,7 @@ fn tangent_output_to_fbx(set: &TangentSetOutput) -> draco_io::FbxTangentSet {
             name: set.name.clone(),
             mapping: set.mapping.clone(),
             reference: set.reference.clone(),
-            values: set
-                .values
-                .chunks_exact(4)
-                .map(|v| [v[0], v[1], v[2], v[3]])
-                .collect(),
+            values: set.values.as_chunks::<4>().0.to_vec(),
             indices: set.indices.clone(),
         },
         has_handedness: set.has_handedness,
@@ -2664,9 +2660,9 @@ fn mesh_input_to_instance(mesh: &MeshInput, index: usize) -> Result<FbxMeshInsta
             .control_points
             .as_deref()
             .unwrap_or(&[])
-            .chunks_exact(3)
-            .map(|value| [value[0], value[1], value[2]])
-            .collect(),
+            .as_chunks::<3>()
+            .0
+            .to_vec(),
         polygon_vertex_indices: mesh.polygon_vertex_indices.clone().unwrap_or_default(),
         edges: mesh.edges.clone(),
         layers: draco_io::FbxMeshLayers {
@@ -2708,11 +2704,7 @@ fn mesh_input_to_instance(mesh: &MeshInput, index: usize) -> Result<FbxMeshInsta
                     name: set.name.clone(),
                     mapping: set.mapping.clone(),
                     reference: set.reference.clone(),
-                    values: set
-                        .values
-                        .chunks_exact(2)
-                        .map(|value| [value[0], value[1]])
-                        .collect(),
+                    values: set.values.as_chunks::<2>().0.to_vec(),
                     indices: set.indices.clone(),
                 })
                 .collect(),
@@ -2723,11 +2715,7 @@ fn mesh_input_to_instance(mesh: &MeshInput, index: usize) -> Result<FbxMeshInsta
                     name: set.name.clone(),
                     mapping: set.mapping.clone(),
                     reference: set.reference.clone(),
-                    values: set
-                        .values
-                        .chunks_exact(4)
-                        .map(|value| [value[0], value[1], value[2], value[3]])
-                        .collect(),
+                    values: set.values.as_chunks::<4>().0.to_vec(),
                     indices: set.indices.clone(),
                 })
                 .collect(),
@@ -2738,11 +2726,7 @@ fn mesh_input_to_instance(mesh: &MeshInput, index: usize) -> Result<FbxMeshInsta
                     name: set.name.clone(),
                     mapping: set.mapping.clone(),
                     reference: set.reference.clone(),
-                    values: set
-                        .values
-                        .chunks_exact(3)
-                        .map(|value| [value[0], value[1], value[2]])
-                        .collect(),
+                    values: set.values.as_chunks::<3>().0.to_vec(),
                     indices: set.indices.clone(),
                 })
                 .collect(),
@@ -2814,12 +2798,9 @@ fn morph_target_input_to_fbx(input: &MorphTargetInput) -> Result<draco_io::FbxMo
         return Err("FBX morph position deltas must be a vec3 per control point".to_string());
     }
     let normal_deltas = match &input.normal_deltas {
-        Some(values) if values.len() == input.control_point_indices.len() * 3 => Some(
-            values
-                .chunks_exact(3)
-                .map(|values| [values[0], values[1], values[2]])
-                .collect(),
-        ),
+        Some(values) if values.len() == input.control_point_indices.len() * 3 => {
+            Some(values.as_chunks::<3>().0.to_vec())
+        }
         Some(_) => {
             return Err("FBX morph normal deltas must be a vec3 per control point".to_string())
         }
@@ -2828,11 +2809,7 @@ fn morph_target_input_to_fbx(input: &MorphTargetInput) -> Result<draco_io::FbxMo
     Ok(draco_io::FbxMorphTarget {
         name: input.name.clone(),
         control_point_indices: input.control_point_indices.clone(),
-        position_deltas: input
-            .position_deltas
-            .chunks_exact(3)
-            .map(|values| [values[0], values[1], values[2]])
-            .collect(),
+        position_deltas: input.position_deltas.as_chunks::<3>().0.to_vec(),
         normal_deltas,
         default_weight: input.default_weight,
         full_weight: input.full_weight,
@@ -2953,7 +2930,7 @@ fn mesh_input_to_core_mesh(input: &MeshInput) -> Result<Mesh, String> {
         }
     }
     mesh.set_num_faces(input.indices.len() / 3);
-    for (index, face) in input.indices.chunks_exact(3).enumerate() {
+    for (index, face) in input.indices.as_chunks::<3>().0.iter().enumerate() {
         if face.iter().any(|&point| point as usize >= point_count) {
             return Err("FBX mesh index is outside its position array".to_string());
         }
@@ -3176,7 +3153,7 @@ mod reader_tests {
             false,
             point_count,
         );
-        for (index, chunk) in positions.chunks_exact(3).enumerate() {
+        for (index, chunk) in positions.as_chunks::<3>().0.iter().enumerate() {
             let bytes: Vec<u8> = chunk.iter().flat_map(|v| v.to_le_bytes()).collect();
             position.buffer_mut().write(index * 12, &bytes);
         }
