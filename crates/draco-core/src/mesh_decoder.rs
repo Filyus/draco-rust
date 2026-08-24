@@ -1606,8 +1606,16 @@ impl MeshDecoder {
         let num_vertices = corner_table.num_vertices();
         let num_faces = corner_table.num_faces();
 
-        let mut point_ids = Vec::with_capacity(num_vertices);
-        let mut data_to_corner_map = Vec::with_capacity(num_vertices);
+        // Sized rather than reserved, and cut back to what the walk visited at
+        // the end. `visited_vertices` gates the observer to one call per vertex
+        // and is this long itself, so the walk cannot fill more than this --
+        // which is what lets the observer write by index instead of pushing.
+        // The push carried the reallocation path with it, and that path is what
+        // an inliner priced: outlined, the observer cost `18` instructions of
+        // prologue and epilogue per vertex on top of its three stores.
+        let mut point_ids = vec![PointIndex(0); num_vertices];
+        let mut data_to_corner_map = vec![0u32; num_vertices];
+        let mut num_visited = 0usize;
         let mut vertex_to_data_map = vec![-1i32; num_vertices];
         let mut visited_vertices = vec![false; num_vertices];
         let mut visited_faces = vec![false; num_faces];
@@ -1632,12 +1640,21 @@ impl MeshDecoder {
         // C++ MeshAttributeIndicesEncodingObserver::OnNewVertexVisited.
         let mut on_new_vertex = |vertex: VertexIndex, corner: CornerIndex| {
             let point_id = corner_to_point_id(corner);
-            vertex_to_data_map[vertex.0 as usize] = point_ids.len() as i32;
+            vertex_to_data_map[vertex.0 as usize] = num_visited as i32;
             if event_log_enabled {
                 record_vertex_visit_events(corner, vertex, point_id);
             }
-            point_ids.push(point_id);
-            data_to_corner_map.push(corner.0);
+            // Reached through `get_mut` rather than indexed so the observer
+            // carries no panic path either: the slot exists by the sizing
+            // above, and what kept this a real call was its size.
+            if let (Some(point_slot), Some(corner_slot)) = (
+                point_ids.get_mut(num_visited),
+                data_to_corner_map.get_mut(num_visited),
+            ) {
+                *point_slot = point_id;
+                *corner_slot = corner.0;
+                num_visited += 1;
+            }
         };
 
         // Scratch for the depth-first walk, reused across seeds.
@@ -1671,6 +1688,12 @@ impl MeshDecoder {
                 }
             }
         }
+
+        // Back to the length the pushes would have left: a walk that reaches
+        // fewer vertices than the table holds -- an isolated one, a component
+        // the seeds miss -- must not hand back slots it never wrote.
+        point_ids.truncate(num_visited);
+        data_to_corner_map.truncate(num_visited);
 
         Ok((point_ids, data_to_corner_map, vertex_to_data_map))
     }
