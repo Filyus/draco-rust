@@ -665,3 +665,78 @@ fn an_integer_attribute_spanning_close_to_the_full_i32_range_is_encoded_without_
         );
     }
 }
+
+/// A one-dimensional KD-tree over values that reach the top of the `u32`
+/// range, with few enough distinct values that the groups stay large.
+///
+/// `bit_length` is then 32, the walk splits 32 times along its single axis,
+/// and the leaf it arrives at sits on the last row the stacks hold -- which is
+/// the row they are sized for. The decoder refused it anyway, because it asked
+/// for room for a child row before deciding whether the node had a child, so
+/// an encode the encoder was happy with came back as "KD-tree traversal failed
+/// after 0 of 64 points". Minimized input in
+/// `fuzz/seeds/encode_drc/kd_tree_full_range_single_component.bin`.
+#[test]
+fn a_full_range_single_component_kd_tree_round_trips() {
+    // Thirteen distinct values spanning the whole `u32` range: the spread is
+    // what drives `bit_length` to 32, and the repetition is what keeps every
+    // node above two points until the walk is out of levels.
+    const VALUES: [u32; 13] = [
+        0,
+        35,
+        255,
+        458_752,
+        16_777_188,
+        17_442_815,
+        603_979_776,
+        989_395_192,
+        2_969_565_210,
+        4_177_066_232,
+        4_279_894_016,
+        4_294_965_325,
+        u32::MAX,
+    ];
+    let num_points = 64usize;
+
+    let mut point_cloud = PointCloud::new();
+    point_cloud.set_num_points(num_points);
+    let mut attribute = PointAttribute::new();
+    attribute.init(
+        GeometryAttributeType::Position,
+        1,
+        DataType::Uint32,
+        false,
+        num_points,
+    );
+    let mut expected: Vec<u32> = (0..num_points).map(|i| VALUES[i % VALUES.len()]).collect();
+    for (index, value) in expected.iter().enumerate() {
+        attribute
+            .buffer_mut()
+            .write(index * 4, &value.to_le_bytes());
+    }
+    point_cloud.add_attribute(attribute);
+
+    let mut options = EncoderOptions::new();
+    options.set_encoding_method(1);
+    let encoded = encode_point_cloud(point_cloud, &options).expect("encode");
+
+    let mut decoded = PointCloud::new();
+    let mut buffer = DecoderBuffer::new(&encoded);
+    PointCloudDecoder::new()
+        .decode(&mut buffer, &mut decoded)
+        .expect("a stream this encoder produced must decode");
+    assert_eq!(decoded.num_points(), num_points);
+
+    // A KD-tree encode reorders points, so the multiset is what survives.
+    let attribute = decoded.attribute(0);
+    let mut round_tripped: Vec<u32> = (0..num_points)
+        .map(|index| {
+            let mut bytes = [0u8; 4];
+            attribute.buffer().read(index * 4, &mut bytes);
+            u32::from_le_bytes(bytes)
+        })
+        .collect();
+    round_tripped.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(round_tripped, expected);
+}

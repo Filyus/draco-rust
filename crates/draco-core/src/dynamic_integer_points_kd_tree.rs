@@ -696,12 +696,20 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             // round trip through a scratch buffer.
             let child_start = row_end;
             let child_end = child_start + dimension;
-            // Both stacks hold `32 * dimension + 1` rows, and a path can split
-            // at most 32 times per axis, so a well-formed tree never reaches
-            // this. Checking once here refuses a malformed one where the row
-            // accesses below would otherwise panic, and leaves the compiler a
-            // bound it can carry through the rest of the node.
-            if base_stack.len() < child_end || levels_stack.len() < child_end {
+            // This node's own row, which every branch below reads. Both stacks
+            // hold `32 * dimension + 1` rows and a path splits at most 32 times
+            // per axis, so a well-formed tree never reaches this; a malformed
+            // one is refused here rather than panicking in the row accesses,
+            // and the compiler carries the bound through the node.
+            //
+            // The *child's* row is not checked here, because the deepest node a
+            // well-formed tree can reach is one that has no child: 32 splits
+            // per axis put it at row `32 * dimension`, the last one there is,
+            // and it terminates on `bit_length - level == 0` without ever
+            // descending. Demanding its child's row up front refused exactly
+            // that node -- a one-dimensional tree over full-range values hit it
+            // on its first leaf.
+            if base_stack.len() < row_end || levels_stack.len() < row_end {
                 return false;
             }
 
@@ -767,6 +775,11 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             }
 
             if self.num_decoded_points > self.num_points {
+                return false;
+            }
+
+            // Splitting is the one branch that writes the child's row.
+            if base_stack.len() < child_end || levels_stack.len() < child_end {
                 return false;
             }
 
