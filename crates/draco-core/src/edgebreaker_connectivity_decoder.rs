@@ -583,11 +583,22 @@ impl EdgebreakerConnectivityDecoder {
         Ok(num_vertices)
     }
 
+    /// The refusal the three active-corner accessors share, out of line for
+    /// the reason [`invalid_vertex`](Self::invalid_vertex) is: each of them is
+    /// a `last`/`pop` on a `Vec`, called once or more per face, and each
+    /// carried a `format!` -- an argument struct and a formatting call --
+    /// inline in the symbol loop that inlines all three.
+    #[cold]
+    #[inline(never)]
+    fn empty_active_stack(context: &str) -> DracoError {
+        DracoError::general(format!("active_corner_stack empty in {context}"))
+    }
+
     fn active_corner(&self, context: &str) -> Result<CornerIndex, DracoError> {
         self.active_corner_stack
             .last()
             .copied()
-            .ok_or_else(|| DracoError::general(format!("active_corner_stack empty in {context}")))
+            .ok_or_else(|| Self::empty_active_stack(context))
     }
 
     fn replace_active_corner(
@@ -595,9 +606,10 @@ impl EdgebreakerConnectivityDecoder {
         corner: CornerIndex,
         context: &str,
     ) -> Result<(), DracoError> {
-        let active = self.active_corner_stack.last_mut().ok_or_else(|| {
-            DracoError::general(format!("active_corner_stack empty in {context}"))
-        })?;
+        let active = self
+            .active_corner_stack
+            .last_mut()
+            .ok_or_else(|| Self::empty_active_stack(context))?;
         *active = corner;
         Ok(())
     }
@@ -605,7 +617,7 @@ impl EdgebreakerConnectivityDecoder {
     fn pop_active_corner(&mut self, context: &str) -> Result<CornerIndex, DracoError> {
         self.active_corner_stack
             .pop()
-            .ok_or_else(|| DracoError::general(format!("active_corner_stack empty in {context}")))
+            .ok_or_else(|| Self::empty_active_stack(context))
     }
 
     /// The refusal [`vertex_index`](Self::vertex_index) hands back, out of
@@ -642,9 +654,11 @@ impl EdgebreakerConnectivityDecoder {
     /// the comparison here used to leave the indexing's own panic check
     /// standing behind it -- twice per call, three calls a face.
     fn set_opposite_corners(&mut self, c1: CornerIndex, c2: CornerIndex) -> Result<(), DracoError> {
-        let invalid = |corner: CornerIndex| {
+        #[cold]
+        #[inline(never)]
+        fn invalid(corner: CornerIndex) -> DracoError {
             DracoError::general(format!("Invalid opposite corner {}", corner.0))
-        };
+        }
         if c1 != INVALID_CORNER_INDEX && !self.corner_table.try_set_opposite(c1, c2) {
             return Err(invalid(c1));
         }
