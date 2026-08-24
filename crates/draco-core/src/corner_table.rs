@@ -510,14 +510,19 @@ impl CornerTable {
         self.corner_to_vertex_map
             .extend_from_slice(faces.as_flattened());
 
-        // Reading the clock costs nothing here: `stages` is `None` on every
-        // path but the profiler's, and `init` runs once per encode.
-        let mut started = std::time::Instant::now();
+        // Every clock read sits behind `stages`, which is `None` on every path
+        // but the profiler's. Not for the cost -- `init` runs once per encode
+        // -- but because `Instant::now()` panics on `wasm32-unknown-unknown`,
+        // where the standard library has no clock at all. An unguarded read
+        // here aborts a web encode before it starts.
+        let mut started = stages.as_ref().map(|_| std::time::Instant::now());
         let mut mark = |stages: &mut Option<&mut [f64; InitStage::COUNT]>, stage: InitStage| {
             if let Some(stages) = stages.as_deref_mut() {
                 let now = std::time::Instant::now();
-                stages[stage as usize] = now.duration_since(started).as_secs_f64() * 1e6;
-                started = now;
+                if let Some(previous) = started {
+                    stages[stage as usize] = now.duration_since(previous).as_secs_f64() * 1e6;
+                }
+                started = Some(now);
             }
         };
 
