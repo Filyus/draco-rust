@@ -187,6 +187,12 @@ $env:PATH = "$($msvc.FullName)\bin\Hostx64\x64;$env:PATH"
 cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
 ```
 
+It has to be that runtime. A standalone LLVM installation ships
+`clang_rt.asan_dynamic-x86_64.dll` too, and putting *its* directory on `PATH`
+gets the target past `STATUS_DLL_NOT_FOUND` only to fail with
+`STATUS_ENTRYPOINT_NOT_FOUND` (`0xc0000139`) — the version rustc links against
+and the one LLVM ships are not the same.
+
 `--sanitizer none` is **not** a workaround on MSVC: libFuzzer's coverage
 counters (`__start___sancov_cntrs` and friends) come from the sanitizer
 runtime, so dropping it fails at link time with unresolved externals.
