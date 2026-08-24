@@ -2802,11 +2802,13 @@ fn extract_uvs(mesh: &Mesh) -> Option<Vec<f64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Only the round-trip tests below build scenes, and those need the reader.
+    // The scene types the writer takes: available wherever the writer is, and
+    // used by tests that write a scene without reading one back.
+    use crate::fbx_scene::{FbxScene, FbxSceneNode};
+    // Read back through the reader, so only the round-trip tests need these.
     #[cfg(feature = "fbx-reader")]
     use crate::fbx_scene::{
-        FbxAnimation, FbxMeshInstance, FbxMeshLayers, FbxScene, FbxSceneNode, FbxTransform,
-        FbxTransformStack,
+        FbxAnimation, FbxMeshInstance, FbxMeshLayers, FbxTransform, FbxTransformStack,
     };
     use draco_core::draco_types::DataType;
     use draco_core::geometry_attribute::PointAttribute;
@@ -4095,6 +4097,7 @@ mod tests {
     /// distinct coordinates thousands of times. A three-vertex triangle has
     /// nothing for a deeper search to exploit either way, so it cannot tell
     /// `with_compression_level` from a no-op.
+    #[cfg(feature = "compression")]
     fn create_repetitive_fan_mesh(spokes: usize) -> Mesh {
         let mut mesh = Mesh::new();
         let mut pos_att = PointAttribute::new();

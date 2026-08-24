@@ -161,3 +161,11 @@ required-features = ["fbx-reader", "fbx-writer", "compression"]
 [[example]]
 name = "fbx_rewrite"
 required-features = ["fbx-reader", "fbx-writer", "compression"]
+
+[[example]]
+name = "fbx_orphan_models"
+required-features = ["fbx-reader"]
+
+[[example]]
+name = "fbx_skeleton_dump"
+required-features = ["fbx-reader"]
