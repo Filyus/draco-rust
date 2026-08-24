@@ -27,6 +27,23 @@ use crate::version::version_at_least;
 /// `(point ids in traversal order, processed corners, vertex -> data-id map)`.
 type AttributeTraversalArrays = (Vec<PointIndex>, Vec<u32>, Vec<i32>);
 
+/// The traversal observers' test-log arm, out of line.
+///
+/// [`test_event_log::record_event`] takes an owned `String`, so the two
+/// `format!` calls are built at the call site: argument structs, a formatter
+/// call and an allocation, inline in a closure whose live body is three stores.
+/// An inliner prices the whole body, and both observers were being emitted as
+/// real calls -- `17` instructions of prologue and epilogue on a closure taking
+/// six or seven arguments, once per vertex visited. The log is installed only by
+/// the tests that read it, so this is the cold arm; outlined and marked cold, it
+/// leaves an observer the walk can inline.
+#[cold]
+#[inline(never)]
+fn record_vertex_visit_events(corner: CornerIndex, vertex: VertexIndex, point_id: PointIndex) {
+    test_event_log::record_event(format!("MAP:{}->v{}", corner.0, vertex.0));
+    test_event_log::record_event(format!("MAP_POINT:{}->p{}", corner.0, point_id.0));
+}
+
 fn validate_num_attributes_in_decoder(
     num_attributes_in_decoder: usize,
     remaining_bytes: usize,
@@ -1617,8 +1634,7 @@ impl MeshDecoder {
             let point_id = corner_to_point_id(corner);
             vertex_to_data_map[vertex.0 as usize] = point_ids.len() as i32;
             if event_log_enabled {
-                test_event_log::record_event(format!("MAP:{}->v{}", corner.0, vertex.0));
-                test_event_log::record_event(format!("MAP_POINT:{}->p{}", corner.0, point_id.0));
+                record_vertex_visit_events(corner, vertex, point_id);
             }
             point_ids.push(point_id);
             data_to_corner_map.push(corner.0);
@@ -1727,8 +1743,7 @@ impl MeshDecoder {
                 // Use corner_to_point_id to get mesh PointIndex from corner
                 let point_id = corner_to_point_id(c);
                 if event_log_enabled {
-                    test_event_log::record_event(format!("MAP:{}->v{}", c.0, v.0));
-                    test_event_log::record_event(format!("MAP_POINT:{}->p{}", c.0, point_id.0));
+                    record_vertex_visit_events(c, v, point_id);
                 }
                 point_ids.push(point_id);
                 data_to_corner_map.push(c.0);
