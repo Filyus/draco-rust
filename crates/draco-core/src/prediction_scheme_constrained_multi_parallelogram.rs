@@ -1037,7 +1037,17 @@ where
 
             let mut num_used_parallelograms = 0;
             if num_parallelograms > 0 {
-                multi_pred_vals.fill(DataType::default());
+                // No zeroing pass: the first parallelogram that is used *sets*
+                // the accumulator and the rest add to it. A sum of wrapping
+                // adds does not care whether it started at zero, and the zero
+                // it started at cost a `memset` **call** per entry -- `9,213`
+                // of them in a speed-0 grid decode, for twelve bytes each,
+                // because LLVM recognises a zero-fill over a runtime-length
+                // `Copy` slice and calls out to it whether it is written as
+                // `fill`, as an indexed loop, or as `iter_mut`. If every
+                // parallelogram turns out to be a crease the accumulator is
+                // never written, and it is never read either: that is the
+                // `num_used_parallelograms == 0` arm below.
 
                 // The context is the parallelogram count, so it is fixed for
                 // the whole of this entry: the flag row and the position in it
@@ -1094,6 +1104,7 @@ where
                         let v_opp = &data[v_opp_off..v_opp_off + num_components];
                         let v_next = &data[v_next_off..v_next_off + num_components];
                         let v_prev = &data[v_prev_off..v_prev_off + num_components];
+                        let accumulate = num_used_parallelograms > 0;
                         for (((pv, &n), &pr), &op) in multi_pred_vals
                             .iter_mut()
                             .zip(v_next)
@@ -1102,7 +1113,11 @@ where
                         {
                             let p = DataType::compute_parallelogram_prediction(n, pr, op);
                             // Use add_as_unsigned for C++ compatible accumulation
-                            *pv = DataType::add_as_unsigned(*pv, p);
+                            *pv = if accumulate {
+                                DataType::add_as_unsigned(*pv, p)
+                            } else {
+                                p
+                            };
                         }
                         num_used_parallelograms += 1;
                     }
