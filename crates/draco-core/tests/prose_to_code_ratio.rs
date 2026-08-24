@@ -24,7 +24,7 @@
 //!    not one string.
 //! 2. An example is built in release into its own target directory, so the
 //!    nested build neither blocks on the outer one nor pollutes it. Cold it
-//!    costs about fifteen seconds; after that it is cached. `debug_cube_v11`
+//!    costs about fifteen seconds; after that it is cached. `encode_decode`
 //!    is the one chosen because it encodes *and* decodes: a decode-only
 //!    example leaves every encoder message unlinked, and the ratio would then
 //!    measure which example was picked as much as anything else. It is built
@@ -37,14 +37,16 @@
 //! ## What the number is a share *of*
 //!
 //! Of the machine code in one linked artifact, which is narrower than "the
-//! crate". About a quarter of the crate's message fragments are absent from it,
-//! and the report names them because the reason matters:
+//! crate". Some of the crate's message fragments are absent from it, and the
+//! report names them because the reason matters:
 //!
-//! - **Not linked** (roughly 114 of 145 when this was written). The example
-//!   encodes and decodes a mesh, so the KD-tree encoder, the point-cloud
-//!   encoder and the normal encoder are never called and the linker never
-//!   pulls them in. Their messages do not ship *in this program*, which is the
-//!   honest answer for this program and the wrong answer for the crate.
+//! - **Not linked** (`4` of the `74` absent when this was written). The example
+//!   encodes and decodes a mesh, so the KD-tree encoder and the point-cloud
+//!   encoder are never called and the linker never pulls them in. Their
+//!   messages do not ship *in this program*, which is the honest answer for
+//!   this program and the wrong answer for the crate. It is a small share of
+//!   the absences, and the `-C link-dead-code` run below is what measures it:
+//!   those four are all the linker can bring back.
 //! - **Compiled out by `--all-features`.** A dozen messages live under
 //!   `#[cfg(not(feature = …))]` and say so — "Point cloud decode support is
 //!   disabled". Turning every feature on deletes them. There is no feature set
@@ -77,9 +79,12 @@
 //!   Reading the list also found `encode_raw_symbols_typed`, dead since before
 //!   this release and carrying a message of its own.
 //!
-//! `RUSTFLAGS="-C link-dead-code"` gives the whole-crate view -- 31 absent
-//! instead of 145 -- at the cost of a denominator stuffed with code nobody
-//! ships, so it is a diagnostic to run by hand rather than the measurement.
+//! `RUSTFLAGS="-C link-dead-code"` is the whole-crate view, and against this
+//! example it is worth little: `70` absent instead of `74`, for a `.text` half
+//! again as large and a ratio of `1.682%`. What it retains, this artifact was
+//! already linking; what stays absent is compiled out or never monomorphised,
+//! and neither is something the linker can bring back. A diagnostic to run by
+//! hand, not the measurement.
 //!
 //! ## What it cannot do
 //!
@@ -94,6 +99,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The example the ratio is measured against. It has to be one the repository
+/// carries: a name that `.gitignore` excludes builds on the machine that wrote
+/// it and nowhere else, which is a green test locally and a hard failure in CI.
+const EXAMPLE: &str = "encode_decode";
+
 /// The call heads whose string arguments are a refusal's text.
 const ERROR_CALL_HEADS: &[&str] = &["DracoError::", "error_status("];
 
@@ -101,14 +111,22 @@ const ERROR_CALL_HEADS: &[&str] = &["DracoError::", "error_status("];
 /// occur throughout compiled code by chance.
 const MIN_FRAGMENT: usize = 8;
 
-/// Measured at the 2.0.0 release; printed on every run, so moving the ceiling
-/// is a decision made against a number.
-const RATIO_AT_2_0_0: f64 = 0.036_31;
+/// Measured against [`EXAMPLE`]; printed on every run, so moving the ceiling is
+/// a decision made against a number.
+///
+/// The `3.631%` this file carried before was taken against a different,
+/// decode-only artifact and is not comparable: a program that links the
+/// encoder has more machine code under the same messages, so the share falls
+/// without a line of prose being deleted. Both the baseline and the ceiling
+/// were re-taken when the measurement moved to this example.
+const BASELINE_RATIO: f64 = 0.024_45;
 
 /// Prose may reach this share of `.text` before the build fails. Wide on
 /// purpose: converting another path to `Status` should not need this file
-/// edited, while doubling the crate's messages should not pass unnoticed.
-const MAX_RATIO: f64 = 0.050;
+/// edited, while doubling the crate's messages should not pass unnoticed. The
+/// headroom over the baseline is what was kept when the artifact changed --
+/// roughly `1.4x`, as it was at `3.631%` against `5.0%`.
+const MAX_RATIO: f64 = 0.035;
 
 // ---------------------------------------------------------------------------
 // Reading the messages out of the source
@@ -595,7 +613,7 @@ fn build_artifact() -> PathBuf {
             "-p",
             "draco-core",
             "--example",
-            "debug_cube_v11",
+            EXAMPLE,
             "--target-dir",
         ])
         .arg(&target)
@@ -608,8 +626,7 @@ fn build_artifact() -> PathBuf {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        let is_artifact =
-            name.starts_with("debug_cube_v11") && path.extension().is_none_or(|e| e == "exe");
+        let is_artifact = name.starts_with(EXAMPLE) && path.extension().is_none_or(|e| e == "exe");
         if is_artifact && path.is_file() {
             return path;
         }
@@ -669,14 +686,14 @@ fn error_prose_stays_a_small_part_of_the_compiled_code() {
         "artifact {} ({} bytes)\n\
          .text {text} bytes, error prose {shipped} bytes -> {:.3}% of the machine code\n\
          {} distinct fragments, {} of them not in the artifact:\n  {}\n\
-         (was {:.3}% at 2.0.0, ceiling {:.3}%)",
+         (baseline {:.3}%, ceiling {:.3}%)",
         artifact.file_name().unwrap_or_default().to_string_lossy(),
         binary.len(),
         ratio * 100.0,
         all.len(),
         missing.len(),
         sample.join("\n  "),
-        RATIO_AT_2_0_0 * 100.0,
+        BASELINE_RATIO * 100.0,
         MAX_RATIO * 100.0,
     );
     eprintln!("{report}");
