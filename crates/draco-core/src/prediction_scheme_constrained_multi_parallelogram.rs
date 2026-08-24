@@ -908,6 +908,18 @@ where
             )));
         }
 
+        // The qualifying test in the fan walk below reads a data id as a `u32`,
+        // which is what collapses "not decoded yet" (`-1`) and "not before this
+        // entry" into one unsigned comparison. That reading needs `data_id` to
+        // fit in a `u32` as well; a map of `i32` data ids cannot describe more
+        // entries than that in the first place, so this rejects only a buffer
+        // no stream could have produced.
+        if num_entries > u32::MAX as usize {
+            return Err(DracoError::general(format!(
+                "Constrained multi-parallelogram prediction cannot index {num_entries} entries"
+            )));
+        }
+
         let mut multi_pred_vals = vec![DataType::default(); num_components];
         let zero_vals = vec![DataType::default(); num_components];
         let mut predicted_val = vec![DataType::default(); num_components];
@@ -938,10 +950,13 @@ where
 
             if corner_id == INVALID_CORNER_INDEX {
                 let prev_offset = (data_id - 1) * num_components;
-                predicted_val.fill(DataType::default());
-                for c in 0..num_components {
-                    predicted_val[c] = data[prev_offset + c];
-                }
+                // The fill wrote a default into every component the copy below
+                // then overwrote, and the copy walked the two buffers a
+                // component at a time with a bounds check on each. Both are one
+                // equal-length slice copy: `predicted_val` was sized to
+                // `num_components` and `prev_offset` is the previous entry, so
+                // the two slices are the same length by construction.
+                predicted_val.copy_from_slice(&data[prev_offset..prev_offset + num_components]);
                 self.transform.compute_original_value(
                     &predicted_val,
                     &mut data[data_offset..data_offset + num_components],
@@ -949,12 +964,13 @@ where
                 continue;
             }
 
-            let mut corners = [INVALID_CORNER_INDEX; MAX_NUM_PARALLELOGRAMS];
-            // (opp, next, prev) data ids for `corners[i]`'s opposite corner,
-            // resolved once by the qualifying test below and carried forward
-            // so the prediction pass further down can read them back instead
-            // of asking the corner table and `vertex_to_data_map` again.
-            let mut corner_data_ids = [(0i32, 0i32, 0i32); MAX_NUM_PARALLELOGRAMS];
+            // (opp, next, prev) data ids for the qualifying corner's opposite
+            // corner, resolved once by the test below and carried forward so the
+            // prediction pass further down can read them back instead of asking
+            // the corner table and `vertex_to_data_map` again. The corner itself
+            // was recorded here too and never read back: the pass below works
+            // entirely from these three ids.
+            let mut corner_data_ids = [(0u32, 0u32, 0u32); MAX_NUM_PARALLELOGRAMS];
             let mut num_parallelograms = 0;
 
             let start_c = corner_id;
@@ -981,17 +997,22 @@ where
                     let next_data_id = *vertex_to_data_map.get(next_v.0 as usize).unwrap_or(&-1);
                     let prev_data_id = *vertex_to_data_map.get(prev_v.0 as usize).unwrap_or(&-1);
 
-                    if opp_data_id != -1
-                        && next_data_id != -1
-                        && prev_data_id != -1
-                        && (opp_data_id as usize) < data_id
-                        && (next_data_id as usize) < data_id
-                        && (prev_data_id as usize) < data_id
-                        && num_parallelograms < MAX_NUM_PARALLELOGRAMS
-                    {
-                        corners[num_parallelograms] = c;
+                    // Six data-dependent branches asked one question: are all
+                    // three neighbours decoded, and decoded before this entry.
+                    // `-1` is the only value the map holds for "not decoded",
+                    // and read as a `u32` it is `4,294,967,295` -- past every
+                    // data id, since `data_id` is below `num_entries` and that
+                    // was bounded to a `u32` above. So `x >= 0 && x < data_id`
+                    // is exactly `(x as u32) < data_id as u32`, and the largest
+                    // of the three answers for all three. Two maxima and one
+                    // comparison, all of it `cmov`, where the conjunction had
+                    // six branches on decoded data with no pattern to learn.
+                    let newest = (opp_data_id as u32)
+                        .max(next_data_id as u32)
+                        .max(prev_data_id as u32);
+                    if newest < data_id as u32 && num_parallelograms < MAX_NUM_PARALLELOGRAMS {
                         corner_data_ids[num_parallelograms] =
-                            (opp_data_id, next_data_id, prev_data_id);
+                            (opp_data_id as u32, next_data_id as u32, prev_data_id as u32);
                         num_parallelograms += 1;
                         if num_parallelograms == MAX_NUM_PARALLELOGRAMS {
                             break;
@@ -1016,27 +1037,32 @@ where
 
             let mut num_used_parallelograms = 0;
             if num_parallelograms > 0 {
-                for k in 0..num_components {
-                    multi_pred_vals[k] = DataType::default();
+                multi_pred_vals.fill(DataType::default());
+
+                // The context is the parallelogram count, so it is fixed for
+                // the whole of this entry: the flag row and the position in it
+                // are read once here instead of re-indexed on every
+                // parallelogram, which cost a bounds check on the outer array
+                // and a reload of the counter each time round.
+                let context = num_parallelograms - 1;
+                let creases = &self.is_crease_edge[context];
+                let first_pos = is_crease_edge_pos[context];
+                is_crease_edge_pos[context] += num_parallelograms;
+                if first_pos + num_parallelograms > creases.len() {
+                    // This should never happen if encoder/decoder are in sync
+                    debug_log!("ERROR: is_crease_edge bounds exceeded: pos={} >= len={}, context={}, data_id={}",
+                        first_pos, creases.len(), context, data_id);
+                    return Err(DracoError::general(format!(
+                        "Entry {data_id} reads crease-edge flag {} of {} in context {context}",
+                        first_pos + num_parallelograms - 1,
+                        creases.len()
+                    )));
                 }
 
-                for i in 0..num_parallelograms {
-                    let context = num_parallelograms - 1;
-                    let pos = is_crease_edge_pos[context];
-                    is_crease_edge_pos[context] += 1;
-
-                    // Check bounds - if we've exhausted the flags, this is an error
-                    if pos >= self.is_crease_edge[context].len() {
-                        // This should never happen if encoder/decoder are in sync
-                        debug_log!("ERROR: is_crease_edge bounds exceeded: pos={} >= len={}, context={}, data_id={}",
-                            pos, self.is_crease_edge[context].len(), context, data_id);
-                        return Err(DracoError::general(format!(
-                            "Entry {data_id} reads crease-edge flag {pos} of {} in context {context}",
-                            self.is_crease_edge[context].len()
-                        )));
-                    }
-                    let is_crease = self.is_crease_edge[context][pos];
-
+                for (i, &is_crease) in creases[first_pos..first_pos + num_parallelograms]
+                    .iter()
+                    .enumerate()
+                {
                     if !is_crease {
                         // Compute prediction for this parallelogram. The
                         // qualifying pass above already asked the corner
@@ -1044,20 +1070,17 @@ where
                         // three neighbour vertices' data ids -- neither
                         // changes between the two passes, so the answer here
                         // is provably the one stored then, not a fresh one.
+                        // They are held as `u32` because that pass proved all
+                        // three non-negative, which is why no test for that
+                        // stands here.
                         let (vert_opp, vert_next, vert_prev) = corner_data_ids[i];
-                        if vert_opp < 0 || vert_next < 0 || vert_prev < 0 {
-                            return Err(DracoError::general(
-                                "Parallelogram corner maps to no decoded entry".to_string(),
-                            ));
-                        }
 
                         let v_opp_off = (vert_opp as usize) * num_components;
                         let v_next_off = (vert_next as usize) * num_components;
                         let v_prev_off = (vert_prev as usize) * num_components;
-                        if v_opp_off + num_components > data.len()
-                            || v_next_off + num_components > data.len()
-                            || v_prev_off + num_components > data.len()
-                        {
+                        // One comparison for the three: the widest offset is
+                        // the only one that can reach past the end.
+                        if v_opp_off.max(v_next_off).max(v_prev_off) + num_components > data.len() {
                             return Err(DracoError::general(
                                 "Parallelogram corner reads past the decoded values".to_string(),
                             ));
@@ -1088,20 +1111,19 @@ where
 
             if num_used_parallelograms == 0 {
                 let prev_offset = (data_id - 1) * num_components;
-                predicted_val.fill(DataType::default());
-                for c in 0..num_components {
-                    predicted_val[c] = data[prev_offset + c];
-                }
+                // As above: one equal-length copy in place of a fill the copy
+                // overwrote and a component-at-a-time indexed loop.
+                predicted_val.copy_from_slice(&data[prev_offset..prev_offset + num_components]);
                 self.transform.compute_original_value(
                     &predicted_val,
                     &mut data[data_offset..data_offset + num_components],
                 );
             } else {
                 // C++ decoder uses truncating integer division (not rounding)
-                for c in 0..num_components {
-                    let val: i64 = multi_pred_vals[c].into();
-                    let averaged = (val / num_used_parallelograms as i64) as i32;
-                    multi_pred_vals[c] = DataType::from(averaged);
+                let divisor = num_used_parallelograms as i64;
+                for pred in multi_pred_vals.iter_mut() {
+                    let val: i64 = (*pred).into();
+                    *pred = DataType::from((val / divisor) as i32);
                 }
                 self.transform.compute_original_value(
                     &multi_pred_vals,
