@@ -284,7 +284,7 @@ premise holds, and the encoder reports the choices it makes for itself.
   a leaf writes its remaining bits in, so two partitions agreeing on the split
   index and not on the order would produce different files carrying the same
   points.
-- The mesh decoder's turn, and five rounds of it. Four are the same finding:
+- The mesh decoder's turn, and six rounds of it. Four are the same finding:
   a small function an inliner declined because of prose it would never run.
   Rust builds an error message at the call site -- `format!` is an argument
   struct and a formatting call -- so a function whose live body is three stores
@@ -298,18 +298,22 @@ premise holds, and the encoder reports the choices it makes for itself.
   constrained multi-parallelogram predictor, `40%` of a speed-0 decode, where
   the qualifying test's six data-dependent branches collapse into two unsigned
   maxima and one comparison, three range tests into one, and two fills that a
-  copy overwrote into `copy_from_slice`.
+  copy overwrote into `copy_from_slice`. The sixth is the same predictor again:
+  its accumulator was zeroed before the parallelogram terms were summed into
+  it, and a zero-fill over a runtime-length slice is a `memset` **call** --
+  `9,213` of them per speed-0 decode, twelve bytes each -- so the first term
+  used now sets the accumulator and the zeroing is gone.
 
   One decode, instructions under callgrind against a same-platform `gcc -O3`
-  build of upstream 1.5.7: `-12.8%` to `-14.7%` at speed 0 and `-3.6%` to
+  build of upstream 1.5.7: `-14.3%` to `-15.9%` at speed 0 and `-3.6%` to
   `-4.6%` at speed 5, across the seeded grid, ribbon, torus and fan. **This
   one converts** -- base and head interleaved, four rounds of `150` decodes,
-  minima: `-10.0%` to `-14.5%` at speed 0 and `-2.3%` to `-2.8%` at speed 5,
-  with every speed-0 per-round difference negative. Removing a call takes
+  minima: `-11.0%` to `-12.6%` at speed 0 and `-2.0%` to `-3.6%` at speed 5,
+  with every per-round difference negative. Removing a call takes
   argument marshalling and stack traffic off the critical path, where removing
   index arithmetic from a chain of dependent loads takes nothing off it; the
   decode had only ever measured the second kind before. Against the same
-  reference on the clock the decode is now `1.10x` to `1.38x` ahead on all
+  reference on the clock the decode is now `1.15x` to `1.37x` ahead on all
   twelve payload-and-speed cells, with the speed-0 column -- three of four
   payloads within `5%` of the reference before these rounds -- the one that
   moved.

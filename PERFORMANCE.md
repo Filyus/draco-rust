@@ -3432,31 +3432,50 @@ which is `40%` of a speed-0 decode -- `9,524,649` against the reference's
 Speed 0 `-4.1` to `-6.0%`; speed 5 unchanged, which is the control -- that
 predictor is speed 0's, and speed 5 runs the plain parallelogram.
 
+A sixth round came out of the same predictor and out of the instrument the
+first four came from. **A call-count profile of a speed-0 decode listed
+`__memset_avx2_unaligned_erms` at `9,213` calls, one per decoded entry, twelve
+bytes each** -- the accumulator being zeroed before the parallelogram terms
+were summed into it. LLVM recognises a zero-fill over a runtime-length `Copy`
+slice and calls out to `memset` whether it is written as `fill`, as an indexed
+loop or as `iter_mut`; rewriting it three ways changes nothing. So the zeroing
+stops existing: a sum of wrapping adds does not care what it started at, and
+the first parallelogram actually used sets the accumulator instead. Speed 0
+`-1.1` to `-1.7%` (`9e2745b`), speed 5 the control again and unchanged.
+
+**A call count is a cheap instrument and this document had not been reading
+it.** Four of these six rounds are calls that should not have been calls, and
+three of the four were found by listing callees by count rather than by cost --
+a row of `9,213` twelve-byte `memset`s is invisible in an instruction total
+(`276K` of `22M`) and obvious the moment the calls are counted.
+
 **Where the five rounds land.** One decode, callgrind, against the
 same-platform `gcc -O3` build:
 
 | payload | speed 0 start | now | | speed 5 start | now | |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| grid | `26,126,917` | `22,587,690` | `-13.5%` | `11,378,868` | `10,856,829` | `-4.6%` |
-| ribbon | `28,292,777` | `24,673,626` | `-12.8%` | `17,394,656` | `16,772,010` | `-3.6%` |
-| torus | `26,290,727` | `22,804,596` | `-13.3%` | `11,411,610` | `10,898,729` | `-4.5%` |
-| fan | `23,657,640` | `20,175,463` | `-14.7%` | `11,022,277` | `10,534,991` | `-4.4%` |
+| grid | `26,126,917` | `22,330,860` | `-14.5%` | `11,378,868` | `10,856,829` | `-4.6%` |
+| ribbon | `28,292,777` | `24,255,311` | `-14.3%` | `17,394,656` | `16,772,010` | `-3.6%` |
+| torus | `26,290,727` | `22,539,706` | `-14.3%` | `11,411,610` | `10,898,768` | `-4.5%` |
+| fan | `23,657,640` | `19,906,668` | `-15.9%` | `11,022,277` | `10,534,991` | `-4.4%` |
 
-The grid's instruction ratio goes `1.24x -> 1.07x` at speed 0 and
-`1.15x -> 1.10x` at speed 5.
+The grid's instruction ratio goes `1.24x -> 1.06x` at speed 0 and
+`1.15x -> 1.10x` at speed 5 -- and the speed-5 figure still carries the
+`memset`/`memcpy` unit: `740K` of our `10.86M` are libc fill and copy rows
+counted per byte, against the reference's `286K`, so the ratio of *work* is
+nearer `1.06x` there too.
 
 **And this time the counted win converts, which is the round's other finding.**
 Base and head interleaved, four rounds of `150` decodes each, minima:
 
 | payload | speed 0 counted | clocked | speed 5 counted | clocked |
 | --- | ---: | ---: | ---: | ---: |
-| grid | `-13.5%` | `-10.4%` | `-4.6%` | `-2.8%` |
-| ribbon | `-12.8%` | `-12.2%` | `-3.6%` | `-0.1%` |
-| torus | `-13.3%` | `-10.0%` | `-4.5%` | `-2.4%` |
-| fan | `-14.7%` | `-14.5%` | `-4.4%` | `-2.3%` |
+| grid | `-14.5%` | `-11.5%` | `-4.6%` | `-3.6%` |
+| ribbon | `-14.3%` | `-11.7%` | `-3.6%` | `-2.0%` |
+| torus | `-14.3%` | `-11.0%` | `-4.5%` | `-3.0%` |
+| fan | `-15.9%` | `-12.6%` | `-4.4%` | `-3.2%` |
 
-All sixteen speed-0 per-round differences are negative and fourteen of sixteen
-at speed 5. **That does not overturn the standing lesson that a decode's
+All eight cells negative, and every per-round difference behind them. **That does not overturn the standing lesson that a decode's
 instruction count is an upper bound on time -- it says which instructions.**
 What came off here is call prologue and epilogue: argument marshalling, stack
 traffic, a return through memory. That is on the critical path in a way a
@@ -3469,13 +3488,15 @@ decodes, above `1.00x` is the port ahead:
 
 | payload | speed 0 | speed 5 | speed 8 |
 | --- | ---: | ---: | ---: |
-| grid | `1.16x` | `1.24x` | `1.27x` |
-| ribbon | `1.36x` | `1.30x` | `1.38x` |
-| torus | `1.20x` | `1.10x` | `1.22x` |
-| fan | `1.22x` | `1.29x` | `1.31x` |
+| grid | `1.15x` | `1.24x` | `1.27x` |
+| ribbon | `1.34x` | `1.37x` | `1.33x` |
+| torus | `1.19x` | `1.15x` | `1.19x` |
+| fan | `1.23x` | `1.30x` | `1.32x` |
 
 Every cell is ahead, and the speed-0 column -- `1.03-1.05x` on three of four
-payloads when the session started -- is the one that moved.
+payloads when the session started -- is the one that moved. The reference
+column is the control across the session and held: grid s0 `2,514 -> 2,522` us,
+grid s5 `1,497 -> 1,449`.
 
 Decoded output was checked byte-for-byte after every round, not just
 `cargo test`: `examples/dump_decoded.rs` writes every face and every attribute
