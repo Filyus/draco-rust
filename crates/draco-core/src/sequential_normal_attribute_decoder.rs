@@ -13,6 +13,9 @@
 //! data down explicitly instead, which is why the mesh-only arguments below are
 //! options -- a point cloud has none of them and passes `None`.
 
+// Only the pre-2.0 layout reads the bit count here; 2.0+ leaves it to the
+// caller's transform data.
+#[cfg(feature = "legacy_bitstream_decode")]
 use crate::attribute_octahedron_transform::AttributeOctahedronTransform;
 use crate::corner_table::CornerTable;
 use crate::decoder_buffer::DecoderBuffer;

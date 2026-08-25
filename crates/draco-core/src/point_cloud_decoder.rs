@@ -23,6 +23,7 @@ use crate::attribute_octahedron_transform::AttributeOctahedronTransform;
 use crate::attribute_quantization_transform::AttributeQuantizationTransform;
 #[cfg(feature = "point_cloud_decode")]
 use crate::attribute_transform::AttributeTransform;
+#[cfg(feature = "point_cloud_decode")]
 use crate::sequential_normal_attribute_decoder::{
     PortableExtent, SequentialNormalAttributeDecoder,
 };
