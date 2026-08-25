@@ -94,8 +94,7 @@ match decoder_type {
         att_decoder.init(self, att_id);
         att_decoder.decode_values(pc, point_ids, buffer, None, None, None, None, None, None);
     }
-    // 3 => the octahedron transform and the integer decoder, open-coded:
-    //      there is no SequentialNormalAttributeDecoder on this side.
+    // 3 => SequentialNormalAttributeDecoder, which both callers share.
 }
 ```
 

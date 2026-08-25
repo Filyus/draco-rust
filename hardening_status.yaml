@@ -320,6 +320,9 @@ completed:
       - path: "crates/draco-core/src/sequential_generic_attribute_decoder.rs"
         tests:
           - "decode_values_rejects_invalid_attribute_id"
+      - path: "crates/draco-core/src/sequential_normal_attribute_decoder.rs"
+        tests:
+          - "init_refuses_an_attribute_the_octahedral_encoding_cannot_describe"
       - path: "crates/draco-core/src/point_cloud_decoder.rs"
     note: "PointCloud now exposes fallible attribute lookup helpers, and generic/normal/sequential point-cloud decode uses them in decoder-facing paths so invalid attribute ids return decode errors instead of indexing the attribute array unchecked."
 
@@ -346,6 +349,7 @@ completed:
           - "decode_parameters_rejects_invalid_quantization_bits"
           - "decode_parameters_accepts_valid_quantization_bits"
           - "init_from_attribute_rejects_invalid_quantization_bits"
+      - path: "crates/draco-core/src/sequential_normal_attribute_decoder.rs"
       - path: "crates/draco-core/src/mesh_decoder.rs"
       - path: "crates/draco-core/src/point_cloud_decoder.rs"
     note: "Normal attribute decode now rejects invalid octahedral quantization bits at parameter/metadata decode time in sequential normal, mesh, point-cloud, and generic octahedron transform paths instead of carrying an invalid transform until inverse reconstruction fails later."
