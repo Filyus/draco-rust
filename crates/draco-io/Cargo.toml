@@ -141,6 +141,11 @@ name = "fbx_seeds"
 path = "tests/fbx_seeds.rs"
 required-features = ["fbx-reader", "fbx-writer", "compression"]
 
+[[test]]
+name = "draco_decode_allocation_test"
+path = "tests/draco_decode_allocation_test.rs"
+required-features = ["draco-decode", "point_cloud_decode"]
+
 
 [[example]]
 name = "fbx_endian_diff"

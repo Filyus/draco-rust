@@ -691,6 +691,31 @@ impl SequentialIntegerAttributeDecoder {
                 )));
             }
 
+            // Raw corrections are copied out of the stream a fixed number of
+            // bytes at a time, so the stream is an exact bound on how many
+            // there can be -- the one rung above any ratio. `num_bytes == 0`
+            // reads nothing, so nothing backs the count there and the
+            // allocation budget is what stands in for it.
+            if num_bytes == 0 {
+                crate::decode_budget::ensure_elements_are_backed(
+                    num_values,
+                    std::mem::size_of::<i32>(),
+                    in_buffer.size(),
+                )?;
+            } else {
+                let Some(byte_len) = num_values.checked_mul(num_bytes) else {
+                    return Err(DracoError::general(format!(
+                        "{num_values} {num_bytes}-byte corrections overflow a byte count"
+                    )));
+                };
+                if byte_len > in_buffer.remaining_size() {
+                    return Err(DracoError::buffer(format!(
+                        "declared {num_values} raw corrections of {num_bytes} bytes, more                          than the {} bytes left in the stream",
+                        in_buffer.remaining_size()
+                    )));
+                }
+            }
+
             let Some(mut raw_corrections) = try_reserved::<i32>(num_values) else {
                 return Err(DracoError::general(format!(
                     "Failed to allocate {num_values} raw corrections"

@@ -464,7 +464,11 @@ impl PointCloudDecoder {
                             let (original_type, original_num_components) =
                                 (original.attribute_type(), original.num_components());
                             let mut portable = PointAttribute::default();
-                            portable.try_init(
+                            // Deferred for the same reason the attribute above
+                            // it is: `num_points` is the header's claim, and
+                            // the integer decoder sizes this buffer once the
+                            // values it will hold have been read.
+                            portable.init_deferred(
                                 original_type,
                                 original_num_components,
                                 DataType::Uint32,
@@ -550,7 +554,8 @@ impl PointCloudDecoder {
                         }
                         3 => {
                             let mut portable = PointAttribute::default();
-                            portable.try_init(
+                            // Deferred: see the quantized arm above.
+                            portable.init_deferred(
                                 GeometryAttributeType::Generic,
                                 2,
                                 DataType::Uint32,
