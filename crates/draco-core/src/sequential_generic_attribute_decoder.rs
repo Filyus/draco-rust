@@ -39,7 +39,7 @@ impl SequentialGenericAttributeDecoder {
         buffer: &mut DecoderBuffer,
     ) -> Status {
         let attribute_id = self.base.attribute_id();
-        let attribute = point_cloud.try_attribute_mut(attribute_id)?;
+        let attribute = point_cloud.try_attribute(attribute_id)?;
 
         let num_components = attribute.num_components() as usize;
         let num_points = point_ids.len();
@@ -49,15 +49,24 @@ impl SequentialGenericAttributeDecoder {
             .checked_mul(num_components)
             .and_then(|size| size.checked_mul(data_type_size))
             .ok_or_else(|| DracoError::general("Generic attribute size overflow".to_string()))?;
-        crate::decode_budget::ensure_allocation_is_backed(total_size, buffer.remaining_size())?;
-        attribute
-            .buffer_mut()
-            .try_resize(total_size)
-            .map_err(|_| DracoError::general("Failed to allocate generic attribute".to_string()))?;
 
+        // The bytes first, the buffer after. Generic values are copied verbatim
+        // out of the stream, so `decode_slice` is an exact bound on how many
+        // there can be: it borrows from the input, allocates nothing, and
+        // refuses a count the remaining bytes cannot cover. Sizing the
+        // destination from the slice that came back makes the allocation
+        // data-backed by construction, with no budget to clear -- the ratio
+        // that stood here allowed a million bytes per input byte on a path
+        // where the honest bound is one.
         let bytes = buffer
             .decode_slice(total_size)
             .map_err(|_| DracoError::general("Failed to decode generic attribute".to_string()))?;
+
+        let attribute = point_cloud.try_attribute_mut(attribute_id)?;
+        attribute
+            .buffer_mut()
+            .try_resize(bytes.len())
+            .map_err(|_| DracoError::general("Failed to allocate generic attribute".to_string()))?;
         attribute.buffer_mut().data_mut().copy_from_slice(bytes);
         Ok(())
     }

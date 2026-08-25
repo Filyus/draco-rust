@@ -143,3 +143,56 @@ fn an_octahedral_normal_point_cloud_does_not_reserve_one_value_per_claimed_point
         stream.len()
     );
 }
+
+/// Generic attribute values are copied verbatim out of the stream, so the
+/// stream is an exact bound on how many there can be.
+///
+/// The budget that stood in for that bound allowed a million bytes per input
+/// byte: a 32 KB stream claiming 200 million points cleared it and bought
+/// 2.4 GB before a byte of the values was read. Nothing here needs a ratio --
+/// the slice comes first and the buffer is sized from what it returned.
+///
+/// The generic decoder is the mesh side's raw-value path; the point cloud
+/// reaches its own `decode_raw_attribute_values`, which was already exact.
+#[test]
+fn a_generic_attribute_does_not_reserve_more_than_the_stream_can_carry() {
+    fn append_varint(out: &mut Vec<u8>, mut value: u64) {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    let mut stream = draco_header(2, 2, 1, 0); // mesh, sequential
+    append_varint(&mut stream, 0); // zero faces, so connectivity is skipped
+    append_varint(&mut stream, 200_000_000); // 2.4 GB of claimed values
+    append_varint(&mut stream, 1); // one attribute decoder
+    append_varint(&mut stream, 1); // one attribute in it
+    stream.extend_from_slice(&[4, 9, 3, 0]); // generic, float32, three components
+    append_varint(&mut stream, 0); // unique id
+    stream.push(0); // generic decoder
+    stream.resize(stream.len() + 32 * 1024, 0);
+
+    let before = ALLOCATED.load(Ordering::Relaxed);
+    let mut decoded = draco_core::mesh::Mesh::new();
+    let result = draco_core::mesh_decoder::MeshDecoder::new()
+        .decode(&mut DecoderBuffer::new(&stream), &mut decoded);
+    let requested = ALLOCATED.load(Ordering::Relaxed) - before;
+
+    assert!(
+        result.is_err(),
+        "a stream carrying none of the values it claims must not decode"
+    );
+    assert!(
+        requested < 1024 * 1024,
+        "decode reserved {requested} bytes for a {} byte stream",
+        stream.len()
+    );
+}
