@@ -693,9 +693,21 @@ impl SequentialIntegerAttributeDecoder {
 
             // Raw corrections are copied out of the stream a fixed number of
             // bytes at a time, so the stream is an exact bound on how many
-            // there can be -- the one rung above any ratio. `num_bytes == 0`
-            // reads nothing, so nothing backs the count there and the
-            // allocation budget is what stands in for it.
+            // there can be -- the one rung above any ratio.
+            //
+            // `num_bytes == 0` reads nothing: "every correction is zero" is a
+            // claim in the header, and the buffer it sizes is the attribute's
+            // own output. Nothing backs the count, so this is the one place in
+            // the decoder where the allocation budget is load-bearing rather
+            // than a backstop -- and, since the budget is charged nowhere else,
+            // its entire practical surface. What it permits, exactly: below a
+            // 256-byte stream the ratio binds at `262,144` values per input
+            // byte, above it the absolute ceiling binds at `67,108,864` values,
+            // which is 22.4 million vec3 points. This crate never writes such a
+            // stream -- its encoder always emits entropy-coded corrections --
+            // so reaching either bound means a file from elsewhere whose
+            // corrections are uniformly zero and whose point count is past
+            // that.
             if num_bytes == 0 {
                 in_buffer.charge_elements(num_values, std::mem::size_of::<i32>())?;
             } else {
