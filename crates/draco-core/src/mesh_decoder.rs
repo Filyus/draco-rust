@@ -7,6 +7,9 @@ use crate::point_cloud_decoder::PointCloudDecoder;
 use crate::prediction_scheme::EntryToPointIdMap;
 use crate::sequential_generic_attribute_decoder::SequentialGenericAttributeDecoder;
 use crate::sequential_integer_attribute_decoder::SequentialIntegerAttributeDecoder;
+use crate::sequential_normal_attribute_decoder::{
+    PortableExtent, SequentialNormalAttributeDecoder,
+};
 use crate::status::{DracoError, Status};
 
 use crate::attribute_octahedron_transform::AttributeOctahedronTransform;
@@ -1257,87 +1260,8 @@ impl MeshDecoder {
                         });
                     }
                     3 => {
-                        let mut portable = PointAttribute::default();
-                        portable.try_init(
-                            GeometryAttributeType::Generic,
-                            2,
-                            DataType::Uint32,
-                            false,
-                            point_ids_for_values.len(),
-                        )?;
-                        // Legacy compatibility shim: C++ bitstreams with version < 2.0 store
-                        // normal octahedron quantization bits after the prediction header but
-                        // before integer values. Rust-generated files never use this layout.
-                        #[allow(unused_mut)]
-                        let mut quant_bits: u8 = 0;
-                        let normal_skip_bytes = if bitstream_version < 0x0200 {
-                            #[cfg(not(feature = "legacy_bitstream_decode"))]
-                            {
-                                return Err(DracoError::bitstream_version_unsupported());
-                            }
-                            #[cfg(feature = "legacy_bitstream_decode")]
-                            {
-                                let saved_pos = buffer.position();
-                                // Skip prediction_method + transform_type
-                                let method_byte = buffer.decode_u8().map_err(|_| {
-                                    DracoError::general(
-                                        "Failed to read prediction method".to_string(),
-                                    )
-                                })?;
-                                if crate::point_cloud_decoder::carries_transform_byte(method_byte) {
-                                    let _transform_byte = buffer.decode_u8().map_err(|_| {
-                                        DracoError::general(
-                                            "Failed to read transform type".to_string(),
-                                        )
-                                    })?;
-                                }
-                                // Read quant_bits at the correct position
-                                quant_bits = buffer.decode_u8().map_err(|_| {
-                                    DracoError::general(
-                                        "Failed to read normal quant_bits".to_string(),
-                                    )
-                                })?;
-                                if !AttributeOctahedronTransform::is_valid_quantization_bits(
-                                    quant_bits as i32,
-                                ) {
-                                    return Err(DracoError::general(
-                                        "Invalid normal quantization bits".to_string(),
-                                    ));
-                                }
-                                let bytes_consumed = buffer.position() - saved_pos;
-                                let pred_header_bytes =
-                                    if crate::point_cloud_decoder::carries_transform_byte(
-                                        method_byte,
-                                    ) {
-                                        2
-                                    } else {
-                                        1
-                                    };
-                                let skip = bytes_consumed - pred_header_bytes;
-                                buffer.set_position(saved_pos).map_err(|_| {
-                                    DracoError::general(
-                                        "Failed to reset buffer position".to_string(),
-                                    )
-                                })?;
-                                skip
-                            }
-                        } else {
-                            0
-                        };
-                        let mut att_decoder = SequentialIntegerAttributeDecoder::new();
-                        att_decoder.init(&pc_decoder, att_id);
-                        let mut normal_skip_fn = move |buf: &mut DecoderBuffer<'_>| -> bool {
-                            if normal_skip_bytes == 0 {
-                                return true;
-                            }
-                            buf.try_advance(normal_skip_bytes).is_ok()
-                        };
-                        let normal_hook: Option<&mut dyn FnMut(&mut DecoderBuffer<'_>) -> bool> =
-                            if normal_skip_bytes > 0 {
-                                Some(&mut normal_skip_fn)
-                            } else {
-                                None
-                            };
+                        let mut att_decoder = SequentialNormalAttributeDecoder::new();
+                        att_decoder.init(&pc_decoder, mesh, att_id)?;
                         let portable_parent_attribute = if bitstream_version >= 0x0200 {
                             let pos_att_id =
                                 mesh.named_attribute_id(GeometryAttributeType::Position);
@@ -1348,7 +1272,7 @@ impl MeshDecoder {
                         } else {
                             None
                         };
-                        {
+                        let portable = {
                             let _phase = crate::decode_phase_probe::PhaseTimer::start(
                                 crate::decode_phase_probe::Phase::Values,
                             );
@@ -1356,18 +1280,18 @@ impl MeshDecoder {
                                 mesh,
                                 point_ids_for_values,
                                 buffer,
+                                bitstream_version,
+                                PortableExtent::Decoded(point_ids_for_values.len()),
                                 corner_table_for_decoder,
                                 data_to_corner_map_override_for_values,
                                 vertex_to_data_map_override_for_values,
-                                Some(&mut portable),
                                 portable_parent_attribute,
-                                normal_hook,
-                            )?;
-                        }
+                            )?
+                        };
                         pending_normals.push(PendingNormal {
                             att_id,
                             portable,
-                            quantization_bits: quant_bits,
+                            quantization_bits: att_decoder.quantization_bits(),
                         });
                     }
                     _ => {

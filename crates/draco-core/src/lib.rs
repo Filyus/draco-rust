@@ -276,6 +276,10 @@ pub mod sequential_generic_attribute_decoder;
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 #[doc(hidden)]
 pub mod sequential_integer_attribute_decoder;
+#[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
+#[doc(hidden)]
+pub mod sequential_normal_attribute_decoder;
 
 // =============================================================================
 // Encoder-only modules

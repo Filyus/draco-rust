@@ -23,6 +23,9 @@ use crate::attribute_octahedron_transform::AttributeOctahedronTransform;
 use crate::attribute_quantization_transform::AttributeQuantizationTransform;
 #[cfg(feature = "point_cloud_decode")]
 use crate::attribute_transform::AttributeTransform;
+use crate::sequential_normal_attribute_decoder::{
+    PortableExtent, SequentialNormalAttributeDecoder,
+};
 #[cfg(feature = "point_cloud_decode")]
 use crate::version::{version_at_least, VERSION_FLAGS_INTRODUCED};
 
@@ -549,74 +552,9 @@ impl PointCloudDecoder {
                             });
                         }
                         3 => {
-                            let mut portable = PointAttribute::default();
-                            // Deferred: see the quantized arm above.
-                            portable.init_deferred(
-                                GeometryAttributeType::Generic,
-                                2,
-                                DataType::Uint32,
-                                false,
-                                num_points,
-                            )?;
-                            // Legacy compatibility shim: C++ bitstreams with version <= 1.1
-                            // store octahedron quantization bits after the prediction header
-                            // but before integer values. v1.2+ stores them after.
-                            let mut quant_bits: u8 = 0;
-                            let normal_skip_bytes = if bitstream_version < 0x0200 {
-                                let saved_pos = buffer.position();
-                                let method_byte = buffer.decode_u8().map_err(|_| {
-                                    DracoError::general("read pred method".to_string())
-                                })?;
-                                if carries_transform_byte(method_byte) {
-                                    let _transform_byte = buffer.decode_u8().map_err(|_| {
-                                        DracoError::general("read transform".to_string())
-                                    })?;
-                                }
-                                quant_bits = buffer.decode_u8().map_err(|_| {
-                                    DracoError::general("read normal quant_bits".to_string())
-                                })?;
-                                if !AttributeOctahedronTransform::is_valid_quantization_bits(
-                                    quant_bits as i32,
-                                ) {
-                                    return Err(DracoError::general(
-                                        "Invalid normal quantization bits".to_string(),
-                                    ));
-                                }
-                                let bytes_consumed = buffer.position() - saved_pos;
-                                let pred_header_bytes = if carries_transform_byte(method_byte) {
-                                    2
-                                } else {
-                                    1
-                                };
-                                let skip = bytes_consumed - pred_header_bytes;
-                                buffer
-                                    .set_position(saved_pos)
-                                    .map_err(|_| DracoError::general("buf reset".to_string()))?;
-                                skip
-                            } else {
-                                0
-                            };
-                            let mut att_decoder = SequentialIntegerAttributeDecoder::new();
-                            att_decoder.init(self, att_id);
-                            let mut skip_fn =
-                                move |buf: &mut crate::decoder_buffer::DecoderBuffer<'_>| -> bool {
-                                    if normal_skip_bytes > 0
-                                        && buf.try_advance(normal_skip_bytes).is_err()
-                                    {
-                                        return false;
-                                    }
-                                    true
-                                };
-                            let hook: Option<
-                                &mut dyn FnMut(
-                                    &mut crate::decoder_buffer::DecoderBuffer<'_>,
-                                ) -> bool,
-                            > = if normal_skip_bytes > 0 {
-                                Some(&mut skip_fn)
-                            } else {
-                                None
-                            };
-                            att_decoder.decode_values(
+                            let mut att_decoder = SequentialNormalAttributeDecoder::new();
+                            att_decoder.init(self, pc, att_id)?;
+                            let portable = att_decoder.decode_values(
                                 pc,
                                 point_ids.ok_or_else(|| {
                                     DracoError::general(
@@ -625,17 +563,17 @@ impl PointCloudDecoder {
                                     )
                                 })?,
                                 buffer,
+                                bitstream_version,
+                                PortableExtent::Declared(num_points),
                                 None,
                                 None,
                                 None,
-                                Some(&mut portable),
                                 None,
-                                hook,
                             )?;
                             pending_normals.push(PendingNormal {
                                 att_id,
                                 portable,
-                                quantization_bits: quant_bits,
+                                quantization_bits: att_decoder.quantization_bits(),
                             });
                         }
                         0 => {
