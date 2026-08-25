@@ -122,11 +122,13 @@ impl TryFrom<u8> for PredictionSchemeTransformType {
             1 => Ok(PredictionSchemeTransformType::Wrap),
             2 => Ok(PredictionSchemeTransformType::NormalOctahedron),
             3 => Ok(PredictionSchemeTransformType::NormalOctahedronCanonicalized),
-            4 => Ok(PredictionSchemeTransformType::Parallelogram),
-            5 => Ok(PredictionSchemeTransformType::TexCoordsPortable),
-            6 => Ok(PredictionSchemeTransformType::GeometricNormal),
-            7 => Ok(PredictionSchemeTransformType::MultiParallelogram),
-            8 => Ok(PredictionSchemeTransformType::ConstrainedMultiParallelogram),
+            // Nothing above three. The bitstream's transform types end at
+            // `NUM_PREDICTION_SCHEME_TRANSFORM_TYPES == 4`, and upstream's
+            // decoder refuses a byte at or past it before it builds anything.
+            // The variants this used to accept here name predictors, not
+            // transforms; no encoder writes them, so admitting them only let a
+            // stream through that C++ Draco rejects -- and it was let through
+            // to the wrap transform anyway, since nothing decodes them.
             _ => Err(()),
         }
     }
@@ -226,4 +228,31 @@ pub trait PredictionSchemeDecoder<'a, DataType>: PredictionScheme<'a> {
         &mut self,
         buffer: &mut crate::decoder_buffer::DecoderBuffer,
     ) -> Status;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PredictionSchemeTransformType;
+
+    /// The bitstream has four transform types, and a decoder that accepts a
+    /// fifth accepts files C++ Draco refuses -- its own check is
+    /// `transform_type >= NUM_PREDICTION_SCHEME_TRANSFORM_TYPES`, run before
+    /// it builds anything. This enum also carries names for the *predictors*,
+    /// which share no numbering with the transforms and were being parsed as
+    /// if they did.
+    #[test]
+    fn only_the_four_transform_types_the_bitstream_has_are_accepted() {
+        for byte in 0..=3u8 {
+            assert!(
+                PredictionSchemeTransformType::try_from(byte).is_ok(),
+                "byte {byte} names a transform the format defines"
+            );
+        }
+        for byte in 4..=255u8 {
+            assert!(
+                PredictionSchemeTransformType::try_from(byte).is_err(),
+                "byte {byte} is past the last transform type and must be refused"
+            );
+        }
+    }
 }
