@@ -824,3 +824,93 @@ fn a_normal_predicted_from_a_one_component_position_still_round_trips() {
         assert_eq!(decoded.num_faces(), NUM_POINTS / 3);
     }
 }
+
+/// An octahedron-folded normal only round-trips under a prediction scheme that
+/// carries the octahedron transform. Asking for a parallelogram one instead
+/// used to be honoured, and below bitstream 2.0 that moved the octahedron's
+/// bit count out of the stream entirely -- the byte rides between the
+/// prediction header and the values, and it was written only when the header
+/// said octahedron. The decoder then read the first value byte as a bit count
+/// and refused the file its own encoder had just written.
+///
+/// Every scheme, not just the one the fuzzer happened to name, and both
+/// bitstream eras: 2.0 keeps the byte after the values, so it fails
+/// differently or not at all, which is exactly why one version is not a test.
+#[test]
+fn a_normal_round_trips_whichever_prediction_scheme_is_asked_for() {
+    const NUM_POINTS: usize = 96;
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(NUM_POINTS);
+
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        NUM_POINTS,
+    );
+    for index in 0..NUM_POINTS {
+        let angle = index as f32 * 0.37;
+        for (component, value) in [angle.cos(), angle.sin(), index as f32].iter().enumerate() {
+            position
+                .buffer_mut()
+                .write((index * 3 + component) * 4, &value.to_le_bytes());
+        }
+    }
+    mesh.add_attribute(position);
+
+    let mut normal = PointAttribute::new();
+    normal.init(
+        GeometryAttributeType::Normal,
+        3,
+        DataType::Float32,
+        true,
+        NUM_POINTS,
+    );
+    for index in 0..NUM_POINTS {
+        let angle = index as f32 * 0.11;
+        for (component, value) in [angle.cos(), angle.sin(), 0.0].iter().enumerate() {
+            normal
+                .buffer_mut()
+                .write((index * 3 + component) * 4, &value.to_le_bytes());
+        }
+    }
+    mesh.add_attribute(normal);
+
+    mesh.set_num_faces(NUM_POINTS / 3);
+    for face in 0..NUM_POINTS / 3 {
+        let base = (face * 3) as u32;
+        mesh.set_face(
+            draco_core::geometry_indices::FaceIndex(face as u32),
+            [base.into(), (base + 1).into(), (base + 2).into()],
+        );
+    }
+
+    for version in [(1u8, 1u8), (2, 2)] {
+        for scheme in 0..=6 {
+            let mut options = EncoderOptions::new();
+            options.set_version(version.0, version.1);
+            options.set_attribute_int(0, "quantization_bits", 11);
+            options.set_attribute_int(1, "quantization_bits", 9);
+            options.set_attribute_int(1, "prediction_scheme", scheme);
+
+            let encoded = match encode_mesh(mesh.clone(), &options) {
+                Ok(bytes) => bytes,
+                // Refusing to encode is a fine answer; writing a stream the
+                // decoder cannot read is not.
+                Err(_) => continue,
+            };
+            let mut decoded = Mesh::new();
+            MeshDecoder::new()
+                .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "version {version:?}, prediction scheme {scheme}:                          encoder wrote a stream its decoder rejects: {error}"
+                    )
+                });
+            assert_eq!(decoded.num_faces(), NUM_POINTS / 3);
+        }
+    }
+}

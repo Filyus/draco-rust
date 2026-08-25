@@ -336,6 +336,27 @@ impl SequentialIntegerAttributeEncoder {
             encoder,
         );
 
+        // An octahedron-folded normal can only be predicted by a scheme that
+        // carries the octahedron transform, which is the geometric-normal and
+        // difference pair -- upstream's
+        // `SequentialNormalAttributeEncoder::CreateIntPredictionScheme` builds
+        // no others. Every remaining method here is wrap-transformed, and a
+        // wrap-transformed normal is a stream no decoder reads back: below 2.0
+        // the octahedron's bit count rides between the prediction header and
+        // the values, and it is written only when the transform says
+        // octahedron, so choosing one of the parallelogram schemes for a normal
+        // left the decoder reading the first value byte as a bit count.
+        if !matches!(self.transform_family, IntPredictionTransformFamily::Wrap)
+            && !matches!(
+                selected_method,
+                PredictionSchemeMethod::None
+                    | PredictionSchemeMethod::Difference
+                    | PredictionSchemeMethod::MeshPredictionGeometricNormal
+            )
+        {
+            selected_method = PredictionSchemeMethod::Difference;
+        }
+
         // The wrap transform stores `1 + (max - min)` of the raw values in an
         // i32 (see `PredictionSchemeWrapEncodingTransform::init`), and its
         // decoder counterpart refuses any stream whose span does not fit --
@@ -1131,12 +1152,13 @@ impl SequentialIntegerAttributeEncoder {
             out_buffer.encode_u8(selected_transform_type as u8);
         }
 
+        // Keyed on the attribute being octahedron-folded, not on the transform
+        // that ended up in the header: upstream writes this byte from
+        // `PrepareValues`, which runs for every normal attribute including the
+        // one whose prediction came out `None` and therefore carries no
+        // transform byte at all. The decoder reads it back the same way.
         #[cfg(feature = "legacy_bitstream_encode")]
-        if matches!(
-            selected_transform_type,
-            PredictionSchemeTransformType::NormalOctahedron
-                | PredictionSchemeTransformType::NormalOctahedronCanonicalized
-        ) {
+        if !matches!(self.transform_family, IntPredictionTransformFamily::Wrap) {
             let (major, minor) = options.get_version();
             let bitstream_version = crate::version::bitstream_version(major, minor);
             // Version alone, for the same reason as `writes_inline_quantization`.
