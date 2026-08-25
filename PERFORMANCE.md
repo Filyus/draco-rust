@@ -3766,6 +3766,53 @@ cell, and the spread column says which cells resolved anything.
 ITERS=80 cargo run --release --manifest-path crates/Cargo.toml   -p draco-cpp-test-bridge --example encode_matrix -- 5 0,3,5,8,10 <mesh.obj>...
 ```
 
+### Named Models, Both Operations, One Process
+
+File: `crates/draco-cpp-test-bridge/examples/model_matrix.rs`
+
+Package: `draco-cpp-test-bridge`
+
+Purpose: compress and decompress named models on both sides in one process,
+for a comparison meant to be quoted rather than acted on. The sibling matrices
+sweep speeds over generated payloads; this one answers "how do the two compare
+on this actual model, at these settings", and prints the two output sizes so a
+cell that is not comparing like with like says so.
+
+The timed regions are matched to the C++ shim on purpose, because that is where
+a cross-implementation comparison usually goes wrong. `EncodeMeshToBuffer` and
+`DecodeMeshFromBuffer` alone are inside the clock; the encoder, the buffer and
+the `Mesh` clone that `set_mesh` needs are outside it, because C++ hands its
+encoder a `const Mesh&` and never copies -- timing that copy would charge one
+side for work the other does not do.
+
+Quantization targets the *position* attribute by name. Attribute 0 is not
+always position -- in `car.drc` it is the normal -- and quantizing the wrong one
+is a difference between the two sides rather than a setting. The output sizes
+are what catch it: they came out 42,688 against 41,718 until this was fixed,
+and byte-identical after.
+
+```sh
+DRACO_CPP_BUILD_DIR=... DRACO_CPP_SOURCE_DIR=.../src cargo run --release   --manifest-path crates/Cargo.toml -p draco-cpp-test-bridge --example model_matrix   -- 9 20 4 10 bunny=testdata/bunny_cpp_standard.drc lamp=testdata/lamp_cpp_std.drc   car=testdata/car.drc
+```
+
+A model that exists only as a `.drc` reaches the sibling matrices, which take
+`.obj`, through `examples/drc_to_obj.rs`.
+
+Ryzen AI 7 350, one thread, C++ Draco 1.5.7 release, speed 4, 10-bit positions,
+medians of nine rounds of twenty. All three wrote byte-identical output.
+
+| model | faces | C++ encode | Rust encode | | C++ decode | Rust decode | |
+|---|---|---|---|---|---|---|---|
+| bunny | 69,451 | `19,792 [19,325..24,542]` | `12,394 [12,032..14,016]` | `1.60x` | `6,162 [6,112..8,107]` | `4,533 [4,426..5,904]` | `1.36x` |
+| lamp | 12,082 | `2,764 [2,730..2,853]` | `1,950 [1,927..2,006]` | `1.42x` | `1,270 [1,256..1,370]` | `932 [914..970]` | `1.36x` |
+| car | 1,744 | `644 [631..658]` | `358 [351..384]` | `1.80x` | `261 [254..270]` | `147 [146..162]` | `1.78x` |
+
+Microseconds. The ratios are stable across runs to within 0.02x; the absolute
+figures are not, and are comparable only inside their own run. An earlier run
+of the same command on a quieter machine read `1.62x / 1.34x`, `1.40x / 1.37x`
+and `1.79x / 1.80x` while its absolute encode times were some 20% lower -- which
+is the reason ratios are quoted from a run rather than carried between them.
+
 ### Decode Through The C++ Bridge
 
 File: `crates/draco-cpp-test-bridge/tests/bench_decode_cpp_vs_rust.rs`
