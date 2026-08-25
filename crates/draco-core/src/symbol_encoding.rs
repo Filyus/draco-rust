@@ -561,8 +561,7 @@ pub fn decode_raw_symbols(
             return Err(DracoError::new(
                 crate::status::ErrorKind::AllocationExceedsInput,
                 format!(
-                    "the stream declared {num_values} symbols but its coded bytes ran out after {}",
-                    symbols.len()
+                    "the stream declared {num_values} symbols, more than its coded bytes carry"
                 ),
             ));
         }
