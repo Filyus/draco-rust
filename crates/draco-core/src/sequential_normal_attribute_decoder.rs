@@ -24,20 +24,10 @@ use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_decoder::PointCloudDecoder;
 use crate::prediction_scheme::EntryToPointIdMap;
-use crate::sequential_integer_attribute_decoder::SequentialIntegerAttributeDecoder;
+use crate::sequential_integer_attribute_decoder::{
+    PortableExtent, SequentialIntegerAttributeDecoder,
+};
 use crate::status::{DracoError, Status};
-
-/// How the portable attribute may be sized before a value has been read.
-pub enum PortableExtent {
-    /// A count the connectivity already produced. The mesh decoder's point-id
-    /// list comes out of the decoded corner table, so it is backed by data and
-    /// can be reserved in one go.
-    Decoded(usize),
-    /// A count the header states and nothing has yet backed. A point cloud has
-    /// no connectivity to derive one from, so the buffer grows as values arrive
-    /// rather than trusting the claim.
-    Declared(usize),
-}
 
 pub struct SequentialNormalAttributeDecoder {
     base: SequentialIntegerAttributeDecoder,
@@ -153,22 +143,13 @@ impl SequentialNormalAttributeDecoder {
         portable_parent_attribute: Option<&PointAttribute>,
     ) -> Result<PointAttribute, DracoError> {
         let mut portable = PointAttribute::default();
-        match extent {
-            PortableExtent::Decoded(size) => portable.try_init(
-                GeometryAttributeType::Generic,
-                2,
-                DataType::Uint32,
-                false,
-                size,
-            )?,
-            PortableExtent::Declared(size) => portable.init_deferred(
-                GeometryAttributeType::Generic,
-                2,
-                DataType::Uint32,
-                false,
-                size,
-            )?,
-        }
+        extent.init(
+            &mut portable,
+            GeometryAttributeType::Generic,
+            2,
+            DataType::Uint32,
+            false,
+        )?;
 
         let skip_bytes = if bitstream_version < 0x0200 {
             #[cfg(not(feature = "legacy_bitstream_decode"))]

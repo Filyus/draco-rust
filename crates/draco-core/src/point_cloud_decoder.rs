@@ -13,7 +13,9 @@ use crate::point_cloud::PointCloud;
 #[cfg(feature = "point_cloud_decode")]
 use crate::prediction_scheme::EntryToPointIdMap;
 #[cfg(feature = "point_cloud_decode")]
-use crate::sequential_integer_attribute_decoder::SequentialIntegerAttributeDecoder;
+use crate::sequential_integer_attribute_decoder::{
+    PortableExtent, SequentialIntegerAttributeDecoder,
+};
 #[cfg(feature = "point_cloud_decode")]
 use crate::status::{DracoError, Status};
 
@@ -26,9 +28,9 @@ use crate::attribute_transform::AttributeTransform;
 #[cfg(feature = "point_cloud_decode")]
 use crate::sequential_generic_attribute_decoder::SequentialGenericAttributeDecoder;
 #[cfg(feature = "point_cloud_decode")]
-use crate::sequential_normal_attribute_decoder::{
-    PortableExtent, SequentialNormalAttributeDecoder,
-};
+use crate::sequential_normal_attribute_decoder::SequentialNormalAttributeDecoder;
+#[cfg(feature = "point_cloud_decode")]
+use crate::sequential_quantization_attribute_decoder::SequentialQuantizationAttributeDecoder;
 #[cfg(feature = "point_cloud_decode")]
 use crate::version::{version_at_least, VERSION_FLAGS_INTRODUCED};
 
@@ -61,13 +63,11 @@ pub trait GeometryDecoder {
 /// parameters shifted: the range came out zero and every position dequantized to
 /// the origin, with the point and face counts still right and the decode still
 /// reporting success. Draco writes `PREDICTION_NONE` at compression level 0.
-/// Gated on both callers rather than on `point_cloud_decode` alone, because the
-/// mesh decoder's own pre-1.2 shims call it too -- a build with `decoder` but
-/// without `point_cloud_decode`, which is what `drc-wasm` asks for, otherwise
-/// fails to compile. Naming both is what keeps it from also being dead code in
-/// a `decoder` build that compiles neither caller, which is what `obj-wasm` and
-/// `ply-wasm` ask for.
-#[cfg(any(feature = "point_cloud_decode", feature = "legacy_bitstream_decode"))]
+/// Gated on the feature its callers live behind, and only that one: both of
+/// them are now the pre-2.0 shims inside the shared normal and quantization
+/// decoders, so a `point_cloud_decode` build without legacy support compiles
+/// neither and would carry this as dead code.
+#[cfg(feature = "legacy_bitstream_decode")]
 pub(crate) fn carries_transform_byte(method_byte: u8) -> bool {
     method_byte != 0xFF && method_byte != 0xFE
 }
@@ -411,77 +411,9 @@ impl PointCloudDecoder {
                             )?;
                         }
                         2 => {
-                            let original = pc.try_attribute(att_id)?;
-                            let (original_type, original_num_components) =
-                                (original.attribute_type(), original.num_components());
-                            let mut portable = PointAttribute::default();
-                            // Deferred for the same reason the attribute above
-                            // it is: `num_points` is the header's claim, and
-                            // the integer decoder sizes this buffer once the
-                            // values it will hold have been read.
-                            portable.init_deferred(
-                                original_type,
-                                original_num_components,
-                                DataType::Uint32,
-                                false,
-                                num_points,
-                            )?;
-                            let mut transform = AttributeQuantizationTransform::new();
-
-                            // Legacy compatibility shim: C++ bitstreams with version <= 1.1
-                            // store quantization params before integer values in the stream.
-                            // v1.2+ (including Rust-generated v1.3) stores them after.
-                            let quant_skip_bytes = if bitstream_version < 0x0200 {
-                                let saved_pos = buffer.position();
-                                let method_byte = buffer.decode_u8().map_err(|_| {
-                                    DracoError::general("read pred method".to_string())
-                                })?;
-                                if carries_transform_byte(method_byte) {
-                                    let _transform_byte = buffer.decode_u8().map_err(|_| {
-                                        DracoError::general("read transform".to_string())
-                                    })?;
-                                }
-                                let original = pc.try_attribute(att_id)?;
-                                transform.decode_parameters(original, buffer).map_err(|e| {
-                                    DracoError::general(format!(
-                                        "Failed to decode quantization parameters (v<2.0): {e}"
-                                    ))
-                                })?;
-                                let bytes_consumed = buffer.position() - saved_pos;
-                                let pred_header_bytes = if carries_transform_byte(method_byte) {
-                                    2
-                                } else {
-                                    1
-                                };
-                                let skip = bytes_consumed - pred_header_bytes;
-                                buffer
-                                    .set_position(saved_pos)
-                                    .map_err(|_| DracoError::general("buf reset".to_string()))?;
-                                skip
-                            } else {
-                                0
-                            };
-                            let mut att_decoder = SequentialIntegerAttributeDecoder::new();
-                            att_decoder.init(self, att_id);
-                            let mut skip_fn =
-                                move |buf: &mut crate::decoder_buffer::DecoderBuffer<'_>| -> bool {
-                                    if quant_skip_bytes > 0
-                                        && buf.try_advance(quant_skip_bytes).is_err()
-                                    {
-                                        return false;
-                                    }
-                                    true
-                                };
-                            let hook: Option<
-                                &mut dyn FnMut(
-                                    &mut crate::decoder_buffer::DecoderBuffer<'_>,
-                                ) -> bool,
-                            > = if quant_skip_bytes > 0 {
-                                Some(&mut skip_fn)
-                            } else {
-                                None
-                            };
-                            att_decoder.decode_values(
+                            let mut att_decoder = SequentialQuantizationAttributeDecoder::new();
+                            att_decoder.init(self, pc, att_id)?;
+                            let portable = att_decoder.decode_values(
                                 pc,
                                 point_ids.ok_or_else(|| {
                                     DracoError::general(
@@ -490,17 +422,17 @@ impl PointCloudDecoder {
                                     )
                                 })?,
                                 buffer,
+                                bitstream_version,
+                                PortableExtent::Declared(num_points),
                                 None,
                                 None,
                                 None,
-                                Some(&mut portable),
                                 None,
-                                hook,
                             )?;
                             pending_quant.push(PendingQuant {
                                 att_id,
                                 portable,
-                                transform,
+                                transform: att_decoder.into_transform(),
                             });
                         }
                         3 => {

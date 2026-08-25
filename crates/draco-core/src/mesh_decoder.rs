@@ -6,10 +6,11 @@ use crate::mesh::Mesh;
 use crate::point_cloud_decoder::PointCloudDecoder;
 use crate::prediction_scheme::EntryToPointIdMap;
 use crate::sequential_generic_attribute_decoder::SequentialGenericAttributeDecoder;
-use crate::sequential_integer_attribute_decoder::SequentialIntegerAttributeDecoder;
-use crate::sequential_normal_attribute_decoder::{
-    PortableExtent, SequentialNormalAttributeDecoder,
+use crate::sequential_integer_attribute_decoder::{
+    PortableExtent, SequentialIntegerAttributeDecoder,
 };
+use crate::sequential_normal_attribute_decoder::SequentialNormalAttributeDecoder;
+use crate::sequential_quantization_attribute_decoder::SequentialQuantizationAttributeDecoder;
 use crate::status::{DracoError, Status};
 
 use crate::attribute_octahedron_transform::AttributeOctahedronTransform;
@@ -1128,84 +1129,8 @@ impl MeshDecoder {
                         }
                     }
                     2 => {
-                        let mut portable = PointAttribute::default();
-                        let (original_type, original_num_components) = {
-                            let original = mesh.try_attribute(att_id)?;
-                            (original.attribute_type(), original.num_components())
-                        };
-                        portable.try_init(
-                            original_type,
-                            original_num_components,
-                            DataType::Uint32,
-                            false,
-                            point_ids_for_values.len(),
-                        )?;
-                        #[allow(unused_mut)]
-                        let mut transform = AttributeQuantizationTransform::new();
-                        // Legacy compatibility shim: C++ bitstreams with version < 2.0 store
-                        // quantization params before the integer values, while v2.0+ stores
-                        // them after the values. Rust-generated files never use the legacy
-                        // layout, so this peek-ahead only exists to decode genuine old C++ files.
-                        let quant_skip_bytes = if bitstream_version < 0x0200 {
-                            #[cfg(not(feature = "legacy_bitstream_decode"))]
-                            {
-                                return Err(DracoError::bitstream_version_unsupported());
-                            }
-                            #[cfg(feature = "legacy_bitstream_decode")]
-                            {
-                                let saved_pos = buffer.position();
-                                let method_byte = buffer.decode_u8().map_err(|_| {
-                                    DracoError::general(
-                                        "Failed to read prediction method".to_string(),
-                                    )
-                                })?;
-                                if crate::point_cloud_decoder::carries_transform_byte(method_byte) {
-                                    let _transform_byte = buffer.decode_u8().map_err(|_| {
-                                        DracoError::general(
-                                            "Failed to read transform type".to_string(),
-                                        )
-                                    })?;
-                                }
-                                let original = mesh.try_attribute(att_id)?;
-                                transform.decode_parameters(original, buffer).map_err(|e| {
-                                    DracoError::general(format!(
-                                        "Failed to decode quantization parameters (v<2.0): {e}"
-                                    ))
-                                })?;
-                                let bytes_consumed = buffer.position() - saved_pos;
-                                let pred_header_bytes =
-                                    if crate::point_cloud_decoder::carries_transform_byte(
-                                        method_byte,
-                                    ) {
-                                        2
-                                    } else {
-                                        1
-                                    };
-                                let skip = bytes_consumed - pred_header_bytes;
-                                buffer.set_position(saved_pos).map_err(|_| {
-                                    DracoError::general(
-                                        "Failed to reset buffer position".to_string(),
-                                    )
-                                })?;
-                                skip
-                            }
-                        } else {
-                            0
-                        };
-                        let mut att_decoder = SequentialIntegerAttributeDecoder::new();
-                        att_decoder.init(&pc_decoder, att_id);
-                        let mut skip_hook_fn = move |buf: &mut DecoderBuffer<'_>| -> bool {
-                            if quant_skip_bytes == 0 {
-                                return true;
-                            }
-                            buf.try_advance(quant_skip_bytes).is_ok()
-                        };
-                        let pre_hook_opt: Option<&mut dyn FnMut(&mut DecoderBuffer<'_>) -> bool> =
-                            if quant_skip_bytes > 0 {
-                                Some(&mut skip_hook_fn)
-                            } else {
-                                None
-                            };
+                        let mut att_decoder = SequentialQuantizationAttributeDecoder::new();
+                        att_decoder.init(&pc_decoder, mesh, att_id)?;
                         let portable_parent_attribute = if bitstream_version >= 0x0200 {
                             let pos_att_id =
                                 mesh.named_attribute_id(GeometryAttributeType::Position);
@@ -1216,7 +1141,7 @@ impl MeshDecoder {
                         } else {
                             None
                         };
-                        {
+                        let portable = {
                             let _phase = crate::decode_phase_probe::PhaseTimer::start(
                                 crate::decode_phase_probe::Phase::Values,
                             );
@@ -1224,14 +1149,14 @@ impl MeshDecoder {
                                 mesh,
                                 point_ids_for_values,
                                 buffer,
+                                bitstream_version,
+                                PortableExtent::Decoded(point_ids_for_values.len()),
                                 corner_table_for_decoder,
                                 data_to_corner_map_override_for_values,
                                 vertex_to_data_map_override_for_values,
-                                Some(&mut portable),
                                 portable_parent_attribute,
-                                pre_hook_opt,
-                            )?;
-                        }
+                            )?
+                        };
                         // Below 2.0, upstream has no separate "portable" concept
                         // at all: an attribute's own decode dequantizes it in
                         // place immediately, so a later attribute in this same
@@ -1251,12 +1176,14 @@ impl MeshDecoder {
                             if dst.size() != portable.size() {
                                 dst.resize_unique_entries(portable.size())?;
                             }
-                            transform.inverse_transform_attribute(&portable, dst)?;
+                            att_decoder
+                                .transform()
+                                .inverse_transform_attribute(&portable, dst)?;
                         }
                         pending_quant.push(PendingQuant {
                             att_id,
                             portable,
-                            transform,
+                            transform: att_decoder.into_transform(),
                         });
                     }
                     3 => {

@@ -32,6 +32,40 @@ use crate::prediction_scheme_wrap::PredictionSchemeWrapDecodingTransform;
 use crate::status::{DracoError, Status};
 use crate::symbol_encoding::{decode_symbols, SymbolEncodingOptions};
 
+/// How a portable attribute may be sized before a value has been read.
+///
+/// The two geometry decoders answer this differently and both are right: a
+/// mesh's point-id list comes out of the decoded corner table, so its length is
+/// backed by data, while a point cloud has only the count the header states.
+pub enum PortableExtent {
+    /// A count the connectivity already produced; reserve it in one go.
+    Decoded(usize),
+    /// A count nothing has backed yet; let the buffer grow as values arrive.
+    Declared(usize),
+}
+
+impl PortableExtent {
+    /// Initializes `portable` to hold values of this shape, reserving or
+    /// deferring according to what backs the count.
+    pub fn init(
+        &self,
+        portable: &mut crate::geometry_attribute::PointAttribute,
+        attribute_type: crate::geometry_attribute::GeometryAttributeType,
+        num_components: u8,
+        data_type: crate::draco_types::DataType,
+        normalized: bool,
+    ) -> Status {
+        match *self {
+            PortableExtent::Decoded(size) => {
+                portable.try_init(attribute_type, num_components, data_type, normalized, size)
+            }
+            PortableExtent::Declared(size) => {
+                portable.init_deferred(attribute_type, num_components, data_type, normalized, size)
+            }
+        }
+    }
+}
+
 pub struct SequentialIntegerAttributeDecoder {
     attribute: i32,
     prediction_scheme: Option<Box<dyn PredictionSchemeDecoder<'static, i32>>>,
