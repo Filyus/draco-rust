@@ -914,3 +914,92 @@ fn a_normal_round_trips_whichever_prediction_scheme_is_asked_for() {
         }
     }
 }
+
+/// The deprecated texture-coordinate scheme predicts nothing on some meshes,
+/// and a prediction that produced no orientations writes a count of zero --
+/// which is exactly where its decoder stops, here and upstream. The encoder
+/// used to write it anyway and refuse its own file.
+///
+/// The mesh is what the `encode_drc` campaign reduced to: four faces over a
+/// point count far larger than they use, so the traversal reaches almost none
+/// of the values and no orientation comes out.
+#[test]
+fn a_texture_coordinate_scheme_that_predicts_nothing_still_round_trips() {
+    const NUM_POINTS: usize = 308;
+    const NUM_FACES: usize = 4;
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(NUM_POINTS);
+
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        NUM_POINTS,
+    );
+    for index in 0..NUM_POINTS {
+        let angle = index as f32 * 0.21;
+        for (component, value) in [angle.cos(), angle.sin(), index as f32 * 0.01]
+            .iter()
+            .enumerate()
+        {
+            position
+                .buffer_mut()
+                .write((index * 3 + component) * 4, &value.to_le_bytes());
+        }
+    }
+    mesh.add_attribute(position);
+
+    let mut tex_coord = PointAttribute::new();
+    tex_coord.init(
+        GeometryAttributeType::TexCoord,
+        2,
+        DataType::Float32,
+        false,
+        NUM_POINTS,
+    );
+    // One texture coordinate for every point. The prediction pushes an
+    // orientation only where a triangle's two already-coded corners carry
+    // *different* coordinates, so a uniformly mapped attribute produces none at
+    // all -- which is a perfectly ordinary thing for a mesh to have.
+    for index in 0..NUM_POINTS {
+        for (component, value) in [0.25f32, 0.75].iter().enumerate() {
+            tex_coord
+                .buffer_mut()
+                .write((index * 2 + component) * 4, &value.to_le_bytes());
+        }
+    }
+    mesh.add_attribute(tex_coord);
+
+    mesh.set_num_faces(NUM_FACES);
+    for face in 0..NUM_FACES {
+        let base = (face * 3) as u32;
+        mesh.set_face(
+            draco_core::geometry_indices::FaceIndex(face as u32),
+            [base.into(), (base + 1).into(), (base + 2).into()],
+        );
+    }
+
+    for version in [(1u8, 1u8), (2, 2)] {
+        let mut options = EncoderOptions::new();
+        options.set_version(version.0, version.1);
+        options.set_attribute_int(0, "quantization_bits", 14);
+        options.set_attribute_int(1, "quantization_bits", 12);
+        // The deprecated scheme, by number: nothing selects it automatically.
+        options.set_attribute_int(1, "prediction_scheme", 3);
+
+        let encoded = match encode_mesh(mesh.clone(), &options) {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        let mut decoded = Mesh::new();
+        MeshDecoder::new()
+            .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
+            .unwrap_or_else(|error| {
+                panic!("version {version:?}: encoder wrote a stream its decoder rejects: {error}")
+            });
+        assert_eq!(decoded.num_faces(), NUM_FACES);
+    }
+}

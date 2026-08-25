@@ -785,7 +785,30 @@ impl SequentialIntegerAttributeEncoder {
                                 &entry_to_point_id_map,
                             )),
                         )?;
-                        predictor_tex_coords_deprecated = Some(predictor);
+                        // A prediction that produced no orientations writes a
+                        // count of zero, and a count of zero is where both this
+                        // decoder and upstream's stop -- so the encode would
+                        // have produced a stream nothing reads. Whether any
+                        // orientation comes out is a property of the mesh, not
+                        // of the request, so the answer is the downgrade this
+                        // arm already makes when there is no corner table to
+                        // predict from.
+                        if predictor.num_orientations() == 0 {
+                            selected_method = PredictionSchemeMethod::Difference;
+                            let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                            let mut fallback = PredictionSchemeDeltaEncoder::new(transform);
+                            selected_transform_type = fallback.get_transform_type();
+                            fallback.compute_correction_values(
+                                &values,
+                                &mut corrections,
+                                num_values,
+                                num_components,
+                                None,
+                            )?;
+                            predictor_delta = Some(fallback);
+                        } else {
+                            predictor_tex_coords_deprecated = Some(predictor);
+                        }
                     } else {
                         selected_method = PredictionSchemeMethod::Difference;
                         let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();

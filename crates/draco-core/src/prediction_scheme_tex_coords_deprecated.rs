@@ -40,6 +40,14 @@ pub struct MeshPredictionSchemeTexCoordsDeprecatedEncoder<'a, Transform> {
 
 #[cfg(feature = "encoder")]
 impl<'a, Transform> MeshPredictionSchemeTexCoordsDeprecatedEncoder<'a, Transform> {
+    /// How many orientation bits the prediction produced. Zero is a stream no
+    /// decoder reads back -- both this crate's and upstream's refuse a count of
+    /// zero before anything else -- so the caller checks this before keeping
+    /// the scheme.
+    pub fn num_orientations(&self) -> usize {
+        self.orientations.len()
+    }
+
     pub fn new(transform: Transform) -> Self {
         Self {
             transform,
