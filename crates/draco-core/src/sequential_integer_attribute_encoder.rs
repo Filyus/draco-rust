@@ -1281,7 +1281,7 @@ impl SequentialIntegerAttributeEncoder {
     }
 }
 
-fn read_value_as_i32(buffer: &DataBuffer, offset: usize, data_type: DataType) -> i32 {
+pub(crate) fn read_value_as_i32(buffer: &DataBuffer, offset: usize, data_type: DataType) -> i32 {
     match data_type {
         DataType::Int8 => {
             let mut bytes = [0u8; 1];

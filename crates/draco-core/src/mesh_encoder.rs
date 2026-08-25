@@ -260,6 +260,108 @@ impl GeometryEncoder for MeshEncoder {
     }
 }
 
+/// Rebuilds a portable attribute's point map, as upstream does in
+/// `SequentialIntegerAttributeEncoder::TransformAttributeToPortableFormat`.
+///
+/// The values were written in encoding order, but a prediction scheme reads its
+/// parent as `mapped_index(point_id)`; without this the lookup returns whichever
+/// vertex happens to sit at that index in the traversal, and encoder and decoder
+/// predict from different positions.
+#[cfg(feature = "encoder")]
+fn rebuild_parent_point_map(
+    attribute: &PointAttribute,
+    portable: &mut PointAttribute,
+    point_ids: &[PointIndex],
+    num_points: usize,
+) -> Status {
+    let mut value_to_value = vec![0u32; attribute.size().max(1)];
+    for (entry, &point_id) in point_ids.iter().enumerate() {
+        let src = attribute.mapped_index(point_id);
+        if (src.0 as usize) < value_to_value.len() {
+            value_to_value[src.0 as usize] = entry as u32;
+        }
+    }
+    portable.set_explicit_mapping(num_points);
+    for point in 0..num_points {
+        let src = attribute.mapped_index(PointIndex(point as u32));
+        let entry = value_to_value
+            .get(src.0 as usize)
+            .copied()
+            .unwrap_or_default();
+        portable.try_set_point_map_entry(
+            PointIndex(point as u32),
+            crate::geometry_indices::AttributeValueIndex(entry),
+        )?;
+    }
+    Ok(())
+}
+
+/// Whether a prediction scheme that reads the position as its parent will be
+/// used, so the position needs a portable form for the predictor to read.
+///
+/// Speed is upstream's own condition -- the tex-coords-portable and
+/// geometric-normal schemes are the two that declare a parent, and
+/// `SelectPredictionMethod` picks neither at speed 4 or above. An explicit
+/// `prediction_scheme` option does not go through that selection, though, so
+/// asking for one by number at any speed has to count as well: otherwise the
+/// scheme is built and the parent it reads is the original attribute, whose
+/// value order and point map are not what the decoder reconstructs.
+#[cfg(feature = "encoder")]
+fn position_is_a_prediction_parent(point_cloud: &PointCloud, options: &EncoderOptions) -> bool {
+    if options.get_speed() < 4 {
+        return true;
+    }
+    (0..point_cloud.num_attributes())
+        .any(|att_id| matches!(options.get_attribute_prediction_scheme(att_id), 3 | 5 | 6))
+}
+
+/// The portable form of an already-integral attribute: its values converted to
+/// `i32` in encoding order, which is the shape the decoder reconstructs.
+///
+/// Upstream builds one for *every* integer attribute --
+/// `SequentialIntegerAttributeEncoder::PrepareValues` calls
+/// `PreparePortableAttribute` before it looks at quantization at all -- and a
+/// prediction scheme reaching for a parent gets that, never the original. This
+/// port only built one where a quantization transform produced it, so a scheme
+/// predicting from an integer position read the original instead: its own value
+/// count and its own point map, both of which a deduplicated or seamed mesh
+/// makes different from what the decoder will hold. Encoder and decoder then
+/// predicted from different positions and disagreed about which entries carry
+/// an orientation bit, which the decoder reports as running out of them.
+#[cfg(feature = "encoder")]
+fn integral_portable_attribute(
+    attribute: &PointAttribute,
+    point_ids: &[PointIndex],
+) -> Result<PointAttribute, DracoError> {
+    let num_components = attribute.num_components();
+    let data_type = attribute.data_type();
+    let byte_stride = attribute.byte_stride() as usize;
+    let component_size = data_type.byte_length();
+
+    let mut portable = PointAttribute::default();
+    portable.try_init(
+        attribute.attribute_type(),
+        num_components,
+        crate::draco_types::DataType::Int32,
+        false,
+        point_ids.len(),
+    )?;
+
+    for (entry, &point_id) in point_ids.iter().enumerate() {
+        let src = attribute.mapped_index(point_id).0 as usize * byte_stride;
+        for component in 0..num_components as usize {
+            let value = crate::sequential_integer_attribute_encoder::read_value_as_i32(
+                attribute.buffer(),
+                src + component * component_size,
+                data_type,
+            );
+            let offset = (entry * num_components as usize + component) * 4;
+            portable.buffer_mut().write(offset, &value.to_le_bytes());
+        }
+    }
+    Ok(portable)
+}
+
 impl MeshEncoder {
     /// Creates an encoder without an assigned mesh.
     pub fn new() -> Self {
@@ -1086,11 +1188,64 @@ impl MeshEncoder {
         // Store transforms and encoders for later use in transform data encoding
         let mut quantization_transforms: Vec<Option<AttributeQuantizationTransform>> = Vec::new();
         let mut portable_attributes: Vec<Option<PointAttribute>> = Vec::new();
+        let mut parent_portable: Option<(i32, PointAttribute)> = None;
         let mut normal_encoders: Vec<Option<SequentialNormalAttributeEncoder>> = Vec::new();
         // Collected here rather than written straight to `self`, which is
         // borrowed as the `GeometryEncoder` the attribute encoders predict
         // against for as long as this loop runs.
         let mut predictions = Vec::new();
+
+        // Before any value is written: the position's portable form, for a
+        // prediction scheme that will read it as a parent.
+        //
+        // The grouped path builds these in a pass of their own, as upstream's
+        // controller does. This one encodes each attribute inline, so a parent
+        // encoded after its dependant would not exist when the dependant needs
+        // it -- and until now none existed at all here, which left every
+        // parent-reading scheme on this path predicting from the original
+        // attribute while the decoder predicted from the reconstruction. The
+        // two differ whenever the encoding order is not the attribute's own
+        // value order, which deduplication and seams both cause.
+        if position_is_a_prediction_parent(mesh, &self.options) {
+            let position_id = mesh.named_attribute_id(GeometryAttributeType::Position);
+            if position_id >= 0 {
+                let att = mesh.attribute(position_id);
+                let quantization_bits =
+                    self.options
+                        .get_attribute_int(position_id, "quantization_bits", -1);
+                let portable = match decoder_types[position_id as usize] {
+                    1 => Some(integral_portable_attribute(att, &self.point_ids)?),
+                    2 => {
+                        let mut q_transform = AttributeQuantizationTransform::new();
+                        q_transform.compute_parameters(att, quantization_bits)?;
+                        let mut portable = PointAttribute::default();
+                        q_transform.transform_attribute(
+                            att,
+                            EntryToPointIdMap::from_point_indices(&self.point_ids),
+                            &mut portable,
+                        )?;
+                        Some(portable)
+                    }
+                    _ => None,
+                };
+                if let Some(mut portable) = portable {
+                    rebuild_parent_point_map(
+                        att,
+                        &mut portable,
+                        &self.point_ids,
+                        mesh.num_points(),
+                    )?;
+                    parent_portable = Some((position_id, portable));
+                }
+            }
+        }
+        if let Some((att_id, portable)) = parent_portable {
+            self.portable_attributes.push((att_id, portable));
+        }
+        let mesh = self
+            .mesh
+            .as_ref()
+            .expect("mesh must be set before encoding");
 
         // First pass: encode all attribute VALUES
         for i in 0..mesh.num_attributes() {
@@ -1488,13 +1643,21 @@ impl MeshEncoder {
             // borrowed as the mesh for as long as this loop runs.
             let mut quantized: Vec<(i32, AttributeQuantizationTransform)> = Vec::new();
             for (local_i, &att_id) in attr_ids.iter().enumerate() {
+                let att = mesh.attribute(att_id);
+                let is_parent_attribute = att.attribute_type() == GeometryAttributeType::Position
+                    && position_is_a_prediction_parent(mesh, &self.options);
                 if decoder_types[local_i] != 2 {
+                    // An already-integral parent still needs a portable form,
+                    // for the reason `integral_portable_attribute` gives: the
+                    // predictor must read what the decoder will reconstruct,
+                    // not the original the mesh was handed. Only a parent, as
+                    // upstream only rebuilds the map under `is_parent_encoder`.
+                    if is_parent_attribute && decoder_types[local_i] == 1 {
+                        portables.push((att_id, integral_portable_attribute(att, point_ids)?));
+                    }
                     quantization_transforms.push(None);
                     continue;
                 }
-                let att = mesh.attribute(att_id);
-                let is_parent_attribute = att.attribute_type() == GeometryAttributeType::Position
-                    && self.options.get_speed() < 4;
                 let quantization_bits =
                     self.options
                         .get_attribute_int(att_id, "quantization_bits", -1);
@@ -1532,26 +1695,7 @@ impl MeshEncoder {
                 // none. So this is the same guard, decided up front rather than
                 // by a flag set during scheme construction.
                 if is_parent_attribute {
-                    let num_points = mesh.num_points();
-                    let mut value_to_value = vec![0u32; att.size().max(1)];
-                    for (entry, &point_id) in point_ids.iter().enumerate() {
-                        let src = att.mapped_index(point_id);
-                        if (src.0 as usize) < value_to_value.len() {
-                            value_to_value[src.0 as usize] = entry as u32;
-                        }
-                    }
-                    portable.set_explicit_mapping(num_points);
-                    for point in 0..num_points {
-                        let src = att.mapped_index(PointIndex(point as u32));
-                        let entry = value_to_value
-                            .get(src.0 as usize)
-                            .copied()
-                            .unwrap_or_default();
-                        portable.try_set_point_map_entry(
-                            PointIndex(point as u32),
-                            crate::geometry_indices::AttributeValueIndex(entry),
-                        )?;
-                    }
+                    rebuild_parent_point_map(att, &mut portable, point_ids, mesh.num_points())?;
                 }
 
                 portables.push((att_id, portable));
