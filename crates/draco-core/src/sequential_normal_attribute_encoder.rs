@@ -2,9 +2,13 @@
 //!
 //! [`SequentialNormalAttributeEncoder`] octahedron-encodes unit normals into a
 //! quantized 2D integer pair and encodes them with the normal-specialized
-//! prediction transform. Encode-side counterpart of
-//! `SequentialNormalAttributeDecoder`. Port of Draco's
+//! prediction transform. Port of Draco's
 //! `sequential_normal_attribute_encoder.h`.
+//!
+//! It has no decode-side twin here. Upstream pairs this class with
+//! `SequentialNormalAttributeDecoder`, but both decoders in this crate
+//! open-code the normal case in their attribute dispatch, so the ported twin
+//! was never constructed by anything and was removed.
 
 use crate::attribute_octahedron_transform::AttributeOctahedronTransform;
 use crate::draco_types::DataType;
