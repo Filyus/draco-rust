@@ -57,6 +57,59 @@ fn introduced_at(method: PredictionSchemeMethod) -> (u8, u8) {
 /// [`downgrade_to_bitstream_era`]; writing it would mean predicting through a
 /// float domain no reference encoder produces. The parallelogram gives up some
 /// ratio for a scheme both sides compute identically.
+/// Downgrades a scheme that predicts from position when there is no position
+/// to predict from.
+///
+/// Applied to the caller's explicit choice as well as to the automatic one,
+/// because the disagreement this prevents does not care which of the two it
+/// was: `set_parent_attribute` refuses a parent that is not a three-component
+/// `Position`, and it runs on the *decode* side, so an encode that selects one
+/// of these against a one-component position writes a stream its own decoder
+/// will not read. `Difference` predicts from the attribute itself and always
+/// applies -- the same downgrade the surrounding code already makes for a
+/// value span the wrap transform cannot carry.
+#[cfg(feature = "encoder")]
+pub(crate) fn downgrade_without_position_parent(
+    method: PredictionSchemeMethod,
+    encoder: &dyn GeometryEncoder,
+) -> PredictionSchemeMethod {
+    let predicts_from_position = matches!(
+        method,
+        PredictionSchemeMethod::MeshPredictionGeometricNormal
+            | PredictionSchemeMethod::MeshPredictionTexCoordsPortable
+            | PredictionSchemeMethod::MeshPredictionTexCoordsDeprecated
+    );
+    if !predicts_from_position {
+        return method;
+    }
+    match encoder.point_cloud().and_then(position_parent) {
+        Some(_) => method,
+        None => PredictionSchemeMethod::Difference,
+    }
+}
+
+/// The position attribute, if it can serve as a prediction parent.
+///
+/// Every scheme that predicts from position -- geometric normal, both
+/// tex-coord schemes -- refuses a parent that is not a three-component
+/// `Position`, and refuses it in `set_parent_attribute`, which runs on the
+/// *decode* side. Selecting one of them against a position of some other
+/// width therefore produced a stream the encoder was happy with and its own
+/// decoder would not read: `encoder produced a mesh stream the decoder
+/// rejects: Failed to set parent attribute for GeometricNormal`, from a mesh
+/// whose position had one component. Found by the `encode_drc` fuzz target,
+/// whose second oracle is exactly that disagreement.
+///
+/// The callers fall through to the schemes that predict from the attribute
+/// itself, which is what they already do when there is no position at all.
+#[cfg(feature = "encoder")]
+fn position_parent(
+    pc: &crate::point_cloud::PointCloud,
+) -> Option<&crate::geometry_attribute::PointAttribute> {
+    pc.named_attribute(GeometryAttributeType::Position)
+        .filter(|att| att.num_components() == 3)
+}
+
 #[cfg(feature = "encoder")]
 fn era_substitute(method: PredictionSchemeMethod) -> PredictionSchemeMethod {
     match method {
@@ -156,7 +209,7 @@ fn select_prediction_method_for_newest(
             && att.attribute_type() == GeometryAttributeType::TexCoord
             && att.num_components() == 2
         {
-            let pos_att = pc.named_attribute(GeometryAttributeType::Position);
+            let pos_att = position_parent(pc);
             let mut is_pos_att_valid = false;
 
             if let Some(pos_att) = pos_att {
@@ -179,8 +232,7 @@ fn select_prediction_method_for_newest(
         if att.attribute_type() == GeometryAttributeType::Normal {
             if speed < 4 {
                 let pos_att_id = pc.named_attribute_id(GeometryAttributeType::Position);
-                let pos_att = pc.named_attribute(GeometryAttributeType::Position);
-                if let Some(pos_att) = pos_att {
+                if let Some(pos_att) = position_parent(pc) {
                     if pos_att.data_type().is_integral()
                         || options.get_attribute_int(pos_att_id, "quantization_bits", -1) > 0
                     {

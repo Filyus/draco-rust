@@ -740,3 +740,87 @@ fn a_full_range_single_component_kd_tree_round_trips() {
     expected.sort_unstable();
     assert_eq!(round_tripped, expected);
 }
+
+/// A normal attribute beside a position that is not a `vec3`.
+///
+/// Every scheme that predicts from position -- geometric normal and both
+/// tex-coord schemes -- refuses a parent that is not a three-component
+/// `Position`, and refuses it in `set_parent_attribute`, which runs on the
+/// decode side. Nothing checked it at selection time, and nothing checked a
+/// scheme the caller asked for by number either, so this encoded happily and
+/// came back as `Failed to set parent attribute for GeometricNormal` from the
+/// crate's own decoder. Found by `encode_drc`; minimized input in
+/// `fuzz/seeds/encode_drc/geometric_normal_without_a_vec3_position.bin`.
+#[test]
+fn a_normal_predicted_from_a_one_component_position_still_round_trips() {
+    const NUM_POINTS: usize = 12;
+
+    let mut mesh = Mesh::new();
+
+    // Position with one component, which is what makes it unusable as a
+    // prediction parent while remaining a perfectly encodable attribute.
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        1,
+        DataType::Int16,
+        false,
+        NUM_POINTS,
+    );
+    for index in 0..NUM_POINTS {
+        let value = (index as i16) * 37;
+        position.buffer_mut().write(index * 2, &value.to_le_bytes());
+    }
+    mesh.add_attribute(position);
+
+    let mut normal = PointAttribute::new();
+    normal.init(
+        GeometryAttributeType::Normal,
+        3,
+        DataType::Float32,
+        true,
+        NUM_POINTS,
+    );
+    for index in 0..NUM_POINTS {
+        let angle = index as f32 * 0.5;
+        for (component, value) in [angle.cos(), angle.sin(), 0.0].iter().enumerate() {
+            normal
+                .buffer_mut()
+                .write((index * 3 + component) * 4, &value.to_le_bytes());
+        }
+    }
+    mesh.add_attribute(normal);
+
+    mesh.set_num_faces(NUM_POINTS / 3);
+    for face in 0..NUM_POINTS / 3 {
+        let base = (face * 3) as u32;
+        mesh.set_face(
+            draco_core::geometry_indices::FaceIndex(face as u32),
+            [base.into(), (base + 1).into(), (base + 2).into()],
+        );
+    }
+
+    // Both ways the geometric normal scheme can be reached: asked for by
+    // number, and left to the encoder to choose.
+    for explicit in [true, false] {
+        let mut options = EncoderOptions::new();
+        options.set_attribute_int(1, "quantization_bits", 10);
+        if explicit {
+            options.set_attribute_int(1, "prediction_scheme", 6);
+        }
+
+        let encoded = match encode_mesh(mesh.clone(), &options) {
+            Ok(bytes) => bytes,
+            // Refusing to encode is a fine answer; writing a stream the
+            // decoder cannot read is not.
+            Err(_) => continue,
+        };
+        let mut decoded = Mesh::new();
+        MeshDecoder::new()
+            .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
+            .unwrap_or_else(|error| {
+                panic!("explicit={explicit}: encoder wrote a stream its decoder rejects: {error}")
+            });
+        assert_eq!(decoded.num_faces(), NUM_POINTS / 3);
+    }
+}

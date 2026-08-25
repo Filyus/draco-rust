@@ -327,6 +327,15 @@ impl SequentialIntegerAttributeEncoder {
             selected_method = select_prediction_method(att_id, options, encoder);
         }
 
+        // Whichever way it was chosen. A scheme that predicts from position
+        // needs a three-component `Position` to predict from, and the decoder
+        // is where that is enforced, so selecting one without it writes a
+        // stream this crate's own decoder refuses.
+        selected_method = crate::prediction_scheme_selection::downgrade_without_position_parent(
+            selected_method,
+            encoder,
+        );
+
         // The wrap transform stores `1 + (max - min)` of the raw values in an
         // i32 (see `PredictionSchemeWrapEncodingTransform::init`), and its
         // decoder counterpart refuses any stream whose span does not fit --
