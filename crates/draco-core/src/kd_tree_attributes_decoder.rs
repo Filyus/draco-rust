@@ -127,16 +127,11 @@ impl KdTreeAttributesDecoder {
                 ))
             })? as u32;
 
-            // The ratio still refuses the absurd, but the buffer is not taken
-            // here: the point count came out of the header, and this decoder
-            // runs before a single point has been read. It is sized in
+            // Uncharged, because untaken: the point count came out of the
+            // header and this decoder runs before a single point has been read,
+            // so the buffer is left unreserved and sized in
             // `decode_portable_attributes`, once the KD-tree has produced the
             // values and their length has been checked against the count.
-            crate::decode_budget::ensure_elements_are_backed(
-                point_cloud.num_points(),
-                num_components as usize * data_type.byte_length(),
-                in_buffer.size(),
-            )?;
             let mut att = PointAttribute::new();
             att.init_deferred(
                 att_type,

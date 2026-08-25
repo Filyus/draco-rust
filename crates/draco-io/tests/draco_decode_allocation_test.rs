@@ -196,3 +196,40 @@ fn a_generic_attribute_does_not_reserve_more_than_the_stream_can_carry() {
         stream.len()
     );
 }
+
+/// Raw corrections that declare zero bytes each read nothing from the stream,
+/// so nothing there backs the count: "every correction is zero" is a claim in
+/// the header, and the buffer it sizes is the attribute's own output.
+///
+/// A ratio cannot refuse this -- 21 GB over `2^20` is 20,236 bytes, so a 32 KB
+/// stream buys it -- which is why the budget carries an absolute ceiling on
+/// reservations nothing backs. Measured on this stream: `21,219,601,020 ->
+/// 32,791` bytes, the size of its own input.
+#[test]
+fn zero_byte_raw_corrections_do_not_reserve_one_value_per_claimed_point() {
+    let mut stream = draco_header(2, 2, 0, 0);
+    stream.extend_from_slice(&1_768_300_085u32.to_le_bytes());
+    stream.push(1); // one attributes decoder
+    stream.push(1); // one attribute in it
+    stream.extend_from_slice(&[0, 9, 3, 0]); // position, float32, three components
+    stream.push(0); // unique id
+    stream.push(2); // decoder type 2: quantized integer values
+    stream.push(0); // corrections are raw, not entropy-coded
+    stream.push(0); // zero bytes each: nothing is read, all are zero
+    stream.resize(stream.len() + 32 * 1024, 0);
+
+    let before = ALLOCATED.load(Ordering::Relaxed);
+    let mut decoded = PointCloud::new();
+    let result = PointCloudDecoder::new().decode(&mut DecoderBuffer::new(&stream), &mut decoded);
+    let requested = ALLOCATED.load(Ordering::Relaxed) - before;
+
+    assert!(
+        result.is_err(),
+        "a header claiming 1.7 billion points in 32 KB must not decode"
+    );
+    assert!(
+        requested < 1024 * 1024,
+        "decode reserved {requested} bytes for a {} byte stream",
+        stream.len()
+    );
+}

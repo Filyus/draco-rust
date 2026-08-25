@@ -12,33 +12,48 @@
 //! decoder then refused to read the file back. C++ Draco produces such files
 //! too, which made it an interoperability bug rather than a conservative bound.
 //!
-//! This replaces it with a ratio: a decode may allocate up to
-//! [`MAX_ALLOCATED_BYTES_PER_INPUT_BYTE`] bytes for every byte of the stream.
-//! It scales with the input instead of capping the geometry, which is what
-//! `SECURITY.md` promises — Draco is for large meshes, and a fixed ceiling
-//! would break legitimate ones.
+//! What replaced it is a **backstop**, and the word is load-bearing: what
+//! actually keeps these paths bounded is that every buffer on them grows as its
+//! data arrives or is sized after the step that produced it. A legitimate
+//! decode therefore charges nothing here at all, which is not an aspiration
+//! but a test — `corpus::no_tracked_fixture_spends_the_budget` reads every
+//! fixture the repository carries and fails on the first byte charged.
 //!
-//! The ratio is not the whole of it, and the missing half is the reason this
-//! paragraph exists. A ratio bounds bytes allocated per byte read, so a longer
-//! input buys a larger allocation — and the input is the attacker's to choose.
-//! For a declared count of *symbols* that is the wrong instrument entirely, so
-//! [`ensure_symbols_are_backed`] bounds those at one bit each. The two are not
-//! interchangeable: a 26 KB stream naming a billion faces clears the ratio and
-//! fails the bit bound, which is exactly the case the `decode_drc` fuzz target
-//! found after the ratio replaced the count check.
+//! What the backstop catches is the residue: a reservation made against a
+//! count with no data behind it. It is bounded two ways, because either alone
+//! has a failure mode the other does not:
+//!
+//! - [`MAX_ALLOCATED_BYTES_PER_INPUT_BYTE`], a ratio against the stream. It
+//!   refuses a nine-byte header naming gigabytes, which no absolute ceiling
+//!   set high enough to be safe would catch.
+//! - [`MAX_UNBACKED_BYTES`], an absolute ceiling. A ratio grants a longer input
+//!   a larger allocation, and the input is the attacker's: a 32 KB stream buys
+//!   21 GB and clears the ratio with room to spare. That is not a constant to
+//!   be tuned — halve it and a stream twice as long buys the same.
+//!
+//! The counter is **cumulative** over one decode, held on [`DecoderBuffer`],
+//! which is the stream. Checked per allocation the same budget is granted
+//! again at every site, and the number of sites is the attacker's to pick.
+//!
+//! For a declared count of *symbols* neither instrument is right, so
+//! [`ensure_symbols_are_backed`] bounds those at one bit each. A 26 KB stream
+//! naming a billion faces is the case the `decode_drc` fuzz target found.
+//!
+//! [`DecoderBuffer`]: crate::decoder_buffer::DecoderBuffer
 
 use crate::status::{DracoError, Status};
 
-/// How many bytes a decode may allocate per byte of input.
+/// How many bytes a decode may reserve, against a count nothing backs, per
+/// byte of input.
 ///
-/// It is a heuristic, so the numbers that place it are measured rather than
-/// guessed:
+/// Legitimate files do not reach this — they charge nothing — so what places
+/// it is the malformed side: the KD-tree header pinned in
+/// `drc_edge_cases_test.rs` asks for 51 GB from 19 bytes, a ratio near 2^31,
+/// and is refused by about 2,500×.
 ///
-/// - The largest legitimate ratio this crate is known to produce is about
-///   7,000× — 100,000 positions, 1.2 MB of values, from a 171-byte stream — so
-///   2^20 leaves better than two orders of magnitude of headroom.
-/// - The malformed KD-tree header pinned in `drc_edge_cases_test.rs` asks for
-///   51 GB from 19 bytes, a ratio near 2^31, so it is refused by about 2,500×.
+/// It is deliberately loose, because it is the wrong shape for the job and
+/// tightening it does not fix that: the ratio's purpose is the small-stream
+/// case, and [`MAX_UNBACKED_BYTES`] is what stops a long one.
 ///
 /// Fallible allocation is **not** a substitute, which is the reason this exists
 /// at all. Measured on Windows: `Vec::<u32>::try_reserve_exact` for 51 GB
@@ -46,35 +61,61 @@ use crate::status::{DracoError, Status};
 /// it was given. Asking the allocator politely does not bound anything when the
 /// allocator says yes.
 ///
-/// It is also a stopgap for something deeper. The KD-tree loop cannot stop when
-/// the data runs out, because `decode_next_bit` reports an exhausted buffer and
-/// a zero bit the same way — see the `decode-error-api-cleanup` risk. Once that
-/// is fixed the loop bounds itself, and this ratio can be revisited.
+/// It is not waiting on an API fix, whatever this comment used to say.
+/// `DirectBitDecoder::decode_next_bit` already reports an exhausted buffer;
+/// `RAnsBitDecoder::decode_next_bit` cannot and, by its own reasoning, never
+/// will — the rABS tail legitimately draws from state alone in 26% of reads on
+/// correct files, and upstream has no check there either. What bounds those
+/// loops is a structural per-call-site count, audited under
+/// `rans-over-read-call-site-bounds` in `hardening_status.yaml`.
 pub(crate) const MAX_ALLOCATED_BYTES_PER_INPUT_BYTE: usize = 1 << 20;
 
-/// Refuses an allocation the stream is too small to be describing.
+/// The most a decode may reserve for buffers nothing in the stream backs,
+/// whatever its size.
 ///
-/// Written as a division rather than `stream_bytes * MAX`, because `usize` is
-/// 32 bits on the `wasm32` target this crate ships to: there the multiplication
-/// saturates for any stream over 4 KiB and the bound silently stops existing.
+/// A ratio cannot bound this on its own and the reason is measured: for
+/// geometry whose values are all equal, the stream length is independent of
+/// the point count, so the legitimate bytes-per-input-byte ratio has no upper
+/// bound. Six million points encode to 58 bytes here; a hundred million would
+/// encode to 58 bytes as well. Whatever constant the ratio carries, a large
+/// enough legitimate file walks past it -- and one did, which is the
+/// interoperability bug this module was created to remove, reappearing at a
+/// larger count.
+///
+/// An absolute ceiling has the opposite failure mode, and this one can be
+/// placed honestly because of what the counter now counts. Every buffer on the
+/// decode paths grows as its data arrives or is sized after the step that
+/// produced it, so a legitimate decode charges **nothing at all** -- held to
+/// that by `corpus::no_tracked_fixture_spends_the_budget` over every fixture
+/// the repository carries, and by its sibling over the compressible extreme.
+/// The ceiling therefore does not cap geometry, which `SECURITY.md` promises
+/// it never will; it caps reservations made against a claim and nothing else.
+///
+/// One path can still reach it from a real file: raw corrections declaring
+/// zero bytes each, where "every correction is zero" is read from the header
+/// and no data is read at all. This crate never writes that -- its encoder
+/// always emits entropy-coded corrections -- and 256 MiB covers 64 million
+/// such values, well past any attribute whose corrections are uniformly zero.
+/// The 19.76 GiB the `decode_drc` campaign found is refused by 83x.
+pub(crate) const MAX_UNBACKED_BYTES: usize = 256 << 20;
+
+/// Refuses an allocation the stream is too small to be describing, or one past
+/// the absolute ceiling on reservations nothing backs.
+///
+/// The ratio is written as a division rather than `stream_bytes * MAX`,
+/// because `usize` is 32 bits on the `wasm32` target this crate ships to:
+/// there the multiplication saturates for any stream over 4 KiB and the bound
+/// silently stops existing.
 pub(crate) fn ensure_allocation_is_backed(requested_bytes: usize, stream_bytes: usize) -> Status {
-    if requested_bytes / MAX_ALLOCATED_BYTES_PER_INPUT_BYTE > stream_bytes {
+    if requested_bytes > MAX_UNBACKED_BYTES
+        || requested_bytes / MAX_ALLOCATED_BYTES_PER_INPUT_BYTE > stream_bytes
+    {
         return Err(DracoError::allocation_exceeds_input(
             requested_bytes,
             stream_bytes,
         ));
     }
     Ok(())
-}
-
-/// The same, for a count of `element_size`-byte elements.
-pub(crate) fn ensure_elements_are_backed(
-    count: usize,
-    element_size: usize,
-    stream_bytes: usize,
-) -> Status {
-    let requested_bytes = count.saturating_mul(element_size);
-    ensure_allocation_is_backed(requested_bytes, stream_bytes)
 }
 
 /// Refuses a symbol count the remaining stream cannot be carrying, at one bit
@@ -121,6 +162,137 @@ pub(crate) fn ensure_symbols_are_backed(count: usize, stream_bytes: usize) -> St
     Ok(())
 }
 
+#[cfg(all(test, feature = "decoder"))]
+mod corpus {
+    /// No file this crate is meant to read spends any of the budget.
+    ///
+    /// That is the property, not a coincidence: every buffer on the decode
+    /// paths either grows as the data arrives or is sized after the step that
+    /// produced it, so the backstop is reached only by a reservation nothing
+    /// backs. A charge appearing here means a header-driven allocation came
+    /// back -- which is worth failing over even when the ratio would have
+    /// covered it, because the ratio is what breaks first on a legitimate
+    /// file (see the sibling test).
+    #[test]
+    fn no_tracked_fixture_spends_the_budget() {
+        use crate::decoder_buffer::DecoderBuffer;
+        use std::path::PathBuf;
+
+        fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "drc") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        files.sort();
+        assert!(
+            files.len() > 50,
+            "found only {} .drc fixtures: the walk is wrong, not the corpus",
+            files.len()
+        );
+
+        let mut decoded_ok = 0;
+        for path in &files {
+            let bytes = std::fs::read(path).expect("read fixture");
+            if bytes.is_empty() {
+                continue;
+            }
+            for as_mesh in [true, false] {
+                let mut buffer = DecoderBuffer::new(&bytes);
+                let ok = if as_mesh {
+                    let mut mesh = crate::mesh::Mesh::new();
+                    crate::mesh_decoder::MeshDecoder::new()
+                        .decode(&mut buffer, &mut mesh)
+                        .is_ok()
+                } else {
+                    let mut point_cloud = crate::point_cloud::PointCloud::new();
+                    crate::point_cloud_decoder::PointCloudDecoder::new()
+                        .decode(&mut buffer, &mut point_cloud)
+                        .is_ok()
+                };
+                if !ok {
+                    continue;
+                }
+                decoded_ok += 1;
+                assert_eq!(
+                    buffer.spent(),
+                    0,
+                    "{} charged {} bytes against the budget",
+                    path.display(),
+                    buffer.spent()
+                );
+            }
+        }
+        assert!(decoded_ok > 50, "only {decoded_ok} fixtures decoded");
+    }
+
+    /// The tracked fixtures are all under a kilobyte, so they say nothing
+    /// about the extreme. This is the extreme, and it is the reason the
+    /// charges above had to go: geometry whose values are all equal
+    /// entropy-codes to a size independent of how many there are, so the
+    /// legitimate bytes-per-input-byte ratio has no upper bound at all.
+    ///
+    /// Measured on this shape, six million points in a 58-byte stream: the
+    /// charge was `72,000,000`, the ratio `1,241,379x`, and
+    /// [`MAX_ALLOCATED_BYTES_PER_INPUT_BYTE`] refused it -- a file this crate
+    /// had just written, which is the interoperability bug this module was
+    /// created to remove, reappearing at a larger point count. Nothing is
+    /// charged for it now, so nothing refuses it.
+    #[test]
+    #[cfg(feature = "encoder")]
+    fn a_stream_that_decodes_far_larger_than_itself_is_not_refused() {
+        use crate::decoder_buffer::DecoderBuffer;
+        use crate::draco_types::DataType;
+        use crate::encoder_buffer::EncoderBuffer;
+        use crate::encoder_options::EncoderOptions;
+        use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+        use crate::point_cloud_encoder::PointCloudEncoder;
+
+        const NUM_POINTS: usize = 6_000_000;
+
+        let mut point_cloud = crate::point_cloud::PointCloud::new();
+        point_cloud.set_num_points(NUM_POINTS);
+        let mut position = PointAttribute::new();
+        position.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            NUM_POINTS,
+        );
+        point_cloud.add_attribute(position);
+
+        let mut options = EncoderOptions::new();
+        options.set_attribute_int(0, "quantization_bits", 8);
+        let mut encoded = EncoderBuffer::new();
+        let mut encoder = PointCloudEncoder::new();
+        encoder.set_point_cloud(point_cloud);
+        encoder.encode(&options, &mut encoded).expect("encode");
+        let stream = encoded.data().to_vec();
+        assert!(
+            stream.len() < 1024,
+            "the point of this test is a stream far smaller than what it decodes to, got {}",
+            stream.len()
+        );
+
+        let mut buffer = DecoderBuffer::new(&stream);
+        let mut decoded = crate::point_cloud::PointCloud::new();
+        crate::point_cloud_decoder::PointCloudDecoder::new()
+            .decode(&mut buffer, &mut decoded)
+            .expect("a stream this crate wrote must decode back");
+        assert_eq!(decoded.num_points(), NUM_POINTS);
+        assert_eq!(buffer.spent(), 0, "a legitimate file spent the backstop");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,25 +301,35 @@ mod tests {
     fn a_stream_backs_an_allocation_within_the_ratio() {
         assert!(ensure_allocation_is_backed(MAX_ALLOCATED_BYTES_PER_INPUT_BYTE, 1).is_ok());
         // The case the old guard refused: 100,000 positions from 171 bytes.
-        assert!(ensure_elements_are_backed(100_000, 12, 171).is_ok());
+        assert!(ensure_allocation_is_backed(100_000 * 12, 171).is_ok());
+    }
+
+    /// The ceiling is absolute: a stream long enough to buy 19.76 GiB through
+    /// the ratio -- which is exactly what the `decode_drc` campaign supplied --
+    /// does not buy it.
+    #[test]
+    fn a_long_stream_does_not_buy_an_unbounded_reservation() {
+        assert!(ensure_allocation_is_backed(MAX_UNBACKED_BYTES, usize::MAX).is_ok());
+        assert!(ensure_allocation_is_backed(MAX_UNBACKED_BYTES + 1, usize::MAX).is_err());
+        assert!(ensure_allocation_is_backed(21_219_601_020, 27_911).is_err());
     }
 
     #[test]
     fn a_tiny_stream_does_not_back_a_huge_allocation() {
         // The shape the pinned malformed headers have: u32::MAX values from a
         // body of a dozen bytes.
-        assert!(ensure_elements_are_backed(u32::MAX as usize, 12, 12).is_err());
+        assert!(ensure_allocation_is_backed(u32::MAX as usize * 12, 12).is_err());
     }
 
     /// The shape a 26 KB fuzz artifact had: a mesh header naming 1,095,910,464
-    /// faces, whose 3,287,731,392 indices reserve 13 GB. The ratio accepts it,
-    /// because 13 GB over 2^20 is 12 KB and the stream is 26; one bit per
-    /// symbol does not.
+    /// faces, whose 3,287,731,392 indices reserve 13 GB. One bit per symbol
+    /// refuses it on the count; the byte budget refuses the reservation too,
+    /// now that its ceiling is absolute -- no stream length buys 13 GB.
     #[test]
     fn a_symbol_count_beyond_one_bit_each_is_refused() {
         assert!(ensure_symbols_are_backed(3_287_731_392, 26_386).is_err());
         // The ratio on its own is what let it through, and still would.
-        assert!(ensure_elements_are_backed(3_287_731_392, 4, 26_386).is_ok());
+        assert!(ensure_allocation_is_backed(3_287_731_392 * 4, usize::MAX).is_err());
     }
 
     /// Eight symbols per byte is the boundary itself, and it is inclusive: a

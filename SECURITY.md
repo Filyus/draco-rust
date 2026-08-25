@@ -161,8 +161,20 @@ Two things this deliberately does *not* rely on:
 
 - **A ratio is not a bound.** It limits bytes allocated per byte read, and the
   input is the attacker's to choose, so any constant is walked past by a larger
-  file. `decode_budget` keeps one as a backstop; it is not what makes these
-  paths safe.
+  file — measured, a 32 KB stream buys 21 GB and clears the ratio with room to
+  spare. It fails the other way too: for geometry whose values are all equal
+  the stream length is independent of the point count, so the *legitimate*
+  ratio has no upper bound, and six million points in a 58-byte stream were
+  refused by a file this crate had just written. `decode_budget` keeps a ratio
+  as a backstop against small streams, pairs it with an absolute ceiling
+  against long ones, and counts cumulatively over a decode rather than per
+  allocation; none of that is what makes these paths safe.
+- **The backstop is not on the path of a legitimate file.** Because every
+  buffer grows or is sized after its data, a correct decode charges the budget
+  nothing at all, and a test over every tracked fixture fails on the first byte
+  charged. That is what lets the ceiling be absolute without capping geometry:
+  it bounds reservations made against a claim, which a legitimate decode does
+  not make.
 - **A per-element floor holds only where it is measured.** One bit per symbol
   is a floor for a *count* — `ensure_symbols_are_backed` uses it for
   connectivity — and it is false for entropy-coded values, and false for ETC1S

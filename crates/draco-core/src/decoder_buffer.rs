@@ -29,6 +29,14 @@ pub struct DecoderBuffer<'a> {
     bit_sequence_size_known: bool,
     version_major: u8,
     version_minor: u8,
+    /// Bytes this decode has reserved so far, across every buffer it sized.
+    ///
+    /// The budget belongs to *one decode of one stream*, and that is what this
+    /// type is: built once per decode, carrying the stream, and already
+    /// threaded to every site that sizes something. Holding the counter here
+    /// is what makes the bound cumulative rather than per-allocation -- see
+    /// [`charge`](Self::charge).
+    spent: usize,
 }
 
 impl<'a> DecoderBuffer<'a> {
@@ -45,7 +53,56 @@ impl<'a> DecoderBuffer<'a> {
             // Default to latest mesh version to match encoder output format
             version_major: DEFAULT_MESH_VERSION.0,
             version_minor: DEFAULT_MESH_VERSION.1,
+            spent: 0,
         }
+    }
+
+    /// Charges `bytes` against what this stream is allowed to make the decoder
+    /// allocate, and refuses when the running total outgrows it.
+    ///
+    /// Cumulative on purpose. Checked per allocation, the same budget is
+    /// granted again at every site, and the number of sites is the attacker's:
+    /// one attributes decoder carries as many attributes as the header names,
+    /// and their buffers coexist. Measured before this existed, on a stream
+    /// held at ~32 KB while only the attribute count changed:
+    ///
+    /// | attributes | reserved |
+    /// | ---: | ---: |
+    /// | 1 | 19.2 MB |
+    /// | 4 | 76.8 MB |
+    /// | 16 | 307.2 MB |
+    ///
+    /// Linear in a count that costs 7.5 bytes of input each, so the per-site
+    /// form bounded nothing that mattered. One running total does.
+    ///
+    /// Nothing is ever credited back. A decode that frees a buffer and sizes
+    /// another still pays for both, which is why the ceiling has to cover the
+    /// *sum* over a real file rather than its peak -- see
+    /// [`MAX_ALLOCATED_BYTES_PER_INPUT_BYTE`], whose value is measured against
+    /// exactly that.
+    ///
+    /// [`MAX_ALLOCATED_BYTES_PER_INPUT_BYTE`]: crate::decode_budget::MAX_ALLOCATED_BYTES_PER_INPUT_BYTE
+    pub(crate) fn charge(&mut self, bytes: usize) -> crate::status::Status {
+        let total = self.spent.saturating_add(bytes);
+        crate::decode_budget::ensure_allocation_is_backed(total, self.data.len())?;
+        self.spent = total;
+        Ok(())
+    }
+
+    /// [`charge`](Self::charge) for a count of `element_size`-byte elements.
+    pub(crate) fn charge_elements(
+        &mut self,
+        count: usize,
+        element_size: usize,
+    ) -> crate::status::Status {
+        self.charge(count.saturating_mul(element_size))
+    }
+
+    /// What this decode has reserved so far, for the tests that hold the
+    /// budget to being a backstop no legitimate file reaches.
+    #[cfg(test)]
+    pub(crate) fn spent(&self) -> usize {
+        self.spent
     }
 
     /// Sets the Draco bitstream version for version-dependent decoding.

@@ -410,17 +410,13 @@ impl PointCloudDecoder {
                     }
 
                     let mut att = PointAttribute::new();
-                    // The ratio still refuses the absurd, but it is not what
-                    // keeps this bounded: a ratio scales with the input, and a
-                    // 9 KB stream declaring 33,686,016 points of 255 components
-                    // clears it while asking for 8 GB. The buffer is left
-                    // unreserved instead, and the decoder that writes the
-                    // values sizes it once they exist.
-                    crate::decode_budget::ensure_elements_are_backed(
-                        num_points,
-                        spec.num_components as usize * spec.data_type.byte_length(),
-                        buffer.size(),
-                    )?;
+                    // Nothing is charged for this attribute, because nothing is
+                    // taken for it: the buffer is left unreserved and sized by
+                    // whichever decoder writes the values, once they exist. A
+                    // charge here would be for an allocation that no longer
+                    // happens, and it is not free -- the budget is a backstop
+                    // against unbacked reservations, and billing it for backed
+                    // ones is what made it refuse files this crate writes.
                     att.init_deferred(
                         spec.att_type,
                         spec.num_components,

@@ -400,7 +400,7 @@ impl MeshDecoder {
                     // Sized from what the decode produced rather than from what
                     // the header claimed: on success the two are equal, and on
                     // failure this line is not reached.
-                    let mut indices = make_zeroed_indices(encoded_indices.len(), buffer.size())?;
+                    let mut indices = make_zeroed_indices(encoded_indices.len(), buffer)?;
                     let mut last_index_value = 0i32;
                     for (dst, encoded_val) in indices.iter_mut().zip(encoded_indices) {
                         let mut index_diff = (encoded_val >> 1) as i32;
@@ -1988,12 +1988,11 @@ fn validate_mesh_index_count(num_faces: usize) -> Result<usize, DracoError> {
         .ok_or_else(|| DracoError::general("Mesh face index count overflow".to_string()))
 }
 
-fn make_zeroed_indices(num_indices: usize, stream_bytes: usize) -> Result<Vec<u32>, DracoError> {
-    crate::decode_budget::ensure_elements_are_backed(
-        num_indices,
-        std::mem::size_of::<u32>(),
-        stream_bytes,
-    )?;
+fn make_zeroed_indices(
+    num_indices: usize,
+    buffer: &mut DecoderBuffer,
+) -> Result<Vec<u32>, DracoError> {
+    buffer.charge_elements(num_indices, std::mem::size_of::<u32>())?;
     let mut indices = Vec::new();
     indices
         .try_reserve_exact(num_indices)

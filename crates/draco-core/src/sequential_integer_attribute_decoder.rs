@@ -697,11 +697,7 @@ impl SequentialIntegerAttributeDecoder {
             // reads nothing, so nothing backs the count there and the
             // allocation budget is what stands in for it.
             if num_bytes == 0 {
-                crate::decode_budget::ensure_elements_are_backed(
-                    num_values,
-                    std::mem::size_of::<i32>(),
-                    in_buffer.size(),
-                )?;
+                in_buffer.charge_elements(num_values, std::mem::size_of::<i32>())?;
             } else {
                 let Some(byte_len) = num_values.checked_mul(num_bytes) else {
                     return Err(DracoError::general(format!(
@@ -710,7 +706,7 @@ impl SequentialIntegerAttributeDecoder {
                 };
                 if byte_len > in_buffer.remaining_size() {
                     return Err(DracoError::buffer(format!(
-                        "declared {num_values} raw corrections of {num_bytes} bytes, more                          than the {} bytes left in the stream",
+                        "declared {num_values} raw corrections of {num_bytes} bytes, more than the \n                         {} bytes left in the stream",
                         in_buffer.remaining_size()
                     )));
                 }
