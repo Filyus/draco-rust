@@ -77,6 +77,59 @@ mod tests {
     use super::*;
     use crate::point_cloud_decoder::PointCloudDecoder;
 
+    use crate::draco_types::DataType;
+    use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+
+    fn cloud_with_one_generic_value() -> PointCloud {
+        let mut point_cloud = PointCloud::new();
+        point_cloud.set_num_points(1);
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Generic,
+            1,
+            DataType::Uint32,
+            false,
+            1,
+        );
+        point_cloud.add_attribute(attribute);
+        point_cloud
+    }
+
+    /// Both cases the point-cloud decoder used to pin on its own copy of this
+    /// path, kept here now that the copy is gone.
+    #[test]
+    fn a_value_count_that_overflows_its_byte_size_is_refused() {
+        let mut point_cloud = cloud_with_one_generic_value();
+        let mut buffer = DecoderBuffer::new(&[]);
+        let mut decoder = SequentialGenericAttributeDecoder::new();
+        decoder.init(&PointCloudDecoder::new(), 0);
+
+        assert!(decoder
+            .decode_values(
+                &mut point_cloud,
+                EntryToPointIdMap::identity(usize::MAX),
+                &mut buffer
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn a_stream_too_short_for_the_values_is_refused() {
+        let mut point_cloud = cloud_with_one_generic_value();
+        let bytes = [1u8, 2, 3];
+        let mut buffer = DecoderBuffer::new(&bytes);
+        let mut decoder = SequentialGenericAttributeDecoder::new();
+        decoder.init(&PointCloudDecoder::new(), 0);
+
+        assert!(decoder
+            .decode_values(
+                &mut point_cloud,
+                EntryToPointIdMap::identity(1),
+                &mut buffer
+            )
+            .is_err());
+    }
+
     #[test]
     fn decode_values_rejects_invalid_attribute_id() {
         let mut decoder = SequentialGenericAttributeDecoder::new();
