@@ -1,10 +1,10 @@
 name: Fuzz
 
-# Coverage-guided decode and glTF-compressor fuzzing (level 1: bounded smoke on
-# PR/push, with a longer soak available on manual dispatch). The decode corpus
-# is persisted across runs via the GitHub Actions cache and re-seeded from the
-# committed fixtures each run, so coverage never starts from zero even if the
-# cache is evicted.
+# Coverage-guided fuzzing of every untrusted-input path in the workspace
+# (level 1: bounded smoke on PR/push, with a longer soak on manual dispatch).
+# Each corpus is persisted across runs via the GitHub Actions cache and
+# re-seeded from the committed fixtures each run, so coverage never starts from
+# zero even if the cache is evicted.
 #
 # ClusterFuzzLite (cflite_*.yml) provides the heavier continuous-fuzzing layer
 # (crash dedup, batch mode); this workflow is the lightweight in-repo gate.
@@ -41,9 +41,33 @@ permissions:
   contents: read
 
 jobs:
+  # One job per group of targets rather than one job for all of them. Groups
+  # run concurrently, so a soak costs the wall-clock of its longest group
+  # instead of the sum of every target -- which is what buys `draco` an hour
+  # per target while the whole run still lands well inside the six-hour job
+  # limit. The split is by risk, not by convenience: `draco` fuzzes this
+  # workspace's own bitstream encoder and decoder, where four of the last five
+  # findings came from, and it gets twice the budget of the groups that fuzz
+  # parsers for other people's formats.
   fuzz:
-    name: decode_drc + glTF compression/import
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: draco
+            name: draco bitstream
+            targets: decode_drc encode_drc
+            soak_seconds: 3600
+          - group: readers
+            name: mesh + FBX readers
+            targets: mesh_text_readers fbx_read_scene fbx_roundtrip
+            soak_seconds: 1800
+          - group: gltf
+            name: glTF compression/import
+            targets: compress_gltf draco_gltf_import
+            soak_seconds: 1800
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,31 +85,31 @@ jobs:
         run: |
           # Manual dispatch = deep soak; change-triggered = quick smoke.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "seconds=1800" >> "$GITHUB_OUTPUT"
+            echo "seconds=${{ matrix.soak_seconds }}" >> "$GITHUB_OUTPUT"
           else
             echo "seconds=120" >> "$GITHUB_OUTPUT"
           fi
 
+      # Keyed per group: the jobs run at the same time and each writes its own
+      # entry, so a shared key would have them overwrite each other's corpus.
       - name: Restore fuzz corpus
         uses: actions/cache@v4
         with:
           path: fuzz/corpus
-          key: fuzz-corpus-v2-${{ github.run_id }}
+          key: fuzz-corpus-v3-${{ matrix.group }}-${{ github.run_id }}
           restore-keys: |
-            fuzz-corpus-v2-
+            fuzz-corpus-v3-${{ matrix.group }}-
 
       - name: Seed corpus from fixtures
         run: |
-          ./fuzz/seed_corpus.sh decode_drc
-          ./fuzz/seed_corpus.sh compress_gltf
-          ./fuzz/seed_corpus.sh draco_gltf_import
-          ./fuzz/seed_corpus.sh fbx_read_scene
-          ./fuzz/seed_corpus.sh fbx_roundtrip
-          ./fuzz/seed_corpus.sh encode_drc
-          ./fuzz/seed_corpus.sh mesh_text_readers
+          for target in ${{ matrix.targets }}; do
+            ./fuzz/seed_corpus.sh "$target"
+          done
 
-      # The decode target includes legacy decode features so old bitstream paths
-      # get coverage-guided fuzzing, not just deterministic fixture tests.
+      # Every target in the group runs, whichever way the ones before it went,
+      # and the loop's own tally becomes the step's result. Fail-fast starved
+      # the tail of the list instead: two soaks in a row ended on a crash in an
+      # early target, and the last one never got a single second of either.
       #
       # -O builds in release mode WITHOUT cargo-fuzz's default debug-assertions
       # /overflow-checks, so the campaign targets shipped behavior. The decoder
@@ -93,113 +117,22 @@ jobs:
       # debug_assert! invariants that are compiled out in release; with those on
       # the fuzzer would trip on dev-time checks rather than real hazards.
       # Out-of-bounds indexing still panics in release and is still caught.
-      # First in the list, and first on purpose: the OBJ, PLY and STL readers
-      # parse untrusted files with no limits API of their own -- an audit of the
-      # PLY one found a panic, a seven-second spin and a 48 GB reservation, all
-      # driven by counts printed in a header -- and while it ran last it was the
-      # target two soaks in a row never reached.
-      - name: Fuzz mesh_text_readers
-        id: fuzz_mesh_text_readers
-        continue-on-error: true
-        run: |
-          cargo +nightly fuzz run -O mesh_text_readers --fuzz-dir fuzz \
-            --target x86_64-unknown-linux-gnu -- \
-            -max_total_time=${{ steps.dur.outputs.seconds }} \
-            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
-
-      - name: Fuzz decode_drc
-        id: fuzz_decode_drc
-        continue-on-error: true
-        run: |
-          cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz \
-            --target x86_64-unknown-linux-gnu -- \
-            -max_total_time=${{ steps.dur.outputs.seconds }} \
-            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
-
-      # The glTF targets parse untrusted glTF/GLB bytes. Repository fixtures and
-      # committed self-contained seeds give libFuzzer valid structure before it
-      # starts mutating; deterministic regressions still run in stable CI.
-      - name: Fuzz compress_gltf
-        id: fuzz_compress_gltf
-        continue-on-error: true
-        run: |
-          cargo +nightly fuzz run -O compress_gltf --fuzz-dir fuzz \
-            --target x86_64-unknown-linux-gnu -- \
-            -max_total_time=${{ steps.dur.outputs.seconds }} \
-            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
-
-      - name: Fuzz draco_gltf_import
-        id: fuzz_draco_gltf_import
-        continue-on-error: true
-        run: |
-          cargo +nightly fuzz run -O draco_gltf_import --fuzz-dir fuzz \
-            --target x86_64-unknown-linux-gnu -- \
-            -max_total_time=${{ steps.dur.outputs.seconds }} \
-            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
-
-      # The FBX reader is the workspace's only hand-rolled untrusted binary
-      # parser: file-controlled lengths feed allocations and array payloads go
-      # through zlib. Its target uses FbxDecodeLimits::fuzzing(), well under
-      # -rss_limit_mb, so any allocation failure reported here is a real bug
-      # rather than a header legitimately asking for a lot of memory.
-      - name: Fuzz fbx_read_scene
-        id: fuzz_fbx_read_scene
-        continue-on-error: true
-        run: |
-          cargo +nightly fuzz run -O fbx_read_scene --fuzz-dir fuzz \
-            --target x86_64-unknown-linux-gnu -- \
-            -max_total_time=${{ steps.dur.outputs.seconds }} \
-            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
-
-      # Feeds reader output back through the writer, so the writer gets
-      # coverage from scenes nobody would think to hand-build.
-      - name: Fuzz fbx_roundtrip
-        id: fuzz_fbx_roundtrip
-        continue-on-error: true
-        run: |
-          cargo +nightly fuzz run -O fbx_roundtrip --fuzz-dir fuzz \
-            --target x86_64-unknown-linux-gnu -- \
-            -max_total_time=${{ steps.dur.outputs.seconds }} \
-            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
-
-      # The only target that fuzzes the encoder rather than a parser: its input
-      # is a geometry description, so the encoder sees index buffers, attribute
-      # mappings and options no caller would write by hand. It also checks that
-      # a stream the encoder accepted decodes.
-      - name: Fuzz encode_drc
-        id: fuzz_encode_drc
-        continue-on-error: true
-        run: |
-          cargo +nightly fuzz run -O encode_drc --fuzz-dir fuzz \
-            --target x86_64-unknown-linux-gnu -- \
-            -max_total_time=${{ steps.dur.outputs.seconds }} \
-            -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
-
-      # Every target above runs whichever way the ones before it went, and this
-      # is what turns their outcomes into the job's. Fail-fast starved the tail
-      # of the list instead: two soaks in a row ended on a crash in an early
-      # target, and the last one never got a single second of either.
-      - name: Report fuzz outcomes
-        if: always()
-        env:
-          OUTCOMES: |
-            mesh_text_readers ${{ steps.fuzz_mesh_text_readers.outcome }}
-            decode_drc ${{ steps.fuzz_decode_drc.outcome }}
-            compress_gltf ${{ steps.fuzz_compress_gltf.outcome }}
-            draco_gltf_import ${{ steps.fuzz_draco_gltf_import.outcome }}
-            fbx_read_scene ${{ steps.fuzz_fbx_read_scene.outcome }}
-            fbx_roundtrip ${{ steps.fuzz_fbx_roundtrip.outcome }}
-            encode_drc ${{ steps.fuzz_encode_drc.outcome }}
+      - name: Fuzz
         run: |
           failed=""
-          while read -r target outcome; do
-            [ -n "$target" ] || continue
-            echo "$target: $outcome"
-            case "$outcome" in
-              success | skipped) ;;
-              *) failed="$failed $target" ;;
-            esac
-          done <<< "$OUTCOMES"
+          for target in ${{ matrix.targets }}; do
+            echo "::group::$target"
+            if cargo +nightly fuzz run -O "$target" --fuzz-dir fuzz \
+              --target x86_64-unknown-linux-gnu -- \
+              -max_total_time=${{ steps.dur.outputs.seconds }} \
+              -rss_limit_mb=4096 -timeout=25 -print_final_stats=1; then
+              echo "$target: ok"
+            else
+              echo "$target: crashed"
+              failed="$failed $target"
+            fi
+            echo "::endgroup::"
+          done
           if [ -n "$failed" ]; then
             echo "::error::fuzz targets crashed:$failed"
             exit 1
@@ -208,15 +141,16 @@ jobs:
       - name: Minimize corpora
         if: always()
         run: |
-          for target in mesh_text_readers decode_drc compress_gltf draco_gltf_import fbx_read_scene fbx_roundtrip encode_drc; do
+          for target in ${{ matrix.targets }}; do
             cargo +nightly fuzz cmin -O "$target" --fuzz-dir fuzz \
               --target x86_64-unknown-linux-gnu
           done
 
+      # Named per group: two jobs uploading under one artifact name collide.
       - name: Upload crash artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fuzz-artifacts
+          name: fuzz-artifacts-${{ matrix.group }}
           path: fuzz/artifacts/
           if-no-files-found: ignore

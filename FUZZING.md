@@ -367,21 +367,29 @@ changes, plus deeper runs on demand. Trigger a manual run with
 
 **Level 1 — lightweight in-repo gate ([`.github/workflows/fuzz.yml`](.github/workflows/fuzz.yml)):**
 
-- Bounded smoke runs (`-max_total_time=120`) for `mesh_text_readers`,
-  `decode_drc`, `compress_gltf`, `draco_gltf_import`, `fbx_read_scene`,
-  `fbx_roundtrip` and `encode_drc` on every pull request and push to `main`.
-  A manual dispatch runs longer soaks (`-max_total_time=1800`).
+- Bounded smoke runs (`-max_total_time=120`) for every target on each pull
+  request and push to `main`. A manual dispatch runs a soak instead.
+- **Three jobs, grouped by what the target parses**, running concurrently:
+  `draco` (`decode_drc`, `encode_drc`), `readers` (`mesh_text_readers`,
+  `fbx_read_scene`, `fbx_roundtrip`) and `gltf` (`compress_gltf`,
+  `draco_gltf_import`). The groups are the unit of budget, and the split is by
+  risk: `draco` fuzzes this workspace's own bitstream encoder and decoder,
+  where four of the last five findings came from, and its soak is an hour per
+  target against half of that for the parsers of other people's formats.
+  Because the groups run at the same time, the run costs the wall-clock of the
+  longest one rather than the sum, and no target is competing with six others
+  for the six-hour job limit.
+- Each group caches its corpus under its own key. One shared key across
+  concurrent jobs would have them overwrite each other's entry.
 - The corpus is persisted across runs via the GitHub Actions cache and
   re-seeded from the committed fixtures each run, so coverage never starts from
   zero even if the cache entry is evicted.
 - **Every target runs, whichever way the ones before it went.** A crash used
   to end the job where it happened, which is right for a two-minute smoke and
   wrong for a soak: two half-hour runs in a row ended on an early target, and
-  the last one in the list never got a single second of either. Each target is
-  `continue-on-error` now and a `Report fuzz outcomes` step turns the
-  collected outcomes into the job's, naming every target that crashed. The
-  order still matters for a run that hits the six-hour job limit, which is why
-  the readers with no limits API of their own go first.
+  the last one in the list never got a single second of either. The group's
+  loop records each target's result and fails the step at the end, naming every
+  target that crashed.
 - Reproducers upload as a build artifact whether or not the job failed.
 
 **Level 2 — ClusterFuzzLite continuous fuzzing
