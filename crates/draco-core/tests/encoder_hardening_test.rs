@@ -982,17 +982,20 @@ fn a_texture_coordinate_scheme_that_predicts_nothing_still_round_trips() {
         );
     }
 
-    for version in [(1u8, 1u8), (2, 2)] {
+    let encode_with_scheme = |scheme: i32, version: (u8, u8)| {
         let mut options = EncoderOptions::new();
         options.set_version(version.0, version.1);
         options.set_attribute_int(0, "quantization_bits", 14);
         options.set_attribute_int(1, "quantization_bits", 12);
-        // The deprecated scheme, by number: nothing selects it automatically.
-        options.set_attribute_int(1, "prediction_scheme", 3);
+        options.set_attribute_int(1, "prediction_scheme", scheme);
+        encode_mesh(mesh.clone(), &options)
+    };
 
-        let encoded = match encode_mesh(mesh.clone(), &options) {
-            Ok(bytes) => bytes,
-            Err(_) => continue,
+    for version in [(1u8, 1u8), (2, 2)] {
+        // 3 is the deprecated scheme, by number: nothing selects it
+        // automatically. 0 is the difference scheme the downgrade lands on.
+        let Ok(encoded) = encode_with_scheme(3, version) else {
+            continue;
         };
         let mut decoded = Mesh::new();
         MeshDecoder::new()
@@ -1001,5 +1004,28 @@ fn a_texture_coordinate_scheme_that_predicts_nothing_still_round_trips() {
                 panic!("version {version:?}: encoder wrote a stream its decoder rejects: {error}")
             });
         assert_eq!(decoded.num_faces(), NUM_FACES);
+
+        // The downgrade is not a lossy escape hatch: the stream is the one
+        // asking for the difference scheme outright would have produced, byte
+        // for byte, so it round-trips exactly as that one does. The header
+        // agrees too, since it is written from the method the downgrade left
+        // behind rather than the one that was asked for.
+        let difference = encode_with_scheme(0, version)
+            .unwrap_or_else(|error| panic!("version {version:?}: difference encode: {error}"));
+        assert_eq!(
+            encoded, difference,
+            "version {version:?}: the downgraded stream is not the difference one"
+        );
+
+        let mut expected = Mesh::new();
+        MeshDecoder::new()
+            .decode(&mut DecoderBuffer::new(&difference), &mut expected)
+            .expect("difference decode");
+        let decoded_uv = decoded.attribute(1).buffer().data().to_vec();
+        let expected_uv = expected.attribute(1).buffer().data().to_vec();
+        assert_eq!(
+            decoded_uv, expected_uv,
+            "version {version:?}: texture coordinates differ after the downgrade"
+        );
     }
 }
