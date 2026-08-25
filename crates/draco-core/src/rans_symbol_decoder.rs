@@ -158,6 +158,13 @@ impl<'a> RAnsSymbolDecoder<'a> {
         true
     }
 
+    /// How many distinct symbols the table holds. One or none is the case with
+    /// no rANS state at all: the encoder wrote no payload, so the run is that
+    /// symbol repeated and nothing in the stream bounds how many times.
+    pub fn num_symbols(&self) -> usize {
+        self.num_symbols
+    }
+
     pub fn start_decoding(&mut self, buffer: &mut DecoderBuffer<'a>) -> bool {
         // Draco advances the buffer past the encoded rANS data regardless of the
         // number of symbols (the encoded size prefix is always present).

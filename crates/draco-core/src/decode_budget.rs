@@ -14,10 +14,18 @@
 //!
 //! What replaced it is a **backstop**, and the word is load-bearing: what
 //! actually keeps these paths bounded is that every buffer on them grows as its
-//! data arrives or is sized after the step that produced it. A legitimate
-//! decode therefore charges nothing here at all, which is not an aspiration
-//! but a test — `corpus::no_tracked_fixture_spends_the_budget` reads every
-//! fixture the repository carries and fails on the first byte charged.
+//! data arrives or is sized after the step that produced it, so a legitimate
+//! decode charges almost nothing here.
+//!
+//! Almost, and the exception is worth naming because it is the one shape with
+//! no honest bound at all: an entropy-coded run over an alphabet of *one*
+//! carries no payload, so nothing in the stream says how far it goes and the
+//! declared count is all there is. A constant attribute reaches it -- one
+//! tracked fixture charges 192 bytes that way -- and a 170-byte stream naming
+//! 6.8 billion values reached it for 27 GB.
+//! `corpus::no_tracked_fixture_spends_the_budget` reads every fixture the
+//! repository carries and holds the charge to a rounding error against the
+//! ceiling.
 //!
 //! What the backstop catches is the residue: a reservation made against a
 //! count with no data behind it. It is bounded two ways, because either alone
@@ -222,10 +230,18 @@ mod corpus {
                     continue;
                 }
                 decoded_ok += 1;
-                assert_eq!(
-                    buffer.spent(),
-                    0,
-                    "{} charged {} bytes against the budget",
+                // Not zero, and the exception is exact: a run over an alphabet
+                // of one carries no payload, so the count is genuinely unbacked
+                // and gets charged. `cube_att.obj.edgebreaker.cl10.2.2.drc` has
+                // a constant attribute and charges 192 bytes for it. What the
+                // corpus still has to say is that such a charge stays a rounding
+                // error against the ceiling -- a fixture spending megabytes here
+                // would mean something other than a constant attribute had found
+                // its way onto this path.
+                const ROUNDING_ERROR: usize = super::MAX_UNBACKED_BYTES / 1024;
+                assert!(
+                    buffer.spent() < ROUNDING_ERROR,
+                    "{} charged {} bytes against the budget, past the {ROUNDING_ERROR} a                      constant attribute can explain",
                     path.display(),
                     buffer.spent()
                 );

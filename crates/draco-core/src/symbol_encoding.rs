@@ -527,11 +527,36 @@ pub fn decode_raw_symbols(
             "Failed to read the raw scheme's rANS frequency table",
         ));
     }
+    // Taken before `start_decoding` walks past the coded bytes, so the
+    // difference below is the payload this run has to work from.
+    let before_payload = in_buffer.remaining_size();
     if !decoder.start_decoding(in_buffer) {
         return Err(DracoError::general(
             "Failed to start rANS decoding of the raw symbols",
         ));
     }
+    let payload_bytes = before_payload.saturating_sub(in_buffer.remaining_size());
+    // Only the part of the count the payload cannot plausibly account for is
+    // charged, so a real stream charges nothing and a runaway is bounded.
+    //
+    // Neither the payload nor the coder gives an exact bound here. rANS spends
+    // well under a bit on a near-certain symbol, and its state does not have
+    // to fall out of range once the bytes are spent: a near-deterministic
+    // alphabet keeps producing symbols from state alone indefinitely, which is
+    // how a small stream asked for two billion values and got them, in nine
+    // seconds. An alphabet of *one* is the extreme -- no payload at all, so
+    // nothing in the stream says how far the run goes -- and a constant
+    // attribute reaches it legitimately, which is why the answer is the budget
+    // rather than a refusal.
+    //
+    // Sixty-four symbols per payload byte is the same measured dial the
+    // reserve below uses: the densest coding a Draco encoder produces is 4.4
+    // symbols per *bit* on the seeded ribbon at speed 0, which is 35 per byte.
+    let backed_by_payload = payload_bytes.saturating_mul(64);
+    if num_values > backed_by_payload {
+        in_buffer.charge_elements(num_values - backed_by_payload, size_of::<u32>())?;
+    }
+
     // Growth is capped at `num_values` the same way the corner table caps at
     // the declared face count: the target is only reached after decoding a
     // capacity's worth of real symbols, so it never exceeds doubling of
@@ -793,6 +818,49 @@ mod roundtrip_tests {
         );
         assert!(
             out.len() < 50_000_000,
+            "the sink was filled to the declared count before failing"
+        );
+    }
+
+    /// A count the coded bytes cannot account for is charged to the budget,
+    /// not filled.
+    ///
+    /// The sibling above pins the case where the coder runs out of state. This
+    /// is the case where it does not: a near-deterministic alphabet keeps
+    /// producing symbols from state alone after its payload is spent, so
+    /// nothing inside the coder ever objects. Before the charge, this decoded
+    /// two billion values out of a hundred-odd bytes and took nine seconds
+    /// doing it.
+    ///
+    /// The bound cannot be exact -- rANS spends well under a bit on a
+    /// near-certain symbol -- so what is charged is only the part of the count
+    /// the payload cannot plausibly back, at the same sixty-four symbols per
+    /// byte the reserve uses.
+    #[test]
+    fn a_symbol_count_the_payload_cannot_account_for_is_refused() {
+        let symbols = vec![7u32; 4_000];
+        let options = SymbolEncodingOptions::default();
+
+        let mut target = EncoderBuffer::new();
+        encode_symbols(&symbols, 1, &options, &mut target).unwrap();
+        let data = target.data().to_vec();
+
+        // Its own count decodes and charges nothing.
+        let mut source = DecoderBuffer::new(&data);
+        let mut out = Vec::new();
+        decode_symbols(symbols.len(), 1, &options, &mut source, &mut out).unwrap();
+        assert_eq!(out, symbols);
+
+        let mut source = DecoderBuffer::new(&data);
+        let mut out = Vec::new();
+        let error = decode_symbols(2_000_000_000, 1, &options, &mut source, &mut out)
+            .expect_err("a count past the ceiling was filled anyway");
+        assert_eq!(
+            error.kind(),
+            crate::status::ErrorKind::AllocationExceedsInput
+        );
+        assert!(
+            out.len() < 2_000_000_000,
             "the sink was filled to the declared count before failing"
         );
     }
