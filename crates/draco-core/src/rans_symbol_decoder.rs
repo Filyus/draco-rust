@@ -219,18 +219,28 @@ impl<'a> RAnsSymbolDecoder<'a> {
     /// so `rem - cum_prob` is the offset within that symbol's range and cannot
     /// go negative. Both hold for any table `decode_table` accepted, which is
     /// the only way one is built.
-    pub fn decode_run(&mut self, out: &mut [u32]) {
+    /// Returns whether every symbol came out of the coded bytes. A `false` says
+    /// the run outlived its input: `start_decoding` gave the coder a payload of
+    /// exactly the length the stream declared, and once that is spent the state
+    /// can no longer renormalize, so each further slot is a function of the
+    /// state alone and carries no information from the file. The loop below
+    /// would otherwise fill a caller-declared count with those -- 134 million
+    /// of them out of 226 bytes in the case that put this check here. The
+    /// alternative, bounding the count against the input size, does not exist:
+    /// rANS spends well under a bit on a near-certain symbol, and this crate's
+    /// own encoder writes 50,000 symbols into 82 bytes.
+    pub fn decode_run(&mut self, out: &mut [u32]) -> bool {
         // A single-symbol alphabet carries no rANS state at all -- the encoder
         // wrote nothing and `start_decoding` initialized nothing -- so the run
         // is that symbol repeated.
         if self.num_symbols <= 1 {
             out.fill(0);
-            return;
+            return true;
         }
         let precision = self.rans_precision as usize;
         if self.lut.len() < precision || self.probability_table.is_empty() {
             out.fill(0);
-            return;
+            return false;
         }
         let lut = &self.lut[..precision];
         let table = &self.probability_table[..];
@@ -242,11 +252,16 @@ impl<'a> RAnsSymbolDecoder<'a> {
         let mut offset = self.ans.buf_offset.min(buf.len());
         let mut state = self.ans.state;
 
+        // Set once the state could not be refilled, never cleared: from that
+        // slot on the run is drawing on nothing. One predicated compare per
+        // symbol, off the dependency chain the loop is actually waiting on.
+        let mut backed = true;
         for slot in out.iter_mut() {
             while state < l_base && offset > 0 {
                 offset -= 1;
                 state = (state << 8) | buf[offset] as u32;
             }
+            backed &= state >= l_base;
             let quo = state >> bits;
             let rem = state & mask;
             // `rem <= mask` and `lut.len() == mask + 1`, so this indexes in
@@ -261,6 +276,7 @@ impl<'a> RAnsSymbolDecoder<'a> {
 
         self.ans.buf_offset = offset;
         self.ans.state = state;
+        backed
     }
 
     #[inline(always)]

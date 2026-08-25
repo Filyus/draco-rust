@@ -557,7 +557,15 @@ pub fn decode_raw_symbols(
         // capacity, so this fills without reallocating.
         let filled = symbols.len();
         symbols.resize(filled + (chunk_end - index), 0);
-        decoder.decode_run(&mut symbols[filled..]);
+        if !decoder.decode_run(&mut symbols[filled..]) {
+            return Err(DracoError::new(
+                crate::status::ErrorKind::AllocationExceedsInput,
+                format!(
+                    "the stream declared {num_values} symbols but its coded bytes ran out after {}",
+                    symbols.len()
+                ),
+            ));
+        }
         index = chunk_end;
     }
     Ok(())
@@ -744,6 +752,50 @@ mod roundtrip_tests {
         let mut out = Vec::new();
         decode_symbols(symbols.len(), 1, &options, &mut source, &mut out).unwrap();
         assert_eq!(out, symbols, "the sink stopped short of the symbol count");
+    }
+
+    /// A count larger than the coded bytes can back is refused, not filled.
+    ///
+    /// The rANS coder does not run out: once its payload is spent the state can
+    /// no longer renormalize and every further symbol is a function of the
+    /// state alone, so a declared count is a promise the decoder used to keep
+    /// no matter what -- 134 million symbols out of a 226-byte file, two and a
+    /// half seconds and 86 MB of them, in the `decode_drc` campaign that found
+    /// this.
+    ///
+    /// The count is not bounded against the input size here, and cannot be:
+    /// the sibling test above encodes 50,000 symbols into 82 bytes, so any
+    /// symbols-per-byte constant that admits it admits this too. What
+    /// separates them is the coded payload running out, which is what the
+    /// decoder now reports.
+    #[test]
+    fn a_symbol_count_the_coded_bytes_cannot_back_is_refused() {
+        // Two symbols, one rare: the raw scheme, as in the sibling test.
+        let symbols: Vec<u32> = (0..50_000u32).map(|i| u32::from(i % 997 == 0)).collect();
+        let options = SymbolEncodingOptions::default();
+
+        let mut target = EncoderBuffer::new();
+        encode_symbols(&symbols, 1, &options, &mut target).unwrap();
+        let data = target.data().to_vec();
+
+        // The stream is intact and its own count decodes.
+        let mut source = DecoderBuffer::new(&data);
+        let mut out = Vec::new();
+        decode_symbols(symbols.len(), 1, &options, &mut source, &mut out).unwrap();
+        assert_eq!(out, symbols);
+
+        let mut source = DecoderBuffer::new(&data);
+        let mut out = Vec::new();
+        let error = decode_symbols(50_000_000, 1, &options, &mut source, &mut out)
+            .expect_err("a count the payload cannot back decoded anyway");
+        assert_eq!(
+            error.kind(),
+            crate::status::ErrorKind::AllocationExceedsInput
+        );
+        assert!(
+            out.len() < 50_000_000,
+            "the sink was filled to the declared count before failing"
+        );
     }
 
     /// A symbol whose top bit is set forces the tagged scheme's per-chunk
