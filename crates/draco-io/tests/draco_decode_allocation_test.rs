@@ -52,6 +52,23 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static ALLOC: CountingAllocator = CountingAllocator;
 
+/// One counter, one process, and `cargo test` runs these in parallel: without
+/// this every measurement would include whatever the other tests allocated
+/// while it ran. Held for the whole of a measured decode.
+static MEASURING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The bytes one decode reserved, with the counter to itself.
+fn reserved_by<T>(decode: impl FnOnce() -> T) -> (T, usize) {
+    let guard = MEASURING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = ALLOCATED.load(Ordering::Relaxed);
+    let result = decode();
+    let requested = ALLOCATED.load(Ordering::Relaxed) - before;
+    drop(guard);
+    (result, requested)
+}
+
 /// `DRACO` magic, version, encoder type and method.
 fn draco_header(major: u8, minor: u8, encoder_type: u8, method: u8) -> Vec<u8> {
     let mut header = b"DRACO".to_vec();
@@ -96,10 +113,10 @@ fn a_quantized_point_cloud_does_not_reserve_one_value_per_claimed_point() {
     // point of the test is what happens *after* that gate, not at it.
     let stream = a_point_cloud_claiming(1_768_300_085, 32 * 1024);
 
-    let before = ALLOCATED.load(Ordering::Relaxed);
     let mut decoded = PointCloud::new();
-    let result = PointCloudDecoder::new().decode(&mut DecoderBuffer::new(&stream), &mut decoded);
-    let requested = ALLOCATED.load(Ordering::Relaxed) - before;
+    let (result, requested) = reserved_by(|| {
+        PointCloudDecoder::new().decode(&mut DecoderBuffer::new(&stream), &mut decoded)
+    });
 
     assert!(
         result.is_err(),
@@ -128,10 +145,10 @@ fn an_octahedral_normal_point_cloud_does_not_reserve_one_value_per_claimed_point
     stream.push(1); // entropy-coded corrections
     stream.resize(stream.len() + 32 * 1024, 0);
 
-    let before = ALLOCATED.load(Ordering::Relaxed);
     let mut decoded = PointCloud::new();
-    let result = PointCloudDecoder::new().decode(&mut DecoderBuffer::new(&stream), &mut decoded);
-    let requested = ALLOCATED.load(Ordering::Relaxed) - before;
+    let (result, requested) = reserved_by(|| {
+        PointCloudDecoder::new().decode(&mut DecoderBuffer::new(&stream), &mut decoded)
+    });
 
     assert!(
         result.is_err(),
@@ -180,11 +197,11 @@ fn a_generic_attribute_does_not_reserve_more_than_the_stream_can_carry() {
     stream.push(0); // generic decoder
     stream.resize(stream.len() + 32 * 1024, 0);
 
-    let before = ALLOCATED.load(Ordering::Relaxed);
     let mut decoded = draco_core::mesh::Mesh::new();
-    let result = draco_core::mesh_decoder::MeshDecoder::new()
-        .decode(&mut DecoderBuffer::new(&stream), &mut decoded);
-    let requested = ALLOCATED.load(Ordering::Relaxed) - before;
+    let (result, requested) = reserved_by(|| {
+        draco_core::mesh_decoder::MeshDecoder::new()
+            .decode(&mut DecoderBuffer::new(&stream), &mut decoded)
+    });
 
     assert!(
         result.is_err(),
@@ -218,14 +235,62 @@ fn zero_byte_raw_corrections_do_not_reserve_one_value_per_claimed_point() {
     stream.push(0); // zero bytes each: nothing is read, all are zero
     stream.resize(stream.len() + 32 * 1024, 0);
 
-    let before = ALLOCATED.load(Ordering::Relaxed);
     let mut decoded = PointCloud::new();
-    let result = PointCloudDecoder::new().decode(&mut DecoderBuffer::new(&stream), &mut decoded);
-    let requested = ALLOCATED.load(Ordering::Relaxed) - before;
+    let (result, requested) = reserved_by(|| {
+        PointCloudDecoder::new().decode(&mut DecoderBuffer::new(&stream), &mut decoded)
+    });
 
     assert!(
         result.is_err(),
         "a header claiming 1.7 billion points in 32 KB must not decode"
+    );
+    assert!(
+        requested < 1024 * 1024,
+        "decode reserved {requested} bytes for a {} byte stream",
+        stream.len()
+    );
+}
+
+/// The KD-tree walk stacks were `(32 * dimension + 1) * dimension` entries
+/// each, taken in the decoder's constructor, where `dimension` is the sum of
+/// the attributes' component counts -- one byte of the descriptor each, at
+/// five bytes per attribute.
+///
+/// Quadratic in a number the stream picks that cheaply: 25 attributes of 255
+/// components in 143 bytes reached `5,202,025,500` bytes in a single
+/// `vec![0; n]`. That one cannot fail gracefully, so this did not return an
+/// error -- it aborted the process, which in the WASM modules takes the page.
+/// The stacks are grown by the walk now, so a row costs a split and a split
+/// costs input.
+///
+/// With the fix reverted this test reports `10,404,193,277 bytes for a 143
+/// byte stream` on a machine that can satisfy the request, and dies inside the
+/// allocator on one that cannot. Either way an `is_err` assertion would have
+/// seen nothing: the decode's *verdict* was never wrong, only what it spent
+/// reaching it.
+#[test]
+fn a_declared_kd_tree_dimension_does_not_size_the_walk_stacks() {
+    const ATTRIBUTES: usize = 25;
+    const COMPONENTS: u8 = 255;
+
+    let mut stream = draco_header(2, 2, 0, 1); // point cloud, method 1 = KD-tree
+    stream.extend_from_slice(&1u32.to_le_bytes()); // one point
+    stream.push(1); // one attributes decoder
+    stream.push(ATTRIBUTES as u8); // varint attribute count, one byte below 128
+    for id in 0..ATTRIBUTES {
+        // Generic, float32, 255 components, unnormalized, and a one-byte id.
+        stream.extend_from_slice(&[4, 9, COMPONENTS, 0, id as u8]);
+    }
+    stream.push(0); // KD-tree compression level
+
+    let mut decoded = PointCloud::new();
+    let (result, requested) = reserved_by(|| {
+        PointCloudDecoder::new().decode(&mut DecoderBuffer::new(&stream), &mut decoded)
+    });
+
+    assert!(
+        result.is_err(),
+        "a stream that ends before the KD-tree payload must not decode"
     );
     assert!(
         requested < 1024 * 1024,

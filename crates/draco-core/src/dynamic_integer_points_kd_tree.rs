@@ -29,6 +29,33 @@ fn most_significant_bit(value: u32) -> u32 {
     31 - value.leading_zeros()
 }
 
+/// Grows both walk stacks to hold at least `rows` rows of `dimension` entries,
+/// and returns how many rows they hold afterwards.
+///
+/// Doubling, so the check the walk makes per split is a comparison against a
+/// number it already has and the resize is rare. Fallible on purpose: the row
+/// count follows a walk the stream drives, so a malformed stream that keeps
+/// splitting keeps asking, and the answer has to be an error the decode
+/// reports rather than an abort inside the allocator.
+#[cfg(feature = "decoder")]
+fn grow_rows(
+    base: &mut Vec<u32>,
+    levels: &mut Vec<u32>,
+    dimension: usize,
+    rows: usize,
+    have: usize,
+) -> Result<usize, ()> {
+    let target = rows.max(have.saturating_mul(2));
+    let needed = target.checked_mul(dimension).ok_or(())?;
+    for stack in [&mut *base, &mut *levels] {
+        if stack.len() < needed {
+            stack.try_reserve(needed - stack.len()).map_err(|_| ())?;
+            stack.resize(needed, 0);
+        }
+    }
+    Ok(target)
+}
+
 /// Copies the row at `src` onto the `dim` values that follow it.
 ///
 /// `copy_within` with a length only known at run time is a `memmove` call, and
@@ -508,9 +535,17 @@ pub struct DynamicIntegerPointsKdTreeDecoder<'a> {
 
 #[cfg(feature = "decoder")]
 impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
+    /// Builds the decoder without its walk stacks.
+    ///
+    /// They used to be taken here, `(32 * dimension + 1) * dimension` entries
+    /// each: quadratic in a dimension the stream picks, one component at a
+    /// time, at five bytes per attribute. A 143-byte file naming 25 attributes
+    /// of 255 components reached `5,202,025,500` bytes in one `vec![0; n]`,
+    /// which cannot fail gracefully -- it aborts, and in the WASM modules that
+    /// takes the page. The stacks are grown by the walk instead, a row at a
+    /// time, as the splits that need them are decoded.
     pub fn new(compression_level: u8, dimension: u32) -> Self {
         assert!(compression_level <= 6);
-        let stack_len = (32 * dimension + 1) as usize;
         let numbers_decoder = match compression_level {
             0 | 1 => NumbersDecoder::Direct(DirectBitDecoder::new()),
             2 | 3 => NumbersDecoder::RAns(RAnsBitDecoder::new()),
@@ -523,8 +558,8 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             num_points: 0,
             num_decoded_points: 0,
             dimension,
-            base_stack: vec![0; stack_len * dimension as usize],
-            levels_stack: vec![0; stack_len * dimension as usize],
+            base_stack: Vec::new(),
+            levels_stack: Vec::new(),
             numbers_decoder,
             remaining_bits_decoder: DirectBitDecoder::new(),
             axis_decoder: DirectBitDecoder::new(),
@@ -653,6 +688,8 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
         // memcpys per node, on a walk that visits two nodes per point.
         let mut base_stack = std::mem::take(&mut self.base_stack);
         let mut levels_stack = std::mem::take(&mut self.levels_stack);
+        base_stack.clear();
+        levels_stack.clear();
         let ok = self.decode_walk(num_points, out, &mut base_stack, &mut levels_stack);
         self.base_stack = base_stack;
         self.levels_stack = levels_stack;
@@ -663,8 +700,8 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
         &mut self,
         num_points: u32,
         out: &mut Vec<u32>,
-        base_stack: &mut [u32],
-        levels_stack: &mut [u32],
+        base_stack: &mut Vec<u32>,
+        levels_stack: &mut Vec<u32>,
     ) -> bool {
         #[derive(Clone, Copy)]
         struct Status {
@@ -674,6 +711,12 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
         }
 
         let dimension = self.dimension as usize;
+        // The root's row, and a little beyond it. Every row after that is added
+        // by the split that needs it, so the stacks follow the walk the stream
+        // actually drives rather than the deepest one it could claim.
+        let Ok(mut rows) = grow_rows(base_stack, levels_stack, dimension, 8, 0) else {
+            return false;
+        };
         base_stack[0..dimension].fill(0);
         levels_stack[0..dimension].fill(0);
 
@@ -695,20 +738,12 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             // propagating to a child is a copy within the stack rather than a
             // round trip through a scratch buffer.
             let child_start = row_end;
-            let child_end = child_start + dimension;
-            // This node's own row, which every branch below reads. Both stacks
-            // hold `32 * dimension + 1` rows and a path splits at most 32 times
-            // per axis, so a well-formed tree never reaches this; a malformed
-            // one is refused here rather than panicking in the row accesses,
-            // and the compiler carries the bound through the node.
-            //
-            // The *child's* row is not checked here, because the deepest node a
-            // well-formed tree can reach is one that has no child: 32 splits
-            // per axis put it at row `32 * dimension`, the last one there is,
-            // and it terminates on `bit_length - level == 0` without ever
-            // descending. Demanding its child's row up front refused exactly
-            // that node -- a one-dimensional tree over full-range values hit it
-            // on its first leaf.
+            // This node's own row, which every branch below reads. It was
+            // added by the split that pushed this node, or by the root setup,
+            // so a well-formed walk never fails here; the check stays because
+            // it is what turns a malformed one into a refusal rather than a
+            // panic in the row accesses, and it leaves the compiler a bound to
+            // carry through the node.
             if base_stack.len() < row_end || levels_stack.len() < row_end {
                 return false;
             }
@@ -778,9 +813,16 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
                 return false;
             }
 
-            // Splitting is the one branch that writes the child's row.
-            if base_stack.len() < child_end || levels_stack.len() < child_end {
-                return false;
+            // Splitting is the one branch that writes the child's row, so it is
+            // the one that adds it. A row costs a split, and a split costs
+            // input, which is what keeps the stacks proportional to the stream
+            // rather than to the dimension it declares.
+            if stack_pos + 2 > rows {
+                let Ok(grown) = grow_rows(base_stack, levels_stack, dimension, stack_pos + 2, rows)
+                else {
+                    return false;
+                };
+                rows = grown;
             }
 
             let num_remaining_bits = self.bit_length - level;
