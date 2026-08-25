@@ -367,14 +367,22 @@ changes, plus deeper runs on demand. Trigger a manual run with
 
 **Level 1 — lightweight in-repo gate ([`.github/workflows/fuzz.yml`](.github/workflows/fuzz.yml)):**
 
-- Bounded smoke runs (`-max_total_time=120`) for `decode_drc`,
-  `compress_gltf`, `draco_gltf_import`, `fbx_read_scene`, `fbx_roundtrip`,
-  `encode_drc` and `mesh_text_readers` on every pull request and push to
-  `main`. A manual dispatch runs longer soaks (`-max_total_time=1800`).
+- Bounded smoke runs (`-max_total_time=120`) for `mesh_text_readers`,
+  `decode_drc`, `compress_gltf`, `draco_gltf_import`, `fbx_read_scene`,
+  `fbx_roundtrip` and `encode_drc` on every pull request and push to `main`.
+  A manual dispatch runs longer soaks (`-max_total_time=1800`).
 - The corpus is persisted across runs via the GitHub Actions cache and
   re-seeded from the committed fixtures each run, so coverage never starts from
   zero even if the cache entry is evicted.
-- A crash fails the job and uploads the reproducer as a build artifact.
+- **Every target runs, whichever way the ones before it went.** A crash used
+  to end the job where it happened, which is right for a two-minute smoke and
+  wrong for a soak: two half-hour runs in a row ended on an early target, and
+  the last one in the list never got a single second of either. Each target is
+  `continue-on-error` now and a `Report fuzz outcomes` step turns the
+  collected outcomes into the job's, naming every target that crashed. The
+  order still matters for a run that hits the six-hour job limit, which is why
+  the readers with no limits API of their own go first.
+- Reproducers upload as a build artifact whether or not the job failed.
 
 **Level 2 — ClusterFuzzLite continuous fuzzing
 ([`.github/workflows/cflite_*.yml`](.github/workflows), [`.clusterfuzzlite/`](.clusterfuzzlite)):**
