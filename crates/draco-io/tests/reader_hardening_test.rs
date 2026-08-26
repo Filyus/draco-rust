@@ -1,9 +1,9 @@
 //! The OBJ/PLY/STL readers, given files nobody would author.
 //!
-//! These three parsers are not covered by any libFuzzer target - only the FBX
-//! reader is - so the cases they used to mishandle are pinned here instead.
-//! Every one is driven by file content: a header count, a repeated property,
-//! a body that ends early.
+//! The `mesh_text_readers` campaign covers all three; what it finds is pinned
+//! here, where it runs on stable CI without the fuzzing toolchain. Every case
+//! is driven by file content: a header count, a repeated property, a body that
+//! ends early.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -204,4 +204,41 @@ f	1 2 3
         obj_positions(tabbed).expect("a tab-delimited file must read"),
         vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
     );
+}
+
+#[test]
+fn a_face_list_size_that_overflows_the_cursor_is_refused() {
+    // libFuzzer reproducer (fuzz target `mesh_text_readers`): the per-face list
+    // size is whatever the line says, and the check that it fits the line added
+    // it to the cursor. At `usize::MAX` that sum wrapped below the cursor, so
+    // the check passed and the slice that followed started after it ended.
+    let file = ply(&format!(
+        concat!(
+            "ply
+",
+            "format ascii 1.0
+",
+            "element vertex 3
+",
+            "property float x
+property float y
+property float z
+",
+            "element face 1
+",
+            "property list uchar int vertex_indices
+",
+            "end_header
+",
+            "0 0 0
+1 0 0
+0 1 0
+",
+            "{} 0 1 2
+",
+        ),
+        usize::MAX
+    ));
+    // Either outcome is acceptable; slicing past the line is not.
+    let _ = PlyReader::read_from_bytes(&file);
 }

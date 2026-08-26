@@ -755,11 +755,17 @@ fn parse_ascii_face_line(
         }
 
         let polygon_size = indices[0] as usize;
-        if polygon_size < 3 || indices.len() < polygon_size + 1 {
+        // `polygon_size` is a file-controlled `u32`, and `usize` is 32 bits on
+        // the wasm32 target this ships to, where the leading count's own slot
+        // pushes it past the end.
+        let Some(end) = polygon_size.checked_add(1) else {
+            return Ok(());
+        };
+        if polygon_size < 3 || indices.len() < end {
             return Ok(());
         }
 
-        triangulate_vertex_indices(&indices[1..polygon_size + 1], faces);
+        triangulate_vertex_indices(&indices[1..end], faces);
         return Ok(());
     }
 
@@ -783,13 +789,19 @@ fn parse_ascii_face_line(
                     .parse()
                     .map_err(|_| invalid_ply("Bad face list size"))?;
                 cursor += 1;
-                if parts.len() < cursor + count {
+                // The count is whatever the line says. Added to the cursor it
+                // leaves `usize` -- and the sum, having wrapped, then passes
+                // for a length this line does hold.
+                let Some(end) = cursor.checked_add(count) else {
+                    return Ok(());
+                };
+                if parts.len() < end {
                     return Ok(());
                 }
 
                 if index_property == Some(position) {
                     polygon_indices = Some(
-                        parts[cursor..cursor + count]
+                        parts[cursor..end]
                             .iter()
                             .map(|part| {
                                 part.parse::<u32>()
@@ -798,7 +810,7 @@ fn parse_ascii_face_line(
                             .collect::<io::Result<Vec<u32>>>()?,
                     );
                 }
-                cursor += count;
+                cursor = end;
             }
         }
     }
