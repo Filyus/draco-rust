@@ -26,27 +26,9 @@
 # hardening_status.yaml; keep only concrete implementation actions here.
 
 version: 1
-last_reviewed: "2026-07-26"
+last_reviewed: "2026-08-27"
 
 items:
-  - id: encoder-per-attribute-connectivity
-    area: draco-core/prediction
-    priority: high
-    status: open
-    summary: "A prediction scheme on a seamed attribute is given the mesh-wide corner table on the encoder and the attribute's own on the decoder, so the two predict over different connectivity."
-    evidence:
-      - path: "dev/docs/per-attribute-connectivity.md"
-        note: "Full handover: the instrumented counts, both maps at the diverging entry (39 vertices against 43), where each half takes its table, and the question to answer first."
-      - path: "crates/draco-core/src/sequential_integer_attribute_encoder.rs"
-        note: "The parallelogram arm builds MeshPredictionSchemeData from encoder.corner_table() and encoder.get_vertex_to_data_map(). Both accessors prefer per-attribute state and fall back to mesh-wide; for the reproducer the fallback was taken."
-      - path: "crates/draco-core/src/mesh_decoder.rs"
-        note: "rebuild_edgebreaker_attribute_corner_tables builds the per-attribute tables the decoder walks, so the two halves start from different vertex counts."
-    impact: "The root behind three findings so far -- 6d5600b, 4a41796, and the crease-flag desync the encode_drc oracle reported. Each was traced from a fuzz artifact at roughly an hour apiece, and narrow refusals only shrink the surface where it can still appear."
-    next_steps:
-      - "Establish which half is right about this attribute having its own connectivity, by instrumenting active_corner_table against the decoder's rebuilt tables on the committed reproducer."
-      - "Route the per-attribute table and its traversal maps into the scheme where that is the answer; otherwise fix what the encoder writes as seam bits."
-      - "Hold the change to the verification bar in the handover: the corpus differential over all 119 .drc fixtures is the one that catches right-shaped wrong values."
-
   - id: fbx-pre-7000-object-model
     area: draco-io/fbx
     priority: low

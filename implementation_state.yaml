@@ -877,7 +877,7 @@ files:
         note: "Supports Sequential and Edgebreaker encoding. Version-aware field sizes (u32 vs varint). Generates EdgebreakerAttributeConnectivity for non-position attributes when Edgebreaker uses non-single connectivity."
       - name: "prepare_active_attribute_connectivity"
         progress: "fully implemented"
-        note: "Builds seam-expanded active corner-table and point-sequence views for seam-bearing attribute value encoding while preserving base traversal for attributes without interior seams."
+        note: "Builds seam-expanded active corner-table and point-sequence views for seam-bearing attribute value encoding while preserving base traversal for attributes without interior seams. For a no-interior-seams attribute at encoding speed 0, its no-interior-seams branch reuses `self.attribute_traversal` -- a depth-first order computed separately from position's own MaxPredictionDegree order in `encode_edgebreaker_connectivity`. That computation used to gate on `mesh.num_attributes() > 1`, which undercounts a mesh with no registered Position attribute (connectivity from the face list only, one non-position attribute registered); fixed to gate on `!self.edgebreaker_attribute_connectivity.is_empty()` instead, which counts non-position attributes directly regardless of whether Position is registered."
       - name: "encode_geometry_data"
         progress: "fully implemented"
         note: "Matches C++ logic."
