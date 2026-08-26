@@ -15,7 +15,7 @@ fn repo_testdata_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata")
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum DecoderKind {
     Mesh,
     PointCloud,
@@ -47,6 +47,12 @@ fn append_varint(bytes: &mut Vec<u8>, value: u64) {
     }
 }
 
+/// Decodes `bytes` and returns what the decoder *reported*: `Ok` for a stream
+/// it accepted, `Err` for one it refused. A panic is neither, and is the thing
+/// every test in this file exists to catch, so it is turned into a failure of
+/// the calling test right here rather than handed back as a value a caller
+/// could discard -- which is what a `let _ =` at half the call sites did, for
+/// as long as the panic came back as an ordinary `Err`.
 fn decode_malformed_without_panic(kind: DecoderKind, bytes: &[u8]) -> Result<(), String> {
     let status = panic::catch_unwind(AssertUnwindSafe(|| match kind {
         DecoderKind::Mesh => {
@@ -62,7 +68,14 @@ fn decode_malformed_without_panic(kind: DecoderKind, bytes: &[u8]) -> Result<(),
             decoder.decode(&mut buffer, &mut pc)
         }
     }))
-    .map_err(|_| "decoder panicked".to_string())?;
+    .unwrap_or_else(|_| {
+        // The panic's own message and location have already gone to stderr
+        // through the default hook; this names the input that produced it.
+        panic!(
+            "{kind:?} decoder panicked on a {}-byte stream (its panic is printed above)",
+            bytes.len()
+        )
+    });
 
     status.map_err(|e| format!("{e:?}"))
 }
@@ -76,6 +89,11 @@ fn decode_by_header_without_panic(bytes: &[u8]) -> Result<(), String> {
     decode_malformed_without_panic(kind, bytes)
 }
 
+/// Runs both decoders over the same bytes for their panic behaviour alone.
+///
+/// Either verdict is a pass: a reproducer of this kind is malformed, and a
+/// decoder that refuses it is doing its job. The failure this asserts on is
+/// raised by `decode_malformed_without_panic` itself.
 fn assert_both_decoders_do_not_panic(bytes: &[u8]) {
     let _ = decode_malformed_without_panic(DecoderKind::Mesh, bytes);
     let _ = decode_malformed_without_panic(DecoderKind::PointCloud, bytes);
@@ -1285,9 +1303,10 @@ fn a_one_component_geometric_normal_fails_without_indexing_past_its_pair() {
         1, 1, 1, 1, 64, 1, 0, 255, 3, 0, 0, 255, 1, 0, 0, 255, 2, 161, 65, 10, 1, 1, 1, 1, 2, 3,
         85, 53, 3, 173, 10, 4, 142, 132, 157, 130, 0, 0, 0, 0, 2, 0, 0, 0,
     ];
-    // Spelled out rather than left to `assert_both_decoders_do_not_panic`: the
-    // panic is the finding, so the test has to fail on it rather than discard
-    // the helper's verdict.
+    // Asserted on the message rather than left to
+    // `assert_both_decoders_do_not_panic`, which would pass on any refusal:
+    // the component count is what has to be refused, and it has to be refused
+    // before the transform runs.
     assert_eq!(
         decode_malformed_without_panic(DecoderKind::Mesh, &one_component_geometric_normal)
             .unwrap_err(),
