@@ -209,6 +209,19 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableDecoder<'a> {
             }
         }
 
+        // Delta coding, for a corner whose neighbours cannot carry a geometric
+        // prediction. The previous corner is picked first and then overwritten
+        // on every remaining path -- upstream writes it with a plain `if` and
+        // follows it with another plain `if` whose `else` covers the rest, so
+        // the previous corner never survives to be used. That is upstream issue
+        // #1117, and it stays: this has to predict what the encoder predicted,
+        // so picking the previous corner here would misread every stream
+        // already written. The encoding half drops the dead branch rather than
+        // transcribing it; both spell the same prediction.
+        //
+        // A negative id is a vertex that never received data. Upstream
+        // multiplies it out and indexes with it; here it fails the conversion
+        // and the prediction is refused.
         let data_offset = if prev_data_id < data_id {
             let mut offset = prev_data_id;
             if next_data_id < data_id {
@@ -925,7 +938,9 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
         // plain `if` whose `else` covers everything remaining -- so whatever the
         // previous corner set is overwritten on every path. Reproducing it as an
         // if/else-if chain would pick the previous corner where Draco picks the
-        // next one or the last encoded value.
+        // next one or the last encoded value. Upstream issue #1117 proposes
+        // making that branch reachable; it cannot be taken here, because the
+        // decoding half has to predict what this wrote.
         let data_offset = if next_data_id < data_id {
             (next_data_id * 2) as usize
         } else if data_id > 0 {
