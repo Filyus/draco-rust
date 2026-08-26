@@ -6,7 +6,7 @@
 //! `prediction_scheme_tex_coords_portable_*`.
 
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
-use crate::geometry_indices::{CornerIndex, PointIndex};
+use crate::geometry_indices::{CornerIndex, PointIndex, INVALID_ATTRIBUTE_VALUE_INDEX};
 use crate::math_utils::int_sqrt;
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;
 use crate::prediction_scheme::{
@@ -15,8 +15,6 @@ use crate::prediction_scheme::{
 
 #[cfg(feature = "decoder")]
 use crate::decoder_buffer::DecoderBuffer;
-#[cfg(feature = "decoder")]
-use crate::geometry_indices::INVALID_ATTRIBUTE_VALUE_INDEX;
 #[cfg(feature = "decoder")]
 use crate::prediction_scheme::{PredictionSchemeDecoder, PredictionSchemeDecodingTransform};
 #[cfg(feature = "decoder")]
