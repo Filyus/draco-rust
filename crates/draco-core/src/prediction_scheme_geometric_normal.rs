@@ -385,6 +385,16 @@ impl<'a> PredictionSchemeDecoder<'a, i32> for MeshPredictionSchemeGeometricNorma
                 "Geometric normal prediction was never initialized".to_string(),
             ));
         }
+
+        // The octahedral coordinates the transform reads and writes are a pair;
+        // it indexes both without asking. The encoding half refuses any other
+        // count already, so a stream claiming one is a stream nothing here
+        // wrote.
+        if num_components != 2 {
+            return Err(DracoError::invalid_parameter(format!(
+                "Geometric normal prediction needs 2 octahedral components, got {num_components}"
+            )));
+        }
         self.transform.init(num_components);
 
         let missing =

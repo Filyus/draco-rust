@@ -1265,3 +1265,32 @@ fn a_truncated_stream_names_what_ran_out() {
         "no truncation carried the prediction transform's own message; saw: {messages:?}"
     );
 }
+
+#[test]
+fn a_one_component_geometric_normal_fails_without_indexing_past_its_pair() {
+    // libFuzzer reproducer (fuzz target `decode_drc`): a v2.2 EdgeBreaker mesh
+    // whose geometric-normal prediction covers an attribute with a single
+    // component. The octahedral transform reads and writes a coordinate pair
+    // and indexed the second one unconditionally, so a one-component attribute
+    // panicked on the correction it does not have. The encoding half refuses
+    // any count but two, so no stream this project writes carries one.
+    let one_component_geometric_normal: [u8; 227] = [
+        68, 82, 65, 67, 79, 2, 2, 1, 1, 0, 0, 0, 8, 12, 3, 11, 0, 0, 3, 95, 75, 21, 1, 1, 16, 85,
+        4, 138, 172, 164, 70, 85, 4, 138, 172, 164, 70, 128, 4, 0, 151, 98, 113, 4, 255, 0, 0, 0,
+        1, 0, 1, 1, 0, 2, 1, 0, 1, 0, 9, 3, 0, 0, 2, 1, 3, 9, 2, 0, 2, 1, 1, 1, 9, 3, 0, 2, 3, 1,
+        4, 2, 1, 0, 3, 1, 1, 1, 1, 0, 3, 3, 1, 32, 1, 32, 3, 0, 80, 67, 142, 8, 20, 10, 8, 0, 0, 0,
+        0, 255, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63, 14, 5, 1, 1, 1, 2, 3,
+        85, 41, 1, 12, 173, 10, 10, 187, 74, 75, 252, 193, 10, 163, 236, 35, 145, 12, 0, 0, 0, 1,
+        2, 192, 64, 0, 0, 0, 0, 255, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63, 12, 6, 3, 1,
+        1, 1, 1, 1, 64, 1, 0, 255, 3, 0, 0, 255, 1, 0, 0, 255, 2, 161, 65, 10, 1, 1, 1, 1, 2, 3,
+        85, 53, 3, 173, 10, 4, 142, 132, 157, 130, 0, 0, 0, 0, 2, 0, 0, 0,
+    ];
+    // Spelled out rather than left to `assert_both_decoders_do_not_panic`: the
+    // panic is the finding, so the test has to fail on it rather than discard
+    // the helper's verdict.
+    assert_eq!(
+        decode_malformed_without_panic(DecoderKind::Mesh, &one_component_geometric_normal)
+            .unwrap_err(),
+        "DracoError { kind: InvalidParameter, message: \"Geometric normal prediction needs 2 octahedral components, got 1\" }"
+    );
+}
