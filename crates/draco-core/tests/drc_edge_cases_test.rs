@@ -1313,3 +1313,31 @@ fn a_one_component_geometric_normal_fails_without_indexing_past_its_pair() {
         "DracoError { kind: InvalidParameter, message: \"Geometric normal prediction needs 2 octahedral components, got 1\" }"
     );
 }
+
+#[test]
+fn a_bit_stream_longer_than_the_buffer_does_not_move_the_position_past_it() {
+    // libFuzzer reproducer (fuzz target `decode_drc`): the size that precedes a
+    // bit sequence is a varint out of the stream, and the end position built
+    // from it was bounded only against overflow. A size a few bytes short of
+    // `usize::MAX` put that position into the buffer's cursor when bit decoding
+    // ended, and the next length check -- a sum that wrapped -- waved the read
+    // through: `range start index 18446744073709551613 out of range for slice
+    // of length 195`.
+    //
+    // Upstream hands its bit decoder `remaining_size()` and never positions
+    // from the claim, so a stream claiming more than it carries is read to the
+    // end rather than refused; the end position is clamped here for the same
+    // reason.
+    let bit_stream_outruns_the_buffer: [u8; 195] = [
+        68, 82, 65, 67, 79, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 55, 114, 0, 0, 0, 224, 0, 0, 0, 1, 223,
+        0, 0, 0, 126, 0, 0, 0, 102, 0, 0, 0, 208, 255, 255, 255, 255, 255, 255, 255, 223, 243, 120,
+        180, 143, 246, 209, 106, 219, 182, 109, 31, 218, 71, 235, 125, 180, 192, 67, 251, 104, 181,
+        218, 71, 75, 171, 213, 122, 104, 31, 173, 86, 171, 125, 180, 180, 90, 15, 255, 255, 130,
+        122, 45, 160, 1, 0, 0, 0, 0, 0, 0, 0, 1, 255, 3, 0, 0, 0, 102, 212, 128, 17, 0, 0, 0, 161,
+        24, 0, 0, 0, 61, 183, 195, 79, 70, 62, 230, 227, 99, 170, 92, 154, 47, 153, 174, 54, 4, 7,
+        4, 27, 131, 40, 64, 80, 0, 0, 0, 0, 0, 0, 0, 0, 2, 255, 0, 0, 0, 0, 64, 2, 96, 215, 174,
+        110, 110, 207, 249, 47, 0, 0, 242, 143, 16, 211, 237, 224, 16, 0, 124, 245, 187, 189, 59,
+        0, 42, 3, 242, 127, 117, 112, 0, 0, 255, 1, 0, 161, 65, 0, 0, 10,
+    ];
+    assert_both_decoders_do_not_panic(&bit_stream_outruns_the_buffer);
+}

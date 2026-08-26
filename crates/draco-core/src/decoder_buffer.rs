@@ -173,8 +173,9 @@ impl<'a> DecoderBuffer<'a> {
 
     /// Peeks at the next `len` bytes without advancing the position.
     pub fn peek_bytes(&self, len: usize) -> Vec<u8> {
-        let end = std::cmp::min(self.pos + len, self.data.len());
-        self.data[self.pos..end].to_vec()
+        let start = self.pos.min(self.data.len());
+        let end = start.saturating_add(len).min(self.data.len());
+        self.data[start..end].to_vec()
     }
 
     /// Starts bit-level decoding mode.
@@ -211,10 +212,18 @@ impl<'a> DecoderBuffer<'a> {
         if decode_size {
             let size_bytes = usize::try_from(size_bytes)
                 .map_err(|_| DracoError::buffer("Bit stream size too large"))?;
-            self.bit_stream_end_pos = self
+            // Bounded by the buffer, not by the number: the size is a varint
+            // out of the stream, and a stream claiming more than it carries is
+            // one upstream reads to the end of rather than refuses -- its bit
+            // decoder is handed `remaining_size()` and never sees the claim.
+            // Left unbounded, the claim lands in `pos` when bit decoding ends,
+            // and a position past the buffer is one no later bounds check is
+            // written to expect.
+            let declared_end = self
                 .bit_start_pos
                 .checked_add(size_bytes)
                 .ok_or_else(|| DracoError::buffer("Bit stream end position overflow"))?;
+            self.bit_stream_end_pos = declared_end.min(self.data.len());
         } else {
             // If size is not encoded, assume the rest of the buffer.
             self.bit_stream_end_pos = self.data.len();
@@ -330,7 +339,7 @@ impl<'a> DecoderBuffer<'a> {
             ));
         }
         let size = mem::size_of::<T>();
-        if self.pos + size > self.data.len() {
+        if size > self.data.len().saturating_sub(self.pos) {
             return Err(DracoError::buffer(format!(
                 "Unexpected end of buffer: need {} bytes, have {}",
                 size,
@@ -405,7 +414,7 @@ impl<'a> DecoderBuffer<'a> {
     /// Returns an [`ErrorKind::Buffer`](crate::ErrorKind::Buffer) error if not enough bytes remaining.
     pub fn decode_bytes(&mut self, out: &mut [u8]) -> Result<(), DracoError> {
         let size = out.len();
-        if self.pos + size > self.data.len() {
+        if size > self.data.len().saturating_sub(self.pos) {
             return Err(DracoError::buffer(format!(
                 "Unexpected end of buffer: need {} bytes, have {}",
                 size,
@@ -488,7 +497,7 @@ impl<'a> DecoderBuffer<'a> {
     ///
     /// Returns an [`ErrorKind::Buffer`](crate::ErrorKind::Buffer) error if not enough bytes remaining.
     pub fn decode_slice(&mut self, size: usize) -> Result<&'a [u8], DracoError> {
-        if self.pos + size > self.data.len() {
+        if size > self.data.len().saturating_sub(self.pos) {
             return Err(DracoError::buffer(format!(
                 "Unexpected end of buffer: need {} bytes, have {}",
                 size,
