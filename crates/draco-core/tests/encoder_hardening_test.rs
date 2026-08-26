@@ -1125,3 +1125,86 @@ fn a_position_predicting_scheme_is_not_chosen_under_single_connectivity() {
         }
     }
 }
+
+/// An integral position used as a prediction parent needs its portable form's
+/// point map rebuilt, exactly as a quantized one does.
+///
+/// The values are written in encoding order while a predictor reads its parent
+/// as `mapped_index(point_id)`. Left as the identity, the encoder reads the
+/// entry sitting at the point's own index and the decoder -- whose parent
+/// carries the rebuilt map -- reads a different one. It shows only when the two
+/// orders differ, which coincident positions cause: the corner table merges
+/// those points into one vertex, so the traversal order stops matching the
+/// attribute's own.
+#[test]
+fn an_integral_prediction_parent_carries_the_traversal_order() {
+    const NUM_POINTS: usize = 6;
+    // Four of the six share a position, which is what makes the encoding order
+    // differ from the attribute's own.
+    const POSITIONS: [[u16; 3]; NUM_POINTS] = [
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+        [12032, 0, 0],
+        [47545, 47545, 185],
+        [0, 0, 0],
+    ];
+    const TEX_COORDS: [[u16; 2]; NUM_POINTS] = [[0, 0], [0, 0], [0, 0], [0, 47], [0, 0], [0, 0]];
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(NUM_POINTS);
+
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Uint16,
+        true,
+        NUM_POINTS,
+    );
+    for (index, value) in POSITIONS.iter().enumerate() {
+        for (component, v) in value.iter().enumerate() {
+            position
+                .buffer_mut()
+                .write((index * 3 + component) * 2, &v.to_le_bytes());
+        }
+    }
+    mesh.add_attribute(position);
+
+    let mut tex_coord = PointAttribute::new();
+    tex_coord.init(
+        GeometryAttributeType::TexCoord,
+        2,
+        DataType::Uint16,
+        false,
+        NUM_POINTS,
+    );
+    for (index, value) in TEX_COORDS.iter().enumerate() {
+        for (component, v) in value.iter().enumerate() {
+            tex_coord
+                .buffer_mut()
+                .write((index * 2 + component) * 2, &v.to_le_bytes());
+        }
+    }
+    mesh.add_attribute(tex_coord);
+
+    mesh.set_num_faces(2);
+    for (index, face) in [[0u32, 1, 2], [1, 3, 4]].iter().enumerate() {
+        mesh.set_face(
+            draco_core::geometry_indices::FaceIndex(index as u32),
+            [face[0].into(), face[1].into(), face[2].into()],
+        );
+    }
+
+    let mut options = EncoderOptions::new();
+    options.set_attribute_int(0, "quantization_bits", 20);
+    options.set_attribute_int(1, "quantization_bits", 23);
+    options.set_attribute_int(1, "prediction_scheme", 5);
+
+    let encoded = encode_mesh(mesh, &options).expect("encode");
+    let mut decoded = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
+        .expect("encoder wrote a stream its decoder rejects");
+    assert_eq!(decoded.num_faces(), 2);
+}

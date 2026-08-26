@@ -1600,7 +1600,16 @@ impl MeshEncoder {
                     // not the original the mesh was handed. Only a parent, as
                     // upstream only rebuilds the map under `is_parent_encoder`.
                     if is_parent_attribute && decoder_types[local_i] == 1 {
-                        portables.push((att_id, integral_portable_attribute(att, point_ids)?));
+                        let mut portable = integral_portable_attribute(att, point_ids)?;
+                        // The same rebuild the quantized arm below does, and for
+                        // the same reason: the values are in encoding order and
+                        // a predictor reads its parent as
+                        // `mapped_index(point_id)`. Without it the map stays the
+                        // identity, the encoder reads the entry sitting at the
+                        // point's own index, and the decoder -- whose parent
+                        // carries the rebuilt map -- reads a different one.
+                        rebuild_parent_point_map(att, &mut portable, point_ids, mesh.num_points())?;
+                        portables.push((att_id, portable));
                     }
                     quantization_transforms.push(None);
                     continue;
