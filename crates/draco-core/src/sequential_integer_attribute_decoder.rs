@@ -45,6 +45,24 @@ pub enum PortableExtent {
 }
 
 impl PortableExtent {
+    /// The extent of the values a point-id map describes.
+    ///
+    /// The two array variants are arrays: their length is a count something
+    /// already produced, and reserving it costs what the array itself cost.
+    /// The identity variant is a number the stream declared and nothing has
+    /// backed -- it materializes no array precisely so that a claim of a
+    /// billion points does not cost four bytes each, and sizing the portable
+    /// attribute from its `len()` spends that claim anyway, one value at a
+    /// time instead.
+    pub fn of(map: crate::prediction_scheme::EntryToPointIdMap<'_>) -> Self {
+        match map {
+            crate::prediction_scheme::EntryToPointIdMap::Identity(num_points) => {
+                PortableExtent::Declared(num_points)
+            }
+            other => PortableExtent::Decoded(other.len()),
+        }
+    }
+
     /// Initializes `portable` to hold values of this shape, reserving or
     /// deferring according to what backs the count.
     pub fn init(

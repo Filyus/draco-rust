@@ -16,6 +16,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use draco_core::decoder_buffer::DecoderBuffer;
+use draco_core::mesh::Mesh;
+use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::point_cloud::PointCloud;
 use draco_core::point_cloud_decoder::PointCloudDecoder;
 
@@ -296,5 +298,44 @@ fn a_declared_kd_tree_dimension_does_not_size_the_walk_stacks() {
         requested < 1024 * 1024,
         "decode reserved {requested} bytes for a {} byte stream",
         stream.len()
+    );
+}
+
+/// A varint point count in a sequential *mesh* header, spent one portable
+/// value at a time.
+///
+/// The mesh path does not materialize the point-id array for a sequential
+/// stream -- it uses an identity map holding only the count, precisely so that
+/// a claim of a billion points does not cost four bytes each. The portable
+/// attribute was then sized from that map's `len()`, which is the claim again:
+/// this 62-byte artifact declares about 7e16 points and asked for a single
+/// 558,446,353,793,941,488-byte buffer, which the campaign's AddressSanitizer
+/// refused outright. The same decode now reserves 702 bytes.
+///
+/// The `decode_drc` reproducer verbatim rather than a stream built here: what
+/// makes it reach the value pass is a header this file has no helper for, and
+/// a hand-built approximation decoded successfully without ever allocating,
+/// which would have pinned nothing.
+#[test]
+fn a_sequential_mesh_does_not_reserve_one_portable_value_per_claimed_point() {
+    let claimed_points: [u8; 62] = [
+        68, 82, 65, 67, 79, 2, 2, 1, 0, 9, 3, 0, 254, 255, 255, 255, 255, 255, 255, 251, 0, 2, 1,
+        3, 9, 2, 0, 3, 2, 1, 1, 9, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 239, 239, 239, 239, 1, 0, 0, 0,
+        239, 239, 239, 239, 239, 239, 239, 239, 239, 161, 65, 8,
+    ];
+
+    let mut decoded = Mesh::new();
+    let (result, requested) = reserved_by(|| {
+        MeshDecoder::new().decode(&mut DecoderBuffer::new(&claimed_points), &mut decoded)
+    });
+
+    assert!(
+        result.is_err(),
+        "a stream with no values in it must not decode"
+    );
+    assert!(
+        requested < 64 * 1024 * 1024,
+        "decode reserved {requested} bytes for a {} byte stream",
+        claimed_points.len()
     );
 }
