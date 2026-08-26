@@ -1312,3 +1312,53 @@ fn a_position_outside_the_integer_range_is_not_predicted_from() {
             panic!("encoder wrote a stream its decoder rejects: {error}");
         });
 }
+
+/// An attribute with no values still carries its headers, and the decoder has
+/// to read them.
+///
+/// The prediction header and the entropy stream's own header go into the
+/// bitstream whether or not a value follows. The decoder took a shortcut on an
+/// empty attribute and read neither, so the next thing it read -- the
+/// octahedral transform's bit count, which trails the values -- came out of the
+/// middle of the headers it had skipped, and the decoder rejected the encoder's
+/// own stream.
+#[test]
+fn an_attribute_with_no_values_round_trips_through_its_headers() {
+    for num_points in [0usize, 1, 4] {
+        let mut point_cloud = PointCloud::new();
+        point_cloud.set_num_points(num_points);
+
+        let mut normal = PointAttribute::new();
+        normal.init(
+            GeometryAttributeType::Normal,
+            3,
+            DataType::Float32,
+            true,
+            num_points,
+        );
+        for index in 0..num_points {
+            for component in 0..3 {
+                normal.buffer_mut().write(
+                    (index * 3 + component) * 4,
+                    &(0.5f32 + component as f32).to_le_bytes(),
+                );
+            }
+        }
+        point_cloud.add_attribute(normal);
+
+        let mut options = EncoderOptions::new();
+        options.set_encoding_method(0);
+        options.set_prediction_scheme(1);
+        options.set_attribute_int(0, "quantization_bits", 6);
+
+        let encoded = encode_point_cloud(point_cloud, &options)
+            .unwrap_or_else(|error| panic!("{num_points} points: encode refused: {error}"));
+        let mut decoded = PointCloud::new();
+        PointCloudDecoder::new()
+            .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
+            .unwrap_or_else(|error| {
+                panic!("{num_points} points: encoder wrote a stream its decoder rejects: {error}")
+            });
+        assert_eq!(decoded.num_points(), num_points);
+    }
+}

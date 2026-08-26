@@ -244,9 +244,12 @@ impl SequentialIntegerAttributeDecoder {
         }
 
         let num_points = point_ids.len();
-        if num_points == 0 {
-            return Ok(());
-        }
+        // No shortcut for an empty attribute: the prediction header and the
+        // entropy stream's own header are written whether or not a value
+        // follows, and upstream reads them unconditionally. Returning early
+        // left them in the buffer, and whatever the stream carries next -- the
+        // octahedral transform's bit count, in the campaign's reproducer -- was
+        // read out of the middle of them.
 
         let attribute = if let Some(ref pa) = portable_attribute {
             &**pa
@@ -855,7 +858,14 @@ impl SequentialIntegerAttributeDecoder {
             }
         }
 
-        // 4. Apply Inverse Prediction.
+        // 4. Apply Inverse Prediction. Nothing to revert without a value:
+        // every predictor starts by computing the first entry, which an empty
+        // buffer does not have. Upstream guards the same call the same way.
+        // Returning here rather than skipping to step 5 costs nothing -- with
+        // no values there is nothing to store.
+        if num_values == 0 {
+            return Ok(());
+        }
         match selected_method {
             _ if self.prediction_scheme.is_some() => {
                 let map_opt = match selected_method {
