@@ -1636,20 +1636,10 @@ impl MeshEncoder {
                         DracoError::general(format!("Failed to quantize attribute: {e}"))
                     })?;
 
-                // Rebuild the portable attribute's point map, as upstream does
-                // in SequentialIntegerAttributeEncoder::TransformAttributeToPortableFormat.
-                // The values were written in encoding order, but a prediction
-                // scheme reads its parent as `mapped_index(point_id)`; without
-                // this the lookup returns whichever vertex happens to sit at
-                // that index in the traversal, and encoder and decoder predict
-                // from different positions.
-                //
-                // Upstream guards this with `is_parent_encoder()`. The two
-                // schemes that declare a parent -- tex coords portable and
-                // geometric normal -- both name the position and are both
-                // selected only below speed 4; every other scheme declares
-                // none. So this is the same guard, decided up front rather than
-                // by a flag set during scheme construction.
+                // Only a parent needs the rebuilt map, which is the guard
+                // upstream spells `is_parent_encoder()`. What declares a parent
+                // is `position_is_a_prediction_parent` above -- not the speed
+                // alone, which is what this used to say.
                 if is_parent_attribute {
                     rebuild_parent_point_map(att, &mut portable, point_ids, mesh.num_points())?;
                 }
