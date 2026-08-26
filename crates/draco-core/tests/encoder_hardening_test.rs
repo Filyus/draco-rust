@@ -1362,3 +1362,284 @@ fn an_attribute_with_no_values_round_trips_through_its_headers() {
         assert_eq!(decoded.num_points(), num_points);
     }
 }
+
+/// Replays the exact byte-decoding the `encode_drc` fuzz target uses, against
+/// one committed seed, so the geometry here is the real fuzz-discovered mesh
+/// rather than a hand-shrunk guess -- a guessed approximation of this one
+/// already passed against the unfixed encoder once.
+mod encode_drc_replay {
+    use draco_core::draco_types::DataType;
+    use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
+    use draco_core::geometry_indices::{AttributeValueIndex, PointIndex};
+
+    const MAX_POINTS: usize = 2048;
+    const MAX_FACES: usize = 2048;
+    const MAX_ATTRIBUTES: usize = 4;
+
+    pub(super) struct Reader<'a> {
+        data: &'a [u8],
+        pos: usize,
+    }
+
+    impl<'a> Reader<'a> {
+        pub(super) fn new(data: &'a [u8]) -> Self {
+            Self { data, pos: 0 }
+        }
+        fn u8(&mut self) -> u8 {
+            let byte = self.data.get(self.pos).copied().unwrap_or(0);
+            self.pos = self.pos.saturating_add(1);
+            byte
+        }
+        fn u16(&mut self) -> u16 {
+            u16::from(self.u8()) | (u16::from(self.u8()) << 8)
+        }
+        fn bool(&mut self) -> bool {
+            self.u8() & 1 == 1
+        }
+        fn in_range(&mut self, min: i32, max: i32) -> i32 {
+            if max <= min {
+                return min;
+            }
+            let span = (max - min) as u32 + 1;
+            min + (u32::from(self.u16()) % span) as i32
+        }
+        pub(super) fn rest(&self) -> &'a [u8] {
+            self.data.get(self.pos..).unwrap_or(&[])
+        }
+    }
+
+    pub(super) struct AttributeSpec {
+        attribute_type: GeometryAttributeType,
+        data_type: DataType,
+        num_components: u8,
+        normalized: bool,
+        num_values: usize,
+        explicit_mapping: bool,
+        pub(super) quantization_bits: i32,
+        pub(super) prediction_scheme: i32,
+    }
+
+    pub(super) struct GeometrySpec {
+        pub(super) as_point_cloud: bool,
+        pub(super) num_points: usize,
+        pub(super) faces: Vec<[u32; 3]>,
+        pub(super) attributes: Vec<AttributeSpec>,
+        #[allow(dead_code)]
+        deduplicate: bool,
+        pub(super) encoding_method: i32,
+        pub(super) prediction_scheme: i32,
+        pub(super) encoding_speed: i32,
+        pub(super) decoding_speed: i32,
+        pub(super) split_on_seams: i32,
+    }
+
+    /// Faithful copy of `fuzz/fuzz_targets/encode_drc.rs`'s `read_spec`, trimmed
+    /// to the fields this replay actually consumes -- `deduplicate`,
+    /// `store_number_of_encoded_faces`, `force_predictive_traversal` and
+    /// `version` are still read in the same order so every later field lands at
+    /// the same byte offset, just not kept.
+    pub(super) fn read_spec(reader: &mut Reader) -> GeometrySpec {
+        let as_point_cloud = reader.bool();
+        let num_points = reader.in_range(0, MAX_POINTS as i32) as usize;
+        let num_faces = if as_point_cloud {
+            0
+        } else {
+            reader.in_range(0, MAX_FACES as i32) as usize
+        };
+
+        let index_bound = reader.in_range(1, MAX_POINTS as i32 + 16) as u32;
+        let mut faces = Vec::with_capacity(num_faces);
+        for _ in 0..num_faces {
+            faces.push([
+                u32::from(reader.u16()) % index_bound,
+                u32::from(reader.u16()) % index_bound,
+                u32::from(reader.u16()) % index_bound,
+            ]);
+        }
+
+        let num_attributes = reader.in_range(0, MAX_ATTRIBUTES as i32) as usize;
+        let mut attributes = Vec::with_capacity(num_attributes);
+        for _ in 0..num_attributes {
+            attributes.push(read_attribute_spec(reader, num_points));
+        }
+
+        // Field order matches upstream's struct-literal evaluation order
+        // exactly (left to right, `deduplicate` through `version`): a
+        // struct literal evaluates its initializers in source order, not
+        // declaration order, and every field after this one shifts to a
+        // different byte offset if that order slips.
+        let spec = GeometrySpec {
+            as_point_cloud,
+            num_points,
+            faces,
+            attributes,
+            deduplicate: reader.bool(),
+            encoding_method: reader.in_range(-1, 3),
+            prediction_scheme: reader.in_range(-2, 6),
+            encoding_speed: reader.in_range(-1, 10),
+            decoding_speed: reader.in_range(-1, 10),
+            split_on_seams: reader.in_range(-1, 1),
+        };
+        let _store_number_of_encoded_faces = reader.bool();
+        let _force_predictive_traversal = reader.bool();
+        let _version = if reader.bool() {
+            Some((reader.u8() % 4, reader.u8() % 8))
+        } else {
+            None
+        };
+        spec
+    }
+
+    fn read_attribute_spec(reader: &mut Reader, num_points: usize) -> AttributeSpec {
+        let attribute_type = match reader.in_range(0, 4) {
+            0 => GeometryAttributeType::Position,
+            1 => GeometryAttributeType::Normal,
+            2 => GeometryAttributeType::Color,
+            3 => GeometryAttributeType::TexCoord,
+            _ => GeometryAttributeType::Generic,
+        };
+        let data_type = match reader.in_range(0, 10) {
+            0 => DataType::Int8,
+            1 => DataType::Uint8,
+            2 => DataType::Int16,
+            3 => DataType::Uint16,
+            4 => DataType::Int32,
+            5 => DataType::Uint32,
+            6 => DataType::Int64,
+            7 => DataType::Uint64,
+            8 => DataType::Float32,
+            9 => DataType::Float64,
+            _ => DataType::Bool,
+        };
+        let explicit_mapping = reader.bool();
+        let num_values = if explicit_mapping {
+            reader.in_range(0, MAX_POINTS as i32) as usize
+        } else {
+            reader.in_range(0, num_points as i32 + 4) as usize
+        };
+
+        AttributeSpec {
+            attribute_type,
+            data_type,
+            num_components: reader.in_range(0, 8) as u8,
+            normalized: reader.bool(),
+            num_values,
+            explicit_mapping,
+            quantization_bits: reader.in_range(-2, 34),
+            prediction_scheme: reader.in_range(-2, 6),
+        }
+    }
+
+    pub(super) fn build_attribute(
+        spec: &AttributeSpec,
+        num_points: usize,
+        payload: &[u8],
+        seed: usize,
+    ) -> Option<PointAttribute> {
+        let mut attribute = PointAttribute::new();
+        attribute
+            .try_init(
+                spec.attribute_type,
+                spec.num_components,
+                spec.data_type,
+                spec.normalized,
+                spec.num_values,
+            )
+            .ok()?;
+
+        fill(attribute.buffer_mut().data_mut(), payload, seed);
+
+        if spec.explicit_mapping {
+            attribute.set_explicit_mapping(num_points);
+            for point in 0..num_points {
+                if spec.num_values == 0 {
+                    break;
+                }
+                let value = ((point.wrapping_mul(2654435761).wrapping_add(seed))
+                    % spec.num_values) as u32;
+                let _ = attribute.try_set_point_map_entry(
+                    PointIndex(point as u32),
+                    AttributeValueIndex(value),
+                );
+            }
+        } else {
+            attribute.set_identity_mapping();
+        }
+
+        Some(attribute)
+    }
+
+    fn fill(dst: &mut [u8], src: &[u8], seed: usize) {
+        if src.is_empty() {
+            return;
+        }
+        for (i, byte) in dst.iter_mut().enumerate() {
+            *byte = src[(i + seed) % src.len()];
+        }
+    }
+}
+
+/// The exact geometry `fuzz/seeds/encode_drc/parallelogram_over_attribute_connectivity.bin`
+/// decodes to: 301 points, 45 faces, one explicit-mapping `Color` attribute
+/// with more distinct values (693) than points, encoding speed 0, and no
+/// `Position` attribute registered at all -- connectivity comes only from the
+/// face list. That last part is what the fix here is about: the encoder used
+/// `mesh.num_attributes() > 1` to decide whether a non-position attribute
+/// needs its own depth-first traversal (position takes MaxPredictionDegree at
+/// speed 0), and undercounts by one whenever there is no separate Position
+/// attribute to count. See `dev/docs/per-attribute-connectivity.md`.
+#[test]
+fn a_color_attribute_without_a_position_attribute_round_trips_at_speed_zero() {
+    use encode_drc_replay::*;
+
+    let data = include_bytes!(
+        "../../../fuzz/seeds/encode_drc/parallelogram_over_attribute_connectivity.bin"
+    );
+    let mut reader = Reader::new(data);
+    let spec = read_spec(&mut reader);
+    let payload = reader.rest().to_vec();
+
+    assert!(!spec.as_point_cloud);
+    assert_eq!(spec.num_points, 301);
+    assert_eq!(spec.faces.len(), 45);
+    assert_eq!(spec.attributes.len(), 1);
+    assert_eq!(spec.encoding_speed, 0);
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(spec.num_points);
+    mesh.try_set_num_faces(spec.faces.len())
+        .expect("face count within bounds");
+    for (index, face) in spec.faces.iter().enumerate() {
+        mesh.set_face_from_indices(index, *face);
+    }
+
+    for (index, attribute_spec) in spec.attributes.iter().enumerate() {
+        let attribute =
+            build_attribute(attribute_spec, spec.num_points, &payload, index * 7 + 1)
+                .expect("attribute within bounds");
+        mesh.add_attribute(attribute);
+    }
+    assert_eq!(mesh.num_attributes(), 1, "no Position attribute registered");
+
+    let mut options = EncoderOptions::new();
+    options.set_encoding_method(spec.encoding_method);
+    options.set_prediction_scheme(spec.prediction_scheme);
+    options.set_global_int("encoding_speed", spec.encoding_speed);
+    options.set_global_int("decoding_speed", spec.decoding_speed);
+    if spec.split_on_seams >= 0 {
+        options.set_global_int("split_mesh_on_seams", spec.split_on_seams);
+    }
+    for (id, attribute) in spec.attributes.iter().enumerate() {
+        let id = id as i32;
+        options.set_attribute_int(id, "quantization_bits", attribute.quantization_bits);
+        if attribute.prediction_scheme >= -1 {
+            options.set_attribute_int(id, "prediction_scheme", attribute.prediction_scheme);
+        }
+    }
+
+    let encoded = encode_mesh(mesh, &options).expect("encode");
+    let mut decoded = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
+        .expect("encoder wrote a stream its decoder rejects");
+}

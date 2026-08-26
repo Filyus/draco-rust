@@ -900,7 +900,16 @@ impl MeshEncoder {
         // every other attribute stays depth first, so the two orders part ways
         // and the non-position groups need their own. At any other speed the
         // position order already is the depth-first one.
-        self.attribute_traversal = if self.options.get_speed() == 0 && mesh.num_attributes() > 1 {
+        //
+        // Whether there is a non-position group is `edgebreaker_attribute_connectivity`
+        // being non-empty, not `mesh.num_attributes() > 1`: a mesh can carry a
+        // single attribute that is not Position (no separate Position attribute
+        // registered at all, connectivity coming only from the face list), and
+        // then `num_attributes()` is 1 while that one attribute still needs its
+        // own traversal. Counting attributes undercounts exactly that mesh.
+        self.attribute_traversal = if self.options.get_speed() == 0
+            && !self.edgebreaker_attribute_connectivity.is_empty()
+        {
             Some(encoder.generate_depth_first_traversal(mesh, corner_table))
         } else {
             None
