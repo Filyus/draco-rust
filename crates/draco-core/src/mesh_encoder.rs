@@ -1188,64 +1188,11 @@ impl MeshEncoder {
         // Store transforms and encoders for later use in transform data encoding
         let mut quantization_transforms: Vec<Option<AttributeQuantizationTransform>> = Vec::new();
         let mut portable_attributes: Vec<Option<PointAttribute>> = Vec::new();
-        let mut parent_portable: Option<(i32, PointAttribute)> = None;
         let mut normal_encoders: Vec<Option<SequentialNormalAttributeEncoder>> = Vec::new();
         // Collected here rather than written straight to `self`, which is
         // borrowed as the `GeometryEncoder` the attribute encoders predict
         // against for as long as this loop runs.
         let mut predictions = Vec::new();
-
-        // Before any value is written: the position's portable form, for a
-        // prediction scheme that will read it as a parent.
-        //
-        // The grouped path builds these in a pass of their own, as upstream's
-        // controller does. This one encodes each attribute inline, so a parent
-        // encoded after its dependant would not exist when the dependant needs
-        // it -- and until now none existed at all here, which left every
-        // parent-reading scheme on this path predicting from the original
-        // attribute while the decoder predicted from the reconstruction. The
-        // two differ whenever the encoding order is not the attribute's own
-        // value order, which deduplication and seams both cause.
-        if position_is_a_prediction_parent(mesh, &self.options) {
-            let position_id = mesh.named_attribute_id(GeometryAttributeType::Position);
-            if position_id >= 0 {
-                let att = mesh.attribute(position_id);
-                let quantization_bits =
-                    self.options
-                        .get_attribute_int(position_id, "quantization_bits", -1);
-                let portable = match decoder_types[position_id as usize] {
-                    1 => Some(integral_portable_attribute(att, &self.point_ids)?),
-                    2 => {
-                        let mut q_transform = AttributeQuantizationTransform::new();
-                        q_transform.compute_parameters(att, quantization_bits)?;
-                        let mut portable = PointAttribute::default();
-                        q_transform.transform_attribute(
-                            att,
-                            EntryToPointIdMap::from_point_indices(&self.point_ids),
-                            &mut portable,
-                        )?;
-                        Some(portable)
-                    }
-                    _ => None,
-                };
-                if let Some(mut portable) = portable {
-                    rebuild_parent_point_map(
-                        att,
-                        &mut portable,
-                        &self.point_ids,
-                        mesh.num_points(),
-                    )?;
-                    parent_portable = Some((position_id, portable));
-                }
-            }
-        }
-        if let Some((att_id, portable)) = parent_portable {
-            self.portable_attributes.push((att_id, portable));
-        }
-        let mesh = self
-            .mesh
-            .as_ref()
-            .expect("mesh must be set before encoding");
 
         // First pass: encode all attribute VALUES
         for i in 0..mesh.num_attributes() {

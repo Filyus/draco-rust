@@ -72,6 +72,7 @@ fn introduced_at(method: PredictionSchemeMethod) -> (u8, u8) {
 pub(crate) fn downgrade_without_position_parent(
     method: PredictionSchemeMethod,
     encoder: &dyn GeometryEncoder,
+    options: &crate::encoder_options::EncoderOptions,
 ) -> PredictionSchemeMethod {
     let predicts_from_position = matches!(
         method,
@@ -82,9 +83,35 @@ pub(crate) fn downgrade_without_position_parent(
     if !predicts_from_position {
         return method;
     }
-    match encoder.point_cloud().and_then(position_parent) {
-        Some(_) => method,
-        None => PredictionSchemeMethod::Difference,
+    if encoder.point_cloud().and_then(position_parent).is_none() {
+        return PredictionSchemeMethod::Difference;
+    }
+    if single_connectivity(options) {
+        return PredictionSchemeMethod::Difference;
+    }
+    method
+}
+
+/// Whether the encode will build one corner table over the point indices
+/// rather than one per attribute.
+///
+/// Upstream's `MeshEdgebreakerEncoderImpl::Init` makes the same decision from
+/// the same two inputs. What matters here is that a scheme predicting from the
+/// position does not survive it: the table's vertices are points rather than
+/// attribute values, the encoder's traversal then names points the decoder's
+/// does not, and the two predict from different positions. A five-point mesh
+/// of two triangles is enough to show it -- the encoder's point order comes
+/// out `[3, 4, 1, 1, 2, 0]` against the decoder's `[1, 2, 0, 4, 5, 3]`.
+///
+/// `SelectPredictionMethod` never combines the two, because every
+/// parent-reading scheme it picks needs speed below 4 and single connectivity
+/// starts at 6. An explicit `prediction_scheme` option does not go through that
+/// selection, which is the only way this pairing is reached at all.
+#[cfg(feature = "encoder")]
+fn single_connectivity(options: &crate::encoder_options::EncoderOptions) -> bool {
+    match options.get_global_int("split_mesh_on_seams", -1) {
+        -1 => options.get_speed() >= 6,
+        explicit => explicit != 0,
     }
 }
 

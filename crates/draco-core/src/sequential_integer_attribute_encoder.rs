@@ -334,6 +334,7 @@ impl SequentialIntegerAttributeEncoder {
         selected_method = crate::prediction_scheme_selection::downgrade_without_position_parent(
             selected_method,
             encoder,
+            options,
         );
 
         // An octahedron-folded normal can only be predicted by a scheme that

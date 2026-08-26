@@ -1029,3 +1029,99 @@ fn a_texture_coordinate_scheme_that_predicts_nothing_still_round_trips() {
         );
     }
 }
+
+/// A scheme that predicts from the position does not survive single
+/// connectivity, and the encoder must not choose one there.
+///
+/// With one corner table over the point indices, the table's vertices are
+/// points rather than attribute values; the encoder's traversal then names
+/// points the decoder's does not, and the two predict from different
+/// positions. Five points and two triangles are enough -- the encoder's point
+/// order came out `[3, 4, 1, 1, 2, 0]` against the decoder's `[1, 2, 0, 4, 5,
+/// 3]`, and the tex-coord predictor ran out of orientations reading it back.
+///
+/// `SelectPredictionMethod` never pairs the two: every parent-reading scheme
+/// it picks needs speed below 4, and single connectivity starts at 6. Only an
+/// explicit `prediction_scheme` reaches the pairing, which is what the
+/// `encode_drc` campaign did twice.
+#[test]
+fn a_position_predicting_scheme_is_not_chosen_under_single_connectivity() {
+    const NUM_POINTS: usize = 6;
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(NUM_POINTS);
+
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Uint16,
+        true,
+        NUM_POINTS,
+    );
+    for index in 0..NUM_POINTS {
+        let value = if index == 1 { 0u16 } else { 48316 };
+        for component in 0..3 {
+            position
+                .buffer_mut()
+                .write((index * 3 + component) * 2, &value.to_le_bytes());
+        }
+    }
+    mesh.add_attribute(position);
+
+    let mut tex_coord = PointAttribute::new();
+    tex_coord.init(
+        GeometryAttributeType::TexCoord,
+        2,
+        DataType::Uint16,
+        false,
+        NUM_POINTS,
+    );
+    for index in 0..NUM_POINTS {
+        let value: u16 = if (1..4).contains(&index) { 48316 } else { 0 };
+        for component in 0..2 {
+            tex_coord
+                .buffer_mut()
+                .write((index * 2 + component) * 2, &value.to_le_bytes());
+        }
+    }
+    mesh.add_attribute(tex_coord);
+
+    mesh.set_num_faces(2);
+    for (index, face) in [[0u32, 1, 2], [1, 3, 4]].iter().enumerate() {
+        mesh.set_face(
+            draco_core::geometry_indices::FaceIndex(index as u32),
+            [face[0].into(), face[1].into(), face[2].into()],
+        );
+    }
+
+    // Both ways single connectivity is reached: by speed, and by asking for it.
+    for (speed, split) in [(6i32, -1i32), (5, 1), (2, 1)] {
+        // 5 is the portable tex-coord scheme, 6 the geometric normal; both
+        // name the position as their parent.
+        for scheme in [5, 6] {
+            let mut options = EncoderOptions::new();
+            options.set_global_int("encoding_speed", speed);
+            options.set_global_int("decoding_speed", speed);
+            if split >= 0 {
+                options.set_global_int("split_mesh_on_seams", split);
+            }
+            options.set_attribute_int(1, "quantization_bits", 12);
+            options.set_attribute_int(1, "prediction_scheme", scheme);
+
+            let encoded = match encode_mesh(mesh.clone(), &options) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            let mut decoded = Mesh::new();
+            MeshDecoder::new()
+                .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "speed {speed}, split {split}, scheme {scheme}: encoder wrote a stream its decoder rejects: {error}"
+                    )
+                });
+            assert_eq!(decoded.num_faces(), 2);
+        }
+    }
+}
