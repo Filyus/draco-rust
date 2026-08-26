@@ -1208,3 +1208,107 @@ fn an_integral_prediction_parent_carries_the_traversal_order() {
         .expect("encoder wrote a stream its decoder rejects");
     assert_eq!(decoded.num_faces(), 2);
 }
+
+/// A position no `i64` can hold is not a position to predict from.
+///
+/// The portable texture-coordinate scheme reads its parent as integers. Its
+/// decoding half refuses a component that does not convert -- one past the
+/// `i64` range, or non-finite -- and stops the decode. Its encoding half stood
+/// in zeros for the same value and carried on, so the encoder predicted from a
+/// position the decoder never reconstructs and wrote a stream its own decoder
+/// rejects.
+///
+/// The mesh is what the `encode_drc` campaign reduced to: two triangles
+/// sharing an edge, a third one apart from them and a degenerate fourth, over
+/// positions whose bytes read back as a mix of subnormals and `1e34`.
+#[test]
+fn a_position_outside_the_integer_range_is_not_predicted_from() {
+    const NUM_POINTS: usize = 8;
+
+    const POSITIONS: [[f64; 3]; NUM_POINTS] = [
+        [0.0, 3.925692213286e-312, 1.0384593717069655e34],
+        [0.0, 5.918037e-318, 0.0],
+        [3.925692213286e-312, 1.0384593717069655e34, 9e-323],
+        [3.560118173611522e-305, 0.0, 5.918037e-318],
+        [1.0384593717069655e34, 9e-323, 3.560118173611522e-305],
+        [5.990131e-317, 2.5417774863171863e-308, 0.0],
+        [9.14e-322, 3.87844465075e-313, 0.0],
+        [1.0384593717069655e34, 9e-323, 3.560118173611522e-305],
+    ];
+    const TEX_COORDS: [[u16; 2]; NUM_POINTS] = [
+        [0, 0],
+        [0, 4679],
+        [0, 0],
+        [47360, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+    ];
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(NUM_POINTS);
+
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float64,
+        true,
+        NUM_POINTS,
+    );
+    for (index, value) in POSITIONS.iter().enumerate() {
+        for (component, component_value) in value.iter().enumerate() {
+            position
+                .buffer_mut()
+                .write((index * 3 + component) * 8, &component_value.to_le_bytes());
+        }
+    }
+    mesh.add_attribute(position);
+
+    let mut tex_coord = PointAttribute::new();
+    tex_coord.init(
+        GeometryAttributeType::TexCoord,
+        2,
+        DataType::Uint16,
+        false,
+        NUM_POINTS,
+    );
+    for (index, value) in TEX_COORDS.iter().enumerate() {
+        for (component, component_value) in value.iter().enumerate() {
+            tex_coord
+                .buffer_mut()
+                .write((index * 2 + component) * 2, &component_value.to_le_bytes());
+        }
+    }
+    mesh.add_attribute(tex_coord);
+
+    mesh.set_num_faces(4);
+    for (index, face) in [[0u32, 1, 2], [1, 3, 4], [5, 6, 7], [7, 7, 7]]
+        .iter()
+        .enumerate()
+    {
+        mesh.set_face(
+            draco_core::geometry_indices::FaceIndex(index as u32),
+            [face[0].into(), face[1].into(), face[2].into()],
+        );
+    }
+
+    let mut options = EncoderOptions::new();
+    options.set_attribute_int(0, "quantization_bits", 20);
+    options.set_attribute_int(0, "prediction_scheme", 4);
+    options.set_attribute_int(1, "quantization_bits", 23);
+    options.set_attribute_int(1, "prediction_scheme", 5);
+
+    // Refusing the mesh is a fine answer; writing a stream and then rejecting
+    // it is not.
+    let Ok(encoded) = encode_mesh(mesh, &options) else {
+        return;
+    };
+    let mut decoded = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
+        .unwrap_or_else(|error| {
+            panic!("encoder wrote a stream its decoder rejects: {error}");
+        });
+}

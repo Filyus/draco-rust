@@ -749,19 +749,28 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
         self.mesh_data = Some(mesh_data.clone());
     }
 
+    // Refuses the same positions the decoding half refuses: a point outside the
+    // entry map, one the position attribute maps nowhere, and a value no `i64`
+    // can hold -- a non-finite or out-of-range float among them. Standing in
+    // zeros for those would predict from a position the decoder will not
+    // reconstruct, and the stream that comes out is one the decoder rejects.
     fn get_position_for_entry_id(
         &self,
         entry_id: i32,
         entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'_>,
-    ) -> [i64; 3] {
-        let Some(point_id) = entry_to_point_id_map.get(entry_id as usize) else {
-            return [0, 0, 0];
-        };
-        let att = self.pos_attribute.unwrap();
+    ) -> Option<[i64; 3]> {
+        let entry_id = usize::try_from(entry_id).ok()?;
+        let point_id = entry_to_point_id_map.get(entry_id)?;
+        let att = self.pos_attribute?;
         let mut pos = [0i64; 3];
         let val_index = att.mapped_index(PointIndex(point_id));
-        read_vector3(att, val_index.0 as usize, &mut pos);
-        pos
+        if val_index == INVALID_ATTRIBUTE_VALUE_INDEX {
+            return None;
+        }
+        if !read_vector3(att, val_index.0 as usize, &mut pos) {
+            return None;
+        }
+        Some(pos)
     }
 
     fn get_tex_coord_for_entry_id(&self, entry_id: i32, data: &[i32]) -> Option<[i64; 2]> {
@@ -822,9 +831,20 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
                 return true;
             }
 
-            let tip_pos = self.get_position_for_entry_id(data_id, entry_to_point_id_map);
-            let next_pos = self.get_position_for_entry_id(next_data_id, entry_to_point_id_map);
-            let prev_pos = self.get_position_for_entry_id(prev_data_id, entry_to_point_id_map);
+            let Some(tip_pos) = self.get_position_for_entry_id(data_id, entry_to_point_id_map)
+            else {
+                return false;
+            };
+            let Some(next_pos) =
+                self.get_position_for_entry_id(next_data_id, entry_to_point_id_map)
+            else {
+                return false;
+            };
+            let Some(prev_pos) =
+                self.get_position_for_entry_id(prev_data_id, entry_to_point_id_map)
+            else {
+                return false;
+            };
 
             let pn = vec3_sub(&prev_pos, &next_pos);
             let pn_norm2_squared = vec3_squared_norm(&pn);
