@@ -33,9 +33,15 @@ on:
   # Trigger a longer soak manually with `gh workflow run fuzz.yml`.
   workflow_dispatch:
 
+# A change-triggered smoke run supersedes the one before it: they test the same
+# thing, and the newer commit is the one worth the runner. A manual soak does
+# not belong in that group -- it is an hour per target, and a documentation push
+# landing in the middle of it used to cancel it and throw the whole campaign
+# away. Each soak gets a group of its own, keyed by its run id, so nothing
+# cancels it and nothing queues behind it.
 concurrency:
-  group: fuzz-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && format('fuzz-soak-{0}', github.run_id) || format('fuzz-smoke-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
