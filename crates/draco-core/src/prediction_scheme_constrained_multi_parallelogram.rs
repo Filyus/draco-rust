@@ -297,30 +297,17 @@ where
                 );
                 for c in 0..num_components {
                     out_corr[data_offset + c] = corr_val[c];
-                    // Update entropy tracker with delta residuals?
-                    // The C++ implementation seems to only update entropy tracker for the chosen configuration.
-                    // If no parallelogram, it falls back to delta.
-                    // We should probably update tracker here too to keep it consistent?
-                    // But wait, the tracker is used to estimate bits for *parallelogram* residuals.
-                    // If we use delta, the residuals might have different distribution.
-                    // However, the entropy tracker is global for the attribute.
-                    // Let's assume we should update it.
-                    // But wait, `ComputeError` uses `entropy_tracker_.Peek`.
-                    // And after selection, we call `entropy_tracker_.Push`.
-                    // So yes, we should push.
-
-                    // But wait, `ComputeError` calculates `num_bits` based on `entropy_tracker`.
-                    // If we don't use `ComputeError` here (because no choice), we still need to push the symbols
-                    // so that future `ComputeError` calls have correct context.
-
-                    // But `out_corr` are the residuals.
-                    // We need to convert them to symbols.
-                    // `CorrType` might not be easily convertible to `i64`.
-                    // But `DataType` is.
-                    // `compute_correction` computes `out_corr`.
-                    // We can compute `dif` manually as `in_data - predicted`.
-                    // `DataType` subtraction?
-                    // `DataType` has `Into<i64>`.
+                    // An entry that predicted nothing still feeds the tracker.
+                    // It is one running symbol history for the whole attribute,
+                    // and every later entry picks its configuration by the cost
+                    // this history estimates; skipping the entries that fell
+                    // back to delta would score those choices against a history
+                    // that is not the one being written.
+                    //
+                    // The difference is recomputed from the value and the
+                    // prediction rather than read out of `out_corr`: the
+                    // tracker counts symbols built from `i64`, and `DataType`
+                    // is the half of the pair that converts.
                     let val = in_data[data_offset + c].into();
                     let pred = predicted_val[c].into();
                     let dif = val - pred;
