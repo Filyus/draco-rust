@@ -1118,15 +1118,13 @@ impl MeshDecoder {
                     1 => {
                         let mut att_decoder = SequentialIntegerAttributeDecoder::new();
                         att_decoder.init(&pc_decoder, att_id);
-                        let portable_parent_attribute = if bitstream_version >= 0x0200 {
+                        let portable_parent_attribute = {
                             let pos_att_id =
                                 mesh.named_attribute_id(GeometryAttributeType::Position);
                             portable_attributes_by_id
                                 .iter()
                                 .find(|(id, _)| *id == pos_att_id)
                                 .map(|(_, att)| att)
-                        } else {
-                            None
                         };
                         {
                             let _phase = crate::decode_phase_probe::PhaseTimer::start(
@@ -1148,15 +1146,13 @@ impl MeshDecoder {
                     2 => {
                         let mut att_decoder = SequentialQuantizationAttributeDecoder::new();
                         att_decoder.init(&pc_decoder, mesh, att_id)?;
-                        let portable_parent_attribute = if bitstream_version >= 0x0200 {
+                        let portable_parent_attribute = {
                             let pos_att_id =
                                 mesh.named_attribute_id(GeometryAttributeType::Position);
                             portable_attributes_by_id
                                 .iter()
                                 .find(|(id, _)| *id == pos_att_id)
                                 .map(|(_, att)| att)
-                        } else {
-                            None
                         };
                         let portable = {
                             let _phase = crate::decode_phase_probe::PhaseTimer::start(
@@ -1206,15 +1202,13 @@ impl MeshDecoder {
                     3 => {
                         let mut att_decoder = SequentialNormalAttributeDecoder::new();
                         att_decoder.init(&pc_decoder, mesh, att_id)?;
-                        let portable_parent_attribute = if bitstream_version >= 0x0200 {
+                        let portable_parent_attribute = {
                             let pos_att_id =
                                 mesh.named_attribute_id(GeometryAttributeType::Position);
                             portable_attributes_by_id
                                 .iter()
                                 .find(|(id, _)| *id == pos_att_id)
                                 .map(|(_, att)| att)
-                        } else {
-                            None
                         };
                         let portable = {
                             let _phase = crate::decode_phase_probe::PhaseTimer::start(

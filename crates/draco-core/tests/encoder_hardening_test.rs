@@ -1716,3 +1716,67 @@ fn a_pre_2_1_stream_carries_a_seam_bit_for_both_sides_of_an_edge() {
         .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
         .expect("encoder wrote a stream its decoder rejects");
 }
+
+/// A pre-2.0 stream predicts texture coordinates from the same position the
+/// encoder predicted from.
+///
+/// The portable texture-coordinate scheme reads its parent as integers, which
+/// is what "portable" names: the encoder predicts from the quantized position,
+/// so the decoder has to as well. It was handed the portable parent only from
+/// 2.0, and below that fell back to the attribute the mesh carries -- by then
+/// dequantized floats. The two halves then predicted from different numbers,
+/// and the decode stopped at the first entry whose float would not convert.
+#[test]
+fn a_pre_2_0_texcoord_predicts_from_the_portable_position() {
+    use encode_drc_replay::{build_attribute, read_spec, Reader};
+
+    let data = include_bytes!(
+        "../../../fuzz/seeds/encode_drc/legacy_texcoord_predicts_from_portable_position.bin"
+    );
+    let mut reader = Reader::new(data);
+    let spec = read_spec(&mut reader);
+    let payload = reader.rest().to_vec();
+
+    assert_eq!(spec.version, Some((1, 1)), "a pre-2.0 target is the point");
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(spec.num_points);
+    mesh.try_set_num_faces(spec.faces.len())
+        .expect("face count within bounds");
+    for (index, face) in spec.faces.iter().enumerate() {
+        mesh.set_face_from_indices(index, *face);
+    }
+    for (index, attribute_spec) in spec.attributes.iter().enumerate() {
+        let attribute = build_attribute(attribute_spec, spec.num_points, &payload, index * 7 + 1)
+            .expect("attribute within bounds");
+        mesh.add_attribute(attribute);
+    }
+    mesh.deduplicate_point_ids();
+
+    let mut options = EncoderOptions::new();
+    options.set_prediction_scheme(spec.prediction_scheme);
+    options.set_global_int("encoding_speed", spec.encoding_speed);
+    options.set_global_int("decoding_speed", spec.decoding_speed);
+    if spec.split_on_seams >= 0 {
+        options.set_global_int("split_mesh_on_seams", spec.split_on_seams);
+    }
+    if spec.force_predictive_traversal {
+        options.set_global_int("force_predictive_traversal", 1);
+    }
+    if let Some((major, minor)) = spec.version {
+        options.set_version(major, minor);
+    }
+    for (id, attribute) in spec.attributes.iter().enumerate() {
+        let id = id as i32;
+        options.set_attribute_int(id, "quantization_bits", attribute.quantization_bits);
+        if attribute.prediction_scheme >= -1 {
+            options.set_attribute_int(id, "prediction_scheme", attribute.prediction_scheme);
+        }
+    }
+
+    let encoded = encode_mesh(mesh, &options).expect("encode");
+    let mut decoded = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
+        .expect("encoder wrote a stream its decoder rejects");
+}
