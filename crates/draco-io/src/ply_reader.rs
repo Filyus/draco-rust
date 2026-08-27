@@ -1356,7 +1356,17 @@ fn read_ply_binary_body(
                 } => {
                     let count = read_binary_scalar_as_usize(&mut cursor, count_type, endian)?;
                     if index_property == Some(position) {
-                        let mut values = Vec::with_capacity(count);
+                        // The count is a number in the payload, and each index
+                        // behind it is a fixed width, so the bytes left bound
+                        // how many of them can be there. Reserving from the
+                        // count alone let a 460-byte file ask for 6.5 GB in one
+                        // allocation before the read that fails on the missing
+                        // data.
+                        let mut values = Vec::with_capacity(body_bounded_capacity(
+                            count,
+                            body.len().saturating_sub(cursor.position() as usize),
+                            item_type.byte_length(),
+                        ));
                         for _ in 0..count {
                             values.push(read_binary_scalar_as_u32(&mut cursor, item_type, endian)?);
                         }
