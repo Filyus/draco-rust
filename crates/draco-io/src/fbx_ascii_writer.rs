@@ -30,8 +30,9 @@ use std::io;
 
 use crate::fbx_ascii_syntax::{
     array_element_type, ascii_object_name, encode_base64, format_f64, is_base64_node, ArrayElement,
-    FBX_VERSION,
 };
+#[cfg(test)]
+use crate::fbx_ascii_syntax::FBX_VERSION;
 use crate::fbx_node::{FbxNode, FbxProperty};
 
 /// Column an array line is broken at.
@@ -52,16 +53,18 @@ enum Spelling {
 }
 
 /// Prints a whole document, header comment included.
-pub(crate) fn print_document(nodes: &[FbxNode]) -> io::Result<Vec<u8>> {
+pub(crate) fn print_document(nodes: &[FbxNode], version: u32) -> io::Result<Vec<u8>> {
     let mut out = String::new();
     // `is_ascii_fbx` sniffs for this line, and Autodesk's own files open with
-    // it, so it is both the format marker and the version in readable form.
+    // it, so it is both the format marker and the version in readable form --
+    // it has to match the real `FBXHeaderExtension`/`FBXVersion` node the tree
+    // carries, not just the crate's own default.
     let _ = writeln!(
         out,
         "; FBX {}.{}.{} project file",
-        FBX_VERSION / 1000,
-        (FBX_VERSION / 100) % 10,
-        (FBX_VERSION / 10) % 10,
+        version / 1000,
+        (version / 100) % 10,
+        (version / 10) % 10,
     );
     out.push_str("; ----------------------------------------------------\n");
     for node in nodes {
@@ -256,7 +259,7 @@ mod tests {
     use crate::fbx_options::FbxReadOptions;
 
     fn round_trip(nodes: Vec<FbxNode>) -> Vec<FbxNode> {
-        let text = print_document(&nodes).expect("printable");
+        let text = print_document(&nodes, FBX_VERSION).expect("printable");
         parse_ascii_nodes(&text, &FbxReadOptions::default()).unwrap_or_else(|error| {
             panic!(
                 "printed document did not parse: {error}\n{}",
@@ -299,7 +302,7 @@ mod tests {
 
     #[test]
     fn a_non_finite_value_is_refused_rather_than_spelled_wrong() {
-        let error = print_document(&[node("Weight", vec![FbxProperty::F64(f64::NAN)])])
+        let error = print_document(&[node("Weight", vec![FbxProperty::F64(f64::NAN)])], FBX_VERSION)
             .expect_err("NaN has no ASCII spelling");
         assert!(error.to_string().contains("Weight"), "{error}");
     }
@@ -332,10 +335,13 @@ mod tests {
         // reads a decimal point as "this is a value" -- so a round trip agrees
         // with itself no matter which is written, and cannot pin this at all.
         let tangents = vec![f32::from_bits(218_434_821), f32::from_bits(0)];
-        let text = print_document(&[node(
-            "KeyAttrDataFloat",
-            vec![FbxProperty::F32Array(tangents.clone())],
-        )])
+        let text = print_document(
+            &[node(
+                "KeyAttrDataFloat",
+                vec![FbxProperty::F32Array(tangents.clone())],
+            )],
+            FBX_VERSION,
+        )
         .expect("printable");
         let text = String::from_utf8_lossy(&text);
         let line = text
@@ -364,7 +370,7 @@ mod tests {
     #[test]
     fn an_object_name_is_written_class_first_and_read_back_name_first() {
         let stored = format!("Cube{NAME_CLASS_SEPARATOR}Model");
-        let text = print_document(&[node("Model", vec![FbxProperty::String(stored.clone())])])
+        let text = print_document(&[node("Model", vec![FbxProperty::String(stored.clone())])], FBX_VERSION)
             .expect("printable");
         assert!(
             String::from_utf8_lossy(&text).contains("\"Model::Cube\""),
@@ -436,20 +442,23 @@ mod tests {
 
     #[test]
     fn raw_bytes_the_reader_would_not_decode_are_refused() {
-        let error = print_document(&[node("Thumbnail", vec![FbxProperty::Raw(vec![1, 2, 3])])])
+        let error = print_document(&[node("Thumbnail", vec![FbxProperty::Raw(vec![1, 2, 3])])], FBX_VERSION)
             .expect_err("only a Content node is read as base64");
         assert!(error.to_string().contains("Thumbnail"), "{error}");
     }
 
     #[test]
     fn two_array_properties_on_one_node_are_refused() {
-        let error = print_document(&[node(
-            "Vertices",
-            vec![
-                FbxProperty::F64Array(vec![1.0]),
-                FbxProperty::F64Array(vec![2.0]),
-            ],
-        )])
+        let error = print_document(
+            &[node(
+                "Vertices",
+                vec![
+                    FbxProperty::F64Array(vec![1.0]),
+                    FbxProperty::F64Array(vec![2.0]),
+                ],
+            )],
+            FBX_VERSION,
+        )
         .expect_err("a node has one block, so it has one array");
         assert!(error.to_string().contains("Vertices"), "{error}");
     }
@@ -466,10 +475,13 @@ mod tests {
         };
         assert_eq!(read_values, &values);
 
-        let text = print_document(&[node(
-            "PolygonVertexIndex",
-            vec![FbxProperty::I32Array(values)],
-        )])
+        let text = print_document(
+            &[node(
+                "PolygonVertexIndex",
+                vec![FbxProperty::I32Array(values)],
+            )],
+            FBX_VERSION,
+        )
         .expect("printable");
         let longest = String::from_utf8_lossy(&text)
             .lines()

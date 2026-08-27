@@ -127,6 +127,7 @@ impl<R: Read + Seek> FbxReader<R> {
             deformer_map,
             pose_map,
             connections,
+            names,
             templates,
             ..
         } = &index;
@@ -134,24 +135,6 @@ impl<R: Read + Seek> FbxReader<R> {
         // Container-layout notices raised by `read_nodes` above ride along
         // with the semantic ones, so a caller sees every tolerated deviation.
         let mut warnings = self.warnings().to_vec();
-        // A pre-7000 document keys its objects and connections by name rather
-        // than by id, and puts geometry on the `Model` itself. None of that is
-        // read, so the scene comes back structurally valid but empty. Saying so
-        // is the difference between "this file has no meshes" and "this reader
-        // did not look for them".
-        if index.name_keyed_objects > 0 {
-            let count = index.name_keyed_objects;
-            push_warning(
-                &mut warnings,
-                FbxWarningCode::NameKeyedObjectModel,
-                format!(
-                    "FBX document identifies its {count} objects by name rather than by id, \
-                     which is the pre-7000 layout; no geometry, materials or animation were \
-                     imported from it"
-                ),
-                None,
-            );
-        }
         collect_transform_warnings(model_map, model_order, templates, &mut warnings);
         let node_attributes = parse_node_attributes(
             attribute_map,
@@ -208,64 +191,55 @@ impl<R: Read + Seek> FbxReader<R> {
         // Map geometries to models and create mesh instances.
         let mut model_mesh_instances: std::collections::HashMap<i64, Vec<FbxMeshInstance>> =
             std::collections::HashMap::new();
+        // Resolve a geometry's own material slots against the materials
+        // connected to the Model that carries it.
+        let resolve_material_indices =
+            |source: &FbxGeometrySource, model_mats: Option<&Vec<i32>>| -> Vec<i32> {
+                let mut indices = source.material_indices.clone();
+                if let Some(model_mats) = model_mats {
+                    if indices.is_empty() {
+                        if !model_mats.is_empty() {
+                            let first = model_mats[0];
+                            // One entry per triangulated face.
+                            indices = vec![first; source.mesh.num_faces()];
+                        }
+                    } else {
+                        // LayerElementMaterial values address the material slots
+                        // attached to this Model. Map them back to the
+                        // document-wide material indices exposed by FbxScene.
+                        indices = indices
+                            .into_iter()
+                            .map(|slot| {
+                                usize::try_from(slot)
+                                    .ok()
+                                    .and_then(|slot| model_mats.get(slot).copied())
+                                    .unwrap_or(model_mats[0])
+                            })
+                            .collect();
+                    }
+                }
+                indices
+            };
         let mut geometry_ids: Vec<i64> = geometry_map.keys().copied().collect();
         geometry_ids.sort_unstable();
         for geom_id in geometry_ids {
             let geom_node = geometry_map[&geom_id];
             if let Some(source) = geometry_to_mesh(geom_node, &mut warnings)? {
-                let mesh = &source.mesh;
-                let material_indices = source.material_indices.clone();
                 // find connection mapping geometry -> model
                 for conn in connections.iter() {
                     if conn.child == geom_id && model_map.contains_key(&conn.parent) {
-                        // If the geometry does not carry its own material layer,
-                        // fall back to materials connected directly to the model.
-                        let mut indices = material_indices.clone();
-                        if let Some(model_mats) = model_material_ids.get(&conn.parent) {
-                            if indices.is_empty() {
-                                if !model_mats.is_empty() {
-                                    let first = model_mats[0];
-                                    // One entry per triangulated face.
-                                    indices = vec![first; mesh.num_faces()];
-                                }
-                            } else {
-                                // LayerElementMaterial values address the
-                                // material slots attached to this Model. Map
-                                // them back to the document-wide material
-                                // indices exposed by FbxScene.
-                                indices = indices
-                                    .into_iter()
-                                    .map(|slot| {
-                                        usize::try_from(slot)
-                                            .ok()
-                                            .and_then(|slot| model_mats.get(slot).copied())
-                                            .unwrap_or(model_mats[0])
-                                    })
-                                    .collect();
-                            }
-                        }
-                        let mesh_instance = FbxMeshInstance {
-                            name: object_name(geom_node),
-                            mesh: source.mesh.clone(),
-                            control_points: source.control_points.clone(),
-                            polygon_vertex_indices: source.polygon_vertex_indices.clone(),
-                            layers: source.layers.clone(),
-                            edges: source.edges.clone(),
-                            material_indices: indices,
-                            skin: parse_skin_for_geometry(
-                                geom_id,
-                                deformer_map,
-                                pose_map,
-                                connections,
-                                &model_node_ids,
-                            ),
-                            morph_targets: parse_morph_targets_for_geometry(
-                                geom_id,
-                                geometry_map,
-                                deformer_map,
-                                connections,
-                            ),
-                        };
+                        let mesh_instance = build_mesh_instance(
+                            geom_id,
+                            geom_node,
+                            &source,
+                            resolve_material_indices(&source, model_material_ids.get(&conn.parent)),
+                            names,
+                            deformer_map,
+                            pose_map,
+                            connections,
+                            &model_node_ids,
+                            geometry_map,
+                        );
                         model_mesh_instances
                             .entry(conn.parent)
                             .or_default()
@@ -275,19 +249,61 @@ impl<R: Read + Seek> FbxReader<R> {
             }
         }
 
+        // A pre-7000 document has no separate Geometry object: the mesh lives
+        // on the Model itself, keyed by nothing but its node.
+        for &model_id in ordered_model_ids.iter() {
+            let model_node = model_map[&model_id];
+            if !model_node
+                .children
+                .iter()
+                .any(|child| child.name == "Vertices")
+            {
+                continue;
+            }
+            if let Some(source) = geometry_to_mesh(model_node, &mut warnings)? {
+                let mesh_instance = build_mesh_instance(
+                    model_id,
+                    model_node,
+                    &source,
+                    resolve_material_indices(&source, model_material_ids.get(&model_id)),
+                    names,
+                    deformer_map,
+                    pose_map,
+                    connections,
+                    &model_node_ids,
+                    geometry_map,
+                );
+                model_mesh_instances
+                    .entry(model_id)
+                    .or_default()
+                    .push(mesh_instance);
+            }
+        }
+
         // ---- Animation ----------------------------------------------------
         let model_name_map: HashMap<i64, String> = model_map
             .iter()
             .filter_map(|(id, node)| object_name(node).map(|name| (*id, name)))
             .collect();
 
-        let animations = self.parse_animations(
+        let mut animations = self.parse_animations(
             &nodes,
             &index,
             &model_name_map,
             &model_node_ids,
             &morph_animation_targets(geometry_map, deformer_map, connections, model_map),
         );
+        if animations.is_empty() {
+            // A pre-7000 document states no AnimationStack objects; its clips
+            // live in the Takes section instead.
+            animations = parse_takes_animations(
+                &nodes,
+                self.version(),
+                &index,
+                &model_name_map,
+                &model_node_ids,
+            );
+        }
 
         // Build root nodes. A Model enters the scene through an object
         // connection to the document root, or through a parent Model that
@@ -372,13 +388,45 @@ impl<R: Read + Seek> FbxReader<R> {
 }
 
 // Build nodes recursively
+/// The `Name\0\x01Class` property of an object record, whichever position the
+/// document's object model puts it at.
+///
+/// FBX 7000 writes `[id, Name\0\x01Class, class]`; FBX 6100 writes
+/// `[Name\0\x01Class, class]` and states no id. Both containers normalize an
+/// ASCII key into the binary spelling, so one form covers both.
+fn object_key(node: &FbxNode) -> Option<&str> {
+    node.properties.iter().find_map(|property| match property {
+        FbxProperty::String(raw) if raw.contains('\0') => Some(raw.as_str()),
+        _ => None,
+    })
+}
+
 fn object_name(node: &FbxNode) -> Option<String> {
-    match node.properties.get(1) {
-        Some(FbxProperty::String(name)) => name
-            .split('\0')
-            .next()
-            .filter(|name| !name.is_empty())
-            .map(str::to_string),
+    object_key(node)?
+        .split('\0')
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
+/// The object record's class token, which follows the name key.
+///
+/// A 7.x record with an empty name has no key property to find the class by,
+/// so its fixed `[id, "", class]` layout is read positionally.
+pub(crate) fn object_class(node: &FbxNode) -> Option<&str> {
+    if let Some(key) = object_key(node) {
+        let after = node
+            .properties
+            .iter()
+            .position(|property| matches!(property, FbxProperty::String(raw) if raw == key))?
+            + 1;
+        return match node.properties.get(after) {
+            Some(FbxProperty::String(class)) => Some(class.as_str()),
+            _ => None,
+        };
+    }
+    match node.properties.get(2) {
+        Some(FbxProperty::String(class)) => Some(class.as_str()),
         _ => None,
     }
 }
@@ -393,12 +441,9 @@ fn object_name(node: &FbxNode) -> Option<String> {
 /// to key on but cluster membership, which is how a round trip rewrote a
 /// rig's tails as plain mesh Models and broke the chain importers form.
 fn model_kind(node_src: &FbxNode) -> Option<crate::fbx_scene::FbxNodeKind> {
-    match node_src.properties.get(2) {
-        Some(FbxProperty::String(class)) => match class.as_str() {
-            "LimbNode" | "Limb" => Some(crate::fbx_scene::FbxNodeKind::Joint),
-            "Null" | "Root" => Some(crate::fbx_scene::FbxNodeKind::Null),
-            _ => None,
-        },
+    match object_class(node_src) {
+        Some("LimbNode" | "Limb") => Some(crate::fbx_scene::FbxNodeKind::Joint),
+        Some("Null" | "Root") => Some(crate::fbx_scene::FbxNodeKind::Null),
         _ => None,
     }
 }
@@ -462,7 +507,7 @@ fn parse_global_settings(nodes: &[FbxNode]) -> Option<crate::fbx_scene::FbxGloba
         .find(|node| node.name == "GlobalSettings")?
         .children
         .iter()
-        .find(|node| node.name == "Properties70")?;
+        .find(|node| node.name == "Properties70" || node.name == "Properties60")?;
     let integer = |property: &FbxNode| {
         property.properties.iter().find_map(|value| match value {
             FbxProperty::I16(value) => Some(*value as i32),
@@ -503,11 +548,7 @@ fn child_i32_array(node: &FbxNode, child_name: &str) -> Vec<i32> {
     node.children
         .iter()
         .find(|child| child.name == child_name)
-        .and_then(|child| child.properties.first())
-        .and_then(|value| match value {
-            FbxProperty::I32Array(values) => Some(values.clone()),
-            _ => None,
-        })
+        .and_then(int_values)
         .unwrap_or_default()
 }
 
@@ -515,17 +556,50 @@ fn child_f64_array(node: &FbxNode, child_name: &str) -> Vec<f64> {
     node.children
         .iter()
         .find(|child| child.name == child_name)
-        .and_then(|child| child.properties.first())
-        .and_then(|value| match value {
-            FbxProperty::F64Array(values) => Some(values.clone()),
-            FbxProperty::F32Array(values) => Some(values.iter().copied().map(f64::from).collect()),
-            _ => None,
-        })
+        .and_then(float_values)
         .unwrap_or_default()
+}
+
+/// Builds one mesh instance, whether its geometry came from a separate
+/// `Geometry` object or -- pre-7000 -- from the `Model` itself. `id` is
+/// whichever of the two the skin, morph and material connections are stated
+/// against.
+#[allow(clippy::too_many_arguments)]
+fn build_mesh_instance(
+    id: i64,
+    node: &FbxNode,
+    source: &FbxGeometrySource,
+    material_indices: Vec<i32>,
+    names: &NameInterner,
+    deformer_map: &std::collections::HashMap<i64, &FbxNode>,
+    pose_map: &std::collections::HashMap<i64, &FbxNode>,
+    connections: &[FbxConnection],
+    model_node_ids: &std::collections::HashMap<i64, FbxNodeId>,
+    geometry_map: &std::collections::HashMap<i64, &FbxNode>,
+) -> FbxMeshInstance {
+    FbxMeshInstance {
+        name: object_name(node),
+        material_indices,
+        mesh: source.mesh.clone(),
+        control_points: source.control_points.clone(),
+        polygon_vertex_indices: source.polygon_vertex_indices.clone(),
+        layers: source.layers.clone(),
+        edges: source.edges.clone(),
+        skin: parse_skin_for_geometry(
+            id,
+            names,
+            deformer_map,
+            pose_map,
+            connections,
+            model_node_ids,
+        ),
+        morph_targets: parse_morph_targets_for_geometry(id, geometry_map, deformer_map, connections),
+    }
 }
 
 fn parse_skin_for_geometry(
     geometry_id: i64,
+    names: &NameInterner,
     deformers: &std::collections::HashMap<i64, &FbxNode>,
     poses: &std::collections::HashMap<i64, &FbxNode>,
     connections: &[FbxConnection],
@@ -630,12 +704,18 @@ fn parse_skin_for_geometry(
                 .iter()
                 .find(|child| child.name == "Node")
                 .and_then(|child| child.properties.first())
-                // Through `object_id`, because ASCII does not record an
-                // integer's width: an id that fits in 32 bits comes back as an
-                // `I32` there and the whole bind pose was dropped. Authored
-                // exports use ids far above that range, so only a document
-                // with small ids -- this crate's own output -- showed it.
-                .and_then(object_id);
+                // Through a lookup that accepts either width, because ASCII
+                // does not record an integer's: an id that fits in 32 bits
+                // comes back as an `I32` there and the whole bind pose was
+                // dropped. Authored exports use ids far above that range, so
+                // only a document with small ids -- this crate's own output --
+                // showed it. A pre-7000 document names the node by key.
+                .and_then(|value| match value {
+                    FbxProperty::I64(value) => Some(*value),
+                    FbxProperty::I32(value) => Some(i64::from(*value)),
+                    FbxProperty::String(key) => names.lookup(key),
+                    _ => None,
+                });
             let matrix = transform_array(pose_node, "Matrix");
             if let (Some(_model_id), Some(matrix), Some(&node_id)) = (
                 model_id,
@@ -833,13 +913,9 @@ struct FbxObjectIndex<'a> {
     pose_map: HashMap<i64, &'a FbxNode>,
     attribute_map: HashMap<i64, &'a FbxNode>,
     connections: Vec<FbxConnection>,
-    /// `Objects` children skipped because they are keyed by name, not by id.
-    ///
-    /// FBX 6100 and earlier identify objects by a name string ending in a
-    /// class marker, and connect them by that string rather than by the `i64`
-    /// id 7.x uses. Nothing in this index can hold them, so counting them is
-    /// how the reader notices it decoded a document it does not understand.
-    name_keyed_objects: usize,
+    /// The name keys of a pre-7000 document, for resolving the references
+    /// that reach the scene passes after this index was built.
+    names: NameInterner,
     /// Class defaults the document states once, in `Definitions`.
     templates: PropertyTemplates<'a>,
 }
@@ -861,78 +937,183 @@ impl<'a> FbxObjectIndex<'a> {
             pose_map: HashMap::new(),
             attribute_map: HashMap::new(),
             connections: Vec::new(),
-            name_keyed_objects: 0,
+            names: NameInterner::default(),
             templates: PropertyTemplates::build(nodes),
         };
+        // Keyed by whichever spelling identifies objects in this document:
+        // an `i64` id in 7000 and later, an interned name key before that.
+        let mut names = NameInterner::default();
 
         for node in nodes {
             if node.name == "Objects" {
                 for child in &node.children {
-                    let Some(id) = child.properties.first().and_then(object_id) else {
-                        if matches!(child.properties.first(), Some(FbxProperty::String(_))) {
-                            index.name_keyed_objects += 1;
-                        }
-                        continue;
-                    };
-                    let id = &id;
-                    match child.name.as_str() {
-                        "Model" => {
-                            // Keep the authored order only for ids seen first.
-                            let first_occurrence = index.model_map.insert(*id, child).is_none();
-                            if first_occurrence {
-                                index.model_order.push(*id);
+                    let id = child
+                        .properties
+                        .first()
+                        .and_then(|property| object_ref(property, &mut names));
+                    if let Some(id) = id {
+                        match child.name.as_str() {
+                            "Model" => {
+                                // Keep the authored order only for ids seen first.
+                                let first_occurrence = index.model_map.insert(id, child).is_none();
+                                if first_occurrence {
+                                    index.model_order.push(id);
+                                }
                             }
+                            "Geometry" => drop(index.geometry_map.insert(id, child)),
+                            "Material" => drop(index.material_map.insert(id, child)),
+                            "Texture" => drop(index.texture_map.insert(id, child)),
+                            "Video" => drop(index.video_map.insert(id, child)),
+                            "AnimationStack" => drop(index.astack_map.insert(id, child)),
+                            "AnimationLayer" => drop(index.alayer_map.insert(id, child)),
+                            "AnimationCurveNode" => drop(index.acnode_map.insert(id, child)),
+                            "AnimationCurve" => drop(index.acurve_map.insert(id, child)),
+                            "Pose" => drop(index.pose_map.insert(id, child)),
+                            "NodeAttribute" => drop(index.attribute_map.insert(id, child)),
+                            "Deformer" => drop(index.deformer_map.insert(id, child)),
+                            _ => {}
                         }
-                        "Geometry" => drop(index.geometry_map.insert(*id, child)),
-                        "Material" => drop(index.material_map.insert(*id, child)),
-                        "Texture" => drop(index.texture_map.insert(*id, child)),
-                        "Video" => drop(index.video_map.insert(*id, child)),
-                        "AnimationStack" => drop(index.astack_map.insert(*id, child)),
-                        "AnimationLayer" => drop(index.alayer_map.insert(*id, child)),
-                        "AnimationCurveNode" => drop(index.acnode_map.insert(*id, child)),
-                        "AnimationCurve" => drop(index.acurve_map.insert(*id, child)),
-                        "Pose" => drop(index.pose_map.insert(*id, child)),
-                        "NodeAttribute" => drop(index.attribute_map.insert(*id, child)),
-                        "Deformer" => drop(index.deformer_map.insert(*id, child)),
-                        _ => {}
                     }
                 }
             } else if node.name == "Connections" {
-                index
-                    .connections
-                    .extend(node.children.iter().filter_map(FbxConnection::from_node));
+                index.connections.extend(
+                    node.children
+                        .iter()
+                        .filter_map(|child| FbxConnection::from_node(child, &mut names)),
+                );
             }
         }
+        index.names = names;
         index
     }
 }
 
-/// Reads a float array, whatever precision it was stored at.
+/// Assigns dense ids to the name keys of a pre-7000 document.
 ///
-/// The binary container tags single and double precision separately, but ASCII
-/// writes a bare number and cannot. A consumer that matched only one width
-/// found nothing in an ASCII document, which is how animation curves came back
-/// empty from files whose objects and connections had parsed perfectly.
-fn float_array(property: &FbxProperty) -> Option<Vec<f32>> {
+/// The scene machinery addresses objects by `i64`, so a 6100 document's
+/// `"Name\0\x01Class"` keys are interned into that space instead of being
+/// carried alongside it. The root object `Scene\0\x01Model` interns to 0,
+/// which is the id 7.x uses for the document root, so connection handling
+/// does not need to know which layout it is reading. A 6100 document states
+/// no numeric ids of its own, so the two spaces never mix.
+#[derive(Default)]
+struct NameInterner {
+    ids: HashMap<String, i64>,
+    next: i64,
+}
+
+impl NameInterner {
+    /// The id a name key interns to, without assigning one to an unseen key.
+    fn lookup(&self, key: &str) -> Option<i64> {
+        self.ids.get(key).copied()
+    }
+
+    fn intern(&mut self, key: &str) -> i64 {
+        if let Some(id) = self.ids.get(key) {
+            return *id;
+        }
+        let id = if key == "Scene\0\x01Model" {
+            0
+        } else {
+            self.next += 1;
+            self.next
+        };
+        self.ids.insert(key.to_string(), id);
+        id
+    }
+}
+
+/// Reads an FBX object reference, whatever identifies it.
+///
+/// The binary container always writes 7.x ids as `i64`; ASCII writes a bare
+/// number, so an id small enough to fit in `i32` arrives as one -- matching
+/// only `I64` skipped every object in such a document, and the scene came back
+/// empty with nothing to explain it. A pre-7000 document keys its objects by
+/// the `"Name\0\x01Class"` string instead, and references them by the same
+/// string, which resolves through the document's name interner.
+fn object_ref(property: &FbxProperty, names: &mut NameInterner) -> Option<i64> {
     match property {
-        FbxProperty::F32Array(values) => Some(values.clone()),
-        FbxProperty::F64Array(values) => Some(values.iter().map(|v| *v as f32).collect()),
+        FbxProperty::I64(value) => Some(*value),
+        FbxProperty::I32(value) => Some(i64::from(*value)),
+        FbxProperty::String(key) => Some(names.intern(key)),
         _ => None,
     }
 }
 
-/// Reads an FBX object id, whatever width it was stored at.
+/// Reads an `i64` array off a node, in either spelling the object model uses.
 ///
-/// The binary container always writes these as `i64`. ASCII writes a bare
-/// number, so an id small enough to fit in `i32` arrives as one -- matching
-/// only `I64` skipped every object in such a document, and the scene came back
-/// empty with nothing to explain it.
-fn object_id(property: &FbxProperty) -> Option<i64> {
-    match property {
-        FbxProperty::I64(value) => Some(*value),
-        FbxProperty::I32(value) => Some(i64::from(*value)),
-        _ => None,
+/// Animation key times exceed `i32` -- one second of FBX KTime is 46186158000
+/// ticks -- so they get their own reader rather than sharing [`int_values`].
+fn i64_values(node: &FbxNode) -> Option<Vec<i64>> {
+    if let Some(FbxProperty::I64Array(values)) = node.properties.first() {
+        return Some(values.clone());
     }
+    let scalars = node
+        .properties
+        .iter()
+        .map(|value| match value {
+            FbxProperty::I32(value) => Some(i64::from(*value)),
+            FbxProperty::I64(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Option<Vec<i64>>>()?;
+    (!scalars.is_empty()).then_some(scalars)
+}
+
+/// Reads an `f64` array off a node, in either spelling the object model uses.
+///
+/// Version 7000 writes one typed array property, as does ASCII of any version.
+/// Binary 6100 stores the payload as repeated scalar properties on the node,
+/// so the values are gathered from those when no array property leads.
+fn float_values(node: &FbxNode) -> Option<Vec<f64>> {
+    match node.properties.first() {
+        Some(FbxProperty::F64Array(values)) => return Some(values.clone()),
+        Some(FbxProperty::F32Array(values)) => {
+            return Some(values.iter().copied().map(f64::from).collect())
+        }
+        _ => {}
+    }
+    let scalars = node
+        .properties
+        .iter()
+        .map(|value| match value {
+            FbxProperty::F64(value) => Some(*value),
+            FbxProperty::F32(value) => Some(f64::from(*value)),
+            // An exporter can write whole-number coordinates as integers; the
+            // ASCII container coerces the same shape to floats by schema.
+            FbxProperty::I32(value) => Some(f64::from(*value)),
+            FbxProperty::I64(value) => Some(*value as f64),
+            _ => None,
+        })
+        .collect::<Option<Vec<f64>>>()?;
+    (!scalars.is_empty()).then_some(scalars)
+}
+
+/// Reads an `i32` array off a node, in either spelling the object model uses.
+///
+/// The typed-array case first, then the repeated scalar properties of a binary
+/// 6100 document -- see [`float_values`].
+fn int_values(node: &FbxNode) -> Option<Vec<i32>> {
+    match node.properties.first() {
+        Some(FbxProperty::I32Array(values)) => return Some(values.clone()),
+        // An out-of-range value here means the file lies about being an i32
+        // array; narrowing it with `as` would silently turn it into a
+        // different, in-range index instead of refusing to decode it.
+        Some(FbxProperty::I64Array(values)) => {
+            return values.iter().map(|value| i32::try_from(*value).ok()).collect();
+        }
+        _ => {}
+    }
+    let scalars = node
+        .properties
+        .iter()
+        .map(|value| match value {
+            FbxProperty::I32(value) => Some(*value),
+            FbxProperty::I64(value) => i32::try_from(*value).ok(),
+            _ => None,
+        })
+        .collect::<Option<Vec<i32>>>()?;
+    (!scalars.is_empty()).then_some(scalars)
 }
 
 /// A parsed FBX connection entry.
@@ -945,15 +1126,22 @@ struct FbxConnection {
 }
 
 impl FbxConnection {
-    /// Parses one `C` entry, skipping relation codes this reader ignores.
-    fn from_node(node: &FbxNode) -> Option<Self> {
+    /// Parses one `C` entry (or its 6100 spelling, `Connect`), skipping
+    /// relation codes this reader ignores.
+    fn from_node(node: &FbxNode, names: &mut NameInterner) -> Option<Self> {
         let kind = match node.properties.first() {
             Some(FbxProperty::String(code)) if code == "OO" => ConnectionKind::Oo,
             Some(FbxProperty::String(code)) if code == "OP" => ConnectionKind::Op,
             _ => return None,
         };
-        let child = node.properties.get(1).and_then(object_id)?;
-        let parent = node.properties.get(2).and_then(object_id)?;
+        let child = node
+            .properties
+            .get(1)
+            .and_then(|property| object_ref(property, names))?;
+        let parent = node
+            .properties
+            .get(2)
+            .and_then(|property| object_ref(property, names))?;
         let property = match node.properties.get(3) {
             Some(FbxProperty::String(name)) => Some(name.clone()),
             _ => None,
@@ -1038,13 +1226,10 @@ fn parse_materials_and_textures<'a>(
     (materials, material_index_by_id, textures)
 }
 
-/// FBX Deformer objects carry their effective kind in the third object
-/// property; the second name component is merely `Deformer`/`SubDeformer`.
+/// FBX Deformer objects carry their effective kind after the name key; the
+/// second name component is merely `Deformer`/`SubDeformer`.
 fn deformer_type(node: &FbxNode) -> Option<&str> {
-    match node.properties.get(2) {
-        Some(FbxProperty::String(value)) if !value.is_empty() => Some(value.as_str()),
-        _ => None,
-    }
+    object_class(node).filter(|value| !value.is_empty())
 }
 
 /// Collects material property texture bindings as placeholders; the FBX
@@ -1103,9 +1288,8 @@ fn parse_node_attributes<'a>(
     let mut resolved = HashMap::new();
     for (model_id, attribute_id) in by_model {
         let node = attribute_map[&attribute_id];
-        let class = match node.properties.get(2) {
-            Some(FbxProperty::String(class)) => class.as_str(),
-            _ => continue,
+        let Some(class) = object_class(node) else {
+            continue;
         };
         match class {
             "Camera" => {
@@ -1171,10 +1355,21 @@ fn parse_light(properties: ObjectProperties<'_>) -> crate::fbx_scene::FbxLight {
     }
 }
 
+/// Where a property record's values start.
+///
+/// A `Properties70` `P` record leads with four strings (`name, type, subtype,
+/// flags`); a `Properties60` `Property` record leads with three. The values
+/// follow in both.
+fn value_offset(prop: &FbxNode) -> usize {
+    if prop.name == "Property" {
+        3
+    } else {
+        4
+    }
+}
+
 fn property_scalar(prop: &FbxNode) -> Option<f32> {
-    // Properties70 P node layout: [name, type, subtype, flags, value(s)...]
-    // Scalar properties start at index 4.
-    for value in prop.properties.iter().skip(4) {
+    for value in prop.properties.iter().skip(value_offset(prop)) {
         match value {
             FbxProperty::F64(v) => return Some(*v as f32),
             FbxProperty::F32(v) => return Some(*v),
@@ -1190,7 +1385,7 @@ fn property_vec3(prop: &FbxNode) -> Option<[f32; 3]> {
     let values: Vec<f32> = prop
         .properties
         .iter()
-        .skip(4)
+        .skip(value_offset(prop))
         .filter_map(|value| match value {
             FbxProperty::F64(v) => Some(*v as f32),
             FbxProperty::F32(v) => Some(*v),
@@ -1202,14 +1397,7 @@ fn property_vec3(prop: &FbxNode) -> Option<[f32; 3]> {
 }
 
 fn parse_material(properties: ObjectProperties<'_>) -> crate::fbx_scene::FbxMaterial {
-    let name = match properties.node().properties.get(1) {
-        Some(FbxProperty::String(raw)) => raw
-            .split('\0')
-            .next()
-            .filter(|s| !s.is_empty())
-            .map(str::to_string),
-        _ => None,
-    };
+    let name = object_name(properties.node());
     let shading_model = read_shading_model(properties);
 
     let get_color = |name: &str| properties.get(name).and_then(property_vec3);
@@ -1253,7 +1441,7 @@ fn read_shading_model(properties: ObjectProperties<'_>) -> Option<String> {
         .node()
         .children
         .iter()
-        .filter(|child| child.name == "Properties70")
+        .filter(|child| child.name == "Properties70" || child.name == "Properties60")
         .find_map(|block| crate::fbx_templates::find_property(block, "ShadingModel"))
         .and_then(string_value);
     let from_sibling_node = object
@@ -1268,10 +1456,9 @@ fn read_shading_model(properties: ObjectProperties<'_>) -> Option<String> {
         .template()
         .and_then(|block| crate::fbx_templates::find_property(block, "ShadingModel"))
         .and_then(string_value);
-    let from_class = match object.properties.get(2) {
-        Some(FbxProperty::String(raw)) if !raw.is_empty() => Some(raw.clone()),
-        _ => None,
-    };
+    let from_class = object_class(object)
+        .filter(|raw| !raw.is_empty())
+        .map(str::to_string);
 
     from_own_properties
         .or(from_sibling_node)
@@ -1284,7 +1471,7 @@ fn string_value(property: &FbxNode) -> Option<String> {
     property
         .properties
         .iter()
-        .skip(4)
+        .skip(value_offset(property))
         .find_map(|value| match value {
             FbxProperty::String(text) => Some(text.clone()),
             _ => None,
@@ -1292,14 +1479,7 @@ fn string_value(property: &FbxNode) -> Option<String> {
 }
 
 fn parse_texture(node: &FbxNode) -> crate::fbx_scene::FbxTexture {
-    let name = match node.properties.get(1) {
-        Some(FbxProperty::String(raw)) => raw
-            .split('\0')
-            .next()
-            .filter(|s| !s.is_empty())
-            .map(str::to_string),
-        _ => None,
-    };
+    let name = object_name(node);
     let mut filename = None;
     let mut content = None;
     for child in &node.children {
@@ -1341,7 +1521,11 @@ impl<R: Read + Seek> FbxReader<R> {
         for node in &nodes {
             if node.name == "Objects" {
                 for child in &node.children {
-                    if child.name == "Geometry" {
+                    // A pre-7000 document carries its geometry on the Model.
+                    if child.name == "Geometry"
+                        || (child.name == "Model"
+                            && child.children.iter().any(|c| c.name == "Vertices"))
+                    {
                         if let Some(source) = geometry_to_mesh(child, &mut warnings)? {
                             meshes.push(source.mesh);
                         }
@@ -1421,18 +1605,18 @@ fn geometry_to_mesh(
     for child in &geometry.children {
         match child.name.as_str() {
             "Vertices" => {
-                if let Some(FbxProperty::F64Array(arr)) = child.properties.first() {
-                    vertices = Some(arr.clone());
+                if let Some(values) = float_values(child) {
+                    vertices = Some(values);
                 }
             }
             "Edges" => {
-                if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
-                    edges = arr.clone();
+                if let Some(values) = int_values(child) {
+                    edges = values;
                 }
             }
             "PolygonVertexIndex" => {
-                if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
-                    polygon_indices = Some(arr.clone());
+                if let Some(values) = int_values(child) {
+                    polygon_indices = Some(values);
                 }
             }
             "LayerElementNormal" => raw.normals.push(child),
@@ -1804,14 +1988,7 @@ impl<R: Read + Seek> FbxReader<R> {
         for stack_id in stack_ids_sorted {
             let layers = &stacks_layers[&stack_id];
             let stack_node = astack_map.get(&stack_id);
-            let name = stack_node.and_then(|n| match n.properties.get(1) {
-                Some(FbxProperty::String(raw)) => raw
-                    .split('\0')
-                    .next()
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string),
-                _ => None,
-            });
+            let name = stack_node.and_then(|node| object_name(node));
             // One clip per layer, which is what Blender's importer does: it
             // "does not mix layers, each layer results in an independent set
             // of actions". Merging them instead produced several channels
@@ -1881,14 +2058,7 @@ impl<R: Read + Seek> FbxReader<R> {
                 let clip_name = if multiple_layers {
                     let layer_name = alayer_map
                         .get(&layer_id)
-                        .and_then(|node| match node.properties.get(1) {
-                            Some(FbxProperty::String(raw)) => raw
-                                .split('\0')
-                                .next()
-                                .filter(|part| !part.is_empty())
-                                .map(str::to_string),
-                            _ => None,
-                        })
+                        .and_then(|node| object_name(node))
                         .unwrap_or_else(|| format!("Layer{layer_index}"));
                     Some(match &name {
                         Some(stack) => format!("{stack}|{layer_name}"),
@@ -1927,32 +2097,26 @@ struct FbxAnimCurveData {
 
 fn parse_curve(node: &FbxNode) -> Option<FbxAnimCurveData> {
     let mut key_times = None;
-    let mut key_values = None;
+    let mut key_values: Option<Vec<f32>> = None;
     let mut key_attr_flags = None;
-    let mut key_attr_data = None;
+    let mut key_attr_data: Option<Vec<f32>> = None;
     let mut key_attr_ref_count = None;
     for child in &node.children {
         match child.name.as_str() {
-            "KeyTime" => {
-                if let Some(FbxProperty::I64Array(arr)) = child.properties.first() {
-                    key_times = Some(arr.clone());
-                }
-            }
+            "KeyTime" => key_times = i64_values(child),
             "KeyValueFloat" => {
-                key_values = child.properties.first().and_then(float_array);
+                key_values = float_values(child)
+                    .map(|values| values.into_iter().map(|value| value as f32).collect());
             }
             "KeyAttrFlags" => {
-                if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
-                    key_attr_flags = Some(arr.clone());
-                }
+                key_attr_flags = int_values(child);
             }
             "KeyAttrDataFloat" => {
-                key_attr_data = child.properties.first().and_then(float_array);
+                key_attr_data = float_values(child)
+                    .map(|values| values.into_iter().map(|value| value as f32).collect());
             }
             "KeyAttrRefCount" => {
-                if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
-                    key_attr_ref_count = Some(arr.clone());
-                }
+                key_attr_ref_count = int_values(child);
             }
             _ => {}
         }
@@ -1992,6 +2156,305 @@ fn parse_curve(node: &FbxNode) -> Option<FbxAnimCurveData> {
         key_times,
         key_values,
         key_attr_flags: expanded_flags,
+        in_tangents,
+        out_tangents,
+    })
+}
+
+/// Reads the `Takes` animation of a pre-7000 document, which has no
+/// `AnimationStack` objects: each `Take` names a Model by key and nests
+/// `Channel` trees whose `Key` payloads hold the curve.
+fn parse_takes_animations(
+    nodes: &[FbxNode],
+    version: u32,
+    index: &FbxObjectIndex<'_>,
+    model_name_map: &HashMap<i64, String>,
+    model_node_ids: &HashMap<i64, FbxNodeId>,
+) -> Vec<FbxAnimation> {
+    let ktime_f = match fbx_ktime_for(nodes, version) {
+        0 => 1.0,
+        v => v as f64,
+    };
+    let mut animations = Vec::new();
+    for takes in nodes.iter().filter(|node| node.name == "Takes") {
+        for take in takes.children.iter().filter(|node| node.name == "Take") {
+            let name = match take.properties.first() {
+                Some(FbxProperty::String(name)) => Some(name.clone()),
+                _ => None,
+            };
+            let mut channels = Vec::new();
+            let mut max_time = 0.0f32;
+            for model in take.children.iter().filter(|node| node.name == "Model") {
+                let Some(FbxProperty::String(model_key)) = model.properties.first() else {
+                    continue;
+                };
+                let Some(model_id) = index.names.lookup(model_key) else {
+                    continue;
+                };
+                let (Some(node_name), Some(&node_id)) =
+                    (model_name_map.get(&model_id), model_node_ids.get(&model_id))
+                else {
+                    continue;
+                };
+                for transform in model
+                    .children
+                    .iter()
+                    .filter(|child| child.name == "Channel")
+                {
+                    if !matches!(
+                        transform.properties.first(),
+                        Some(FbxProperty::String(name)) if name == "Transform"
+                    ) {
+                        continue;
+                    }
+                    for group in transform
+                        .children
+                        .iter()
+                        .filter(|child| child.name == "Channel")
+                    {
+                        let path = match group.properties.first() {
+                            Some(FbxProperty::String(name)) => match name.as_str() {
+                                "T" => FbxAnimChannelPath::Translation,
+                                "R" => FbxAnimChannelPath::Rotation,
+                                "S" => FbxAnimChannelPath::Scale,
+                                _ => continue,
+                            },
+                            _ => continue,
+                        };
+                        let mut by_component =
+                            std::collections::BTreeMap::<u32, FbxAnimCurveData>::new();
+                        for component in group
+                            .children
+                            .iter()
+                            .filter(|child| child.name == "Channel")
+                        {
+                            let axis = match component.properties.first() {
+                                Some(FbxProperty::String(name)) => match name.as_str() {
+                                    "X" => 0,
+                                    "Y" => 1,
+                                    "Z" => 2,
+                                    _ => continue,
+                                },
+                                _ => continue,
+                            };
+                            if let Some(curve) = parse_legacy_curve(component, ktime_f) {
+                                by_component.insert(axis, curve);
+                            }
+                        }
+                        let Some(channel) = flatten_curve(&by_component, path, ktime_f) else {
+                            continue;
+                        };
+                        max_time =
+                            max_time.max(channel.sampler.input.last().copied().unwrap_or(0.0));
+                        channels.push(FbxAnimChannel {
+                            node_id,
+                            node_name: node_name.clone(),
+                            path,
+                            morph_target_index: None,
+                            sampler: channel.sampler,
+                        });
+                    }
+                }
+            }
+            if !channels.is_empty() {
+                animations.push(FbxAnimation {
+                    name,
+                    duration: max_time,
+                    channels,
+                });
+            }
+        }
+    }
+    animations
+}
+
+/// One field of a pre-7000 `Key` payload: a number, or a mode letter.
+enum LegacyKeyField {
+    Num(f64),
+    Char(u8),
+}
+
+/// Reads a `Key` node's heterogeneous payload.
+///
+/// The binary container writes the mode letters as `C`-typed bytes (read as
+/// `U8`); the ASCII container leaves them as bare words, which parse as
+/// single-character strings. An exporter that packs the whole run into one
+/// `d` array -- the shape `ufbx` describes -- is accepted too, with the
+/// letters then indistinguishable and the curve refused by the state machine
+/// rather than misread.
+fn legacy_key_fields(node: &FbxNode) -> Option<Vec<LegacyKeyField>> {
+    if let Some(FbxProperty::F64Array(values)) = node.properties.first() {
+        return Some(values.iter().map(|v| LegacyKeyField::Num(*v)).collect());
+    }
+    node.properties
+        .iter()
+        .map(|value| match value {
+            FbxProperty::I64(v) => Some(LegacyKeyField::Num(*v as f64)),
+            FbxProperty::I32(v) => Some(LegacyKeyField::Num(f64::from(*v))),
+            FbxProperty::F64(v) => Some(LegacyKeyField::Num(*v)),
+            FbxProperty::F32(v) => Some(LegacyKeyField::Num(f64::from(*v))),
+            FbxProperty::U8(b) => Some(LegacyKeyField::Char(*b)),
+            FbxProperty::String(word) if word.len() == 1 => {
+                Some(LegacyKeyField::Char(word.as_bytes()[0]))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Reads one pre-7000 animation channel (`Channel: "X"` and its siblings).
+///
+/// Follows the field layout `ufbx` reverse-engineered: per key, a time, a
+/// value and an interpolation letter, then the letters and numbers that spell
+/// that key's tangents. Where `ufbx` solves automatic slopes from the
+/// neighbouring keys, this keeps the slopes an auto mode implies (zero) --
+/// the corpus's 6100 documents are baked or linear, and a wrong-but-labelled
+/// curve would be worse than a refused one only where the state machine
+/// cannot tell, which it always can.
+fn parse_legacy_curve(channel: &FbxNode, ktime_f: f64) -> Option<FbxAnimCurveData> {
+    let key_node = channel.children.iter().find(|child| child.name == "Key")?;
+    let key_count = channel
+        .children
+        .iter()
+        .find(|child| child.name == "KeyCount")
+        .and_then(|child| match child.properties.first() {
+            Some(FbxProperty::I32(v)) => usize::try_from(*v).ok(),
+            Some(FbxProperty::I64(v)) => usize::try_from(*v).ok(),
+            _ => None,
+        })?;
+    let key_ver = channel
+        .children
+        .iter()
+        .find(|child| child.name == "KeyVer")
+        .and_then(|child| match child.properties.first() {
+            Some(FbxProperty::I32(v)) => Some(*v),
+            _ => None,
+        })
+        .unwrap_or(4005);
+    let data = legacy_key_fields(key_node)?;
+    if key_count == 0 {
+        return None;
+    }
+
+    let mut times = Vec::with_capacity(key_count);
+    let mut values = Vec::with_capacity(key_count);
+    let mut flags = Vec::with_capacity(key_count);
+    let mut in_tangents = Vec::with_capacity(key_count);
+    let mut out_tangents = Vec::with_capacity(key_count);
+
+    let mut cursor = 0usize;
+    let number = |cursor: &mut usize| -> Option<f64> {
+        let field = data.get(*cursor)?;
+        *cursor += 1;
+        match field {
+            LegacyKeyField::Num(v) => Some(*v),
+            LegacyKeyField::Char(_) => None,
+        }
+    };
+    let letter = |cursor: &mut usize| -> Option<u8> {
+        let field = data.get(*cursor)?;
+        *cursor += 1;
+        match field {
+            LegacyKeyField::Char(b) => Some(*b),
+            LegacyKeyField::Num(_) => None,
+        }
+    };
+
+    let mut next_time = number(&mut cursor)?;
+    let mut next_value = number(&mut cursor)?;
+    // The incoming slope this key's predecessor left behind.
+    let mut slope_left = 0.0f64;
+    for index in 0..key_count {
+        let time = next_time;
+        let value = next_value;
+        let mode = letter(&mut cursor)?;
+        // Per-channel interpolation is read from the first key, which is what
+        // the 7.x flattening below expects.
+        let flag = match mode {
+            b'U' => 0x8,
+            b'L' => 0x0,
+            b'C' => 0x2,
+            _ => return None,
+        };
+        let mut slope_right = 0.0f64;
+        let mut next_slope_left = 0.0f64;
+        if mode == b'U' {
+            let slope_mode = letter(&mut cursor)?;
+            let mut weights = match slope_mode {
+                b's' | b'b' => {
+                    slope_right = number(&mut cursor)?;
+                    next_slope_left = number(&mut cursor)?;
+                    (key_ver != 4003) as usize
+                }
+                b'a' => {
+                    if key_ver <= 4004 {
+                        0
+                    } else {
+                        1
+                    }
+                }
+                b'p' | b'q' => {
+                    number(&mut cursor)?;
+                    number(&mut cursor)?;
+                    if key_ver <= 4004 {
+                        1
+                    } else {
+                        2
+                    }
+                }
+                b't' => {
+                    number(&mut cursor)?;
+                    number(&mut cursor)?;
+                    number(&mut cursor)?;
+                    0
+                }
+                b'd' => {
+                    number(&mut cursor)?;
+                    1
+                }
+                _ => return None,
+            };
+            while weights > 0 {
+                weights -= 1;
+                match letter(&mut cursor)? {
+                    b'n' | b'c' => {}
+                    b'a' => {
+                        number(&mut cursor)?;
+                        number(&mut cursor)?;
+                    }
+                    b'l' | b'r' => {
+                        number(&mut cursor)?;
+                    }
+                    _ => return None,
+                }
+            }
+        } else if mode == b'C' && key_ver >= 4004 {
+            letter(&mut cursor)?; // 'n' (hold) or the previous value
+        }
+        if index + 1 < key_count {
+            next_time = number(&mut cursor)?;
+            next_value = number(&mut cursor)?;
+        }
+        // A linear key's slope is the segment to the next key, in output
+        // units per second -- the unit the 7.x tangents carry. The times are
+        // still KTime ticks here, so the divisor converts once, through
+        // `f64` for the same reason the 7.x sampler input does it.
+        if mode == b'L' && next_time > time {
+            slope_right = (next_value - value) / ((next_time - time) / ktime_f);
+            next_slope_left = slope_right;
+        }
+
+        times.push(time as i64);
+        values.push(value as f32);
+        flags.push(flag);
+        in_tangents.push(slope_left as f32);
+        out_tangents.push(slope_right as f32);
+        slope_left = next_slope_left;
+    }
+    Some(FbxAnimCurveData {
+        key_times: times,
+        key_values: values,
+        key_attr_flags: flags,
         in_tangents,
         out_tangents,
     })
@@ -2148,8 +2611,8 @@ fn layer_string(layer: &FbxNode, name: &str) -> Option<String> {
 fn layer_int_array(layer: &FbxNode, name: &str) -> Option<Vec<i32>> {
     for child in &layer.children {
         if child.name == name {
-            if let Some(FbxProperty::I32Array(arr)) = child.properties.first() {
-                return Some(arr.clone());
+            if let Some(values) = int_values(child) {
+                return Some(values);
             }
         }
     }
@@ -2252,13 +2715,9 @@ fn warn_misaligned_layer(
 fn layer_f64_array(layer: &FbxNode, name: &str) -> Option<Vec<f64>> {
     for child in &layer.children {
         if child.name == name {
-            return match child.properties.first() {
-                Some(FbxProperty::F64Array(arr)) => Some(arr.clone()),
-                Some(FbxProperty::F32Array(arr)) => {
-                    Some(arr.iter().map(|v| f64::from(*v)).collect())
-                }
-                _ => None,
-            };
+            if let Some(values) = float_values(child) {
+                return Some(values);
+            }
         }
     }
     None
@@ -2331,11 +2790,8 @@ fn chunk_layer_values<const N: usize>(raw: &[f32]) -> Vec<[f32; N]> {
 fn read_layer_floats(layer: &FbxNode, name: &str) -> Option<Vec<f32>> {
     for child in &layer.children {
         if child.name == name {
-            if let Some(FbxProperty::F64Array(arr)) = child.properties.first() {
-                return Some(arr.iter().map(|v| *v as f32).collect());
-            }
-            if let Some(FbxProperty::F32Array(arr)) = child.properties.first() {
-                return Some(arr.clone());
+            if let Some(values) = float_values(child) {
+                return Some(values.into_iter().map(|v| v as f32).collect());
             }
         }
     }

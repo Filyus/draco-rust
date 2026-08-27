@@ -59,7 +59,7 @@ impl<'a> PropertyTemplates<'a> {
                 let Some(properties) = template
                     .children
                     .iter()
-                    .find(|child| child.name == "Properties70")
+                    .find(|child| child.name == "Properties70" || child.name == "Properties60")
                 else {
                     continue;
                 };
@@ -83,10 +83,7 @@ impl<'a> PropertyTemplates<'a> {
         // seven `Light` attributes that sit beside one in this corpus, and the
         // `FbxNull` template to 186 `LimbNode`s.
         if object.name == "NodeAttribute" {
-            let object_class = match object.properties.get(2) {
-                Some(FbxProperty::String(class)) => class.as_str(),
-                _ => return None,
-            };
+            let object_class = crate::fbx_reader::object_class(object)?;
             if !attribute_class_matches(class, object_class) {
                 return None;
             }
@@ -143,16 +140,21 @@ impl<'a> ObjectProperties<'a> {
         self.object
             .children
             .iter()
-            .filter(|child| child.name == "Properties70")
+            .filter(|child| child.name == "Properties70" || child.name == "Properties60")
             .find_map(|properties| find_property(properties, name))
             .or_else(|| self.template.and_then(|block| find_property(block, name)))
     }
 }
 
-/// The first `P` record in a `Properties70` block with this name.
+/// The first property record in a `Properties70` or `Properties60` block with
+/// this name.
+///
+/// The blocks differ in the record spelling (`P` versus `Property`) and in how
+/// many type strings lead each record, but the property names are the same, so
+/// one lookup covers both.
 pub(crate) fn find_property<'a>(properties70: &'a FbxNode, name: &str) -> Option<&'a FbxNode> {
     properties70.children.iter().find(|entry| {
-        entry.name == "P"
+        (entry.name == "P" || entry.name == "Property")
             && matches!(entry.properties.first(), Some(FbxProperty::String(key)) if key == name)
     })
 }

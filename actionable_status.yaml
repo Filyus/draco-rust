@@ -29,22 +29,6 @@ version: 1
 last_reviewed: "2026-08-27"
 
 items:
-  - id: fbx-pre-7000-object-model
-    area: draco-io/fbx
-    priority: low
-    status: open
-    summary: "FBX 6100 and earlier decode to an empty scene: 81 of the 308 binary corpus files, plus 118 ASCII ones."
-    evidence:
-      - path: "crates/draco-io/src/fbx_reader.rs"
-        note: "FbxObjectIndex::build indexes objects by i64 id. Pre-7000 identifies them by a name string ending in a class marker and connects them by that string, so nothing is indexed; the reader reports FbxWarningCode::NameKeyedObjectModel rather than failing."
-      - path: "crates/draco-io/README.md"
-        note: "The container/content split is documented: the container is read for 6000-8000, scene content only for 7000 and later."
-    impact: "A quarter of the corpus, and any older asset, decodes to nothing. Deliberately deferred: this is a parallel object-identity layer, comparable in size to the ASCII container work, not a patch."
-    next_steps:
-      - "Synthesize stable ids from the name+class strings and resolve Connect records against them."
-      - "Treat Objects/Model as its own geometry source, since pre-7000 has no separate Geometry object."
-      - "Add a scalar-property fallback wherever an array property is read: 6100 stores arrays as repeated scalar properties."
-
   - id: pgo-two-pass-build
     area: draco-io
     priority: low

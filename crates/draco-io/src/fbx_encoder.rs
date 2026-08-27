@@ -13,6 +13,7 @@
 
 use std::io::{self, Seek, SeekFrom, Write};
 
+#[cfg(test)]
 use crate::fbx_ascii_syntax::FBX_VERSION;
 use crate::fbx_node::{FbxNode, FbxProperty};
 
@@ -449,7 +450,7 @@ pub(crate) fn write_null_record<W: Write>(writer: &mut W, is_64: bool) -> io::Re
 /// closing magic. Nothing complained because neither ufbx nor Blender reads
 /// the footer at all, but the output was not a conventional FBX file and the
 /// reader's strict mode rejects it.
-pub(crate) fn write_footer<W: Write + Seek>(writer: &mut W) -> io::Result<()> {
+pub(crate) fn write_footer<W: Write + Seek>(writer: &mut W, version: u32) -> io::Result<()> {
     writer.write_all(&FBX_FOOTER_ID)?;
     writer.write_all(&[0u8; 4])?;
 
@@ -462,7 +463,7 @@ pub(crate) fn write_footer<W: Write + Seek>(writer: &mut W) -> io::Result<()> {
     }
     writer.write_all(&vec![0u8; padding as usize])?;
 
-    writer.write_all(&FBX_VERSION.to_le_bytes())?;
+    writer.write_all(&version.to_le_bytes())?;
     writer.write_all(&[0u8; 120])?;
     writer.write_all(&FBX_FOOTER_MAGIC)?;
     Ok(())
@@ -488,7 +489,7 @@ mod tests {
             encode_node(&mut cursor, node, is_64, options).unwrap();
         }
         write_null_record(&mut cursor, is_64).unwrap();
-        write_footer(&mut cursor).unwrap();
+        write_footer(&mut cursor, FBX_VERSION).unwrap();
 
         let mut reader = FbxMemoryReader::from_bytes(cursor.into_inner()).unwrap();
         reader.read_nodes().unwrap()

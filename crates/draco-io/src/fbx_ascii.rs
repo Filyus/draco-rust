@@ -14,8 +14,9 @@
 //! * Values carry no type tag. A number is typed by how it is written, so an
 //!   array of whole numbers is indistinguishable from an integer array.
 //!
-//! Only FBX 7000 and later are accepted, matching the binary reader: earlier
-//! versions use a different object model regardless of container.
+//! FBX 6100 and later are accepted, matching the binary reader's floor: the
+//! 6100 name-keyed object model is read by the shared scene passes, and
+//! earlier versions use layouts neither container here decodes.
 
 use std::io;
 
@@ -66,10 +67,9 @@ pub fn parse_ascii_nodes(bytes: &[u8], options: &FbxReadOptions) -> io::Result<V
     Ok(nodes)
 }
 
-/// Rejects pre-7000 documents, which use the name-keyed object model this
-/// crate does not read in either container.
-fn check_version(nodes: &[FbxNode]) -> io::Result<()> {
-    let version = nodes
+/// The version an ASCII document declares in its header extension.
+pub fn declared_version(nodes: &[FbxNode]) -> Option<u32> {
+    nodes
         .iter()
         .find(|node| node.name == "FBXHeaderExtension")
         .and_then(|header| header.children.iter().find(|c| c.name == "FBXVersion"))
@@ -78,12 +78,18 @@ fn check_version(nodes: &[FbxNode]) -> io::Result<()> {
             Some(FbxProperty::I64(value)) => Some(*value as i32),
             Some(FbxProperty::F64(value)) => Some(*value as i32),
             _ => None,
-        });
-    match version {
-        Some(version) if version < 7000 => Err(io::Error::new(
+        })
+        .map(|version| version as u32)
+}
+
+/// Rejects pre-6100 documents, whose object layouts predate the name-keyed
+/// model the scene passes read.
+fn check_version(nodes: &[FbxNode]) -> io::Result<()> {
+    match declared_version(nodes).map(|version| version as i32) {
+        Some(version) if version < 6100 => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "FBX: ASCII version {version} uses the pre-7000 object model, which is not read"
+                "FBX: ASCII version {version} predates the 6100 object model, which is not read"
             ),
         )),
         _ => Ok(()),
@@ -522,13 +528,21 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_7000_document_is_refused() {
+    fn a_pre_6100_document_is_refused() {
         let error = parse_ascii_nodes(
-            b"FBXHeaderExtension:  {\n\tFBXVersion: 6100\n}\n",
+            b"FBXHeaderExtension:  {\n\tFBXVersion: 5800\n}\n",
             &FbxReadOptions::default(),
         )
         .unwrap_err();
-        assert!(error.to_string().contains("pre-7000"), "{error}");
+        assert!(error.to_string().contains("6100"), "{error}");
+    }
+
+    /// The 6100 name-keyed object model is read; only the layouts before it
+    /// are refused.
+    #[test]
+    fn a_6100_document_parses() {
+        let nodes = parse("FBXHeaderExtension:  {\n\tFBXVersion: 6100\n}\n");
+        assert_eq!(nodes.len(), 1);
     }
 
     #[test]

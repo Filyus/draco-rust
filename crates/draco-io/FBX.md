@@ -51,23 +51,39 @@ no scene path keeps.
 ## The version floor
 
 The binary container is read for versions 6000 through 8000 and the ASCII one
-from 7000. **Scene content is read only from 7000 and later, in either.**
+from 6100. Scene content is read from 6100 and later, in either.
 
-Earlier versions use a different object model: objects are identified by a
+FBX 6100 uses a different object model: objects are identified by a
 `"name\0\x01Class"` string instead of an `i64` id, connections reference those
-strings, geometry lives on the `Model` rather than on a separate `Geometry`, and
-array payloads are stored as repeated scalar properties. A pre-7000 document
-therefore decodes to a structurally valid but empty scene, and says so through
-`FbxWarningCode::NameKeyedObjectModel` rather than looking like a file that
-simply has no meshes. 81 of the 308 binary files are version 6100 and fall here.
+strings, geometry lives on the `Model` rather than on a separate `Geometry`,
+properties sit in `Properties60` blocks, array payloads are stored as repeated
+scalar properties, and animation lives in the `Takes` section rather than in
+`AnimationStack` objects. The reader normalizes all of that into the same scene
+the 7.x layout produces: name keys are interned into the id space (the root
+`Scene\0\x01Model` as id 0), the `Model`'s own geometry records are read as a
+mesh, and Takes channels — whose `Key` payloads mix times, values and mode
+letters in one run — are flattened by the same state machine `ufbx`
+reverse-engineered. 81 of the 308 binary corpus files are version 6100.
+
+Writing has the same option: `FbxWriter::with_legacy_object_model()` (or
+`FbxScene::to_legacy_bytes` / `to_legacy_ascii_bytes`) spells the document as
+6100 in either container, so a pre-7000 source round-trips inside its own
+version. The 6100 writer carries meshes, transforms, materials, textures and
+Takes animation; a skin or blend shape has no 6100 spelling here, and asking
+for one with either attached is an error rather than a file that silently
+drops it. A cubic curve's first key has no 6100 spelling for its own incoming
+slope either — the format states a slope pair per adjacent key, not one per
+key — so that one value is dropped on a round trip rather than refused, the
+one loss this writer accepts silently.
 
 ## The two containers
 
 Both are read and both are written. Binary is accepted in either byte order — a
-non-zero endian marker selects big-endian, as `ufbx` does — and ASCII from 7000.
+non-zero endian marker selects big-endian, as `ufbx` does — and ASCII from 6100.
 Output is FBX 7500 little-endian, binary unless
 `FbxWriter::with_format(FbxFormat::Ascii)` or `FbxScene::to_ascii_bytes` asks for
-text.
+text, or FBX 6100 when `with_legacy_object_model()` asks for the pre-7000
+object model.
 
 Only the container layer differs; everything above it is shared, and that is
 structural rather than a convention anyone has to maintain. `fbx_container`

@@ -183,9 +183,11 @@ impl<R: Read + Seek> FbxReader<R> {
             return Ok(Self {
                 reader,
                 // The ASCII container records its version inside the node
-                // tree rather than in a header, and `check_version` has
-                // already rejected anything pre-7000.
-                version: 7000,
+                // tree rather than in a header. `check_version` has already
+                // rejected anything below 6100, so this is one of the known
+                // layouts; 7000 stands in only for a document that declares
+                // no version at all.
+                version: crate::fbx_ascii::declared_version(&nodes).unwrap_or(7000),
                 byte_order: FbxByteOrder::Little,
                 options,
                 file_len,
@@ -512,10 +514,26 @@ impl<R: Read + Seek> FbxReader<R> {
 
         match type_code[0] {
             // Single-byte scalars are never byte-swapped.
-            b'B' | b'C' => {
+            b'B' => {
                 let mut v = [0u8; 1];
                 self.reader.read_exact(&mut v)?;
                 Ok(FbxProperty::Bool(v[0] != 0))
+            }
+            // A `C` is a raw byte. Exporters use it for both spellings of a
+            // boolean and for the pre-7000 animation format's interpolation
+            // and tangent mode letters, and the two cannot be told apart in
+            // the container: 0 and 1 read as the boolean every 7.x consumer
+            // expects (which is also what keeps the ASCII twin of such a
+            // document equal), and any other byte reaches the reader whole
+            // rather than collapsing to "nonzero".
+            b'C' => {
+                let mut v = [0u8; 1];
+                self.reader.read_exact(&mut v)?;
+                if v[0] <= 1 {
+                    Ok(FbxProperty::Bool(v[0] != 0))
+                } else {
+                    Ok(FbxProperty::U8(v[0]))
+                }
             }
             b'Z' => {
                 let mut v = [0u8; 1];

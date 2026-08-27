@@ -29,10 +29,6 @@ pub enum FbxWarningCode {
     /// A geometry carried a `LayerElement*` this crate does not import, so
     /// that layer's data is absent from the decoded scene.
     DroppedLayerElement,
-    /// The document uses the pre-7000 object model, which identifies objects
-    /// and connections by name instead of by id, so nothing was imported from
-    /// its `Objects` block.
-    NameKeyedObjectModel,
     /// A node carried a `NodeAttribute` class this crate does not represent,
     /// so the attribute's own properties are absent from the scene.
     DroppedNodeAttribute,
@@ -57,7 +53,6 @@ impl FbxWarningCode {
             | FbxWarningCode::UnsupportedTransformInherit
             | FbxWarningCode::UnsupportedLayerMapping
             | FbxWarningCode::DroppedLayerElement
-            | FbxWarningCode::NameKeyedObjectModel
             | FbxWarningCode::DroppedNodeAttribute
             | FbxWarningCode::UnconnectedModelDropped => true,
         }
@@ -73,7 +68,6 @@ impl FbxWarningCode {
             FbxWarningCode::UnsupportedTransformInherit => "unsupported-transform-inherit",
             FbxWarningCode::UnsupportedLayerMapping => "unsupported-layer-mapping",
             FbxWarningCode::DroppedLayerElement => "dropped-layer-element",
-            FbxWarningCode::NameKeyedObjectModel => "name-keyed-object-model",
             FbxWarningCode::DroppedNodeAttribute => "dropped-node-attribute",
             FbxWarningCode::UnconnectedModelDropped => "unconnected-model-dropped",
         }
@@ -897,6 +891,32 @@ impl FbxScene {
     pub fn to_ascii_bytes(&self) -> io::Result<Vec<u8>> {
         let mut writer =
             crate::fbx_writer::FbxWriter::new().with_format(crate::fbx_writer::FbxFormat::Ascii);
+        writer.add_scene(self)?;
+        writer.write_to_vec()
+    }
+
+    /// Writes this scene in the FBX 6100 object model, binary container.
+    ///
+    /// For a pre-7000 source this is the round trip inside its own version;
+    /// the constraints [`FbxWriter::with_legacy_object_model`][legacy]
+    /// describes apply.
+    ///
+    /// [legacy]: crate::fbx_writer::FbxWriter::with_legacy_object_model
+    #[cfg(feature = "fbx-writer")]
+    pub fn to_legacy_bytes(&self) -> io::Result<Vec<u8>> {
+        let mut writer = crate::fbx_writer::FbxWriter::new().with_legacy_object_model();
+        writer.add_scene(self)?;
+        writer.write_to_vec()
+    }
+
+    /// Writes this scene in the FBX 6100 object model, ASCII container.
+    ///
+    /// The same document as [`Self::to_legacy_bytes`], spelled as text.
+    #[cfg(feature = "fbx-writer")]
+    pub fn to_legacy_ascii_bytes(&self) -> io::Result<Vec<u8>> {
+        let mut writer = crate::fbx_writer::FbxWriter::new()
+            .with_legacy_object_model()
+            .with_format(crate::fbx_writer::FbxFormat::Ascii);
         writer.add_scene(self)?;
         writer.write_to_vec()
     }

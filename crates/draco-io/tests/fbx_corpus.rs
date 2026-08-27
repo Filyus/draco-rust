@@ -249,6 +249,112 @@ fn scenes_survive_a_write_and_read_cycle() {
     );
 }
 
+/// A pre-7000 document round-trips inside its own version.
+///
+/// Decoded scenes are rewritten as 6100 in both containers and read back; the
+/// summaries must agree with the original decode. Scenes that carry a skin or
+/// a blend shape are refused by the 6100 writer -- that refusal is part of the
+/// contract, so it is asserted rather than skipped -- and the one document
+/// whose `"`-vs-`&quot;` pair the ASCII container cannot spell is compared in
+/// the binary container only.
+#[test]
+fn a_pre_7000_scene_survives_a_6100_rewrite() {
+    let Some(dir) = corpus_dir() else {
+        eprintln!("skipping: set DRACO_FBX_CORPUS to a directory of .fbx files");
+        return;
+    };
+    let mut files = Vec::new();
+    collect_fbx(&dir, &mut files);
+    files.sort();
+
+    let carries_deformer = |scene: &FbxScene| {
+        scene.root_nodes.iter().any(|node| {
+            node.mesh_instances
+                .iter()
+                .any(|mesh| mesh.skin.is_some() || !mesh.morph_targets.is_empty())
+        })
+    };
+
+    let mut compared = 0;
+    let mut refused = 0;
+    let mut mismatches: Vec<String> = Vec::new();
+    for path in &files {
+        if path.components().any(|c| c.as_os_str() == "fuzz") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        if !bytes.starts_with(b"Kaydara FBX Binary") {
+            continue;
+        }
+        // Byte 23 holds the version in the little-endian profile; the
+        // big-endian twins spell it the other way and are covered by their
+        // little-endian partner.
+        let version = u32::from_le_bytes([bytes[23], bytes[24], bytes[25], bytes[26]]);
+        if !(6000..7000).contains(&version) {
+            continue;
+        }
+        let Ok(original) = FbxScene::from_bytes(&bytes) else {
+            continue;
+        };
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        let mut containers: Vec<(&str, std::io::Result<Vec<u8>>)> = vec![
+            ("binary", original.to_legacy_bytes()),
+            ("ascii", original.to_legacy_ascii_bytes()),
+        ];
+        if name == "max_quote_6100_binary.fbx" {
+            let (_, written) = containers.remove(1);
+            // This document holds an object named `"` and another named
+            // literally `&quot;`; ASCII spells both `&quot;`, so writing it
+            // succeeds but the pair collapses into one name -- the same
+            // provable ASCII limitation `NOT_SPELLABLE` documents elsewhere in
+            // this file. What's skipped here is the round-trip comparison
+            // below, not the write itself.
+            assert!(written.is_ok());
+        }
+        for (container, written) in containers {
+            let written = match written {
+                Ok(written) => written,
+                Err(error) => {
+                    if carries_deformer(&original) {
+                        refused += 1;
+                        continue;
+                    }
+                    mismatches.push(format!("{name} ({container}): write failed: {error}"));
+                    continue;
+                }
+            };
+            let Ok(roundtrip) = FbxScene::from_bytes(&written) else {
+                mismatches.push(format!(
+                    "{name} ({container}): rewritten file does not read back"
+                ));
+                continue;
+            };
+            compared += 1;
+            for field in summarize(&original).differing_fields(&summarize(&roundtrip)) {
+                mismatches.push(format!("{name} ({container}): {field}"));
+            }
+        }
+    }
+
+    println!("{compared} 6100 rewrites compared, {refused} refused a deformer");
+    for line in mismatches.iter().take(20) {
+        println!("  {line}");
+    }
+    assert!(
+        mismatches.is_empty(),
+        "{} 6100 rewrites changed the scene",
+        mismatches.len()
+    );
+    assert!(compared > 0, "no pre-7000 documents in the corpus to check");
+}
+
 /// Rewriting a rewrite must change nothing: the writer's output is a fixed
 /// point of read-then-write.
 ///
@@ -357,12 +463,12 @@ fn an_ascii_rewrite_says_the_same_as_a_binary_one() {
     collect_fbx(&dir, &mut files);
     files.sort();
 
-    // The one document the text container provably cannot carry: it holds an
+    // The documents the text container provably cannot carry: each holds an
     // object named `"` and another named literally `&quot;`, and ASCII spells
-    // both `&quot;`. Read back, the second becomes the first. Its own ASCII
-    // twin is comparable, because reading that twin has already collapsed the
+    // both `&quot;`. Read back, the second becomes the first. Their own ASCII
+    // twins are comparable, because reading a twin has already collapsed the
     // pair before anything is written.
-    const NOT_SPELLABLE: [&str; 1] = ["max_quote_7500_binary.fbx"];
+    const NOT_SPELLABLE: [&str; 2] = ["max_quote_7500_binary.fbx", "max_quote_6100_binary.fbx"];
 
     let mut compared = 0;
     let mut mismatches: Vec<String> = Vec::new();
@@ -1052,17 +1158,15 @@ fn control_point_total(scene: &FbxScene) -> usize {
     scene.root_nodes.iter().map(visit).sum()
 }
 
-/// A document that decodes to nothing must say why.
+/// Pre-7000 documents decode their geometry like any other.
 ///
-/// Pre-7000 FBX keys its objects and connections by name rather than by id and
-/// puts geometry on the `Model`, none of which this reader understands. It
-/// still returns a structurally valid scene, so without a warning the result is
-/// indistinguishable from a file that genuinely has no meshes. Every such file
-/// in the corpus is checked to raise the notice, and every file that raises it
-/// is checked to really be empty -- otherwise the warning is the thing that is
-/// wrong.
+/// FBX 6100 keys its objects and connections by name rather than by id and
+/// puts the mesh on the `Model` itself. That used to decode to a structurally
+/// valid but empty scene; the name-keyed model is read now, so every binary
+/// pre-7000 document in the corpus that states a mesh must come back with its
+/// control points.
 #[test]
-fn a_pre_7000_document_says_why_it_decoded_to_nothing() {
+fn a_pre_7000_document_decodes_its_geometry() {
     let Some(dir) = corpus_dir() else {
         eprintln!("skipping: set DRACO_FBX_CORPUS to a directory of .fbx files");
         return;
@@ -1071,8 +1175,8 @@ fn a_pre_7000_document_says_why_it_decoded_to_nothing() {
     collect_fbx(&dir, &mut files);
     files.sort();
 
-    let mut warned = 0usize;
-    let mut silent_and_empty = Vec::new();
+    let mut decoded = 0usize;
+    let mut empty = Vec::new();
     for path in &files {
         let Ok(bytes) = std::fs::read(path) else {
             continue;
@@ -1080,36 +1184,29 @@ fn a_pre_7000_document_says_why_it_decoded_to_nothing() {
         if !bytes.starts_with(b"Kaydara FBX Binary") {
             continue;
         }
-        let Ok(scene) = FbxScene::from_bytes(&bytes) else {
-            continue;
-        };
-        let says_why = scene
-            .warnings
-            .iter()
-            .any(|w| w.code == draco_io::FbxWarningCode::NameKeyedObjectModel);
         // Byte 23 holds the version in the little-endian profile.
         let version = u32::from_le_bytes([bytes[23], bytes[24], bytes[25], bytes[26]]);
-        let pre_7000 = version < 7000;
-
-        if says_why {
-            warned += 1;
-            assert_eq!(
-                control_point_total(&scene),
-                0,
-                "{} warns that nothing was imported yet decoded geometry",
-                path.display()
-            );
-        } else if pre_7000 {
-            silent_and_empty.push(path.clone());
+        // The binary container reads 6000 up; older layouts are refused there.
+        if !(6000..7000).contains(&version) || !bytes.windows(8).any(|w| w == b"Vertices") {
+            continue;
+        }
+        let Ok(scene) = FbxScene::from_bytes(&bytes) else {
+            empty.push(path.clone());
+            continue;
+        };
+        if control_point_total(&scene) > 0 {
+            decoded += 1;
+        } else {
+            empty.push(path.clone());
         }
     }
 
     assert!(
-        silent_and_empty.is_empty(),
-        "pre-7000 documents decoded without explanation: {silent_and_empty:?}"
+        empty.is_empty(),
+        "pre-7000 documents with meshes decoded no geometry: {empty:?}"
     );
-    assert!(warned > 0, "no pre-7000 documents in the corpus to check");
-    println!("{warned} pre-7000 documents each explained why they are empty");
+    assert!(decoded > 0, "no pre-7000 documents in the corpus to check");
+    println!("{decoded} pre-7000 documents decoded their geometry");
 }
 
 /// Every camera and light in the corpus survives a rewrite.

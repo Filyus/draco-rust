@@ -9,6 +9,30 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+- FBX 6100 documents are read in either container: the name-keyed object model
+  (`"Name\0\x01Class"` keys, `Connect` records, geometry on the `Model`,
+  `Properties60`, repeated-scalar arrays) is normalized into the same scene the
+  7.x layout produces, including `Takes` animation with its heterogeneous `Key`
+  payloads. Previously such a document decoded to a structurally valid but
+  empty scene with a `name-keyed-object-model` warning; that warning code is
+  removed now that the layout is read.
+- Writing the 6100 object model: `FbxWriter::with_legacy_object_model()`, or
+  `FbxScene::to_legacy_bytes` / `to_legacy_ascii_bytes`, spell the document as
+  FBX 6100 in either container so a pre-7000 source round-trips inside its own
+  version. The 6100 writer carries meshes, transforms, materials, textures and
+  Takes animation; a skin or blend shape is refused with an error rather than
+  silently dropped.
+- A binary `C`-typed property whose byte is neither 0 nor 1 reads as `U8`
+  rather than `Bool(true)`: `C` is a raw byte, and the pre-7000 animation
+  format packs its mode letters into them.
+
+### Changed
+
+- The ASCII container accepts version 6100 (the name-keyed object model);
+  pre-6100 text is refused as before.
+
 ### Fixed
 
 - A `Model` that reaches neither the document root nor a parent `Model` by

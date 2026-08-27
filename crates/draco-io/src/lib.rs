@@ -40,6 +40,8 @@ mod fbx_transform;
 #[cfg(feature = "fbx-writer")]
 /// FBX binary writer.
 pub mod fbx_writer;
+#[cfg(feature = "fbx-writer")]
+mod fbx_writer_6100;
 #[cfg(feature = "gltf-container")]
 /// glTF/GLB containers and resource resolution.
 pub mod gltf_container;

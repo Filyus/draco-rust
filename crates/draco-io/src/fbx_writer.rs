@@ -33,7 +33,7 @@
 //! # Ok::<(), std::io::Error>(())
 //! ```
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufWriter, Cursor, Write};
 use std::path::Path;
@@ -101,6 +101,9 @@ pub enum FbxFormat {
 pub struct FbxWriter {
     /// Container the document is written in.
     format: FbxFormat,
+    /// Whether to spell the document in the FBX 6100 object model rather than
+    /// the default 7500 one.
+    legacy: bool,
     /// Whether to compress arrays using zlib (requires `compression` feature).
     compress: bool,
     /// Minimum array size (in bytes) to consider for compression.
@@ -235,12 +238,12 @@ struct TextureData {
 
 /// Internal animation container for one stack.
 #[derive(Debug, Clone)]
-struct AnimStackData {
+pub(crate) struct AnimStackData {
     stack_id: i64,
     layer_id: i64,
-    name: Option<String>,
+    pub(crate) name: Option<String>,
     duration: f32,
-    channels: Vec<crate::fbx_scene::FbxAnimChannel>,
+    pub(crate) channels: Vec<crate::fbx_scene::FbxAnimChannel>,
 }
 
 /// A connection that will be emitted in the `Connections` section.
@@ -263,6 +266,7 @@ impl FbxWriter {
     pub fn new() -> Self {
         Self {
             format: FbxFormat::Binary,
+            legacy: false,
             compress: false,
             compression_threshold: 128,
             compression_level: 2,
@@ -287,6 +291,20 @@ impl FbxWriter {
     /// encoding field to put a compressed array in.
     pub fn with_format(mut self, format: FbxFormat) -> Self {
         self.format = format;
+        self
+    }
+
+    /// Spells the document in the FBX 6100 object model: objects keyed by
+    /// name, geometry on the `Model`, `Properties60`, and animation in the
+    /// `Takes` section.
+    ///
+    /// The default is the 7500 model. The 6100 one exists so a pre-7000
+    /// document can round-trip inside its own version, and it carries meshes,
+    /// transforms, materials, textures and Takes animation only: a skin or a
+    /// blend shape has no 6100 spelling here, and asking for one with either
+    /// attached is an error rather than a file that silently drops it.
+    pub fn with_legacy_object_model(mut self) -> Self {
+        self.legacy = true;
         self
     }
 
@@ -720,6 +738,22 @@ impl FbxWriter {
             &self.skins,
             &self.morphs,
         ));
+        if self.legacy {
+            if !self.skins.is_empty() || !self.morphs.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "FBX: the 6100 object model this writer spells carries no skin or blend shape; write 7500 for those",
+                ));
+            }
+            // Resolve target by stable node id, never by non-unique name --
+            // see the identical lookup for connections above.
+            let node_model_ids: HashMap<crate::fbx_scene::FbxNodeId, i64> = self
+                .models
+                .iter()
+                .filter_map(|model| model.scene_node_id.map(|node_id| (node_id, model.model_id)))
+                .collect();
+            crate::fbx_writer_6100::translate(&mut document, &self.anim, &node_model_ids);
+        }
         Ok(document)
     }
 
@@ -739,8 +773,9 @@ impl FbxWriter {
     /// Write the FBX data and report arrays that were actually zlib-compressed.
     pub fn write_to_vec_with_stats(&self) -> io::Result<(Vec<u8>, FbxWriteStats)> {
         if self.format == FbxFormat::Ascii {
+            let version = if self.legacy { 6100 } else { FBX_VERSION };
             return Ok((
-                print_document(&self.build_document()?)?,
+                print_document(&self.build_document()?, version)?,
                 FbxWriteStats::default(),
             ));
         }
@@ -749,19 +784,20 @@ impl FbxWriter {
             compression_threshold: self.compression_threshold,
             compression_level: self.compression_level,
         };
-        let is_64 = FBX_VERSION >= 7500;
+        let version = if self.legacy { 6100 } else { FBX_VERSION };
+        let is_64 = version >= 7500;
 
         let mut cursor = Cursor::new(Vec::new());
         cursor.write_all(FBX_MAGIC)?;
         cursor.write_all(&[0x1A, 0x00])?; // Reserved bytes
-        cursor.write_all(&FBX_VERSION.to_le_bytes())?;
+        cursor.write_all(&version.to_le_bytes())?;
         let mut stats = FbxWriteStats::default();
         for node in self.build_document()? {
             stats += encode_node(&mut cursor, &node, is_64, &options)?;
         }
         // Marks the end of the top-level nodes.
         write_null_record(&mut cursor, is_64)?;
-        write_footer(&mut cursor)?;
+        write_footer(&mut cursor, version)?;
         Ok((cursor.into_inner(), stats))
     }
 
@@ -3086,6 +3122,158 @@ mod tests {
         let writer = FbxWriter::new();
         assert_eq!(writer.mesh_count(), 0);
         assert!(!writer.is_compression_enabled());
+    }
+
+    /// A 6100 document reads back as the same scene, in both containers,
+    /// without needing the corpus.
+    #[cfg(feature = "fbx-reader")]
+    #[test]
+    fn a_legacy_document_round_trips_in_both_containers() {
+        let mesh = create_triangle_mesh();
+        let mut scene = FbxScene::default();
+        let mut node = FbxSceneNode::new(Some("Tri".to_string()));
+        node.mesh_instances.push(FbxMeshInstance {
+            name: Some("Tri".to_string()),
+            mesh: mesh.clone(),
+            control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            polygon_vertex_indices: vec![0, 1, -3],
+            layers: FbxMeshLayers::default(),
+            edges: Vec::new(),
+            material_indices: Vec::new(),
+            skin: None,
+            morph_targets: Vec::new(),
+        });
+        scene.root_nodes.push(node);
+
+        for bytes in [
+            scene.to_legacy_bytes().expect("binary 6100"),
+            scene.to_legacy_ascii_bytes().expect("ASCII 6100"),
+        ] {
+            let reread = crate::fbx_reader::FbxMemoryReader::from_bytes(bytes)
+                .and_then(|mut reader| reader.read_scene())
+                .expect("6100 document reads back");
+            let names: Vec<Option<String>> = reread
+                .root_nodes
+                .iter()
+                .map(|node| node.name.clone())
+                .collect();
+            assert_eq!(names, vec![Some("Tri".to_string())]);
+            assert_eq!(reread.root_nodes[0].mesh_instances.len(), 1);
+            // Not just presence: the geometry itself, since that's the part
+            // most likely to break in a name-keyed, scalars-only rewrite.
+            let instance = &reread.root_nodes[0].mesh_instances[0];
+            assert_eq!(
+                instance.control_points,
+                vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+            );
+            assert_eq!(instance.polygon_vertex_indices, vec![0, 1, -3]);
+        }
+    }
+
+    /// Two sibling nodes sharing a display name must keep separate Takes
+    /// entries in the 6100 rewrite: `FbxAnimChannel::node_id`, not
+    /// `node_name`, is what a channel targets, and the id is what
+    /// disambiguates them.
+    #[test]
+    #[cfg(feature = "fbx-reader")]
+    fn a_6100_rewrite_keeps_same_named_siblings_animation_separate() {
+        use crate::fbx_scene::{FbxAnimChannel, FbxAnimChannelPath, FbxAnimSampler, FbxNodeId};
+
+        let sibling = |id: u32| FbxSceneNode {
+            kind: None,
+            id: FbxNodeId(id),
+            name: Some("Bone".to_string()),
+            transform: None,
+            transform_stack: None,
+            has_complex_transform_stack: false,
+            mesh_instances: Vec::new(),
+            attribute: None,
+            children: Vec::new(),
+        };
+        let scene = FbxScene {
+            global_settings: None,
+            root_nodes: vec![sibling(1), sibling(2)],
+            materials: Vec::new(),
+            textures: Vec::new(),
+            animations: vec![FbxAnimation {
+                name: Some("Take".to_string()),
+                duration: 1.0,
+                channels: vec![FbxAnimChannel {
+                    node_id: FbxNodeId(2),
+                    node_name: "Bone".to_string(),
+                    path: FbxAnimChannelPath::Translation,
+                    morph_target_index: None,
+                    sampler: FbxAnimSampler {
+                        input: vec![0.0, 1.0],
+                        output: vec![0.0, 0.0, 0.0, 100.0, 0.0, 0.0],
+                        interpolation: crate::fbx_scene::FbxAnimInterpolation::Linear,
+                        in_tangents: None,
+                        out_tangents: None,
+                    },
+                }],
+            }],
+            warnings: Vec::new(),
+        };
+
+        let reread = FbxScene::from_bytes(&scene.to_legacy_bytes().expect("binary 6100"))
+            .expect("6100 document reads back");
+        assert_eq!(reread.animations.len(), 1);
+        assert_eq!(reread.animations[0].channels.len(), 1);
+        let channel = &reread.animations[0].channels[0];
+        assert_eq!(channel.node_id, FbxNodeId(2));
+        // [x0, y0, z0, x1, y1, z1]; the moved axis is X at the second key.
+        assert_eq!(
+            channel.sampler.output,
+            vec![0.0, 0.0, 0.0, 100.0, 0.0, 0.0],
+            "the animation landed on the wrong sibling"
+        );
+    }
+
+    /// An ordinary Model named exactly "Scene" must not alias the synthetic
+    /// document-root key the 6100 writer spells for id 0.
+    #[test]
+    #[cfg(feature = "fbx-reader")]
+    fn a_6100_rewrite_keeps_a_model_named_scene_out_of_the_root() {
+        use crate::fbx_scene::FbxNodeId;
+
+        let scene = FbxScene {
+            global_settings: None,
+            root_nodes: vec![FbxSceneNode {
+                kind: None,
+                id: FbxNodeId(1),
+                name: Some("Scene".to_string()),
+                transform: None,
+                transform_stack: None,
+                has_complex_transform_stack: false,
+                mesh_instances: Vec::new(),
+                attribute: None,
+                children: vec![FbxSceneNode {
+                    kind: None,
+                    id: FbxNodeId(2),
+                    name: Some("Kid".to_string()),
+                    transform: None,
+                    transform_stack: None,
+                    has_complex_transform_stack: false,
+                    mesh_instances: Vec::new(),
+                    attribute: None,
+                    children: Vec::new(),
+                }],
+            }],
+            materials: Vec::new(),
+            textures: Vec::new(),
+            animations: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        let reread = FbxScene::from_bytes(&scene.to_legacy_bytes().expect("binary 6100"))
+            .expect("6100 document reads back");
+        assert_eq!(reread.root_nodes.len(), 1, "{reread:?}");
+        assert_eq!(reread.root_nodes[0].name.as_deref(), Some("Scene"));
+        assert_eq!(reread.root_nodes[0].children.len(), 1);
+        assert_eq!(
+            reread.root_nodes[0].children[0].name.as_deref(),
+            Some("Kid")
+        );
     }
 
     #[test]

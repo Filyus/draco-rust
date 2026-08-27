@@ -72,6 +72,9 @@ pub(crate) fn parse_transform(
     fn property_bool(property: &FbxNode) -> Option<bool> {
         property.properties.iter().find_map(|value| match value {
             crate::fbx_reader::FbxProperty::Bool(value) => Some(*value),
+            // A `C`-typed byte reads as `U8`; some exporters spell a boolean
+            // that way rather than with `B`.
+            crate::fbx_reader::FbxProperty::U8(value) => Some(*value != 0),
             crate::fbx_reader::FbxProperty::I32(value) => Some(*value != 0),
             crate::fbx_reader::FbxProperty::I16(value) => Some(*value != 0),
             crate::fbx_reader::FbxProperty::I64(value) => Some(*value != 0),
@@ -88,7 +91,7 @@ pub(crate) fn parse_transform(
             .node()
             .children
             .iter()
-            .filter(|child| child.name == "Properties70"),
+            .filter(|child| child.name == "Properties70" || child.name == "Properties60"),
     );
     for block in blocks {
         for prop in &block.children {
