@@ -28,11 +28,11 @@
 use std::fmt::Write as _;
 use std::io;
 
+#[cfg(test)]
+use crate::fbx_ascii_syntax::FBX_VERSION;
 use crate::fbx_ascii_syntax::{
     array_element_type, ascii_object_name, encode_base64, format_f64, is_base64_node, ArrayElement,
 };
-#[cfg(test)]
-use crate::fbx_ascii_syntax::FBX_VERSION;
 use crate::fbx_node::{FbxNode, FbxProperty};
 
 /// Column an array line is broken at.
@@ -302,8 +302,11 @@ mod tests {
 
     #[test]
     fn a_non_finite_value_is_refused_rather_than_spelled_wrong() {
-        let error = print_document(&[node("Weight", vec![FbxProperty::F64(f64::NAN)])], FBX_VERSION)
-            .expect_err("NaN has no ASCII spelling");
+        let error = print_document(
+            &[node("Weight", vec![FbxProperty::F64(f64::NAN)])],
+            FBX_VERSION,
+        )
+        .expect_err("NaN has no ASCII spelling");
         assert!(error.to_string().contains("Weight"), "{error}");
     }
 
@@ -370,8 +373,11 @@ mod tests {
     #[test]
     fn an_object_name_is_written_class_first_and_read_back_name_first() {
         let stored = format!("Cube{NAME_CLASS_SEPARATOR}Model");
-        let text = print_document(&[node("Model", vec![FbxProperty::String(stored.clone())])], FBX_VERSION)
-            .expect("printable");
+        let text = print_document(
+            &[node("Model", vec![FbxProperty::String(stored.clone())])],
+            FBX_VERSION,
+        )
+        .expect("printable");
         assert!(
             String::from_utf8_lossy(&text).contains("\"Model::Cube\""),
             "{}",
@@ -442,8 +448,11 @@ mod tests {
 
     #[test]
     fn raw_bytes_the_reader_would_not_decode_are_refused() {
-        let error = print_document(&[node("Thumbnail", vec![FbxProperty::Raw(vec![1, 2, 3])])], FBX_VERSION)
-            .expect_err("only a Content node is read as base64");
+        let error = print_document(
+            &[node("Thumbnail", vec![FbxProperty::Raw(vec![1, 2, 3])])],
+            FBX_VERSION,
+        )
+        .expect_err("only a Content node is read as base64");
         assert!(error.to_string().contains("Thumbnail"), "{error}");
     }
 

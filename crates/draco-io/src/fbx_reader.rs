@@ -593,7 +593,12 @@ fn build_mesh_instance(
             connections,
             model_node_ids,
         ),
-        morph_targets: parse_morph_targets_for_geometry(id, geometry_map, deformer_map, connections),
+        morph_targets: parse_morph_targets_for_geometry(
+            id,
+            geometry_map,
+            deformer_map,
+            connections,
+        ),
     }
 }
 
@@ -1100,7 +1105,10 @@ fn int_values(node: &FbxNode) -> Option<Vec<i32>> {
         // array; narrowing it with `as` would silently turn it into a
         // different, in-range index instead of refusing to decode it.
         Some(FbxProperty::I64Array(values)) => {
-            return values.iter().map(|value| i32::try_from(*value).ok()).collect();
+            return values
+                .iter()
+                .map(|value| i32::try_from(*value).ok())
+                .collect();
         }
         _ => {}
     }
