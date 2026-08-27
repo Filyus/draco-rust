@@ -54,12 +54,18 @@ permissions:
 jobs:
   # One job per group of targets rather than one job for all of them. Groups
   # run concurrently, so a soak costs the wall-clock of its longest group
-  # instead of the sum of every target -- which is what buys `draco` an hour
-  # per target while the whole run still lands well inside the six-hour job
-  # limit. The split is by risk, not by convenience: `draco` fuzzes this
-  # workspace's own bitstream encoder and decoder, where four of the last five
-  # findings came from, and it gets twice the budget of the groups that fuzz
-  # parsers for other people's formats.
+  # instead of the sum of every target -- which is what buys the bitstream
+  # targets an hour each while the whole run still lands well inside the
+  # six-hour job limit. The split is by risk, not by convenience: this
+  # workspace's own encoder and decoder are where most findings come from, and
+  # they get twice the budget of the groups that fuzz parsers for other
+  # people's formats.
+  #
+  # `decode_drc` and `encode_drc` are a group each rather than two targets in
+  # one. Sharing a job made the soak cost their sum, since a group runs its
+  # targets in sequence, and an hour of the pair is two hours of wall clock for
+  # no reason: they share nothing but a name. Splitting also stops a crash in
+  # the first from eating into the second's budget on a rerun.
   fuzz:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
@@ -67,10 +73,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - group: draco
-            name: draco bitstream
-            targets: decode_drc encode_drc
+          - group: decode
+            name: draco decode
+            targets: decode_drc
             soak_seconds: 3600
+            inherit_key: fuzz-corpus-v3-draco-
+          - group: encode
+            name: draco encode
+            targets: encode_drc
+            soak_seconds: 3600
+            inherit_key: fuzz-corpus-v3-draco-
           - group: readers
             name: mesh + FBX readers
             targets: mesh_text_readers fbx_read_scene fbx_roundtrip
@@ -108,8 +120,14 @@ jobs:
         with:
           path: fuzz/corpus
           key: fuzz-corpus-v3-${{ matrix.group }}-${{ github.run_id }}
+          # The second key is what a group renamed or split off another one
+          # falls back to on its first run: the cached path is the whole corpus
+          # directory, so the entry written under the old group's name still
+          # holds this group's targets. Harmless once the group has an entry of
+          # its own, since the first key matches first.
           restore-keys: |
             fuzz-corpus-v3-${{ matrix.group }}-
+            ${{ matrix.inherit_key }}
 
       - name: Seed corpus from fixtures
         run: |
