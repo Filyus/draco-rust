@@ -1555,12 +1555,10 @@ mod encode_drc_replay {
                 if spec.num_values == 0 {
                     break;
                 }
-                let value = ((point.wrapping_mul(2654435761).wrapping_add(seed))
-                    % spec.num_values) as u32;
-                let _ = attribute.try_set_point_map_entry(
-                    PointIndex(point as u32),
-                    AttributeValueIndex(value),
-                );
+                let value =
+                    ((point.wrapping_mul(2654435761).wrapping_add(seed)) % spec.num_values) as u32;
+                let _ = attribute
+                    .try_set_point_map_entry(PointIndex(point as u32), AttributeValueIndex(value));
             }
         } else {
             attribute.set_identity_mapping();
@@ -1614,9 +1612,8 @@ fn a_color_attribute_without_a_position_attribute_round_trips_at_speed_zero() {
     }
 
     for (index, attribute_spec) in spec.attributes.iter().enumerate() {
-        let attribute =
-            build_attribute(attribute_spec, spec.num_points, &payload, index * 7 + 1)
-                .expect("attribute within bounds");
+        let attribute = build_attribute(attribute_spec, spec.num_points, &payload, index * 7 + 1)
+            .expect("attribute within bounds");
         mesh.add_attribute(attribute);
     }
     assert_eq!(mesh.num_attributes(), 1, "no Position attribute registered");
