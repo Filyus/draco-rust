@@ -865,7 +865,7 @@ where
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
     ) -> Status {
-        self.transform.init(num_components);
+        self.transform.init(num_components)?;
 
         if size == 0 {
             return Ok(());

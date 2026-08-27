@@ -108,8 +108,9 @@ where
     DataType: Copy + Add<DataType, Output = DataType>,
 {
     #[inline]
-    fn init(&mut self, num_components: usize) {
+    fn init(&mut self, num_components: usize) -> Status {
         self.num_components = num_components;
+        Ok(())
     }
 
     #[inline]
@@ -319,7 +320,7 @@ where
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
     ) -> Status {
-        self.transform.init(num_components);
+        self.transform.init(num_components)?;
 
         // The first element has no predecessor, so it predicts from zeros.
         let zeros = vec![DataType::default(); num_components];

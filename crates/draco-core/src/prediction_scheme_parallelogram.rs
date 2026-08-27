@@ -226,8 +226,8 @@ where
         PredictionSchemeTransformType::Parallelogram
     }
 
-    fn init(&mut self, _num_components: usize) {
-        // No init needed
+    fn init(&mut self, _num_components: usize) -> Status {
+        Ok(())
     }
 
     fn compute_original_value(&self, predicted_vals: &[DataType], data: &mut [DataType]) {
@@ -464,7 +464,7 @@ where
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
     ) -> Status {
-        self.transform.init(num_components);
+        self.transform.init(num_components)?;
 
         if num_components == 0 {
             return Err(DracoError::invalid_parameter(

@@ -178,7 +178,11 @@ pub trait PredictionSchemeEncodingTransform<DataType, CorrType> {
 
 #[cfg(feature = "decoder")]
 pub trait PredictionSchemeDecodingTransform<DataType> {
-    fn init(&mut self, num_components: usize);
+    /// Announces the component count the scheme will hand to
+    /// `compute_original_value`, and is the transform's one chance to refuse
+    /// it: the octahedral transforms read and write a coordinate pair and have
+    /// no meaning at any other width.
+    fn init(&mut self, num_components: usize) -> Status;
     /// Reconstructs one entry in place: `data` holds the correction on entry
     /// and the original value on return. The single-buffer contract mirrors
     /// upstream, whose decoders pass the same pointer as both `in_corr` and

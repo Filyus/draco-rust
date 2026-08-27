@@ -18,6 +18,16 @@ that, the bitstream versions an encode accepts are now an enumeration of
 combinations that have a round-trip test, the header count guard is replaced by one whose
 premise holds, and the encoder reports the choices it makes for itself.
 
+### Changed
+
+- `PredictionSchemeDecodingTransform::init` returns a `Status`. It is the point
+  where a transform learns the component count it will be handed, and the
+  octahedral transforms have no meaning at any width but two: they read and
+  write a coordinate pair. Refusing there covers every pairing of scheme and
+  transform a stream can name, where guarding a scheme at a time left the next
+  pairing open -- the same one-component transform was reached first through
+  geometric-normal prediction and then through delta.
+
 ### Removed
 
 - `GeometryDecoder`, the trait a decoder was to present to attribute decoders,

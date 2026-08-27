@@ -53,8 +53,19 @@ impl PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform {
 impl PredictionSchemeDecodingTransform<i32>
     for PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform
 {
-    fn init(&mut self, num_components: usize) {
+    fn init(&mut self, num_components: usize) -> Status {
+        // An octahedral value is a coordinate pair, and this reads and writes
+        // both without asking. Whichever scheme drives it -- geometric normal,
+        // delta, a parallelogram -- an attribute of any other width is one no
+        // encoder here produces, and refusing it once, here, covers every
+        // pairing the stream can name.
+        if num_components != 2 {
+            return Err(DracoError::invalid_parameter(format!(
+                "Octahedral transform needs 2 components, got {num_components}"
+            )));
+        }
         self.num_components = num_components;
+        Ok(())
     }
 
     fn decode_transform_data(&mut self, buffer: &mut DecoderBuffer) -> Status {

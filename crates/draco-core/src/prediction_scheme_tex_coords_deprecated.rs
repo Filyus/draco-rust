@@ -725,7 +725,7 @@ where
             )));
         }
 
-        self.transform.init(num_components);
+        self.transform.init(num_components)?;
         let mut predicted_value = [0i32; 2];
         for (p, &corner) in data_to_corner_map.iter().enumerate() {
             if !self.compute_predicted_value(

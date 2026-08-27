@@ -1341,3 +1341,17 @@ fn a_bit_stream_longer_than_the_buffer_does_not_move_the_position_past_it() {
     ];
     assert_both_decoders_do_not_panic(&bit_stream_outruns_the_buffer);
 }
+
+#[test]
+fn an_octahedral_transform_on_a_single_component_is_refused_by_any_scheme() {
+    // libFuzzer reproducer (fuzz target `decode_drc`): the same octahedral
+    // transform that a one-component geometric normal reached, arrived at
+    // through the delta scheme instead. The pairing of scheme and transform is
+    // whatever the stream names, so guarding the schemes one at a time leaves
+    // the next pairing open; the transform refuses the width itself now.
+    let delta_scheme_over_an_octahedral_transform: [u8; 44] = [
+        68, 82, 65, 67, 79, 2, 1, 0, 0, 1, 0, 65, 0, 0, 0, 1, 2, 0, 9, 1, 0, 3, 0, 9, 3, 0, 1, 2,
+        131, 0, 2, 0, 0, 255, 1, 0, 0, 0, 1, 1, 0, 9, 16, 0,
+    ];
+    assert_both_decoders_do_not_panic(&delta_scheme_over_an_octahedral_transform);
+}

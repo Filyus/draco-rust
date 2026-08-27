@@ -300,7 +300,7 @@ where
             )));
         }
 
-        self.transform.init(num_components);
+        self.transform.init(num_components)?;
 
         let mut pred_vals = vec![DataType::default(); num_components];
         let mut parallelogram_pred_vals = vec![DataType::default(); num_components];
@@ -405,7 +405,9 @@ mod tests {
     }
 
     impl PredictionSchemeDecodingTransform<i32> for IdentityTransform {
-        fn init(&mut self, _num_components: usize) {}
+        fn init(&mut self, _num_components: usize) -> Status {
+            Ok(())
+        }
 
         fn compute_original_value(&self, predicted_vals: &[i32], data: &mut [i32]) {
             for i in 0..data.len() {

@@ -175,8 +175,9 @@ impl PredictionSchemeDecodingTransform<i32> for PredictionSchemeWrapDecodingTran
     }
 
     #[inline]
-    fn init(&mut self, num_components: usize) {
+    fn init(&mut self, num_components: usize) -> Status {
         self.num_components = num_components;
+        Ok(())
     }
 
     #[inline(always)]
@@ -334,7 +335,7 @@ mod tests {
             transform.min_value = min_value;
             transform.max_value = max_value;
             transform.max_dif = max_dif;
-            transform.init(1);
+            transform.init(1)?;
 
             for pred in [i32::MIN, -7, -1, 0, 1, 7, i32::MAX] {
                 for corr in [i32::MIN, -8, -1, 0, 1, 8, i32::MAX] {

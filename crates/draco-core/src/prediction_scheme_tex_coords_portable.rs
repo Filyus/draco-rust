@@ -390,7 +390,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32> for MeshPredictionSchemeTexCoordsPorta
             return Err(missing("position parent"));
         }
 
-        self.transform.init(num_components);
+        self.transform.init(num_components)?;
 
         let Some(entry_map) = entry_to_point_id_map else {
             return Err(missing("entry-to-point map"));

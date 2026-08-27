@@ -395,7 +395,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32> for MeshPredictionSchemeGeometricNorma
                 "Geometric normal prediction needs 2 octahedral components, got {num_components}"
             )));
         }
-        self.transform.init(num_components);
+        self.transform.init(num_components)?;
 
         let missing =
             |what: &str| DracoError::general(format!("Geometric normal prediction has no {what}"));
