@@ -1088,6 +1088,26 @@ impl MeshEncoder {
         Ok(())
     }
 
+    /// Whether the position attribute is walked by max prediction degree
+    /// rather than depth first.
+    ///
+    /// This is the predicate behind the `traversal_method` byte, and it has to
+    /// be the same one `MeshEdgebreakerEncoder::position_uses_prediction_degree`
+    /// walks by: the byte tells the decoder which order the position values are
+    /// in, and a decoder that reorders them differently reads every value onto
+    /// the wrong vertex. Upstream takes the prediction degree back when one
+    /// connectivity is shared by more than one attribute -- see
+    /// `mesh_edgebreaker_encoder_impl.cc:165-175` -- so the walk does too, and
+    /// so must the byte.
+    ///
+    /// The third condition the walk applies, that the target bitstream can
+    /// express the choice at all, needs no counterpart here: the byte itself
+    /// arrived in 1.2, and every caller writes it only for 1.2 and above.
+    fn position_traversal_is_prediction_degree(&self, mesh: &Mesh) -> bool {
+        self.options.get_speed() == 0
+            && !(self.use_single_connectivity && mesh.num_attributes() > 1)
+    }
+
     fn encode_attributes(&mut self, out_buffer: &mut EncoderBuffer) -> Status {
         // NOTE: Unlike the decoder, the encoder does NOT need to apply UpdatePointToAttributeIndexMapping
         // because the attribute still has identity mapping. The encoder uses the point_ids array
@@ -1135,10 +1155,14 @@ impl MeshEncoder {
             // Traversal method was added in bitstream 1.2. Older streams
             // default to DEPTH_FIRST on decode and must not carry the byte.
             if crate::version::bitstream_version(major, minor) >= 0x0102 {
-                // PREDICTION_DEGREE (1) for speed 0, DEPTH_FIRST (0) otherwise.
-                // This must match the traversal used in MeshEdgebreakerEncoder.
-                let encoding_speed = self.options.get_speed();
-                let traversal_method: u8 = if encoding_speed == 0 { 1 } else { 0 };
+                // This group carries att_data_id -1, so it is the position
+                // group, and the byte is whatever the position walk turns out
+                // to be.
+                let traversal_method: u8 = if self.position_traversal_is_prediction_degree(mesh) {
+                    1
+                } else {
+                    0
+                };
                 out_buffer.encode_u8(traversal_method);
             }
         }
@@ -1400,13 +1424,12 @@ impl MeshEncoder {
         let major = out_buffer.version_major();
         let minor = out_buffer.version_minor();
         let writes_traversal_method = crate::version::bitstream_version(major, minor) >= 0x0102;
-        // Prediction degree is the position group's traversal alone, and only at
-        // speed 0. Every other group is walked depth first, whatever the speed --
-        // upstream guards on the attribute being POSITION, and the groups here
-        // carry att_data_id -1 for exactly that one. Declaring it for the rest
+        // Prediction degree is the position group's traversal alone. Every
+        // other group is walked depth first, whatever the speed -- upstream
+        // guards on the attribute being POSITION, and the groups here carry
+        // att_data_id -1 for exactly that one. Declaring it for the rest
         // mislabels a stream whose values were written in depth-first order.
-        let position_prediction_degree = self.options.get_speed() == 0
-            && !(self.use_single_connectivity && mesh.num_attributes() > 1);
+        let position_prediction_degree = self.position_traversal_is_prediction_degree(mesh);
         for (att_data_id, _) in &groups {
             out_buffer.encode_u8(*att_data_id as u8);
             let element_type = if *att_data_id >= 0

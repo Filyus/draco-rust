@@ -353,6 +353,18 @@ premise holds, and the encoder reports the choices it makes for itself.
 
 ### Fixed
 
+- The `traversal_method` byte named an order the position values were not
+  written in. At speed 0 the position walks the mesh by max prediction degree,
+  except where one connectivity is shared by several attributes, where upstream
+  takes the prediction degree back and the walk falls back to depth first. The
+  byte was written from the speed alone, so those streams announced a walk the
+  decoder then performed while the values had been ordered by the other one,
+  and every value was read onto the wrong vertex. The two now come from one
+  predicate. The constrained multi-parallelogram scheme is where it surfaced,
+  its crease-edge flags being counted per vertex fan and the two walks
+  disagreeing on the fans, but nothing about the defect was particular to that
+  scheme: the schemes that do not read a side stream took the same wrong values
+  in silence.
 - An encoding speed outside the documented 0..=10 produced different bytes from
   C++ Draco. The entropy coder's compression level is `10 - speed`, and upstream
   sets it through `SetSymbolEncodingCompressionLevel`, which refuses anything

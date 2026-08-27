@@ -1780,3 +1780,76 @@ fn a_pre_2_0_texcoord_predicts_from_the_portable_position() {
         .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
         .expect("encoder wrote a stream its decoder rejects");
 }
+
+/// The `traversal_method` byte has to name the order the position values were
+/// actually written in.
+///
+/// At speed 0 the position walks the mesh by max prediction degree -- except
+/// when one connectivity is shared by several attributes, where the walk falls
+/// back to depth first. The byte was written from the speed alone, so such a
+/// stream announced an order its values were not in, and the decoder rebuilt
+/// the attribute-to-vertex map from a different walk. Every value then landed
+/// on the wrong vertex; the constrained multi-parallelogram scheme is merely
+/// the first place that becomes visible, because the crease-edge flags it
+/// reads are counted per vertex fan and the two walks disagree on the fans.
+#[test]
+fn speed_zero_multi_attribute_mesh_round_trips() {
+    // Seven faces over six points, from a fuzz artifact: no degenerate and no
+    // repeated face, and every edge is shared by at most two faces. What makes
+    // it bite is that the two walks part ways over the last two vertices.
+    const FACES: &[[u32; 3]] = &[
+        [0, 2, 5],
+        [0, 4, 3],
+        [4, 0, 5],
+        [1, 3, 4],
+        [1, 0, 3],
+        [4, 2, 1],
+        [1, 2, 0],
+    ];
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(6);
+    mesh.try_set_num_faces(FACES.len()).unwrap();
+    for (index, face) in FACES.iter().enumerate() {
+        mesh.set_face_from_indices(index, *face);
+    }
+    // More than one attribute over a single connectivity is the case the byte
+    // got wrong; one attribute alone keeps the prediction-degree walk and does
+    // not reach it.
+    for attribute_index in 0..4usize {
+        let mut attribute = PointAttribute::new();
+        attribute
+            .try_init(GeometryAttributeType::Generic, 6, DataType::Uint8, false, 6)
+            .unwrap();
+        let data = attribute.buffer_mut().data_mut();
+        for (offset, byte) in data.iter_mut().enumerate() {
+            *byte = ((offset * 31 + attribute_index * 7 + 1) % 251) as u8;
+        }
+        attribute.set_identity_mapping();
+        mesh.add_attribute(attribute);
+    }
+
+    let mut options = EncoderOptions::new();
+    options.set_encoding_method(1);
+    options.set_global_int("decoding_speed", 0);
+    options.set_global_int("split_mesh_on_seams", 1);
+    for id in 0..4i32 {
+        options.set_attribute_int(id, "quantization_bits", 16);
+        // Constrained multi-parallelogram: the scheme whose crease-edge flags
+        // are counted per fan.
+        options.set_attribute_int(id, "prediction_scheme", 4);
+    }
+
+    let mut buffer = EncoderBuffer::new();
+    let mut encoder = MeshEncoder::new();
+    encoder.set_mesh(mesh);
+    encoder
+        .encode(&options, &mut buffer)
+        .expect("the encoder accepts this mesh");
+
+    let mut decoded = Mesh::new();
+    let mut decoder_buffer = DecoderBuffer::new(buffer.data());
+    MeshDecoder::new()
+        .decode(&mut decoder_buffer, &mut decoded)
+        .expect("a stream the encoder produced has to decode");
+}
