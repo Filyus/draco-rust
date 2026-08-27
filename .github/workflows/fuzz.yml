@@ -61,11 +61,14 @@ jobs:
   # they get twice the budget of the groups that fuzz parsers for other
   # people's formats.
   #
-  # `decode_drc` and `encode_drc` are a group each rather than two targets in
-  # one. Sharing a job made the soak cost their sum, since a group runs its
-  # targets in sequence, and an hour of the pair is two hours of wall clock for
-  # no reason: they share nothing but a name. Splitting also stops a crash in
-  # the first from eating into the second's budget on a rerun.
+  # One target per group, for the same reason: a group runs its targets in
+  # sequence, so sharing a job made the soak cost their sum. Three readers in
+  # one group were ninety minutes of wall clock for thirty minutes of work
+  # each, and that group, not the hour-long bitstream ones, was what the whole
+  # soak waited on. A job costs fourteen seconds of setup, so the split is
+  # close to free, and it lets a budget be raised for one target without
+  # lengthening anything else. It also stops a crash in one target from eating
+  # into another's budget on a rerun.
   fuzz:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
@@ -83,14 +86,31 @@ jobs:
             targets: encode_drc
             soak_seconds: 3600
             inherit_key: fuzz-corpus-v3-draco-
-          - group: readers
-            name: mesh + FBX readers
-            targets: mesh_text_readers fbx_read_scene fbx_roundtrip
+          - group: mesh_text
+            name: OBJ/PLY/STL readers
+            targets: mesh_text_readers
             soak_seconds: 1800
-          - group: gltf
-            name: glTF compression/import
-            targets: compress_gltf draco_gltf_import
+            inherit_key: fuzz-corpus-v3-readers-
+          - group: fbx_read
+            name: FBX reader
+            targets: fbx_read_scene
             soak_seconds: 1800
+            inherit_key: fuzz-corpus-v3-readers-
+          - group: fbx_round
+            name: FBX round trip
+            targets: fbx_roundtrip
+            soak_seconds: 1800
+            inherit_key: fuzz-corpus-v3-readers-
+          - group: gltf_compress
+            name: glTF compression
+            targets: compress_gltf
+            soak_seconds: 1800
+            inherit_key: fuzz-corpus-v3-gltf-
+          - group: gltf_import
+            name: glTF import
+            targets: draco_gltf_import
+            soak_seconds: 1800
+            inherit_key: fuzz-corpus-v3-gltf-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -118,6 +138,13 @@ jobs:
       - name: Restore fuzz corpus
         uses: actions/cache@v4
         with:
+          # The whole corpus directory rather than this group's one target, so
+          # that a group split off another one restores what the old entry
+          # holds. The cost is that such an entry keeps its former sibling's
+          # corpus frozen inside it; narrowing the path to
+          # `fuzz/corpus/${{ matrix.targets }}` collects that back, once every
+          # group has written an entry of its own and the fallback below is
+          # doing nothing.
           path: fuzz/corpus
           key: fuzz-corpus-v3-${{ matrix.group }}-${{ github.run_id }}
           # The second key is what a group renamed or split off another one
