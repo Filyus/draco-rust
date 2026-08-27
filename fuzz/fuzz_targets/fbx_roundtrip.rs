@@ -29,7 +29,7 @@ fuzz_target!(|data: &[u8]| {
     // permissive limits here: the scene came from tightly-limited input, but
     // re-encoding can legitimately exceed the fuzzing ceilings.
     let strict = FbxReadOptions::strict().with_limits(FbxDecodeLimits::permissive());
-    let reread = FbxScene::from_bytes_with_options(&written, strict)
+    let reread = FbxScene::from_bytes_with_options(&written, strict.clone())
         .expect("writer output must satisfy the reader's strict mode");
 
     assert_eq!(
@@ -42,6 +42,24 @@ fuzz_target!(|data: &[u8]| {
         reread.materials.len(),
         "material count changed across a write/read round-trip"
     );
+
+    // The 6100 object model is a second writer over the same scene, reached by
+    // no other fuzz target: name-keyed identity, the root-key collision guard,
+    // and the Takes/Key state machine all only run on this path.
+    for legacy in [scene.to_legacy_bytes(), scene.to_legacy_ascii_bytes()] {
+        let Ok(written) = legacy else {
+            // Refusing a skin/blend shape (or an ASCII name collision) is
+            // allowed; emitting corrupt bytes is not.
+            continue;
+        };
+        let reread = FbxScene::from_bytes_with_options(&written, strict.clone())
+            .expect("6100 writer output must satisfy the reader's strict mode");
+        assert_eq!(
+            count_nodes(&scene),
+            count_nodes(&reread),
+            "node count changed across a 6100 write/read round-trip"
+        );
+    }
 });
 
 fn count_nodes(scene: &FbxScene) -> usize {
