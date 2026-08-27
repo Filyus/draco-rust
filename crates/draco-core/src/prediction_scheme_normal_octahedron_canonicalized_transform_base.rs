@@ -66,18 +66,6 @@ impl PredictionSchemeNormalOctahedronCanonicalizedTransformBase {
         }
     }
 
-    pub fn rotate_point_reverse(&self, p: &[i32; 2], rotation_count: i32) -> [i32; 2] {
-        // The inverse of `rotate_point`: rotating by `4 - count` quarters.
-        // Upstream has no counterpart and spells it at the call site, passing
-        // the complement to `RotatePoint`.
-        match rotation_count {
-            1 => [-p[1], p[0]],  // Rotate by 3 (270 deg)
-            2 => [-p[0], -p[1]], // Rotate by 2 (180 deg)
-            3 => [p[1], -p[0]],  // Rotate by 1 (90 deg)
-            _ => *p,
-        }
-    }
-
     pub fn is_in_bottom_left(&self, p: &[i32; 2]) -> bool {
         if p[0] == 0 && p[1] == 0 {
             return true;

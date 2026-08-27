@@ -18,6 +18,19 @@ that, the bitstream versions an encode accepts are now an enumeration of
 combinations that have a round-trip test, the header count guard is replaced by one whose
 premise holds, and the encoder reports the choices it makes for itself.
 
+### Removed
+
+- `GeometryDecoder`, the trait a decoder was to present to attribute decoders,
+  and its one implementation. Nothing in the workspace ever called it through
+  the trait, and it could not usefully answer: a decoder never owns the
+  geometry, so `point_cloud`, `mesh` and `corner_table` all returned `None`
+  while attribute decoders took the geometry as an argument. `PointCloudDecoder`
+  keeps its inherent `get_geometry_type`, which is the one method that had an
+  answer.
+- `PredictionSchemeNormalOctahedronCanonicalizedTransformBase::rotate_point_reverse`,
+  which nothing called. Upstream has no counterpart: it rotates by the
+  complement at the call site, and `rotate_point` does that here too.
+
 ### Added
 
 - `Mesh::faces` hands back every face at once, where `Mesh::face` answers for

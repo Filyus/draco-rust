@@ -1,5 +1,4 @@
 use crate::compression_config::EncodedGeometryType;
-use crate::corner_table::CornerTable;
 #[cfg(feature = "point_cloud_decode")]
 use crate::decoder_buffer::DecoderBuffer;
 #[cfg(feature = "point_cloud_decode")]
@@ -8,7 +7,7 @@ use crate::draco_types::DataType;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 #[cfg(feature = "point_cloud_decode")]
 use crate::kd_tree_attributes_decoder::KdTreeAttributesDecoder;
-use crate::mesh::Mesh;
+#[cfg(feature = "point_cloud_decode")]
 use crate::point_cloud::PointCloud;
 #[cfg(feature = "point_cloud_decode")]
 use crate::prediction_scheme::EntryToPointIdMap;
@@ -33,22 +32,6 @@ use crate::sequential_normal_attribute_decoder::SequentialNormalAttributeDecoder
 use crate::sequential_quantization_attribute_decoder::SequentialQuantizationAttributeDecoder;
 #[cfg(feature = "point_cloud_decode")]
 use crate::version::{version_at_least, VERSION_FLAGS_INTRODUCED};
-
-/// Internal geometry context used by attribute decoders.
-pub trait GeometryDecoder {
-    /// Returns point-cloud geometry when available.
-    fn point_cloud(&self) -> Option<&PointCloud>;
-    /// Returns mesh geometry when available.
-    fn mesh(&self) -> Option<&Mesh>;
-    /// Returns mesh corner-table topology when available.
-    fn corner_table(&self) -> Option<&CornerTable>;
-    /// Returns the encoded geometry type.
-    fn get_geometry_type(&self) -> EncodedGeometryType;
-    /// Returns the attribute encoding method for an attribute id, if known.
-    fn get_attribute_encoding_method(&self, _att_id: i32) -> Option<i32> {
-        None
-    }
-}
 
 /// Whether a prediction transform byte follows this prediction method byte.
 ///
@@ -90,28 +73,6 @@ pub struct PointCloudDecoder {
     version_major: u8,
     #[cfg(feature = "point_cloud_decode")]
     version_minor: u8,
-}
-
-impl GeometryDecoder for PointCloudDecoder {
-    // Nothing to hand back: the decoder never owns the geometry. `decode`
-    // borrows the caller's `PointCloud` for the length of one call and the
-    // attribute decoders are handed it directly, so there is nothing for this
-    // to return between calls.
-    fn point_cloud(&self) -> Option<&PointCloud> {
-        None
-    }
-
-    fn mesh(&self) -> Option<&Mesh> {
-        None
-    }
-
-    fn corner_table(&self) -> Option<&CornerTable> {
-        None
-    }
-
-    fn get_geometry_type(&self) -> EncodedGeometryType {
-        self.geometry_type
-    }
 }
 
 impl Default for PointCloudDecoder {
