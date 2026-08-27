@@ -1,7 +1,7 @@
 # draco-rust
 
 [![Rust CI](https://github.com/Filyus/draco-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/Filyus/draco-rust/actions/workflows/ci.yml)
-[![Fuzz](https://github.com/Filyus/draco-rust/actions/workflows/fuzz.yml/badge.svg)](https://github.com/Filyus/draco-rust/actions/workflows/fuzz.yml)
+[![Fuzz](https://github.com/Filyus/draco-rust/actions/workflows/fuzz.yml/badge.svg?event=push)](https://github.com/Filyus/draco-rust/actions/workflows/fuzz.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Draco geometry compression in pure Rust, with the file formats and glTF scene

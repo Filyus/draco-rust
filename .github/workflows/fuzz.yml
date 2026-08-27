@@ -31,6 +31,11 @@ on:
       - "testdata/**"
   # No scheduled (nightly) run: the smoke gate fires only when code changes.
   # Trigger a longer soak manually with `gh workflow run fuzz.yml`.
+  #
+  # The README badge is pinned to `?event=push` so it reports this gate rather
+  # than the soaks: a campaign that runs for an hour per target is expected to
+  # find things, and a finding is not a broken build. Read the soak's own
+  # conclusion from the run list, not from the badge.
   workflow_dispatch:
 
 # A change-triggered smoke run supersedes the one before it: they test the same
