@@ -487,6 +487,29 @@ fn sorted_mesh_positions(mesh: &Mesh) -> Vec<[u32; 3]> {
     out
 }
 
+/// The decoded texture coordinates, sorted, as raw bit patterns.
+///
+/// Sorted because the traversal is free to number entries its own way; raw
+/// because these are compared against another round trip's output rather than
+/// against a value anyone computed, so a bit-for-bit match is the claim.
+#[cfg(feature = "legacy_bitstream_encode")]
+fn sorted_mesh_texcoords(mesh: &Mesh) -> Vec<[u32; 2]> {
+    let attribute = mesh.attribute(mesh.named_attribute_id(GeometryAttributeType::TexCoord));
+    let stride = attribute.byte_stride() as usize;
+    let mut out = Vec::with_capacity(attribute.size());
+    for i in 0..attribute.size() {
+        let mut uv = [0u32; 2];
+        for (k, component) in uv.iter_mut().enumerate() {
+            let mut bytes = [0u8; 4];
+            attribute.buffer().read(i * stride + k * 4, &mut bytes);
+            *component = u32::from_le_bytes(bytes);
+        }
+        out.push(uv);
+    }
+    out.sort_unstable();
+    out
+}
+
 /// Which half of a round trip failed. Both payloads exist for the panic
 /// message; nothing matches on them, now that every claimed combination is
 /// expected to succeed.
@@ -511,6 +534,114 @@ fn round_trip(mesh: &Mesh, options: &EncoderOptions) -> Result<Mesh, RoundTripEr
         .decode(&mut DecoderBuffer::new(buffer.data()), &mut decoded)
         .map_err(RoundTripError::Decode)?;
     Ok(decoded)
+}
+
+/// A grid whose texture coordinates part along the middle column.
+///
+/// The seam is what makes an attribute's connectivity differ from the mesh's:
+/// two points share one position value and carry different UVs, so the corners
+/// on either side of that column belong to one position vertex and two
+/// attribute vertices. [`grid_mesh_with_texcoords`] cannot produce that -- one
+/// UV per point leaves nothing to split -- and the encoder writes a seam bit
+/// per edge only when there is a split to describe.
+#[cfg(feature = "legacy_bitstream_encode")]
+fn grid_mesh_with_uv_seam(n: usize) -> Mesh {
+    use draco_core::geometry_indices::{AttributeValueIndex, PointIndex};
+
+    let seam_column = n / 2;
+    // One point per grid vertex, plus a second for every vertex on the seam
+    // column: same position value, its own texture coordinate.
+    let num_points = n * n + n;
+    let point_of = |x: usize, y: usize, right_side: bool| -> u32 {
+        if right_side && x == seam_column {
+            (n * n + y) as u32
+        } else {
+            (y * n + x) as u32
+        }
+    };
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(num_points);
+
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        n * n,
+    );
+    for y in 0..n {
+        for x in 0..n {
+            let offset = (y * n + x) * 12;
+            position
+                .buffer_mut()
+                .write(offset, &(x as f32).to_le_bytes());
+            position
+                .buffer_mut()
+                .write(offset + 4, &(y as f32).to_le_bytes());
+            position
+                .buffer_mut()
+                .write(offset + 8, &(((x + y) % 5) as f32).to_le_bytes());
+        }
+    }
+    position.set_explicit_mapping(num_points);
+    for y in 0..n {
+        for x in 0..n {
+            position.set_point_map_entry(
+                PointIndex((y * n + x) as u32),
+                AttributeValueIndex((y * n + x) as u32),
+            );
+        }
+        // The duplicate resolves to the same position value as the original.
+        position.set_point_map_entry(
+            PointIndex((n * n + y) as u32),
+            AttributeValueIndex((y * n + seam_column) as u32),
+        );
+    }
+    mesh.add_attribute(position);
+
+    let mut uv = PointAttribute::new();
+    uv.init(
+        GeometryAttributeType::TexCoord,
+        2,
+        DataType::Float32,
+        false,
+        num_points,
+    );
+    for y in 0..n {
+        for x in 0..n {
+            let offset = (y * n + x) * 8;
+            uv.buffer_mut()
+                .write(offset, &(x as f32 / n as f32).to_le_bytes());
+            uv.buffer_mut()
+                .write(offset + 4, &(y as f32 / n as f32).to_le_bytes());
+        }
+        // The far side of the seam restarts the u axis, which is what a real
+        // unwrap does and what makes the edge a seam rather than a duplicate.
+        let offset = (n * n + y) * 8;
+        uv.buffer_mut().write(offset, &0.0f32.to_le_bytes());
+        uv.buffer_mut()
+            .write(offset + 4, &(y as f32 / n as f32).to_le_bytes());
+    }
+    mesh.add_attribute(uv);
+
+    mesh.set_num_faces((n - 1) * (n - 1) * 2);
+    let mut face_id = 0;
+    for y in 0..n - 1 {
+        for x in 0..n - 1 {
+            let right_side = x >= seam_column;
+            let p0 = point_of(x, y, right_side);
+            let p1 = point_of(x + 1, y, right_side);
+            let p2 = point_of(x, y + 1, right_side);
+            let p3 = point_of(x + 1, y + 1, right_side);
+            mesh.set_face_from_indices(face_id, [p0, p1, p2]);
+            face_id += 1;
+            mesh.set_face_from_indices(face_id, [p1, p3, p2]);
+            face_id += 1;
+        }
+    }
+    mesh
 }
 
 /// [`grid_mesh`] plus a tex coordinate per point.
@@ -651,4 +782,82 @@ fn grid_mesh(n: usize) -> Mesh {
         }
     }
     mesh
+}
+
+/// A second attribute, with its own seams and its own prediction, round-trips
+/// at every claimed version.
+///
+/// The matrices above vary version against traversal, size and topology, and
+/// leave the attribute layout trivial: one position, one value per point, no
+/// seams. Every rule that changes shape between versions on the *attribute*
+/// side is therefore reached at one version only, and two of them were wrong
+/// for years below 2.1 without a test noticing:
+///
+/// - the seam bits, which carry both sides of an interior edge below 2.1 and
+///   one side from 2.1;
+/// - the prediction parent, which is the portable integer position from 2.0
+///   and was the dequantized one below it, so the two halves predicted from
+///   different numbers.
+///
+/// Both were found by the `encode_drc` campaign rather than here. This is the
+/// row that would have found them: a texture coordinate with an interior seam,
+/// quantized, predicted, over the same version list.
+#[test]
+#[cfg(feature = "legacy_bitstream_encode")]
+fn a_seamed_predicted_texcoord_round_trips_at_every_claimed_version() {
+    let mesh = grid_mesh_with_uv_seam(9);
+
+    let options_for = |major: u8, minor: u8, speed: i32, uv_scheme: i32| {
+        let mut options = EncoderOptions::new();
+        options.set_version(major, minor);
+        options.set_encoding_method(1);
+        options.set_global_int("encoding_speed", speed);
+        options.set_global_int("decoding_speed", speed);
+        options.set_attribute_int(0, "quantization_bits", 12);
+        options.set_attribute_int(1, "quantization_bits", 12);
+        if uv_scheme >= 0 {
+            options.set_attribute_int(1, "prediction_scheme", uv_scheme);
+        }
+        options
+    };
+
+    // Quantization is lossy, so the input mesh is not what any version returns;
+    // the newest version's own answer is the reference the older ones have to
+    // reproduce.
+    for (speed, uv_scheme) in [(5i32, -1i32), (0, -1), (5, 5), (0, 5)] {
+        let reference = round_trip(&mesh, &options_for(2, 2, speed, uv_scheme))
+            .unwrap_or_else(|e| panic!("v2.2 speed {speed} scheme {uv_scheme}: {e:?}"));
+        let reference_positions = sorted_mesh_positions(&reference);
+        let reference_texcoords = sorted_mesh_texcoords(&reference);
+
+        for (major, minor) in [(2u8, 1u8), (2, 0), (1, 2), (1, 1)] {
+            let decoded = round_trip(&mesh, &options_for(major, minor, speed, uv_scheme))
+                .unwrap_or_else(|e| {
+                    panic!("v{major}.{minor} speed {speed} scheme {uv_scheme}: {e:?}")
+                });
+            assert_eq!(
+                decoded.num_faces(),
+                reference.num_faces(),
+                "v{major}.{minor} speed {speed} scheme {uv_scheme}: face count"
+            );
+            assert_eq!(
+                sorted_mesh_positions(&decoded),
+                reference_positions,
+                "v{major}.{minor} speed {speed} scheme {uv_scheme}: positions"
+            );
+            assert_eq!(
+                decoded.num_attributes(),
+                2,
+                "v{major}.{minor}: the texture coordinate survives"
+            );
+            // The values, not just their presence: a prediction that reads the
+            // wrong parent still produces a coordinate for every entry, and
+            // only their numbers say it read the wrong one.
+            assert_eq!(
+                sorted_mesh_texcoords(&decoded),
+                reference_texcoords,
+                "v{major}.{minor} speed {speed} scheme {uv_scheme}: texture coordinates"
+            );
+        }
+    }
 }
