@@ -9,7 +9,7 @@
 #   behavior still belongs in implementation_state.yaml.
 
 version: 1
-last_reviewed: "2026-08-16"
+last_reviewed: "2026-08-27"
 
 scope:
   crate: "draco-core"
@@ -30,7 +30,7 @@ readiness:
   controlled_assets: "good"
   opportunistic_untrusted_decode: "good"
   arbitrary_hostile_input: "not_claimed"
-  summary: "Positive-path decode coverage is strong for the supported fixture set. Malformed-input behavior has deterministic regression coverage and several panic/resource hazards have been converted into controlled failures. Coverage-guided fuzzing is now operationalized (seed corpus + documented routine in FUZZING.md) and has already found and fixed multiple malformed-input hazards: count-driven memory-amplification OOMs (EdgeBreaker geometry counts, point-cloud point count, rANS probability table), an integer-overflow panic in portable-texcoord prediction (now wrapping like C++), and a multi-second CPU/memory DoS from an unbounded texcoord orientation count. All are pinned as deterministic regression tests. Caller resource policy is now documented in SECURITY.md. After these fixes a 300-second local campaign (24,715 executions, peak RSS under 1 GB) over the seeded corpus completed with no panic, OOM, or timeout. Fuzzing now runs in CI on Linux/ASan with release semantics (cargo-fuzz -O): a bounded smoke gate on every PR/push (no scheduled runs) with a cache-persisted corpus, a longer soak and ClusterFuzzLite PR/batch/prune available on manual dispatch. Remaining confidence is a function of accumulated soak time before arbitrary-hostile-input claims; Encoding is now fuzzed as well: encode_drc builds geometry from the fuzz input and requires that the encoder never panics and that anything it accepts decodes, which found six encoder hazards - a zero-component attribute indexing an empty axis array, an attribute mapping reading past its own buffer, a face index past the point count, an unsupported target bitstream version, a point-cloud header missing its flags field below 1.3, and the legacy predictive traversal written into a 2.x stream - all fixed and pinned in encoder_hardening_test.rs. Note that development (non -O) fuzzing additionally surfaces DRACO_DCHECK-equivalent debug_assert! invariant violations, which are debug-only and do not reproduce in the shipped release build. The rANS bit-read call-site audit is complete (see rans-over-read-call-site-bounds under completed): every read loop is bounded by a count the decode itself produced or validated, and the two declared-count bounds that had no regression of their own are pinned."
+  summary: "Positive-path decode coverage is strong for the supported fixture set. Malformed-input behavior has deterministic regression coverage and several panic/resource hazards have been converted into controlled failures. Coverage-guided fuzzing is now operationalized (seed corpus + documented routine in FUZZING.md) and has already found and fixed multiple malformed-input hazards: count-driven memory-amplification OOMs (EdgeBreaker geometry counts, point-cloud point count, rANS probability table), an integer-overflow panic in portable-texcoord prediction (now wrapping like C++), and a multi-second CPU/memory DoS from an unbounded texcoord orientation count. All are pinned as deterministic regression tests. Caller resource policy is now documented in SECURITY.md. After these fixes a 300-second local campaign (24,715 executions, peak RSS under 1 GB) over the seeded corpus completed with no panic, OOM, or timeout. Fuzzing now runs in CI on Linux/ASan with release semantics (cargo-fuzz -O): a bounded smoke gate on every PR/push (no scheduled runs) with a cache-persisted corpus, a longer soak and ClusterFuzzLite PR/batch/prune available on manual dispatch. Remaining confidence is a function of accumulated soak time before arbitrary-hostile-input claims -- four soaks on 2026-08-26 produced seven findings at 3, 28, 43 and 50 minutes in, and the fifth was the first to run an hour per target without one, so the count of consecutive clean soaks is the honest measure of that time, not the number of hours spent; Encoding is now fuzzed as well: encode_drc builds geometry from the fuzz input and requires that the encoder never panics and that anything it accepts decodes, which found six encoder hazards - a zero-component attribute indexing an empty axis array, an attribute mapping reading past its own buffer, a face index past the point count, an unsupported target bitstream version, a point-cloud header missing its flags field below 1.3, and the legacy predictive traversal written into a 2.x stream - all fixed and pinned in encoder_hardening_test.rs. Note that development (non -O) fuzzing additionally surfaces DRACO_DCHECK-equivalent debug_assert! invariant violations, which are debug-only and do not reproduce in the shipped release build. The rANS bit-read call-site audit is complete (see rans-over-read-call-site-bounds under completed): every read loop is bounded by a count the decode itself produced or validated, and the two declared-count bounds that had no regression of their own are pinned."
 
 completed:
   - id: gltf-compress-untrusted-input
@@ -628,6 +628,61 @@ completed:
       - path: "crates/draco-core/src/dynamic_integer_points_kd_tree.rs"
       - path: "crates/draco-core/src/folded_bit32_coder.rs"
     note: "Every RAnsBitDecoder bit-read call site is enumerated and each read count is bounded by a quantity the decode itself produced or validated; the audit found no site missing a bound, so nothing new had to be refused. Per site: the constrained multi-parallelogram crease flags read one bit per flag with the declared count refused above the corner count before the stream starts (now pinned by a unit test, as the portable orientation count already was by a drc_edge_cases regression and the deprecated orientation count is pinned beside it); the geometric-normal flip bits read one bit per data-to-corner-map entry, a length the decoded mesh produced rather than a header claim; the EdgeBreaker attribute-seam readers - both the valence-mode decoders started before connectivity and the standard-mode decoders started after - read at most one bit per interior edge inside the loop over decoded faces, and that face count is the corner table's own, which the connectivity decode already required to equal the declared count that passed the geometric invariants; the three start-face readers read one bit per active-corner-stack pop, the stack gains at most one entry per decoded symbol (E pushes, S consumes a split-event entry, and events are bounded by num_symbols), and the interior-face branch refuses once the face count reaches the declared count; the predictive traversal's prediction stream reads at most one bit per decode_symbol call, and decode_connectivity calls decode_symbol exactly num_symbols times; the KD-tree reads rANS bits only through decode_least_significant_bits32 with the width validated 1..=32 and the read loops driven by decoded counts, its half and axis readers being DirectBitDecoder, which refuses a past-the-end read outright. FoldedBit32Decoder::decode_next_bit has no callers; its folded per-position reads are bounded by the validated width. What remains is inherent to binary rANS and shared with C++ Draco: a stream that ends early yields deterministic bits - wrong geometry, not an error - which is why the counts are bounded structurally instead of by the stream's own size."
+
+  - id: campaign-findings-2026-08-26
+    status: covered
+    evidence:
+      - path: "crates/draco-core/src/prediction_scheme_tex_coords_portable.rs"
+        tests:
+          - a_position_outside_the_integer_range_is_not_predicted_from
+      - path: "crates/draco-core/src/prediction_scheme_geometric_normal.rs"
+        tests:
+          - a_one_component_geometric_normal_fails_without_indexing_past_its_pair
+      - path: "crates/draco-core/src/sequential_integer_attribute_decoder.rs"
+        tests:
+          - an_attribute_with_no_values_round_trips_through_its_headers
+          - a_sequential_mesh_does_not_reserve_one_portable_value_per_claimed_point
+      - path: "crates/draco-core/src/decoder_buffer.rs"
+        tests:
+          - a_bit_stream_longer_than_the_buffer_does_not_move_the_position_past_it
+      - path: "crates/draco-core/src/mesh_encoder.rs"
+        tests:
+          - a_color_attribute_without_a_position_attribute_round_trips_at_speed_zero
+      - path: "crates/draco-io/src/ply_reader.rs"
+        tests:
+          - a_face_list_size_that_overflows_the_cursor_is_refused
+    note: >-
+      Seven findings from four soaks in one day, each pinned by a deterministic
+      regression and a committed seed. Three are decoder-side: an octahedral
+      transform indexing the second component of an attribute that declared one,
+      a portable attribute sized from a point count the identity map only
+      claimed (a 62-byte stream requested 558 PB), and a bit-sequence size that
+      moved the cursor past the buffer while the length guard it then met was a
+      sum that wrapped. Three are encoder-side, all reported by the round-trip
+      oracle rather than by a crash: predicting from a position no i64 can hold,
+      an early return that skipped headers an empty attribute still carries, and
+      a speed-0 traversal gate that counted attributes where it had to count
+      non-position ones. One is in the PLY reader, where a face-list size was
+      added to the cursor before being checked against it. Four of the seven are
+      arithmetic or bounds on a number the input declares; three are encoder and
+      decoder disagreeing about what they each compute, which is the class a
+      port has and upstream does not, since C++ shares one predictor between the
+      two halves.
+  - id: panic-swallowing-test-helper
+    status: covered
+    evidence:
+      - path: "crates/draco-core/tests/drc_edge_cases_test.rs"
+        tests:
+          - a_one_component_geometric_normal_fails_without_indexing_past_its_pair
+    note: >-
+      The helper every malformed-input reproducer in the file calls caught the
+      decoder's panic and returned it as an ordinary Err, which the call sites
+      then discarded with `let _`. So the file's own subject -- a decoder that
+      panics on a malformed stream -- passed silently, and a regression added
+      during this campaign passed against the unfixed decoder until its
+      assertion was spelled out by hand. The panic now fails the calling test
+      where it is caught, naming the decoder and the input size; all 31 tests in
+      the file still pass, so none of them was leaning on the swallow.
 
 open_risks:
   - id: fuzzing-ci-soak-time
