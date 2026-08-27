@@ -339,3 +339,35 @@ fn a_sequential_mesh_does_not_reserve_one_portable_value_per_claimed_point() {
         claimed_points.len()
     );
 }
+
+/// A varint face count in a sequential mesh, sized before a byte was read.
+///
+/// Three of the four raw-connectivity branches read the exact number of index
+/// bytes first, so a count the stream cannot back fails there rather than in
+/// the allocator. The varint branch reads variable-length indices and had
+/// nothing to check the count against, so it went straight into the face
+/// array: this 22-byte artifact declared twenty trillion faces and asked for
+/// 240,195,674,023,752 bytes, which the campaign's AddressSanitizer refused
+/// outright. Three varints a face, one byte each at least, is the floor that
+/// bounds it now.
+#[test]
+fn a_sequential_mesh_does_not_size_its_faces_before_reading_a_varint() {
+    let claimed_faces: [u8; 22] = [
+        68, 82, 65, 67, 79, 2, 199, 1, 7, 4, 59, 198, 198, 198, 198, 198, 198, 4, 206, 158, 82, 1,
+    ];
+
+    let mut decoded = Mesh::new();
+    let (result, requested) = reserved_by(|| {
+        MeshDecoder::new().decode(&mut DecoderBuffer::new(&claimed_faces), &mut decoded)
+    });
+
+    assert!(
+        result.is_err(),
+        "a stream with no connectivity in it must not decode"
+    );
+    assert!(
+        requested < 64 * 1024 * 1024,
+        "decode reserved {requested} bytes for a {} byte stream",
+        claimed_faces.len()
+    );
+}

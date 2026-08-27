@@ -445,6 +445,23 @@ impl MeshDecoder {
                         mesh.try_set_num_faces(num_faces)?;
                         mesh.set_faces_from_le_u16_indices(bytes);
                     } else if num_points < (1 << 21) && seq_uses_varint {
+                        // Three varints a face, and a varint is at least one
+                        // byte, so a face count past the bytes that remain is
+                        // one this stream cannot deliver. The three branches
+                        // around this one are bounded by the exact byte count
+                        // they read before sizing anything; this one reads
+                        // variable-length indices, so the per-face floor is
+                        // what it can check instead. Without it the count went
+                        // straight into the face array: a 22-byte stream sized
+                        // it for twenty trillion faces and asked for 240 TB,
+                        // which the campaign's AddressSanitizer refused before
+                        // the fallible reservation could report anything.
+                        if num_indices > buffer.remaining_size() {
+                            return Err(DracoError::general(format!(
+                                "Sequential connectivity declares {num_faces} faces, more than the {} bytes left can encode",
+                                buffer.remaining_size()
+                            )));
+                        }
                         mesh.try_set_num_faces(num_faces)?;
                         for face_id in 0..num_faces {
                             mesh.set_face_from_indices(
