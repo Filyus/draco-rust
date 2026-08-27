@@ -151,7 +151,9 @@ impl MeshEdgebreakerTraversalValenceEncoder {
                 self.vertex_valences[self.corner_to_vertex_map[next.0 as usize].0 as usize] -= 2;
                 self.vertex_valences[self.corner_to_vertex_map[prev.0 as usize].0 as usize] -= 2;
             }
-            _ => {} // Hole?
+            // C, S, L, R and E are the whole traversal; the arm is here for
+            // exhaustiveness over the symbol type, not for a case that occurs.
+            _ => {}
         }
 
         if self.prev_symbol != -1 {
@@ -180,14 +182,11 @@ impl MeshEdgebreakerTraversalValenceEncoder {
         for symbols in &self.context_symbols {
             out_buffer.encode_varint(symbols.len() as u64);
             if !symbols.is_empty() {
-                // Use standard raw symbol encoding.
-                // Ideally we should use the compression level from options,
-                // but for now we default to some reasonable value or pass it in.
-                // C++ uses default options for this specific call usually.
-                // Actually, C++ `EncodeSymbols` uses `options` if passed, or default.
-                // `MeshEdgebreakerTraversalValenceEncoder` doesn't seem to set distinct options.
-                // We'll use a default compression level (e.g. 7) or pass it in.
-                // Let's assume we can change signature of done later if needed.
+                // Upstream calls `EncodeSymbols` with no options here, which
+                // leaves it at `kDefaultSymbolCodingCompressionLevel` -- seven.
+                // Both callers pass that same seven rather than the level the
+                // encoder was configured with, because this block has to match
+                // C++ byte for byte and C++ never varies it.
                 let options = crate::symbol_encoding::SymbolEncodingOptions { compression_level };
                 crate::symbol_encoding::encode_symbols(symbols, 1, &options, out_buffer).map_err(
                     |err| DracoError::general(format!("Failed to encode valence symbols: {err}")),

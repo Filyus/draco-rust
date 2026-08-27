@@ -186,8 +186,7 @@ impl EncoderOptions {
                 return *val;
             }
         }
-        // Fallback to global options if not found for attribute?
-        // Draco C++ implementation does fallback to global options.
+        // Falls back to the global value, as upstream does.
         self.get_global_int(key, default_val)
     }
 }

@@ -93,12 +93,12 @@ pub struct PointCloudDecoder {
 }
 
 impl GeometryDecoder for PointCloudDecoder {
+    // Nothing to hand back: the decoder never owns the geometry. `decode`
+    // borrows the caller's `PointCloud` for the length of one call and the
+    // attribute decoders are handed it directly, so there is nothing for this
+    // to return between calls.
     fn point_cloud(&self) -> Option<&PointCloud> {
-        None // PointCloudDecoder constructs PointCloud, doesn't hold it?
-             // Actually decode takes &mut PointCloud.
-             // So we can't return it here easily unless we store it.
-             // But GeometryDecoder is usually passed to attribute decoders.
-             // Attribute decoders take PointCloud as argument.
+        None
     }
 
     fn mesh(&self) -> Option<&Mesh> {

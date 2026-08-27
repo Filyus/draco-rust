@@ -155,22 +155,9 @@ fn test_rust_encode_cpp_decode() {
 
     assert!(output.status.success(), "C++ decoder failed");
 
-    // Verify decoded geometry by reading the generated PLY file
-    // Note: draco_decoder saves decoded mesh to .ply file with the same name as input + .ply
-    // when no output file is specified? Or we need to check stdout.
-    // draco_decoder behavior: "Decoded mesh saved to ..."
-    // By default it might save to current dir if we don't specify output?
-    // Actually, looking at original test: it checked `rust_encoded.drc.ply`.
-    // We should check file existence in current dir?
-    // Wait, if I run draco_decoder on a file in temp dir, where does it save the output?
-    // It usually saves to the same directory as input or current directory.
-    // Let's check `ply_path`.
-
-    // To be safe, we should specify output path for decoder if possible, but draco_decoder
-    // might not expose it easily via CLI args we used (it usually auto-names).
-    // If it saves to CWD, we are still polluting.
-    // Let's specify output file if possible. `draco_decoder -i <input> -o <output>`
-
+    // The output path is given rather than left to the decoder: without `-o`
+    // it names the file after the input, and the run would leave it wherever
+    // the process happened to start.
     let decoded_ply_path = temp_path.join("rust_encoded.decoded.ply");
     let output = Command::new(&decoder_path)
         .arg("-i")

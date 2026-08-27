@@ -33,9 +33,8 @@ fn test_edgebreaker_single_triangle_roundtrip() {
     assert_eq!(decoded_mesh.num_faces(), 1);
     assert_eq!(decoded_mesh.num_points(), 3);
     let face = decoded_mesh.face(FaceIndex(0));
-    // Note: Edgebreaker might permute vertices, but for a single triangle
-    // it should be consistent if we handle it right.
-    // Actually, the order might be different.
+    // Compared as a set: the traversal assigns its own vertex order, so which
+    // rotation of the triangle comes back is not part of the contract.
     let mut face_vec = vec![face[0].0, face[1].0, face[2].0];
     face_vec.sort();
     assert_eq!(face_vec, vec![0, 1, 2]);

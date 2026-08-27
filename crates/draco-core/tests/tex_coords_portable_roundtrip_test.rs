@@ -76,7 +76,8 @@ fn test_tex_coords_portable_roundtrip() {
     mesh_data.set(&corner_table, &data_to_corner_map, &vertex_to_data_map);
 
     // 4. Prepare Tex Coord Data (to be encoded)
-    // Let's use simple mapping: u = x, v = y
+    // The unit square, with the coordinate taken from the position: u = x,
+    // v = y.
     // 0: (0,0)
     // 1: (10,0)
     // 2: (0,10)

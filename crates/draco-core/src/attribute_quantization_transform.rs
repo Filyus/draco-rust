@@ -228,7 +228,9 @@ impl AttributeQuantizationTransform {
             }
         }
 
-        // Adjust range if it is 0?
+        // Every value the same leaves a zero range, which the quantizer would
+        // divide by. Unit length instead, as upstream does, so they all
+        // quantize to the same bucket.
         if self.range == 0.0 {
             self.range = 1.0;
         }
