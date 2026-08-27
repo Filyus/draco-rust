@@ -1431,13 +1431,14 @@ mod encode_drc_replay {
         pub(super) encoding_speed: i32,
         pub(super) decoding_speed: i32,
         pub(super) split_on_seams: i32,
+        pub(super) force_predictive_traversal: bool,
+        pub(super) version: Option<(u8, u8)>,
     }
 
-    /// Faithful copy of `fuzz/fuzz_targets/encode_drc.rs`'s `read_spec`, trimmed
-    /// to the fields this replay actually consumes -- `deduplicate`,
-    /// `store_number_of_encoded_faces`, `force_predictive_traversal` and
-    /// `version` are still read in the same order so every later field lands at
-    /// the same byte offset, just not kept.
+    /// Faithful copy of `fuzz/fuzz_targets/encode_drc.rs`'s `read_spec`.
+    /// `deduplicate` and `store_number_of_encoded_faces` are read in the same
+    /// order as the target reads them, so every later field lands at the same
+    /// byte offset, and then dropped; the rest is kept.
     pub(super) fn read_spec(reader: &mut Reader) -> GeometrySpec {
         let as_point_cloud = reader.bool();
         let num_points = reader.in_range(0, MAX_POINTS as i32) as usize;
@@ -1479,15 +1480,22 @@ mod encode_drc_replay {
             encoding_speed: reader.in_range(-1, 10),
             decoding_speed: reader.in_range(-1, 10),
             split_on_seams: reader.in_range(-1, 1),
+            // Read after the literal, in the order the target reads them.
+            force_predictive_traversal: false,
+            version: None,
         };
         let _store_number_of_encoded_faces = reader.bool();
-        let _force_predictive_traversal = reader.bool();
-        let _version = if reader.bool() {
+        let force_predictive_traversal = reader.bool();
+        let version = if reader.bool() {
             Some((reader.u8() % 4, reader.u8() % 8))
         } else {
             None
         };
-        spec
+        GeometrySpec {
+            force_predictive_traversal,
+            version,
+            ..spec
+        }
     }
 
     fn read_attribute_spec(reader: &mut Reader, num_points: usize) -> AttributeSpec {
@@ -1625,6 +1633,74 @@ fn a_color_attribute_without_a_position_attribute_round_trips_at_speed_zero() {
     options.set_global_int("decoding_speed", spec.decoding_speed);
     if spec.split_on_seams >= 0 {
         options.set_global_int("split_mesh_on_seams", spec.split_on_seams);
+    }
+    for (id, attribute) in spec.attributes.iter().enumerate() {
+        let id = id as i32;
+        options.set_attribute_int(id, "quantization_bits", attribute.quantization_bits);
+        if attribute.prediction_scheme >= -1 {
+            options.set_attribute_int(id, "prediction_scheme", attribute.prediction_scheme);
+        }
+    }
+
+    let encoded = encode_mesh(mesh, &options).expect("encode");
+    let mut decoded = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
+        .expect("encoder wrote a stream its decoder rejects");
+}
+
+/// A pre-2.1 stream carries a seam bit for both sides of an interior edge.
+///
+/// From 2.1 the decoder skips an edge whose opposite face it has already
+/// processed, so one bit an edge is enough. Below that it reads a bit for every
+/// corner that has an opposite, and the encoder wrote the newer shape at every
+/// version: the bits landed on the wrong edges, the attribute vertex partition
+/// came out two entries short of the decoder's, and the values ran out
+/// mid-stream -- reported, three bytes later, as an unsupported prediction
+/// method.
+///
+/// Upstream has only the decoding half of the older rule. C++ Draco encodes the
+/// current version and nothing else, so there was no encoder to compare against
+/// and the divergence sat in a version this project alone writes.
+#[test]
+fn a_pre_2_1_stream_carries_a_seam_bit_for_both_sides_of_an_edge() {
+    use encode_drc_replay::{build_attribute, read_spec, Reader};
+
+    let data = include_bytes!("../../../fuzz/seeds/encode_drc/legacy_predictive_symbol_count.bin");
+    let mut reader = Reader::new(data);
+    let spec = read_spec(&mut reader);
+    let payload = reader.rest().to_vec();
+
+    assert_eq!(spec.num_points, 301);
+    assert_eq!(spec.faces.len(), 45);
+    assert_eq!(spec.version, Some((1, 1)), "a pre-2.1 target is the point");
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(spec.num_points);
+    mesh.try_set_num_faces(spec.faces.len())
+        .expect("face count within bounds");
+    for (index, face) in spec.faces.iter().enumerate() {
+        mesh.set_face_from_indices(index, *face);
+    }
+    for (index, attribute_spec) in spec.attributes.iter().enumerate() {
+        let attribute = build_attribute(attribute_spec, spec.num_points, &payload, index * 7 + 1)
+            .expect("attribute within bounds");
+        mesh.add_attribute(attribute);
+    }
+
+    let mut options = EncoderOptions::new();
+    options.set_encoding_method(spec.encoding_method);
+    options.set_prediction_scheme(spec.prediction_scheme);
+    options.set_global_int("encoding_speed", spec.encoding_speed);
+    options.set_global_int("decoding_speed", spec.decoding_speed);
+    if spec.split_on_seams >= 0 {
+        options.set_global_int("split_mesh_on_seams", spec.split_on_seams);
+    }
+    if spec.force_predictive_traversal {
+        options.set_global_int("force_predictive_traversal", 1);
+    }
+    if let Some((major, minor)) = spec.version {
+        options.set_version(major, minor);
     }
     for (id, attribute) in spec.attributes.iter().enumerate() {
         let id = id as i32;

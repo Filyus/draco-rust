@@ -29,24 +29,6 @@ version: 1
 last_reviewed: "2026-08-27"
 
 items:
-  - id: encoder-attribute-entries-over-dropped-faces
-    area: draco-core/encoder
-    priority: high
-    status: open
-    summary: "An attribute's entry count is derived from a corner table holding every face the mesh was given, while the stream carries only the faces the traversal emitted, so the two halves disagree about how many values follow."
-    evidence:
-      - path: "fuzz/seeds/encode_drc/legacy_predictive_symbol_count.bin"
-        note: "401-byte reproducer. Round-trip oracle reports `Unsupported feature: Prediction method 41` -- a symptom, not the cause: the decoder is three bytes past where the encoder wrote that byte."
-      - path: "crates/draco-core/src/mesh_encoder.rs"
-        note: "prepare_active_attribute_connectivity clones the base corner table (45 faces on the reproducer, 25 of them degenerate) and breaks seams over all 135 corners, giving 58 attribute vertices. The attribute traversal then visits 20 of 45 faces -- correctly, since only those are encoded -- and emits 58 entries."
-      - path: "crates/draco-core/src/mesh_decoder.rs"
-        note: "rebuild_edgebreaker_attribute_corner_tables builds over the decoded connectivity: 20 faces, 60 corners, and 60 attribute vertices, so it expects 60 entries and reads 480 symbols where the encoder wrote 464."
-    impact: "Fourth finding of the family that began with 6d5600b -- encoder and decoder disagreeing about the order or count of attribute entries. Each has cost about two hours to trace from an artifact, and each narrow fix has left the root in place."
-    next_steps:
-      - "Instrument the seam bit per corner on both halves and diff them: over the same twenty faces the encoder merges exactly two corner pairs (60 corners into 58 vertices) and the decoder merges none. Naming those two edges names the bug."
-      - "Note that the corner index spaces differ -- the encoder numbers over 45 faces, the decoder over 20 -- so the diff needs the emitted-face order to line them up."
-      - "Attempted and reverted: treating an edge whose neighbour is a degenerate face as a seam in EdgebreakerAttributeConnectivity::build. The counts did not move, so the two edges in question are not adjacent to dropped faces."
-
   - id: fbx-pre-7000-object-model
     area: draco-io/fbx
     priority: low

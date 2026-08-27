@@ -1699,12 +1699,27 @@ impl MeshEdgebreakerEncoder {
         corner_order
     }
 
+    /// Writes the attribute seam bits, one context per non-position attribute.
+    ///
+    /// Below 2.1 a bit belongs to every corner that has an opposite -- both
+    /// sides of an interior edge -- because that is what
+    /// `DecodeAttributeConnectivitiesOnFaceLegacy` reads back. From 2.1 the
+    /// second side is dropped, the decoder skipping an edge whose opposite face
+    /// it has already processed. Upstream has only the decoding half of the
+    /// older rule: C++ Draco encodes the current version and nothing else, so
+    /// writing the newer shape into an older stream was a divergence with no
+    /// counterpart to compare against. It cost two attribute entries on a mesh
+    /// whose seam bits then landed on the wrong edges.
     fn encode_attribute_seams(
         &self,
         corner_table: &CornerTable,
         attribute_connectivity: &[EdgebreakerAttributeConnectivity],
         out_buffer: &mut EncoderBuffer,
     ) {
+        let legacy_attribute_connectivity = cfg!(feature = "legacy_bitstream_encode") && {
+            let v = out_buffer.bitstream_version();
+            v != 0 && v < 0x0201
+        };
         for attr_conn in attribute_connectivity {
             let mut seam_encoder = RAnsBitEncoder::new();
             seam_encoder.start_encoding();
@@ -1735,7 +1750,10 @@ impl MeshEdgebreakerEncoder {
                         continue;
                     }
                     let opp_idx = opp_face.0 as usize;
-                    if opp_idx < visited_faces.len() && visited_faces[opp_idx] {
+                    if !legacy_attribute_connectivity
+                        && opp_idx < visited_faces.len()
+                        && visited_faces[opp_idx]
+                    {
                         continue;
                     }
                     seam_encoder.encode_bit(attr_conn.is_corner_opposite_to_seam_edge(c));
