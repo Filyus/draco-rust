@@ -335,7 +335,9 @@ mod tests {
             transform.min_value = min_value;
             transform.max_value = max_value;
             transform.max_dif = max_dif;
-            transform.init(1)?;
+            transform
+                .init(1)
+                .expect("the wrap transform accepts any component count");
 
             for pred in [i32::MIN, -7, -1, 0, 1, 7, i32::MAX] {
                 for corr in [i32::MIN, -8, -1, 0, 1, 8, i32::MAX] {
