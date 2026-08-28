@@ -2471,9 +2471,7 @@ fn mesh_input_from_js(value: &JsValue) -> Result<MeshInput, String> {
 }
 
 #[cfg(feature = "write")]
-fn geometric_transform_input_from_js(
-    value: &JsValue,
-) -> Result<GeometricTransformOutput, String> {
+fn geometric_transform_input_from_js(value: &JsValue) -> Result<GeometricTransformOutput, String> {
     Ok(GeometricTransformOutput {
         translation: optional_vec3(value, "translation")?,
         rotation: optional_vec3(value, "rotation")?,
