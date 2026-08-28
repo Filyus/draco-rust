@@ -372,10 +372,12 @@ changes, plus deeper runs on demand. Trigger a manual run with
 - **One job per target**, running concurrently, so the run costs the
   wall-clock of the longest budget rather than the sum, and no target competes
   with six others for the six-hour job limit. Budgets are set per target from
-  its own coverage curve rather than by symmetry: `encode_drc` gets four hours
+  its own coverage curve rather than by symmetry: `encode_drc` gets two hours
   as the slowest, widest target and the one carrying the round-trip oracle;
   every other target, `decode_drc` included, gets thirty minutes, which is
-  where their coverage stops moving.
+  where their coverage stops moving. A four-hour `encode_drc` run was measured
+  once to price the tail -- its second half bought four edges out of 13,124 --
+  so the extra time buys executions, not reach.
 - Each corpus family caches under its own key. One shared key across
   concurrent jobs would have them overwrite each other's entry.
 - The corpus is persisted across runs via the GitHub Actions cache and

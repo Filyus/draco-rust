@@ -62,21 +62,28 @@ jobs:
   # people's formats.
   #
   # Budgets follow the coverage curve, measured by the edges each target gained
-  # in the last tenth of its own run. On the 2026-08-28 soak: `encode_drc` +7,
-  # `decode_drc` +0, and between 0 and 5 for the other five. Every target now
-  # reaches 99% of its final coverage inside the first minute, so the seconds
-  # are no longer what limits coverage -- the corpus is. `decode_drc` is held
-  # at the parser budget because two hours bought it nothing over thirty
-  # minutes, twice running; `encode_drc` keeps the ceiling because its tail is
-  # the only one still above zero, not because more time is expected to pay.
+  # in the last tenth of its own run. Every target reaches 99% of its final
+  # coverage inside the first minute, so seconds are no longer what limits
+  # coverage -- the corpus is, and past that the budget buys executions rather
+  # than reach.
   #
-  # `encode_drc` earns it three ways: it is the slowest target at 124 exec/s
-  # against 600-4000 for the rest, so equal seconds buy it an order of
-  # magnitude less exploration; it is the widest at 13,115 edges against 2,346
-  # to 7,030; and it is where the round-trip oracle lives, which is the only
-  # oracle here that catches an encoder writing a stream its own decoder
-  # refuses -- three of the seven findings on 2026-08-26. Four hours still
-  # leave it under the executions `decode_drc` reaches in half of one.
+  # `encode_drc` was given four hours on 2026-08-28 to find out what the tail
+  # was worth, and the answer settles it: over 1,736,158 runs it ended at
+  # 13,124 edges, and the second half of that -- two hours of runner -- bought
+  # four of them. The last tenth bought one. Read against the same metric on
+  # the two runs before it (+226, then +7), the tail is gone. Two hours keeps
+  # roughly 900,000 executions, still more than any other target gets, and the
+  # round-trip oracle it carries is the only one here that catches an encoder
+  # writing a stream its own decoder refuses.
+  #
+  # `decode_drc` is at the parser budget for the same reason twice measured:
+  # thirty minutes reached 7,033 edges where two hours had reached 7,030.
+  #
+  # Nothing is given the freed time, because nothing here is short of it. The
+  # same runner-hours buy two soaks from different seeds instead of one twice
+  # as long, and two independent runs explore more of a saturated corpus than
+  # one does. Whether the surface itself grows is a question for the target's
+  # input grammar, not for this file.
   #
   # One target per group, for the same reason: a group runs its targets in
   # sequence, so sharing a job made the soak cost their sum. Three readers in
@@ -101,7 +108,7 @@ jobs:
           - group: encode
             name: draco encode
             targets: encode_drc
-            soak_seconds: 14400
+            soak_seconds: 7200
             inherit_key: fuzz-corpus-v3-draco-
           - group: mesh_text
             name: OBJ/PLY/STL readers
