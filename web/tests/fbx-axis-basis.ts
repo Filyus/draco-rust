@@ -161,3 +161,39 @@ assert.deepEqual(
 assert.deepEqual(scaleCurve(yUp), [2, 3, 4], 'and its scale curve keeps its order');
 
 console.log('FBX axis basis and unit scale passed');
+
+// The preview reads the same declaration. It renders in the file's own units
+// rather than in metres, so only the axes are checked here -- but a Z-up file
+// drawn as Y-up lies on its side, which is what this pins.
+const { buildSceneFromFbx } = await import(
+  pathToFileURL(resolve(here, '..', 'src', 'fbx-import-scene.ts')).href
+) as { buildSceneFromFbx: any };
+
+async function previewWorld(globalSettings: Record<string, number>, translation: number[]) {
+  const parsed = scene(globalSettings, translation);
+  const flat = { meshes: [], materials: [], textures: [] };
+  const preview = await buildSceneFromFbx(
+    parsed,
+    Object.create(null),
+    {},
+    async () => ({ meshes: [{ primitives: [{ attributes: {} }] }], materials: [], textures: [], nodes: [], renderables: [], skins: [], animations: [], rootIndices: [], ...flat }),
+  );
+  const { updateNode } = await import(
+    pathToFileURL(resolve(here, '..', 'src', 'viewer', 'scene-graph.ts')).href
+  ) as { updateNode: any };
+  const host = { scene: preview, _scratch: new Float32Array(16) };
+  for (const index of preview.rootIndices) updateNode(host, preview.nodes[index], null);
+  const object = preview.nodes.find((node: any) => node.name === 'Object');
+  return Array.from(object.world).map((value: any) => Math.round(value * 1e6) / 1e6);
+}
+
+// Up in this system is -Z, so a node 2.818 along it must arrive 2.818 up in +Y.
+const zUpPreview = await previewWorld(Z_UP, [0, 0, -2.818]);
+assert.deepEqual(zUpPreview.slice(12, 15), [0, 2.818, 0], 'preview Z-up node translation');
+
+// A Y-up file is glTF's own space and must come through untouched, without the
+// extra basis node.
+const yUpPreview = await previewWorld(Y_UP, [0, 2.818, 0]);
+assert.deepEqual(yUpPreview.slice(12, 15), [0, 2.818, 0], 'preview Y-up node translation');
+
+console.log('FBX axis basis: preview honours the declared up axis');

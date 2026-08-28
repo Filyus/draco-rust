@@ -7,6 +7,7 @@
 
 import { cloneTrs, decomposeMat4, identityMat4, identityTrs, invertMat4, multiplyMat4 } from './mat4.ts';
 import { adaptFbxAnimation } from './fbx-animation-adapter.ts';
+import { fbxSpace } from './fbx-space.ts';
 import { adaptFbxMaterial, adaptFbxTextures } from './fbx-material-adapter.ts';
 import type { ResourceMap } from './scene-resources.ts';
 import type { Renderable, Trs, ViewerNode, ViewerSkin } from './viewer-scene.ts';
@@ -55,7 +56,7 @@ export async function buildSceneFromFbx(
 
   const { nodes, renderables, nodeById, nodeByName, rootIndices } = buildFbxNodes(roots);
   scene.nodes = nodes;
-  scene.rootIndices = rootIndices;
+  scene.rootIndices = axisBasisRoots(nodes, rootIndices, parsed?.scene?.globalSettings);
   scene.renderables = renderables;
   scene.skins = attachFbxSkins(roots, renderables, nodeById);
 
@@ -66,6 +67,42 @@ export async function buildSceneFromFbx(
       .filter(Boolean);
   }
   return scene;
+}
+
+/**
+ * Roots re-parented under the file's declared axes, when they are not glTF's.
+ *
+ * An FBX states which way is up in `GlobalSettings`, and a Z-up file drawn as
+ * though it were Y-up lies on its side. The whole change is one signed
+ * permutation, so it goes on one node above the roots rather than into every
+ * node's own transform: skinning, animation and the geometric offsets below all
+ * stay in the file's own space, and the basis divides out of the joint palette
+ * exactly as any other shared ancestor does. Unit scale is deliberately left
+ * alone -- this preview works in the file's units.
+ */
+function axisBasisRoots(nodes: ViewerNode[], rootIndices: number[], settings: FbxJson): number[] {
+  const space = fbxSpace(settings);
+  if (space.identity) return rootIndices;
+  const localMatrix = Float32Array.from(space.basis);
+  const trs = decomposeMat4(localMatrix);
+  const index = nodes.length;
+  nodes.push({
+    id: null,
+    name: 'fbx_axis_basis',
+    trs: cloneTrs(trs),
+    restTrs: cloneTrs(trs),
+    bindTrs: cloneTrs(trs),
+    animationTrs: cloneTrs(trs),
+    hasComplexTransformStack: false,
+    usesAuthoredModelTrs: false,
+    localMatrix,
+    children: rootIndices,
+    weights: new Float32Array(0),
+    meshIndex: -1,
+    skinIndex: -1,
+    world: new Float32Array(16),
+  } as ViewerNode);
+  return [index];
 }
 
 /** V runs the other way in FBX, whichever direction it is being carried. */
