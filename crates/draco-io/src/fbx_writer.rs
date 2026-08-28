@@ -173,6 +173,8 @@ struct ModelData {
     parent_id: Option<i64>,
     transform: Option<crate::fbx_scene::FbxTransform>,
     transform_stack: Option<crate::fbx_scene::FbxTransformStack>,
+    /// `Geometric*` offset carried by the meshes attached to this model.
+    geometric_transform: Option<crate::fbx_scene::FbxGeometricTransform>,
     /// Material ids connected to this model via `OO`.
     material_ids: Vec<i64>,
     /// Camera or light this model carries, written as its `NodeAttribute`.
@@ -371,6 +373,16 @@ impl FbxWriter {
     ) -> i64 {
         let scene_node_id = source.map(|node| node.id);
         let attribute = source.and_then(|node| node.attribute.clone());
+        // FBX states `Geometric*` once per Model, so the geometry attached to
+        // one Model shares one offset; the reader assigns it that way. Taking
+        // the first instance that carries one keeps a hand-built scene whose
+        // instances disagree from silently writing an offset chosen by
+        // whichever instance came last.
+        let geometric_transform = source.and_then(|node| {
+            node.mesh_instances
+                .iter()
+                .find_map(|instance| instance.geometric_transform.clone())
+        });
         let model_id = self.allocate_id();
         // Importers key off the Model's own class, not only off the attribute
         // hanging from it: a camera written as Model::Mesh loads as an empty
@@ -402,6 +414,7 @@ impl FbxWriter {
             parent_id,
             transform,
             transform_stack,
+            geometric_transform,
             material_ids,
             attribute,
             class,
@@ -1347,6 +1360,21 @@ fn model_node(model_data: &ModelData) -> io::Result<FbxNode> {
             properties.push(vec3_property_node("Lcl Translation", translation));
             properties.push(vec3_property_node("Lcl Rotation", rotation));
             properties.push(vec3_property_node("Lcl Scaling", scaling));
+        }
+    }
+    // Written whether or not the Model has a transform: the geometric offset
+    // belongs to the attached geometry, and a Model can carry one while
+    // leaving its own transform at the FBX defaults.
+    if let Some(geometric) = model_data.geometric_transform.as_ref() {
+        let as_f64 = |value: [f32; 3]| value.map(f64::from);
+        for (name, value) in [
+            ("GeometricTranslation", geometric.translation),
+            ("GeometricRotation", geometric.rotation),
+            ("GeometricScaling", geometric.scaling),
+        ] {
+            if let Some(value) = value {
+                properties.push(vec3_property_node(name, as_f64(value)));
+            }
         }
     }
 
@@ -3142,6 +3170,7 @@ mod tests {
             material_indices: Vec::new(),
             skin: None,
             morph_targets: Vec::new(),
+            geometric_transform: None,
         });
         scene.root_nodes.push(node);
 
@@ -3463,6 +3492,68 @@ mod tests {
             output.root_nodes[0].transform_stack.as_ref(),
             Some(&transform_stack)
         );
+    }
+
+    #[test]
+    #[cfg(feature = "fbx-reader")]
+    fn scene_roundtrip_preserves_geometric_transform_on_the_mesh_instance() {
+        // `Geometric*` places the geometry relative to its Model and is not
+        // inherited by child nodes, so it travels on the mesh instance. It is
+        // written for every object whose pivot is off its mesh origin; dropping
+        // it moves those meshes by the pivot distance.
+        let geometric = crate::fbx_scene::FbxGeometricTransform {
+            translation: Some([745.9, 86.3, -323.8]),
+            rotation: Some([0.0, 90.0, 0.0]),
+            scaling: Some([1.0, 2.0, 1.0]),
+        };
+        let mut node = FbxSceneNode::new(Some("Offset".to_string()));
+        node.transform = Some(crate::fbx_transform::identity_transform());
+        node.mesh_instances.push(FbxMeshInstance {
+            name: Some("Offset".to_string()),
+            mesh: create_triangle_mesh(),
+            control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            polygon_vertex_indices: vec![0, 1, -3],
+            layers: FbxMeshLayers::default(),
+            edges: Vec::new(),
+            material_indices: Vec::new(),
+            skin: None,
+            morph_targets: Vec::new(),
+            geometric_transform: Some(geometric.clone()),
+        });
+        let scene = FbxScene {
+            root_nodes: vec![node],
+            ..FbxScene::default()
+        };
+
+        let output = FbxScene::from_bytes(&scene.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            output.root_nodes[0].mesh_instances[0]
+                .geometric_transform
+                .as_ref(),
+            Some(&geometric)
+        );
+        // The node itself keeps its own transform: the offset must not be
+        // folded into it, or the node's children would move with the mesh.
+        assert_eq!(
+            output.root_nodes[0].transform.map(|t| t.matrix),
+            Some(crate::fbx_transform::identity_transform().matrix)
+        );
+    }
+
+    #[test]
+    fn a_default_geometric_transform_is_not_carried_as_an_offset() {
+        assert!(crate::fbx_scene::FbxGeometricTransform::default().is_identity());
+        assert!(crate::fbx_scene::FbxGeometricTransform {
+            translation: Some([0.0; 3]),
+            rotation: Some([0.0; 3]),
+            scaling: Some([1.0; 3]),
+        }
+        .is_identity());
+        assert!(!crate::fbx_scene::FbxGeometricTransform {
+            translation: Some([0.0, 1.0, 0.0]),
+            ..Default::default()
+        }
+        .is_identity());
     }
 
     #[test]

@@ -182,6 +182,23 @@ pub struct MeshData {
     pub smoothing_layers: Vec<SmoothingLayerOutput>,
     /// Original edge and vertex crease layers, carried opaquely.
     pub crease_layers: Vec<CreaseLayerOutput>,
+    /// The attaching Model's `Geometric*` offset, when it sets one.
+    pub geometric_transform: Option<GeometricTransformOutput>,
+}
+
+/// A Model's `Geometric*` offset crossing the WASM boundary, in both
+/// directions.
+///
+/// The composed matrix travels with the components because the consumer of the
+/// read side is a renderer -- it needs `node * geometric` per mesh -- while the
+/// write side needs the authored components back verbatim.
+#[derive(Clone, Default)]
+pub struct GeometricTransformOutput {
+    pub translation: Option<[f32; 3]>,
+    pub rotation: Option<[f32; 3]>,
+    pub scaling: Option<[f32; 3]>,
+    /// `Gt * Gr * Gs`, packed column-major like the node matrix.
+    pub matrix: Vec<f32>,
 }
 
 /// A `LayerElementSmoothing` crossing the WASM boundary, in both directions.
@@ -922,6 +939,16 @@ fn set_skipped_opt_f64_nullable(obj: &Object, key: &str, value: &Option<f64>) {
 }
 
 #[cfg(feature = "read")]
+fn geometric_transform_to_js(geometric: &GeometricTransformOutput) -> Object {
+    let obj = Object::new();
+    set_opt_vec3(&obj, "translation", &geometric.translation);
+    set_opt_vec3(&obj, "rotation", &geometric.rotation);
+    set_opt_vec3(&obj, "scaling", &geometric.scaling);
+    set_plain_f32_array(&obj, "matrix", &geometric.matrix);
+    obj
+}
+
+#[cfg(feature = "read")]
 fn transform_stack_to_js(stack: &TransformStackOutput) -> Object {
     let obj = Object::new();
     set_opt_vec3(&obj, "translation", &stack.translation);
@@ -1015,6 +1042,13 @@ fn mesh_data_to_js(mesh: &MeshData) -> Object {
     set_skipped_f32_array(&obj, "weights1", &mesh.weights1);
     set_skipped_f32_array(&obj, "controlPoints", &mesh.control_points);
     set_skipped_i32_array(&obj, "polygonVertexIndices", &mesh.polygon_vertex_indices);
+    if let Some(geometric) = &mesh.geometric_transform {
+        set_js(
+            &obj,
+            "geometricTransform",
+            &geometric_transform_to_js(geometric).into(),
+        );
+    }
     if !mesh.uv_sets.is_empty() {
         let sets = Array::new();
         for set in &mesh.uv_sets {
@@ -1280,6 +1314,21 @@ fn tangent_set_to_output(set: &draco_io::FbxTangentSet) -> TangentSetOutput {
 fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
     let mut mesh = mesh_to_js_data(&instance.mesh);
     mesh.name = instance.name.clone();
+    mesh.geometric_transform =
+        instance
+            .geometric_transform
+            .as_ref()
+            .map(|geometric| GeometricTransformOutput {
+                translation: geometric.translation,
+                rotation: geometric.rotation,
+                scaling: geometric.scaling,
+                matrix: geometric
+                    .matrix()
+                    .matrix
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<f32>>(),
+            });
     mesh.control_points = instance
         .control_points
         .iter()
@@ -1666,6 +1715,7 @@ fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
         normals,
         uvs,
         colors,
+        geometric_transform: None,
         tangents: Vec::new(),
         uv_layers: Vec::new(),
         material_indices: Vec::new(),
@@ -1751,6 +1801,8 @@ pub struct MeshInput {
     pub material_indices: Vec<i32>,
     pub skin: Option<SkinInput>,
     pub morph_targets: Vec<MorphTargetInput>,
+    /// `Geometric*` offset to write on the Model this mesh attaches to.
+    pub geometric_transform: Option<GeometricTransformOutput>,
 }
 
 #[cfg(feature = "write")]
@@ -2411,6 +2463,24 @@ fn mesh_input_from_js(value: &JsValue) -> Result<MeshInput, String> {
             None => None,
         },
         morph_targets: layers_from_js(value, "morphTargets", morph_target_input_from_js)?,
+        geometric_transform: match get_field(value, "geometricTransform") {
+            Some(geometric) => Some(geometric_transform_input_from_js(&geometric)?),
+            None => None,
+        },
+    })
+}
+
+#[cfg(feature = "write")]
+fn geometric_transform_input_from_js(
+    value: &JsValue,
+) -> Result<GeometricTransformOutput, String> {
+    Ok(GeometricTransformOutput {
+        translation: optional_vec3(value, "translation")?,
+        rotation: optional_vec3(value, "rotation")?,
+        scaling: optional_vec3(value, "scaling")?,
+        // Derived on the read side and recomputed by the writer, so a caller
+        // that hands one back is not asked for it.
+        matrix: Vec::new(),
     })
 }
 
@@ -2738,6 +2808,16 @@ fn mesh_input_to_instance(mesh: &MeshInput, index: usize) -> Result<FbxMeshInsta
             .iter()
             .map(morph_target_input_to_fbx)
             .collect::<Result<_, _>>()?,
+        // The matrix that came out on the read side is derived, so only the
+        // authored components are taken back: recomposing them here is what
+        // keeps a rewritten Model's `Geometric*` byte-identical to the source.
+        geometric_transform: mesh.geometric_transform.as_ref().map(|geometric| {
+            draco_io::FbxGeometricTransform {
+                translation: geometric.translation,
+                rotation: geometric.rotation,
+                scaling: geometric.scaling,
+            }
+        }),
     })
 }
 
@@ -3189,6 +3269,7 @@ mod writer_tests {
             material_indices: Vec::new(),
             skin: None,
             morph_targets: Vec::new(),
+            geometric_transform: None,
         };
 
         // No `globalSettings`: the writer's own defaults, which is what a caller
@@ -3236,6 +3317,7 @@ mod writer_tests {
             material_indices: Vec::new(),
             skin: None,
             morph_targets: Vec::new(),
+            geometric_transform: None,
         };
 
         let shallow = create_fbx_internal(std::slice::from_ref(&mesh), None, true, 1);

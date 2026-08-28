@@ -292,18 +292,25 @@ function attachMeshesAndSkins(roots: FbxJson[], state: FbxImportState, materialM
     for (const sourceMesh of source.meshes || []) {
       const meshIndex = appendMesh(sourceMesh, materialMap, document, scale, space);
       const skinIndex = appendSkin(sourceMesh, ownerState, state, document, scale, space);
-      meshBindings.push({ meshIndex, skinIndex });
+      meshBindings.push({ meshIndex, skinIndex, geometric: geometricMatrix(sourceMesh, space, scale) });
     }
-    if (meshBindings.length === 1) {
+    // A geometric offset places the geometry relative to its node and is not
+    // inherited by the node's children, which no glTF-shaped document can say
+    // about a node that also has children. The offset therefore becomes a child
+    // node of its own -- the same shape the multi-mesh case already uses.
+    const needsOwnNode = meshBindings.length > 1 || meshBindings.some((binding) => binding.geometric);
+    if (!needsOwnNode && meshBindings.length === 1) {
       ownerNode.mesh = meshBindings[0].meshIndex;
       if (meshBindings[0].skinIndex >= 0) ownerNode.skin = meshBindings[0].skinIndex;
       ownerNode.weights = morphWeights(source.meshes?.[0]);
-    } else if (meshBindings.length > 1) {
+    } else if (meshBindings.length > 0) {
       for (const binding of meshBindings) {
         const childIndex = document.nodes.length;
         document.nodes.push({
           name: `${ownerNode.name}_mesh_${childIndex}`,
-          translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1],
+          ...(binding.geometric
+            ? { matrix: Array.from(binding.geometric) }
+            : { translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] }),
           mesh: binding.meshIndex,
           ...(binding.skinIndex >= 0 ? { skin: binding.skinIndex } : {}),
         });
@@ -319,6 +326,18 @@ function attachMeshesAndSkins(roots: FbxJson[], state: FbxImportState, materialM
     const rootState = state.stateById.get(root.id);
     if (rootState) append(root, rootState);
   }
+}
+
+/**
+ * The mesh's `Geometric*` offset in document space, or null when it has none.
+ *
+ * Conjugated through the same space and unit scale as a node's own matrix,
+ * because that is what it becomes.
+ */
+function geometricMatrix(source: FbxJson, space: FbxSpace, scale: number): Float32Array | null {
+  const matrix = source?.geometricTransform?.matrix;
+  if (!validMatrix(Array.isArray(matrix) ? matrix : Array.from(matrix || []))) return null;
+  return rebaseMatrix(matrix, space, scale);
 }
 
 function appendMesh(source: FbxJson, materialMap: number[], document: SceneDocument, scale: number, space: FbxSpace) {

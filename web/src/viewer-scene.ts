@@ -254,6 +254,12 @@ export interface Renderable {
   node: ViewerNode;
   meshIndex: number;
   skinIndex: number;
+  /**
+   * FBX `Geometric*`: an offset from the node to this mesh alone, which the
+   * node's children do not inherit. Absent for every other source, and for FBX
+   * meshes whose Model leaves it at the default.
+   */
+  geometricMatrix?: Float32Array;
 }
 
 /**

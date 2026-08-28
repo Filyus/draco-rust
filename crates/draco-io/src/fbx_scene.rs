@@ -200,6 +200,42 @@ pub struct FbxTransformStack {
     pub inherit_type: Option<i32>,
 }
 
+/// A Model's `Geometric*` properties, in authored FBX units and degrees.
+///
+/// FBX applies these to the geometry attached to a node and to nothing else:
+/// unlike the rest of the transform stack they are not inherited by child
+/// nodes, so they belong to the mesh instance rather than to the node.
+/// Exporters write them for every object whose pivot is not at its mesh
+/// origin.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FbxGeometricTransform {
+    /// `GeometricTranslation` in source units.
+    pub translation: Option<[f32; 3]>,
+    /// `GeometricRotation` in degrees.
+    pub rotation: Option<[f32; 3]>,
+    /// `GeometricScaling`.
+    pub scaling: Option<[f32; 3]>,
+}
+
+impl FbxGeometricTransform {
+    /// Whether every authored component is its FBX default.
+    pub fn is_identity(&self) -> bool {
+        let zero = |values: Option<[f32; 3]>| {
+            values.is_none_or(|values| values.iter().all(|value| *value == 0.0))
+        };
+        let one = |values: Option<[f32; 3]>| {
+            values.is_none_or(|values| values.iter().all(|value| *value == 1.0))
+        };
+        zero(self.translation) && zero(self.rotation) && one(self.scaling)
+    }
+
+    /// The composed `Gt * Gr * Gs` matrix, in the same packed column-major
+    /// layout as [`FbxTransform`].
+    pub fn matrix(&self) -> FbxTransform {
+        crate::fbx_transform::geometric_matrix(self)
+    }
+}
+
 /// Source FBX global coordinate, unit, and display-time settings retained for
 /// FBX-to-FBX provenance exports. This is intentionally not part of the
 /// portable SceneDocument contract.
@@ -298,6 +334,13 @@ pub struct FbxMeshInstance {
     pub skin: Option<FbxSkin>,
     /// Blend-shape targets defined for this geometry.
     pub morph_targets: Vec<FbxMorphTarget>,
+    /// The attaching Model's `Geometric*` offset, when it sets one.
+    ///
+    /// It sits here rather than on the node because FBX does not pass it to
+    /// child nodes: a consumer places this geometry with
+    /// `node_transform * geometric_transform` and places the children with the
+    /// node transform alone.
+    pub geometric_transform: Option<FbxGeometricTransform>,
 }
 
 /// A preserved FBX layer element carrying `N` float components per value.

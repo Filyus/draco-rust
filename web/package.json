@@ -22,6 +22,7 @@
     "test:fbx-scene-provenance": "node tests/fbx-scene-provenance.ts",
     "test:fbx-axis-basis": "node tests/fbx-axis-basis.ts",
     "test:fbx-export-space": "node tests/fbx-export-space.ts",
+    "test:fbx-geometric-transform": "node tests/fbx-geometric-transform.ts",
     "test:fbx-blender-axis-spaces": "node tests/fbx-blender-axis-spaces.ts",
     "test:no-absolute-paths": "node tests/no-absolute-paths.ts",
     "test:blender-resolver": "node tests/blender-resolver.ts",

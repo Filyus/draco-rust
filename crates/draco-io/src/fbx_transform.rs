@@ -21,6 +21,108 @@ use crate::fbx_container::{FbxNode, FbxProperty};
 use crate::fbx_scene::{push_warning, FbxTransform, FbxWarning, FbxWarningCode};
 use crate::fbx_templates::{ObjectProperties, PropertyTemplates};
 
+fn property_vec3(property: &FbxNode) -> Option<[f32; 3]> {
+    for value in &property.properties {
+        if let crate::fbx_reader::FbxProperty::F64Array(values) = value {
+            if values.len() >= 3 {
+                return Some([values[0] as f32, values[1] as f32, values[2] as f32]);
+            }
+        }
+    }
+
+    let values: Vec<f32> = property
+        .properties
+        .iter()
+        .filter_map(|value| match value {
+            crate::fbx_reader::FbxProperty::F64(value) => Some(*value as f32),
+            crate::fbx_reader::FbxProperty::F32(value) => Some(*value),
+            _ => None,
+        })
+        .take(3)
+        .collect();
+    (values.len() == 3).then(|| [values[0], values[1], values[2]])
+}
+
+fn property_i32(property: &FbxNode) -> Option<i32> {
+    property.properties.iter().find_map(|value| match value {
+        crate::fbx_reader::FbxProperty::I32(value) => Some(*value),
+        crate::fbx_reader::FbxProperty::I16(value) => Some(*value as i32),
+        crate::fbx_reader::FbxProperty::I64(value) => i32::try_from(*value).ok(),
+        _ => None,
+    })
+}
+
+fn property_bool(property: &FbxNode) -> Option<bool> {
+    property.properties.iter().find_map(|value| match value {
+        crate::fbx_reader::FbxProperty::Bool(value) => Some(*value),
+        // A `C`-typed byte reads as `U8`; some exporters spell a boolean
+        // that way rather than with `B`.
+        crate::fbx_reader::FbxProperty::U8(value) => Some(*value != 0),
+        crate::fbx_reader::FbxProperty::I32(value) => Some(*value != 0),
+        crate::fbx_reader::FbxProperty::I16(value) => Some(*value != 0),
+        crate::fbx_reader::FbxProperty::I64(value) => Some(*value != 0),
+        _ => None,
+    })
+}
+
+fn identity() -> [[f32; 4]; 4] {
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+// FbxTransform is packed column-major: its outer index is the
+// column and its inner index is the row. Evaluate the local stack
+// in that layout so the result can go straight to WebGL.
+fn multiply(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut result = [[0.0; 4]; 4];
+    for column in 0..4 {
+        for row in 0..4 {
+            result[column][row] = (0..4).map(|index| a[index][row] * b[column][index]).sum();
+        }
+    }
+    result
+}
+fn translation_matrix(values: [f32; 3]) -> [[f32; 4]; 4] {
+    let mut matrix = identity();
+    matrix[3][0] = values[0];
+    matrix[3][1] = values[1];
+    matrix[3][2] = values[2];
+    matrix
+}
+fn scale(values: [f32; 3]) -> [[f32; 4]; 4] {
+    [
+        [values[0], 0.0, 0.0, 0.0],
+        [0.0, values[1], 0.0, 0.0],
+        [0.0, 0.0, values[2], 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+fn rotation_matrix(values: [f32; 3]) -> [[f32; 4]; 4] {
+    let (sin_x, cos_x) = values[0].to_radians().sin_cos();
+    let (sin_y, cos_y) = values[1].to_radians().sin_cos();
+    let (sin_z, cos_z) = values[2].to_radians().sin_cos();
+    // Rz * Ry * Rx, packed by column for FBX/WebGL.
+    [
+        [cos_z * cos_y, sin_z * cos_y, -sin_y, 0.0],
+        [
+            cos_z * sin_y * sin_x - sin_z * cos_x,
+            sin_z * sin_y * sin_x + cos_z * cos_x,
+            cos_y * sin_x,
+            0.0,
+        ],
+        [
+            cos_z * sin_y * cos_x + sin_z * sin_x,
+            sin_z * sin_y * cos_x - cos_z * sin_x,
+            cos_y * cos_x,
+            0.0,
+        ],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
 // Helper to parse transform from Model node's Properties70
 pub(crate) fn parse_transform(
     properties: ObjectProperties<'_>,
@@ -37,50 +139,6 @@ pub(crate) fn parse_transform(
     let mut rotation_order = None;
     let mut rotation_active = None;
     let mut inherit_type = None;
-
-    fn property_vec3(property: &FbxNode) -> Option<[f32; 3]> {
-        for value in &property.properties {
-            if let crate::fbx_reader::FbxProperty::F64Array(values) = value {
-                if values.len() >= 3 {
-                    return Some([values[0] as f32, values[1] as f32, values[2] as f32]);
-                }
-            }
-        }
-
-        let values: Vec<f32> = property
-            .properties
-            .iter()
-            .filter_map(|value| match value {
-                crate::fbx_reader::FbxProperty::F64(value) => Some(*value as f32),
-                crate::fbx_reader::FbxProperty::F32(value) => Some(*value),
-                _ => None,
-            })
-            .take(3)
-            .collect();
-        (values.len() == 3).then(|| [values[0], values[1], values[2]])
-    }
-
-    fn property_i32(property: &FbxNode) -> Option<i32> {
-        property.properties.iter().find_map(|value| match value {
-            crate::fbx_reader::FbxProperty::I32(value) => Some(*value),
-            crate::fbx_reader::FbxProperty::I16(value) => Some(*value as i32),
-            crate::fbx_reader::FbxProperty::I64(value) => i32::try_from(*value).ok(),
-            _ => None,
-        })
-    }
-
-    fn property_bool(property: &FbxNode) -> Option<bool> {
-        property.properties.iter().find_map(|value| match value {
-            crate::fbx_reader::FbxProperty::Bool(value) => Some(*value),
-            // A `C`-typed byte reads as `U8`; some exporters spell a boolean
-            // that way rather than with `B`.
-            crate::fbx_reader::FbxProperty::U8(value) => Some(*value != 0),
-            crate::fbx_reader::FbxProperty::I32(value) => Some(*value != 0),
-            crate::fbx_reader::FbxProperty::I16(value) => Some(*value != 0),
-            crate::fbx_reader::FbxProperty::I64(value) => Some(*value != 0),
-            _ => None,
-        })
-    }
 
     // The class defaults first, then the object's own values over the top.
     // Last write wins, so the object wins -- which is the whole point: 928
@@ -128,63 +186,6 @@ pub(crate) fn parse_transform(
     let r_deg = rotation.unwrap_or([0.0, 0.0, 0.0]);
     let s = scaling.unwrap_or([1.0, 1.0, 1.0]);
 
-    fn identity() -> [[f32; 4]; 4] {
-        [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ]
-    }
-    // FbxTransform is packed column-major: its outer index is the
-    // column and its inner index is the row. Evaluate the local stack
-    // in that layout so the result can go straight to WebGL.
-    fn multiply(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
-        let mut result = [[0.0; 4]; 4];
-        for column in 0..4 {
-            for row in 0..4 {
-                result[column][row] = (0..4).map(|index| a[index][row] * b[column][index]).sum();
-            }
-        }
-        result
-    }
-    fn translation_matrix(values: [f32; 3]) -> [[f32; 4]; 4] {
-        let mut matrix = identity();
-        matrix[3][0] = values[0];
-        matrix[3][1] = values[1];
-        matrix[3][2] = values[2];
-        matrix
-    }
-    fn scale(values: [f32; 3]) -> [[f32; 4]; 4] {
-        [
-            [values[0], 0.0, 0.0, 0.0],
-            [0.0, values[1], 0.0, 0.0],
-            [0.0, 0.0, values[2], 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ]
-    }
-    fn rotation_matrix(values: [f32; 3]) -> [[f32; 4]; 4] {
-        let (sin_x, cos_x) = values[0].to_radians().sin_cos();
-        let (sin_y, cos_y) = values[1].to_radians().sin_cos();
-        let (sin_z, cos_z) = values[2].to_radians().sin_cos();
-        // Rz * Ry * Rx, packed by column for FBX/WebGL.
-        [
-            [cos_z * cos_y, sin_z * cos_y, -sin_y, 0.0],
-            [
-                cos_z * sin_y * sin_x - sin_z * cos_x,
-                sin_z * sin_y * sin_x + cos_z * cos_x,
-                cos_y * sin_x,
-                0.0,
-            ],
-            [
-                cos_z * sin_y * cos_x + sin_z * sin_x,
-                sin_z * sin_y * cos_x - cos_z * sin_x,
-                cos_y * cos_x,
-                0.0,
-            ],
-            [0.0, 0.0, 0.0, 1.0],
-        ]
-    }
     let inverse_translation =
         |values: [f32; 3]| translation_matrix([-values[0], -values[1], -values[2]]);
     let inverse_rotation = |values: [f32; 3]| {
@@ -365,4 +366,66 @@ pub(crate) fn collect_transform_warnings<'a>(
             None,
         );
     }
+}
+
+/// Reads a Model's `Geometric*` properties, if it sets any.
+///
+/// These are the one part of the FBX transform stack that belongs to the
+/// geometry rather than to the node: FBX applies them to the attached mesh and
+/// explicitly does not pass them to child nodes, which is why they are read
+/// separately from [`parse_transform`] and land on the mesh instance. They
+/// appear whenever an object's pivot differs from its mesh origin, so a reader
+/// that skips them leaves those meshes offset by the pivot distance.
+pub(crate) fn parse_geometric_transform(
+    properties: ObjectProperties<'_>,
+) -> Option<crate::fbx_scene::FbxGeometricTransform> {
+    let mut translation = None;
+    let mut rotation = None;
+    let mut scaling = None;
+
+    // Same template-then-object order as `parse_transform`: the object's own
+    // value wins over the class default.
+    let blocks = properties.template().into_iter().chain(
+        properties
+            .node()
+            .children
+            .iter()
+            .filter(|child| child.name == "Properties70" || child.name == "Properties60"),
+    );
+    for block in blocks {
+        for prop in &block.children {
+            let Some(crate::fbx_reader::FbxProperty::String(name)) = prop.properties.first() else {
+                continue;
+            };
+            match name.as_str() {
+                "GeometricTranslation" => translation = property_vec3(prop),
+                "GeometricRotation" => rotation = property_vec3(prop),
+                "GeometricScaling" => scaling = property_vec3(prop),
+                _ => {}
+            }
+        }
+    }
+
+    let result = crate::fbx_scene::FbxGeometricTransform {
+        translation,
+        rotation,
+        scaling,
+    };
+    // An authored identity carries no information the consumer can act on, and
+    // keeping it would make every Max export look like it needs the extra
+    // matrix multiply.
+    (!result.is_identity()).then_some(result)
+}
+
+/// Composes `Gt * Gr * Gs` in the packed column-major layout the scene uses.
+pub(crate) fn geometric_matrix(
+    geometric: &crate::fbx_scene::FbxGeometricTransform,
+) -> FbxTransform {
+    let mut matrix = translation_matrix(geometric.translation.unwrap_or([0.0; 3]));
+    matrix = multiply(
+        matrix,
+        rotation_matrix(geometric.rotation.unwrap_or([0.0; 3])),
+    );
+    matrix = multiply(matrix, scale(geometric.scaling.unwrap_or([1.0; 3])));
+    FbxTransform { matrix }
 }

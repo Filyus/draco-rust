@@ -220,7 +220,13 @@ function buildFbxNodes(roots: FbxJson[]) {
     if (source.name) nodeByName.set(source.name, node);
     if (nodeId !== null) nodeById.set(nodeId, node);
     for (const mesh of source.meshes || []) {
-      renderables.push({ node, meshIndex, skinIndex: -1 });
+      const geometric = mesh?.geometricTransform?.matrix;
+      renderables.push({
+        node,
+        meshIndex,
+        skinIndex: -1,
+        ...(geometric?.length === 16 ? { geometricMatrix: Float32Array.from(geometric) } : {}),
+      });
       if (node.meshIndex < 0) node.meshIndex = meshIndex;
       meshIndex += 1;
     }

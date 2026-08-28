@@ -355,7 +355,15 @@ function ensureSceneResources(host: RenderHost): SceneTarget {
  */
 function prepareRenderable(host: RenderHost, renderable: Renderable) {
   const node = renderable.node;
-  mat4.copy(host._model, node.world);
+  // The geometric offset belongs to this mesh, not to the node, so it is
+  // applied here and not in the hierarchy walk that the node's children read.
+  // A skinned mesh is placed by its joint palette instead, and folding the
+  // offset into the model matrix would move it twice.
+  if (renderable.geometricMatrix && renderable.skinIndex < 0) {
+    mat4.multiply(host._model, node.world, renderable.geometricMatrix);
+  } else {
+    mat4.copy(host._model, node.world);
+  }
   // Normal matrix = inverse-transpose(model)
   mat4.invert(host._normalMatrix, host._model);
   mat4.transpose(host._normalMatrix, host._normalMatrix);
@@ -476,6 +484,9 @@ export function deferredDrawOrder(host: RenderHost): DeferredDraw[] {
         (box.min[1] + box.max[1]) / 2,
         (box.min[2] + box.max[2]) / 2,
       );
+      if (renderable.geometricMatrix && renderable.skinIndex < 0) {
+        vec3.transformMat4(centre, centre, renderable.geometricMatrix);
+      }
       vec3.transformMat4(centre, centre, renderable.node.world);
       const eye = host._eye!;
       distance = Math.hypot(centre[0] - eye[0], centre[1] - eye[1], centre[2] - eye[2]);

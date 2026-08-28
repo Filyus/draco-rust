@@ -69,7 +69,14 @@ export function updateSceneBounds(host: SceneGraphHost) {
       : null;
     const skinned = !!skin?.joints.length && meshIsSkinned(mesh.primitives);
     if (!skinned) {
-      grow(meshBox, renderable.node.world);
+      // Framing has to agree with the draw, which places this mesh at
+      // `node.world * geometric`.
+      if (renderable.geometricMatrix) {
+        mat4.multiply(matrix, renderable.node.world, renderable.geometricMatrix);
+        grow(meshBox, matrix);
+      } else {
+        grow(meshBox, renderable.node.world);
+      }
       continue;
     }
     // A skinned vertex lands at jointWorld * IBM * position: the palette is

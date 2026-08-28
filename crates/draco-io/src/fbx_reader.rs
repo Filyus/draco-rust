@@ -475,7 +475,18 @@ fn build_model_node(id: i64, graph: &ModelGraph<'_, '_>, ancestors: &mut Vec<i64
     node.attribute = graph.attributes.get(&id).cloned();
     node.kind = model_kind(node_src);
     if let Some(mesh_instances) = graph.mesh_instances.get(&id) {
-        node.mesh_instances.extend(mesh_instances.clone());
+        // `Geometric*` is authored on the Model, not on the Geometry, so it is
+        // resolved here rather than in `build_mesh_instance`: one geometry
+        // shared by several Models carries a different offset per Model.
+        let geometric = crate::fbx_transform::parse_geometric_transform(ObjectProperties::new(
+            node_src,
+            graph.templates,
+        ));
+        node.mesh_instances
+            .extend(mesh_instances.iter().cloned().map(|mut instance| {
+                instance.geometric_transform = geometric.clone();
+                instance
+            }));
     }
 
     // The ancestor check below stops a plain cycle. This bounds the
@@ -599,6 +610,9 @@ fn build_mesh_instance(
             deformer_map,
             connections,
         ),
+        // Filled in by `build_model_node`, which is where the attaching Model
+        // and therefore the offset is known.
+        geometric_transform: None,
     }
 }
 
