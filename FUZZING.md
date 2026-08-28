@@ -369,17 +369,14 @@ changes, plus deeper runs on demand. Trigger a manual run with
 
 - Bounded smoke runs (`-max_total_time=120`) for every target on each pull
   request and push to `main`. A manual dispatch runs a soak instead.
-- **Three jobs, grouped by what the target parses**, running concurrently:
-  `draco` (`decode_drc`, `encode_drc`), `readers` (`mesh_text_readers`,
-  `fbx_read_scene`, `fbx_roundtrip`) and `gltf` (`compress_gltf`,
-  `draco_gltf_import`). The groups are the unit of budget, and the split is by
-  risk: `draco` fuzzes this workspace's own bitstream encoder and decoder,
-  where four of the last five findings came from, and its soak is an hour per
-  target against half of that for the parsers of other people's formats.
-  Because the groups run at the same time, the run costs the wall-clock of the
-  longest one rather than the sum, and no target is competing with six others
-  for the six-hour job limit.
-- Each group caches its corpus under its own key. One shared key across
+- **One job per target**, running concurrently, so the run costs the
+  wall-clock of the longest budget rather than the sum, and no target competes
+  with six others for the six-hour job limit. Budgets are set per target from
+  its own coverage curve rather than by symmetry: `encode_drc` gets four hours
+  as the slowest, widest target and the one carrying the round-trip oracle;
+  every other target, `decode_drc` included, gets thirty minutes, which is
+  where their coverage stops moving.
+- Each corpus family caches under its own key. One shared key across
   concurrent jobs would have them overwrite each other's entry.
 - The corpus is persisted across runs via the GitHub Actions cache and
   re-seeded from the committed fixtures each run, so coverage never starts from
@@ -387,8 +384,8 @@ changes, plus deeper runs on demand. Trigger a manual run with
 - **Every target runs, whichever way the ones before it went.** A crash used
   to end the job where it happened, which is right for a two-minute smoke and
   wrong for a soak: two half-hour runs in a row ended on an early target, and
-  the last one in the list never got a single second of either. The group's
-  loop records each target's result and fails the step at the end, naming every
+  the last one in the list never got a single second of either. The loop
+  records each target's result and fails the step at the end, naming every
   target that crashed.
 - Reproducers upload as a build artifact whether or not the job failed.
 

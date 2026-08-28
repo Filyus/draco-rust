@@ -61,19 +61,22 @@ jobs:
   # they get twice the budget of the groups that fuzz parsers for other
   # people's formats.
   #
-  # Budgets follow the coverage curve, measured on the 2026-08-27 soak by the
-  # edges each target gained in the last tenth of its own run: `encode_drc`
-  # +226, `decode_drc` +18, and between 0 and 5 for the other five, which reach
-  # 96-99% of their final coverage by half time. So the ceiling is set by
-  # `encode_drc` and nobody else is given more for the sake of symmetry.
+  # Budgets follow the coverage curve, measured by the edges each target gained
+  # in the last tenth of its own run. On the 2026-08-28 soak: `encode_drc` +7,
+  # `decode_drc` +0, and between 0 and 5 for the other five. Every target now
+  # reaches 99% of its final coverage inside the first minute, so the seconds
+  # are no longer what limits coverage -- the corpus is. `decode_drc` is held
+  # at the parser budget because two hours bought it nothing over thirty
+  # minutes, twice running; `encode_drc` keeps the ceiling because its tail is
+  # the only one still above zero, not because more time is expected to pay.
   #
-  # `encode_drc` earns it three ways: it is the slowest target at 123 exec/s
-  # against 400-4000 for the rest, so equal seconds buy it an order of
-  # magnitude less exploration; it is the widest at 12,849 edges against 2,346
-  # to 6,694; and it is where the round-trip oracle lives, which is the only
+  # `encode_drc` earns it three ways: it is the slowest target at 124 exec/s
+  # against 600-4000 for the rest, so equal seconds buy it an order of
+  # magnitude less exploration; it is the widest at 13,115 edges against 2,346
+  # to 7,030; and it is where the round-trip oracle lives, which is the only
   # oracle here that catches an encoder writing a stream its own decoder
-  # refuses -- three of the seven findings on 2026-08-26. Three hours still
-  # leave it under the executions `decode_drc` reaches in one.
+  # refuses -- three of the seven findings on 2026-08-26. Four hours still
+  # leave it under the executions `decode_drc` reaches in half of one.
   #
   # One target per group, for the same reason: a group runs its targets in
   # sequence, so sharing a job made the soak cost their sum. Three readers in
@@ -93,12 +96,12 @@ jobs:
           - group: decode
             name: draco decode
             targets: decode_drc
-            soak_seconds: 7200
+            soak_seconds: 1800
             inherit_key: fuzz-corpus-v3-draco-
           - group: encode
             name: draco encode
             targets: encode_drc
-            soak_seconds: 10800
+            soak_seconds: 14400
             inherit_key: fuzz-corpus-v3-draco-
           - group: mesh_text
             name: OBJ/PLY/STL readers
